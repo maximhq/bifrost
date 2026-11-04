@@ -1350,6 +1350,9 @@ false
 {{- if .Values.storage.logsStore.objectStorageExcludeRequestTypes }}
 {{- $_ := set (index $config "logs_store") "object_storage_exclude_request_types" .Values.storage.logsStore.objectStorageExcludeRequestTypes }}
 {{- end }}
+{{- if hasKey .Values.storage.logsStore "captureClientIp" }}
+{{- $_ := set (index $config "logs_store") "capture_client_ip" .Values.storage.logsStore.captureClientIp }}
+{{- end }}
 {{- end }}
 {{- /* Vector Store */ -}}
 {{- if and .Values.vectorStore.enabled (ne .Values.vectorStore.type "none") }}
@@ -1589,6 +1592,9 @@ false
 {{- end }}
 {{- if hasKey $client "needsSessionStickiness" }}
 {{- $_ := set $cc "needs_session_stickiness" $client.needsSessionStickiness }}
+{{- end }}
+{{- if hasKey $client "perUserDiscovery" }}
+{{- $_ := set $cc "per_user_discovery" $client.perUserDiscovery }}
 {{- end }}
 {{- if $client.clientId }}
 {{- $_ := set $cc "client_id" $client.clientId }}
@@ -2928,6 +2934,20 @@ Call this template at the beginning of deployment/stateful templates
 {{- end }}
 {{- else if $client.openapiConfig }}
 {{- fail (printf "ERROR: bifrost.mcp.clientConfigs[%d].openapiConfig only applies to connectionType 'openapi' (client '%s' is '%s')." $idx $client.name $client.connectionType) }}
+{{- end }}
+{{- $ccAuth := default "none" (default $client.authType $client.auth_type) }}
+{{- $perUserAuthTypes := list "per_user_oauth" "per_user_headers" "token_exchange" }}
+{{- /* websocket renders as sse, so it takes the same restriction. */ -}}
+{{- if and (has $client.connectionType (list "sse" "stdio" "websocket")) (has $ccAuth $perUserAuthTypes) }}
+{{- fail (printf "ERROR: bifrost.mcp.clientConfigs[%d].authType '%s' is not supported for connectionType '%s' (client '%s'). Per-user auth types open a connection per call, which SSE and STDIO cannot serve; use none, headers or oauth." $idx $ccAuth $client.connectionType $client.name) }}
+{{- end }}
+{{- if $client.perUserDiscovery }}
+{{- if eq $client.connectionType "openapi" }}
+{{- fail (printf "ERROR: bifrost.mcp.clientConfigs[%d].perUserDiscovery does not apply to connectionType 'openapi' (client '%s'): its tools come from the OpenAPI document." $idx $client.name) }}
+{{- end }}
+{{- if not (has $ccAuth $perUserAuthTypes) }}
+{{- fail (printf "ERROR: bifrost.mcp.clientConfigs[%d].perUserDiscovery requires authType per_user_oauth, per_user_headers or token_exchange (client '%s' has '%s')." $idx $client.name $ccAuth) }}
+{{- end }}
 {{- end }}
 {{- end }}
 {{- end }}

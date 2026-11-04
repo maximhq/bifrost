@@ -6584,7 +6584,7 @@
       "properties": {
         "id": {
           "type": "string",
-          "description": "Unique routing rule ID"
+          "description": "Unique routing rule ID. Optional: a rule without an id is matched to the stored rule with the same name, scope and scope_id, and gets a generated ID the first time it is stored, so name must be unique within the scope. A rule with an id is matched by id, so changing the id creates a new rule; with source_of_truth split the old rule stays in the database."
         },
         "name": {
           "type": "string",
@@ -6645,7 +6645,7 @@
         },
         "priority": {
           "type": "integer",
-          "description": "Evaluation order within the rule's scope (scope plus scope_id); lower runs first. Must be unique within that scope, counting disabled rules and rules created in the UI or API. Defaults to 0, so two rules in one scope that both omit priority collide, and Bifrost exits at startup with 'routing rule with priority 0 already exists for scope ...'. Give every rule that shares a scope its own priority.",
+          "description": "Evaluation order within the rule's scope (scope plus scope_id); lower runs first. Must be unique within that scope, counting disabled rules and rules created in the UI or API. Defaults to 0, so two rules in one scope that both omit priority collide, and at startup Bifrost keeps the first and skips the other with a warning. A rule whose priority is held by a stored rule that config.json does not declare (for example the old row left behind by changing a rule's id) is also skipped with a warning. Give every rule that shares a scope its own priority.",
           "default": 0
         },
         "query": {
@@ -6682,7 +6682,6 @@
         }
       },
       "required": [
-        "id",
         "name",
         "targets"
       ],
