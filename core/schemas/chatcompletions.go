@@ -2324,6 +2324,44 @@ type ToolUsage struct {
 	ContainerSessions map[string]int `json:"container_sessions,omitempty"`
 }
 
+// UnmarshalJSON keeps a malformed image_gen block from failing the response it arrives on: it loses
+// only the image charge. Well-formed usage decodes once; the second pass runs only after a failure.
+func (t *ToolUsage) UnmarshalJSON(data []byte) error {
+	type alias ToolUsage
+	var parsed alias
+	if Unmarshal(data, &parsed) == nil {
+		*t = ToolUsage(parsed)
+		return nil
+	}
+	parsed = alias{}
+	aux := struct {
+		*alias
+		ImageGen json.RawMessage `json:"image_gen"`
+	}{alias: &parsed}
+	if err := Unmarshal(data, &aux); err != nil {
+		return err
+	}
+	*t = ToolUsage(parsed)
+	var imageGen *ImageGenToolUsage
+	if Unmarshal(aux.ImageGen, &imageGen) == nil {
+		t.ImageGen = imageGen
+	}
+	return nil
+}
+
+// withoutZeroImageGen drops OpenAI's all-zero image_gen block from t, which the caller must own. Chat usage
+// never carried it. Generated images stay, because pricing reads them from this usage.
+func (t *ToolUsage) withoutZeroImageGen() *ToolUsage {
+	if t == nil || t.ImageGen == nil || t.ImageGen.HasTokens() {
+		return t
+	}
+	t.ImageGen = nil
+	if t.WebSearch == nil && len(t.ContainerSessions) == 0 {
+		return nil
+	}
+	return t
+}
+
 // ContainerTierDefault is the ContainerSessions key for a container with no explicit memory tier.
 const ContainerTierDefault = "default"
 

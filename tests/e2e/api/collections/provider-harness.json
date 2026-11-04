@@ -150855,6 +150855,92 @@
               ]
             }
           }
+        },
+        {
+          "name": "openai/gpt-5.6 /v1/chat/completions over Responses sends no zero image_gen block",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"openai/gpt-5.6\", \"messages\": [{\"role\": \"user\", \"content\": \"Reply with the single word: ok\"}], \"reasoning\": {\"effort\": \"low\", \"mode\": \"standard\"}}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('chat over Responses: no zero image_gen block on usage', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-converted-request-type'), 'not served through Responses: ' + pm.response.text()).to.equal('responses');",
+                  "  var toolUsage = pm.response.json().usage.tool_usage || {};",
+                  "  pm.expect(toolUsage.image_gen, 'zero image_gen reached chat: ' + pm.response.text()).to.equal(undefined);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "openai/gpt-5.6 /v1/chat/completions over Responses streaming sends no zero image_gen block",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"openai/gpt-5.6\", \"messages\": [{\"role\": \"user\", \"content\": \"Reply with the single word: ok\"}], \"reasoning\": {\"effort\": \"low\", \"mode\": \"standard\"}, \"stream\": true}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('chat stream over Responses: usage arrives with no zero image_gen block', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var body = pm.response.text();",
+                  "  pm.expect(body, 'no usage chunk: ' + body).to.include('\"usage\":{');",
+                  "  pm.expect(body, 'zero image_gen reached chat: ' + body).to.not.include('\"image_gen\"');",
+                  "});"
+                ]
+              }
+            }
+          ]
         }
       ]
     },
