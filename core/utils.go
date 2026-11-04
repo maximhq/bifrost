@@ -621,6 +621,19 @@ func isFileRequestType(reqType schemas.RequestType) bool {
 	return reqType == schemas.FileUploadRequest || reqType == schemas.FileListRequest || reqType == schemas.FileRetrieveRequest || reqType == schemas.FileDeleteRequest || reqType == schemas.FileContentRequest
 }
 
+// isKeyScopedLookupRequest reports whether the request addresses one stored object by id through a single-key provider call;
+// core tries each key in turn because the object lives on whichever key created it.
+func isKeyScopedLookupRequest(br *schemas.BifrostRequest) bool {
+	switch br.RequestType {
+	case schemas.ContainerFileCreateRequest,
+		schemas.VideoRetrieveRequest, schemas.VideoDownloadRequest, schemas.VideoDeleteRequest, schemas.VideoRemixRequest:
+		return true
+	case schemas.VideoEditRequest:
+		return br.VideoEditRequest != nil && br.VideoEditRequest.Input != nil && br.VideoEditRequest.Input.Video.ID != ""
+	}
+	return isResponsesLifecycleRequestType(br.RequestType)
+}
+
 // isCachedContentRequestType returns true if the given request type is a cached content lifecycle operation.
 func isCachedContentRequestType(reqType schemas.RequestType) bool {
 	return reqType == schemas.CachedContentCreateRequest || reqType == schemas.CachedContentListRequest ||
