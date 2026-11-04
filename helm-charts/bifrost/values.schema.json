@@ -2803,7 +2803,7 @@
                     ]
                   }
                 },
-                "required": ["id", "name", "targets"]
+                "required": ["name", "targets"]
               }
             },
             "authConfig": {
