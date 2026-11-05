@@ -743,3 +743,23 @@ func TestOpenCodeConfigureRemovesConflictingAuthHeaders(t *testing.T) {
 		t.Fatal("API version duplicated")
 	}
 }
+
+func TestReadNativeJSONTreatsEmptyFilesAsEmptySettings(t *testing.T) {
+	for name, body := range map[string]string{"empty": "", "whitespace": " \n\t\n", "comment only": "// managed elsewhere\n/* nothing */\n"} {
+		path := filepath.Join(t.TempDir(), "settings.json")
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		settings, err := readNativeJSON(path)
+		if err != nil || settings == nil || len(settings) != 0 {
+			t.Errorf("%s: got %v, %v", name, settings, err)
+		}
+	}
+	path := filepath.Join(t.TempDir(), "settings.json")
+	if err := os.WriteFile(path, []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readNativeJSON(path); err == nil {
+		t.Error("invalid JSON must still fail to parse")
+	}
+}

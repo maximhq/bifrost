@@ -139,6 +139,28 @@ func antigravitySettingsPath() (string, error) {
 	return filepath.Join(home, ".gemini", "antigravity-cli", "settings.json"), nil
 }
 
+// ValidRecordedAntigravityPaths reports whether a restoration receipt names the
+// current Antigravity settings file and a shell profile configure could have
+// written: ~/.bashrc, or a .zshrc under any (possibly former) ZDOTDIR.
+func ValidRecordedAntigravityPaths(recorded []string) bool {
+	settings, err := antigravitySettingsPath()
+	if err != nil || len(recorded) != 2 || recorded[0] != settings {
+		return false
+	}
+	profile := recorded[1]
+	if !filepath.IsAbs(profile) || filepath.Clean(profile) != profile {
+		return false
+	}
+	switch filepath.Base(profile) {
+	case ".bashrc":
+		home, err := os.UserHomeDir()
+		return err == nil && filepath.Dir(profile) == home
+	case ".zshrc":
+		return true
+	}
+	return false
+}
+
 // agy 1.4.8 headless mode does not reliably apply the saved model itself.
 func antigravityRunArgs(model string) []string {
 	if strings.TrimSpace(model) == "" {

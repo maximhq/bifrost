@@ -36,7 +36,7 @@ def normalize(path):
 def catalog_routes(root):
     result = set()
     for path in [root / "docs/openapi/openapi.json", root / "cli/internal/operations/management.json"]:
-        for route, item in json.loads(path.read_text())["paths"].items():
+        for route, item in json.loads(path.read_text(encoding="utf-8"))["paths"].items():
             result.update((m.upper(), normalize(route)) for m in item if m in METHODS)
     return result
 
@@ -47,7 +47,7 @@ def registered_routes(root):
     for source in sorted((root / "transports").rglob("*.go")):
         if source.name.endswith("_test.go"):
             continue
-        text = source.read_text()
+        text = source.read_text(encoding="utf-8")
         # Ignore commented-out registrations.
         text = re.sub(r"(?m)^\s*//.*$", "", text)
         for method, path in re.findall(r'\.(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\s*\(\s*"([^"]+)"', text):

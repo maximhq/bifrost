@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/maximhq/bifrost/cli/internal/config"
+	"github.com/maximhq/bifrost/cli/internal/harness"
 )
 
 // erroringWriter fails every write, simulating a broken output pipe.
@@ -762,6 +763,127 @@ func TestConfigureAllHarnessesRoundTrip(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestUnconfigureAntigravityAfterShellOrZDOTDIRChange(t *testing.T) {
+	cases := map[string]func(t *testing.T){
+		"unsupported shell": func(t *testing.T) { t.Setenv("SHELL", "/usr/bin/fish") },
+		"zdotdir moved":     func(t *testing.T) { t.Setenv("ZDOTDIR", t.TempDir()) },
+		"zsh to bash":       func(t *testing.T) { t.Setenv("SHELL", "/bin/bash") },
+	}
+	for name, change := range cases {
+		t.Run(name, func(t *testing.T) {
+			home := t.TempDir()
+			zdotdir := filepath.Join(home, "zsh")
+			t.Setenv("HOME", home)
+			t.Setenv("SHELL", "/bin/zsh")
+			t.Setenv("ZDOTDIR", zdotdir)
+			t.Setenv("BIFROST_VIRTUAL_KEY", "sk-bf-shell-change")
+			if err := os.MkdirAll(zdotdir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			profile := filepath.Join(zdotdir, ".zshrc")
+			original := []byte("# user zshrc\n")
+			if err := os.WriteFile(profile, original, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			runner, _, _ := newTestRunner(t, testRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+				t.Fatalf("unexpected network request: %s", req.URL)
+				return nil, nil
+			}))
+			if err := runner.Run(context.Background(), []string{"configure", "antigravity", "--model", "gemini/test"}); err != nil {
+				t.Fatal(err)
+			}
+			change(t)
+			if err := runner.Run(context.Background(), []string{"unconfigure", "agy"}); err != nil {
+				t.Fatal(err)
+			}
+			if body, _ := os.ReadFile(profile); string(body) != string(original) {
+				t.Fatalf("zshrc not restored: %q", body)
+			}
+			if _, err := os.Stat(filepath.Join(home, ".gemini", "antigravity-cli", "settings.json")); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("settings not restored: %v", err)
+			}
+		})
+	}
+}
+
+func TestRecordedAntigravityPathsRejectUnexpectedFiles(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	settings := filepath.Join(home, ".gemini", "antigravity-cli", "settings.json")
+	for name, recorded := range map[string][]string{
+		"bashrc outside home": {settings, filepath.Join(home, "other", ".bashrc")},
+		"unrelated file":      {settings, filepath.Join(home, ".profile")},
+		"relative zshrc":      {settings, "zsh/.zshrc"},
+		"unclean zshrc":       {settings, home + "/zsh/../zsh/.zshrc"},
+		"other settings":      {filepath.Join(home, "settings.json"), filepath.Join(home, ".bashrc")},
+		"extra file":          {settings, filepath.Join(home, ".bashrc"), filepath.Join(home, ".zshrc")},
+	} {
+		receipt := &configReceipt{}
+		for _, path := range recorded {
+			receipt.Files = append(receipt.Files, configSnapshot{Path: path})
+		}
+		if _, ok := recordedAntigravityPaths(receipt); ok {
+			t.Errorf("%s: accepted %v", name, recorded)
+		}
+	}
+	receipt := &configReceipt{Files: []configSnapshot{{Path: settings}, {Path: filepath.Join(t.TempDir(), ".zshrc")}}}
+	if _, ok := recordedAntigravityPaths(receipt); !ok {
+		t.Error("rejected a .zshrc from a previous ZDOTDIR")
+	}
+}
+
+func TestConfigureGeminiRollsBackWhenEnvWriteFails(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("BIFROST_VIRTUAL_KEY", "sk-bf-rollback")
+	paths, err := nativeConfigPaths("gemini")
+	if err != nil {
+		t.Fatal(err)
+	}
+	originals := [][]byte{[]byte("{\"theme\": \"keep\"}\n"), []byte("KEEP='original'\n")}
+	for i, path := range paths {
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, originals[i], 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	original := lookupConfigHarness
+	t.Cleanup(func() { lookupConfigHarness = original })
+	lookupConfigHarness = func(id string) (harness.Harness, bool) {
+		h, ok := original(id)
+		write := h.WriteNativeConfig
+		h.WriteNativeConfig = func(baseURL, apiKey, model string) error {
+			// settings.json and .env are both written before the injected .env failure.
+			if err := write(baseURL, apiKey, model); err != nil {
+				return err
+			}
+			if body, _ := os.ReadFile(paths[0]); string(body) == string(originals[0]) {
+				t.Fatal("settings.json was not written before the injected failure")
+			}
+			return errors.New("injected .env write failure")
+		}
+		return h, ok
+	}
+	runner, _, _ := newTestRunner(t, testRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		t.Fatalf("unexpected network request: %s", req.URL)
+		return nil, nil
+	}))
+	err = runner.Run(context.Background(), []string{"configure", "gemini", "--model", "gemini/test"})
+	if err == nil || !strings.Contains(err.Error(), "injected .env write failure") {
+		t.Fatalf("expected injected failure, got %v", err)
+	}
+	for i, path := range paths {
+		if body, _ := os.ReadFile(path); string(body) != string(originals[i]) {
+			t.Fatalf("%s not restored: %q", path, body)
+		}
+	}
+	if receipts, _ := filepath.Glob(filepath.Join(filepath.Dir(runner.StatePath), "receipts", "*.json")); len(receipts) != 0 {
+		t.Fatalf("receipt left after rollback: %v", receipts)
 	}
 }
 
