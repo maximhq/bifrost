@@ -287170,11 +287170,11 @@
                   "  var onItem = {};",
                   "  frames.forEach(function (f) {",
                   "    if (!f || f.type !== 'response.output_item.done' || !f.item || f.item.type !== 'reasoning') { return; }",
-                  "    var sig = f.item.encrypted_content || '';",
+                  "    var sig = '';",
                   "    if (!sig && Array.isArray(f.item.content)) {",
                   "      f.item.content.forEach(function (c) { if (c && typeof c.signature === 'string') { sig += c.signature; } });",
                   "    }",
-                  "    onItem[f.item.id] = sig;",
+                  "    onItem[f.item.id] = sig || f.item.encrypted_content || '';",
                   "  });",
                   "  Object.keys(streamed).forEach(function (id) {",
                   "    pm.expect(onItem[id], 'output_item.done for reasoning item ' + id + ' does not carry the signature streamed on its delta, so the turn cannot be replayed').to.equal(streamed[id]);",
@@ -287259,11 +287259,11 @@
                   "  var onItem = {};",
                   "  frames.forEach(function (f) {",
                   "    if (!f || f.type !== 'response.output_item.done' || !f.item || f.item.type !== 'reasoning') { return; }",
-                  "    var sig = f.item.encrypted_content || '';",
+                  "    var sig = '';",
                   "    if (!sig && Array.isArray(f.item.content)) {",
                   "      f.item.content.forEach(function (c) { if (c && typeof c.signature === 'string') { sig += c.signature; } });",
                   "    }",
-                  "    onItem[f.item.id] = sig;",
+                  "    onItem[f.item.id] = sig || f.item.encrypted_content || '';",
                   "  });",
                   "  Object.keys(streamed).forEach(function (id) {",
                   "    pm.expect(onItem[id], 'output_item.done for reasoning item ' + id + ' does not carry the signature streamed on its delta, so the turn cannot be replayed').to.equal(streamed[id]);",
@@ -306057,6 +306057,405 @@
               "});",
               "}"
             ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "311. Claude Responses thinking summary (#9631) (claude-thinking-summary)",
+      "description": "Pins visible thinking completion on both Responses aliases for Anthropic and the Azure and Vertex Claude endpoints that reuse its SSE converter. The Go regression also checks tool continuation when a client echoes only standard Responses fields.",
+      "item": [
+        {
+          "name": "anthropic/claude-haiku-4-5 /v1/responses streaming completes visible reasoning - claude-thinking-summary - #9631",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.expect(pm.response.code, 'request failed: ' + pm.response.text()).to.equal(200);",
+                  "var frames = pm.response.text().split('\\n').filter(function (line) { return line.indexOf('data: {') === 0; }).map(function (line) { return JSON.parse(line.slice(6)); });",
+                  "var done = frames.filter(function (f) { return f.type === 'response.output_item.done' && f.item && f.item.type === 'reasoning'; });",
+                  "var deltas = frames.filter(function (f) { return f.type === 'response.reasoning_summary_text.delta'; });",
+                  "var visible = done.filter(function (f) { return deltas.some(function (d) { return d.item_id === f.item.id && d.delta; }); });",
+                  "pm.test('completed reasoning contains the streamed summary and signature', function () {",
+                  "  pm.expect(visible, pm.response.text()).to.not.be.empty;",
+                  "  visible.forEach(function (f) {",
+                  "    var chunks = deltas.filter(function (d) { return d.item_id === f.item.id; });",
+                  "    var text = chunks.map(function (d) { return d.delta || ''; }).join('');",
+                  "    var sig = chunks.map(function (d) { return d.signature || ''; }).join('');",
+                  "    pm.expect(f.item.summary).to.eql([{ type: 'summary_text', text: text }]);",
+                  "    pm.expect(sig).to.not.be.empty;",
+                  "    pm.expect(f.item.encrypted_content).to.equal('bifrost:anthropic:thinking:v1:' + sig);",
+                  "  });",
+                  "});",
+                  "pm.test('response.completed includes the same reasoning summaries', function () {",
+                  "  var completed = frames.filter(function (f) { return f.type === 'response.completed'; });",
+                  "  pm.expect(completed).to.have.lengthOf(1);",
+                  "  visible.forEach(function (f) {",
+                  "    var item = completed[0].response.output.filter(function (i) { return i.id === f.item.id; })[0];",
+                  "    pm.expect(item && item.summary).to.eql(f.item.summary);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-haiku-4-5\",\n  \"input\": \"Find the minimum number of coins from denominations 1, 7, and 11 that sum to 39. Think through the options.\",\n  \"reasoning\": {\n    \"effort\": \"medium\",\n    \"summary\": \"auto\"\n  },\n  \"stream\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "anthropic/claude-haiku-4-5 /openai/v1/responses streaming completes visible reasoning - claude-thinking-summary - #9631",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.expect(pm.response.code, 'request failed: ' + pm.response.text()).to.equal(200);",
+                  "var frames = pm.response.text().split('\\n').filter(function (line) { return line.indexOf('data: {') === 0; }).map(function (line) { return JSON.parse(line.slice(6)); });",
+                  "var done = frames.filter(function (f) { return f.type === 'response.output_item.done' && f.item && f.item.type === 'reasoning'; });",
+                  "var deltas = frames.filter(function (f) { return f.type === 'response.reasoning_summary_text.delta'; });",
+                  "var visible = done.filter(function (f) { return deltas.some(function (d) { return d.item_id === f.item.id && d.delta; }); });",
+                  "pm.test('completed reasoning contains the streamed summary and signature', function () {",
+                  "  pm.expect(visible, pm.response.text()).to.not.be.empty;",
+                  "  visible.forEach(function (f) {",
+                  "    var chunks = deltas.filter(function (d) { return d.item_id === f.item.id; });",
+                  "    var text = chunks.map(function (d) { return d.delta || ''; }).join('');",
+                  "    var sig = chunks.map(function (d) { return d.signature || ''; }).join('');",
+                  "    pm.expect(f.item.summary).to.eql([{ type: 'summary_text', text: text }]);",
+                  "    pm.expect(sig).to.not.be.empty;",
+                  "    pm.expect(f.item.encrypted_content).to.equal('bifrost:anthropic:thinking:v1:' + sig);",
+                  "  });",
+                  "});",
+                  "pm.test('response.completed includes the same reasoning summaries', function () {",
+                  "  var completed = frames.filter(function (f) { return f.type === 'response.completed'; });",
+                  "  pm.expect(completed).to.have.lengthOf(1);",
+                  "  visible.forEach(function (f) {",
+                  "    var item = completed[0].response.output.filter(function (i) { return i.id === f.item.id; })[0];",
+                  "    pm.expect(item && item.summary).to.eql(f.item.summary);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-haiku-4-5\",\n  \"input\": \"Find the minimum number of coins from denominations 1, 7, and 11 that sum to 39. Think through the options.\",\n  \"reasoning\": {\n    \"effort\": \"medium\",\n    \"summary\": \"auto\"\n  },\n  \"stream\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "azure/claude-haiku-4-5 /v1/responses streaming completes visible reasoning - claude-thinking-summary - #9631",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.expect(pm.response.code, 'request failed: ' + pm.response.text()).to.equal(200);",
+                  "var frames = pm.response.text().split('\\n').filter(function (line) { return line.indexOf('data: {') === 0; }).map(function (line) { return JSON.parse(line.slice(6)); });",
+                  "var done = frames.filter(function (f) { return f.type === 'response.output_item.done' && f.item && f.item.type === 'reasoning'; });",
+                  "var deltas = frames.filter(function (f) { return f.type === 'response.reasoning_summary_text.delta'; });",
+                  "var visible = done.filter(function (f) { return deltas.some(function (d) { return d.item_id === f.item.id && d.delta; }); });",
+                  "pm.test('completed reasoning contains the streamed summary and signature', function () {",
+                  "  pm.expect(visible, pm.response.text()).to.not.be.empty;",
+                  "  visible.forEach(function (f) {",
+                  "    var chunks = deltas.filter(function (d) { return d.item_id === f.item.id; });",
+                  "    var text = chunks.map(function (d) { return d.delta || ''; }).join('');",
+                  "    var sig = chunks.map(function (d) { return d.signature || ''; }).join('');",
+                  "    pm.expect(f.item.summary).to.eql([{ type: 'summary_text', text: text }]);",
+                  "    pm.expect(sig).to.not.be.empty;",
+                  "    pm.expect(f.item.encrypted_content).to.equal('bifrost:anthropic:thinking:v1:' + sig);",
+                  "  });",
+                  "});",
+                  "pm.test('response.completed includes the same reasoning summaries', function () {",
+                  "  var completed = frames.filter(function (f) { return f.type === 'response.completed'; });",
+                  "  pm.expect(completed).to.have.lengthOf(1);",
+                  "  visible.forEach(function (f) {",
+                  "    var item = completed[0].response.output.filter(function (i) { return i.id === f.item.id; })[0];",
+                  "    pm.expect(item && item.summary).to.eql(f.item.summary);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"azure/claude-haiku-4-5\",\n  \"input\": \"Find the minimum number of coins from denominations 1, 7, and 11 that sum to 39. Think through the options.\",\n  \"reasoning\": {\n    \"effort\": \"medium\",\n    \"summary\": \"auto\"\n  },\n  \"stream\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "azure/claude-haiku-4-5 /openai/v1/responses streaming completes visible reasoning - claude-thinking-summary - #9631",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.expect(pm.response.code, 'request failed: ' + pm.response.text()).to.equal(200);",
+                  "var frames = pm.response.text().split('\\n').filter(function (line) { return line.indexOf('data: {') === 0; }).map(function (line) { return JSON.parse(line.slice(6)); });",
+                  "var done = frames.filter(function (f) { return f.type === 'response.output_item.done' && f.item && f.item.type === 'reasoning'; });",
+                  "var deltas = frames.filter(function (f) { return f.type === 'response.reasoning_summary_text.delta'; });",
+                  "var visible = done.filter(function (f) { return deltas.some(function (d) { return d.item_id === f.item.id && d.delta; }); });",
+                  "pm.test('completed reasoning contains the streamed summary and signature', function () {",
+                  "  pm.expect(visible, pm.response.text()).to.not.be.empty;",
+                  "  visible.forEach(function (f) {",
+                  "    var chunks = deltas.filter(function (d) { return d.item_id === f.item.id; });",
+                  "    var text = chunks.map(function (d) { return d.delta || ''; }).join('');",
+                  "    var sig = chunks.map(function (d) { return d.signature || ''; }).join('');",
+                  "    pm.expect(f.item.summary).to.eql([{ type: 'summary_text', text: text }]);",
+                  "    pm.expect(sig).to.not.be.empty;",
+                  "    pm.expect(f.item.encrypted_content).to.equal('bifrost:anthropic:thinking:v1:' + sig);",
+                  "  });",
+                  "});",
+                  "pm.test('response.completed includes the same reasoning summaries', function () {",
+                  "  var completed = frames.filter(function (f) { return f.type === 'response.completed'; });",
+                  "  pm.expect(completed).to.have.lengthOf(1);",
+                  "  visible.forEach(function (f) {",
+                  "    var item = completed[0].response.output.filter(function (i) { return i.id === f.item.id; })[0];",
+                  "    pm.expect(item && item.summary).to.eql(f.item.summary);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"azure/claude-haiku-4-5\",\n  \"input\": \"Find the minimum number of coins from denominations 1, 7, and 11 that sum to 39. Think through the options.\",\n  \"reasoning\": {\n    \"effort\": \"medium\",\n    \"summary\": \"auto\"\n  },\n  \"stream\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "vertex/claude-haiku-4-5 /v1/responses streaming completes visible reasoning - claude-thinking-summary - #9631",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.expect(pm.response.code, 'request failed: ' + pm.response.text()).to.equal(200);",
+                  "var frames = pm.response.text().split('\\n').filter(function (line) { return line.indexOf('data: {') === 0; }).map(function (line) { return JSON.parse(line.slice(6)); });",
+                  "var done = frames.filter(function (f) { return f.type === 'response.output_item.done' && f.item && f.item.type === 'reasoning'; });",
+                  "var deltas = frames.filter(function (f) { return f.type === 'response.reasoning_summary_text.delta'; });",
+                  "var visible = done.filter(function (f) { return deltas.some(function (d) { return d.item_id === f.item.id && d.delta; }); });",
+                  "pm.test('completed reasoning contains the streamed summary and signature', function () {",
+                  "  pm.expect(visible, pm.response.text()).to.not.be.empty;",
+                  "  visible.forEach(function (f) {",
+                  "    var chunks = deltas.filter(function (d) { return d.item_id === f.item.id; });",
+                  "    var text = chunks.map(function (d) { return d.delta || ''; }).join('');",
+                  "    var sig = chunks.map(function (d) { return d.signature || ''; }).join('');",
+                  "    pm.expect(f.item.summary).to.eql([{ type: 'summary_text', text: text }]);",
+                  "    pm.expect(sig).to.not.be.empty;",
+                  "    pm.expect(f.item.encrypted_content).to.equal('bifrost:anthropic:thinking:v1:' + sig);",
+                  "  });",
+                  "});",
+                  "pm.test('response.completed includes the same reasoning summaries', function () {",
+                  "  var completed = frames.filter(function (f) { return f.type === 'response.completed'; });",
+                  "  pm.expect(completed).to.have.lengthOf(1);",
+                  "  visible.forEach(function (f) {",
+                  "    var item = completed[0].response.output.filter(function (i) { return i.id === f.item.id; })[0];",
+                  "    pm.expect(item && item.summary).to.eql(f.item.summary);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/claude-haiku-4-5\",\n  \"input\": \"Find the minimum number of coins from denominations 1, 7, and 11 that sum to 39. Think through the options.\",\n  \"reasoning\": {\n    \"effort\": \"medium\",\n    \"summary\": \"auto\"\n  },\n  \"stream\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "vertex/claude-haiku-4-5 /openai/v1/responses streaming completes visible reasoning - claude-thinking-summary - #9631",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.expect(pm.response.code, 'request failed: ' + pm.response.text()).to.equal(200);",
+                  "var frames = pm.response.text().split('\\n').filter(function (line) { return line.indexOf('data: {') === 0; }).map(function (line) { return JSON.parse(line.slice(6)); });",
+                  "var done = frames.filter(function (f) { return f.type === 'response.output_item.done' && f.item && f.item.type === 'reasoning'; });",
+                  "var deltas = frames.filter(function (f) { return f.type === 'response.reasoning_summary_text.delta'; });",
+                  "var visible = done.filter(function (f) { return deltas.some(function (d) { return d.item_id === f.item.id && d.delta; }); });",
+                  "pm.test('completed reasoning contains the streamed summary and signature', function () {",
+                  "  pm.expect(visible, pm.response.text()).to.not.be.empty;",
+                  "  visible.forEach(function (f) {",
+                  "    var chunks = deltas.filter(function (d) { return d.item_id === f.item.id; });",
+                  "    var text = chunks.map(function (d) { return d.delta || ''; }).join('');",
+                  "    var sig = chunks.map(function (d) { return d.signature || ''; }).join('');",
+                  "    pm.expect(f.item.summary).to.eql([{ type: 'summary_text', text: text }]);",
+                  "    pm.expect(sig).to.not.be.empty;",
+                  "    pm.expect(f.item.encrypted_content).to.equal('bifrost:anthropic:thinking:v1:' + sig);",
+                  "  });",
+                  "});",
+                  "pm.test('response.completed includes the same reasoning summaries', function () {",
+                  "  var completed = frames.filter(function (f) { return f.type === 'response.completed'; });",
+                  "  pm.expect(completed).to.have.lengthOf(1);",
+                  "  visible.forEach(function (f) {",
+                  "    var item = completed[0].response.output.filter(function (i) { return i.id === f.item.id; })[0];",
+                  "    pm.expect(item && item.summary).to.eql(f.item.summary);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/claude-haiku-4-5\",\n  \"input\": \"Find the minimum number of coins from denominations 1, 7, and 11 that sum to 39. Think through the options.\",\n  \"reasoning\": {\n    \"effort\": \"medium\",\n    \"summary\": \"auto\"\n  },\n  \"stream\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses"
+              ]
+            }
           }
         }
       ]

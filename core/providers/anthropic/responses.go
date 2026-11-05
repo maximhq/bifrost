@@ -110,6 +110,9 @@ const (
 // summary block. summary_index is required on every reasoning_summary_* event.
 const anthropicReasoningSummaryIndex = 0
 
+// Distinguish a visible thinking signature from a native redacted thinking payload.
+const visibleThinkingSignaturePrefix = "bifrost:anthropic:thinking:v1:"
+
 func (state *AnthropicResponsesStreamState) beginInputJSONBuffer(index *int, kind anthropicInputJSONBufferKind) {
 	if index == nil {
 		return
@@ -543,6 +546,9 @@ func reasoningPayloadAndSummary(item *schemas.ResponsesMessage) (string, bool) {
 	encrypted := ""
 	if item.ResponsesReasoning.EncryptedContent != nil {
 		encrypted = *item.ResponsesReasoning.EncryptedContent
+		if strings.HasPrefix(encrypted, visibleThinkingSignaturePrefix) {
+			encrypted = ""
+		}
 	}
 	return encrypted, len(item.ResponsesReasoning.Summary) > 0
 }
@@ -2852,7 +2858,21 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 								},
 							},
 						}
-						storedItem.ResponsesReasoning = nil
+						carrier := visibleThinkingSignaturePrefix
+						if signature != nil {
+							carrier += *signature
+						}
+						summary := []schemas.ResponsesReasoningSummary{}
+						if accReasoning != "" {
+							summary = append(summary, schemas.ResponsesReasoningSummary{
+								Type: schemas.ResponsesReasoningContentBlockTypeSummaryText,
+								Text: accReasoning,
+							})
+						}
+						storedItem.ResponsesReasoning = &schemas.ResponsesReasoning{
+							Summary:          summary,
+							EncryptedContent: &carrier,
+						}
 					}
 
 					// Emit reasoning_summary_text.done (reasoning equivalent of
@@ -8368,6 +8388,11 @@ func convertBifrostReasoningToAnthropicThinking(ctx *schemas.BifrostContext, msg
 	var thinkingBlocks []AnthropicContentBlock
 	embedID := providerUtils.ShouldEmbedReasoningItemID(ctx, sourceProvider, model) &&
 		(!bridgedFromChat || (msg.ResponsesReasoning != nil && msg.ResponsesReasoning.EncryptedContent != nil && *msg.ResponsesReasoning.EncryptedContent != ""))
+	var carriedSignature string
+	var taggedSignature bool
+	if msg.ResponsesReasoning != nil && msg.ResponsesReasoning.EncryptedContent != nil {
+		carriedSignature, taggedSignature = strings.CutPrefix(*msg.ResponsesReasoning.EncryptedContent, visibleThinkingSignaturePrefix)
+	}
 
 	// Track whether the content blocks actually yielded reasoning rather than
 	// branching on Content being non-nil. `ContentBlocks != nil` is true for an
@@ -8381,6 +8406,9 @@ func convertBifrostReasoningToAnthropicThinking(ctx *schemas.BifrostContext, msg
 				// signature is required by the Agent SDK; converted (non-Anthropic) reasoning
 				// has none, so default to empty rather than omitting the field.
 				signature := block.Signature
+				if taggedSignature && (signature == nil || *signature == "") {
+					continue
+				}
 				if signature == nil {
 					signature = schemas.Ptr("")
 				}
@@ -8397,6 +8425,21 @@ func convertBifrostReasoningToAnthropicThinking(ctx *schemas.BifrostContext, msg
 				emittedFromContentBlocks = true
 			}
 		}
+	}
+	if taggedSignature {
+		if !emittedFromContentBlocks && carriedSignature != "" && len(msg.ResponsesReasoning.Summary) <= 1 {
+			// Omitted thinking still needs its original empty text and signature on replay.
+			text := ""
+			if len(msg.ResponsesReasoning.Summary) == 1 {
+				text = msg.ResponsesReasoning.Summary[0].Text
+			}
+			thinkingBlocks = append(thinkingBlocks, AnthropicContentBlock{
+				Type:      AnthropicContentBlockTypeThinking,
+				Thinking:  &text,
+				Signature: &carriedSignature,
+			})
+		}
+		return thinkingBlocks
 	}
 	if !emittedFromContentBlocks && msg.ResponsesReasoning != nil {
 		// Redacted-only reasoning items carry an EMPTY (non-nil) summary list next
