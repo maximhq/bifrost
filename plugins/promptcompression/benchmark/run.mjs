@@ -65,10 +65,31 @@ function cachedTokens(usage) {
 function report() {
   const load = (l) => {
     if (!existsSync(resultsPath(l))) throw new Error(`missing ${resultsPath(l)}; run --label ${l} first`);
-    return JSON.parse(readFileSync(resultsPath(l), "utf8"));
+    const data = JSON.parse(readFileSync(resultsPath(l), "utf8"));
+    if (Array.isArray(data) || !data.model || !Array.isArray(data.rows)) {
+      throw new Error(`${resultsPath(l)} has no model recorded; delete it and rerun --label ${l}`);
+    }
+    return data;
   };
-  const off = load("off");
-  const on = load("on");
+  const offRun = load("off");
+  const onRun = load("on");
+  if (offRun.model !== onRun.model) {
+    throw new Error(`off and on runs used different models (${offRun.model} vs ${onRun.model}); rerun both with the same BENCH_MODEL`);
+  }
+  const expectedTurns = buildTurns(JSON.parse(readFileSync(fixturePath, "utf8"))).length;
+  for (const [l, run] of [["off", offRun], ["on", onRun]]) {
+    const have = new Set(run.rows.map((r) => r.turn));
+    const missing = [];
+    for (let t = 1; t <= expectedTurns; t++) if (!have.has(t)) missing.push(t);
+    if (missing.length) throw new Error(`${l} run is missing turns ${missing.join(", ")} of ${expectedTurns}; rerun --label ${l}`);
+    for (const r of run.rows) {
+      if (!Number.isFinite(r.prompt_tokens) || r.prompt_tokens <= 0) {
+        throw new Error(`${l} run turn ${r.turn} has no prompt_tokens; rerun --label ${l}`);
+      }
+    }
+  }
+  const off = offRun.rows;
+  const on = onRun.rows;
   const byTurn = (rows) => new Map(rows.map((r) => [r.turn, r]));
   const o = byTurn(off), n = byTurn(on);
   const turns = [...new Set([...o.keys(), ...n.keys()])].sort((a, b) => a - b);
@@ -77,7 +98,7 @@ function report() {
   const lines = [
     "# Live benchmark results",
     "",
-    `Model: ${process.env.BENCH_MODEL ?? "(see run logs)"}. Provider-reported usage; results depend on the provider's caching behaviour.`,
+    `Model: ${offRun.model}. Provider-reported usage; results depend on the provider's caching behaviour.`,
     "",
     "| Turn | prompt_tokens off | prompt_tokens on | cached off | cached on | % saved |",
     "|---:|---:|---:|---:|---:|---:|",
@@ -123,7 +144,14 @@ async function main() {
   if (process.env.BENCH_API_KEY) headers.Authorization = `Bearer ${process.env.BENCH_API_KEY}`;
 
   const file = resultsPath(label);
-  const rows = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : [];
+  let rows = [];
+  if (existsSync(file)) {
+    const prev = JSON.parse(readFileSync(file, "utf8"));
+    if (Array.isArray(prev) || prev.model !== model) {
+      throw new Error(`${file} was recorded for a different model (${prev.model ?? "unknown"}); delete it to start over with ${model}`);
+    }
+    rows = prev.rows;
+  }
   for (let i = 0; i < turns.length; i++) {
     const res = await fetch(`${base}/v1/chat/completions`, {
       method: "POST",
@@ -132,12 +160,20 @@ async function main() {
     });
     const text = await res.text();
     if (!res.ok) throw new Error(`turn ${i + 1}: HTTP ${res.status}: ${text.slice(0, 500)}`);
-    const usage = JSON.parse(text).usage;
-    const row = { turn: i + 1, prompt_tokens: usage?.prompt_tokens ?? 0, cached_read_tokens: cachedTokens(usage) };
+    let usage;
+    try {
+      usage = JSON.parse(text).usage;
+    } catch {
+      throw new Error(`turn ${i + 1}: response is not JSON: ${text.slice(0, 500)}`);
+    }
+    if (!Number.isFinite(usage?.prompt_tokens) || usage.prompt_tokens <= 0) {
+      throw new Error(`turn ${i + 1}: response has no usage.prompt_tokens: ${text.slice(0, 500)}`);
+    }
+    const row = { turn: i + 1, prompt_tokens: usage.prompt_tokens, cached_read_tokens: cachedTokens(usage) };
     // Replace any earlier row for this turn so reruns do not duplicate.
     const idx = rows.findIndex((r) => r.turn === row.turn);
     if (idx >= 0) rows[idx] = row; else rows.push(row);
-    writeFileSync(file, JSON.stringify(rows, null, 2) + "\n");
+    writeFileSync(file, JSON.stringify({ model, rows }, null, 2) + "\n");
     console.log(`turn ${row.turn}: prompt_tokens=${row.prompt_tokens} cached=${row.cached_read_tokens}`);
   }
 }

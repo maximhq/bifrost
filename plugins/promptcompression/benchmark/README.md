@@ -57,3 +57,4 @@ Results depend on the provider's caching behaviour. Providers cache by prefix, s
 Expect `cached on` to dip on the turns where a new output gets trimmed and recover on the following turns.
 `prompt_tokens` is what the provider counted for the whole request; the savings column compares that between the two runs.
 Provider-side nondeterminism and cache TTLs mean single runs are noisy; repeat a run before drawing conclusions.
+Each `results-<label>.json` records the model; `--report` refuses to compare runs with different models, missing turns, or turns without `prompt_tokens`.
