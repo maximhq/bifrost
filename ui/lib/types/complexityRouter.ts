@@ -90,10 +90,23 @@ export interface SessionConfig {
 // cluster real traffic. Edited through config.json and the API until the
 // suggestions page exists; the complexity router page carries it through
 // saves unchanged.
+export interface SuggestionsSchedule {
+	every?: string; // "6h", "1d", "1w"
+	at?: string; // "HH:MM", daily and weekly only
+	weekday?: "monday" | "tuesday" | "wednesday" | "thursday" | "friday" | "saturday" | "sunday";
+	timezone?: string; // IANA
+}
+
 export interface SuggestionsConfig {
 	enabled: boolean;
 	sample_rate?: number;
 	lookback_days?: number;
+	schedule?: SuggestionsSchedule;
+	max_clustered_requests?: number;
+	min_cluster_requests?: number;
+	provider?: string;
+	model?: string;
+	instructions?: string;
 }
 
 // The llm classifier has no warmup: it holds no corpus and makes its first
