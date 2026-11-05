@@ -139,3 +139,16 @@ func providersList(t *testing.T, lc logCtx, step int) []providerSummary {
 	logf(t, lc.at(step), "INFO", "providers_list", map[string]any{"count": len(bare)})
 	return bare
 }
+
+// requireProvider fails the test when the named provider is not configured on
+// the gateway. Cross-provider cases require all providers from the suite's
+// config.json — a missing one means the gateway wasn't started against
+// tests/semanticcache/config.json or the provider's key env var isn't
+// exported, and the run must surface that as a failure, not a skip.
+func requireProvider(t *testing.T, lc logCtx, name string) {
+	t.Helper()
+	if !hasProvider(providersList(t, lc, 0), name) {
+		logf(t, lc.at(0), "FAIL", "provider_missing", map[string]any{"provider": name})
+		t.Fatalf("%s provider not configured — start Bifrost with APP_DIR=tests/semanticcache and export the provider's key env var", name)
+	}
+}
