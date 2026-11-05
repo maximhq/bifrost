@@ -4024,6 +4024,11 @@ func ConvertToAnthropicImageBlock(block schemas.ChatContentBlock) AnthropicConte
 	return imageBlock
 }
 
+// isPlainTextFileType reports whether a Bifrost file type names a plain-text document.
+func isPlainTextFileType(fileType *string) bool {
+	return fileType != nil && (*fileType == "text/plain" || *fileType == "txt")
+}
+
 // ConvertToAnthropicDocumentBlock converts a Bifrost file block to Anthropic document format
 func ConvertToAnthropicDocumentBlock(block schemas.ChatContentBlock) AnthropicContentBlock {
 	documentBlock := AnthropicContentBlock{
@@ -4058,6 +4063,14 @@ func ConvertToAnthropicDocumentBlock(block schemas.ChatContentBlock) AnthropicCo
 	if file.FileURL != nil && *file.FileURL != "" {
 		documentBlock.Source.SourceObj.Type = "url"
 		documentBlock.Source.SourceObj.URL = file.FileURL
+		return documentBlock
+	}
+
+	// An empty plain-text document is valid on Anthropic's wire; keep it as a text source.
+	if file.FileData != nil && *file.FileData == "" && isPlainTextFileType(file.FileType) {
+		documentBlock.Source.SourceObj.Type = "text"
+		documentBlock.Source.SourceObj.MediaType = schemas.Ptr("text/plain")
+		documentBlock.Source.SourceObj.Data = schemas.Ptr("")
 		return documentBlock
 	}
 
@@ -4197,6 +4210,14 @@ func ConvertResponsesFileBlockToAnthropic(fileBlock *schemas.ResponsesInputMessa
 	if fileBlock.FileURL != nil && *fileBlock.FileURL != "" {
 		documentBlock.Source.SourceObj.Type = "url"
 		documentBlock.Source.SourceObj.URL = fileBlock.FileURL
+		return documentBlock
+	}
+
+	// An empty plain-text document is valid on Anthropic's wire; keep it as a text source.
+	if fileBlock.FileData != nil && *fileBlock.FileData == "" && isPlainTextFileType(fileBlock.FileType) {
+		documentBlock.Source.SourceObj.Type = "text"
+		documentBlock.Source.SourceObj.MediaType = schemas.Ptr("text/plain")
+		documentBlock.Source.SourceObj.Data = schemas.Ptr("")
 		return documentBlock
 	}
 
