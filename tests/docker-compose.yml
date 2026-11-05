@@ -1,7 +1,7 @@
 services:
     # Weaviate instance for basic tests
     weaviate:
-        image: semitechnologies/weaviate:1.32.4
+        image: semitechnologies/weaviate:1.39.13
         command:
             - --host
             - 0.0.0.0
