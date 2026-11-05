@@ -185,8 +185,7 @@ func newBedrockHTTPTransport(config *schemas.ProviderConfig, proxy func(*http.Re
 	if config.NetworkConfig.CACertPEM != nil {
 		caCertPEM = config.NetworkConfig.CACertPEM.GetValue()
 	}
-	targetTLS := config.NetworkConfig.InsecureSkipVerify || caCertPEM != ""
-	if targetTLS {
+	if config.NetworkConfig.InsecureSkipVerify || caCertPEM != "" {
 		// Layer on top of the proxy's CA, if any, so both are trusted.
 		tlsConfig := &tls.Config{MinVersion: tls.VersionTLS12}
 		if proxyTLS != nil {
@@ -208,15 +207,13 @@ func newBedrockHTTPTransport(config *schemas.ProviderConfig, proxy func(*http.Re
 			}
 			tlsConfig.RootCAs = certPool
 		}
-		// Keep an inherited proxy's skip_tls_verify scoped to proxied traffic, now
-		// checked against the merged roots.
-		transport.TLSClientConfig = providerUtils.RescopeProxySkipVerify(proxyTLS, tlsConfig, config.NetworkConfig.InsecureSkipVerify)
+		transport.TLSClientConfig = tlsConfig
 	}
 
-	// net/http handshakes with an https:// proxy using TLSClientConfig, which carries the
-	// targets' settings: proxyTLS's no_proxy scope, and network_config's
-	// insecure_skip_verify and CA. A proxy from proxy_config is verified by its own.
-	if proxyFromConfig && (proxyHopTLS != proxyTLS || targetTLS) {
+	// An https:// proxy from proxy_config is dialed with its own TLS config (proxy CA,
+	// skip_tls_verify), separate from the target's, which net/http would otherwise share
+	// through TLSClientConfig. skip_tls_verify covers only that hop: targets are verified.
+	if proxyFromConfig {
 		providerUtils.DialHTTPSProxyWithHopTLS(transport, proxyHopTLS)
 	}
 
@@ -1766,6 +1763,7 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 
 						if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
 							response.ExtraFields.RawResponse = string(message.Payload)
+							response.ExtraFields.RawResponseFormat = schemas.RawResponseFormatBedrockConverseStreamEvent
 						}
 
 						providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, response, nil, nil, nil, nil), responseChan, postHookSpanFinalizer)
@@ -1803,6 +1801,7 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 
 					if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
 						response.ExtraFields.RawResponse = string(message.Payload)
+						response.ExtraFields.RawResponseFormat = schemas.RawResponseFormatBedrockConverseStreamEvent
 					}
 
 					providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, response, nil, nil, nil, nil), responseChan, postHookSpanFinalizer)
@@ -2178,7 +2177,9 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, provider.logger, postHookSpanFinalizer)
 					return
 				}
-				for _, response := range responses {
+				// Attach the upstream event to exactly one response: the one streaming its text or arguments.
+				rawIdx := providerUtils.ResponsesStreamRawIndex(responses, len(responses)-1)
+				for i, response := range responses {
 					if response != nil {
 						response.ExtraFields = schemas.BifrostResponseExtraFields{
 							ChunkIndex: chunkIndex,
@@ -2187,8 +2188,9 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 						chunkIndex++
 						lastChunkTime = time.Now()
 
-						if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
+						if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) && i == rawIdx {
 							response.ExtraFields.RawResponse = string(message.Payload)
+							response.ExtraFields.RawResponseFormat = schemas.RawResponseFormatBedrockConverseStreamEvent
 						}
 
 						providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, response, nil, nil, nil), responseChan, postHookSpanFinalizer)

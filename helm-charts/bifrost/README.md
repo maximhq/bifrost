@@ -4,9 +4,26 @@
 
 Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost) - a high-performance AI gateway with unified interface for multiple providers.
 
-**Latest Version:** 2.1.46
+**Latest Version:** 2.1.48
 
 ## Changelog
+
+### 2.1.48
+
+- Added `bifrost.mcp.clientConfigs[].oauthConfig.useClientMetadataDocument` (`use_client_metadata_document`): register with Bifrost's Client ID Metadata Document even when the authorization server does not advertise it.
+- Added `bifrost.mcp.clientConfigs[].oauthConfig.resource` (`resource`): the OAuth resource indicator, discovered when omitted.
+- Added `workloadIdentity.additionalTrustedIssuers` to every `bifrost.scim.config` provider (enterprise): issuers whose workload tokens can be mapped to service accounts.
+- Added `storage.logsStore.captureClientIp` (`logs_store.capture_client_ip`): record the caller's IP on logs. Off by default.
+- Added `bifrost.mcp.clientConfigs[].perUserDiscovery` (`per_user_discovery`): discover each caller's tools with their own credential. Needs a per-user `authType`.
+- `sse`, `stdio` and `websocket` MCP clients now refuse per-user auth types at render time.
+- `bifrost.governance.routingRules[].id` (`governance.routing_rules[].id`) is now optional: a rule without one is matched by `name`, `scope` and `scope_id`.
+
+### 2.1.47
+
+- Added `bifrost.server.basePath` (`server.base_path`) to serve Bifrost under a URL path prefix behind an ingress (e.g. `https://abc.com/bifrost`). The UI, redirects and OAuth callback URLs use the prefix. Requests are accepted with or without it, so the ingress can forward or strip it and probes stay on `/health`.
+- Added `socks5` as a `bifrost.proxyConfig.type` (`proxy_config.type`): `url` is then a `socks5://` or `socks5h://` proxy URL; a bare `host:port` takes its scheme from the type. The values schema previously rejected it, so a SOCKS5 global proxy could only be set from the dashboard.
+- `bifrost.client.oauth2ServerConfig.issuerUrl` (`client.oauth2_server_config.issuer_url`): a trailing slash is now ignored.
+- Bumped `appVersion` from `2.3.1` to `2.4.0`.
 
 ### 2.1.46
 

@@ -1,3 +1,4 @@
+import type { Page } from '@playwright/test'
 import { featureFlagsApi } from '../../core/actions/api'
 import { expect, test } from '../../core/fixtures/base.fixture'
 import { waitForNetworkIdle } from '../../core/utils/test-helpers'
@@ -441,4 +442,49 @@ test.describe('Dashboard', () => {
     })
   })
 
+})
+
+// Bifrost running from config.json alone has no config store. Pages served entirely by the logs
+// store stay usable; the rest show the "not available" banner. The store flags come from /api/config,
+// so the mode is stubbed there: the suite's servers always have a config store.
+test.describe('Config-file-only mode', () => {
+  async function stubStores(page: Page, stores: { is_db_connected: boolean; is_logs_connected: boolean }) {
+    await page.route(
+      (url) => url.pathname.endsWith('/api/config'),
+      async (route) => {
+        const response = await route.fetch()
+        await route.fulfill({ response, json: { ...(await response.json()), ...stores } })
+      },
+    )
+  }
+
+  test('renders the dashboard when only the logs store is connected', async ({ page, dashboardPage }) => {
+    await stubStores(page, { is_db_connected: false, is_logs_connected: true })
+    await page.goto('/workspace/dashboard')
+    // The heading sits in the topbar, outside the store gate, so only page content proves the gate opened.
+    await expect(dashboardPage.logVolumeChart).toBeVisible()
+    await expect(page.getByTestId('config-store-documentation-link')).toHaveCount(0)
+  })
+
+  test('renders MCP logs when only the logs store is connected', async ({ page }) => {
+    await stubStores(page, { is_db_connected: false, is_logs_connected: true })
+    // The page loads its logs only once it mounts, and a fresh database shows the empty state, so the
+    // request is the marker that holds with or without data.
+    const logsRequest = page.waitForResponse((r) => new URL(r.url()).pathname.endsWith('/api/mcp-logs') && r.ok())
+    await page.goto('/workspace/mcp-logs')
+    await logsRequest
+    await expect(page.getByTestId('config-store-documentation-link')).toHaveCount(0)
+  })
+
+  test('shows the banner on pages that need the config store', async ({ page }) => {
+    await stubStores(page, { is_db_connected: false, is_logs_connected: true })
+    await page.goto('/workspace/providers')
+    await expect(page.getByTestId('config-store-documentation-link')).toBeVisible()
+  })
+
+  test('shows the banner on the dashboard when no logs store is connected', async ({ page }) => {
+    await stubStores(page, { is_db_connected: false, is_logs_connected: false })
+    await page.goto('/workspace/dashboard')
+    await expect(page.getByTestId('config-store-documentation-link')).toBeVisible()
+  })
 })

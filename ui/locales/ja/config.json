@@ -37,6 +37,7 @@
 		"dumpErrorsHelp": "有効にすると、詳細なエラーがサーバーのコンソールログに書き込まれます。デバッグに便利ですが、本番ではノイズが多くなることがあります。",
 		"asyncJobTtl": "非同期ジョブ結果の TTL（秒）",
 		"asyncJobTtlHelp": "非同期ジョブ結果のデフォルト有効期間（秒）。期限後に結果は自動削除されます。",
+		"languageHelp": "ダッシュボードの表示言語。このブラウザに保存され、すぐに適用されます。",
 		"headerForwarding": "ヘッダー転送",
 		"headerForwardingHelp": "LLM プロバイダーへ転送する追加ヘッダーを制御します。",
 		"aboutHeaderForwarding": "ヘッダー転送について",
@@ -224,7 +225,7 @@
 		"directKeysHelp": "有効時、呼び出し元は <b3>x-bf-direct-key: true</b3> と共に <b0>Authorization</b0>、<b1>x-api-key</b1>、または <b2>x-goog-api-key</b2> でプロバイダー API キーを直接渡せます。Bifrost はそのキーを使い、登録キープールを迂回します。",
 		"originsHelp": "CORS と WebSocket の許可オリジン（カンマ区切り）。localhost は常に許可。各オリジンはプロトコル付きの完全 URL（例：https://app.example.com、http://10.0.0.100:3000）。サブドメインのワイルドカード（例：https://*.example.com）や、すべて許可の \"*\" も可。",
 		"requiredHeadersHelp": "すべてのリクエストに必須のヘッダー（カンマ区切り）。欠けると 400 で拒否。ヘッダー名は大文字小文字を区別しません。",
-		"routesHelp": "認証ミドルウェアを迂回するルート（カンマ区切り）。これらのルートは認証不要。<b0>/health</b0>、<b1>/api/session/login</b1>、<b2>/api/session/is-auth-enabled</b2> などのシステムルートは常にホワイトリストです。",
+		"routesHelp": "認証ミドルウェアを迂回するルート（カンマ区切り）。これらのルートは認証不要。<b0>/health</b0>、<b1>/api/session/login</b1>、<b2>/api/session/is-auth-enabled</b2> などのシステムルートは常にホワイトリストです。 ルートは server.base_path のプレフィックスを除いた後に照合されるため、プレフィックスなしで指定してください。",
 		"see": "詳細は",
 		"documentation": "ドキュメント",
 		"forDetails": "を参照してください。",
@@ -253,7 +254,7 @@
 		"title": "ログ設定",
 		"description": "リクエストとレスポンスのログ設定を構成します。",
 		"enableLogs": "ログを有効化",
-		"enableLogsHelp": "リクエストとレスポンスを SQL データベースに記録します。システムメモリに 40–60MB 程度のオーバーヘッドが乗ることがあります。",
+		"enableLogsHelp": "リクエストとレスポンス（リレー呼び出しを含む）を SQL データベースに記録します。システムメモリに 40–60MB 程度のオーバーヘッドが乗ることがあります。",
 		"requiresStore": "config.json でログストアの構成と有効化が必要です。",
 		"disableContentLogging": "コンテンツログを無効化",
 		"disableContentLoggingHelp": "LLM、MCP、エージェント、リレーのログに適用されます。有効にすると、使用状況のメタデータ（レイテンシ、コスト、トークン数、ステータス、ルーティング ID など）のみが記録されます。リクエスト/レスポンスの内容（メッセージ、パラメーター、ツール呼び出し、プロバイダーの生バイト）は、<code0>store_raw_request_response</code0> が有効でもログレコードから除外されます。<code1>send_back_raw_*</code1> による呼び出し元への生バイトの返送は影響を受けません。エージェントプロトコルの本文はこの設定に従います。アップストリームの生データ取得には、Agent Gateway 設定の「生のリクエストとレスポンスをキャプチャ」も必要です。",
@@ -265,9 +266,9 @@
 		"allowRawOverride": "リクエスト単位の Raw 上書きを許可",
 		"allowRawOverrideHelp": "有効時、個別リクエストは x-bf-send-back-raw-request / x-bf-send-back-raw-response で生のプロバイダー要求/応答バイトを呼び出し元へ返せます。ログ保存には影響しません。ログ内の生バイト永続化は {{setting}} が制御します。",
 		"logRetentionDays": "ログ保持日数",
-		"logRetentionDaysHelp": "DB にログを保持する日数。最小 1 日。古いログは自動削除されます。",
+		"logRetentionDaysHelp": "DB にログ（リレーログを含む）を保持する日数。最小 1 日。古いログは自動削除されます。",
 		"hideDeletedVks": "フィルターに削除済み仮想キーを表示しない",
-		"hideDeletedVksHelp": "有効時、削除済み仮想キーはログ、ダッシュボード、MCP ログの仮想キーフィルターから除外されます。",
+		"hideDeletedVksHelp": "有効時、削除済み仮想キーはログ、ダッシュボード、MCP ログ、リレーログの仮想キーフィルターから除外されます。",
 		"loggingHeaders": "ログ用ヘッダー",
 		"loggingHeadersHelp": "ログのメタデータに記録するリクエストヘッダーのカンマ区切りリストです。完全一致の名前とワイルドカードパターンに対応します（例：x-custom-* はそのプレフィックスを持つすべてのヘッダーを記録し、* はすべてのヘッダーを記録します。* は Authorization などの機密ヘッダーも記録する点に注意してください）。値は受信リクエストから抽出され、ログエントリの metadata フィールドに保存されます。x-bf-lh- プレフィックスのヘッダーは常に自動で記録されます。リレーログにも同じメタデータが含まれ、それに加えてリレーのルートが照合に使うヘッダーも含まれます。それ以外のヘッダーや、レスポンスのヘッダーは保存されません。",
 		"loggingHeadersPlaceholder": "X-Tenant-ID, X-Request-Source, x-custom-*",
@@ -349,6 +350,7 @@
 		"disableAutoToolInjection": "自動ツール注入を無効化",
 		"allowTempToken": "一時トークン認証リンクを許可",
 		"codeModeBinding": "コードモードのバインドレベル",
+		"codeModeSettings": "コードモードの設定",
 		"selectBindingLevel": "バインドレベルを選択",
 		"serverLevel": "サーバーレベル",
 		"toolLevel": "ツールレベル",
@@ -374,7 +376,7 @@
 		"disableAutoToolInjectionHelp": "有効時、MCP ツールはすべてのリクエストに自動追加されません。リクエストヘッダー（<code0>x-bf-mcp-include-tools</code0>）で明示指定されたときだけ注入され、仮想キーの MCP 構成で許可されている必要もあります。",
 		"tempTokenHelp": "有効時、ユーザーごとの MCP OAuth リンクに短命スコープトークンを含め、Bifrost ダッシュボード未ログインでもフロー完了できます。無効のままにすると通常のダッシュボード認証が必要です。",
 		"bindingHelp": "VFS でのツール公開方法：サーバーレベル（サーバー単位ですべて）またはツールレベル（個別ツール）。",
-		"externalClientUrlHelp": "リバースプロキシ背後で Bifrost の公開ベース URL を上書きします。<b0>空欄だと受信 <code1>Host</code1> ヘッダーから導出</b0>。MCP サーバーへのクライアントとして動作するとき、上流 OAuth プロバイダーへ登録する <code2>redirect_uri</code2> に使います（例：Notion や Jira はログイン後に <code3>&lt;URL&gt;/api/oauth/callback</code3> へリダイレクト）。環境変数構文可（例：<code4>env.BIFROST_EXTERNAL_URL</code4>）。",
+		"externalClientUrlHelp": "リバースプロキシ背後で Bifrost の公開ベース URL を上書きします。<b0>空欄だと受信 <code1>Host</code1> ヘッダーから導出</b0>。MCP サーバーへのクライアントとして動作するとき、上流 OAuth プロバイダーへ登録する <code2>redirect_uri</code2> に使います（例：Notion や Jira はログイン後に <code3>&lt;URL&gt;/api/oauth/callback</code3> へリダイレクト）。環境変数構文可（例：<code4>env.BIFROST_EXTERNAL_URL</code4>）。 URL プレフィックス（server.base_path）配下で動作する場合は、https://host/bifrost のようにプレフィックスを含めてください。",
 		"externalClientUrlWarningHelp": "上流 OAuth プロバイダーは最初に登録した <code0>redirect_uri</code0> に固定するため、既に OAuth 完了した MCP クライアントは <em1>\"Invalid redirect URI\"</em1> で失敗します。復旧には対象 MCP サーバーの保存済み OAuth クライアント資格情報を消し、再認可して新しい URL で Dynamic Client Registration をやり直します。",
 		"authModeHelp": "受信 MCP クライアント（例：Claude Code、Cursor）の <code0>/mcp</code0> 認証方法。<b1>headers</b1>（デフォルト）— VK / api-key / session ヘッダーのみ、OAuth ディスカバリー無効。<b2>both</b2> — ヘッダー資格情報と Bifrost 発行 JWT の両方、既存連携は影響なし。<b3>oauth</b3> — JWT のみ、VK とヘッダーアクセス無効。",
 		"issuerUrlHelp": "ディスカバリードキュメントで公開され、すべての JWT の <code0>iss</code0> クレームに埋め込まれる安定した公開 URL。OAuth および Both モードでは必須です。Bifrost はリクエストの <code1>Host</code1> ヘッダーから発行者を導出することはありません（このヘッダーは呼び出し元が制御できるため）。環境変数構文（例：<code2>env.BIFROST_ISSUER_URL</code2>）に対応しています。",
@@ -491,7 +493,7 @@
 		"proxyConfiguration": "プロキシ構成",
 		"proxyType": "プロキシタイプ",
 		"httpHttps": "HTTP / HTTPS",
-		"proxyTypeHelp": "プロキシプロトコルを選択。現在は HTTP プロキシのみ対応。",
+		"proxyTypeHelp": "HTTP / HTTPS には http:// または https:// のプロキシ URL を指定します（https:// はプロキシへの接続を暗号化します）。SOCKS5 には socks5:// の URL を指定します。",
 		"selectType": "タイプを選択",
 		"proxyUrl": "プロキシ URL",
 		"proxyUrlHelp": "プロトコルとポートを含むプロキシサーバーの完全 URL。",
@@ -512,16 +514,16 @@
 		"scimHelp": "SCIM ディレクトリ同期リクエストにプロキシを使います。",
 		"scimEnterpriseOnly": "SCIM プロキシ対応は Bifrost エンタープライズで利用できます。",
 		"inference": "推論",
-		"inferenceHelp": "モデルプロバイダーへの LLM 推論リクエストにプロキシを使います。",
+		"inferenceHelp": "モデルプロバイダーへの LLM 推論リクエストとリレー呼び出しにプロキシを使用します。独自のプロキシ設定を持つプロバイダーやリレーはその設定を維持します。",
 		"comingSoon": "近日公開",
 		"api": "API",
-		"apiHelp": "外部 API 呼び出しと webhook にプロキシを使います。",
+		"apiHelp": "外部への API 呼び出しにプロキシを使用します：MCP サーバー、OAuth、Webhook、プラグインのダウンロード、モデルカタログ同期、OpenTelemetry エクスポート。",
 		"noPermission": "設定を更新する権限がありません",
 		"toastSaved": "プロキシ構成を更新しました。",
 		"connectionTimeoutHelp": "プロキシ接続確立のタイムアウト。0 は無制限。デフォルト 60 秒。",
 		"caCertificateHelp": "SSL 傍受プロキシ経由の TLS で信頼する PEM 形式 CA 証明書。",
 		"skipTlsHelp": "HTTPS プロキシの TLS 証明書検証を無効化。本番では非推奨。",
-		"unsupportedType": "{{type}} プロキシは未対応です。HTTP プロキシを使ってください。"
+		"unsupportedType": "{{type}} プロキシは未対応です。HTTP または SOCKS5 プロキシを使ってください。"
 	},
 	"userAgent": {
 		"title": "User-Agent マッピング",
@@ -1229,7 +1231,7 @@
 		"toastSaved": "Agent Gateway の設定を更新しました。",
 		"loadFailed": "Agent Gateway の設定の読み込みに失敗しました。",
 		"externalClientUrl": "外部クライアント URL",
-		"externalClientUrlHelp": "Bifrost の公開ベース URL で、提供されるエージェントカードやプッシュ通知のコールバック URL に使用されます。空のままにすると、すべてのエージェントプロトコルのエンドポイントが無効になります。エージェント管理は引き続き利用できます。環境変数構文に対応しています（例: <code>env.BIFROST_EXTERNAL_URL</code>）。",
+		"externalClientUrlHelp": "Bifrost の公開ベース URL で、提供されるエージェントカードやプッシュ通知のコールバック URL に使用されます。空のままにすると、すべてのエージェントプロトコルのエンドポイントが無効になります。エージェント管理は引き続き利用できます。環境変数構文に対応しています（例: <code>env.BIFROST_EXTERNAL_URL</code>）。 URL プレフィックス（server.base_path）配下で動作する場合は、https://host/bifrost のようにプレフィックスを含めてください。",
 		"privateAllowlist": "プライベートネットワーク許可リスト",
 		"privateAllowlistHelp": "プライベートまたはループバックアドレスに解決される場合に、Agent Gateway のディスカバリー、OAuth、ランタイムリクエストが到達できるホスト、IP アドレス、CIDR 範囲です。スキームやポートは含めません。リンクローカルおよびクラウドメタデータのアドレスは常にブロックされます。",
 		"privateAllowlistPlaceholder": "ホスト、IP、CIDR を追加（Enter またはカンマ）",
@@ -1257,7 +1259,15 @@
 			"editConfigAria": "リレー設定を編集",
 			"viewConfigAria": "リレー設定を表示",
 			"testSheetTitle": "料金をテスト",
-			"testSheetDescription": "{{name}} の保存済みルートと料金でサンプル呼び出しを実行します。アップストリームには何も送信されません。"
+			"testSheetDescription": "{{name}} の保存済みルートと料金でサンプル呼び出しを実行します。アップストリームには何も送信されません。",
+			"gatewayPath": "ゲートウェイパス",
+			"upstream": "アップストリーム",
+			"auth": "認証",
+			"pricing": "デフォルト料金",
+			"anyPath": "任意のパス",
+			"moreActionsAria": "その他のリレー操作",
+			"deleteRelay": "リレーを削除",
+			"copyPathAria": "ゲートウェイパスをコピー"
 		},
 		"deleteDialog": {
 			"title": "リレーを削除",
@@ -1285,6 +1295,7 @@
 			"title": "ルート",
 			"importOpenapi": "OpenAPI をインポート",
 			"addRoute": "ルートを追加",
+			"description": "リクエストには最初に一致したルートが使われます。より具体的なルートが先に並びます。",
 			"columns": {
 				"method": "メソッド",
 				"route": "ルート",
@@ -1588,6 +1599,7 @@
 			"proxyCaCertInfo": "SSL を傍受するプロキシ経由の TLS 接続で信頼する、PEM 形式の CA 証明書、またはそれを指す env. 参照です。",
 			"proxyCaCertPlaceholder": "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE----- または env.PROXY_CA_CERT_PEM",
 			"removeConfig": "設定を削除",
+			"discardProxy": "変更を破棄",
 			"saveProxy": "プロキシ設定を保存"
 		},
 		"pricing": {
@@ -1609,6 +1621,6 @@
 		"loadFailed": "スキル設定の読み込みに失敗しました。",
 		"retry": "再試行",
 		"externalClientUrl": "外部クライアント URL",
-		"externalClientUrlHelp": "Claude Code と Codex のマーケットプレイス用の Bifrost の公開ベース URL です。空のままにすると、マーケットプレイスの配信と登録が無効になります。スキル管理とダウンロードは引き続き利用できます。環境変数と vault 参照に対応しています。"
+		"externalClientUrlHelp": "Claude Code と Codex のマーケットプレイス用の Bifrost の公開ベース URL です。空のままにすると、マーケットプレイスの配信と登録が無効になります。スキル管理とダウンロードは引き続き利用できます。環境変数と vault 参照に対応しています。 URL プレフィックス（server.base_path）配下で動作する場合は、https://host/bifrost のようにプレフィックスを含めてください。"
 	}
 }

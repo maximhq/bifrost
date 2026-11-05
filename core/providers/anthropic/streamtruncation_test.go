@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/tidwall/gjson"
 )
 
 // Anthropic's Messages stream carries no [DONE] sentinel: message_stop is the
@@ -486,4 +487,122 @@ func TestStreamErrorStatusMapsAnthropicErrorTypes(t *testing.T) {
 			t.Errorf("streamErrorStatus(%q) = %d, want %d", tc.errType, got, tc.want)
 		}
 	}
+}
+
+// TestStreamRawResponseDeclaresAnthropicFormat verifies every streamed Chat and Responses chunk that carries an
+// Anthropic event as its raw payload declares the Anthropic format, and that the text delta's payload follows a
+// change to the normalized text it backs.
+func TestStreamRawResponseDeclaresAnthropicFormat(t *testing.T) {
+	newRawCaptureProvider := func(baseURL string) *AnthropicProvider {
+		return NewAnthropicProvider(&schemas.ProviderConfig{
+			NetworkConfig:       schemas.NetworkConfig{BaseURL: baseURL},
+			SendBackRawResponse: true,
+		}, truncationTestLogger{})
+	}
+	key := schemas.Key{Value: *schemas.NewSecretVar("test-key")}
+	body := anthropicMessageStart + anthropicTextDelta + anthropicMessageStop
+
+	// assertDeclared fails on any raw payload without the Anthropic format and on a stream that carried none.
+	assertDeclared := func(t *testing.T, extras []*schemas.BifrostResponseExtraFields) {
+		t.Helper()
+		withRaw := 0
+		for _, extra := range extras {
+			if extra.RawResponse == nil {
+				continue
+			}
+			withRaw++
+			if extra.RawResponseFormat != schemas.RawResponseFormatAnthropicMessagesStreamEvent {
+				t.Errorf("chunk %d carries raw %v with format %q", extra.ChunkIndex, extra.RawResponse, extra.RawResponseFormat)
+			}
+		}
+		if withRaw == 0 {
+			t.Fatal("no chunk carried a raw response; the assertion would be vacuous")
+		}
+	}
+
+	t.Run("chat", func(t *testing.T) {
+		server := anthropicSSEServer(t, body, false)
+		defer server.Close()
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		stream, bifrostErr := newRawCaptureProvider(server.URL).ChatCompletionStream(ctx, truncationPassthroughPostHook, nil, key, truncationChatRequest())
+		if bifrostErr != nil {
+			t.Fatalf("stream setup failed: %v", bifrostErr)
+		}
+		var extras []*schemas.BifrostResponseExtraFields
+		var text *schemas.BifrostChatResponse
+		for _, chunk := range collectTruncationChunks(t, stream) {
+			if chunk.BifrostChatResponse == nil {
+				continue
+			}
+			extras = append(extras, &chunk.BifrostChatResponse.ExtraFields)
+			if chunksContainContent([]*schemas.BifrostStreamChunk{chunk}, anthropicPartialText) {
+				text = chunk.BifrostChatResponse
+			}
+		}
+		assertDeclared(t, extras)
+		if text == nil {
+			t.Fatal("no chunk carried the text delta")
+		}
+
+		after := *text
+		choice := after.Choices[0]
+		streamChoice := *choice.ChatStreamResponseChoice
+		delta := *streamChoice.Delta
+		delta.Content = schemas.Ptr("[REDACTED]")
+		streamChoice.Delta = &delta
+		choice.ChatStreamResponseChoice = &streamChoice
+		after.Choices = []schemas.BifrostResponseChoice{choice}
+		synced, err := schemas.SyncRawResponseText(text.ExtraFields.RawResponse, text.ExtraFields.RawResponseFormat, text, &after)
+		if err != nil {
+			t.Fatalf("raw payload did not follow the text change: %v", err)
+		}
+		if got := gjson.Get(synced.(string), "delta.text").String(); got != "[REDACTED]" {
+			t.Fatalf("raw text = %q, want the redacted text", got)
+		}
+	})
+
+	t.Run("responses", func(t *testing.T) {
+		server := anthropicSSEServer(t, body, false)
+		defer server.Close()
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		request := &schemas.BifrostResponsesRequest{
+			Provider: schemas.Anthropic,
+			Model:    "claude-repro",
+			Input: []schemas.ResponsesMessage{{
+				Type:    schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+				Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")},
+			}},
+		}
+		stream, bifrostErr := newRawCaptureProvider(server.URL).ResponsesStream(ctx, truncationPassthroughPostHook, nil, key, request)
+		if bifrostErr != nil {
+			t.Fatalf("stream setup failed: %v", bifrostErr)
+		}
+		var extras []*schemas.BifrostResponseExtraFields
+		var text *schemas.BifrostResponsesStreamResponse
+		for _, chunk := range collectTruncationChunks(t, stream) {
+			event := chunk.BifrostResponsesStreamResponse
+			if event == nil {
+				continue
+			}
+			extras = append(extras, &event.ExtraFields)
+			if event.Type == schemas.ResponsesStreamResponseTypeOutputTextDelta && event.Delta != nil && *event.Delta == anthropicPartialText {
+				text = event
+			}
+		}
+		assertDeclared(t, extras)
+		if text == nil || text.ExtraFields.RawResponse == nil {
+			t.Fatal("the text delta carried no raw payload")
+		}
+
+		after := *text
+		after.Delta = schemas.Ptr("[REDACTED]")
+		synced, err := schemas.SyncRawResponseText(text.ExtraFields.RawResponse, text.ExtraFields.RawResponseFormat, text, &after)
+		if err != nil {
+			t.Fatalf("raw payload did not follow the text change: %v", err)
+		}
+		if got := gjson.Get(synced.(string), "delta.text").String(); got != "[REDACTED]" {
+			t.Fatalf("raw text = %q, want the redacted text", got)
+		}
+	})
 }

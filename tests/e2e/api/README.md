@@ -383,6 +383,117 @@ The cases are skipped unless `bedrockEndpointFixture=1`.
 
 Stop the fixture and isolated gateway with Ctrl+C after testing.
 
+## Workload identity federation
+
+These deterministic cases run Anthropic Workload Identity Federation end to end against a local
+stand-in for the token endpoint and the Messages API. They make no live call and need no key and no
+federation rule. Folder 297 pins what real Anthropic answers to an unregistered federation; this
+folder pins the success path, the token lifecycle and the failure modes. Run the following commands
+from the repository root.
+
+The gateway reads identity token files only from `BIFROST_OIDC_ALLOWED_CREDENTIAL_DIRS`, an
+environment variable on purpose, so the cases run on their own gateway rather than on `make dev`.
+
+Start the fixture in one terminal. It writes the identity token files the config names under
+`tmp/wif-fixture`, so start it before the gateway:
+
+```bash
+node tests/e2e/api/runners/wif-fixture.mjs
+```
+
+Start a separate gateway in another terminal:
+
+```bash
+wif_dir=$(pwd)/tmp/wif-fixture
+wif_app_dir=$(mktemp -d)
+sed "s#__WIF_FIXTURE_DIR__#$wif_dir#g" tests/e2e/api/provider_config/workload-identity.config.json > "$wif_app_dir/config.json"
+BIFROST_OIDC_ALLOWED_CREDENTIAL_DIRS="$wif_dir/tokens" WIF_FIXTURE_TOKEN_FILE="$wif_dir/tokens/config-file.jwt" \
+  go run ./transports/bifrost-http -app-dir "$wif_app_dir" -host 127.0.0.1 -port 8801
+```
+
+Run the cases in a third terminal:
+
+```bash
+newman run tests/e2e/api/collections/provider-harness.json \
+  --folder "298. Workload identity federation against a local token endpoint (workload identity fixture)" \
+  --env-var baseUrl=http://127.0.0.1:8801 \
+  --env-var workloadIdentityFixture=1
+```
+
+Every provider in the config is an `anthropic`-based custom provider whose base URL is the fixture's
+`/anthropic` profile. The main key, `wif-config-file`, reads its token from a file named by an `env.`
+reference, the shape a Kubernetes deployment uses. The other keys each pin one behaviour, chosen by
+an `fx` claim inside their identity token: a denied or unavailable exchange, a 200 without a token,
+a redirect, a file outside the allowlist, a rotating file and a single-use (`jti`) file. Cases that
+need a cold credential add a run-scoped inline key and select it with `x-bf-api-key`.
+
+Assertions read what the fixture recorded for an identity (`GET /__wif/hits?sub=...`): exchanges,
+the assertion each one presented, the API routes it reached, and the credential and betas each call
+carried. Cases compare counts before and after, so they rerun against a warm gateway. Three cases
+wait for a short-lived token to reach its refresh window, so the folder takes about 30 seconds.
+
+The fixture's logic is in `runners/lib/wif-fixture.mjs` and is covered offline by
+`runners/lib/wif-fixture.test.mjs` (`make test-harness-runner-lib`): it refuses what Anthropic
+refuses (an exchange without both betas, a reused single-use token, a bearer without the OAuth beta
+or beside `x-api-key`), so a green case means the gateway sent what the real endpoint accepts.
+Another provider gaining workload identity adds a profile there, its providers to the config, and
+cases to the folder named after it.
+
+The cases are skipped unless `workloadIdentityFixture=1`.
+
+Stop the fixture and isolated gateway with Ctrl+C after testing.
+
+## Relay and log-store matrix
+
+`runners/run-log-store-matrix.mjs` checks that relays behave as documented and that relay rows
+follow every logging setting the way LLM rows do, on every log store. It is hermetic: every
+upstream is a local server (an echo LLM provider, a programmable relay upstream, an HTTPS twin,
+local HTTP and SOCKS5 proxies, and an S3-compatible bucket), so it needs no keys and makes no
+paid calls.
+
+```bash
+make run-log-store-matrix POSTGRES_URL=postgresql://bifrost:bifrost_password@localhost:5432/postgres PARALLEL=3
+make run-log-store-matrix BINARY=tmp/bifrost-http CELLS=sqlite SUITES=pricing,proxy SKIP_CONTENT_MATRIX=1
+```
+
+It boots one gateway per log-store cell, because the store is read at boot only:
+
+| Cell | Log store |
+|---|---|
+| `sqlite`, `postgres` | RDB store |
+| `sqlite+s3`, `postgres+s3` | Hybrid store over `lib/fake-s3.mjs` |
+| `sqlite+s3-exclude-types` | Hybrid, `relay` and `chat_completion` in `object_storage_exclude_request_types` |
+| `sqlite+s3-exclude-fields` | Hybrid, `request_body` in `object_storage_exclude_fields` |
+
+Postgres cells need `POSTGRES_URL` (an admin connection; each cell gets a fresh database) and are
+skipped without it. Against each cell it runs:
+
+- `run-content-logging-matrix.mjs`: every combination of client, virtual key, per-request
+  header and OTel connector content settings. Each case sends an LLM request and a relay request
+  on the same key and header, and the relay row must keep or drop content exactly as its LLM twin,
+  checked through the API and in the raw `logs` and `relay_logs` rows.
+- `run-relay-matrix.mjs`: the relay suites below. Run it alone against any gateway with
+  `BIFROST_E2E_BASE_URL` (and `--suites`).
+
+| Suite | Covers |
+|---|---|
+| `pricing` | Every usage mapping (source, measure, rate, fee, block, minimum, reported cost, `ignore_upstream_cost`) through an inherit, an override and a waive route, checked against an independent reference of the pricing rules (`lib/relay-matrix.mjs`) |
+| `streaming` | Route `stream` flag, `streaming.paths` and upstream content type, with SSE last-value usage and byte-priced bodies |
+| `billing` | Method, `billable` flag and upstream status |
+| `routes` | Path globs, header matchers, operator headers, route order, disabled routes, `skip_route_check` |
+| `auth` | `bearer`, `header`, `query`, `basic`, `none`, `aws_sigv4`, extra headers, credential stripping |
+| `governance` | Grants, inactive and unknown keys, inference auth, attribution parity with LLM rows, budgets and request limits at key, team and customer level, the request counter LLM and relay traffic share |
+| `settings` | `logging_headers`, `x-bf-lh-*`, `x-bf-dim-*`, key metadata, session ids, user agent and app, `hide_deleted_virtual_keys_in_filters`, query-string redaction, each compared with an LLM row |
+| `logsapi` | Shared filters, stats, histogram bucket sizes, sort, paging and delete on `/api/logs` and `/api/relay-logs` |
+| `network` | Timeouts, stream idle timeout, redirects, TLS with a private CA, unreachable upstreams, a reply past the old 64 MiB cap, a caller that hangs up mid-stream |
+| `proxy` | A relay's `proxy_config` (`http`, `socks5`, `none`, credentials, an HTTPS upstream through CONNECT) and the inherited global proxy |
+| `hybrid` | Offload, previews, hydration, hidden retention, exclusions and deletes, each compared with an LLM row (hybrid cells only) |
+
+A parity check that differs by design is listed in `KNOWN_GAPS` (`lib/relay-matrix.mjs`) and
+reports `GAP`; a listed gap that stops reproducing fails the run as `STALE`. The squid, stunnel
+and microsocks proxy matrix (`make run-e2e-api PROXY=1`) also sends the relays-e2e rows through
+every proxy cell, with the profile's relays given each cell's proxy.
+
 ## Contents
 
 ### V1 Endpoint Tests

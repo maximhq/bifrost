@@ -3521,17 +3521,10 @@ func toAnthropicResponsesStreamEvents(ctx *schemas.BifrostContext, bifrostResp *
 				Name: schemas.Ptr(string(AnthropicToolNameWebSearch)),                  // "web_search"
 			}
 
-			// Deliver the query whole in content_block_start (no input_json_delta),
-			// matching native: a web_search is spawned atomically (in PTC, by the
-			// sandbox), so Anthropic never streams its input. Fall back to empty.
+			// Direct searches stream their query after this event; programmatic
+			// searches may already have it. Emit both at output_item.done so the
+			// client receives the complete input exactly once, before block stop.
 			contentBlock.Input = json.RawMessage("{}")
-			if tm := bifrostResp.Item.ResponsesToolMessage; tm != nil && tm.Action != nil &&
-				tm.Action.ResponsesWebSearchToolCallAction != nil &&
-				tm.Action.ResponsesWebSearchToolCallAction.Query != nil {
-				if inputBytes, err := providerUtils.MarshalSorted(map[string]interface{}{"query": *tm.Action.ResponsesWebSearchToolCallAction.Query}); err == nil {
-					contentBlock.Input = json.RawMessage(inputBytes)
-				}
-			}
 
 			// Preserve the caller (set when this search was spawned from inside the
 			// code execution sandbox — programmatic tool calling).
@@ -4011,8 +4004,25 @@ func toAnthropicResponsesStreamEvents(ctx *schemas.BifrostContext, bifrostResp *
 				wsAction = tm.Action.ResponsesWebSearchToolCallAction
 			}
 
-			// 1. Stop the server_tool_use. The query was already delivered whole in
-			// content_block_start (no input_json_delta), matching native.
+			// Deliver the completed query before closing the server_tool_use.
+			// It may not have been available on output_item.added.
+			if wsAction != nil && wsAction.Query != nil {
+				input := struct {
+					Query string `json:"query"`
+				}{Query: *wsAction.Query}
+				if inputBytes, err := providerUtils.MarshalSorted(input); err == nil {
+					events = append(events, &AnthropicStreamEvent{
+						Type:  AnthropicStreamEventTypeContentBlockDelta,
+						Index: serverIdx,
+						Delta: &AnthropicStreamDelta{
+							Type:        AnthropicStreamDeltaTypeInputJSON,
+							PartialJSON: schemas.Ptr(string(inputBytes)),
+						},
+					})
+				}
+			}
+
+			// 1. Stop the server_tool_use after its input has been delivered.
 			events = append(events, &AnthropicStreamEvent{
 				Type:  AnthropicStreamEventTypeContentBlockStop,
 				Index: serverIdx,
@@ -4836,7 +4846,7 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 	if bifrostReq.Params != nil {
 		requestTools = bifrostReq.Params.Tools
 	}
-	input, err := prepareInlineToolDefinitions(bifrostReq.Input, requestTools)
+	input, err := prepareInlineToolDefinitions(bifrostReq.Input, requestTools, caps, bifrostReq.Provider)
 	if err != nil {
 		return nil, err
 	}
@@ -5861,6 +5871,38 @@ func convertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifr
 	// already-emitted role:"system" messages (an effort-only override, an earlier reminder) is
 	// skipped before requiring the user turn; without that, the second member of a system
 	// group would be judged against its sibling and inlined, dropping its override.
+	// droppedAsEmpty reports whether a user/assistant input item leaves no message on the
+	// wire because all of its text is empty (convertBifrostMessageToAnthropicMessage returns
+	// nil for it). Turn-shape checks below must not count it. Pending thinking flushes at a
+	// system message, so it cannot attach to the item a lookahead skips.
+	droppedAsEmpty := func(m *schemas.ResponsesMessage) bool {
+		if m.Type != nil && *m.Type != schemas.ResponsesMessageTypeMessage {
+			return false
+		}
+		if m.Role != nil && (*m.Role == schemas.ResponsesInputMessageRoleSystem || *m.Role == schemas.ResponsesInputMessageRoleDeveloper) {
+			return false
+		}
+		if m.Content == nil {
+			return true
+		}
+		if m.Content.ContentStr != nil {
+			return *m.Content.ContentStr == ""
+		}
+		for _, block := range m.Content.ContentBlocks {
+			// Text decides without converting, so the common prefill-trim check allocates nothing.
+			if block.Type == schemas.ResponsesInputMessageContentBlockTypeText || block.Type == schemas.ResponsesOutputMessageContentTypeText {
+				if block.Text != nil && *block.Text != "" {
+					return false
+				}
+				continue
+			}
+			if convertContentBlockToAnthropicWithCaps(caps, block) != nil {
+				return false
+			}
+		}
+		return true
+	}
+
 	midConvPlacementOK := func(i int) bool {
 		prev := len(anthropicMessages) - 1
 		for prev >= 0 && anthropicMessages[prev].Role == AnthropicMessageRoleSystem {
@@ -5886,9 +5928,10 @@ func convertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifr
 		// that will join this system section, then require end-of-messages or an assistant
 		// turn. Judging the first member by its system sibling would inline it.
 		next := i + 1
-		for next < len(bifrostMessages) && bifrostMessages[next].Role != nil &&
+		for next < len(bifrostMessages) && ((bifrostMessages[next].Role != nil &&
 			(*bifrostMessages[next].Role == schemas.ResponsesInputMessageRoleSystem ||
-				*bifrostMessages[next].Role == schemas.ResponsesInputMessageRoleDeveloper) {
+				*bifrostMessages[next].Role == schemas.ResponsesInputMessageRoleDeveloper)) ||
+			droppedAsEmpty(&bifrostMessages[next])) {
 			next++
 		}
 		if next == len(bifrostMessages) {
@@ -6042,7 +6085,7 @@ func convertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifr
 	if isRequestMessage && ctx.Value(schemas.BifrostContextKeySupportsAssistantPrefill) == false {
 		for trimIndex > 0 {
 			m := bifrostMessages[trimIndex-1]
-			if m.Role != nil && *m.Role == schemas.ResponsesInputMessageRoleAssistant {
+			if (m.Role != nil && *m.Role == schemas.ResponsesInputMessageRoleAssistant) || droppedAsEmpty(&m) {
 				trimIndex--
 			} else {
 				break
@@ -7425,7 +7468,7 @@ func normalizeInlineFunctionTool(tool *schemas.ResponsesTool) (*schemas.Response
 //     caller value the request fails, exactly as it does for a tools[] entry.
 //
 // The returned input is the caller's slice unless a rewrite was needed.
-func prepareInlineToolDefinitions(input []schemas.ResponsesMessage, tools []schemas.ResponsesTool) ([]schemas.ResponsesMessage, error) {
+func prepareInlineToolDefinitions(input []schemas.ResponsesMessage, tools []schemas.ResponsesTool, caps schemas.ModelCaps, provider schemas.ModelProvider) ([]schemas.ResponsesMessage, error) {
 	needsCaller := false
 	var validate func(blocks []schemas.ResponsesMessageContentBlock) error
 	validate = func(blocks []schemas.ResponsesMessageContentBlock) error {
@@ -7459,16 +7502,13 @@ func prepareInlineToolDefinitions(input []schemas.ResponsesMessage, tools []sche
 		return input, nil
 	}
 
-	// Same resolution as convertBifrostToolsToAnthropic: beside web search / fetch a
-	// code_interpreter is not sent, so it must not count as the declared version.
+	// Same resolution as convertBifrostToolsToAnthropic: beside an auto-injecting web
+	// tool a code_interpreter is not sent, so it must not count as the declared version.
 	sentTools := tools
-	for _, tool := range tools {
-		if tool.Type == schemas.ResponsesToolTypeWebSearch || tool.Type == schemas.ResponsesToolTypeWebFetch {
-			sentTools = slices.DeleteFunc(slices.Clone(tools), func(t schemas.ResponsesTool) bool {
-				return t.Type == schemas.ResponsesToolTypeCodeInterpreter
-			})
-			break
-		}
+	if webToolsSupplyCodeExecution(caps, tools, provider) {
+		sentTools = slices.DeleteFunc(slices.Clone(tools), func(t schemas.ResponsesTool) bool {
+			return t.Type == schemas.ResponsesToolTypeCodeInterpreter
+		})
 	}
 	declaredVersion, hasCodeExecution := declaredCodeExecutionVersion(sentTools)
 	caller, emitVersion := resolveAnthropicProgrammaticCaller(declaredVersion, hasCodeExecution)
@@ -8198,6 +8238,9 @@ func convertAnthropicContentBlocksToResponsesMessagesOrdered(ctx *schemas.Bifros
 func convertBifrostMessageToAnthropicSystemContent(caps schemas.ModelCaps, msg *schemas.ResponsesMessage) *AnthropicContent {
 	if msg.Content != nil {
 		if msg.Content.ContentStr != nil {
+			if *msg.Content.ContentStr == "" {
+				return nil
+			}
 			return &AnthropicContent{
 				ContentStr: msg.Content.ContentStr,
 			}
@@ -8258,10 +8301,12 @@ func convertBifrostMessageToAnthropicMessage(caps schemas.ModelCaps, msg *schema
 		// Add content blocks after pending reasoning content blocks are added
 		if msg.Content != nil {
 			if msg.Content.ContentStr != nil {
-				contentBlocks = append(contentBlocks, AnthropicContentBlock{
-					Type: AnthropicContentBlockTypeText,
-					Text: msg.Content.ContentStr,
-				})
+				if *msg.Content.ContentStr != "" {
+					contentBlocks = append(contentBlocks, AnthropicContentBlock{
+						Type: AnthropicContentBlockTypeText,
+						Text: msg.Content.ContentStr,
+					})
+				}
 			} else if msg.Content.ContentBlocks != nil {
 				contentBlocks = append(contentBlocks, convertBifrostContentBlocksToAnthropic(caps, msg.Content.ContentBlocks)...)
 			}
@@ -8272,7 +8317,7 @@ func convertBifrostMessageToAnthropicMessage(caps schemas.ModelCaps, msg *schema
 	} else {
 		// Convert content
 		if msg.Content != nil {
-			if msg.Content.ContentStr != nil {
+			if msg.Content.ContentStr != nil && *msg.Content.ContentStr != "" {
 				anthropicMsg.Content = AnthropicContent{
 					ContentBlocks: []AnthropicContentBlock{{
 						Type: AnthropicContentBlockTypeText,
@@ -8288,6 +8333,12 @@ func convertBifrostMessageToAnthropicMessage(caps schemas.ModelCaps, msg *schema
 				}
 			}
 		}
+	}
+
+	// Every block was empty: an Anthropic message with no content is rejected, so the
+	// caller skips it.
+	if len(anthropicMsg.Content.ContentBlocks) == 0 && anthropicMsg.Content.ContentStr == nil {
+		return nil
 	}
 
 	return &anthropicMsg
@@ -9794,20 +9845,18 @@ func convertAnthropicToolToBifrost(tool *AnthropicTool) *schemas.ResponsesTool {
 		// Version-dated server search tools ship new versions regularly; match them by
 		// prefix so a newer version (e.g. web_fetch_20260318) is recognized as a server
 		// tool instead of falling through to the client-function default at the end of
-		// this function. Mirrors applySharedServerToolFields and the chat path. Tools
-		// that must round-trip their exact version (code_execution, text_editor) stay in
-		// the exact switch below.
+		// this function. Preserve the requested version through the neutral schema,
+		// as the code_execution and text_editor branches below already do.
 		switch typeStr := string(*tool.Type); {
 		case strings.HasPrefix(typeStr, "web_search_"):
 			bifrostTool := &schemas.ResponsesTool{
-				Type: schemas.ResponsesToolTypeWebSearch,
+				Type:                   schemas.ResponsesToolTypeWebSearch,
+				ResponsesToolWebSearch: &schemas.ResponsesToolWebSearch{Version: (*string)(tool.Type)},
 			}
 			if tool.AnthropicToolWebSearch != nil {
-				bifrostTool.ResponsesToolWebSearch = &schemas.ResponsesToolWebSearch{
-					Filters: &schemas.ResponsesToolWebSearchFilters{
-						AllowedDomains: tool.AnthropicToolWebSearch.AllowedDomains,
-						BlockedDomains: tool.AnthropicToolWebSearch.BlockedDomains,
-					},
+				bifrostTool.ResponsesToolWebSearch.Filters = &schemas.ResponsesToolWebSearchFilters{
+					AllowedDomains: tool.AnthropicToolWebSearch.AllowedDomains,
+					BlockedDomains: tool.AnthropicToolWebSearch.BlockedDomains,
 				}
 				if tool.AnthropicToolWebSearch.MaxUses != nil {
 					bifrostTool.ResponsesToolWebSearch.MaxUses = tool.AnthropicToolWebSearch.MaxUses
@@ -9826,19 +9875,20 @@ func convertAnthropicToolToBifrost(tool *AnthropicTool) *schemas.ResponsesTool {
 
 		case strings.HasPrefix(typeStr, "web_fetch_"):
 			bifrostTool := &schemas.ResponsesTool{
-				Type: schemas.ResponsesToolTypeWebFetch,
+				Type:                  schemas.ResponsesToolTypeWebFetch,
+				ResponsesToolWebFetch: &schemas.ResponsesToolWebFetch{Version: (*string)(tool.Type)},
 			}
 			if tool.AnthropicToolWebFetch != nil {
-				bifrostTool.ResponsesToolWebFetch = &schemas.ResponsesToolWebFetch{
-					MaxUses:           tool.AnthropicToolWebFetch.MaxUses,
-					MaxContentTokens:  tool.AnthropicToolWebFetch.MaxContentTokens,
-					UseCache:          tool.AnthropicToolWebFetch.UseCache,
-					ResponseInclusion: tool.AnthropicToolWebFetch.ResponseInclusion,
-				}
-				if len(tool.AnthropicToolWebFetch.AllowedDomains) > 0 || len(tool.AnthropicToolWebFetch.BlockedDomains) > 0 {
-					bifrostTool.ResponsesToolWebFetch.Filters = &schemas.ResponsesToolWebSearchFilters{
-						AllowedDomains: tool.AnthropicToolWebFetch.AllowedDomains,
-						BlockedDomains: tool.AnthropicToolWebFetch.BlockedDomains,
+				webFetch := bifrostTool.ResponsesToolWebFetch
+				source := tool.AnthropicToolWebFetch
+				webFetch.MaxUses = source.MaxUses
+				webFetch.MaxContentTokens = source.MaxContentTokens
+				webFetch.UseCache = source.UseCache
+				webFetch.ResponseInclusion = source.ResponseInclusion
+				if len(source.AllowedDomains) > 0 || len(source.BlockedDomains) > 0 {
+					webFetch.Filters = &schemas.ResponsesToolWebSearchFilters{
+						AllowedDomains: source.AllowedDomains,
+						BlockedDomains: source.BlockedDomains,
 					}
 				}
 			}
@@ -10040,21 +10090,16 @@ func convertToolOutputToAnthropicContent(output *schemas.ResponsesToolMessageOut
 
 // convertBifrostToolsToAnthropic converts all Bifrost tools to Anthropic tools and MCP servers.
 // It handles context-dependent conversions like code_interpreter, which must be skipped when
-// web_search or web_fetch is present (Anthropic auto-injects code_execution in that case).
+// a web_search or web_fetch version that auto-injects code_execution is sent.
 func convertBifrostToolsToAnthropic(caps schemas.ModelCaps, tools []schemas.ResponsesTool, provider schemas.ModelProvider) ([]AnthropicTool, []AnthropicMCPServerV2, error) {
-	// Check if web search or web fetch is present — when they are, Anthropic
-	// auto-injects code_execution so we must skip it to avoid conflicts.
-	hasWebSearchOrFetch := false
-	for _, tool := range tools {
-		if tool.Type == schemas.ResponsesToolTypeWebSearch || tool.Type == schemas.ResponsesToolTypeWebFetch {
-			hasWebSearchOrFetch = true
-			break
-		}
-	}
+	// Anthropic auto-injects code_execution beside the 2026 web tool versions, so an
+	// explicit one conflicts there. Older versions inject nothing and keep the declared tool.
+	hasWebSearchOrFetch := webToolsSupplyCodeExecution(caps, tools, provider)
 
 	// An OpenAI-origin "programmatic" caller has to be renamed to the code execution
 	// version this request runs on, and that version may have to be raised to reach it.
-	// Resolve against the tools actually sent: beside web search a code_interpreter is dropped.
+	// Resolve against the tools actually sent: beside an auto-injecting web tool a
+	// code_interpreter is dropped.
 	sentTools := tools
 	if hasWebSearchOrFetch {
 		sentTools = slices.DeleteFunc(slices.Clone(tools), func(t schemas.ResponsesTool) bool {
@@ -10213,6 +10258,92 @@ func declaredCodeExecutionVersion(tools []schemas.ResponsesTool) (string, bool) 
 	return "", false
 }
 
+// requestedServerToolVersion preserves client intent while retaining host-specific downgrades.
+func requestedServerToolVersion(version *string, fallback AnthropicToolType, provider schemas.ModelProvider) AnthropicToolType {
+	if version == nil || *version == "" {
+		return fallback
+	}
+	for _, remap := range providerToolVersionRemaps[provider] {
+		if *version == remap.From {
+			return AnthropicToolType(remap.To)
+		}
+	}
+	return AnthropicToolType(*version)
+}
+
+// resolveWebSearchToolType returns the web_search version sent for tool.
+func resolveWebSearchToolType(caps schemas.ModelCaps, tool *schemas.ResponsesTool, provider schemas.ModelProvider) AnthropicToolType {
+	webSearchType := AnthropicToolTypeWebSearch20250305
+	// Prefer the datasheet's pinned version; otherwise dynamic filtering
+	// (web_search_20260209) is available on Anthropic + Azure for Opus 4.6+, Sonnet 4.6+.
+	features, ok := ProviderFeatures[provider]
+	model := caps.Model()
+	if version, pinned := caps.ServerTool(ServerToolWebSearch); pinned {
+		webSearchType = AnthropicToolType(version)
+	} else if ok && features.WebSearchDynamic &&
+		(strings.Contains(model, "4.6") || strings.Contains(model, "4-6") || IsOpus47Plus(model) || IsSonnet5Plus(model) || IsFableFamily(model)) {
+		webSearchType = AnthropicToolTypeWebSearch20260209
+	}
+	// A client-selected version takes precedence over model defaults.
+	if tool.ResponsesToolWebSearch != nil {
+		webSearchType = requestedServerToolVersion(tool.ResponsesToolWebSearch.Version, webSearchType, provider)
+	}
+	return webSearchType
+}
+
+// resolveWebFetchToolType returns the web_fetch version sent for tool.
+func resolveWebFetchToolType(caps schemas.ModelCaps, tool *schemas.ResponsesTool, provider schemas.ModelProvider) AnthropicToolType {
+	webFetchType := AnthropicToolTypeWebFetch20250910
+	// Prefer the datasheet's pinned version; otherwise the dynamic-filtering
+	// versions are only available on Anthropic + Azure.
+	features, ok := ProviderFeatures[provider]
+	model := caps.Model()
+	if version, pinned := caps.ServerTool(ServerToolWebFetch); pinned {
+		webFetchType = AnthropicToolType(version)
+	} else if ok && features.WebSearchDynamic &&
+		(strings.Contains(model, "4.6") || strings.Contains(model, "4-6")) {
+		webFetchType = AnthropicToolTypeWebFetch20260309
+	}
+	if tool.ResponsesToolWebFetch != nil && tool.ResponsesToolWebFetch.ResponseInclusion != nil {
+		webFetchType = AnthropicToolTypeWebFetch20260318
+	} else if tool.ResponsesToolWebFetch != nil && tool.ResponsesToolWebFetch.UseCache != nil &&
+		webFetchType == AnthropicToolTypeWebFetch20250910 {
+		webFetchType = AnthropicToolTypeWebFetch20260309
+	}
+	// A client-selected version takes precedence over model defaults and option upgrades.
+	if tool.ResponsesToolWebFetch != nil {
+		webFetchType = requestedServerToolVersion(tool.ResponsesToolWebFetch.Version, webFetchType, provider)
+	}
+	return webFetchType
+}
+
+// webToolsSupplyCodeExecution reports whether a declared code_interpreter must be omitted
+// because a web search or web fetch tool already supplies code execution. Only the
+// 2026 web tool versions auto-inject it, so the decision uses the version actually sent.
+// Hosts without code execution keep the earlier omission instead of failing the request.
+func webToolsSupplyCodeExecution(caps schemas.ModelCaps, tools []schemas.ResponsesTool, provider schemas.ModelProvider) bool {
+	for i := range tools {
+		var toolType AnthropicToolType
+		switch tools[i].Type {
+		case schemas.ResponsesToolTypeWebSearch:
+			toolType = resolveWebSearchToolType(caps, &tools[i], provider)
+		case schemas.ResponsesToolTypeWebFetch:
+			toolType = resolveWebFetchToolType(caps, &tools[i], provider)
+		default:
+			continue
+		}
+		if !providerSupportsCodeExecution(provider) || doesWebSearchOrFetchAutoInjectCodeExecution(string(toolType)) {
+			return true
+		}
+	}
+	return false
+}
+
+// providerSupportsCodeExecution reports whether the host accepts a code_execution tool.
+func providerSupportsCodeExecution(provider schemas.ModelProvider) bool {
+	return !slices.Contains(unsupportedRawToolTypes[provider], "code_execution")
+}
+
 // Helper function to convert Tool back to AnthropicTool
 func convertBifrostToolToAnthropic(caps schemas.ModelCaps, tool *schemas.ResponsesTool, provider schemas.ModelProvider, hasWebSearchOrFetch bool) *AnthropicTool {
 	if tool == nil {
@@ -10262,17 +10393,7 @@ func convertBifrostToolToAnthropic(caps schemas.ModelCaps, tool *schemas.Respons
 	case schemas.ResponsesToolTypeComputerUsePreview, schemas.ResponsesToolTypeComputer:
 		return convertResponsesToAnthropicComputerTool(caps, tool)
 	case schemas.ResponsesToolTypeWebSearch:
-		webSearchType := AnthropicToolTypeWebSearch20250305
-		// Prefer the datasheet's pinned version; otherwise dynamic filtering
-		// (web_search_20260209) is available on Anthropic + Azure for Opus 4.6+, Sonnet 4.6+.
-		features, ok := ProviderFeatures[provider]
-		model := caps.Model()
-		if version, pinned := caps.ServerTool(ServerToolWebSearch); pinned {
-			webSearchType = AnthropicToolType(version)
-		} else if ok && features.WebSearchDynamic &&
-			(strings.Contains(model, "4.6") || strings.Contains(model, "4-6") || IsOpus47Plus(model) || IsSonnet5Plus(model) || IsFableFamily(model)) {
-			webSearchType = AnthropicToolTypeWebSearch20260209
-		}
+		webSearchType := resolveWebSearchToolType(caps, tool, provider)
 		anthropicTool := &AnthropicTool{
 			Type:                   schemas.Ptr(webSearchType),
 			Name:                   string(AnthropicToolNameWebSearch),
@@ -10298,23 +10419,7 @@ func convertBifrostToolToAnthropic(caps schemas.ModelCaps, tool *schemas.Respons
 
 		return anthropicTool
 	case schemas.ResponsesToolTypeWebFetch:
-		webFetchType := AnthropicToolTypeWebFetch20250910
-		// Prefer the datasheet's pinned version; otherwise the dynamic-filtering
-		// versions are only available on Anthropic + Azure.
-		features, ok := ProviderFeatures[provider]
-		model := caps.Model()
-		if version, pinned := caps.ServerTool(ServerToolWebFetch); pinned {
-			webFetchType = AnthropicToolType(version)
-		} else if ok && features.WebSearchDynamic &&
-			(strings.Contains(model, "4.6") || strings.Contains(model, "4-6")) {
-			webFetchType = AnthropicToolTypeWebFetch20260309
-		}
-		if tool.ResponsesToolWebFetch != nil && tool.ResponsesToolWebFetch.ResponseInclusion != nil {
-			webFetchType = AnthropicToolTypeWebFetch20260318
-		} else if tool.ResponsesToolWebFetch != nil && tool.ResponsesToolWebFetch.UseCache != nil &&
-			webFetchType == AnthropicToolTypeWebFetch20250910 {
-			webFetchType = AnthropicToolTypeWebFetch20260309
-		}
+		webFetchType := resolveWebFetchToolType(caps, tool, provider)
 		anthropicTool := &AnthropicTool{
 			Type:                  schemas.Ptr(webFetchType),
 			Name:                  string(AnthropicToolNameWebFetch),
@@ -10511,7 +10616,9 @@ func convertContentBlockToAnthropicWithCaps(caps schemas.ModelCaps, block schema
 		}
 	case schemas.ResponsesInputMessageContentBlockTypeText, schemas.ResponsesOutputMessageContentTypeText:
 		anthropicBlock := AnthropicContentBlock{}
-		if block.Text != nil {
+		// Anthropic rejects an empty text block with a 400, so it is skipped like the
+		// Chat Completions converter does.
+		if block.Text != nil && *block.Text != "" {
 			anthropicBlock = AnthropicContentBlock{
 				Type:         AnthropicContentBlockTypeText,
 				Text:         block.Text,

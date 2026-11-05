@@ -1,5 +1,6 @@
 import { getErrorMessage, useAppSelector, useUpdatePluginMutation } from "@/lib/store";
 import { type SecretVar, PrometheusFormSchema } from "@/lib/types/schemas";
+import { getExampleBaseUrl } from "@/lib/utils/port";
 import { toOptionalSecretVarPayload } from "@/lib/utils/secretVarForm";
 import { useMemo } from "react";
 import { toast } from "sonner";
@@ -47,8 +48,8 @@ export default function PrometheusView({ onDelete, isDeleting }: PrometheusViewP
 	}, [selectedPlugin]);
 
 	const [updatePlugin] = useUpdatePluginMutation();
-	const baseUrl = `${window.location.protocol}//${window.location.host}`;
-	const metricsEndpoint = `${baseUrl}/metrics`;
+	// Origin plus server.base_path, so the scrape target users copy is the one the proxy routes.
+	const metricsEndpoint = `${getExampleBaseUrl()}/metrics`;
 
 	const handlePrometheusConfigSave = (config: PrometheusFormSchema): Promise<void> => {
 		return new Promise((resolve, reject) => {

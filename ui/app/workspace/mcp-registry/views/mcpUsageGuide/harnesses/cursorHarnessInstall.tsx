@@ -5,7 +5,9 @@ import { buildCursorConfig, buildCursorDeeplink } from "../commandBuilders";
 import { HarnessCommandSection } from "../harnessCommandSection";
 import type { CursorConfigScope, HarnessInstallProps } from "../types";
 import { getRegistrationLabel, getUserHomePrefix } from "../utils";
+import { withBasePath } from "@/lib/utils/basePath";
 
+/** Install panel for Cursor: the generated config or command for the selected MCP servers. */
 export function CursorHarnessInstall({
 	canGenerateCommand,
 	clientConfig,
@@ -53,7 +55,7 @@ export function CursorHarnessInstall({
 			emptyMessage={emptyMessage}
 			harnessName="Cursor"
 			label={t("common.config")}
-			logoSrc="/images/harness/cursor.svg"
+			logoSrc={withBasePath("/images/harness/cursor.svg")}
 			registrationLabel={`${configPath} · ${getRegistrationLabel(serverScope, selectedServers)}`}
 		/>
 	);
