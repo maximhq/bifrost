@@ -24,6 +24,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/bytedance/sonic"
 	"github.com/cespare/xxhash/v2"
@@ -2768,6 +2769,32 @@ func handleProviderAPIError(resp *fasthttp.Response, errorResp any) *schemas.Bif
 			},
 		}
 	}
+
+	bifrostErr := providerErrorFromDecodedBody(resp, errorResp, decodedBody)
+	bifrostErr.ExtraFields.ProviderErrorExcerpt = ProviderErrorExcerpt(decodedBody)
+	return bifrostErr
+}
+
+// providerErrorExcerptMaxBytes bounds ProviderErrorExcerpt: enough for a log line to say
+// why a call failed, without keeping a whole error body alive for the rest of the request.
+const providerErrorExcerptMaxBytes = 200
+
+// ProviderErrorExcerpt returns a copy of at most providerErrorExcerptMaxBytes of a provider's
+// decoded error body, cut on a rune boundary so the excerpt of a UTF-8 body stays valid UTF-8.
+func ProviderErrorExcerpt(body []byte) string {
+	if len(body) <= providerErrorExcerptMaxBytes {
+		return string(body)
+	}
+	end := providerErrorExcerptMaxBytes
+	for end > 0 && !utf8.RuneStart(body[end]) {
+		end--
+	}
+	return string(body[:end])
+}
+
+// providerErrorFromDecodedBody builds the error from a body that decoded cleanly.
+func providerErrorFromDecodedBody(resp *fasthttp.Response, errorResp any, decodedBody []byte) *schemas.BifrostError {
+	statusCode := resp.StatusCode()
 
 	// Try to unmarshal decoded body for RawResponse
 	var rawErrorResponse interface{}

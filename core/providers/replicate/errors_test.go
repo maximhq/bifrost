@@ -32,5 +32,6 @@ func TestParseReplicateError(t *testing.T) {
 
 		assert.Equal(t, "upstream unavailable", bErr.Error.Message)
 		assert.Equal(t, int64(0), bErr.ExtraFields.RetryAfter)
+		assert.Equal(t, "upstream unavailable", bErr.ExtraFields.ProviderErrorExcerpt)
 	})
 }
