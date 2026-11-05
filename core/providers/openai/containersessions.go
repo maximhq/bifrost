@@ -32,15 +32,38 @@ type containerSessionsInputItem struct {
 	} `json:"environment"`
 }
 
-// recordResponsesContainerSessions records the auto containers this response started on its usage.
-func recordResponsesContainerSessions(response *schemas.BifrostResponsesResponse, reqBody []byte) {
+// recordResponsesServerToolUsage records what pricing needs from the request onto the response's usage.
+func recordResponsesServerToolUsage(response *schemas.BifrostResponsesResponse, reqBody []byte) {
 	if response == nil || response.Usage == nil {
 		return
 	}
 	schemas.SetContainerSessions(&response.Usage.ToolUsage, countContainerSessions(reqBody, response.Output))
+	recordImageGenToolModel(response.Usage.ToolUsage, reqBody)
 }
 
-// recordPassthroughContainerSessions is recordResponsesContainerSessions for a raw body or SSE event.
+// recordImageGenToolModel saves the image tool's model for pricing. Absent means the API's default model.
+func recordImageGenToolModel(toolUsage *schemas.ToolUsage, reqBody []byte) {
+	if toolUsage == nil || !toolUsage.ImageGen.HasTokens() || len(reqBody) == 0 {
+		return
+	}
+	var req struct {
+		Tools []struct {
+			Type  string `json:"type"`
+			Model string `json:"model"`
+		} `json:"tools"`
+	}
+	if sonic.Unmarshal(reqBody, &req) != nil {
+		return
+	}
+	for i := range req.Tools {
+		if req.Tools[i].Type == string(schemas.ResponsesToolTypeImageGeneration) {
+			toolUsage.ImageGenModel = req.Tools[i].Model
+			return
+		}
+	}
+}
+
+// recordPassthroughContainerSessions counts container sessions from a raw body or SSE event.
 func recordPassthroughContainerSessions(usage *schemas.BifrostPassthroughUsage, reqBody, body []byte) {
 	if usage == nil || usage.LLMUsage == nil {
 		return

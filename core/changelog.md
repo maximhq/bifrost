@@ -4,3 +4,4 @@
 - fix: multi-key providers - follow-up calls on a stored response, container or video now find the key that created it instead of returning 404 from another key; video list pages across every key
 - feat: count the containers a request starts through OpenAI and Azure code interpreter and hosted shell on `usage.tool_usage.container_sessions`, so they can be billed
 - feat: anthropic - count the code execution containers a request starts on `usage.tool_usage.container_sessions`, so they can be billed
+- fix: openai - keep `tool_usage.image_gen` on Responses API output instead of dropping it, and record the image tool's model so its tokens can be billed

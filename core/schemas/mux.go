@@ -1788,6 +1788,7 @@ func (responsesResp *BifrostResponsesResponse) ToBifrostChatResponse() *BifrostC
 	if responsesResp.Usage != nil {
 		// Map Responses usage to Chat usage
 		chatResp.Usage = responsesResp.Usage.ToBifrostLLMUsage()
+		chatResp.Usage.ToolUsage = chatResp.Usage.ToolUsage.withoutZeroImageGen()
 	}
 
 	// Copy other relevant fields
@@ -2870,6 +2871,7 @@ func (rsr *BifrostResponsesStreamResponse) ToBifrostChatResponse() *BifrostChatR
 			output = rsr.Response.Output
 			if rsr.Response.Usage != nil {
 				resp.Usage = rsr.Response.Usage.ToBifrostLLMUsage()
+				resp.Usage.ToolUsage = resp.Usage.ToolUsage.withoutZeroImageGen()
 			}
 		}
 

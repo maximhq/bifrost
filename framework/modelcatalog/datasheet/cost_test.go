@@ -7890,3 +7890,125 @@ func TestCalculateCost_ContainerSessions_ProviderCostWins(t *testing.T) {
 	}
 	assert.InDelta(t, 1.5, s.CalculateCost(responsesResultWithSessions(schemas.OpenAI, "gpt-6.1-sol", usage), nil), 1e-12)
 }
+
+// ---------------------------------------------------------------------------
+// Image generation tool
+// ---------------------------------------------------------------------------
+
+func imageGenToolTestStore() *Store {
+	row := func(model, provider string, text, image, out, cachedText, cachedImage float64) configstoreTables.TableModelPricing {
+		return configstoreTables.TableModelPricing{
+			Model: model, Provider: provider, Mode: "image_generation",
+			InputCostPerToken: bifrost.Ptr(text), InputCostPerImageToken: bifrost.Ptr(image), OutputCostPerImageToken: bifrost.Ptr(out),
+			CacheReadInputTokenCost: bifrost.Ptr(cachedText), CacheReadInputImageTokenCost: bifrost.Ptr(cachedImage),
+		}
+	}
+	return testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("gpt-image-2", "openai", "image_generation"):      row("gpt-image-2", "openai", 5e-6, 8e-6, 3e-5, 1.25e-6, 2e-6),
+		makeKey("gpt-image-1-mini", "openai", "image_generation"): row("gpt-image-1-mini", "openai", 2e-6, 2.5e-6, 8e-6, 2e-7, 2.5e-7),
+		makeKey("gpt-image-2", "azure", "image_generation"):       row("gpt-image-2", "azure", 5e-6, 8e-6, 3e-5, 1.25e-6, 2e-6),
+		makeKey("gpt-6.1-sol", "openai", "chat"): {
+			Model: "gpt-6.1-sol", Provider: "openai", Mode: "chat",
+			InputCostPerToken: bifrost.Ptr(2e-6), OutputCostPerToken: bifrost.Ptr(1e-5),
+		},
+		makeKey("gpt-6.1-sol", "azure", "chat"): {
+			Model: "gpt-6.1-sol", Provider: "azure", Mode: "chat",
+			InputCostPerToken: bifrost.Ptr(2e-6), OutputCostPerToken: bifrost.Ptr(1e-5),
+		},
+	})
+}
+
+func TestCalculateImageGenToolCost(t *testing.T) {
+	s := imageGenToolTestStore()
+	openaiRouting := schemas.RoutingInfo{Provider: schemas.OpenAI, Model: "gpt-6.1-sol"}
+	base := func() *schemas.ImageGenToolUsage {
+		return &schemas.ImageGenToolUsage{
+			InputTokens: 100, OutputTokens: 5000, TotalTokens: 5100,
+			InputTokensDetails:  &schemas.ImageGenTokenDetails{TextTokens: 100},
+			OutputTokensDetails: &schemas.ImageGenTokenDetails{ImageTokens: 5000},
+		}
+	}
+	withCache := base()
+	withCache.InputTokens, withCache.TotalTokens = 1100, 6100
+	withCache.InputTokensDetails = &schemas.ImageGenTokenDetails{ImageTokens: 1000, TextTokens: 100}
+	withCache.CachedTokensDetails = &schemas.ImageGenCachedTokenDetails{CachedImageTokens: 400, CachedTextTokens: 50}
+	cachedNoSplit := base()
+	cachedNoSplit.CachedTokens = bifrost.Ptr(50)
+	noDetails := &schemas.ImageGenToolUsage{InputTokens: 100, OutputTokens: 5000, TotalTokens: 5100}
+	zeroDetails := &schemas.ImageGenToolUsage{
+		InputTokens: 100, OutputTokens: 5000, TotalTokens: 5100,
+		InputTokensDetails: &schemas.ImageGenTokenDetails{}, OutputTokensDetails: &schemas.ImageGenTokenDetails{},
+	}
+
+	tests := []struct {
+		name    string
+		routing schemas.RoutingInfo
+		model   string
+		usage   *schemas.ImageGenToolUsage
+		want    float64
+	}{
+		{"default model", openaiRouting, "", base(), 100*5e-6 + 5000*3e-5},
+		{"named model", openaiRouting, "gpt-image-1-mini", base(), 100*2e-6 + 5000*8e-6},
+		{"cached input at cached rates", openaiRouting, "", withCache, 50*5e-6 + 600*8e-6 + 50*1.25e-6 + 400*2e-6 + 5000*3e-5},
+		{"cached count without a split bills in full", openaiRouting, "", cachedNoSplit, 100*5e-6 + 5000*3e-5},
+		{"no details: input as text, output as image", openaiRouting, "", noDetails, 100*5e-6 + 5000*3e-5},
+		{"empty details act like none", openaiRouting, "", zeroDetails, 100*5e-6 + 5000*3e-5},
+		{"zero counts are free", openaiRouting, "", &schemas.ImageGenToolUsage{}, 0},
+		{"unknown model is not charged", openaiRouting, "gpt-image-9", base(), 0},
+		{"azure is not charged", schemas.RoutingInfo{Provider: schemas.Azure, Model: "gpt-6.1-sol"}, "gpt-image-2", base(), 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cost := s.calculateImageGenToolCost(&schemas.ToolUsage{ImageGen: tt.usage, ImageGenModel: tt.model}, tt.routing, LookupScopes{})
+			if tt.want == 0 {
+				assert.Nil(t, cost)
+				return
+			}
+			require.NotNil(t, cost)
+			assert.InDelta(t, tt.want, cost.TotalCost, 1e-12)
+		})
+	}
+}
+
+func imageGenToolUsage() *schemas.ImageGenToolUsage {
+	return &schemas.ImageGenToolUsage{
+		InputTokens: 100, OutputTokens: 5000, TotalTokens: 5100,
+		InputTokensDetails:  &schemas.ImageGenTokenDetails{TextTokens: 100},
+		OutputTokensDetails: &schemas.ImageGenTokenDetails{ImageTokens: 5000},
+	}
+}
+
+// The tool's tokens are added to the mainline model's, on the side each belongs to.
+func TestCalculateCost_ImageGenTool_AddsToModelTokens(t *testing.T) {
+	s := imageGenToolTestStore()
+	usage := &schemas.ResponsesResponseUsage{
+		InputTokens: 10, OutputTokens: 2, TotalTokens: 12,
+		ToolUsage: &schemas.ToolUsage{ImageGen: imageGenToolUsage()},
+	}
+	cost := s.CalculateCostBreakdown(responsesResultWithSessions(schemas.OpenAI, "gpt-6.1-sol", usage), nil)
+	require.NotNil(t, cost)
+	assert.InDelta(t, 10*2e-6+100*5e-6, cost.InputCost, 1e-12)
+	assert.InDelta(t, 2*1e-5+5000*3e-5, cost.OutputCost, 1e-12)
+	assert.InDelta(t, 10*2e-6+2*1e-5+100*5e-6+5000*3e-5, cost.TotalCost, 1e-12)
+	require.NotNil(t, cost.InputCostDetails)
+	require.NotNil(t, cost.OutputCostDetails)
+	assert.InDelta(t, 10*2e-6, cost.InputCostDetails.TextCost, 1e-12)
+	assert.InDelta(t, 100*5e-6, cost.InputCostDetails.ImageCost, 1e-12)
+	assert.InDelta(t, 2*1e-5, cost.OutputCostDetails.TextCost, 1e-12)
+	assert.InDelta(t, 5000*3e-5, cost.OutputCostDetails.ImageCost, 1e-12)
+
+	azure := s.CalculateCostBreakdown(responsesResultWithSessions(schemas.Azure, "gpt-6.1-sol", usage), nil)
+	require.NotNil(t, azure)
+	assert.InDelta(t, 10*2e-6+2*1e-5, azure.TotalCost, 1e-12, "azure tool tokens stay unpriced")
+}
+
+func TestCalculateCostBreakdownForUsage_ImageGenTool(t *testing.T) {
+	s := imageGenToolTestStore()
+	usage := &schemas.BifrostLLMUsage{
+		PromptTokens: 10, CompletionTokens: 2, TotalTokens: 12,
+		ToolUsage: &schemas.ToolUsage{ImageGen: imageGenToolUsage(), ImageGenModel: "gpt-image-1-mini"},
+	}
+	cost := s.CalculateCostBreakdownForUsage(usage, schemas.OpenAI, "gpt-6.1-sol", schemas.ResponsesRequest, nil)
+	require.NotNil(t, cost)
+	assert.InDelta(t, 10*2e-6+2*1e-5+100*2e-6+5000*8e-6, cost.TotalCost, 1e-12)
+}
