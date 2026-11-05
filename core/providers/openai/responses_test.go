@@ -499,6 +499,147 @@ func TestToOpenAIResponsesRequest_ReasoningContentBlocksDropped(t *testing.T) {
 	})
 }
 
+// TestToOpenAIResponsesRequest_VLLMKeepsReplayedReasoningContent pins that a replayed
+// Anthropic thinking block (summary [] + one reasoning_text block) reaches vLLM's
+// Responses endpoint with its content intact, whatever the model name. vLLM reads a
+// reasoning item's content back into the prompt; dropping it hid the model's own
+// earlier reasoning from it on the next turn.
+func TestToOpenAIResponsesRequest_VLLMKeepsReplayedReasoningContent(t *testing.T) {
+	thinking := "I privately choose the code word PAMPLEMOUSSE-47."
+	bifrostReq := &schemas.BifrostResponsesRequest{
+		Provider: schemas.VLLM,
+		Model:    "deepseek-v4.1-flash",
+		Input: []schemas.ResponsesMessage{{
+			Type:               schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
+			Role:               schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+			ResponsesReasoning: &schemas.ResponsesReasoning{Summary: []schemas.ResponsesReasoningSummary{}},
+			Content: &schemas.ResponsesMessageContent{
+				ContentBlocks: []schemas.ResponsesMessageContentBlock{{
+					Type:      schemas.ResponsesOutputMessageContentTypeReasoning,
+					Text:      schemas.Ptr(thinking),
+					Signature: schemas.Ptr("sig-123"),
+				}},
+			},
+		}},
+	}
+
+	result := ToOpenAIResponsesRequest(nil, bifrostReq)
+	require.NotNil(t, result)
+	require.Len(t, result.Input.OpenAIResponsesRequestInputArray, 1, "the reasoning item must be replayed to vLLM")
+	c := result.Input.OpenAIResponsesRequestInputArray[0].Content
+	require.NotNil(t, c)
+	require.Len(t, c.ContentBlocks, 1)
+	require.Equal(t, thinking, *c.ContentBlocks[0].Text)
+	require.Nil(t, c.ContentBlocks[0].Signature, "the Anthropic signature must not reach the Responses wire")
+
+	// The OpenAI-hosted path for the same name still drops the reasoning-only item.
+	bifrostReq.Provider = schemas.OpenAI
+	result = ToOpenAIResponsesRequest(nil, bifrostReq)
+	require.NotNil(t, result)
+	require.Empty(t, result.Input.OpenAIResponsesRequestInputArray)
+}
+
+// TestToOpenAIResponsesRequest_SummaryRewrittenAsContentKeepsSummaryArray pins that a
+// summary-only reasoning item (history from an OpenAI model) rewritten as content blocks
+// for vLLM or gpt-oss still carries summary: []. vLLM validates against OpenAI's
+// ResponseReasoningItem, where summary is required; without it the item matches no input
+// variant and the request fails with "203 validation errors".
+func TestToOpenAIResponsesRequest_SummaryRewrittenAsContentKeepsSummaryArray(t *testing.T) {
+	for _, tc := range []struct {
+		provider schemas.ModelProvider
+		model    string
+	}{{schemas.VLLM, "glm-4.7-flash"}, {schemas.VLLM, "gpt-oss-20b"}, {schemas.OpenAI, "gpt-oss-120b"}} {
+		t.Run(string(tc.provider)+"/"+tc.model, func(t *testing.T) {
+			result := ToOpenAIResponsesRequest(nil, &schemas.BifrostResponsesRequest{
+				Provider: tc.provider,
+				Model:    tc.model,
+				Input: []schemas.ResponsesMessage{{
+					ID:   schemas.Ptr("rs_x"),
+					Type: schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
+					ResponsesReasoning: &schemas.ResponsesReasoning{Summary: []schemas.ResponsesReasoningSummary{
+						{Type: schemas.ResponsesReasoningContentBlockTypeSummaryText, Text: "I choose the code word ZUCCHINI-9."},
+					}},
+				}},
+			})
+			require.NotNil(t, result)
+			wire, err := sonic.Marshal(result)
+			require.NoError(t, err)
+			var payload struct {
+				Input []struct {
+					Summary *[]json.RawMessage `json:"summary"`
+					Content []struct {
+						Text string `json:"text"`
+					} `json:"content"`
+				} `json:"input"`
+			}
+			require.NoError(t, sonic.Unmarshal(wire, &payload))
+			require.Len(t, payload.Input, 1, "wire: %s", wire)
+			item := payload.Input[0]
+			require.Len(t, item.Content, 1, "summary not rewritten as content: %s", wire)
+			require.Equal(t, "I choose the code word ZUCCHINI-9.", item.Content[0].Text)
+			require.NotNil(t, item.Summary, "summary missing from the rewritten item: %s", wire)
+			require.Empty(t, *item.Summary)
+		})
+	}
+}
+
+// TestToOpenAIResponsesRequest_VLLMJoinsReasoningBlocks pins that vLLM receives a reasoning
+// item's text as one content block. vLLM's general reader keeps only content[0] (or
+// summary[0]), so a second thinking block or summary part never reached the model. Every
+// part is kept, in order, joined with "\n" as vLLM's own harmony reader does. Other hosts
+// read every block and keep receiving them separately.
+func TestToOpenAIResponsesRequest_VLLMJoinsReasoningBlocks(t *testing.T) {
+	blocks := func() *schemas.ResponsesMessageContent {
+		return &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{
+			{Type: schemas.ResponsesOutputMessageContentTypeReasoning, Text: schemas.Ptr("The code word begins with PAMPLE."), Signature: schemas.Ptr("sig-1")},
+			{Type: schemas.ResponsesOutputMessageContentTypeReasoning, Text: schemas.Ptr("It ends with MOUSSE-47.")},
+		}}
+	}
+	summaries := []schemas.ResponsesReasoningSummary{
+		{Type: schemas.ResponsesReasoningContentBlockTypeSummaryText, Text: "The code word begins with PAMPLE."},
+		{Type: schemas.ResponsesReasoningContentBlockTypeSummaryText, Text: "It ends with MOUSSE-47."},
+	}
+	const joined = "The code word begins with PAMPLE.\nIt ends with MOUSSE-47."
+	for _, tc := range []struct {
+		name      string
+		provider  schemas.ModelProvider
+		model     string
+		input     schemas.ResponsesMessage
+		wantTexts []string
+	}{
+		{"vllm content blocks", schemas.VLLM, "qwen3.8-27b",
+			schemas.ResponsesMessage{ResponsesReasoning: &schemas.ResponsesReasoning{Summary: []schemas.ResponsesReasoningSummary{}}, Content: blocks()},
+			[]string{joined}},
+		{"vllm summaries rewritten as content", schemas.VLLM, "qwen3.8-27b",
+			schemas.ResponsesMessage{ResponsesReasoning: &schemas.ResponsesReasoning{Summary: summaries}},
+			[]string{joined}},
+		{"other gpt-oss host keeps separate blocks", schemas.BedrockMantle, "openai.gpt-oss-120b",
+			schemas.ResponsesMessage{ResponsesReasoning: &schemas.ResponsesReasoning{Summary: []schemas.ResponsesReasoningSummary{}}, Content: blocks()},
+			[]string{"The code word begins with PAMPLE.", "It ends with MOUSSE-47."}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.input.ID = schemas.Ptr("msg_rs_1")
+			tc.input.Type = schemas.Ptr(schemas.ResponsesMessageTypeReasoning)
+			original := tc.input.Content
+			result := ToOpenAIResponsesRequest(nil, &schemas.BifrostResponsesRequest{Provider: tc.provider, Model: tc.model, Input: []schemas.ResponsesMessage{tc.input}})
+			require.NotNil(t, result)
+			require.Len(t, result.Input.OpenAIResponsesRequestInputArray, 1)
+			c := result.Input.OpenAIResponsesRequestInputArray[0].Content
+			require.NotNil(t, c)
+			var texts []string
+			for _, b := range c.ContentBlocks {
+				require.Equal(t, schemas.ResponsesOutputMessageContentTypeReasoning, b.Type)
+				require.Nil(t, b.Signature, "signatures must not reach the Responses wire")
+				texts = append(texts, *b.Text)
+			}
+			require.Equal(t, tc.wantTexts, texts)
+			if original != nil {
+				require.Len(t, original.ContentBlocks, 2, "the caller's input was mutated")
+			}
+		})
+	}
+}
+
 func TestToOpenAIResponsesRequest_NormalizesReasoningEffort(t *testing.T) {
 	// Register the custom "deepseek" provider so ParseModelString strips its prefix.
 	schemas.RegisterKnownProvider(schemas.ModelProvider("deepseek"))
