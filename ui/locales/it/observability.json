@@ -945,6 +945,9 @@
 		"copyToClipboard": "Copia negli appunti",
 		"stats": {
 			"totalExecutions": "Totale esecuzioni",
+			"executions": "Esecuzioni",
+			"ofAllExecutions": "Di tutte le chiamate ai tool MCP in questo intervallo",
+			"perExecution": "{{value}}/chiamata",
 			"successRate": "Tasso di successo",
 			"avgLatency": "Latenza media",
 			"totalCost": "Costo totale"

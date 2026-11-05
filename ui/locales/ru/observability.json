@@ -995,6 +995,9 @@
 		"copyToClipboard": "Копировать в буфер обмена",
 		"stats": {
 			"totalExecutions": "Всего выполнений",
+			"executions": "Выполнения",
+			"ofAllExecutions": "Из всех вызовов инструментов MCP за этот период",
+			"perExecution": "{{value}}/вызов",
 			"successRate": "Доля успеха",
 			"avgLatency": "Сред. задержка",
 			"totalCost": "Общая стоимость"

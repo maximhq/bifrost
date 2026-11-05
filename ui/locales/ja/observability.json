@@ -939,6 +939,9 @@
 		"copyToClipboard": "クリップボードにコピー",
 		"stats": {
 			"totalExecutions": "総処刑数",
+			"executions": "実行",
+			"ofAllExecutions": "この期間のすべての MCP ツール呼び出しのうち",
+			"perExecution": "{{value}}/呼び出し",
 			"successRate": "成功率",
 			"avgLatency": "平均遅延",
 			"totalCost": "総費用"
