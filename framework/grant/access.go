@@ -38,11 +38,40 @@ type ModelMatcher func(provider, model string, allowed []string) bool
 //
 // There is one scoping slot, not a list. A request is scoped by at most one thing at a time, and
 // composing under one mode is what keeps every answer here decidable.
+//
+// Ceilings are layers of permits that cap the caller's permits without granting anything of their
+// own. Each layer is read as one, the way the caller's permits are, and the caller's side permits
+// only what its permits and every layer permit. They bound the caller's side before the scoping
+// permit composes with it, so a scope keeps its own mode whatever caps the caller. A ceiling never
+// offers a provider candidate and never widens a key restriction; it can only take away.
 type Access struct {
-	bases   []schemas.Permit
-	scoping schemas.Permit
-	mode    CompositionMode
-	matcher ModelMatcher
+	bases    []schemas.Permit
+	ceilings [][]schemas.Permit
+	scoping  schemas.Permit
+	mode     CompositionMode
+	matcher  ModelMatcher
+}
+
+// AccessOption configures an Access beyond what every resolver supplies.
+type AccessOption func(*Access)
+
+// WithCeilings caps the caller's permits with layers of permits, outermost last. Nil permits are
+// dropped, and so is a layer left with none: a layer with nothing in it caps nothing rather than
+// refusing everything, so a resolver that found no cap for one level does not have to say so.
+func WithCeilings(layers ...[]schemas.Permit) AccessOption {
+	return func(a *Access) {
+		for _, layer := range layers {
+			held := make([]schemas.Permit, 0, len(layer))
+			for _, permit := range layer {
+				if !isNilPermit(permit) {
+					held = append(held, permit)
+				}
+			}
+			if len(held) > 0 {
+				a.ceilings = append(a.ceilings, held)
+			}
+		}
+	}
 }
 
 // NewAccess folds the permits the caller holds together with the permit scoping this request,
@@ -51,8 +80,9 @@ type Access struct {
 // A request composes under exactly one mode. Choosing it belongs to whoever resolved the permits:
 // that layer knows what it asked and what answered. Passing no scoping permit leaves the mode
 // irrelevant and the answer is the caller's permits alone. Nil entries in bases are dropped, so a
-// resolver that found nothing for one source does not have to say so twice.
-func NewAccess(bases []schemas.Permit, scoping schemas.Permit, mode CompositionMode, matcher ModelMatcher) *Access {
+// resolver that found nothing for one source does not have to say so twice. Ceilings, when a
+// resolver has any, are passed as an option (see WithCeilings).
+func NewAccess(bases []schemas.Permit, scoping schemas.Permit, mode CompositionMode, matcher ModelMatcher, opts ...AccessOption) *Access {
 	held := make([]schemas.Permit, 0, len(bases))
 	for _, base := range bases {
 		if !isNilPermit(base) {
@@ -62,12 +92,18 @@ func NewAccess(bases []schemas.Permit, scoping schemas.Permit, mode CompositionM
 	if isNilPermit(scoping) {
 		scoping = nil
 	}
-	return &Access{
+	access := &Access{
 		bases:   held,
 		scoping: scoping,
 		mode:    mode,
 		matcher: matcher,
 	}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(access)
+		}
+	}
+	return access
 }
 
 // Bases implements schemas.Access.
@@ -76,6 +112,18 @@ func (a *Access) Bases() []schemas.Permit {
 		return nil
 	}
 	return slices.Clone(a.bases)
+}
+
+// Ceilings implements schemas.Access.
+func (a *Access) Ceilings() [][]schemas.Permit {
+	if a == nil || len(a.ceilings) == 0 {
+		return nil
+	}
+	layers := make([][]schemas.Permit, 0, len(a.ceilings))
+	for _, layer := range a.ceilings {
+		layers = append(layers, slices.Clone(layer))
+	}
+	return layers
 }
 
 // Scoping implements schemas.Access.
@@ -104,7 +152,7 @@ func (a *Access) IsProviderAllowed(provider string) bool {
 	if a == nil {
 		return false
 	}
-	base := a.anyBase(func(p schemas.Permit) bool { return allowsProvider(p, provider) })
+	base := a.callerAllows(func(p schemas.Permit) bool { return allowsProvider(p, provider) })
 	if a.scoping == nil {
 		return base
 	}
@@ -116,7 +164,7 @@ func (a *Access) IsModelAllowed(provider string, model string) bool {
 	if a == nil {
 		return false
 	}
-	base := a.anyBase(func(p schemas.Permit) bool { return a.permitAllowsModel(p, provider, model) })
+	base := a.callerAllows(func(p schemas.Permit) bool { return a.permitAllowsModel(p, provider, model) })
 	if a.scoping == nil {
 		return base
 	}
@@ -128,7 +176,7 @@ func (a *Access) AllowsEveryModel(provider string) bool {
 	if a == nil {
 		return false
 	}
-	base := a.anyBase(func(p schemas.Permit) bool { return permitAllowsEveryModel(p, provider) })
+	base := a.callerAllows(func(p schemas.Permit) bool { return permitAllowsEveryModel(p, provider) })
 	if a.scoping == nil {
 		return base
 	}
@@ -168,7 +216,7 @@ func (a *Access) IsMCPToolAllowed(toolPattern string) bool {
 	if a == nil || toolPattern == "" {
 		return false
 	}
-	base := a.anyBase(func(p schemas.Permit) bool { return allowsTool(p, toolPattern) })
+	base := a.callerAllows(func(p schemas.Permit) bool { return allowsTool(p, toolPattern) })
 	if a.scoping == nil {
 		return base
 	}
@@ -180,7 +228,7 @@ func (a *Access) IsAgentAllowed(agentName string) bool {
 	if a == nil || agentName == "" {
 		return false
 	}
-	base := a.anyBase(func(p schemas.Permit) bool { return allowsAgent(p, agentName) })
+	base := a.callerAllows(func(p schemas.Permit) bool { return allowsAgent(p, agentName) })
 	if a.scoping == nil {
 		return base
 	}
@@ -192,7 +240,7 @@ func (a *Access) IsRelayAllowed(endpointName string) bool {
 	if a == nil || endpointName == "" {
 		return false
 	}
-	base := a.anyBase(func(p schemas.Permit) bool { return allowsRelay(p, endpointName) })
+	base := a.callerAllows(func(p schemas.Permit) bool { return allowsRelay(p, endpointName) })
 	if a.scoping == nil {
 		return base
 	}
@@ -205,9 +253,23 @@ func (a *Access) PermitsForModel(provider string, model string) []schemas.Permit
 		return nil
 	}
 	permits := make([]schemas.Permit, 0, len(a.bases)+1)
-	for _, base := range a.bases {
-		if a.permitAllowsModel(base, provider, model) {
-			permits = append(permits, base)
+	// A caller side a ceiling refuses is not what the request proceeds on, so none of it is named:
+	// only a union scope can have admitted the pair, and the scope answers for it alone.
+	allowsPair := func(p schemas.Permit) bool { return a.permitAllowsModel(p, provider, model) }
+	if a.ceilingsAllow(allowsPair) {
+		for _, base := range a.bases {
+			if allowsPair(base) {
+				permits = append(permits, base)
+			}
+		}
+		// A ceiling the request proceeds under answers for it too: its holder's money for the pair is
+		// spent by everything it caps, so it is named alongside the caller's permits.
+		for _, layer := range a.ceilings {
+			for _, permit := range layer {
+				if allowsPair(permit) {
+					permits = append(permits, permit)
+				}
+			}
 		}
 	}
 	if a.scoping != nil {
@@ -234,7 +296,15 @@ func (a *Access) KeysForModel(provider string, model string) (keyIDs []string, r
 		// The request cannot proceed on this provider, so there is no key restriction to report.
 		return nil, false
 	}
-	callerKeys, callerHolds := a.unionKeysHeldBy(a.bases, provider, model)
+	var callerKeys schemas.WhiteList
+	callerHolds := false
+	// A caller side that does not permit the pair - none of its permits does, or a ceiling refuses
+	// it - is not what the request proceeds on: only a union scope can have admitted it, and then the
+	// scope's restriction is the whole of it.
+	if a.callerAllows(func(p schemas.Permit) bool { return a.permitAllowsModel(p, provider, model) }) {
+		callerKeys, callerHolds = a.unionKeysHeldBy(a.bases, provider, model)
+		callerKeys, callerHolds = a.capKeys(callerKeys, callerHolds, provider, model)
+	}
 	var scopeKeys schemas.WhiteList
 	scopeHolds := false
 	if a.scoping != nil {
@@ -264,6 +334,25 @@ func (a *Access) KeysForModel(provider string, model string) (keyIDs []string, r
 	keyIDs = make([]string, 0, len(granted))
 	keyIDs = append(keyIDs, granted...)
 	return keyIDs, true
+}
+
+// capKeys narrows the caller's key restriction by every ceiling layer that restricts the provider's
+// keys for the pair. A layer holding no provider permit for the provider says nothing about its keys
+// and leaves the restriction as it was; a layer that does hold one intersects with it, and becomes
+// the whole restriction when the caller's permits held none.
+func (a *Access) capKeys(keys schemas.WhiteList, holds bool, provider string, model string) (schemas.WhiteList, bool) {
+	for _, layer := range a.ceilings {
+		layerKeys, layerHolds := a.unionKeysHeldBy(layer, provider, model)
+		if !layerHolds {
+			continue
+		}
+		if !holds {
+			keys, holds = layerKeys, true
+			continue
+		}
+		keys = composeKeyIDs(keys, layerKeys, Intersect)
+	}
+	return keys, holds
 }
 
 // unionKeysHeldBy is the union of the key restrictions that permits which authorize model on
@@ -313,6 +402,11 @@ func (a *Access) ProvidersForModel(model string) []schemas.ProviderCandidate {
 		if !a.permitsModel(pp, model) {
 			return false
 		}
+		// And, for the caller's permits, whether every ceiling permits it: a capped-out candidate can
+		// only have been admitted by a union scope, which then serves the provider itself.
+		if isBase && !a.ceilingsAllow(func(p schemas.Permit) bool { return a.permitAllowsModel(p, provider, model) }) {
+			return false
+		}
 		// Weight does not compose, because it is a preference rather than a permission and there is
 		// no meaningful intersection of two preferences. Instead the scoping permit wins where it
 		// expresses one: it is the more specific context, so a scope that wants a provider preferred
@@ -334,6 +428,11 @@ func (a *Access) ProvidersForModel(model string) []schemas.ProviderCandidate {
 		// candidate the keys are this provider permit's own; KeysForModel is where the caller's
 		// permits are read as one.
 		selectedKeyIDs := pp.KeyIDs
+		// The caller's candidates are capped by every ceiling layer that restricts the provider's
+		// keys. The verdict above already established each layer permits the pair.
+		if isBase {
+			selectedKeyIDs = a.capCandidateKeys(selectedKeyIDs, provider, model)
+		}
 		if isBase && a.scoping != nil && a.permitAllowsModel(a.scoping, provider, model) {
 			if scoped := providerPermitFor(a.scoping, provider); scoped != nil {
 				selectedKeyIDs = composeKeyIDs(pp.KeyIDs, scoped.KeyIDs, a.mode)
@@ -353,6 +452,17 @@ func (a *Access) ProvidersForModel(model string) []schemas.ProviderCandidate {
 		return nil
 	}
 	return candidates
+}
+
+// capCandidateKeys narrows one candidate's own keys by every ceiling layer holding a key restriction
+// for the provider, as capKeys does for the caller's permits read as one.
+func (a *Access) capCandidateKeys(keyIDs schemas.WhiteList, provider string, model string) schemas.WhiteList {
+	for _, layer := range a.ceilings {
+		if layerKeys, layerHolds := a.unionKeysHeldBy(layer, provider, model); layerHolds {
+			keyIDs = composeKeyIDs(keyIDs, layerKeys, Intersect)
+		}
+	}
+	return keyIDs
 }
 
 // GrantedProvidersForModel implements schemas.Access. Because this gate cannot ask ProvidersForModel
@@ -375,6 +485,11 @@ func (a *Access) GrantedProvidersForModel(model string) []string {
 			return true
 		}
 		if !providerPermitAllowsModel(pp, model) {
+			return false
+		}
+		// Every ceiling caps the caller's permits, and only theirs: a provider gained through a union
+		// scope is the scope's grant.
+		if isBase && !a.ceilingsAllow(func(p schemas.Permit) bool { return allowsModelByName(p, pp.Provider, model) }) {
 			return false
 		}
 		if intersecting {
@@ -451,6 +566,9 @@ func (a *Access) MCPToolIncludeList() []string {
 		}
 	}
 	base := merged.list()
+	for _, layer := range a.ceilings {
+		base = intersectMCPEntries(base, layer, layerMCPEntries(layer))
+	}
 	if !a.IsScoped() {
 		return base
 	}
@@ -514,40 +632,68 @@ func (a *Access) composeMCPEntries(base, scoped []string) []string {
 		}
 		return merged.list()
 	case Intersect:
-		// A wildcard is passed through only when both sides hold one, because downstream a
-		// "<client>-*" entry reads as every tool of that client. Which side carries the wildcard
-		// decides how the other is consulted, and this is why narrowing needs the permit and not
-		// just its entries: an unrestricted client expands to a bare "<client>-*", so testing a
-		// specific entry for membership in that expansion would drop every tool the scoping permit
-		// in fact permits. The permit is asked instead. In the other direction there is nothing to
-		// ask: a wildcard has to be replaced by the scoping permit's specific entries for the
-		// client, which only the expansion lists.
-		scopedSet := make(map[string]struct{}, len(scoped))
-		for _, entry := range scoped {
-			scopedSet[entry] = struct{}{}
-		}
-		kept := newUniqueEntries(len(base))
-		for _, entry := range base {
-			clientName, isWildcard := strings.CutSuffix(entry, "-"+Wildcard)
-			if !isWildcard {
-				if allowsTool(a.scoping, entry) {
-					kept.add(entry)
-				}
-				continue
-			}
-			if _, unrestrictedOnBothSides := scopedSet[entry]; unrestrictedOnBothSides {
-				kept.add(entry)
-				continue
-			}
-			for _, scopedEntry := range scoped {
-				if strings.HasPrefix(scopedEntry, clientName+"-") {
-					kept.add(scopedEntry)
-				}
-			}
-		}
-		return kept.list()
+		return intersectMCPEntries(base, []schemas.Permit{a.scoping}, scoped)
 	}
 	return []string{}
+}
+
+// intersectMCPEntries keeps what both the caller's tool patterns and a set of narrowing permits,
+// read as one, permit. scoped has to be those permits' own expansion.
+//
+// A wildcard is passed through only when both sides hold one, because downstream a "<client>-*"
+// entry reads as every tool of that client. Which side carries the wildcard decides how the other
+// is consulted, and this is why narrowing needs the permits and not just their entries: an
+// unrestricted client expands to a bare "<client>-*", so testing a specific entry for membership in
+// that expansion would drop every tool the narrowing permits in fact permit. The permits are asked
+// instead. In the other direction there is nothing to ask: a wildcard has to be replaced by the
+// narrowing side's specific entries for the client, which only the expansion lists.
+func intersectMCPEntries(base []string, narrowing []schemas.Permit, scoped []string) []string {
+	scopedSet := make(map[string]struct{}, len(scoped))
+	for _, entry := range scoped {
+		scopedSet[entry] = struct{}{}
+	}
+	kept := newUniqueEntries(len(base))
+	for _, entry := range base {
+		clientName, isWildcard := strings.CutSuffix(entry, "-"+Wildcard)
+		if !isWildcard {
+			if anyPermitAllowsTool(narrowing, entry) {
+				kept.add(entry)
+			}
+			continue
+		}
+		if _, unrestrictedOnBothSides := scopedSet[entry]; unrestrictedOnBothSides {
+			kept.add(entry)
+			continue
+		}
+		for _, scopedEntry := range scoped {
+			if strings.HasPrefix(scopedEntry, clientName+"-") {
+				kept.add(scopedEntry)
+			}
+		}
+	}
+	return kept.list()
+}
+
+// anyPermitAllowsTool reports whether any of permits permits toolPattern, reading them as one.
+func anyPermitAllowsTool(permits []schemas.Permit, toolPattern string) bool {
+	for _, permit := range permits {
+		if allowsTool(permit, toolPattern) {
+			return true
+		}
+	}
+	return false
+}
+
+// layerMCPEntries merges the tool patterns of a ceiling layer's permits in order, the way the
+// caller's permits are merged: a layer is read as one permit.
+func layerMCPEntries(layer []schemas.Permit) []string {
+	merged := newUniqueEntries(0)
+	for _, permit := range layer {
+		for _, entry := range mcpEntries(permit) {
+			merged.add(entry)
+		}
+	}
+	return merged.list()
 }
 
 // DeniedPermitsForModel implements schemas.Access.
@@ -590,11 +736,22 @@ func (a *Access) DeniedPermitsForMCPTool(toolPattern string) []schemas.Permit {
 }
 
 // deniedBy identifies which permits refused, given a verdict per permit.
+//
+// A ceiling refusing what the caller's permits allow is named in their place: it alone stood in the
+// way on the caller's side. Every layer that refused is named, outermost last.
 func (a *Access) deniedBy(permits func(schemas.Permit) bool) []schemas.Permit {
 	baseAllows := a.anyBase(permits)
+	var refusingCeilings []schemas.Permit
+	if baseAllows {
+		refusingCeilings = a.refusingCeilings(permits)
+		baseAllows = len(refusingCeilings) == 0
+	}
 	if a.scoping == nil {
 		if baseAllows {
 			return nil
+		}
+		if len(refusingCeilings) > 0 {
+			return refusingCeilings
 		}
 		return a.refusingBases()
 	}
@@ -605,7 +762,10 @@ func (a *Access) deniedBy(permits func(schemas.Permit) bool) []schemas.Permit {
 	if baseAllows {
 		return []schemas.Permit{a.scoping}
 	}
-	refused := a.refusingBases()
+	refused := refusingCeilings
+	if len(refused) == 0 {
+		refused = a.refusingBases()
+	}
 	if a.mode == Union && !scopingAllows {
 		refused = append(refused, a.scoping)
 	}
@@ -619,6 +779,45 @@ func (a *Access) refusingBases() []schemas.Permit {
 		return nil
 	}
 	return slices.Clone(a.bases)
+}
+
+// refusingCeilings is every permit of every ceiling layer that none of whose permits satisfies
+// permits. Nil when every layer allows.
+func (a *Access) refusingCeilings(permits func(schemas.Permit) bool) []schemas.Permit {
+	var refused []schemas.Permit
+	for _, layer := range a.ceilings {
+		if !anyPermit(layer, permits) {
+			refused = append(refused, layer...)
+		}
+	}
+	return refused
+}
+
+// callerAllows reports whether the caller's side satisfies permits: some permit the caller holds
+// does, and every ceiling layer allows it too.
+func (a *Access) callerAllows(permits func(schemas.Permit) bool) bool {
+	return a.anyBase(permits) && a.ceilingsAllow(permits)
+}
+
+// ceilingsAllow reports whether every ceiling layer has a permit satisfying permits. True when
+// nothing caps the caller.
+func (a *Access) ceilingsAllow(permits func(schemas.Permit) bool) bool {
+	for _, layer := range a.ceilings {
+		if !anyPermit(layer, permits) {
+			return false
+		}
+	}
+	return true
+}
+
+// anyPermit reports whether any permit in layer satisfies permits.
+func anyPermit(layer []schemas.Permit, permits func(schemas.Permit) bool) bool {
+	for _, permit := range layer {
+		if permits(permit) {
+			return true
+		}
+	}
+	return false
 }
 
 // anyBase reports whether any of the caller's permits satisfies permits. The caller's permits are
