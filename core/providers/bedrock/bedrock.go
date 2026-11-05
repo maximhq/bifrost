@@ -1349,6 +1349,9 @@ func (provider *BedrockProvider) ChatCompletion(ctx *schemas.BifrostContext, key
 	if parseTracer != nil {
 		parseTracer.EndSpan(parseHandle, schemas.SpanStatusOk, "")
 	}
+	if IsDSMLLeakModel(ctx, request.Model) {
+		stripDSMLLeakConverse(bedrockResponse)
+	}
 
 	// Convert using the new response converter
 	convTracer, convHandle := providerUtils.StartResponseConvertorSpan(ctx)
@@ -1583,6 +1586,7 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 		}()
 		var finishReason *string
 		var progress converseStreamProgress
+		dsml := NewDSMLStreamFilter(ctx, request.Model)
 		chunkIndex := 0
 
 		// Process AWS Event Stream format using proper decoder
@@ -1603,6 +1607,37 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 		streamState := NewBedrockStreamStateWithContext(ctx)
 		var isAccumulatingStructuredOutput bool
 		var structuredOutputBuilder strings.Builder
+
+		// sendEvent converts one Converse event and sends it; false means an error was sent.
+		sendEvent := func(ev *BedrockStreamEvent, payload []byte) bool {
+			// Per-event mapping -> "convertor" (Convertor) stream phase.
+			convStart := time.Now()
+			response, bifrostErr, _ := ev.ToBifrostChatCompletionStream(streamState)
+			schemas.AddStreamConvert(ctx, time.Since(convStart))
+			if bifrostErr != nil {
+				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+				providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, provider.logger, postHookSpanFinalizer)
+				return false
+			}
+			if response != nil {
+				response.ID = id
+				response.Model = request.Model
+				response.ExtraFields = schemas.BifrostResponseExtraFields{
+					ChunkIndex: chunkIndex,
+					Latency:    time.Since(lastChunkTime).Milliseconds(),
+				}
+				chunkIndex++
+				lastChunkTime = time.Now()
+
+				if payload != nil && providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
+					response.ExtraFields.RawResponse = string(payload)
+					response.ExtraFields.RawResponseFormat = schemas.RawResponseFormatBedrockConverseStreamEvent
+				}
+
+				providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, response, nil, nil, nil, nil), responseChan, postHookSpanFinalizer)
+			}
+			return true
+		}
 
 		for {
 			if ctx.Err() != nil {
@@ -1667,6 +1702,12 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 				}
 
 				progress.observe(message, &streamEvent)
+				// Held text the next event showed was the answer goes out first; structured output drops text anyway.
+				if release := dsml.filterConverseEvent(&streamEvent); release != nil && structuredOutputToolName == "" {
+					if !sendEvent(release, nil) {
+						return
+					}
+				}
 
 				if streamEvent.Usage != nil {
 					// Accumulate usage information instead of overwriting
@@ -1782,31 +1823,8 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 					}
 				}
 
-				// Per-event mapping -> "convertor" (Convertor) stream phase.
-				convStart := time.Now()
-				response, bifrostErr, _ := streamEvent.ToBifrostChatCompletionStream(streamState)
-				schemas.AddStreamConvert(ctx, time.Since(convStart))
-				if bifrostErr != nil {
-					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, provider.logger, postHookSpanFinalizer)
+				if !sendEvent(&streamEvent, message.Payload) {
 					return
-				}
-				if response != nil {
-					response.ID = id
-					response.Model = request.Model
-					response.ExtraFields = schemas.BifrostResponseExtraFields{
-						ChunkIndex: chunkIndex,
-						Latency:    time.Since(lastChunkTime).Milliseconds(),
-					}
-					chunkIndex++
-					lastChunkTime = time.Now()
-
-					if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
-						response.ExtraFields.RawResponse = string(message.Payload)
-						response.ExtraFields.RawResponseFormat = schemas.RawResponseFormatBedrockConverseStreamEvent
-					}
-
-					providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, response, nil, nil, nil, nil), responseChan, postHookSpanFinalizer)
 				}
 			}
 		}
@@ -1885,6 +1903,9 @@ func (provider *BedrockProvider) Responses(ctx *schemas.BifrostContext, key sche
 	}
 	if parseTracer != nil {
 		parseTracer.EndSpan(parseHandle, schemas.SpanStatusOk, "")
+	}
+	if IsDSMLLeakModel(ctx, request.Model) {
+		stripDSMLLeakConverse(bedrockResponse)
 	}
 
 	// Convert using the new response converter
@@ -2015,6 +2036,7 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 
 		var streamTrace *BedrockConverseTrace
 		var progress converseStreamProgress
+		dsml := NewDSMLStreamFilter(ctx, request.Model)
 		chunkIndex := 0
 
 		// Create stream state for stateful conversions (used by Converse API path)
@@ -2035,6 +2057,40 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 		lastChunkTime := startTime
 		decoder := eventstream.NewDecoder()
 		payloadBuf := make([]byte, 0, 1024*1024) // 1MB payload buffer
+
+		// sendEvent converts one Converse event and sends it; false means an error was sent.
+		sendEvent := func(ev *BedrockStreamEvent, payload []byte) bool {
+			// Per-event mapping -> "convertor" (Convertor) stream phase.
+			convStart := time.Now()
+			responses, bifrostErr, _ := ev.ToBifrostResponsesStream(chunkIndex, streamState)
+			schemas.AddStreamConvert(ctx, time.Since(convStart))
+			if bifrostErr != nil {
+				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+				providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, provider.logger, postHookSpanFinalizer)
+				return false
+			}
+			// Attach the upstream event to exactly one response: the one streaming its text or arguments.
+			rawIdx := providerUtils.ResponsesStreamRawIndex(responses, len(responses)-1)
+			for i, response := range responses {
+				if response != nil {
+					response.ExtraFields = schemas.BifrostResponseExtraFields{
+						ChunkIndex: chunkIndex,
+						Latency:    time.Since(lastChunkTime).Milliseconds(),
+					}
+					chunkIndex++
+					lastChunkTime = time.Now()
+
+					if payload != nil && providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) && i == rawIdx {
+						response.ExtraFields.RawResponse = string(payload)
+						response.ExtraFields.RawResponseFormat = schemas.RawResponseFormatBedrockConverseStreamEvent
+					}
+
+					providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, response, nil, nil, nil), responseChan, postHookSpanFinalizer)
+				}
+			}
+			return true
+		}
+
 		for {
 			// If context was cancelled/timed out, let defer handle it
 			if ctx.Err() != nil {
@@ -2123,6 +2179,12 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 				}
 
 				progress.observe(message, &streamEvent)
+				// Held text the next event showed was the answer goes out first; structured output drops text anyway.
+				if release := dsml.filterConverseEvent(&streamEvent); release != nil && structuredOutputToolName == "" {
+					if !sendEvent(release, nil) {
+						return
+					}
+				}
 
 				if streamEvent.Trace != nil {
 					streamTrace = streamEvent.Trace
@@ -2185,33 +2247,8 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 					}
 				}
 
-				// Per-event mapping -> "convertor" (Convertor) stream phase.
-				convStart := time.Now()
-				responses, bifrostErr, _ := streamEvent.ToBifrostResponsesStream(chunkIndex, streamState)
-				schemas.AddStreamConvert(ctx, time.Since(convStart))
-				if bifrostErr != nil {
-					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, provider.logger, postHookSpanFinalizer)
+				if !sendEvent(&streamEvent, message.Payload) {
 					return
-				}
-				// Attach the upstream event to exactly one response: the one streaming its text or arguments.
-				rawIdx := providerUtils.ResponsesStreamRawIndex(responses, len(responses)-1)
-				for i, response := range responses {
-					if response != nil {
-						response.ExtraFields = schemas.BifrostResponseExtraFields{
-							ChunkIndex: chunkIndex,
-							Latency:    time.Since(lastChunkTime).Milliseconds(),
-						}
-						chunkIndex++
-						lastChunkTime = time.Now()
-
-						if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) && i == rawIdx {
-							response.ExtraFields.RawResponse = string(message.Payload)
-							response.ExtraFields.RawResponseFormat = schemas.RawResponseFormatBedrockConverseStreamEvent
-						}
-
-						providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, response, nil, nil, nil), responseChan, postHookSpanFinalizer)
-					}
 				}
 			}
 		}

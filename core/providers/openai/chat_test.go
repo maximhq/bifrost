@@ -17,6 +17,7 @@ import (
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
 
 // Issue #8749: zero counts must survive the upstream parser and wire encoding,
@@ -2560,6 +2561,51 @@ func TestToOpenAIChatRequest_DoesNotEmitReasoningType(t *testing.T) {
 		body, err := sonic.Marshal(out)
 		require.NoError(t, err)
 		require.NotContains(t, string(body), "between_tools", "%s: reasoning.type leaked: %s", provider, body)
+	}
+}
+
+// Chat Completions rejects both the block and request-level ttl on OpenAI and Azure
+// (live 400); OpenRouter accepts it and bills the 12h rate.
+func TestToOpenAIChatRequest_CacheBreakpointTTL(t *testing.T) {
+	msgsJSON := `[{"role":"system","content":[{"type":"text","text":"STABLE","prompt_cache_breakpoint":{"mode":"explicit","ttl":"12h"}}]},` +
+		`{"role":"user","content":[{"type":"image_url","image_url":{"url":"https://example.com/a.png"},"prompt_cache_breakpoint":{"mode":"explicit"}},{"type":"text","text":"go"}]}]`
+	for _, tc := range []struct {
+		name     string
+		provider schemas.ModelProvider
+		model    string
+		wantTTL  bool
+	}{
+		{"openai", schemas.OpenAI, "gpt-5.6-sol", false},
+		{"azure", schemas.Azure, "gpt-6.1-luna", false},
+		{"openrouter", schemas.OpenRouter, "openai/gpt-5.6-luna", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var msgs []schemas.ChatMessage
+			require.NoError(t, sonic.Unmarshal([]byte(msgsJSON), &msgs))
+			ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+			defer cancel()
+			opts := &schemas.PromptCacheOptions{Mode: schemas.Ptr("implicit"), TTL: schemas.Ptr("12h")}
+			out := ToOpenAIChatRequest(ctx, &schemas.BifrostChatRequest{Provider: tc.provider, Model: tc.model, Input: msgs, Params: &schemas.ChatParameters{PromptCacheOptions: opts}})
+			require.NotNil(t, out)
+			b, err := out.MarshalJSON()
+			require.NoError(t, err)
+			raw := string(b)
+			bp := gjson.Get(raw, "messages.0.content.0.prompt_cache_breakpoint")
+			require.Equal(t, "explicit", bp.Get("mode").String(), raw)
+			if tc.wantTTL {
+				require.Equal(t, "12h", bp.Get("ttl").String(), raw)
+			} else {
+				require.False(t, bp.Get("ttl").Exists(), raw)
+			}
+			require.False(t, gjson.Get(raw, "messages.1.content.0.prompt_cache_breakpoint.ttl").Exists(), "no ttl must be invented; raw=%s", raw)
+			require.NotNil(t, msgs[0].Content.ContentBlocks[0].PromptCacheBreakpoint.TTL, "caller input must not be mutated")
+			// Request-level ttl: Responses accepts "12h", Chat rejects it (live 400 "Supported values are: '30m'").
+			if tc.provider != schemas.OpenRouter { // OpenRouter never receives prompt_cache_options
+				require.Equal(t, "implicit", gjson.Get(raw, "prompt_cache_options.mode").String(), raw)
+				require.False(t, gjson.Get(raw, "prompt_cache_options.ttl").Exists(), raw)
+			}
+			require.NotNil(t, opts.TTL, "caller params must not be mutated")
+		})
 	}
 }
 
