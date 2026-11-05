@@ -1986,19 +1986,22 @@
 					"uncovered": "Sin coincidencia ({{n}})",
 					"weak": "Coincidencia débil ({{n}})",
 					"misrouted": "Otro nivel ({{n}})",
-					"mixed": "Niveles mixtos ({{n}})"
+					"mixed": "Niveles mixtos ({{n}})",
+					"template": "Plantilla de prompt ({{n}})"
 				},
 				"category": {
 					"uncovered": "Sin coincidencia",
 					"weak": "Coincidencia débil",
 					"misrouted": "Otro nivel",
-					"mixed": "Niveles mixtos"
+					"mixed": "Niveles mixtos",
+					"template": "Plantilla de prompt"
 				},
 				"categoryDescription": {
 					"uncovered": "La mayoría de estas solicitudes no coinciden lo suficiente con ninguna frase, así que reciben el nivel predeterminado.",
 					"weak": "Estas solicitudes llegan al nivel sugerido, pero solo mediante coincidencias débiles.",
 					"misrouted": "Estas solicitudes coinciden claramente con frases de un nivel distinto del sugerido.",
-					"mixed": "Actualmente, solicitudes similares se reparten entre varios niveles."
+					"mixed": "Actualmente, solicitudes similares se reparten entre varios niveles.",
+					"template": "Estas solicitudes son una misma plantilla de prompt con distinto contenido, así que las frases se redactan a partir del texto fijo de la plantilla."
 				},
 				"lastDays_one": "Último {{count}} día",
 				"lastDays_other": "Últimos {{count}} días",

@@ -231,3 +231,66 @@ func TestClustererAssignCountsWithoutFormingClusters(t *testing.T) {
 		t.Errorf("assigned requests count toward today's routing: %v", got[0].CurrentRouting())
 	}
 }
+
+// A cluster holding two request types that k-means put together comes apart
+// when both halves are big enough and their centres are further apart than
+// the join threshold; one type, or a half too small to suggest for, stays.
+func TestClustererSplitsTwoTypesInOneCluster(t *testing.T) {
+	rng := rand.New(rand.NewSource(51))
+	c := NewClusterer(ClusterOptions{MinRequests: 6}, nil, 0.4)
+	mixed := c.newCluster(c.prepare(append(typeRequests("a", 0, 8, rng), typeRequests("b", 1, 7, rng)...)))
+	got := c.splitClusters([]*Cluster{mixed})
+	if len(got) != 2 || got[0].Weight+got[1].Weight != 15 {
+		t.Fatalf("want the two types apart, got %d clusters", len(got))
+	}
+	for _, cl := range got {
+		first := cl.Members[0].ID[:1]
+		for _, m := range cl.Members {
+			if m.ID[:1] != first {
+				t.Fatalf("a split half mixes %s and %s", first, m.ID)
+			}
+		}
+	}
+
+	one := c.newCluster(c.prepare(typeRequests("a", 0, 15, rng)))
+	if got := c.splitClusters([]*Cluster{one}); len(got) != 1 {
+		t.Errorf("one type split into %d", len(got))
+	}
+	lopsided := c.newCluster(c.prepare(append(typeRequests("a", 0, 12, rng), typeRequests("b", 1, 3, rng)...)))
+	if got := c.splitClusters([]*Cluster{lopsided}); len(got) != 1 {
+		t.Errorf("a half under MinRequests should stay, got %d clusters", len(got))
+	}
+	off := NewClusterer(ClusterOptions{MinRequests: 6, SplitSimilarity: -1}, nil, 0.4)
+	if got := off.splitClusters([]*Cluster{mixed}); len(got) != 1 {
+		t.Errorf("a negative SplitSimilarity disables splitting")
+	}
+}
+
+// Fragments of one small type, each too small to keep, are merged into a
+// cluster of their own instead of being dropped; a fragment is never merged
+// into a cluster already big enough to keep.
+func TestClustererRescuesFragmentsOfSmallTypes(t *testing.T) {
+	rng := rand.New(rand.NewSource(52))
+	c := NewClusterer(ClusterOptions{MinRequests: 6}, nil, 0.4)
+	small := typeRequests("s", 3, 9, rng)
+	frags := []*Cluster{
+		c.newCluster(c.prepare(small[:3])),
+		c.newCluster(c.prepare(small[3:6])),
+		c.newCluster(c.prepare(small[6:])),
+	}
+	big := c.newCluster(c.prepare(typeRequests("b", 3, 10, rng)))
+	got := c.rescueSmall(append([]*Cluster{big}, frags...))
+	if len(got) != 2 {
+		t.Fatalf("want the big cluster and one rescued cluster, got %d", len(got))
+	}
+	if got[0] != big || big.Weight != 10 {
+		t.Fatalf("the big cluster must be left alone (weight %d)", big.Weight)
+	}
+	if got[1].Weight != 9 {
+		t.Fatalf("rescued cluster weight %d, want the 9 fragment requests", got[1].Weight)
+	}
+	off := NewClusterer(ClusterOptions{MinRequests: 6, RescueSimilarity: -1}, nil, 0.4)
+	if got := off.rescueSmall(append([]*Cluster{big}, frags...)); len(got) != 4 {
+		t.Errorf("a negative RescueSimilarity disables rescue, got %d", len(got))
+	}
+}

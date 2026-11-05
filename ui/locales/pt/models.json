@@ -1986,19 +1986,22 @@
 					"uncovered": "Sem correspondência ({{n}})",
 					"weak": "Correspondência fraca ({{n}})",
 					"misrouted": "Nível diferente ({{n}})",
-					"mixed": "Níveis mistos ({{n}})"
+					"mixed": "Níveis mistos ({{n}})",
+					"template": "Modelo de prompt ({{n}})"
 				},
 				"category": {
 					"uncovered": "Sem correspondência",
 					"weak": "Correspondência fraca",
 					"misrouted": "Nível diferente",
-					"mixed": "Níveis mistos"
+					"mixed": "Níveis mistos",
+					"template": "Modelo de prompt"
 				},
 				"categoryDescription": {
 					"uncovered": "A maioria destes pedidos não corresponde suficientemente a nenhuma frase, pelo que recebe o nível predefinido.",
 					"weak": "Estes pedidos chegam ao nível sugerido, mas apenas através de correspondências fracas.",
 					"misrouted": "Estes pedidos correspondem claramente a frases de um nível diferente do sugerido.",
-					"mixed": "Atualmente, pedidos semelhantes dividem-se por vários níveis."
+					"mixed": "Atualmente, pedidos semelhantes dividem-se por vários níveis.",
+					"template": "Estes pedidos são um mesmo modelo de prompt enviado com conteúdos diferentes, por isso as frases são escritas a partir do texto fixo do modelo."
 				},
 				"lastDays_one": "Último {{count}} dia",
 				"lastDays_other": "Últimos {{count}} dias",

@@ -1986,19 +1986,22 @@
 					"uncovered": "Aucune correspondance ({{n}})",
 					"weak": "Correspondance faible ({{n}})",
 					"misrouted": "Autre niveau ({{n}})",
-					"mixed": "Niveaux mixtes ({{n}})"
+					"mixed": "Niveaux mixtes ({{n}})",
+					"template": "Modèle de prompt ({{n}})"
 				},
 				"category": {
 					"uncovered": "Aucune correspondance",
 					"weak": "Correspondance faible",
 					"misrouted": "Autre niveau",
-					"mixed": "Niveaux mixtes"
+					"mixed": "Niveaux mixtes",
+					"template": "Modèle de prompt"
 				},
 				"categoryDescription": {
 					"uncovered": "La plupart de ces requêtes ne correspondent suffisamment à aucune phrase et reçoivent donc le niveau par défaut.",
 					"weak": "Ces requêtes atteignent le niveau suggéré, mais uniquement par des correspondances faibles.",
 					"misrouted": "Ces requêtes correspondent nettement à des phrases d’un autre niveau que celui suggéré.",
-					"mixed": "Des requêtes similaires se répartissent aujourd’hui sur plusieurs niveaux."
+					"mixed": "Des requêtes similaires se répartissent aujourd’hui sur plusieurs niveaux.",
+					"template": "Ces requêtes sont un même modèle de prompt envoyé avec des contenus différents ; les phrases reprennent donc le texte fixe du modèle."
 				},
 				"lastDays_one": "{{count}} dernier jour",
 				"lastDays_other": "{{count}} derniers jours",
