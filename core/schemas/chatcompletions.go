@@ -1270,19 +1270,17 @@ func (cm *ChatMessage) UnmarshalJSON(data []byte) error {
 // object (the shape OpenAI-compatible SDKs emit) where every provider converter
 // reads it: the last content block, promoting string content to a single text
 // block, or the last tool call when the message has no content. A block or tool
-// call that already carries its own marker keeps it. Empty string content is left
-// alone, since providers reject a breakpoint on an empty text block. Content and
-// tool calls are copied before they are changed, so values shared with the caller
-// are never modified.
+// call that already carries its own marker keeps it. Empty content ("" or []) is
+// left as sent and counts as no content, since providers reject a breakpoint on an
+// empty text block and the AI SDK sends a tool-call-only assistant turn with
+// content "". Content and tool calls are copied before they are changed, so values
+// shared with the caller are never modified.
 func (cm *ChatMessage) AttachMessageCacheControl(marker *CacheControl) {
 	if marker == nil {
 		return
 	}
 	if cm.Content != nil {
-		if cm.Content.ContentStr != nil {
-			if *cm.Content.ContentStr == "" {
-				return
-			}
+		if cm.Content.ContentStr != nil && *cm.Content.ContentStr != "" {
 			cm.Content = &ChatMessageContent{ContentBlocks: []ChatContentBlock{{
 				Type:         ChatContentBlockTypeText,
 				Text:         cm.Content.ContentStr,
