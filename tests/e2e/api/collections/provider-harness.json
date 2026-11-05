@@ -310673,7 +310673,1209 @@
       ]
     },
     {
-      "name": "318. Bedrock Request Metadata Headers (#9297 / PR #9189)",
+      "name": "310. Reasoning item ids on non-streamed output and on replay (reasoning item id)",
+      "description": "Two bugs around reasoning item ids on /v1/responses.\n\n1. Gemini non-streamed output: convertGeminiCandidatesToResponsesOutput built reasoning items with no id and, for text-only thoughts, no summary, so clients got \"id\": null and \"summary\": null (opentelemetry-instrumentation-openai drops the span on a null id). The streaming path already minted msg_<id>_reasoning. The fix mints the same form; never rs_, which ToOpenAIResponsesRequest keeps on replay and OpenAI rejects as foreign.\n\n2. Mantle replay: ToOpenAIResponsesRequest stripped every non-rs_ reasoning id (meant for Gemini residue sent to OpenAI). Mantle requires an id on a replayed reasoning item and mints msg_ ids itself, so any second turn with reasoning on Mantle's Responses models failed with 400 \"Invalid 'input': value did not match any expected variant\". The fix keeps reasoning ids for bedrock_mantle and bedrock; OpenAI and Azure still strip.\n\nRed before the fix: the Gemini cases see a null id; the Mantle cases get 400.",
+      "item": [
+        {
+          "name": "Gemini non-stream reasoning item has an id (gemini/gemini-2.5-flash, /v1/responses)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('status is 200', function () { pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 500)).to.eql(200); });",
+                  "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var out = body.output || [];",
+                  "var reasoning = out.filter(function (o) { return o.type === 'reasoning'; });",
+                  "pm.test('a reasoning item is returned', function () { pm.expect(reasoning.length, 'no reasoning item: ' + txt.slice(0, 500)).to.be.above(0); });",
+                  "pm.test('every output item has a non-empty id', function () {",
+                  "  out.forEach(function (o) { pm.expect(o.id, o.type + ' item without an id: ' + JSON.stringify(o).slice(0, 300)).to.be.a('string').and.not.empty; });",
+                  "});",
+                  "pm.test('reasoning items carry a summary array and a non-OpenAI id', function () {",
+                  "  reasoning.forEach(function (o) {",
+                  "    pm.expect(o.summary, 'summary is not an array: ' + JSON.stringify(o).slice(0, 300)).to.be.an('array');",
+                  "    pm.expect(o.id.indexOf('rs_'), 'minted id mimics an OpenAI rs_ id: ' + o.id).to.not.eql(0);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash\",\n  \"input\": \"Is 9973 prime? Answer yes or no.\",\n  \"max_output_tokens\": 4096,\n  \"reasoning\": {\n    \"effort\": \"high\",\n    \"summary\": \"auto\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Vertex Gemini non-stream reasoning item has an id (vertex/gemini-2.5-flash, /v1/responses)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('status is 200', function () { pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 500)).to.eql(200); });",
+                  "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var out = body.output || [];",
+                  "var reasoning = out.filter(function (o) { return o.type === 'reasoning'; });",
+                  "pm.test('a reasoning item is returned', function () { pm.expect(reasoning.length, 'no reasoning item: ' + txt.slice(0, 500)).to.be.above(0); });",
+                  "pm.test('every output item has a non-empty id', function () {",
+                  "  out.forEach(function (o) { pm.expect(o.id, o.type + ' item without an id: ' + JSON.stringify(o).slice(0, 300)).to.be.a('string').and.not.empty; });",
+                  "});",
+                  "pm.test('reasoning items carry a summary array and a non-OpenAI id', function () {",
+                  "  reasoning.forEach(function (o) {",
+                  "    pm.expect(o.summary, 'summary is not an array: ' + JSON.stringify(o).slice(0, 300)).to.be.an('array');",
+                  "    pm.expect(o.id.indexOf('rs_'), 'minted id mimics an OpenAI rs_ id: ' + o.id).to.not.eql(0);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/gemini-2.5-flash\",\n  \"input\": \"Is 9973 prime? Answer yes or no.\",\n  \"max_output_tokens\": 4096,\n  \"reasoning\": {\n    \"effort\": \"high\",\n    \"summary\": \"auto\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Mantle replay keeps the reasoning item id (bedrock_mantle/openai.gpt-oss-120b, /v1/responses)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('status is 200', function () { pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 500)).to.eql(200); });",
+                  "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var out = body.output || [];",
+                  "pm.test('the replay is answered', function () { pm.expect(out.length, 'empty output: ' + txt.slice(0, 500)).to.be.above(0); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock_mantle/openai.gpt-oss-120b\",\n  \"max_output_tokens\": 400,\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"Bash\",\n      \"description\": \"Run a shell command\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"command\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"command\"\n        ]\n      }\n    }\n  ],\n  \"input\": [\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"List the files in the current directory.\"\n        }\n      ]\n    },\n    {\n      \"type\": \"reasoning\",\n      \"id\": \"msg_harness_replayed_reasoning\",\n      \"summary\": [],\n      \"content\": [\n        {\n          \"type\": \"reasoning_text\",\n          \"text\": \"The user wants a listing, so run ls.\"\n        }\n      ]\n    },\n    {\n      \"type\": \"function_call\",\n      \"call_id\": \"call_harness_1\",\n      \"name\": \"Bash\",\n      \"arguments\": \"{\\\"command\\\":\\\"ls -la\\\"}\"\n    },\n    {\n      \"type\": \"function_call_output\",\n      \"call_id\": \"call_harness_1\",\n      \"output\": \"README.md\\nmain.go\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Bedrock gpt-oss replay keeps the reasoning item id (bedrock/openai.gpt-oss-120b, /v1/responses)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('status is 200', function () { pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 500)).to.eql(200); });",
+                  "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var out = body.output || [];",
+                  "pm.test('the replay is answered', function () { pm.expect(out.length, 'empty output: ' + txt.slice(0, 500)).to.be.above(0); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/openai.gpt-oss-120b\",\n  \"max_output_tokens\": 400,\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"Bash\",\n      \"description\": \"Run a shell command\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"command\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"command\"\n        ]\n      }\n    }\n  ],\n  \"input\": [\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"List the files in the current directory.\"\n        }\n      ]\n    },\n    {\n      \"type\": \"reasoning\",\n      \"id\": \"msg_harness_replayed_reasoning\",\n      \"summary\": [],\n      \"content\": [\n        {\n          \"type\": \"reasoning_text\",\n          \"text\": \"The user wants a listing, so run ls.\"\n        }\n      ]\n    },\n    {\n      \"type\": \"function_call\",\n      \"call_id\": \"call_harness_1\",\n      \"name\": \"Bash\",\n      \"arguments\": \"{\\\"command\\\":\\\"ls -la\\\"}\"\n    },\n    {\n      \"type\": \"function_call_output\",\n      \"call_id\": \"call_harness_1\",\n      \"output\": \"README.md\\nmain.go\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Mantle two-turn replay turn 1 (bedrock_mantle/openai.gpt-oss-120b, /v1/responses)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('status is 200', function () { pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 500)).to.eql(200); });",
+                  "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var out = body.output || [];",
+                  "var reasoning = out.filter(function (o) { return o.type === 'reasoning'; });",
+                  "var calls = out.filter(function (o) { return o.type === 'function_call'; });",
+                  "pm.test('turn 1 returns reasoning and a tool call', function () {",
+                  "  pm.expect(reasoning.length, 'no reasoning item: ' + txt.slice(0, 500)).to.be.above(0);",
+                  "  pm.expect(reasoning[0].id, 'reasoning item without an id').to.be.a('string').and.not.empty;",
+                  "  pm.expect(calls.length, 'no function_call: ' + txt.slice(0, 500)).to.be.above(0);",
+                  "});",
+                  "var outputs = calls.map(function (c) { return { type: 'function_call_output', call_id: c.call_id, output: 'README.md\\nmain.go' }; });",
+                  "pm.collectionVariables.set('reasoningIdReplayInput', JSON.stringify(out.concat(outputs)));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock_mantle/openai.gpt-oss-120b\",\n  \"max_output_tokens\": 2000,\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"Bash\",\n      \"description\": \"Run a shell command\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"command\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"command\"\n        ]\n      }\n    }\n  ],\n  \"input\": [\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"List the files in the current directory.\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Mantle two-turn replay turn 2 replays turn 1 verbatim (bedrock_mantle/openai.gpt-oss-120b, /v1/responses)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var raw = pm.collectionVariables.get('reasoningIdReplayInput');",
+                  "var replay = null; try { replay = JSON.parse(raw); } catch (e) { replay = null; }",
+                  "var hasReasoning = Array.isArray(replay) && replay.some(function (i) { return i && i.type === 'reasoning'; });",
+                  "if (!hasReasoning) {",
+                  "  pm.test('turn 1 left a reasoning item to replay', function () {",
+                  "    pm.expect(hasReasoning, 'reasoningIdReplayInput missing or holds no reasoning item (run turn 1 first): ' + String(raw).slice(0, 300)).to.eql(true);",
+                  "  });",
+                  "  if (pm.execution && typeof pm.execution.skipRequest === 'function') pm.execution.skipRequest();",
+                  "} else {",
+                  "  var body = JSON.parse(pm.request.body.raw);",
+                  "  body.input = [body.input[0]].concat(replay);",
+                  "  pm.request.body.raw = JSON.stringify(body);",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('status is 200', function () { pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 500)).to.eql(200); });",
+                  "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var out = body.output || [];",
+                  "pm.test('the replay is answered', function () { pm.expect(out.length, 'empty output: ' + txt.slice(0, 500)).to.be.above(0); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock_mantle/openai.gpt-oss-120b\",\n  \"max_output_tokens\": 400,\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"Bash\",\n      \"description\": \"Run a shell command\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"command\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"command\"\n        ]\n      }\n    }\n  ],\n  \"input\": [\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"List the files in the current directory.\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "311. Assistant message items carrying encrypted_content (codex message replay)",
+      "description": "Codex replays its own assistant turns as `type:\"message\"` items that also carry `summary: null` and `encrypted_content`.\nThose fields decode into the embedded ResponsesReasoning, so ToOpenAIResponsesRequest treated the message as a reasoning item:\nfor reasoning models it nulled `content` (OpenAI 400 \"Missing required parameter: 'input[N].content'\") and forwarded `summary`\n(OpenAI rejects it on a message item); for non-reasoning models it silently dropped the whole assistant turn.\n\nThe token here is deliberately foreign. OpenAI never mints encrypted_content on a message item and rejects any it receives, so\nBifrost drops it from every message item before forwarding; the message content must survive. Each case asks the model to repeat a codeword that\nonly exists in the replayed assistant turn, which pins that the turn was forwarded rather than dropped.\n\n- gpt-5-mini non-stream: content kept, summary omitted, encrypted_content dropped before forwarding.\n- gpt-5-mini stream: same invariant on the streaming path.\n- gpt-4o-mini non-stream: non-reasoning model keeps the turn and drops only the token.",
+      "item": [
+        {
+          "name": "openai/gpt-5-mini responses replays assistant message with encrypted_content (codex message replay)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('status is 200', function () { pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 800)).to.eql(200); });",
+                  "pm.test('assistant message content reached the provider', function () {",
+                  "  pm.expect(txt, 'content was stripped from the replayed assistant message').to.not.include(\"Missing required parameter\");",
+                  "  pm.expect(txt, 'summary was forwarded on a message item').to.not.include(\"Unknown parameter\");",
+                  "});",
+                  "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var text = (body.output || []).filter(function (o) { return o.type === 'message'; }).map(function (o) { return (o.content || []).map(function (c) { return c.text || ''; }).join(''); }).join('');",
+                  "pm.test('model saw the replayed assistant turn (recalls the codeword)', function () { pm.expect(text, 'assistant turn was dropped from history: ' + txt.slice(0, 800)).to.include('ZEBRA-42'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-5-mini\",\n  \"input\": [\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Remember the codeword.\"\n        }\n      ]\n    },\n    {\n      \"type\": \"message\",\n      \"role\": \"assistant\",\n      \"status\": \"completed\",\n      \"phase\": \"final_answer\",\n      \"content\": [\n        {\n          \"type\": \"output_text\",\n          \"text\": \"The codeword is ZEBRA-42.\",\n          \"annotations\": []\n        }\n      ],\n      \"summary\": null,\n      \"encrypted_content\": \"gAAAAB-harness-foreign-token\"\n    },\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Reply with only the codeword you told me.\"\n        }\n      ]\n    }\n  ],\n  \"max_output_tokens\": 2048\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai/gpt-5-mini responses stream replays assistant message with encrypted_content (codex message replay)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('status is 200', function () { pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 800)).to.eql(200); });",
+                  "pm.test('assistant message content reached the provider', function () {",
+                  "  pm.expect(txt, 'content was stripped from the replayed assistant message').to.not.include(\"Missing required parameter\");",
+                  "  pm.expect(txt, 'summary was forwarded on a message item').to.not.include(\"Unknown parameter\");",
+                  "});",
+                  "pm.test('stream completed', function () { pm.expect(txt, 'stream did not complete: ' + txt.slice(-800)).to.include('response.completed'); });",
+                  "pm.test('model saw the replayed assistant turn (recalls the codeword)', function () { pm.expect(txt, 'assistant turn was dropped from history: ' + txt.slice(-800)).to.include('ZEBRA-42'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-5-mini\",\n  \"input\": [\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Remember the codeword.\"\n        }\n      ]\n    },\n    {\n      \"type\": \"message\",\n      \"role\": \"assistant\",\n      \"status\": \"completed\",\n      \"phase\": \"final_answer\",\n      \"content\": [\n        {\n          \"type\": \"output_text\",\n          \"text\": \"The codeword is ZEBRA-42.\",\n          \"annotations\": []\n        }\n      ],\n      \"summary\": null,\n      \"encrypted_content\": \"gAAAAB-harness-foreign-token\"\n    },\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Reply with only the codeword you told me.\"\n        }\n      ]\n    }\n  ],\n  \"max_output_tokens\": 2048,\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai/gpt-4o-mini responses keeps assistant message carrying encrypted_content (codex message replay)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('status is 200', function () { pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 800)).to.eql(200); });",
+                  "pm.test('assistant message content reached the provider', function () {",
+                  "  pm.expect(txt, 'content was stripped from the replayed assistant message').to.not.include(\"Missing required parameter\");",
+                  "  pm.expect(txt, 'summary was forwarded on a message item').to.not.include(\"Unknown parameter\");",
+                  "});",
+                  "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var text = (body.output || []).filter(function (o) { return o.type === 'message'; }).map(function (o) { return (o.content || []).map(function (c) { return c.text || ''; }).join(''); }).join('');",
+                  "pm.test('model saw the replayed assistant turn (recalls the codeword)', function () { pm.expect(text, 'assistant turn was dropped from history: ' + txt.slice(0, 800)).to.include('ZEBRA-42'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"input\": [\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Remember the codeword.\"\n        }\n      ]\n    },\n    {\n      \"type\": \"message\",\n      \"role\": \"assistant\",\n      \"status\": \"completed\",\n      \"phase\": \"final_answer\",\n      \"content\": [\n        {\n          \"type\": \"output_text\",\n          \"text\": \"The codeword is ZEBRA-42.\",\n          \"annotations\": []\n        }\n      ],\n      \"summary\": null,\n      \"encrypted_content\": \"gAAAAB-harness-foreign-token\"\n    },\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Reply with only the codeword you told me.\"\n        }\n      ]\n    }\n  ],\n  \"max_output_tokens\": 2048\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "312. Summary-only reasoning replayed as content keeps summary (reasoning summary content replay)",
+      "description": "A summary-only reasoning item (history from an OpenAI-style model) is rewritten as reasoning_text content blocks for models that read replayed reasoning from content: gpt-oss on any host, and every vLLM model. ToOpenAIResponsesRequest built the rewritten item without a summary field. OpenAI's ResponseReasoningItem requires summary, so Bedrock Mantle answered 400 and vLLM 400 \"203 validation errors\"; Fireworks and OpenRouter accepted it. The fix sends summary: [] alongside the content.\n\nRed before the fix: the Mantle and Bedrock gpt-oss cases get 400. The OpenAI case is a control on the summary path, which the rewrite never touches. vLLM is covered by unit tests (no vLLM provider in the harness profile).",
+      "item": [
+        {
+          "name": "Mantle summary-only reasoning replay (bedrock_mantle/openai.gpt-oss-120b, /v1/responses)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('status is 200 (content-only reasoning item without summary is rejected as a validation error)', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 500)).to.eql(200);",
+                  "});",
+                  "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "pm.test('the replay is answered', function () { pm.expect((body.output || []).length, 'empty output: ' + txt.slice(0, 500)).to.be.above(0); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock_mantle/openai.gpt-oss-120b\",\n  \"max_output_tokens\": 600,\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"ping\",\n      \"description\": \"ping\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {}\n      }\n    }\n  ],\n  \"input\": [\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Call ping, then tell me the code word you chose.\"\n        }\n      ]\n    },\n    {\n      \"type\": \"reasoning\",\n      \"id\": \"msg_harness_summary_only\",\n      \"summary\": [\n        {\n          \"type\": \"summary_text\",\n          \"text\": \"I choose the code word ZUCCHINI-9.\"\n        }\n      ]\n    },\n    {\n      \"type\": \"function_call\",\n      \"call_id\": \"call_harness_summary\",\n      \"name\": \"ping\",\n      \"arguments\": \"{}\"\n    },\n    {\n      \"type\": \"function_call_output\",\n      \"call_id\": \"call_harness_summary\",\n      \"output\": \"pong\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Mantle summary-only reasoning replay streamed (bedrock_mantle/openai.gpt-oss-120b, /v1/responses stream)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('status is 200', function () { pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 500)).to.eql(200); });",
+                  "pm.test('stream completes without an error event', function () {",
+                  "  pm.expect(txt, 'no response.completed: ' + txt.slice(0, 600)).to.include('response.completed');",
+                  "  pm.expect(txt.indexOf('\"type\":\"error\"'), 'error event: ' + txt.slice(0, 600)).to.eql(-1);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock_mantle/openai.gpt-oss-120b\",\n  \"max_output_tokens\": 600,\n  \"stream\": true,\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"ping\",\n      \"description\": \"ping\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {}\n      }\n    }\n  ],\n  \"input\": [\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Call ping, then tell me the code word you chose.\"\n        }\n      ]\n    },\n    {\n      \"type\": \"reasoning\",\n      \"id\": \"msg_harness_summary_only\",\n      \"summary\": [\n        {\n          \"type\": \"summary_text\",\n          \"text\": \"I choose the code word ZUCCHINI-9.\"\n        }\n      ]\n    },\n    {\n      \"type\": \"function_call\",\n      \"call_id\": \"call_harness_summary\",\n      \"name\": \"ping\",\n      \"arguments\": \"{}\"\n    },\n    {\n      \"type\": \"function_call_output\",\n      \"call_id\": \"call_harness_summary\",\n      \"output\": \"pong\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Bedrock gpt-oss summary-only reasoning replay (bedrock/openai.gpt-oss-120b, /v1/responses)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('status is 200 (content-only reasoning item without summary is rejected as a validation error)', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 500)).to.eql(200);",
+                  "});",
+                  "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "pm.test('the replay is answered', function () { pm.expect((body.output || []).length, 'empty output: ' + txt.slice(0, 500)).to.be.above(0); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/openai.gpt-oss-120b\",\n  \"max_output_tokens\": 600,\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"ping\",\n      \"description\": \"ping\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {}\n      }\n    }\n  ],\n  \"input\": [\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Call ping, then tell me the code word you chose.\"\n        }\n      ]\n    },\n    {\n      \"type\": \"reasoning\",\n      \"id\": \"msg_harness_summary_only\",\n      \"summary\": [\n        {\n          \"type\": \"summary_text\",\n          \"text\": \"I choose the code word ZUCCHINI-9.\"\n        }\n      ]\n    },\n    {\n      \"type\": \"function_call\",\n      \"call_id\": \"call_harness_summary\",\n      \"name\": \"ping\",\n      \"arguments\": \"{}\"\n    },\n    {\n      \"type\": \"function_call_output\",\n      \"call_id\": \"call_harness_summary\",\n      \"output\": \"pong\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "OpenAI summary-only reasoning replay control (openai/gpt-5-mini, /v1/responses)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('status is 200 (content-only reasoning item without summary is rejected as a validation error)', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 500)).to.eql(200);",
+                  "});",
+                  "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "pm.test('the replay is answered', function () { pm.expect((body.output || []).length, 'empty output: ' + txt.slice(0, 500)).to.be.above(0); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-5-mini\",\n  \"max_output_tokens\": 600,\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"ping\",\n      \"description\": \"ping\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {}\n      }\n    }\n  ],\n  \"input\": [\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Call ping, then tell me the code word you chose.\"\n        }\n      ]\n    },\n    {\n      \"type\": \"reasoning\",\n      \"id\": \"msg_harness_summary_only\",\n      \"summary\": [\n        {\n          \"type\": \"summary_text\",\n          \"text\": \"I choose the code word ZUCCHINI-9.\"\n        }\n      ]\n    },\n    {\n      \"type\": \"function_call\",\n      \"call_id\": \"call_harness_summary\",\n      \"name\": \"ping\",\n      \"arguments\": \"{}\"\n    },\n    {\n      \"type\": \"function_call_output\",\n      \"call_id\": \"call_harness_summary\",\n      \"output\": \"pong\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "313. Raw reasoning_text.delta streams as Anthropic thinking_delta (raw reasoning thinking delta)",
+      "description": "Open-weight reasoning models (gpt-oss on Bedrock Mantle and Bedrock, every reasoning model on vLLM) stream their raw chain of thought as response.reasoning_text.delta, not response.reasoning_summary_text.delta. toAnthropicResponsesStreamEvents handled only the summary event, so /anthropic/v1/messages streams opened a thinking content block and never sent a thinking_delta: the reasoning tokens were billed but never delivered. The fix maps reasoning_text.delta to thinking_delta in the same case.\n\nRed before the fix: one thinking block, zero thinking_delta characters. vLLM is covered by unit tests and the live repro (no vLLM provider in the harness profile).",
+      "item": [
+        {
+          "name": "Bedrock Mantle gpt-oss raw reasoning streams thinking_delta (bedrock_mantle/openai.gpt-oss-120b, /anthropic/v1/messages stream)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('status is 200', function () { pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 500)).to.eql(200); });",
+                  "var thinkingBlocks = {}, thinking = '', text = '', errors = [];",
+                  "txt.split('\\n').forEach(function (line) {",
+                  "  if (line.indexOf('data:') !== 0) { return; }",
+                  "  var ev; try { ev = JSON.parse(line.slice(5)); } catch (e) { return; }",
+                  "  if (ev.type === 'error') { errors.push(JSON.stringify(ev).slice(0, 300)); }",
+                  "  if (ev.type === 'content_block_start' && ev.content_block && ev.content_block.type === 'thinking') { thinkingBlocks[ev.index] = true; }",
+                  "  if (ev.type === 'content_block_delta' && ev.delta && ev.delta.type === 'thinking_delta') {",
+                  "    pm.expect(thinkingBlocks[ev.index], 'thinking_delta at index ' + ev.index + ' without an open thinking block').to.eql(true);",
+                  "    thinking += ev.delta.thinking || '';",
+                  "  }",
+                  "  if (ev.type === 'content_block_delta' && ev.delta && ev.delta.type === 'text_delta') { text += ev.delta.text || ''; }",
+                  "});",
+                  "pm.test('stream has no error event', function () { pm.expect(errors, errors.join(' | ')).to.be.empty; });",
+                  "pm.test('a thinking block is opened', function () { pm.expect(Object.keys(thinkingBlocks).length, 'no thinking content_block_start: ' + txt.slice(0, 600)).to.be.above(0); });",
+                  "pm.test('raw reasoning arrives as thinking_delta (was an empty thinking block)', function () {",
+                  "  pm.expect(thinking.trim().length, 'thinking block opened but no thinking_delta text: ' + txt.slice(0, 800)).to.be.above(0);",
+                  "});",
+                  "pm.test('the answer still streams as text', function () { pm.expect(text.trim().length, 'no text_delta: ' + txt.slice(0, 600)).to.be.above(0); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock_mantle/openai.gpt-oss-120b\",\n  \"max_tokens\": 3000,\n  \"stream\": true,\n  \"thinking\": {\n    \"type\": \"enabled\",\n    \"budget_tokens\": 2000\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Is 391 prime? Think step by step, then answer in one word.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Bedrock gpt-oss raw reasoning streams thinking_delta (bedrock/openai.gpt-oss-120b, /anthropic/v1/messages stream)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('status is 200', function () { pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 500)).to.eql(200); });",
+                  "var thinkingBlocks = {}, thinking = '', text = '', errors = [];",
+                  "txt.split('\\n').forEach(function (line) {",
+                  "  if (line.indexOf('data:') !== 0) { return; }",
+                  "  var ev; try { ev = JSON.parse(line.slice(5)); } catch (e) { return; }",
+                  "  if (ev.type === 'error') { errors.push(JSON.stringify(ev).slice(0, 300)); }",
+                  "  if (ev.type === 'content_block_start' && ev.content_block && ev.content_block.type === 'thinking') { thinkingBlocks[ev.index] = true; }",
+                  "  if (ev.type === 'content_block_delta' && ev.delta && ev.delta.type === 'thinking_delta') {",
+                  "    pm.expect(thinkingBlocks[ev.index], 'thinking_delta at index ' + ev.index + ' without an open thinking block').to.eql(true);",
+                  "    thinking += ev.delta.thinking || '';",
+                  "  }",
+                  "  if (ev.type === 'content_block_delta' && ev.delta && ev.delta.type === 'text_delta') { text += ev.delta.text || ''; }",
+                  "});",
+                  "pm.test('stream has no error event', function () { pm.expect(errors, errors.join(' | ')).to.be.empty; });",
+                  "pm.test('a thinking block is opened', function () { pm.expect(Object.keys(thinkingBlocks).length, 'no thinking content_block_start: ' + txt.slice(0, 600)).to.be.above(0); });",
+                  "pm.test('raw reasoning arrives as thinking_delta (was an empty thinking block)', function () {",
+                  "  pm.expect(thinking.trim().length, 'thinking block opened but no thinking_delta text: ' + txt.slice(0, 800)).to.be.above(0);",
+                  "});",
+                  "pm.test('the answer still streams as text', function () { pm.expect(text.trim().length, 'no text_delta: ' + txt.slice(0, 600)).to.be.above(0); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/openai.gpt-oss-120b\",\n  \"max_tokens\": 3000,\n  \"stream\": true,\n  \"thinking\": {\n    \"type\": \"enabled\",\n    \"budget_tokens\": 2000\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Is 391 prime? Think step by step, then answer in one word.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "317. Claude Code fields on fallback providers: Databricks safeguards, Copilot tool search (claude code fallback fields)",
+      "description": "Claude Code requests that fall back to other providers carried Anthropic-only extras those providers reject. Databricks: the /anthropic/v1/messages route stores the auto-mode classifier payload `safeguards` in ExtraParams, and Databricks always forwards ExtraParams, so the endpoint answered 400 \"safeguards: Extra inputs are not permitted\". stripUnsupportedResponsesFields and stripUnsupportedChatFields (core/providers/databricks/inference.go) now drop it next to context_management. GitHub Copilot: Copilot serves tool search (tool_search tool + defer_loading) with no beta header or advanced-tool-use-2025-11-20, but answers 400 \"unsupported beta header(s): tool-search-tool-2025-10-19\" to that header. Bifrost added it from defer_loading and forwarded the client's copy; the ToolSearchHeaderless provider flag (core/providers/anthropic) now suppresses both. Every case is red before the fix (400) and green after. Copilot cases also assert tool search actually ran, so a fix that dropped the tools instead of the header would fail. 317.6 and 317.7 send safeguards as a caller-supplied field on the neutral Chat and Responses routes (Bifrost collects unknown fields into ExtraParams, which Databricks forwards) and assert the exposed raw_request omits it; the neutral streaming routes call the same strip functions and are covered by 317.2 and the unit tests.",
+      "item": [
+        {
+          "name": "317.1 databricks/databricks-claude-opus-5-5 /anthropic/v1/messages Claude Code safeguards is not forwarded (claude code fallback fields)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"databricks/databricks-claude-opus-5-5\",\n  \"max_tokens\": 40,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say hi in three words.\"\n    }\n  ],\n  \"safeguards\": {\n    \"z\": 1,\n    \"a\": {\n      \"b\": true\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 500)).to.equal(200); });",
+                  "pm.test('safeguards not rejected', function () { pm.expect(pm.response.text()).to.not.include('safeguards'); });",
+                  "var j = pm.response.json();",
+                  "pm.test('Anthropic-shaped message with text', function () { var t = (j.content || []).filter(function (b) { return b.type === 'text' && b.text; }); pm.expect(t.length, pm.response.text().slice(0, 500)).to.be.above(0); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "317.2 databricks/databricks-claude-opus-5-5 /anthropic/v1/messages stream Claude Code safeguards is not forwarded (claude code fallback fields)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"databricks/databricks-claude-opus-5-5\",\n  \"max_tokens\": 40,\n  \"stream\": true,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say hi in three words.\"\n    }\n  ],\n  \"safeguards\": {\n    \"z\": 1,\n    \"a\": {\n      \"b\": true\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 500)).to.equal(200); });",
+                  "var body = pm.response.text() || '';",
+                  "pm.test('safeguards not rejected', function () { pm.expect(body).to.not.include('safeguards'); pm.expect(body).to.not.include('event: error'); });",
+                  "pm.test('stream finished', function () { pm.expect(body, body.slice(0, 500)).to.include('message_stop'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "317.3 github-copilot/claude-opus-5.5 /anthropic/v1/messages tool search without the tool-search beta header (claude code fallback fields)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"github-copilot/claude-opus-5.5\",\n  \"max_tokens\": 300,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Use tool search to find the tool that reads files, then tell me its name.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"tool_search_tool_regex_20251119\",\n      \"name\": \"tool_search_tool_regex\"\n    },\n    {\n      \"name\": \"read_file\",\n      \"description\": \"Read a file from disk\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"path\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"path\"\n        ]\n      },\n      \"defer_loading\": true\n    },\n    {\n      \"name\": \"say\",\n      \"description\": \"Say something to the user\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"text\": {\n            \"type\": \"string\"\n          }\n        }\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 500)).to.equal(200); });",
+                  "pm.test('no unsupported beta header rejection', function () { pm.expect(pm.response.text()).to.not.include('unsupported beta header'); });",
+                  "var j = pm.response.json();",
+                  "var types = (j.content || []).map(function (b) { return b.type; });",
+                  "pm.test('tool search ran on Copilot', function () { pm.expect(types, pm.response.text().slice(0, 800)).to.include('server_tool_use'); pm.expect(types, pm.response.text().slice(0, 800)).to.include('tool_search_tool_result'); });",
+                  "var refs = (j.content || []).filter(function (b) { return b.type === 'tool_search_tool_result'; }).map(function (b) { return JSON.stringify(b.content || {}); }).join('');",
+                  "pm.test('tool search found the deferred read_file tool', function () { pm.expect(refs, pm.response.text().slice(0, 800)).to.include('read_file'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "317.4 github-copilot/claude-opus-5.5 /anthropic/v1/messages tool search drops the client tool-search beta header (claude code fallback fields)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "anthropic-beta",
+                "value": "tool-search-tool-2025-10-19"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"github-copilot/claude-opus-5.5\",\n  \"max_tokens\": 300,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Use tool search to find the tool that reads files, then tell me its name.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"tool_search_tool_regex_20251119\",\n      \"name\": \"tool_search_tool_regex\"\n    },\n    {\n      \"name\": \"read_file\",\n      \"description\": \"Read a file from disk\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"path\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"path\"\n        ]\n      },\n      \"defer_loading\": true\n    },\n    {\n      \"name\": \"say\",\n      \"description\": \"Say something to the user\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"text\": {\n            \"type\": \"string\"\n          }\n        }\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 500)).to.equal(200); });",
+                  "pm.test('no unsupported beta header rejection', function () { pm.expect(pm.response.text()).to.not.include('unsupported beta header'); });",
+                  "var j = pm.response.json();",
+                  "var types = (j.content || []).map(function (b) { return b.type; });",
+                  "pm.test('tool search ran on Copilot', function () { pm.expect(types, pm.response.text().slice(0, 800)).to.include('server_tool_use'); pm.expect(types, pm.response.text().slice(0, 800)).to.include('tool_search_tool_result'); });",
+                  "var refs = (j.content || []).filter(function (b) { return b.type === 'tool_search_tool_result'; }).map(function (b) { return JSON.stringify(b.content || {}); }).join('');",
+                  "pm.test('tool search found the deferred read_file tool', function () { pm.expect(refs, pm.response.text().slice(0, 800)).to.include('read_file'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "317.5 github-copilot/claude-opus-5.5 /v1/responses tool search without the tool-search beta header (claude code fallback fields)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"github-copilot/claude-opus-5.5\",\n  \"input\": \"Use tool search to find the tool that reads files, then tell me its name.\",\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"read_file\",\n      \"description\": \"Read a file from disk\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"path\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"path\"\n        ]\n      },\n      \"defer_loading\": true\n    },\n    {\n      \"type\": \"function\",\n      \"name\": \"say\",\n      \"description\": \"Say something to the user\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"text\": {\n            \"type\": \"string\"\n          }\n        }\n      }\n    },\n    {\n      \"type\": \"tool_search\"\n    }\n  ],\n  \"max_output_tokens\": 300\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 500)).to.equal(200); });",
+                  "pm.test('no unsupported beta header rejection', function () { pm.expect(pm.response.text()).to.not.include('unsupported beta header'); });",
+                  "var j = pm.response.json();",
+                  "pm.test('tool search ran on Copilot', function () { var types = (j.output || []).map(function (o) { return o.type; }); pm.expect(types, pm.response.text().slice(0, 800)).to.include('tool_search_call'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "317.6 databricks/databricks-claude-opus-5-5 /v1/chat/completions caller-sent safeguards is not forwarded (claude code fallback fields)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"databricks/databricks-claude-opus-5-5\",\n  \"max_tokens\": 40,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say hi in three words.\"\n    }\n  ],\n  \"safeguards\": {\n    \"z\": 1,\n    \"a\": {\n      \"b\": true\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 500)).to.equal(200); });",
+                  "pm.test('safeguards not rejected', function () { pm.expect(pm.response.text()).to.not.include('Extra inputs are not permitted'); });",
+                  "var j = pm.response.json();",
+                  "var rawReq = (j.extra_fields || {}).raw_request;",
+                  "pm.test('outbound request is exposed and omits safeguards', function () { pm.expect(rawReq, 'no extra_fields.raw_request: ' + pm.response.text().slice(0, 400)).to.be.an('object'); pm.expect(rawReq).to.not.have.property('safeguards'); });",
+                  "pm.test('chat completion with text', function () { var m = ((j.choices || [])[0] || {}).message || {}; pm.expect(m.content, pm.response.text().slice(0, 400)).to.be.a('string').and.not.empty; });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "317.7 databricks/databricks-claude-opus-5-5 /v1/responses caller-sent safeguards is not forwarded (claude code fallback fields)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"databricks/databricks-claude-opus-5-5\",\n  \"input\": \"Say hi in three words.\",\n  \"max_output_tokens\": 40,\n  \"safeguards\": {\n    \"z\": 1,\n    \"a\": {\n      \"b\": true\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 500)).to.equal(200); });",
+                  "pm.test('safeguards not rejected', function () { pm.expect(pm.response.text()).to.not.include('Extra inputs are not permitted'); });",
+                  "var j = pm.response.json();",
+                  "var rawReq = (j.extra_fields || {}).raw_request;",
+                  "pm.test('outbound request is exposed and omits safeguards', function () { pm.expect(rawReq, 'no extra_fields.raw_request: ' + pm.response.text().slice(0, 400)).to.be.an('object'); pm.expect(rawReq).to.not.have.property('safeguards'); });",
+                  "pm.test('response completed', function () { pm.expect(j.status, pm.response.text().slice(0, 400)).to.equal('completed'); });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "318. Codex message replay keeps genuine reasoning tokens (codex message replay)",
+      "description": "OpenAI never mints encrypted_content on a message item and rejects any it receives (\"Encrypted content could not be decrypted or parsed\"), even its own reasoning token. Bifrost used to forward a Codex message item's token to reasoning models; the 400 triggered the fail-soft retry, which strips encrypted_content from EVERY item, so the conversation's genuine reasoning tokens were lost too (and in large-payload or raw-body mode no retry ran at all). The message-item branch of ToOpenAIResponsesRequest now drops the token for every model.\n\nTurn 1 obtains a genuine reasoning token from openai/gpt-5-mini; turn 2 replays it next to a Codex-style message carrying a foreign token and inspects extra_fields.raw_request. Red before the fix: the reasoning item reaches OpenAI without encrypted_content (stripped by the retry). Green after: the message has no encrypted_content or summary, and the reasoning item keeps its token.",
+      "item": [
+        {
+          "name": "openai/gpt-5-mini codex replay turn 1 mints a genuine reasoning token (codex message replay)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('status is 200', function () { pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 600)).to.eql(200); });",
+                  "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var reasoning = (body.output || []).filter(function (o) { return o.type === 'reasoning' && o.encrypted_content; });",
+                  "pm.test('turn 1 returns a reasoning item with encrypted_content', function () { pm.expect(reasoning.length, 'no reasoning token to replay: ' + txt.slice(0, 600)).to.be.above(0); });",
+                  "pm.collectionVariables.set('codexReplayGenuineReasoning', JSON.stringify(reasoning));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-5-mini\",\n  \"store\": false,\n  \"include\": [\n    \"reasoning.encrypted_content\"\n  ],\n  \"max_output_tokens\": 1500,\n  \"input\": [\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"The codeword is FALCON-12. Acknowledge briefly.\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai/gpt-5-mini codex replay turn 2 keeps the genuine reasoning token next to a Codex message (codex message replay)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var raw = pm.collectionVariables.get('codexReplayGenuineReasoning');",
+                  "var reasoning = null; try { reasoning = JSON.parse(raw); } catch (e) { reasoning = null; }",
+                  "var ok = Array.isArray(reasoning) && reasoning.some(function (i) { return i && i.type === 'reasoning' && i.encrypted_content; });",
+                  "if (!ok) {",
+                  "  pm.test('turn 1 left a genuine reasoning token to replay', function () {",
+                  "    pm.expect(ok, 'codexReplayGenuineReasoning missing or holds no encrypted reasoning item (run turn 1 first): ' + String(raw).slice(0, 300)).to.eql(true);",
+                  "  });",
+                  "  if (pm.execution && typeof pm.execution.skipRequest === 'function') pm.execution.skipRequest();",
+                  "} else {",
+                  "  var body = JSON.parse(pm.request.body.raw);",
+                  "  var codex = {type: 'message', role: 'assistant', status: 'completed', phase: 'final_answer',",
+                  "    content: [{type: 'output_text', text: 'Noted: the codeword is FALCON-12.', annotations: []}],",
+                  "    summary: null, encrypted_content: 'gAAAAB-harness-foreign-token'};",
+                  "  var ask = {type: 'message', role: 'user', content: [{type: 'input_text', text: 'What is the codeword? Reply with only the codeword.'}]};",
+                  "  body.input = [body.input[0]].concat(reasoning, [codex, ask]);",
+                  "  pm.request.body.raw = JSON.stringify(body);",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('status is 200', function () { pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 800)).to.eql(200); });",
+                  "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var sent = (body.extra_fields || {}).raw_request; if (typeof sent === 'string') { try { sent = JSON.parse(sent); } catch (e) { sent = null; } }",
+                  "var input = (sent && sent.input) || [];",
+                  "var msg = input.filter(function (i) { return i.type === 'message' && i.role === 'assistant'; })[0];",
+                  "var rs = input.filter(function (i) { return i.type === 'reasoning'; });",
+                  "pm.test('raw_request was returned', function () { pm.expect(input.length, 'no extra_fields.raw_request.input (send_back_raw_request off?): ' + txt.slice(0, 400)).to.be.above(0); });",
+                  "pm.test('assistant message keeps content and phase, drops summary and encrypted_content', function () {",
+                  "  pm.expect(msg, 'assistant message missing upstream: ' + JSON.stringify(input).slice(0, 600)).to.be.an('object');",
+                  "  pm.expect(msg.content, 'content stripped').to.be.an('array').that.is.not.empty;",
+                  "  pm.expect(msg.phase, 'phase dropped').to.eql('final_answer');",
+                  "  pm.expect(msg, 'summary forwarded on a message item').to.not.have.property('summary');",
+                  "  pm.expect(msg, 'encrypted_content forwarded on a message item').to.not.have.property('encrypted_content');",
+                  "});",
+                  "pm.test('genuine reasoning token reached the provider (no strip-and-retry)', function () {",
+                  "  pm.expect(rs.length, 'reasoning item missing upstream').to.be.above(0);",
+                  "  pm.expect(rs[0].encrypted_content, 'reasoning encrypted_content was stripped: a foreign message token forced the fail-soft retry').to.be.a('string').and.not.empty;",
+                  "});",
+                  "var text = (body.output || []).filter(function (o) { return o.type === 'message'; }).map(function (o) { return (o.content || []).map(function (c) { return c.text || ''; }).join(''); }).join('');",
+                  "pm.test('model saw the replayed assistant turn (recalls the codeword)', function () { pm.expect(text, 'assistant turn was dropped: ' + txt.slice(0, 600)).to.include('FALCON-12'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-5-mini\",\n  \"store\": false,\n  \"include\": [\n    \"reasoning.encrypted_content\"\n  ],\n  \"max_output_tokens\": 800,\n  \"input\": [\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"The codeword is FALCON-12. Acknowledge briefly.\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "319. Bedrock Request Metadata Headers (#9297 / PR #9189)",
       "description": "x-bf-bedrock-metadata-<key> request headers must reach the outgoing Bedrock Converse requestMetadata without x-bf-passthrough-extra-params, so routes that try another provider first never forward them there. Cases pin the neutral Chat Completions and Responses routes, the Anthropic messages route, and body precedence on the PydanticAI route, where an extra_params requestMetadata value beats the header for the same key.",
       "item": [
         {
