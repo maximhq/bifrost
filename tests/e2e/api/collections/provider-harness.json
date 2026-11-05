@@ -309283,7 +309283,14 @@
                   "  pm.expect(stop, 'stop_reason').to.eql('tool_use');",
                   "});",
                   "pm.test('no leaked DSML tag anywhere in the stream', function () {",
-                  "  pm.expect(txt, 'leaked tag reached the client; streamed text: ' + JSON.stringify(text)).to.not.include('DSML');",
+                  "  // Scan each event without extra_fields: raw_response echoes the upstream wire, which carries the DSML markup by design.",
+                  "  var scanned = txt.split('\\n').map(function (line) {",
+                  "    if (line.indexOf('data: {') !== 0) { return line; }",
+                  "    try { var ev = JSON.parse(line.slice(6)); delete ev.extra_fields; return JSON.stringify(ev); } catch (e) { return line; }",
+                  "  }).join('\\n');",
+                  "  pm.expect(scanned, 'leaked tag reached the client; streamed text: ' + JSON.stringify(text)).to.not.include('DSML');",
+                  "  // A marker split across text deltas is in no single event, so check the accumulated text too.",
+                  "  pm.expect(text, 'leaked tag in the accumulated streamed text').to.not.include('DSML');",
                   "});"
                 ]
               }
@@ -309344,7 +309351,14 @@
                   "  pm.expect(finish, 'finish_reason').to.eql('tool_calls');",
                   "});",
                   "pm.test('no leaked DSML tag anywhere in the stream', function () {",
-                  "  pm.expect(txt, 'leaked tag reached the client; streamed text: ' + JSON.stringify(text)).to.not.include('DSML');",
+                  "  // Scan each event without extra_fields: raw_response echoes the upstream wire, which carries the DSML markup by design.",
+                  "  var scanned = txt.split('\\n').map(function (line) {",
+                  "    if (line.indexOf('data: {') !== 0) { return line; }",
+                  "    try { var ev = JSON.parse(line.slice(6)); delete ev.extra_fields; return JSON.stringify(ev); } catch (e) { return line; }",
+                  "  }).join('\\n');",
+                  "  pm.expect(scanned, 'leaked tag reached the client; streamed text: ' + JSON.stringify(text)).to.not.include('DSML');",
+                  "  // A marker split across text deltas is in no single event, so check the accumulated text too.",
+                  "  pm.expect(text, 'leaked tag in the accumulated streamed text').to.not.include('DSML');",
                   "});"
                 ]
               }
@@ -309454,7 +309468,14 @@
                   "  pm.expect(stop, 'stop_reason').to.eql('tool_use');",
                   "});",
                   "pm.test('no leaked DSML tag anywhere in the stream', function () {",
-                  "  pm.expect(txt, 'leaked tag reached the client; streamed text: ' + JSON.stringify(text)).to.not.include('DSML');",
+                  "  // Scan each event without extra_fields: raw_response echoes the upstream wire, which carries the DSML markup by design.",
+                  "  var scanned = txt.split('\\n').map(function (line) {",
+                  "    if (line.indexOf('data: {') !== 0) { return line; }",
+                  "    try { var ev = JSON.parse(line.slice(6)); delete ev.extra_fields; return JSON.stringify(ev); } catch (e) { return line; }",
+                  "  }).join('\\n');",
+                  "  pm.expect(scanned, 'leaked tag reached the client; streamed text: ' + JSON.stringify(text)).to.not.include('DSML');",
+                  "  // A marker split across text deltas is in no single event, so check the accumulated text too.",
+                  "  pm.expect(text, 'leaked tag in the accumulated streamed text').to.not.include('DSML');",
                   "});"
                 ]
               }
