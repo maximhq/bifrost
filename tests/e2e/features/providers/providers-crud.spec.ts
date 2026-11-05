@@ -761,6 +761,9 @@ test.describe("Providers", () => {
         },
       });
       expect(created.ok(), await created.text()).toBeTruthy();
+      const masked = (await fetchOAuthKey(request, providerData.name, keyName))?.oauth_key_config?.extra_params;
+      expect(Object.keys(masked ?? {}).sort()).toEqual(["identity_provider_id", "service_account_id"]);
+      expect(JSON.stringify(masked)).not.toMatch(/idp_e2e|sa_e2e/);
 
       await providersPage.goto();
       await providersPage.selectProvider(providerData.name);
@@ -774,8 +777,13 @@ test.describe("Providers", () => {
       const weight = providersPage.page.getByLabel("Weight");
       await weight.clear();
       await weight.fill("0.5");
+      const update = providersPage.page.waitForRequest(
+        (req) => req.method() === "PUT" && req.url().includes(`/keys/`),
+      );
       await providersPage.keySaveBtn.click();
       await providersPage.waitForSuccessToast();
+      // The UI must send back the masks it received, which the server restores to stored values.
+      expect((await update).postDataJSON()?.oauth_key_config?.extra_params).toEqual(masked);
 
       const saved = await fetchOAuthKey(request, providerData.name, keyName);
       expect(saved?.oauth_key_config?.grant_type).toBe("token_exchange");
