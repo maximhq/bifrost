@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { expect, test } from "../../core/fixtures/base.fixture";
+import { expectListLoadError } from "../../core/utils/test-helpers";
 import { createRoutingRuleData } from "./routing-rules.data";
 
 // Track created rules for cleanup
@@ -202,6 +203,10 @@ test.describe("Routing Rules", () => {
         await expect(routingRulesPage.emptyState).toBeVisible();
       }
       // When rules exist, getRuleCount > 0 is already implied by the condition
+    });
+
+    test("should show the load error instead of the empty state when rules fail to load", async ({ page }) => {
+      await expectListLoadError(page, "/api/routing/rules", "routing-rules-load-error", "routing-rules-empty-state");
     });
   });
 

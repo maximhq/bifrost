@@ -32,6 +32,8 @@ var dynamicallyConfigurableProviders = []schemas.ModelProvider{
 	schemas.Azure,
 	schemas.Bedrock,
 	schemas.BedrockMantle,
+	schemas.SageMaker,
+	schemas.BytePlus,
 	schemas.Cerebras,
 	schemas.Cohere,
 	schemas.Databricks,
@@ -40,6 +42,7 @@ var dynamicallyConfigurableProviders = []schemas.ModelProvider{
 	schemas.Gemini,
 	schemas.Groq,
 	schemas.HuggingFace,
+	schemas.MiniMax,
 	schemas.Mistral,
 	schemas.Nebius,
 	schemas.OpenAI,
@@ -74,17 +77,18 @@ func providerRequiresKey(customConfig *schemas.CustomProviderConfig) bool {
 // CanProviderKeyValueBeEmpty returns true if the given provider allows the API key to be empty.
 // Some providers like Vertex and Bedrock have their credentials in additional key configs.
 // Ollama and SGL are keyless (API Key is optional) but use per-key server URLs.
-// GitHub Copilot may authenticate with a GitHub App bundle in github_copilot_key_config
-// instead of a Copilot API token in value; validateKey checks that one of the two is present.
 func CanProviderKeyValueBeEmpty(providerKey schemas.ModelProvider) bool {
-	return providerKey == schemas.Vertex || providerKey == schemas.Bedrock || providerKey == schemas.BedrockMantle || providerKey == schemas.VLLM || providerKey == schemas.Azure || providerKey == schemas.Ollama || providerKey == schemas.SGL || providerKey == schemas.Databricks || providerKey == schemas.GithubCopilot
+	return providerKey == schemas.Vertex || providerKey == schemas.Bedrock || providerKey == schemas.BedrockMantle || providerKey == schemas.SageMaker || providerKey == schemas.VLLM || providerKey == schemas.Azure || providerKey == schemas.Ollama || providerKey == schemas.SGL || providerKey == schemas.Databricks
 }
 
 // isKeySkippingAllowed gates SkipKeySelection on the provider this attempt resolved to. The flag
-// is set only for Claude Code OAuth passthrough, where the caller's token is the upstream
-// credential — and only the Anthropic provider forwards it.
-func isKeySkippingAllowed(baseProvider schemas.ModelProvider) bool {
-	return baseProvider == schemas.Anthropic
+// is set where the caller's OAuth token is the upstream credential: Claude Code on Anthropic, and
+// ChatGPT/Codex tokens on OpenAI passthrough, which pins its provider so no fallback inherits it.
+func isKeySkippingAllowed(baseProvider schemas.ModelProvider, requestType schemas.RequestType) bool {
+	if baseProvider == schemas.Anthropic {
+		return true
+	}
+	return baseProvider == schemas.OpenAI && (requestType == schemas.PassthroughRequest || requestType == schemas.PassthroughStreamRequest)
 }
 
 // calculateBackoff implements exponential backoff with jitter for retry attempts.
@@ -149,6 +153,11 @@ func validateKey(providerKey schemas.ModelProvider, key *schemas.Key) error {
 		if key.BedrockMantleKeyConfig == nil {
 			key.BedrockMantleKeyConfig = &schemas.BedrockMantleKeyConfig{}
 		}
+	case schemas.SageMaker:
+		// SageMakerKeyConfig is optional — an empty config is valid for IRSA / ambient credential auth.
+		if key.SageMakerKeyConfig == nil {
+			key.SageMakerKeyConfig = &schemas.SageMakerKeyConfig{}
+		}
 	case schemas.Vertex:
 		if key.VertexKeyConfig == nil {
 			return fmt.Errorf("vertex_key_config is required")
@@ -181,36 +190,6 @@ func validateKey(providerKey schemas.ModelProvider, key *schemas.Key) error {
 		if key.CloudflareKeyConfig.AccountID.GetValue() == "" {
 			return fmt.Errorf("cloudflare_key_config.account_id is required")
 		}
-	case schemas.GithubCopilot:
-		// Two auth modes, either is sufficient.
-		//
-		//   1. Key.Value holds a Copilot API token, GitHub's documented "direct API token"
-		//      method. Those live about 30 minutes, so this suits testing.
-		//   2. GithubCopilotKeyConfig holds GitHub App credentials and Bifrost mints its own
-		//      tokens server-to-server. This is the mode for real deployments.
-		// Trim before every check. resolveCredentials and validateKeyConfig trim too, so an
-		// untrimmed check here would accept a key that fails at the first inference call
-		// instead of at setup, where the operator can still act on it.
-		if strings.TrimSpace(key.Value.GetValue()) != "" {
-			break
-		}
-		if key.GithubCopilotKeyConfig == nil {
-			return fmt.Errorf("github_copilot_key_config is required when value is not set")
-		}
-		// Ordered, so the reported field is deterministic when several are missing.
-		for _, field := range []struct {
-			name  string
-			value string
-		}{
-			{"app_id", key.GithubCopilotKeyConfig.AppID.GetValue()},
-			{"installation_id", key.GithubCopilotKeyConfig.InstallationID.GetValue()},
-			{"repository_id", key.GithubCopilotKeyConfig.RepositoryID.GetValue()},
-			{"private_key", key.GithubCopilotKeyConfig.PrivateKey.GetValue()},
-		} {
-			if strings.TrimSpace(field.value) == "" {
-				return fmt.Errorf("github_copilot_key_config.%s is required", field.name)
-			}
-		}
 	case schemas.Databricks:
 		// The workspace URL is not required here: an SDK caller may set it once as the
 		// provider base_url instead of per key. The provider raises a configuration error at
@@ -241,6 +220,18 @@ func validateKey(providerKey schemas.ModelProvider, key *schemas.Key) error {
 			}
 		}
 	}
+	// anthropic_key_config.workload_identity follows the same rules as oauth_key_config: only
+	// the Anthropic provider federates, and a static value wins over the config.
+	if key.AnthropicKeyConfig.HasWorkloadIdentity() {
+		if !ProviderSupportsAnthropicWorkloadIdentity(providerKey) {
+			return fmt.Errorf("anthropic_key_config.workload_identity is only supported on anthropic and on custom providers whose base_provider_type is anthropic")
+		}
+		if strings.TrimSpace(key.Value.GetValue()) == "" {
+			if err := key.AnthropicKeyConfig.WorkloadIdentity.Validate(); err != nil {
+				return err
+			}
+		}
+	}
 	return nil
 }
 
@@ -250,11 +241,19 @@ func ProviderSupportsOAuthKeyConfig(providerKey schemas.ModelProvider) bool {
 	return providerKey == schemas.OpenAI
 }
 
+// ProviderSupportsAnthropicWorkloadIdentity reports whether a provider (the base provider for a
+// custom one) exchanges anthropic_key_config.workload_identity for a bearer token.
+func ProviderSupportsAnthropicWorkloadIdentity(providerKey schemas.ModelProvider) bool {
+	return providerKey == schemas.Anthropic
+}
+
 // keyValueMayBeEmpty reports whether a key with no value is still usable: either the provider
 // carries its credentials in its own key config (CanProviderKeyValueBeEmpty), or the key
-// mints its bearer from oauth_key_config on a provider that honours it.
+// mints its bearer from oauth_key_config or workload identity on a provider that honours it.
 func keyValueMayBeEmpty(providerKey schemas.ModelProvider, key *schemas.Key) bool {
-	return CanProviderKeyValueBeEmpty(providerKey) || (key.OAuthKeyConfig != nil && ProviderSupportsOAuthKeyConfig(providerKey))
+	return CanProviderKeyValueBeEmpty(providerKey) ||
+		(key.OAuthKeyConfig != nil && ProviderSupportsOAuthKeyConfig(providerKey)) ||
+		(key.AnthropicKeyConfig.HasWorkloadIdentity() && ProviderSupportsAnthropicWorkloadIdentity(providerKey))
 }
 
 // routingErrorSummary produces a sanitized, audit-safe one-line summary of a
@@ -281,6 +280,34 @@ func routingErrorSummary(e *schemas.BifrostError) string {
 		return "request failed"
 	}
 	return strings.Join(parts, " ")
+}
+
+// fallbackAttemptOf records what became of one fallback for the primary's error, which is what the
+// caller gets once the whole chain has failed (see schemas.FallbackAttempt). A nil err is a fallback
+// that was skipped before any attempt.
+func fallbackAttemptOf(fallback schemas.Fallback, err *schemas.BifrostError) schemas.FallbackAttempt {
+	attempt := schemas.FallbackAttempt{Provider: fallback.Provider, Model: fallback.Model}
+	if err == nil {
+		attempt.Skipped = true
+		return attempt
+	}
+	if err.StatusCode != nil {
+		attempt.StatusCode = new(*err.StatusCode)
+	}
+	// The nested type first, as in routingErrorSummary: a Responses stream failure's top-level type
+	// is the event name ("response.failed", "error"), not the provider's error type.
+	if err.Error != nil && err.Error.Type != nil && *err.Error.Type != "" {
+		attempt.Type = *err.Error.Type
+	} else if err.Type != nil {
+		attempt.Type = *err.Type
+	}
+	if err.Error != nil {
+		attempt.Message = err.Error.Message
+		if attempt.Message == "" && err.Error.Error != nil {
+			attempt.Message = err.Error.Error.Error()
+		}
+	}
+	return attempt
 }
 
 // newBifrostError wraps a standard error into a BifrostError with IsBifrostError set to false.
@@ -435,6 +462,7 @@ func clearCtxForFallback(ctx *schemas.BifrostContext) {
 	ctx.ClearValue(schemas.BifrostContextKeyStreamParkedAfterFinish)
 	ctx.ClearValue(schemas.BifrostContextKeyStreamAttemptAbort)
 	ctx.ClearValue(schemas.BifrostContextKeySupportsAssistantPrefill)
+	ctx.ClearValue(schemas.BifrostContextKeyDisableStore)
 	// Provider response headers belong to the provider that produced them.
 	// If a fallback attempt fails pre-flight (no HTTP request issued), the
 	// previous provider's headers would otherwise survive on the context and
@@ -478,6 +506,12 @@ func restoreProviderResponseHeaders(ctx *schemas.BifrostContext, headers map[str
 //     raw or streamed body instead of marshaling the internal request, route
 //     it to the caller's endpoint path instead of the internal request's own,
 //     and forward the caller's headers on a call the caller doesn't own.
+//   - Inbound-dialect witness: the surface an Anthropic Messages caller sent
+//     natively (their own thinking mode and sampling scalars), recorded at
+//     ingress so the Anthropic egress can rebuild what the neutral request
+//     shape cannot carry. Inherited, it would answer a plugin's own Sonnet 5.5
+//     request with the caller's parameters rather than the ones that request
+//     actually carries.
 //
 // Deliberately not cleared: tracing/observability keys (the sub-request
 // should stay tied to the caller's trace) and
@@ -508,6 +542,15 @@ func extraHeaderSpanAttribute(name string, values []string) (any, bool) {
 }
 
 func ClearContextForInternalRequest(ctx *schemas.BifrostContext) {
+	// This write is load-bearing for every ClearValue below it, not just for the
+	// witness it parks. ClearValue shadows a parent's value through this context's
+	// OWN value map, and NewBifrostContext leaves that map unallocated until
+	// something is written; on a fresh derived context every ClearValue is
+	// therefore a no-op and the caller's values - their direct key, api-key id and
+	// extra headers among them - stay visible to the sub-request. SetValue
+	// allocates the map, so it has to come first. The egress type assertion treats
+	// the nil it parks here as no witness at all.
+	ctx.SetValue(schemas.BifrostContextKeyAnthropicNativeRequestSurface, nil)
 	// Key routing.
 	ctx.ClearValue(schemas.BifrostContextKeyGovernanceIncludeOnlyKeys)
 	ctx.ClearValue(schemas.BifrostContextKeyRoutingPinnedAPIKeyID)
@@ -519,7 +562,6 @@ func ClearContextForInternalRequest(ctx *schemas.BifrostContext) {
 	// Body transport.
 	ctx.ClearValue(schemas.BifrostContextKeyUseRawRequestBody)
 	ctx.ClearValue(schemas.BifrostContextKeyRawRequestBodyTextRewriter)
-	ctx.ClearValue(schemas.BifrostContextKeyRawStreamTextCodec)
 	ctx.ClearValue(schemas.BifrostContextKeySendBackRawRequest)
 	ctx.ClearValue(schemas.BifrostContextKeySendBackRawResponse)
 	ctx.ClearValue(schemas.BifrostContextKeyPassthroughOverridesPresent)
@@ -605,6 +647,19 @@ func isBatchRequestType(reqType schemas.RequestType) bool {
 // isFileRequestType returns true if the given request type is a file API operation.
 func isFileRequestType(reqType schemas.RequestType) bool {
 	return reqType == schemas.FileUploadRequest || reqType == schemas.FileListRequest || reqType == schemas.FileRetrieveRequest || reqType == schemas.FileDeleteRequest || reqType == schemas.FileContentRequest
+}
+
+// isKeyScopedLookupRequest reports whether the request addresses one stored object by id through a single-key provider call;
+// core tries each key in turn because the object lives on whichever key created it.
+func isKeyScopedLookupRequest(br *schemas.BifrostRequest) bool {
+	switch br.RequestType {
+	case schemas.ContainerFileCreateRequest,
+		schemas.VideoRetrieveRequest, schemas.VideoDownloadRequest, schemas.VideoDeleteRequest, schemas.VideoRemixRequest:
+		return true
+	case schemas.VideoEditRequest:
+		return br.VideoEditRequest != nil && br.VideoEditRequest.Input != nil && br.VideoEditRequest.Input.Video.ID != ""
+	}
+	return isResponsesLifecycleRequestType(br.RequestType)
 }
 
 // isCachedContentRequestType returns true if the given request type is a cached content lifecycle operation.

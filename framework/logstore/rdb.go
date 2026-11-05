@@ -84,6 +84,20 @@ type RDBLogStore struct {
 	// Lazily built shared probe behind MigrationInProgress (see maintenancegate.go).
 	migrationProbeOnce sync.Once
 	migrationProbeInst *migrationLockProbe
+	// matViewLimits are the session bounds every matview create/refresh applies.
+	matViewLimits matViewSessionLimits
+	// matViewTempLimitWarned backs matViewLimits.deniedWarned.
+	matViewTempLimitWarned atomic.Bool
+	// matViewClientCheckWarned backs matViewLimits.clientCheckWarned.
+	matViewClientCheckWarned atomic.Bool
+	// Matview maintenance lifecycle (see goMaintenance). Close cancels
+	// maintenanceCtx so an in-flight REFRESH is cancelled on the server instead
+	// of outliving this process. Nil on stores built without newPostgresLogStore.
+	maintenanceMu     sync.Mutex
+	maintenanceCtx    context.Context
+	maintenanceCancel context.CancelFunc
+	maintenanceClosed bool
+	maintenanceWG     sync.WaitGroup
 }
 
 // generateBucketTimestamps generates all bucket timestamps for a time range.
@@ -355,11 +369,51 @@ func (s *RDBLogStore) applyAgentContextFilter(baseQuery *gorm.DB, agentNames []s
 	return baseQuery.Where("session_id IN (?)", contexts)
 }
 
+// applyTopicFilter narrows a logs query to the requests Warp filed under any
+// of the topics or themes, by id.
+//
+// A request's topic lives in warp_topic_assignments, not on the log row, so
+// the filter is a membership test against that table. An id names a topic,
+// the topics merged into it, or the topics of a theme. A merged topic's
+// requests were never refiled (see MaintainTopics in framework/warp), and
+// upkeep keeps every merged topic pointing at a live survivor and carrying
+// its survivor's theme, so one level of merged_into and one of parent_id is
+// the whole tree. The id list is bound three times, which at the 50 ids a
+// request may name is well inside any backend's parameter limit.
+//
+// Only topics still in use are followed through merged_into and parent_id. A
+// topic a later run retired keeps the theme and survivor it pointed at -
+// retiring changes only its status - but its requests are no longer theirs,
+// and Warp's own counts leave them out. Merged topics are followed: their
+// requests count under the survivor. A retired topic named directly still
+// matches through topic_id.
+//
+// Not scoped on its own: the assignment rows are only a key into the logs
+// table, and the caller's access scope applies to the log rows that come
+// back.
+func applyTopicFilter(baseQuery *gorm.DB, topicIDs []string) *gorm.DB {
+	return baseQuery.Where(
+		"id IN (SELECT log_id FROM warp_topic_assignments WHERE topic_id IN ? OR topic_id IN (SELECT id FROM warp_topics WHERE (merged_into IN ? OR parent_id IN ?) AND status <> ?))",
+		topicIDs, topicIDs, topicIDs, WarpTopicStatusRetired,
+	)
+}
+
 // applyFilters applies search filters to a GORM query. Callers are
 // responsible for starting from ScopedDB(ctx) when row visibility
 // should be respected; this helper only adds the per-call filter
 // predicates.
 func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *gorm.DB {
+	if filters.RealtimeInputItemID != "" {
+		switch s.db.Dialector.Name() {
+		case "postgres":
+			fragment, _ := sonic.Marshal(map[string]any{"realtime_input_items": []map[string]string{{"id": filters.RealtimeInputItemID}}})
+			baseQuery = baseQuery.Where("metadata IS JSON OBJECT AND metadata::jsonb @> ?::jsonb", string(fragment))
+		case "clickhouse":
+			baseQuery = baseQuery.Where("isValidJSON(metadata) AND arrayExists(item -> JSONExtractString(item, 'id') = ?, JSONExtractArrayRaw(ifNull(metadata, '{}'), 'realtime_input_items'))", filters.RealtimeInputItemID)
+		default:
+			baseQuery = baseQuery.Where("json_valid(metadata) AND EXISTS (SELECT 1 FROM json_each(metadata, '$.realtime_input_items') AS realtime_item WHERE json_extract(realtime_item.value, '$.id') = ?)", filters.RealtimeInputItemID)
+		}
+	}
 	if len(filters.Providers) > 0 {
 		baseQuery = baseQuery.Where("provider IN ?", filters.Providers)
 	}
@@ -434,6 +488,9 @@ func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *g
 	// one project, so there is no array column to OR against.
 	if len(filters.ProjectIDs) > 0 {
 		baseQuery = baseQuery.Where("project_id IN ?", filters.ProjectIDs)
+	}
+	if len(filters.TopicIDs) > 0 {
+		baseQuery = applyTopicFilter(baseQuery, filters.TopicIDs)
 	}
 	if len(filters.BusinessUnitIDs) > 0 {
 		sql, args := dimensionMembershipFilterSQL(s.db.Dialector.Name(), "business_unit_id", "business_unit_ids", filters.BusinessUnitIDs)
@@ -560,47 +617,73 @@ func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *g
 	}
 	if len(filters.MetadataFilters) > 0 {
 		dialect := s.db.Dialector.Name()
-		// Guard must match the partial-index predicate so the planner uses the GIN index.
-		// SQLite does not support IS JSON OBJECT, so fall back to the equivalent json_type check.
-		switch dialect {
-		case "postgres":
-			baseQuery = baseQuery.Where("metadata IS NOT NULL AND metadata IS JSON OBJECT")
-		case "clickhouse":
-			baseQuery = baseQuery.Where("metadata IS NOT NULL AND isValidJSON(metadata)")
-		default:
-			baseQuery = baseQuery.Where("metadata IS NOT NULL AND json_valid(metadata) AND json_type(metadata) = 'object'")
-		}
-		for key, value := range filters.MetadataFilters {
-			if !isValidMetadataKey(key) {
+		// Values for one key are alternatives (OR); separate keys must all match (AND). Invalid keys
+		// are dropped before anything is added, so a filter that ends up empty adds no guard either.
+		var metadataConds []string
+		var metadataArgs [][]interface{}
+		for key, values := range filters.MetadataFilters {
+			if !isValidMetadataKey(key) || len(values) == 0 {
 				continue
 			}
+			if len(values) > MaxMetadataFilterValuesPerKey {
+				values = values[:MaxMetadataFilterValuesPerKey]
+			}
+			conds := make([]string, 0, len(values))
+			args := make([]interface{}, 0, len(values)*4)
+			for _, value := range values {
+				cond, condArgs := metadataValueCondition(dialect, key, value)
+				conds = append(conds, cond)
+				args = append(args, condArgs...)
+			}
+			metadataConds = append(metadataConds, "("+strings.Join(conds, " OR ")+")")
+			metadataArgs = append(metadataArgs, args)
+		}
+		if len(metadataConds) > 0 {
+			// Guard must match the partial-index predicate so the planner uses the GIN index.
+			// SQLite does not support IS JSON OBJECT, so fall back to the equivalent json_type check.
 			switch dialect {
 			case "postgres":
-				// Use @> containment operator to leverage GIN index on metadata::jsonb.
-				// Metadata values always originate from HTTP headers and are stored as JSON
-				// strings — always match as a string to avoid type mismatch with jsonb.
-				jsonFragment := fmt.Sprintf(`{%q: %q}`, key, value)
-				baseQuery = baseQuery.Where("metadata::jsonb @> ?::jsonb", jsonFragment)
+				baseQuery = baseQuery.Where("metadata IS NOT NULL AND metadata IS JSON OBJECT")
 			case "clickhouse":
-				// Metadata values are stored as JSON strings (see postgres note);
-				// match them as strings via JSONExtractString.
-				baseQuery = baseQuery.Where("JSONExtractString(metadata, ?) = ?", key, value)
+				baseQuery = baseQuery.Where("metadata IS NOT NULL AND isValidJSON(metadata)")
 			default:
-				// SQLite: quote the member name so dots/hyphens stay part of the key
-				path := `$."` + key + `"`
-				if value == "true" {
-					// json_extract returns 1 for true, but json_type returns 'true'
-					baseQuery = baseQuery.Where("json_type(metadata, ?) = 'true'", path)
-				} else if value == "false" {
-					baseQuery = baseQuery.Where("json_type(metadata, ?) = 'false'", path)
-				} else {
-					// Numeric and string values: compare both as-is and as text
-					baseQuery = baseQuery.Where("json_extract(metadata, ?) = ? OR CAST(json_extract(metadata, ?) AS TEXT) = ?", path, value, path, value)
-				}
+				baseQuery = baseQuery.Where("metadata IS NOT NULL AND json_valid(metadata) AND json_type(metadata) = 'object'")
+			}
+			for i, cond := range metadataConds {
+				baseQuery = baseQuery.Where(cond, metadataArgs[i]...)
 			}
 		}
 	}
 	return baseQuery
+}
+
+// metadataValueCondition is the SQL predicate (with its args) matching rows whose metadata holds
+// value under key. key must already have passed isValidMetadataKey.
+func metadataValueCondition(dialect, key, value string) (string, []interface{}) {
+	switch dialect {
+	case "postgres":
+		// Use @> containment operator to leverage GIN index on metadata::jsonb.
+		// Metadata values always originate from HTTP headers and are stored as JSON
+		// strings — always match as a string to avoid type mismatch with jsonb.
+		return "metadata::jsonb @> ?::jsonb", []interface{}{fmt.Sprintf(`{%q: %q}`, key, value)}
+	case "clickhouse":
+		// Metadata values are stored as JSON strings (see postgres note);
+		// match them as strings via JSONExtractString.
+		return "JSONExtractString(metadata, ?) = ?", []interface{}{key, value}
+	default:
+		// SQLite: quote the member name so dots/hyphens stay part of the key
+		path := `$."` + key + `"`
+		switch value {
+		case "true":
+			// json_extract returns 1 for true, but json_type returns 'true'
+			return "json_type(metadata, ?) = 'true'", []interface{}{path}
+		case "false":
+			return "json_type(metadata, ?) = 'false'", []interface{}{path}
+		default:
+			// Numeric and string values: compare both as-is and as text
+			return "(json_extract(metadata, ?) = ? OR CAST(json_extract(metadata, ?) AS TEXT) = ?)", []interface{}{path, value, path, value}
+		}
+	}
 }
 
 // Guardrail outcome values accepted by SearchFilters.GuardrailOutcomes.
@@ -870,6 +953,11 @@ func (s *RDBLogStore) BatchUpdate(ctx context.Context, entries []*Log) error {
 			// the input summary already on the row.
 			if err := tx.Model(&Log{}).Where("id = ?", entry.ID).Omit("content_summary").Updates(serialized).Error; err != nil {
 				return err
+			}
+			if entry.RealtimeInputCorrection != nil {
+				if err := tx.Model(&Log{}).Where("id = ?", entry.ID).UpdateColumn("content_summary", entry.RealtimeInputCorrection.Summary).Error; err != nil {
+					return err
+				}
 			}
 			// Updates skips zero values, so a final "visible" (false) decision
 			// would never clear a hidden flag saved earlier; write it explicitly.
@@ -1342,6 +1430,12 @@ func applyKeysetCursor(query *gorm.DB, dialect string, pagination PaginationOpti
 // whose children all fail the filters reports ChildCount 0 and offers nothing
 // to expand.
 func (s *RDBLogStore) attachChildAggregates(ctx context.Context, logs []Log, filters SearchFilters) error {
+	return s.attachChildAggregatesWhere(ctx, logs, filters, nil)
+}
+
+// attachChildAggregatesWhere is attachChildAggregates with an extra predicate
+// (nil for none) that narrows which child rows the rollup reads.
+func (s *RDBLogStore) attachChildAggregatesWhere(ctx context.Context, logs []Log, filters SearchFilters, narrow func(*gorm.DB) *gorm.DB) error {
 	if len(logs) == 0 {
 		return nil
 	}
@@ -1365,7 +1459,11 @@ func (s *RDBLogStore) attachChildAggregates(ctx context.Context, logs []Log, fil
 	childFilters.GroupSessions = false
 	childFilters.ParentRequestID = ""
 
-	err := s.applyFilters(s.scopedLogsDB(ctx).Model(&Log{}), childFilters).
+	query := s.applyFilters(s.scopedLogsDB(ctx).Model(&Log{}), childFilters)
+	if narrow != nil {
+		query = narrow(query)
+	}
+	err := query.
 		Select("parent_request_id, COUNT(*) AS child_count, COALESCE(SUM(cost), 0) AS children_cost, COALESCE(SUM(total_tokens), 0) AS children_tokens").
 		Where("parent_request_id IN ? AND id <> parent_request_id", ids).
 		Group("parent_request_id").
@@ -1633,11 +1731,11 @@ func (s *RDBLogStore) listSelectColumns() string {
 		"virtual_key_id", "virtual_key_name",
 		"routing_engines_used", "tool_call_names", "routing_rule_id", "routing_rule_name",
 		"complexity_tier", "complexity_mechanism", "session_id", "agent_correlation_id",
-		"user_id", "user_name", "team_id", "team_name", "customer_id", "customer_name",
+		"user_id", "user_name", "user_email", "team_id", "team_name", "customer_id", "customer_name",
 		"business_unit_id", "business_unit_name",
 		"team_ids", "team_names", "customer_ids", "customer_names", "business_unit_ids", "business_unit_names",
 		"project_id", "project_name",
-		"user_agent", "app",
+		"user_agent", "app", "client_ip",
 		"speech_input", "transcription_input", "image_generation_input", "video_generation_input",
 		// error_details is intentionally excluded from the list select: for status=error
 		// rows it can carry the provider's full (unbounded) error payload, and 25+ such
@@ -1645,7 +1743,7 @@ func (s *RDBLogStore) listSelectColumns() string {
 		// The full error is still served by the detail endpoint (GetLog / GET /api/logs/{id}).
 		// Only guardrail blocks, whose errors are bounded, are listed (see below).
 		"latency", "upstream_latency", "overhead_latency", "token_usage", "cost", "status", "stream",
-		fmt.Sprintf("substr(content_summary, 1, %d) AS content_summary", maxContentSummaryBytes),
+		fmt.Sprintf("substr(content_summary, 1, %d) AS content_summary", MaxContentSummaryBytes),
 		"metadata", "cache_debug",
 		"batch_debug",
 		// video_debug tells a settled video's aggregate cost row apart from the
@@ -4614,17 +4712,22 @@ func (s *RDBLogStore) FindByID(ctx context.Context, id string) (*Log, error) {
 		}
 		return nil, err
 	}
-	// The list rolls a row's children up into ChildrenCost, and a request whose cost
-	// was settled onto a child row has none of its own — so without this the detail
-	// view of a video generation or a batch shows no cost at all while the list
-	// beside it shows one. No filters here: a single row is addressed by id, so the
-	// rollup covers every child rather than only those in some window.
+	return s.withChildAggregates(ctx, log), nil
+}
+
+// withChildAggregates returns a single row found by id with its child rollup
+// attached. The list rolls a row's children up into ChildrenCost, and a request
+// whose cost was settled onto a child row has none of its own — so without this
+// the detail view of a video generation or a batch shows no cost at all while
+// the list beside it shows one. No filters here: a single row is addressed by
+// id, so the rollup covers every child rather than only those in some window.
+func (s *RDBLogStore) withChildAggregates(ctx context.Context, log Log) *Log {
 	rows := []Log{log}
 	if err := s.attachChildAggregates(ctx, rows, SearchFilters{}); err != nil {
-		s.logger.Warn(fmt.Sprintf("logstore: child aggregates unavailable for log %s, returning it without them: %s", id, err))
-		return &log, nil
+		s.logger.Warn(fmt.Sprintf("logstore: child aggregates unavailable for log %s, returning it without them: %s", log.ID, err))
+		return &log
 	}
-	return &rows[0], nil
+	return &rows[0]
 }
 
 // IsLogEntryPresent checks if a log entry is present in the database.
@@ -5196,14 +5299,23 @@ func (s *RDBLogStore) DeleteMCPToolLogsBatch(ctx context.Context, cutoff time.Ti
 // on the indexed column. MySQL rejects LIMIT inside an IN subquery, so it uses
 // its single-table DELETE ... ORDER BY ... LIMIT form instead.
 func (s *RDBLogStore) deleteExpiredBatch(ctx context.Context, table, column string, cutoff time.Time, batchSize int) (int64, error) {
+	return s.deleteExpiredBatchByKey(ctx, table, "id", column, cutoff, batchSize)
+}
+
+// deleteExpiredBatchByKey is deleteExpiredBatch for a table whose primary key
+// is not named id. key, like table and column, is an internal constant.
+func (s *RDBLogStore) deleteExpiredBatchByKey(ctx context.Context, table, key, column string, cutoff time.Time, batchSize int) (int64, error) {
 	if batchSize <= 0 {
 		return 0, nil
 	}
 	var stmt string
-	if s.db.Dialector.Name() == "mysql" {
+	switch s.db.Dialector.Name() {
+	case "mysql":
 		stmt = fmt.Sprintf("DELETE FROM %s WHERE %s < ? ORDER BY %s LIMIT ?", table, column, column)
-	} else {
-		stmt = fmt.Sprintf("DELETE FROM %s WHERE id IN (SELECT id FROM %s WHERE %s < ? ORDER BY %s LIMIT ?)", table, table, column, column)
+	case "postgres":
+		return s.deleteExpiredBatchPostgres(ctx, table, key, column, cutoff, batchSize)
+	default:
+		stmt = fmt.Sprintf("DELETE FROM %s WHERE %s IN (SELECT %s FROM %s WHERE %s < ? ORDER BY %s LIMIT ?)", table, key, key, table, column, column)
 	}
 	result := s.db.WithContext(ctx).Exec(stmt, cutoff, batchSize)
 	if result.Error != nil {
@@ -5212,8 +5324,117 @@ func (s *RDBLogStore) deleteExpiredBatch(ctx context.Context, table, column stri
 	return result.RowsAffected, nil
 }
 
-// Close closes the log store.
+// retentionAdvisoryLockKeys gives each retention table its own lock, so replicas can drain different tables at once.
+// 1000040-1000049 is reserved for retention: enterprise holds 1000031 and 1000032, so keep this block separate.
+var retentionAdvisoryLockKeys = map[string]int64{
+	"logs":                   1000040,
+	"mcp_tool_logs":          1000041,
+	"relay_logs":             1000042,
+	"warp_topic_assignments": 1000043,
+	"warp_topic_unmatched":   1000044,
+}
+
+// retentionAdvisoryLockKeyOther covers any retention table missing from retentionAdvisoryLockKeys.
+const retentionAdvisoryLockKeyOther int64 = 1000049
+
+// deleteExpiredBatchPostgres deletes one batch under the table's xact advisory lock (PgBouncer-safe), or returns ErrRetentionBusy.
+func (s *RDBLogStore) deleteExpiredBatchPostgres(ctx context.Context, table, key, column string, cutoff time.Time, batchSize int) (int64, error) {
+	lockKey, ok := retentionAdvisoryLockKeys[table]
+	if !ok {
+		lockKey = retentionAdvisoryLockKeyOther
+	}
+	stmt := fmt.Sprintf("DELETE FROM %s WHERE %s IN (SELECT %s FROM %s WHERE %s < ? ORDER BY %s LIMIT ? FOR UPDATE SKIP LOCKED)", table, key, key, table, column, column)
+	var deleted int64
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var acquired bool
+		if err := tx.Raw("SELECT pg_try_advisory_xact_lock(?)", lockKey).Row().Scan(&acquired); err != nil {
+			return err
+		}
+		if !acquired {
+			return ErrRetentionBusy
+		}
+		result := tx.Exec(stmt, cutoff, batchSize)
+		if result.Error != nil {
+			return result.Error
+		}
+		deleted = result.RowsAffected
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	return deleted, nil
+}
+
+// RetentionInterval is hourly on Postgres, where the advisory lock makes idle replicas' ticks one cheap probe.
+func (s *RDBLogStore) RetentionInterval() time.Duration {
+	if s.db.Dialector.Name() == "postgres" {
+		return postgresCleanupInterval
+	}
+	return cleanupInterval
+}
+
+// matViewShutdownWait bounds how long Close waits for cancelled matview
+// maintenance to wind down (cancel request, advisory unlock, session restore)
+// before it closes the pool anyway.
+const matViewShutdownWait = 15 * time.Second
+
+// maintenanceContext returns the context matview maintenance runs on: the
+// store's own, cancelled by Close, or Background for a store built without one.
+func (s *RDBLogStore) maintenanceContext() context.Context {
+	if s.maintenanceCtx == nil {
+		return context.Background()
+	}
+	return s.maintenanceCtx
+}
+
+// goMaintenance runs fn in a goroutine that Close waits for. It returns false
+// without running fn once Close has started, so no maintenance starts on a
+// store that is shutting down.
+func (s *RDBLogStore) goMaintenance(fn func()) bool {
+	s.maintenanceMu.Lock()
+	if s.maintenanceClosed {
+		s.maintenanceMu.Unlock()
+		return false
+	}
+	s.maintenanceWG.Add(1)
+	s.maintenanceMu.Unlock()
+	go func() {
+		defer s.maintenanceWG.Done()
+		fn()
+	}()
+	return true
+}
+
+// stopMaintenance cancels matview maintenance and waits up to
+// matViewShutdownWait for it to exit. Cancelling makes the driver send the
+// server a cancel request for a running REFRESH, so the statement and its
+// advisory lock end with this process rather than running on for hours.
+func (s *RDBLogStore) stopMaintenance() {
+	s.maintenanceMu.Lock()
+	s.maintenanceClosed = true
+	if s.maintenanceCancel != nil {
+		s.maintenanceCancel()
+	}
+	s.maintenanceMu.Unlock()
+
+	done := make(chan struct{})
+	go func() {
+		s.maintenanceWG.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(matViewShutdownWait):
+		if s.logger != nil {
+			s.logger.Warn(fmt.Sprintf("logstore: matview maintenance did not stop within %s; closing the pool anyway", matViewShutdownWait))
+		}
+	}
+}
+
+// Close stops matview maintenance and closes the log store.
 func (s *RDBLogStore) Close(ctx context.Context) error {
+	s.stopMaintenance()
 	sqlDB, err := s.db.WithContext(ctx).DB()
 	if err != nil {
 		return err
@@ -5221,23 +5442,29 @@ func (s *RDBLogStore) Close(ctx context.Context) error {
 	return sqlDB.Close()
 }
 
-// DeleteLog deletes a log entry from the database by its ID.
+// DeleteLog deletes a log entry from the database by its ID, and with it
+// what Warp's topic tables hold about it, in one transaction.
 func (s *RDBLogStore) DeleteLog(ctx context.Context, id string) error {
-	if err := s.db.WithContext(ctx).Where("id = ?", id).Delete(&Log{}).Error; err != nil {
-		return err
-	}
-	return nil
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("id = ?", id).Delete(&Log{}).Error; err != nil {
+			return err
+		}
+		return deleteWarpTopicRowsForLogs(tx, []string{id})
+	})
 }
 
-// DeleteLogs deletes multiple log entries from the database by their IDs.
+// DeleteLogs deletes multiple log entries from the database by their IDs, and
+// with them what Warp's topic tables hold about them, in one transaction.
 func (s *RDBLogStore) DeleteLogs(ctx context.Context, ids []string) error {
 	if len(ids) == 0 {
 		return nil
 	}
-	if err := s.db.WithContext(ctx).Where("id IN ?", ids).Delete(&Log{}).Error; err != nil {
-		return err
-	}
-	return nil
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("id IN ?", ids).Delete(&Log{}).Error; err != nil {
+			return err
+		}
+		return deleteWarpTopicRowsForLogs(tx, ids)
+	})
 }
 
 // ============================================================================
@@ -5288,6 +5515,9 @@ func (s *RDBLogStore) applyMCPFilters(baseQuery *gorm.DB, filters MCPToolLogSear
 	}
 	if filters.AgentCorrelationID != "" {
 		baseQuery = baseQuery.Where("agent_correlation_id = ?", filters.AgentCorrelationID)
+	}
+	if filters.RoundTripID != "" {
+		baseQuery = baseQuery.Where("round_trip_id = ?", filters.RoundTripID)
 	}
 	if len(filters.UserAgents) > 0 {
 		baseQuery = baseQuery.Where("user_agent IN ?", filters.UserAgents)

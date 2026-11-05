@@ -126,6 +126,7 @@ type ProviderResponse struct {
 	OpenAIConfig             *schemas.OpenAIConfig            `json:"openai_config,omitempty"`          // OpenAI-specific configuration
 	PromptCache              *schemas.PromptCacheConfig       `json:"prompt_cache,omitempty"`           // Prompt-cache breakpoint injection
 	InjectedTools            []schemas.InjectedTool           `json:"injected_tools,omitempty"`         // MCP tools injected and auto-executed server side
+	Passthrough              *schemas.PassthroughPolicy       `json:"passthrough,omitempty"`            // Routes the HTTP passthrough endpoints may forward
 	ProviderStatus           ProviderStatus                   `json:"provider_status"`                  // Health/initialization status of the provider
 	Status                   string                           `json:"status,omitempty"`                 // Operational status (e.g., list_models_failed)
 	Description              string                           `json:"description,omitempty"`            // Error/status description
@@ -183,6 +184,7 @@ type providerCreatePayload struct {
 	OpenAIConfig             *schemas.OpenAIConfig             `json:"openai_config,omitempty"`  // OpenAI-specific configuration
 	PromptCache              *schemas.PromptCacheConfig        `json:"prompt_cache,omitempty"`   // Prompt-cache breakpoint injection
 	InjectedTools            []schemas.InjectedTool            `json:"injected_tools,omitempty"` // MCP tools injected and auto-executed server side
+	Passthrough              *schemas.PassthroughPolicy        `json:"passthrough,omitempty"`    // Routes the HTTP passthrough endpoints may forward
 }
 
 type providerUpdatePayload struct {
@@ -197,6 +199,7 @@ type providerUpdatePayload struct {
 	OpenAIConfig             *schemas.OpenAIConfig            `json:"openai_config,omitempty"`  // OpenAI-specific configuration
 	PromptCache              *schemas.PromptCacheConfig       `json:"prompt_cache,omitempty"`   // Prompt-cache breakpoint injection
 	InjectedTools            []schemas.InjectedTool           `json:"injected_tools,omitempty"` // MCP tools injected and auto-executed server side
+	Passthrough              *schemas.PassthroughPolicy       `json:"passthrough,omitempty"`    // Routes the HTTP passthrough endpoints may forward
 }
 
 // applyProviderConfigUpdates copies onto config only the nested config blocks the
@@ -237,6 +240,9 @@ func applyProviderConfigUpdates(config *configstore.ProviderConfig, payload *pro
 	if carried("injected_tools") {
 		config.InjectedTools = payload.InjectedTools
 	}
+	if carried("passthrough") {
+		config.Passthrough = payload.Passthrough
+	}
 }
 
 // RegisterRoutes registers all provider management routes
@@ -262,6 +268,7 @@ func (h *ProviderHandler) RegisterRoutes(r *router.Router, middlewares ...schema
 	r.GET("/api/models/details", lib.ChainMiddlewares(h.listModelDetails, middlewares...))
 	r.GET("/api/models/parameters", lib.ChainMiddlewares(h.getModelParameters, middlewares...))
 	r.GET("/api/models/base", lib.ChainMiddlewares(h.listBaseModels, middlewares...))
+	r.GET("/api/models/newest", lib.ChainMiddlewares(h.listNewestModels, middlewares...))
 	r.PUT("/api/models/catalog", lib.ChainMiddlewares(h.upsertModelCatalogEntries, middlewares...))
 }
 
@@ -367,6 +374,10 @@ func sendPayloadDecodeError(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid injected tools config: %v", err))
 		return
 	}
+	if err := lib.ValidatePassthroughBody(ctx.PostBody()); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid passthrough config: %v", err))
+		return
+	}
 	SendError(ctx, fasthttp.StatusBadRequest, "Invalid request payload")
 }
 
@@ -468,6 +479,7 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 		OpenAIConfig:             payload.OpenAIConfig,
 		PromptCache:              payload.PromptCache,
 		InjectedTools:            payload.InjectedTools,
+		Passthrough:              payload.Passthrough,
 	}
 	if requireGenuineAuthForInterception(ctx, configstore.ProviderConfig{}, config) {
 		return
@@ -490,6 +502,14 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 	}
 	if err := lib.ValidateInjectedTools(config.InjectedTools, h.inMemoryStore.GetMCPClientNames()); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid injected tools config: %v", err))
+		return
+	}
+	if err := lib.ValidatePassthroughBody(ctx.PostBody()); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid passthrough config: %v", err))
+		return
+	}
+	if err := config.Passthrough.Validate(); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid passthrough config: %v", err))
 		return
 	}
 	// Add provider to store (env vars will be processed by store)
@@ -519,6 +539,7 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 	redactedConfig, err := h.inMemoryStore.GetProviderConfigRedacted(payload.Provider)
 	if err != nil {
 		logger.Warn("Failed to get redacted config for provider %s: %v", payload.Provider, err)
+		lib.RecordAuditChange(ctx, "provider.created", "provider", string(payload.Provider), string(payload.Provider), nil, auditProviderConfig(config.Redacted()))
 		// Fall back to the saved config, redacted and without keys
 		sanitized := config.Redacted()
 		sanitized.Keys = nil
@@ -529,6 +550,7 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 
 	response := h.getProviderResponseFromConfig(payload.Provider, *redactedConfig, ProviderStatusActive)
 
+	lib.RecordAuditChange(ctx, "provider.created", "provider", string(payload.Provider), string(payload.Provider), nil, auditProviderConfig(redactedConfig))
 	SendJSON(ctx, response)
 }
 
@@ -545,7 +567,7 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	var payload = struct {
+	payload := struct {
 		Keys []schemas.Key `json:"keys"` // API keys for the provider
 		providerUpdatePayload
 	}{}
@@ -603,6 +625,7 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 		}
 	}
 
+	before := auditProviderConfig(oldRedactedConfig)
 	if oldRedactedConfig == nil {
 		oldRedactedConfig = &configstore.ProviderConfig{}
 	}
@@ -617,6 +640,7 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 		OpenAIConfig:             oldConfigRaw.OpenAIConfig,
 		PromptCache:              oldConfigRaw.PromptCache,
 		InjectedTools:            oldConfigRaw.InjectedTools,
+		Passthrough:              oldConfigRaw.Passthrough,
 		StoreRawRequestResponse:  oldConfigRaw.StoreRawRequestResponse,
 		IgnoreProviderCost:       oldConfigRaw.IgnoreProviderCost,
 		Status:                   oldConfigRaw.Status,
@@ -654,6 +678,14 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 	}
 	if err := lib.ValidateInjectedTools(payload.InjectedTools, h.inMemoryStore.GetMCPClientNames()); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid injected tools config: %v", err))
+		return
+	}
+	if err := lib.ValidatePassthroughBody(ctx.PostBody()); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid passthrough config: %v", err))
+		return
+	}
+	if err := payload.Passthrough.Validate(); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid passthrough config: %v", err))
 		return
 	}
 
@@ -781,6 +813,7 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 	redactedConfig, err := h.inMemoryStore.GetProviderConfigRedacted(provider)
 	if err != nil {
 		logger.Warn("Failed to get redacted config for provider %s: %v", provider, err)
+		lib.RecordAuditChange(ctx, "provider.updated", "provider", string(provider), string(provider), before, auditProviderConfig(config.Redacted()))
 		// Fall back to the saved config, redacted and without keys
 		sanitized := config.Redacted()
 		sanitized.Keys = nil
@@ -791,6 +824,7 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 
 	response := h.getProviderResponseFromConfig(provider, *redactedConfig, ProviderStatusActive)
 
+	lib.RecordAuditChange(ctx, "provider.updated", "provider", string(provider), string(provider), before, auditProviderConfig(redactedConfig))
 	SendJSON(ctx, response)
 }
 
@@ -803,13 +837,16 @@ func (h *ProviderHandler) deleteProvider(ctx *fasthttp.RequestCtx) {
 	}
 
 	// Check if provider exists
-	if _, err := h.inMemoryStore.GetProviderConfigRedacted(provider); err != nil && !errors.Is(err, lib.ErrNotFound) {
+	existing, err := h.inMemoryStore.GetProviderConfigRedacted(provider)
+	if err != nil && !errors.Is(err, lib.ErrNotFound) {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Failed to get provider: %v", err))
 		return
 	}
 
 	if err := h.modelsManager.RemoveProvider(ctx, provider); err != nil {
 		logger.Warn("Failed to delete models for provider %s: %v", provider, err)
+	} else {
+		lib.RecordAuditChange(ctx, "provider.deleted", "provider", string(provider), string(provider), auditProviderConfig(existing), nil)
 	}
 
 	response := ProviderResponse{
@@ -944,6 +981,8 @@ type listedModel struct {
 //   - query: Filter models by name (case-insensitive partial match)
 //   - provider: Filter by specific provider name
 //   - keys: Comma-separated list of provider key UUIDs to filter models accessible by those keys
+//   - unfiltered: If true, list the provider's whole catalog: bypass provider-level model pool
+//     restrictions, and do not narrow to what the caller's virtual key or access allows.
 //   - limit: Maximum number of results to return (default: 5)
 //   - offset: Number of results to skip (for pagination)
 //   - include_deprecated: If true, list deprecated models even when nothing is searched for.
@@ -1000,7 +1039,8 @@ func (h *ProviderHandler) listModels(ctx *fasthttp.RequestCtx) {
 //   - query: Filter models by name (case-insensitive partial match)
 //   - provider: Filter by specific provider name
 //   - keys: Comma-separated list of key IDs to filter models accessible by those keys
-//   - unfiltered: If true, bypass provider-level model pool restrictions only
+//   - unfiltered: If true, list the provider's whole catalog: bypass provider-level model pool
+//     restrictions, and do not narrow to what the caller's virtual key or access allows.
 //   - limit: Maximum number of results to return (default: 20)
 //   - offset: Number of results to skip (for pagination)
 //
@@ -1154,12 +1194,15 @@ func toPricingOverrideSummary(o modelcatalog.PricingOverride) ModelPricingOverri
 // offers a model the request would reject nor hides one it would serve. A
 // custom provider is gated by its allowed requests alone: every model when it
 // allows decisions on a base that serves them (Typesafe, serving Laya, Nimble,
-// or Clef, or OpenAI, exposing /v1/decisions), since its server rejects a
+// or Clef, OpenAI, exposing /v1/decisions, or vLLM and SGLang, serving
+// /v1/systemone for every loaded model), since its server rejects a
 // model it does not serve. Typesafe lists every model, and any other provider
 // a model the datasheet marks supports_decisions, or without a row the
 // provider's name-based fallback (the gpt-6-luna family on OpenAI, a TypeSafe
 // System One model on OpenRouter, a Clef model on Cloudflare, a decider model on
-// Perplexity, a System One model on Ollama, a Microsoft decision model on Azure).
+// Perplexity, a System One model on Ollama, a Microsoft decision model or the
+// gpt-6-luna family on Azure, which serves it on /openai/v1/decisions). vLLM
+// and SGLang serve decisions for every model they load, so every listed model qualifies.
 // Any other provider hosting gpt-6-luna serves it as a chat model (OpenRouter
 // serves its decisions under its own id, openai/gpt-6-luna-decisions, marked by
 // its datasheet row). A key alias is checked as the model it points at, as the
@@ -1168,9 +1211,10 @@ func toPricingOverrideSummary(o modelcatalog.PricingOverride) ModelPricingOverri
 func (h *ProviderHandler) supportsDecisions(provider schemas.ModelProvider, model string) bool {
 	if custom := h.customProviderConfig(provider); custom != nil {
 		return custom.IsOperationAllowed(schemas.DecisionRequest) &&
-			(custom.BaseProviderType == schemas.Typesafe || custom.BaseProviderType == schemas.OpenAI)
+			(custom.BaseProviderType == schemas.Typesafe || custom.BaseProviderType == schemas.OpenAI ||
+				custom.BaseProviderType == schemas.VLLM || custom.BaseProviderType == schemas.SGL)
 	}
-	if provider == schemas.Typesafe {
+	if provider == schemas.Typesafe || provider == schemas.VLLM || provider == schemas.SGL {
 		return true
 	}
 	listed := model
@@ -1180,7 +1224,8 @@ func (h *ProviderHandler) supportsDecisions(provider schemas.ModelProvider, mode
 	case provider == schemas.OpenAI:
 		fallback = schemas.DefaultSupportsDecisions(model)
 	case provider == schemas.Azure:
-		fallback = schemas.IsMicrosoftDecisionModel(listed) || schemas.IsMicrosoftDecisionModel(model)
+		fallback = schemas.IsMicrosoftDecisionModel(listed) || schemas.IsMicrosoftDecisionModel(model) ||
+			schemas.DefaultSupportsDecisions(listed) || schemas.DefaultSupportsDecisions(model)
 	case provider == schemas.OpenRouter:
 		fallback = schemas.IsTypesafeModel(model)
 	case provider == schemas.Cloudflare:
@@ -1277,6 +1322,15 @@ func (h *ProviderHandler) parseModelListQuery(ctx *fasthttp.RequestCtx, bifrostC
 		if offset, err := queryArgs.GetUint("offset"); err == nil {
 			query.Offset = offset
 		}
+	}
+
+	// An unfiltered listing is the provider's whole catalog, which is what the pickers that configure
+	// the gateway ask for (a key's allowed models, deployments), so it is not narrowed to what the
+	// caller may reach. Every caller that reaches this route can already read every provider and key
+	// through the provider routes, so narrowing here hid models from whoever was configuring them
+	// without protecting anything.
+	if query.Unfiltered {
+		return query, true
 	}
 
 	// Resolve what a key-authenticated caller may reach, and filter the listing to it. This
@@ -1713,6 +1767,7 @@ func (h *ProviderHandler) getProviderResponseFromConfig(provider schemas.ModelPr
 		OpenAIConfig:             config.OpenAIConfig,
 		PromptCache:              config.PromptCache,
 		InjectedTools:            config.InjectedTools,
+		Passthrough:              config.Passthrough,
 		ProviderStatus:           status,
 		Status:                   config.Status,
 		Description:              config.Description,
@@ -1790,6 +1845,7 @@ func (h *ProviderHandler) upsertModelCatalogEntries(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to upsert catalog entries: %v", err))
 		return
 	}
+	lib.RecordAuditChange(ctx, "model_catalog.updated", "model_catalog", "model_catalog", "Model catalog", nil, map[string]any{"count": len(payload), "entries": payload})
 	ctx.SetStatusCode(fasthttp.StatusNoContent)
 }
 

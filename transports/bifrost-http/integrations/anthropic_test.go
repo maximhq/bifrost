@@ -7,9 +7,11 @@ import (
 	"testing"
 
 	"github.com/bytedance/sonic"
+	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/providers/anthropic"
 	"github.com/maximhq/bifrost/core/providers/openai"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 	"github.com/valyala/fasthttp"
@@ -96,16 +98,9 @@ func TestAnthropicMessagesBillingHeaderAfterEffortOnlySystemMessage(t *testing.T
 				}
 			}
 
-			// Raw forwarding sends the native body, so its text target IDs must skip the
-			// header exactly as ingress did: the user turn is target 0 and the header stays.
-			targets, err := collectAnthropicRawRequestTextTargets(gjson.ParseBytes(raw))
-			if err != nil {
-				t.Fatal(err)
-			}
-			if len(targets) != 1 || targets[0].Path != "messages.2.content" || targets[0].ID != schemas.TextTargetIDForIndex(0) {
-				t.Fatalf("raw targets out of line with normalized input: %+v", targets)
-			}
-			rewritten, err := rewriteAnthropicRawRequestBodyTransforms(append([]byte(nil), raw...), []schemas.TextRewrite{{TargetID: targets[0].ID, Original: "alpha", Replacement: "[MASKED]"}})
+			// Raw forwarding sends the native body, so a rewrite of the user turn's text
+			// must land on it while the header and the effort-only message stay as sent.
+			rewritten, err := rewriteAnthropicRawRequestBody(append([]byte(nil), raw...), map[string]string{"alpha": "[MASKED]"})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -118,67 +113,6 @@ func TestAnthropicMessagesBillingHeaderAfterEffortOnlySystemMessage(t *testing.T
 				}
 			}
 		})
-	}
-}
-
-// TestAnthropicRawStreamTextCodecRewritesOnlyTextDelta verifies the codec preserves provider-native event structure.
-func TestAnthropicRawStreamTextCodecRewritesOnlyTextDelta(t *testing.T) {
-	codec := anthropicRawStreamTextCodec{}
-	raw := `{"type":"content_block_delta","index":2,"delta":{"type":"text_delta","text":"Contact alice@example.com"},"usage":{"output_tokens":4}}`
-	event, eligible, err := codec.Inspect(raw)
-	if err != nil {
-		t.Fatalf("Inspect() error = %v", err)
-	}
-	if !eligible || event.TargetID != "2" || event.Text != "Contact alice@example.com" {
-		t.Fatalf("Inspect() = (%+v, %v), want target 2 text event", event, eligible)
-	}
-
-	rewritten, err := codec.Rewrite(raw, "Contact [EMAIL]\nnext")
-	if err != nil {
-		t.Fatalf("Rewrite() error = %v", err)
-	}
-	if got := gjson.Get(rewritten, "delta.text").String(); got != "Contact [EMAIL]\nnext" {
-		t.Errorf("delta.text = %q", got)
-	}
-	if got := gjson.Get(rewritten, "type").String(); got != "content_block_delta" {
-		t.Errorf("type = %q", got)
-	}
-	if got := gjson.Get(rewritten, "usage.output_tokens").Int(); got != 4 {
-		t.Errorf("usage.output_tokens = %d", got)
-	}
-	if got := gjson.Get(raw, "delta.text").String(); got != "Contact alice@example.com" {
-		t.Errorf("provider-original raw event changed to %q", got)
-	}
-}
-
-// TestAnthropicRawStreamTextCodecIgnoresNonTextEvents verifies reasoning and lifecycle events remain opaque.
-func TestAnthropicRawStreamTextCodecIgnoresNonTextEvents(t *testing.T) {
-	codec := anthropicRawStreamTextCodec{}
-	cases := []string{
-		`{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"alice@example.com"}}`,
-		`{"type":"content_block_delta","index":1,"delta":{"type":"signature_delta","signature":"alice@example.com"}}`,
-		`{"type":"content_block_stop","index":2}`,
-		`{"type":"message_stop"}`,
-	}
-	for _, raw := range cases {
-		if event, eligible, err := codec.Inspect(raw); err != nil || eligible {
-			t.Errorf("Inspect(%s) = (%+v, %v, %v), want ineligible", raw, event, eligible, err)
-		}
-	}
-}
-
-// TestAnthropicRawStreamTextCodecRejectsMalformedEligibleEvents verifies malformed native text events cannot be synchronized.
-func TestAnthropicRawStreamTextCodecRejectsMalformedEligibleEvents(t *testing.T) {
-	codec := anthropicRawStreamTextCodec{}
-	cases := []string{
-		`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta"}}`,
-		`{"type":"content_block_delta","index":"zero","delta":{"type":"text_delta","text":"hello"}}`,
-		`{"type":`,
-	}
-	for _, raw := range cases {
-		if _, _, err := codec.Inspect(raw); err == nil {
-			t.Errorf("Inspect(%q) error = nil", raw)
-		}
 	}
 }
 
@@ -252,6 +186,32 @@ func TestRewriteAnthropicRawRequestBodyRejectsUnmappedLiteral(t *testing.T) {
 	}
 }
 
+// TestRewriteAnthropicRawRequestBodyMatchesEscapedArgumentLiterals verifies a literal cut from escaped argument JSON
+// text, as tool-call arguments are scanned, redacts the decoded tool_use input value it stands for.
+func TestRewriteAnthropicRawRequestBodyMatchesEscapedArgumentLiterals(t *testing.T) {
+	got, err := rewriteAnthropicRawRequestBody(
+		[]byte(`{"messages":[{"role":"assistant","content":[{"type":"tool_use","id":"call_1","name":"write","input":{"content":"head\nkey line one\nkey line two\ntail","quote":"say \"alex@example.com\""}}]}]}`),
+		map[string]string{`key line one\nkey line two`: "[SECRET]", `\"alex@example.com\"`: "[EMAIL]"},
+	)
+	require.NoError(t, err)
+	input := gjson.GetBytes(got, "messages.0.content.0.input")
+	require.Equal(t, "head\n[SECRET]\ntail", input.Get("content").String())
+	require.Equal(t, "say [EMAIL]", input.Get("quote").String())
+}
+
+// TestRewriteAnthropicRawRequestBodyReportsLiteralsNotFound verifies the rewriter names, through a typed error whose
+// message stays generic, exactly the literals no owned field holds.
+func TestRewriteAnthropicRawRequestBodyReportsLiteralsNotFound(t *testing.T) {
+	_, err := rewriteAnthropicRawRequestBody(
+		[]byte(`{"messages":[{"role":"user","content":"mail alice@example.com"}]}`),
+		map[string]string{"alice@example.com": "[EMAIL]", "bob@example.com": "[EMAIL]"},
+	)
+	var notFound *schemas.RawRequestLiteralsNotFoundError
+	require.ErrorAs(t, err, &notFound)
+	require.Equal(t, []string{"bob@example.com"}, notFound.Literals)
+	require.NotContains(t, err.Error(), "bob@example.com")
+}
+
 // TestRewriteAnthropicRawRequestBodyRejectsMalformedJSON verifies native rewrites never repair or forward a malformed body.
 func TestRewriteAnthropicRawRequestBodyRejectsMalformedJSON(t *testing.T) {
 	_, err := rewriteAnthropicRawRequestBody([]byte(`{"messages":`), map[string]string{"alice@example.com": "[EMAIL]"})
@@ -268,114 +228,6 @@ func TestRewriteAnthropicRawRequestBodyRejectsDuplicateKeys(t *testing.T) {
 	)
 	if err == nil {
 		t.Fatal("rewriteAnthropicRawRequestBody() error = nil, want duplicate-key error")
-	}
-}
-
-// TestRewriteAnthropicRawRequestBodyTransformsTargetsDuplicateText verifies provider transforms update one exact native field.
-func TestRewriteAnthropicRawRequestBodyTransformsTargetsDuplicateText(t *testing.T) {
-	rawBody := []byte(`{
-		"messages":[
-			{"role":"user","content":"email alice@example.com"},
-			{"role":"user","content":"email alice@example.com"}
-		],
-		"metadata":{"user_id":"alice@example.com"}
-	}`)
-
-	rewritten, err := rewriteAnthropicRawRequestBodyTransforms(rawBody, []schemas.TextRewrite{{
-		TargetID:    schemas.TextTargetIDForIndex(1),
-		Original:    "email alice@example.com",
-		Replacement: "email [EMAIL]",
-	}})
-	if err != nil {
-		t.Fatalf("rewriteAnthropicRawRequestBodyTransforms() error = %v", err)
-	}
-	if got := gjson.GetBytes(rewritten, "messages.0.content").String(); got != "email alice@example.com" {
-		t.Errorf("first duplicate = %q, want unchanged", got)
-	}
-	if got := gjson.GetBytes(rewritten, "messages.1.content").String(); got != "email [EMAIL]" {
-		t.Errorf("second duplicate = %q, want transformed", got)
-	}
-	if got := gjson.GetBytes(rewritten, "metadata.user_id").String(); got != "alice@example.com" {
-		t.Errorf("metadata.user_id = %q, want unchanged", got)
-	}
-}
-
-// TestRewriteAnthropicRawRequestBodyTransformsRejectsOriginalMismatch verifies stale normalized text cannot rewrite raw passthrough.
-func TestRewriteAnthropicRawRequestBodyTransformsRejectsOriginalMismatch(t *testing.T) {
-	rawBody := []byte(`{"messages":[{"role":"user","content":"email alice@example.com"}]}`)
-	_, err := rewriteAnthropicRawRequestBodyTransforms(rawBody, []schemas.TextRewrite{{
-		TargetID:    schemas.TextTargetIDForIndex(0),
-		Original:    "email bob@example.com",
-		Replacement: "email [EMAIL]",
-	}})
-	if err == nil {
-		t.Fatal("rewriteAnthropicRawRequestBodyTransforms() error = nil, want original mismatch")
-	}
-}
-
-// TestRewriteAnthropicRawRequestBodyTransformsPreservesHistory verifies a selected tool-result target does not rewrite adjacent history.
-func TestRewriteAnthropicRawRequestBodyTransformsPreservesHistory(t *testing.T) {
-	rawBody := []byte(`{
-		"system":"system secret",
-		"messages":[
-			{"role":"user","content":"history secret"},
-			{"role":"user","content":[{"type":"tool_result","tool_use_id":"call_1","content":"tool secret"}]}
-		]
-	}`)
-
-	rewritten, err := rewriteAnthropicRawRequestBodyTransforms(rawBody, []schemas.TextRewrite{{
-		TargetID:    schemas.TextTargetIDForIndex(2),
-		Original:    "tool secret",
-		Replacement: "tool [SAFE]",
-	}})
-	if err != nil {
-		t.Fatalf("rewriteAnthropicRawRequestBodyTransforms() error = %v", err)
-	}
-	if got := gjson.GetBytes(rewritten, "system").String(); got != "system secret" {
-		t.Errorf("system = %q, want unchanged", got)
-	}
-	if got := gjson.GetBytes(rewritten, "messages.0.content").String(); got != "history secret" {
-		t.Errorf("history = %q, want unchanged", got)
-	}
-	if got := gjson.GetBytes(rewritten, "messages.1.content.0.content").String(); got != "tool [SAFE]" {
-		t.Errorf("tool result = %q, want transformed", got)
-	}
-}
-
-// TestRewriteAnthropicRawResponseTransformsTargetsDuplicateText verifies native non-stream output preserves exact target identity.
-func TestRewriteAnthropicRawResponseTransformsTargetsDuplicateText(t *testing.T) {
-	rawResponse := json.RawMessage(`{
-		"id":"msg_1",
-		"content":[
-			{"type":"thinking","thinking":"email alice@example.com","signature":"sig"},
-			{"type":"text","text":"email alice@example.com"},
-			{"type":"text","text":"email alice@example.com"}
-		]
-	}`)
-
-	rewritten, err := rewriteAnthropicRawResponseTransforms(rawResponse, []schemas.TextRewrite{{
-		TargetID:    schemas.TextTargetIDForIndex(1),
-		Original:    "email alice@example.com",
-		Replacement: "email [EMAIL]",
-	}})
-	if err != nil {
-		t.Fatalf("rewriteAnthropicRawResponseTransforms() error = %v", err)
-	}
-	result, ok := rewritten.(json.RawMessage)
-	if !ok {
-		t.Fatalf("rewritten response type = %T, want json.RawMessage", rewritten)
-	}
-	if got := gjson.GetBytes(result, "content.0.thinking").String(); got != "email alice@example.com" {
-		t.Errorf("thinking = %q, want unchanged", got)
-	}
-	if got := gjson.GetBytes(result, "content.1.text").String(); got != "email alice@example.com" {
-		t.Errorf("first text = %q, want unchanged", got)
-	}
-	if got := gjson.GetBytes(result, "content.2.text").String(); got != "email [EMAIL]" {
-		t.Errorf("second text = %q, want transformed", got)
-	}
-	if got := gjson.GetBytes(rawResponse, "content.2.text").String(); got != "email alice@example.com" {
-		t.Errorf("provider-original raw response changed to %q", got)
 	}
 }
 
@@ -559,40 +411,19 @@ func TestCheckAnthropicPassthrough_OutputConfigEscapeHatch(t *testing.T) {
 				t.Errorf("expected UseRawRequestBody to stay true for %s, got false", tc.model)
 			}
 			_, hasRewriter := bifrostCtx.Value(schemas.BifrostContextKeyRawRequestBodyTextRewriter).(schemas.RawRequestBodyTextRewriter)
-			_, hasRequestTransformer := bifrostCtx.Value(schemas.BifrostContextKeyRawRequestBodyTextTransformer).(schemas.RawRequestBodyTextTransformer)
-			_, hasResponseTransformer := bifrostCtx.Value(schemas.BifrostContextKeyRawResponseTextTransformer).(schemas.RawResponseTextTransformer)
-			_, hasStreamCodec := bifrostCtx.Value(schemas.BifrostContextKeyRawStreamTextCodec).(schemas.RawStreamTextCodec)
 			if tc.wantRawOff && hasRewriter {
 				t.Errorf("expected raw request body text rewriter to remain unset for %s", tc.model)
 			}
 			if !tc.wantRawOff && !hasRewriter {
 				t.Errorf("expected Anthropic raw request body text rewriter for %s", tc.model)
 			}
-			if tc.wantRawOff && hasRequestTransformer {
-				t.Errorf("expected raw request body text transformer to remain unset for %s", tc.model)
-			}
-			if !tc.wantRawOff && !hasRequestTransformer {
-				t.Errorf("expected Anthropic raw request body text transformer for %s", tc.model)
-			}
-			if tc.wantRawOff && hasStreamCodec {
-				t.Errorf("expected raw stream text codec to remain unset for %s", tc.model)
-			}
-			if !tc.wantRawOff && !hasStreamCodec {
-				t.Errorf("expected Anthropic raw stream text codec for %s", tc.model)
-			}
-			if tc.wantRawOff && hasResponseTransformer {
-				t.Errorf("expected raw response text transformer to remain unset for %s", tc.model)
-			}
-			if !tc.wantRawOff && !hasResponseTransformer {
-				t.Errorf("expected Anthropic raw response text transformer for %s", tc.model)
-			}
 		})
 	}
 }
 
-// TestCheckAnthropicPassthrough_VertexBetaKeepsNativeResponseCodec verifies
-// request-only Vertex escape hatches do not disable native Messages response rewriting.
-func TestCheckAnthropicPassthrough_VertexBetaKeepsNativeResponseCodec(t *testing.T) {
+// TestCheckAnthropicPassthrough_VertexBetaKeepsNativeResponseForwarding verifies
+// request-only Vertex escape hatches do not disable native Messages response forwarding.
+func TestCheckAnthropicPassthrough_VertexBetaKeepsNativeResponseForwarding(t *testing.T) {
 	betaHeaders := []string{
 		anthropic.AnthropicPromptCachingScopeBetaHeader,
 		anthropic.AnthropicFastModeBetaHeader,
@@ -626,28 +457,7 @@ func TestCheckAnthropicPassthrough_VertexBetaKeepsNativeResponseCodec(t *testing
 			if _, ok := bifrostCtx.Value(schemas.BifrostContextKeyRawRequestBodyTextRewriter).(schemas.RawRequestBodyTextRewriter); ok {
 				t.Fatal("Vertex beta request registered a raw request-body rewriter")
 			}
-			if _, ok := bifrostCtx.Value(schemas.BifrostContextKeyRawStreamTextCodec).(schemas.RawStreamTextCodec); !ok {
-				t.Fatal("Vertex beta request did not register the native response codec")
-			}
 		})
-	}
-}
-
-// TestCheckAnthropicPassthroughLegacyCompleteOmitsStreamCodec verifies only Messages streams register the native SSE codec.
-func TestCheckAnthropicPassthroughLegacyCompleteOmitsStreamCodec(t *testing.T) {
-	reqCtx := &fasthttp.RequestCtx{}
-	reqCtx.Request.Header.SetMethod(fasthttp.MethodPost)
-	reqCtx.Request.Header.Set("user-agent", "claude-code/1.0")
-	reqCtx.Request.Header.Set("x-api-key", "sk-ant-test")
-	bifrostCtx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
-	defer cancel()
-
-	req := &anthropic.AnthropicTextRequest{Model: "anthropic/claude-haiku-4-5"}
-	if err := checkAnthropicPassthrough(reqCtx, bifrostCtx, req); err != nil {
-		t.Fatalf("checkAnthropicPassthrough() error = %v", err)
-	}
-	if _, ok := bifrostCtx.Value(schemas.BifrostContextKeyRawStreamTextCodec).(schemas.RawStreamTextCodec); ok {
-		t.Fatal("legacy complete request registered a Messages raw stream codec")
 	}
 }
 
@@ -818,23 +628,6 @@ func TestCheckAnthropicPassthrough_ProviderPrefixedClaudeModel(t *testing.T) {
 				t.Errorf("UseRawRequestBody = %v, want %v for %s", useRaw, tc.wantRawOn, tc.model)
 			}
 		})
-	}
-}
-
-// TestAnthropicRawArgumentDelta verifies partial JSON is replaced without changing its event envelope.
-func TestAnthropicRawArgumentDelta(t *testing.T) {
-	codec := anthropicRawStreamTextCodec{}
-	raw := `{"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"{\"command\":\"grep alice@"}}`
-	event, eligible, err := codec.Inspect(raw)
-	if err != nil || !eligible || event.Text != `{"command":"grep alice@` {
-		t.Fatalf("unexpected inspection: %+v %v %v", event, eligible, err)
-	}
-	result, err := codec.Rewrite(raw, `{"command":"grep [EMAIL]"}`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if gjson.Get(result, "delta.partial_json").String() != `{"command":"grep [EMAIL]"}` || gjson.Get(result, "index").Int() != 2 {
-		t.Fatal(result)
 	}
 }
 
@@ -1051,141 +844,6 @@ func TestAnthropicRefuseThreadContinue_EdgeCases(t *testing.T) {
 	}
 }
 
-// TestAnthropicRawTransformsBillingHeaderAlignment is a guardrail redaction
-// regression for synthetic Claude Code requests. Native target IDs must follow
-// normalized text rows while preserving the original billing metadata in raw JSON.
-func TestAnthropicRawTransformsBillingHeaderAlignment(t *testing.T) {
-	const header = "x-anthropic-billing-header: cc_version=2.1.285; cc_entrypoint=cli;"
-	for _, tc := range []struct{ name, system string }{
-		{"leading header", `[{"type":"text","text":"` + header + `"},{"type":"text","text":"CLI instructions"},{"type":"text","text":"Task instructions"}]`},
-		{"interleaved headers", `[{"type":"text","text":"CLI instructions"},{"type":"text","text":"` + header + `"},{"type":"text","text":"Task instructions"},{"type":"text","text":"` + header + `"}]`},
-		{"only header block", `[{"type":"text","text":"` + header + `"}]`},
-		{"header string", `"` + header + `"`},
-		{"header object", `{"type":"text","text":"` + header + `"}`},
-		{"ordinary system", `[{"type":"text","text":"CLI instructions"},{"type":"text","text":"Task instructions"}]`},
-		{"whitespace header", `[{"type":"text","text":" \n` + header + `\n"},{"type":"text","text":"Task instructions"}]`},
-		{"future metadata", `[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.285; future=value;"}]`},
-		{"quoted header", `[{"type":"text","text":"Discuss ` + header + `"}]`},
-		{"mixed same line", `[{"type":"text","text":"` + header + ` Keep these instructions."}]`},
-		{"empty metadata", `[{"type":"text","text":"x-anthropic-billing-header: ;"}]`},
-		{"malformed metadata", `[{"type":"text","text":"x-anthropic-billing-header: cc_version=;"}]`},
-		{"mixed instructions", `[{"type":"text","text":"` + header + `\nKeep these instructions."}]`},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			raw := []byte(`{"model":"claude-opus-5-5","max_tokens":64,"system":` + tc.system + `,"messages":[{"role":"user","content":[{"type":"text","text":"Codebase reminder"},{"type":"text","text":"Git status reminder"},{"type":"text","text":"Attribution reminder"},{"type":"text","text":"` + header + `"},{"type":"text","text":"email alice@example.com"}]}],"metadata":{"user_id":"alice@example.com"},"native_only":{"preserve":true}}`)
-			for _, route := range createAnthropicMessagesRouteConfig("/anthropic", nil) {
-				var incoming anthropic.AnthropicMessageRequest
-				if err := sonic.Unmarshal(raw, &incoming); err != nil {
-					t.Fatal(err)
-				}
-				ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-				request, err := route.RequestConverter(ctx, &incoming)
-				if err != nil {
-					t.Fatal(err)
-				}
-				var texts []string
-				for _, message := range request.ResponsesRequest.Input {
-					if message.Content == nil {
-						continue
-					}
-					if message.Content.ContentStr != nil && *message.Content.ContentStr != "" {
-						texts = append(texts, *message.Content.ContentStr)
-					}
-					for _, block := range message.Content.ContentBlocks {
-						if block.Text != nil && *block.Text != "" {
-							texts = append(texts, *block.Text)
-						}
-					}
-				}
-				targets, err := collectAnthropicRawRequestTextTargets(gjson.ParseBytes(raw))
-				if err != nil {
-					t.Fatal(err)
-				}
-				if len(targets) != len(texts) {
-					t.Fatalf("raw targets=%d, normalized rows=%d", len(targets), len(texts))
-				}
-				var rewrites []schemas.TextRewrite
-				for i, text := range texts {
-					if got := gjson.GetBytes(raw, targets[i].Path).String(); got != text {
-						t.Fatalf("target %d path %s differs from normalized text", i, targets[i].Path)
-					}
-					if text != header {
-						rewrites = append(rewrites, schemas.TextRewrite{TargetID: schemas.TextTargetIDForIndex(i), Original: text, Replacement: "[MASKED]"})
-					}
-				}
-				rewritten, err := rewriteAnthropicRawRequestBodyTransforms(append([]byte(nil), raw...), rewrites)
-				if err != nil {
-					t.Fatal(err)
-				}
-				for i, text := range texts {
-					want := "[MASKED]"
-					if text == header {
-						want = header
-					}
-					if got := gjson.GetBytes(rewritten, targets[i].Path).String(); got != want {
-						t.Fatalf("target %d rewrite missing", i)
-					}
-				}
-				if got := gjson.GetBytes(rewritten, "system").Raw; got != tc.system && (tc.name == "header string" || tc.name == "header object" || tc.name == "only header block") {
-					t.Fatalf("standalone billing header changed: %s", got)
-				}
-				if system := gjson.GetBytes(raw, "system"); system.IsArray() {
-					system.ForEach(func(index, block gjson.Result) bool {
-						if block.Get("text").String() == header {
-							path := rawRequestArrayPath("system", int(index.Int()))
-							if got := gjson.GetBytes(rewritten, path).Raw; got != block.Raw {
-								t.Fatalf("billing block changed at %s", path)
-							}
-						}
-						return true
-					})
-				}
-				if got := gjson.GetBytes(rewritten, "messages.0.content.3.text").String(); got != header {
-					t.Fatalf("user header-shaped data changed: %q", got)
-				}
-				if got := gjson.GetBytes(rewritten, "metadata.user_id").String(); got != "alice@example.com" {
-					t.Fatalf("metadata changed: %q", got)
-				}
-				if !gjson.GetBytes(rewritten, "native_only.preserve").Bool() {
-					t.Fatal("native-only data lost")
-				}
-			}
-		})
-	}
-}
-
-// TestAnthropicRawTransformsRetainsBillingLikeToolResults is a guardrail redaction
-// regression: standard tool data remains writable, while native MCP outputs
-// omitted from LLM guardrails consume no text target IDs. Billing metadata stays intact.
-func TestAnthropicRawTransformsRetainsBillingLikeToolResults(t *testing.T) {
-	const header = "x-anthropic-billing-header: cc_version=2.1.285; cc_entrypoint=cli;"
-	for _, blockType := range []string{"tool_result", "mcp_tool_result"} {
-		t.Run(blockType, func(t *testing.T) {
-			raw := []byte(`{"system":"` + header + `","messages":[{"role":"user","content":[{"type":"` + blockType + `","tool_use_id":"call_1","content":"` + header + `"},{"type":"text","text":"email alice@example.com"}]}]}`)
-			targets, err := collectAnthropicRawRequestTextTargets(gjson.ParseBytes(raw))
-			if err != nil {
-				t.Fatal(err)
-			}
-			if blockType == "mcp_tool_result" {
-				if len(targets) != 1 || targets[0].Path != "messages.0.content.1.text" || targets[0].ID != schemas.TextTargetIDForIndex(0) {
-					t.Fatalf("ignored MCP result shifted ordinary text targets: %+v", targets)
-				}
-				return
-			}
-			if len(targets) != 2 || targets[0].Path != "messages.0.content.0.content" || targets[0].ID != schemas.TextTargetIDForIndex(0) {
-				t.Fatalf("tool-result text lost its native target: %+v", targets)
-			}
-			rewritten, err := rewriteAnthropicRawRequestBodyTransforms(append([]byte(nil), raw...), []schemas.TextRewrite{{TargetID: targets[0].ID, Original: header, Replacement: "[MASKED]"}})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if gjson.GetBytes(rewritten, "system").String() != header || gjson.GetBytes(rewritten, targets[0].Path).String() != "[MASKED]" {
-				t.Fatal("system attribution and tool-result data were not kept separate")
-			}
-		})
-	}
-}
-
 // Core can take an attempt off raw-body passthrough after the integration chose it
 // (injected tools, unsupported structured output). The response converters must then
 // re-encode Bifrost events instead of treating the reply as raw Anthropic passthrough.
@@ -1333,4 +991,32 @@ func TestAnthropicMessagesGPTPromptCacheRollingMarker(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestAnthropicMessagesStreamDeclaresItsCleanup pins the wiring the stream
+// prompt-usage ledger depends on for an ORDINARY close.
+//
+// The ErrorConverter release covers a stream that failed, and rendering
+// message_stop covers one that finished. A stream whose upstream simply closes
+// without a terminal frame has neither, and before this hook its ledger entry
+// survived until the next stream opened and ran the sweep. handleStreaming now
+// calls StreamConfig.Cleanup from the producer's deferred cleanup, after the
+// chunk loop has drained, which is the ordering ReleaseStreamPromptUsage
+// requires. Dropping that field here puts the delayed reclaim back.
+func TestAnthropicMessagesStreamDeclaresItsCleanup(t *testing.T) {
+	routes := createAnthropicMessagesRouteConfig("/anthropic", bifrost.NewDefaultLogger(schemas.LogLevelError))
+	require.NotEmpty(t, routes)
+
+	var streaming int
+	for _, route := range routes {
+		if route.StreamConfig == nil {
+			continue
+		}
+		streaming++
+		require.NotNil(t, route.StreamConfig.ErrorConverter,
+			"route %s: the error path must keep its own release", route.Path)
+		require.NotNil(t, route.StreamConfig.Cleanup,
+			"route %s: a stream that closes without a terminal frame has no other release point", route.Path)
+	}
+	require.NotZero(t, streaming, "expected at least one streaming Anthropic messages route")
 }

@@ -1,6 +1,7 @@
 package integrations
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -9,6 +10,7 @@ import (
 	"io"
 	"mime/multipart"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -18,6 +20,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
+	"github.com/tidwall/gjson"
 	"github.com/valyala/fasthttp"
 )
 
@@ -51,11 +54,12 @@ var azureEndpointStarters = map[string]bool{
 	"models":      true,
 }
 
-// isAzureSDKRequest reports whether the request originates from the Azure OpenAI
-// SDK by inspecting the User-Agent header directly from the HTTP request.
+// IsAzureSDKRequest reports whether the request originates from the Azure OpenAI
+// SDK by inspecting the User-Agent header directly from the HTTP request, or arrives
+// on the /azure resource mount, whose URL already names Azure.
 // This avoids any ordering dependency on AzureEndpointPreHook.
-func isAzureSDKRequest(ctx *fasthttp.RequestCtx) bool {
-	return strings.Contains(string(ctx.UserAgent()), "AzureOpenAI")
+func IsAzureSDKRequest(ctx *fasthttp.RequestCtx) bool {
+	return strings.Contains(string(ctx.UserAgent()), "AzureOpenAI") || bytes.HasPrefix(ctx.Path(), azureOpenAIMountPrefix)
 }
 
 func hydrateOpenAIRequestFromLargePayloadMetadata(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) {
@@ -781,7 +785,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 			PreCallback: func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
 				hydrateOpenAIRequestFromLargePayloadMetadata(ctx, bifrostCtx, req)
 				schemas.ExtractAndSetUserAgentFromHeaders(extractHeadersFromRequest(ctx), bifrostCtx)
-				if isAzureSDKRequest(ctx) {
+				if IsAzureSDKRequest(ctx) {
 					bifrostCtx.SetValue(schemas.BifrostContextKeyIsAzureUserAgent, true)
 				}
 				return nil
@@ -986,7 +990,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 			PreCallback: func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
 				hydrateOpenAIRequestFromLargePayloadMetadata(ctx, bifrostCtx, req)
 				schemas.ExtractAndSetUserAgentFromHeaders(extractHeadersFromRequest(ctx), bifrostCtx)
-				if isAzureSDKRequest(ctx) {
+				if IsAzureSDKRequest(ctx) {
 					bifrostCtx.SetValue(schemas.BifrostContextKeyIsAzureUserAgent, true)
 				}
 				return nil
@@ -1391,7 +1395,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 			},
 			PreCallback: func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
 				hydrateOpenAIRequestFromLargePayloadMetadata(ctx, bifrostCtx, req)
-				if isAzureSDKRequest(ctx) {
+				if IsAzureSDKRequest(ctx) {
 					bifrostCtx.SetValue(schemas.BifrostContextKeyIsAzureUserAgent, true)
 				}
 				return nil
@@ -1604,24 +1608,34 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 	return routes
 }
 
-// OpenAIUsage is the OpenAI-compatible usage shape: the standard usage fields,
-// but cost is the bare total (float) rather than the nested BifrostCost object
-// which strict OpenAI SDKs reject. The embedded pointer promotes every other
-// usage field unchanged; the shallower Cost field shadows the embedded object's
-// `cost` at marshal time.
+// OpenAIUsage is the Chat/Text Completions usage shape. Explicitly reported zero
+// counts remain present, and cost is the bare total (float) rather than the
+// nested BifrostCost object which strict OpenAI SDKs reject. The embedded pointer
+// promotes the remaining usage fields unchanged.
 type OpenAIUsage struct {
 	*schemas.BifrostLLMUsage
-	Cost *float64 `json:"cost,omitempty"`
+	PromptTokens     *int     `json:"prompt_tokens,omitempty"`
+	CompletionTokens *int     `json:"completion_tokens,omitempty"`
+	Cost             *float64 `json:"cost,omitempty"`
 }
 
 // newOpenAIUsage wraps u so cost serializes as the bare total float. Copies the
 // total into a local, so the wrapper never aliases into the shared response.
 func newOpenAIUsage(u *schemas.BifrostLLMUsage) *OpenAIUsage {
-	if u == nil || u.Cost == nil {
-		return &OpenAIUsage{BifrostLLMUsage: u}
+	usage := &OpenAIUsage{BifrostLLMUsage: u}
+	if u != nil {
+		if u.PromptTokens != 0 || u.PromptTokensExplicitZero {
+			usage.PromptTokens = &u.PromptTokens
+		}
+		if u.CompletionTokens != 0 || u.CompletionTokensExplicitZero {
+			usage.CompletionTokens = &u.CompletionTokens
+		}
+		if u.Cost != nil {
+			total := u.Cost.TotalCost
+			usage.Cost = &total
+		}
 	}
-	total := u.Cost.TotalCost
-	return &OpenAIUsage{BifrostLLMUsage: u, Cost: &total}
+	return usage
 }
 
 // openAIResponsesUsage / openAIImageUsage / openAIVideoUsage are the same
@@ -1716,18 +1730,20 @@ func openAIWireResponses(r *schemas.BifrostResponsesResponse) *openAIResponsesRe
 // legacy shape SDKs tolerate. Only provider-supplied cost reaches here (Bifrost
 // computes cost log-only), and it stays intact in logs. The rewrite wraps rather
 // than mutates, so the shared response (which governance/telemetry may still read
-// on another goroutine) is untouched. Raw upstream payloads and cost-free
-// responses pass through unchanged.
+// on another goroutine) is untouched. Chat/Text Completions also retain the
+// explicitly reported zero counts. Raw upstream payloads pass through unchanged.
 func openAIWireCostResponse(v interface{}) interface{} {
 	switch r := v.(type) {
 	case *schemas.BifrostChatResponse:
 		if r != nil && r.Usage != nil && r.Usage.Cost != nil {
 			return &openAIChatResponse{BifrostChatResponse: r, Usage: newOpenAIUsage(r.Usage)}
 		}
+		return r.WithPreservedUsage()
 	case *schemas.BifrostTextCompletionResponse:
 		if r != nil && r.Usage != nil && r.Usage.Cost != nil {
 			return &openAITextResponse{BifrostTextCompletionResponse: r, Usage: newOpenAIUsage(r.Usage)}
 		}
+		return r.WithPreservedUsage()
 	case *schemas.BifrostResponsesResponse:
 		if r != nil && r.Usage != nil && r.Usage.Cost != nil {
 			return openAIWireResponses(r)
@@ -1937,7 +1953,7 @@ func CreateOpenAIBatchRouteConfigs(pathPrefix string, handlerStore lib.HandlerSt
 				// Provider is parsed from JSON body (extra_body), default to OpenAI if not set
 				if createReq, ok := req.(*schemas.BifrostBatchCreateRequest); ok {
 					if createReq.Provider == "" {
-						if isAzureSDKRequest(ctx) {
+						if IsAzureSDKRequest(ctx) {
 							createReq.Provider = schemas.Azure
 						} else {
 							createReq.Provider = schemas.OpenAI
@@ -2257,7 +2273,7 @@ func CreateOpenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerSto
 				// Default to OpenAI if provider not set from extra_body
 				if bifrostReq, ok := req.(*schemas.BifrostFileUploadRequest); ok {
 					if bifrostReq.Provider == "" {
-						if isAzureSDKRequest(ctx) {
+						if IsAzureSDKRequest(ctx) {
 							bifrostReq.Provider = schemas.Azure
 						} else {
 							bifrostReq.Provider = schemas.OpenAI
@@ -2489,7 +2505,7 @@ func extractBatchListQueryParams(_ lib.HandlerStore) PreRequestCallback {
 				listReq.Provider = schemas.ModelProvider(provider)
 			}
 			if listReq.Provider == "" {
-				if isAzureSDKRequest(ctx) {
+				if IsAzureSDKRequest(ctx) {
 					listReq.Provider = schemas.Azure
 				} else {
 					listReq.Provider = schemas.OpenAI
@@ -2532,7 +2548,7 @@ func extractBatchIDFromPath(_ lib.HandlerStore) PreRequestCallback {
 		// Extract provider from extra_query (for GET requests)
 		provider := schemas.ModelProvider(string(ctx.QueryArgs().Peek("provider")))
 		if provider == "" {
-			if isAzureSDKRequest(ctx) {
+			if IsAzureSDKRequest(ctx) {
 				provider = schemas.Azure
 			} else {
 				provider = schemas.OpenAI
@@ -2613,7 +2629,7 @@ func extractFileListQueryParams(_ lib.HandlerStore) PreRequestCallback {
 				listReq.Provider = schemas.ModelProvider(provider)
 			}
 			if listReq.Provider == "" {
-				if isAzureSDKRequest(ctx) {
+				if IsAzureSDKRequest(ctx) {
 					listReq.Provider = schemas.Azure
 				} else {
 					listReq.Provider = schemas.OpenAI
@@ -2717,7 +2733,7 @@ func extractFileIDFromPath(_ lib.HandlerStore) PreRequestCallback {
 		// Extract provider from extra_query
 		provider := schemas.ModelProvider(string(ctx.QueryArgs().Peek("provider")))
 		if provider == "" {
-			if isAzureSDKRequest(ctx) {
+			if IsAzureSDKRequest(ctx) {
 				provider = schemas.Azure
 			} else {
 				provider = schemas.OpenAI
@@ -2802,7 +2818,7 @@ func extractResponsesLifecycleFromPath(_ lib.HandlerStore) PreRequestCallback {
 		}
 		provider := schemas.ModelProvider(string(ctx.QueryArgs().Peek("provider")))
 		if provider == "" {
-			if isAzureSDKRequest(ctx) {
+			if IsAzureSDKRequest(ctx) {
 				provider = schemas.Azure
 			} else {
 				provider = schemas.OpenAI
@@ -4290,4 +4306,160 @@ func parseContainerFileCreateMultipartRequest(ctx *fasthttp.RequestCtx, req inte
 	}
 
 	return nil
+}
+
+// openAIRawRequestBodyRewriter returns the raw-body rewriter for an OpenAI request kind whose JSON body carries text a
+// plugin may change, or nil when the kind carries none or is sent as a multipart upload.
+func openAIRawRequestBodyRewriter(requestType schemas.RequestType) schemas.RawRequestBodyTextRewriter {
+	var collect rawRequestTextPathCollector
+	switch requestType {
+	case schemas.ChatCompletionRequest:
+		collect = collectOpenAIChatRawRequestTextPaths
+	case schemas.ResponsesRequest:
+		collect = collectOpenAIResponsesRawRequestTextPaths
+	case schemas.TextCompletionRequest:
+		collect = collectOpenAITextCompletionRawRequestTextPaths
+	case schemas.SpeechRequest:
+		collect = collectRawRequestStringFields("input", "instructions")
+	case schemas.ImageGenerationRequest:
+		collect = collectRawRequestStringFields("prompt")
+	default:
+		return nil
+	}
+	return func(rawBody []byte, replacements map[string]string) ([]byte, error) {
+		return rewriteRawRequestTextFields(rawBody, replacements, collect)
+	}
+}
+
+// collectOpenAIChatRawRequestTextPaths selects Chat Completions message text and tool-call arguments, the fields
+// mirrored as mutable normalized text. Names, tool definitions, and other request fields stay untouched.
+func collectOpenAIChatRawRequestTextPaths(root gjson.Result, _ map[string]string) ([]string, error) {
+	paths := make([]string, 0)
+	messages := root.Get("messages")
+	if !messages.Exists() || messages.Type == gjson.Null {
+		return paths, nil
+	}
+	if !messages.IsArray() {
+		return nil, fmt.Errorf("raw OpenAI chat messages must be an array")
+	}
+	var collectErr error
+	messages.ForEach(func(index, message gjson.Result) bool {
+		messagePath := rawRequestArrayPath("messages", int(index.Int()))
+		collectErr = collectOpenAIRawContentPaths(&paths, message.Get("content"), rawRequestObjectPath(messagePath, "content"), "text")
+		if collectErr != nil {
+			return false
+		}
+		toolCallsPath := rawRequestObjectPath(messagePath, "tool_calls")
+		message.Get("tool_calls").ForEach(func(callIndex, call gjson.Result) bool {
+			functionPath := rawRequestObjectPath(rawRequestArrayPath(toolCallsPath, int(callIndex.Int())), "function")
+			collectErr = appendRawRequestStringPath(&paths, call.Get("function.arguments"), rawRequestObjectPath(functionPath, "arguments"))
+			return collectErr == nil
+		})
+		return collectErr == nil
+	})
+	return paths, collectErr
+}
+
+// collectOpenAIResponsesRawRequestTextPaths selects Responses instructions, input text, function-call arguments,
+// custom-tool input, and tool outputs, the fields mirrored as mutable normalized text. Reasoning items, IDs, and tool
+// definitions stay untouched.
+func collectOpenAIResponsesRawRequestTextPaths(root gjson.Result, _ map[string]string) ([]string, error) {
+	paths := make([]string, 0)
+	if err := appendRawRequestStringPath(&paths, root.Get("instructions"), "instructions"); err != nil {
+		return nil, err
+	}
+	input := root.Get("input")
+	switch {
+	case !input.Exists() || input.Type == gjson.Null:
+		return paths, nil
+	case input.Type == gjson.String:
+		return append(paths, "input"), nil
+	case !input.IsArray():
+		return nil, fmt.Errorf("raw OpenAI Responses input must be a string or an array")
+	}
+	var collectErr error
+	input.ForEach(func(index, item gjson.Result) bool {
+		collectErr = collectOpenAIResponsesItemPaths(&paths, item, rawRequestArrayPath("input", int(index.Int())))
+		return collectErr == nil
+	})
+	return paths, collectErr
+}
+
+// collectOpenAIResponsesItemPaths selects the mutable text of one Responses input item by its type; items without
+// mutable text, such as reasoning, contribute nothing.
+func collectOpenAIResponsesItemPaths(paths *[]string, item gjson.Result, path string) error {
+	if !item.IsObject() {
+		return fmt.Errorf("raw OpenAI Responses input item %q must be an object", path)
+	}
+	switch schemas.ResponsesMessageType(item.Get("type").String()) {
+	case schemas.ResponsesMessageTypeFunctionCall:
+		return appendRawRequestStringPath(paths, item.Get("arguments"), rawRequestObjectPath(path, "arguments"))
+	case schemas.ResponsesMessageTypeCustomToolCall:
+		return appendRawRequestStringPath(paths, item.Get("input"), rawRequestObjectPath(path, "input"))
+	case schemas.ResponsesMessageTypeFunctionCallOutput, schemas.ResponsesMessageTypeCustomToolCallOutput:
+		return collectOpenAIRawContentPaths(paths, item.Get("output"), rawRequestObjectPath(path, "output"),
+			string(schemas.ResponsesInputMessageContentBlockTypeText), string(schemas.ResponsesOutputMessageContentTypeText))
+	case "", schemas.ResponsesMessageTypeMessage:
+		return collectOpenAIRawContentPaths(paths, item.Get("content"), rawRequestObjectPath(path, "content"),
+			string(schemas.ResponsesInputMessageContentBlockTypeText), string(schemas.ResponsesOutputMessageContentTypeText))
+	}
+	return nil
+}
+
+// collectOpenAIRawContentPaths selects string content, or the parts of a content list whose type is one of textTypes
+// (their text) or refusal (their refusal). Other parts, such as images and files, stay untouched.
+func collectOpenAIRawContentPaths(paths *[]string, content gjson.Result, path string, textTypes ...string) error {
+	switch {
+	case !content.Exists() || content.Type == gjson.Null:
+		return nil
+	case content.Type == gjson.String:
+		*paths = append(*paths, path)
+		return nil
+	case !content.IsArray():
+		return fmt.Errorf("raw OpenAI content %q must be a string or an array", path)
+	}
+	var collectErr error
+	content.ForEach(func(index, part gjson.Result) bool {
+		partPath := rawRequestArrayPath(path, int(index.Int()))
+		switch partType := part.Get("type").String(); {
+		case partType == "refusal":
+			collectErr = appendRawRequestStringPath(paths, part.Get("refusal"), rawRequestObjectPath(partPath, "refusal"))
+		case slices.Contains(textTypes, partType):
+			collectErr = appendRawRequestStringPath(paths, part.Get("text"), rawRequestObjectPath(partPath, "text"))
+		}
+		return collectErr == nil
+	})
+	return collectErr
+}
+
+// collectOpenAITextCompletionRawRequestTextPaths selects the legacy completions prompt: a string, or the strings of a
+// prompt array. Token-array prompts carry no text and are left alone.
+func collectOpenAITextCompletionRawRequestTextPaths(root gjson.Result, _ map[string]string) ([]string, error) {
+	paths := make([]string, 0)
+	prompt := root.Get("prompt")
+	if !prompt.IsArray() {
+		err := appendRawRequestStringPath(&paths, prompt, "prompt")
+		return paths, err
+	}
+	prompt.ForEach(func(index, part gjson.Result) bool {
+		if part.Type == gjson.String {
+			paths = append(paths, rawRequestArrayPath("prompt", int(index.Int())))
+		}
+		return true
+	})
+	return paths, nil
+}
+
+// collectRawRequestStringFields returns a collector for top-level string fields of a JSON body, for request kinds
+// whose only mutable text is a few flat fields.
+func collectRawRequestStringFields(fields ...string) rawRequestTextPathCollector {
+	return func(root gjson.Result, _ map[string]string) ([]string, error) {
+		paths := make([]string, 0, len(fields))
+		for _, field := range fields {
+			if err := appendRawRequestStringPath(&paths, root.Get(field), rawRequestObjectPath("", field)); err != nil {
+				return nil, err
+			}
+		}
+		return paths, nil
+	}
 }

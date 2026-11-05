@@ -22,7 +22,8 @@ audit-logs:
       pagination via query parameters. Most filter dimensions accept either a
       single value (singular parameter, e.g. `action`) or a JSON-encoded array
       of values (plural parameter, e.g. `actions`); when both are supplied the
-      plural array takes precedence.
+      plural array takes precedence. List responses omit each event's
+      `changes` diff; fetch the event by ID or export it to get the diff.
     tags:
       - Audit Logs
     parameters:
@@ -83,6 +84,28 @@ audit-logs:
         schema:
           type: string
         example: '["activity","control"]'
+      - name: severity
+        in: query
+        description: Filter by a single severity.
+        schema:
+          $ref: '../../schemas/management/auditlogs.yaml#/AuditSeverity'
+      - name: severities
+        in: query
+        description: JSON array of severities to filter by (OR match).
+        schema:
+          type: string
+        example: '["high"]'
+      - name: event_name
+        in: query
+        description: Filter by a single event name (e.g. `virtual_key.updated`).
+        schema:
+          type: string
+      - name: event_names
+        in: query
+        description: JSON array of event names to filter by (OR match).
+        schema:
+          type: string
+        example: '["virtual_key.updated","user.role_assigned"]'
       - name: initiator_id
         in: query
         description: Filter by a single initiator ID.
@@ -193,6 +216,11 @@ audit-logs:
     responses:
       '200':
         description: Successful response
+        headers:
+          X-Request-ID:
+            description: Request ID recorded on any audit event this request writes. A caller-supplied value of up to 128 characters is kept.
+            schema:
+              type: string
         content:
           application/json:
             schema:
@@ -237,7 +265,7 @@ audit-logs-filterdata:
           example: actions,outcomes,initiators
         # Valid dimensions: actions, outcomes, event_types, initiator_types,
         # target_types, request_methods, initiators, targets, request_paths,
-        # request_ips, tags
+        # request_ips, tags, severities, event_names
       - name: q
         in: query
         description: Optional case-insensitive substring filter applied to dimension values.
@@ -271,14 +299,16 @@ audit-logs-export:
 
         | Permission | Granted via |
         | --- | --- |
-        | `AuditLogs:View` | RBAC role or API key scope |
+        | `AuditLogs:Download` | RBAC role or API key scope |
 
         [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Export audit logs
     description: |
       Streams audit log events matching the supplied filters as a downloadable
-      file. Accepts the same filter query parameters as `GET /api/audit-logs`.
+      file. Accepts the same filter query parameters as `GET /api/governance/audit-logs`.
       The response is returned as an attachment with a generated filename.
+      Exported events include the `changes` diff. Requires `AuditLogs:Download`;
+      a caller with only `AuditLogs:View` gets 403.
     tags:
       - Audit Logs
     parameters:
@@ -311,6 +341,16 @@ audit-logs-export:
       - name: event_types
         in: query
         description: JSON array of event types to filter by (OR match).
+        schema:
+          type: string
+      - name: severities
+        in: query
+        description: JSON array of severities to filter by (OR match). Values are `info` and `high`.
+        schema:
+          type: string
+      - name: event_names
+        in: query
+        description: JSON array of event names to filter by (OR match).
         schema:
           type: string
       - name: start_date
@@ -346,6 +386,8 @@ audit-logs-export:
               type: string
       '400':
         $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '403':
+        $ref: '../../openapi.yaml#/components/responses/Forbidden'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
 
@@ -369,7 +411,8 @@ audit-logs-by-id:
         [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get audit log by ID
     description: |
-      Retrieves a single audit log event by its unique ID.
+      Retrieves a single audit log event by its unique ID, including its
+      `changes` diff.
     tags:
       - Audit Logs
     parameters:
@@ -418,7 +461,9 @@ audit-logs-verify:
     description: |
       Recomputes the HMAC-SHA256 signature for a single audit log event and
       compares it (in constant time) against the stored signature to detect
-      tampering.
+      tampering. The response reports the result, the signature scheme and the
+      key ID. It never returns the expected signature, since a reader holding
+      it could forge a matching row.
     tags:
       - Audit Logs
     parameters:

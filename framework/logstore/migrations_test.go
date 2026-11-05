@@ -53,6 +53,24 @@ func TestMigrationAddMCPPluginLogsColumn(t *testing.T) {
 	assert.Equal(t, int64(1), count)
 }
 
+// TestMigrationAddMethodColumnToMCPToolLogs verifies the read-method column is additive, idempotent,
+// and leaves existing rows (tool calls) null.
+func TestMigrationAddMethodColumnToMCPToolLogs(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "migrations.db")), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(t, err)
+	require.NoError(t, db.Exec("CREATE TABLE mcp_tool_logs (id TEXT PRIMARY KEY)").Error)
+	require.NoError(t, db.Exec("INSERT INTO mcp_tool_logs (id) VALUES (?)", "mcp-existing").Error)
+
+	ctx := context.Background()
+	for range 2 {
+		require.NoError(t, migrationAddMethodColumnToMCPToolLogs(ctx, db, testLogger{}))
+	}
+	require.True(t, db.Migrator().HasColumn(&MCPToolLog{}, "method"))
+	var method *string
+	require.NoError(t, db.Table("mcp_tool_logs").Select("method").Where("id = ?", "mcp-existing").Scan(&method).Error)
+	assert.Nil(t, method)
+}
+
 // TestMigrationAddSessionIDColumn verifies that the session lookup
 // column is additive, indexed, and preserves pre-existing request logs.
 func TestMigrationAddSessionIDColumn(t *testing.T) {
@@ -657,6 +675,11 @@ func TestPerformanceIndexesCoverCorrelationIDs(t *testing.T) {
 	assert.Equal(t, "logs", tables["idx_logs_agent_correlation_id"])
 	assert.Equal(t, "mcp_tool_logs", tables["idx_mcp_logs_session_id"])
 	assert.Equal(t, "mcp_tool_logs", tables["idx_mcp_logs_agent_correlation_id"])
+	// relay_logs_add_session_id adds only the column on Postgres, so the background builder must
+	// carry the index or an upgraded deployment filters relay rows by session unindexed.
+	assert.Equal(t, "relay_logs", tables["idx_relay_logs_session_id"])
+	assert.Equal(t, "relay_logs", tables["idx_relay_logs_parent_request_id"])
+	assert.Equal(t, "relay_logs", tables["idx_relay_logs_agent_correlation_id"])
 }
 
 // TestMigrationAddMCPGovernanceSnapshots verifies the attribution columns are
@@ -734,6 +757,34 @@ func TestMigrationAddWarpConversationTables_NonRollbackable(t *testing.T) {
 	var surviving int64
 	require.NoError(t, db.Model(&WarpConversation{}).Count(&surviving).Error)
 	assert.EqualValues(t, 1, surviving, "the saved conversation must survive")
+}
+
+// TestMigrationAddWarpTopicTables_NonRollbackable pins that rolling the topic
+// tables back is refused while warp_topics holds anything. Topics outlive the
+// requests they were built from, and their names came from a model call, so a
+// populated table cannot be rebuilt from the logs. Empty tables still drop.
+func TestMigrationAddWarpTopicTables_NonRollbackable(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "migrations.db")), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(t, err)
+	ctx := context.Background()
+
+	require.NoError(t, migrationAddWarpTopicTables(ctx, db, testLogger{}))
+	require.NoError(t, rollbackWarpTopicTables(db))
+	require.False(t, db.Migrator().HasTable(&WarpTopic{}), "empty topic tables are safe to drop")
+
+	require.NoError(t, db.AutoMigrate(&WarpTopic{}, &WarpTopicAssignment{}, &WarpTopicUnmatched{}))
+	now := time.Now().UTC()
+	require.NoError(t, db.Create(&WarpTopic{
+		ID: "t-1", Kind: WarpTopicKindTopic, Label: "Refunds", Status: WarpTopicStatusActive,
+		EmbeddingSignature: "sig", CreatedAt: now, UpdatedAt: now,
+	}).Error)
+
+	err = rollbackWarpTopicTables(db)
+	require.Error(t, err, "rollback must refuse while topics exist")
+	assert.Contains(t, err.Error(), "non-rollbackable")
+	for _, model := range []any{&WarpTopic{}, &WarpTopicAssignment{}, &WarpTopicUnmatched{}} {
+		assert.True(t, db.Migrator().HasTable(model), "a refused rollback leaves every topic table intact")
+	}
 }
 
 // TestMigrationAddWarpMessageOutcomeColumns_RollbackGuardsRecordedUsage pins
@@ -1315,4 +1366,178 @@ func TestIsPassthroughMigrationRollbackKeepsMarker(t *testing.T) {
 	var row Log
 	require.NoError(t, db.First(&row, "id = ?", "typed-passthrough").Error)
 	require.True(t, row.IsPassthrough)
+}
+
+// TestClientIPColumnMigration pins logs_add_client_ip_column: existing tables gain client_ip, a rerun is a no-op, and rollback drops it.
+func TestClientIPColumnMigration(t *testing.T) {
+	ctx := context.Background()
+	store, err := newSqliteLogStore(ctx, &SQLiteConfig{Path: filepath.Join(t.TempDir(), "client-ip.db")}, testLogger{})
+	require.NoError(t, err)
+	db := store.db
+	for _, model := range clientIPColumnModels {
+		require.True(t, db.Migrator().HasColumn(model, "client_ip"), "%T.client_ip is created", model)
+		require.False(t, db.Migrator().HasColumn(model, "forwarded_for"), "%T has no forwarded_for column", model)
+		require.NoError(t, db.Migrator().DropColumn(model, "client_ip"))
+	}
+	require.NoError(t, db.Exec("DELETE FROM migrations WHERE id = ?", "logs_add_client_ip_column").Error)
+	require.NoError(t, migrationAddClientIPColumn(ctx, db, testLogger{}))
+	for _, model := range clientIPColumnModels {
+		assert.True(t, db.Migrator().HasColumn(model, "client_ip"), "%T.client_ip is added to an existing table", model)
+	}
+	require.NoError(t, db.Exec("DELETE FROM migrations WHERE id = ?", "logs_add_client_ip_column").Error)
+	require.NoError(t, migrationAddClientIPColumn(ctx, db, testLogger{}), "a rerun over an existing column succeeds")
+
+	require.NoError(t, clientIPColumnMigration(ctx, testLogger{}).Rollback(db))
+	for _, model := range clientIPColumnModels {
+		assert.False(t, db.Migrator().HasColumn(model, "client_ip"), "%T.client_ip is dropped on rollback", model)
+	}
+}
+
+// TestRefuseRollbackWhileRecorded_LocksTablesOnPostgres pins that the rollback check takes the DROP COLUMN lock on every
+// table before it reads, so no writer can commit a value between the check and the drop, and that a statement timeout
+// bounds how long the check can hold those locks.
+func TestRefuseRollbackWhileRecorded_LocksTablesOnPostgres(t *testing.T) {
+	db := trySetupPostgresDB(t)
+	if db == nil {
+		t.Skip("PostgreSQL not available")
+	}
+	require.NoError(t, db.AutoMigrate(clientIPColumnModels...))
+	tx := db.Begin()
+	require.NoError(t, tx.Error)
+	defer tx.Rollback()
+
+	_ = refuseRollbackWhileRecorded(tx, "logs_add_client_ip_column", clientIPColumnModels, "client_ip")
+
+	var locked int64
+	require.NoError(t, tx.Raw(`SELECT count(*) FROM pg_locks l JOIN pg_class c ON c.oid = l.relation
+		WHERE l.pid = pg_backend_pid() AND l.mode = 'AccessExclusiveLock' AND c.relname IN ('logs', 'mcp_tool_logs', 'relay_logs')`).Scan(&locked).Error)
+	assert.EqualValues(t, 3, locked, "every table is locked against writers before its values are checked")
+
+	// lock_timeout only bounds waiting for the locks; the scan that runs while they are held needs its own bound.
+	var timeout string
+	require.NoError(t, tx.Raw("SHOW statement_timeout").Scan(&timeout).Error)
+	assert.Equal(t, "30s", timeout, "the recorded-value scan cannot hold the locks for longer than the statement timeout")
+}
+
+// TestClientIPColumnMigration_NonRollbackable pins that rolling logs_add_client_ip_column back is refused while any
+// table holds a recorded address: the values cannot be recaptured, so the drop would delete data, not reverse a schema change.
+func TestClientIPColumnMigration_NonRollbackable(t *testing.T) {
+	ctx := context.Background()
+	store, err := newSqliteLogStore(ctx, &SQLiteConfig{Path: filepath.Join(t.TempDir(), "client-ip.db")}, testLogger{})
+	require.NoError(t, err)
+	db := store.db
+	require.NoError(t, db.Create(&MCPToolLog{ID: "mcp-1", ToolName: "echo", Status: "success", Timestamp: time.Now().UTC(), CreatedAt: time.Now().UTC()}).Error)
+	require.NoError(t, db.Model(&MCPToolLog{}).Where("id = ?", "mcp-1").Update("client_ip", "203.0.113.7").Error)
+
+	err = clientIPColumnMigration(ctx, testLogger{}).Rollback(db)
+	require.Error(t, err, "rollback must refuse while client_ip holds a value")
+	assert.Contains(t, err.Error(), "non-rollbackable")
+	for _, model := range clientIPColumnModels {
+		assert.True(t, db.Migrator().HasColumn(model, "client_ip"), "%T.client_ip survives a refused rollback", model)
+	}
+	var stored string
+	require.NoError(t, db.Model(&MCPToolLog{}).Where("id = ?", "mcp-1").Pluck("client_ip", &stored).Error)
+	assert.Equal(t, "203.0.113.7", stored)
+}
+
+// TestUserEmailColumnMigration pins logs_add_user_email_column: existing tables gain user_email, a rerun is a no-op, and rollback drops it.
+func TestUserEmailColumnMigration(t *testing.T) {
+	ctx := context.Background()
+	store, err := newSqliteLogStore(ctx, &SQLiteConfig{Path: filepath.Join(t.TempDir(), "user-email.db")}, testLogger{})
+	require.NoError(t, err)
+	db := store.db
+	for _, model := range userEmailColumnModels {
+		require.True(t, db.Migrator().HasColumn(model, "user_email"), "%T.user_email is created", model)
+		require.NoError(t, db.Migrator().DropColumn(model, "user_email"))
+	}
+	require.NoError(t, db.Exec("DELETE FROM migrations WHERE id = ?", "logs_add_user_email_column").Error)
+	require.NoError(t, migrationAddUserEmailColumn(ctx, db, testLogger{}))
+	for _, model := range userEmailColumnModels {
+		assert.True(t, db.Migrator().HasColumn(model, "user_email"), "%T.user_email is added to an existing table", model)
+	}
+	require.NoError(t, db.Exec("DELETE FROM migrations WHERE id = ?", "logs_add_user_email_column").Error)
+	require.NoError(t, migrationAddUserEmailColumn(ctx, db, testLogger{}), "a rerun over existing columns succeeds")
+
+	require.NoError(t, userEmailColumnMigration(ctx, testLogger{}).Rollback(db))
+	for _, model := range userEmailColumnModels {
+		assert.False(t, db.Migrator().HasColumn(model, "user_email"), "%T.user_email is dropped on rollback", model)
+	}
+}
+
+// TestUserEmailColumnMigration_NonRollbackable pins that rolling logs_add_user_email_column back is refused while any
+// table holds a recorded email: the snapshot cannot be rebuilt (relay exports carry only bodies), so the drop would delete it.
+func TestUserEmailColumnMigration_NonRollbackable(t *testing.T) {
+	ctx := context.Background()
+	store, err := newSqliteLogStore(ctx, &SQLiteConfig{Path: filepath.Join(t.TempDir(), "user-email.db")}, testLogger{})
+	require.NoError(t, err)
+	db := store.db
+	require.NoError(t, db.Create(&MCPToolLog{ID: "mcp-1", ToolName: "echo", Status: "success", Timestamp: time.Now().UTC(), CreatedAt: time.Now().UTC()}).Error)
+	require.NoError(t, db.Model(&MCPToolLog{}).Where("id = ?", "mcp-1").Update("user_email", "ada@example.com").Error)
+
+	err = userEmailColumnMigration(ctx, testLogger{}).Rollback(db)
+	require.Error(t, err, "rollback must refuse while user_email holds a value")
+	assert.Contains(t, err.Error(), "non-rollbackable")
+	for _, model := range userEmailColumnModels {
+		assert.True(t, db.Migrator().HasColumn(model, "user_email"), "%T.user_email survives a refused rollback", model)
+	}
+	var stored string
+	require.NoError(t, db.Model(&MCPToolLog{}).Where("id = ?", "mcp-1").Pluck("user_email", &stored).Error)
+	assert.Equal(t, "ada@example.com", stored)
+}
+
+// TestMigrationAddRelayLogCorrelationColumns pins that a relay_logs table from before the
+// correlation columns gains them and their indexes, keeps its rows, and survives a second run.
+func TestMigrationAddRelayLogCorrelationColumns(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "migrations.db")), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(t, err)
+	require.NoError(t, db.Exec("CREATE TABLE relay_logs (id TEXT PRIMARY KEY)").Error)
+	require.NoError(t, db.Exec("INSERT INTO relay_logs (id) VALUES (?)", "relay-existing").Error)
+
+	ctx := context.Background()
+	require.NoError(t, migrationAddRelayLogCorrelationColumns(ctx, db, testLogger{}))
+	require.NoError(t, migrationAddRelayLogCorrelationColumns(ctx, db, testLogger{}), "the migration is idempotent")
+	for field, index := range map[string]string{"ParentRequestID": "idx_relay_logs_parent_request_id", "AgentCorrelationID": "idx_relay_logs_agent_correlation_id"} {
+		require.True(t, db.Migrator().HasColumn(&RelayLog{}, field), "missing column for %s", field)
+		require.True(t, db.Migrator().HasIndex(&RelayLog{}, index), "missing index %s", index)
+	}
+	var count int64
+	require.NoError(t, db.Table("relay_logs").Count(&count).Error)
+	require.Equal(t, int64(1), count)
+}
+
+// TestMigrationAddRelayLogLargePayloadResponse pins that a relay_logs table from before the column
+// gains is_large_payload_response, keeps its rows, and survives a second run.
+func TestMigrationAddRelayLogLargePayloadResponse(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "migrations.db")), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(t, err)
+	require.NoError(t, db.Exec("CREATE TABLE relay_logs (id TEXT PRIMARY KEY)").Error)
+	require.NoError(t, db.Exec("INSERT INTO relay_logs (id) VALUES (?)", "relay-existing").Error)
+	ctx := context.Background()
+	require.NoError(t, migrationAddRelayLogLargePayloadResponse(ctx, db, testLogger{}))
+	require.NoError(t, migrationAddRelayLogLargePayloadResponse(ctx, db, testLogger{}), "the migration is idempotent")
+	require.True(t, db.Migrator().HasColumn(&RelayLog{}, "IsLargePayloadResponse"))
+	var count int64
+	require.NoError(t, db.Table("relay_logs").Count(&count).Error)
+	require.Equal(t, int64(1), count)
+}
+
+func TestRoundTripIDColumnMigration_NonRollbackable(t *testing.T) {
+	ctx := context.Background()
+	store, err := newSqliteLogStore(ctx, &SQLiteConfig{Path: filepath.Join(t.TempDir(), "round-trip-id.db")}, testLogger{})
+	require.NoError(t, err)
+	db := store.db
+	require.NoError(t, db.Create(&MCPToolLog{ID: "mcp-1", ToolName: "echo", Status: "input_required", Timestamp: time.Now().UTC(), CreatedAt: time.Now().UTC()}).Error)
+	require.NoError(t, db.Model(&MCPToolLog{}).Where("id = ?", "mcp-1").Update("round_trip_id", "0123456789abcdef").Error)
+
+	err = roundTripIDColumnMigration(ctx, testLogger{}).Rollback(db)
+	require.Error(t, err, "rollback must refuse while round_trip_id holds a value")
+	assert.Contains(t, err.Error(), "non-rollbackable")
+	assert.True(t, db.Migrator().HasColumn(&MCPToolLog{}, "round_trip_id"), "round_trip_id survives a refused rollback")
+	var stored string
+	require.NoError(t, db.Model(&MCPToolLog{}).Where("id = ?", "mcp-1").Pluck("round_trip_id", &stored).Error)
+	assert.Equal(t, "0123456789abcdef", stored)
+
+	require.NoError(t, db.Model(&MCPToolLog{}).Where("id = ?", "mcp-1").Update("round_trip_id", nil).Error)
+	require.NoError(t, roundTripIDColumnMigration(ctx, testLogger{}).Rollback(db), "an empty column rolls back")
+	assert.False(t, db.Migrator().HasColumn(&MCPToolLog{}, "round_trip_id"))
 }

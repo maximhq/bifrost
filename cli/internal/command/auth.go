@@ -58,11 +58,24 @@ Use --username for the OSS dashboard password flow.
 // authPrintToken emits a currently valid Enterprise agent credential for
 // coding-agent token helpers. Nothing except the token is written to stdout.
 func (r *Runner) authPrintToken(ctx context.Context, env *environment, args []string) error {
-	if len(args) != 0 {
-		return fmt.Errorf("usage: bifrost auth print-token")
+	fs := flag.NewFlagSet("bifrost auth print-token", flag.ContinueOnError)
+	fs.SetOutput(r.ErrOut)
+	browserLogin := fs.Bool("browser-login", false, "sign in using your browser if no agent token is available")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 0 {
+		return fmt.Errorf("usage: bifrost auth print-token [--browser-login]")
 	}
 	if strings.TrimSpace(env.Client.CredentialsSnapshot().AgentToken) == "" {
-		return fmt.Errorf("no Enterprise SSO session is available; run 'bifrost auth login'")
+		if !*browserLogin {
+			return fmt.Errorf("no Enterprise SSO session is available; run 'bifrost auth login'")
+		}
+		loginRunner := *r
+		loginRunner.Out = r.ErrOut
+		if err := loginRunner.authLogin(ctx, env, nil); err != nil {
+			return err
+		}
 	}
 	if _, err := env.Client.Do(ctx, client.Request{Path: "/v1/models", Auth: client.AuthInference}); err != nil {
 		return fmt.Errorf("validate Enterprise SSO session: %w", err)

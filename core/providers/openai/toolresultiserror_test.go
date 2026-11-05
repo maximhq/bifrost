@@ -135,3 +135,33 @@ func TestToolResultIsErrorSurvivesAnthropicToOpenAIResponsesRoundTrip(t *testing
 		t.Fatalf("serialized function_call_output must not carry an error field, got: %s", wire)
 	}
 }
+
+// A tool message takes text only on the OpenAI wire: media a tool returned becomes a placeholder
+// naming it, never base64 text and never an image part OpenAI would reject.
+func TestToolResultMediaFlattenedOnOpenAIWire(t *testing.T) {
+	content := &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{
+		{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr("chart below")},
+		{Type: schemas.ChatContentBlockTypeImage, ImageURLStruct: &schemas.ChatInputImage{URL: "data:image/png;base64,iVBORw0KGgo="}},
+		{Type: schemas.ChatContentBlockTypeInputAudio, InputAudio: &schemas.ChatInputAudio{Data: "SUQz", Format: schemas.Ptr("mp3")}},
+	}}
+	converted := ConvertBifrostMessagesToOpenAIMessages([]schemas.ChatMessage{{
+		Role:            schemas.ChatMessageRoleTool,
+		ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: schemas.Ptr("call_1")},
+		Content:         content,
+	}})
+	if converted[0].Content == nil || converted[0].Content.ContentStr == nil {
+		t.Fatalf("expected a string tool message, got %+v", converted[0].Content)
+	}
+	got := *converted[0].Content.ContentStr
+	for _, want := range []string{"chart below", "[image/png", "[audio/mp3"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected %q in %q", want, got)
+		}
+	}
+	if strings.Contains(got, "iVBORw0KGgo") {
+		t.Fatalf("base64 must not reach the model as text: %q", got)
+	}
+	if len(content.ContentBlocks) != 3 {
+		t.Fatal("caller's content must not be mutated")
+	}
+}

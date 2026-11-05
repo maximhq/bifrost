@@ -1830,7 +1830,8 @@ func convertBifrostFunctionCallOutputToCohereMessage(msg *schemas.ResponsesMessa
 			if msg.ResponsesToolMessage.Output.ResponsesToolCallOutputStr != nil {
 				content.ContentStr = msg.ResponsesToolMessage.Output.ResponsesToolCallOutputStr
 			} else if msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks != nil {
-				content.ContentBlocks = msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks
+				// Cohere tool messages take text only; media becomes a placeholder.
+				content.ContentBlocks, _ = schemas.FlattenResponsesToolResultMedia(msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks)
 			}
 		}
 

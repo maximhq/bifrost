@@ -24,6 +24,7 @@ SGL (SGLang) is an **OpenAI-compatible local/remote inference engine** used for 
 | Embeddings | ✅ | - | `/v1/embeddings` | `/v1/embeddings` (unaffected) |
 | List Models | ✅ | - | `/v1/models` | `/v1/models` (unaffected) |
 | Count Tokens | ✅ | - | `/v1/messages/count_tokens` | `/v1/messages/count_tokens` (always) |
+| Decisions | ✅ | - | `/v1/systemone` | `/v1/systemone` (unaffected) |
 | Image Generation | ❌ | ❌ | - | - |
 | Speech (TTS) | ❌ | ❌ | - | - |
 | Transcriptions (STT) | ❌ | ❌ | - | - |
@@ -239,6 +240,35 @@ Response returns embedding vectors with usage information.
 # 5. List Models
 
 Lists available models from SGL server with capabilities.
+
+---
+
+## Decisions
+
+SGLang serves [decision models](/quickstart/gateway/decisions) on `POST /v1/systemone`, TypeSafe's System One API, from v0.5.21, with Clef, Kev and PPLX-Decider checkpoints added in later builds. Every model the server loads is sent there: `Cloudflare/clef-flash` and `Cloudflare/clef`, `jaredpalmer/kev-*` and `perplexity-ai/pplx-decider-*` need no flag, and a chat model answers through next-token reads when its answer labels are single tokens.
+
+```bash
+curl http://localhost:8080/v1/decisions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "sgl/clef-flash",
+    "input": "Customer message: I was double charged and nobody replied to my two emails.",
+    "questions": [
+      { "type": "predicate", "name": "is_frustrated", "instructions": "Is the customer frustrated?" }
+    ]
+  }'
+```
+
+Questions and input are converted as on [TypeSafe](/providers/supported-providers/typesafe#field-mapping-reference). SGLang-specific behavior:
+
+- **Limits are TypeSafe's**: 1 to 255 options and 1 to 10 levels. A violation comes back as SGLang's `422` with the field it names (`questions.urgency.score.criteria: List should have at most 10 items`).
+- **Images** need SGLang v0.5.22 or later. `input_image` parts are sent in SGLang's top-level `images` array, which every question shares; Clef reads them. v0.5.21 serves `/v1/systemone` but ignores that array, so the model answers without the image. An `https` URL is fetched by the server, and a fetch failure is SGLang's `400`. Images sent by reference (TypeSafe assets) are rejected by Bifrost with a `400`, because SGLang would ignore them and answer without the image.
+- **An empty input** is rejected by Bifrost with a `400`; SGLang would answer it with a `422`.
+- **Confidence** follows TypeSafe's formulas but is not calibrated. Label-scored models add `x_label_mass` to each answer, which is kept in the raw response.
+- **Any model name is accepted** by SGLang, including `jev-latest`; the response carries the served model. `temperature` is a `422` on this route.
+- **Server flags**: do not pass `--chat-template` or `--skip-tokenizer-init` with a decision checkpoint; Kev runs at TP=1. A key's `sgl_key_config.url` wins over `network_config.base_url`.
+
+Decisions are never emulated on SGLang: with `convert_decision_to_responses` on, requests still go to `/v1/systemone`. SGLang's own `/v1/decisions` route uses a different request shape and is not used.
 
 ---
 

@@ -83,6 +83,14 @@ LogEntry:
       type: string
       description: Raw opaque Bifrost session ID resolved at ingress for key stickiness and request correlation.
       nullable: true
+    user_email:
+      type: string
+      description: Email of the user the request was attributed to, recorded at request time. Set by enterprise governance for user sessions and for virtual keys assigned to a user.
+      nullable: true
+    client_ip:
+      type: string
+      description: The caller's IP, taken from the leftmost `X-Forwarded-For` entry, else `X-Real-IP`, else the TCP peer address. The headers are sent by the caller and not verified. Recorded only when `logs_store.capture_client_ip` is true.
+      nullable: true
     child_count:
       type: integer
       description: Rows nesting under this one (fallback attempts, and settled async cost rows). Present only on roots_only responses.
@@ -290,6 +298,14 @@ MCPToolLogEntry:
     virtual_key_name:
       type: string
       description: Name of the virtual key used for this tool execution
+    user_email:
+      type: string
+      description: Email of the user the request was attributed to, recorded at request time. Set by enterprise governance for user sessions and for virtual keys assigned to a user.
+      nullable: true
+    client_ip:
+      type: string
+      description: The caller's IP, taken from the leftmost `X-Forwarded-For` entry, else `X-Real-IP`, else the TCP peer address. The headers are sent by the caller and not verified. Recorded only when `logs_store.capture_client_ip` is true.
+      nullable: true
     arguments:
       type: object
       additionalProperties: true
@@ -479,6 +495,14 @@ SearchFilters:
       description: >-
         Governance projects to narrow to. A request is scoped to at most one
         project, so this filter selects rows rather than intersecting sets.
+    topic_ids:
+      type: array
+      items:
+        type: string
+      description: >-
+        Warp topics to narrow to, by the ids Warp's list_topics reports: the
+        requests filed under any of them. A topic merged into one of these
+        counts as it.
     providers:
       type: array
       items:
@@ -692,6 +716,14 @@ FilterDataResponse:
       description: >-
         Governance projects that appear in the logs, for the `projects`
         dimension. Only projects whose rows carry a name are listed.
+    topics:
+      type: array
+      items:
+        $ref: '#/FilterKeyPair'
+      description: >-
+        Warp topics with a request the caller may see in the last 30 days,
+        largest first, for the `topics` dimension. Empty when Warp has no
+        topics, and narrowed by `q` against the topic's name.
 
 DeleteLogsRequest:
   type: object

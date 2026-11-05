@@ -8,10 +8,22 @@ import (
 
 type contextKey uint8
 
-const requestTypeKey contextKey = iota
+const (
+	requestTypeKey contextKey = iota
+	userIDKey
+)
 
 // GetName identifies this plugin when Bifrost loads its exported hooks.
 func GetName() string { return "realtime-hooks" }
+
+// HTTPTransportPreHook opts a small user identifier into native session contexts.
+// The header is demonstration metadata, not an authenticated identity.
+func HTTPTransportPreHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
+	if userID := req.CaseInsensitiveHeaderLookup("X-Example-User-ID"); userID != "" {
+		ctx.SetValueForRealtimeTurns(userIDKey, userID)
+	}
+	return nil, nil
+}
 
 // PreRequestHook leaves routing to Bifrost. Realtime turns use the LLM hooks below.
 func PreRequestHook(_ *schemas.BifrostContext, _ *schemas.BifrostRequest) error {
@@ -35,6 +47,10 @@ func PostLLMHook(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bif
 	requestType, ok := ctx.Value(requestTypeKey).(schemas.RequestType)
 	if !ok {
 		return resp, bifrostErr, nil
+	}
+	// Read HTTP setup metadata normally, without retaining the HTTP context.
+	if userID, _ := ctx.Value(userIDKey).(string); userID != "" {
+		ctx.Log(schemas.LogLevelInfo, fmt.Sprintf("%s unit metadata: user_id=%q", requestType, userID))
 	}
 	if bifrostErr != nil {
 		// Avoid logging provider error text, which can contain request content.

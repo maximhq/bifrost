@@ -1,5 +1,6 @@
 import type { APIRequestContext } from "@playwright/test";
 import { expect, test } from "../../core/fixtures/base.fixture";
+import { expectListLoadError } from "../../core/utils/test-helpers";
 import {
   createCustomProviderData,
   createProviderKeyData,
@@ -119,6 +120,12 @@ test.describe("Providers", () => {
       // Switch to Anthropic
       await providersPage.selectProvider("anthropic");
       await expect(providersPage.page).toHaveURL(/provider=anthropic/);
+    });
+
+    test("should show the load error instead of the empty state when providers fail to load", async ({
+      page,
+    }) => {
+      await expectListLoadError(page, "/api/providers", "providers-load-error", "providers-button-read-more");
     });
   });
 
@@ -285,6 +292,159 @@ test.describe("Providers", () => {
       await expect(providersPage.keyForm).not.toBeVisible({ timeout: 5000 });
     });
 
+    test("should configure both Vertex OpenAI endpoint methods and restore standard routing", async ({ providersPage, page }) => {
+      if (!(await providersPage.providerExists("vertex"))) {
+        await providersPage.addKnownProviderFromDropdown("vertex");
+        createdProviders.push("vertex");
+      }
+      const keyName = `Vertex-OpenAI-${Date.now()}`;
+      createdKeys.push({ provider: "vertex", keyName });
+      const created = await page.request.post("/api/providers/vertex/keys", {
+        data: {
+          name: keyName,
+          value: "",
+          models: ["*"],
+          weight: 1,
+          vertex_key_config: { project_id: "key-project", region: "us-central1" },
+          aliases: { "customer-vllm": { model_id: "custom-model-version", model_name: "custom-model" } },
+        },
+      });
+      expect(created.ok(), await created.text()).toBe(true);
+      await page.reload();
+      await providersPage.selectProvider("vertex");
+      const edit = async () => {
+        await providersPage.dismissToasts();
+        await providersPage.getKeyRow(keyName).getByTestId("key-actions-trigger").click();
+        await page.getByRole("menuitem", { name: /Edit/i }).click();
+        await expect(providersPage.keyForm).toBeVisible();
+        await page.getByTestId("deployment-expand-customer-vllm").click();
+      };
+      const selectMode = async (label: string) => {
+        await page.getByTestId("deployment-vertex-serving-mode").click();
+        await page.getByRole("option", { name: label, exact: true }).click();
+      };
+      const save = async () => {
+        await providersPage.keySaveBtn.click();
+        await providersPage.waitForSuccessToast();
+        await expect(providersPage.keyForm).not.toBeVisible();
+      };
+      const savedAlias = async () => {
+        const response = await page.request.get("/api/providers/vertex/keys");
+        expect(response.ok()).toBe(true);
+        const body = await response.json();
+        const key = body.keys.find((entry: { name: string }) => entry.name === keyName);
+        expect(key).toBeTruthy();
+        return key.aliases["customer-vllm"];
+      };
+
+      await edit();
+      await selectMode("OpenAI-compatible — Raw prediction");
+      await providersPage.keySaveBtn.click();
+      await expect(page.getByTestId("deployment-vertex-endpoint-error")).toBeVisible();
+      await expect(providersPage.keyForm).toBeVisible();
+      await page.getByTestId("deployment-vertex-endpoint").fill("https://us-west1-aiplatform.googleapis.com/v1/projects/customer-project/locations/us-west1/endpoints/2222222222:rawPredict");
+      await expect(page.getByTestId("deployment-vertex-endpoint")).toHaveValue("2222222222");
+      await save();
+      let alias = await savedAlias();
+      expect(alias.model_id).toBe("custom-model-version");
+      expect(alias.vertex_endpoint).toEqual({ endpoint_id: "2222222222", format: "openai_chat", method: "raw_predict" });
+      expect(alias.project_id.value).toBe("customer-project");
+      expect(alias.region.value).toBe("us-west1");
+
+      await edit();
+      await expect(page.getByTestId("deployment-vertex-serving-mode")).toContainText("Raw prediction");
+      await selectMode("OpenAI-compatible — Chat completions");
+      await save();
+      alias = await savedAlias();
+      expect(alias.vertex_endpoint).toEqual({ endpoint_id: "2222222222", format: "openai_chat", method: "chat_completions" });
+      await edit();
+      await expect(page.getByTestId("deployment-vertex-serving-mode")).toContainText("Chat completions");
+      await selectMode("Standard Vertex");
+      await expect(page.getByTestId("deployment-vertex-endpoint")).toHaveCount(0);
+      await save();
+      expect((await savedAlias()).vertex_endpoint).toBeUndefined();
+    });
+
+    test("should save the Azure Speech endpoints switch and its deployment override", async ({ providersPage, page }) => {
+      if (!(await providersPage.providerExists("azure"))) {
+        await providersPage.addKnownProviderFromDropdown("azure");
+        createdProviders.push("azure");
+      }
+      const keyName = `Azure-Speech-${Date.now()}`;
+      createdKeys.push({ provider: "azure", keyName });
+      const created = await page.request.post("/api/providers/azure/keys", {
+        data: {
+          name: keyName,
+          value: "e2e-azure-key",
+          models: ["*"],
+          weight: 1,
+          azure_key_config: { endpoint: "https://e2e-speech.openai.azure.com" },
+          aliases: { "speech-tts": { model_id: "neural" } },
+        },
+      });
+      expect(created.ok(), await created.text()).toBe(true);
+      await page.reload();
+      await providersPage.selectProvider("azure");
+      const keySwitch = page.getByTestId("apikey-azure-use-speech-endpoints-switch");
+      const override = page.getByTestId("deployment-azure-use-speech-endpoints");
+      const edit = async () => {
+        await providersPage.dismissToasts();
+        await providersPage.getKeyRow(keyName).getByTestId("key-actions-trigger").click();
+        await page.getByRole("menuitem", { name: /Edit/i }).click();
+        await expect(providersPage.keyForm).toBeVisible();
+        await page.getByTestId("deployment-expand-speech-tts").click();
+      };
+      const selectOverride = async (label: string) => {
+        await override.click();
+        await page.getByRole("option", { name: label, exact: true }).click();
+      };
+      const save = async () => {
+        await providersPage.keySaveBtn.click();
+        await providersPage.waitForSuccessToast();
+        await expect(providersPage.keyForm).not.toBeVisible();
+      };
+      const savedKey = async () => {
+        const response = await page.request.get("/api/providers/azure/keys");
+        expect(response.ok()).toBe(true);
+        const body = await response.json();
+        const key = body.keys.find((entry: { name: string }) => entry.name === keyName);
+        expect(key).toBeTruthy();
+        return key;
+      };
+
+      await edit();
+      await expect(keySwitch).not.toBeChecked();
+      await expect(override).toContainText("Use key setting");
+      await keySwitch.click();
+      await save();
+      let key = await savedKey();
+      expect(key.azure_key_config.use_speech_endpoints).toBe(true);
+      expect(key.aliases["speech-tts"].use_speech_endpoints).toBeUndefined();
+
+      await edit();
+      await expect(keySwitch).toBeChecked();
+      await selectOverride("Off");
+      await save();
+      key = await savedKey();
+      expect(key.azure_key_config.use_speech_endpoints).toBe(true);
+      expect(key.aliases["speech-tts"].use_speech_endpoints).toBe(false);
+
+      await edit();
+      await expect(override).toContainText("Off");
+      await selectOverride("On");
+      await save();
+      expect((await savedKey()).aliases["speech-tts"].use_speech_endpoints).toBe(true);
+
+      await edit();
+      await expect(override).toContainText("On");
+      await selectOverride("Use key setting");
+      await keySwitch.click();
+      await save();
+      key = await savedKey();
+      expect(key.azure_key_config.use_speech_endpoints ?? false).toBe(false);
+      expect(key.aliases["speech-tts"].use_speech_endpoints).toBeUndefined();
+    });
+
     test("should save a Cloudflare key with its account ID", async ({
       providersPage,
       page,
@@ -420,6 +580,31 @@ test.describe("Providers", () => {
       expect(saved.custom_provider_config?.allowed_requests?.decisions).toBe(true);
       expect(saved.custom_provider_config?.allowed_requests?.list_models).toBe(true);
       expect(saved.custom_provider_config?.allowed_requests?.chat_completion).toBe(false);
+    });
+
+    test("should show the bedrock passthrough route on a custom Bedrock provider", async ({
+      providersPage,
+      providerSettingsPage,
+    }) => {
+      const providerData = createCustomProviderData({
+        name: `test-bedrock-${Date.now()}`,
+        baseProviderType: "bedrock",
+        baseUrl: "https://bedrock-runtime.us-east-1.amazonaws.com",
+      });
+
+      // Track for cleanup
+      createdProviders.push(providerData.name);
+
+      await providersPage.createProvider(providerData);
+      await expect(providersPage.getProviderItem(providerData.name)).toBeVisible({ timeout: 15000 });
+
+      await providersPage.selectProvider(providerData.name);
+      await providerSettingsPage.selectConfigTab("passthrough");
+      const hint = providerSettingsPage.page.getByTestId("provider-passthrough-endpoint-hint");
+      await expect(hint).toContainText("/bedrock_passthrough/");
+      await expect(hint).toContainText(`x-model-provider: ${providerData.name}`);
+      // A custom provider stays off until it is given a policy.
+      await expect(providerSettingsPage.getPassthroughModeSelect()).toContainText("Off");
     });
 
     test("should add an OAuth client-credentials key to a custom OpenAI-compatible provider", async ({
@@ -617,6 +802,192 @@ test.describe("Providers", () => {
       expect(after?.oauth_key_config ?? null).toBeNull();
       expect(after?.value?.value ?? "").not.toBe("");
       expect(after?.value?.value).not.toBe("sk-e2e-static-key");
+    });
+
+    test("should add a workload identity key to a custom Anthropic-compatible provider and restore it on edit", async ({
+      providersPage,
+      page,
+      request,
+    }) => {
+      const providerData = createCustomProviderData({
+        name: `test-anthropic-wif-${Date.now()}`,
+        baseProviderType: "anthropic",
+        baseUrl: "https://api.anthropic.com",
+      });
+      createdProviders.push(providerData.name);
+
+      await providersPage.createProvider(providerData);
+      await expect(providersPage.getProviderItem(providerData.name)).toBeVisible({ timeout: 15000 });
+      await providersPage.selectProvider(providerData.name);
+
+      const keyName = `anthropic-wif-key-${Date.now()}`;
+      const federationRuleId = "fdrl_e2e01";
+      const organizationId = "00000000-0000-4000-8000-0000000000e2";
+      const serviceAccountId = "svac_e2e01";
+      const identityTokenFile = "/var/run/secrets/anthropic/token";
+      await providersPage.addAnthropicWorkloadIdentityKey({
+        name: keyName,
+        federationRuleId,
+        organizationId,
+        serviceAccountId,
+        identityTokenFile,
+      });
+      await expect(providersPage.getKeyRow(keyName)).toBeVisible();
+
+      // The API stores the federation block with only the token-file source and no static value.
+      const response = await request.get(`/api/providers/${encodeURIComponent(providerData.name)}/keys`);
+      expect(response.ok(), await response.text()).toBe(true);
+      const body = (await response.json()) as {
+        keys: {
+          name: string;
+          value?: { value?: string; ref?: string };
+          anthropic_key_config?: {
+            workload_identity?: {
+              federation_rule_id?: { value?: string };
+              organization_id?: { value?: string };
+              service_account_id?: { value?: string };
+              workspace_id?: { value?: string } | null;
+              identity_source?: { type?: string; path?: { value?: string }; token?: { value?: string } | null };
+            };
+          };
+        }[];
+      };
+      const saved = body.keys.find((k) => k.name === keyName);
+      expect(saved, "saved key must be listed").toBeTruthy();
+      expect(saved?.value?.value ?? "").toBe("");
+      expect(saved?.value?.ref ?? "").toBe("");
+      const wif = saved?.anthropic_key_config?.workload_identity;
+      expect(wif?.federation_rule_id?.value).toBe(federationRuleId);
+      expect(wif?.organization_id?.value).toBe(organizationId);
+      expect(wif?.service_account_id?.value).toBe(serviceAccountId);
+      expect(wif?.identity_source?.type).toBe("file");
+      expect(wif?.identity_source?.path?.value).toBe(identityTokenFile);
+      expect(wif?.identity_source?.token ?? null).toBeNull();
+      expect(wif?.workspace_id ?? null).toBeNull();
+      // The UI-only discriminator never reaches the API.
+      expect(JSON.stringify(saved)).not.toContain("_auth_type");
+
+      // Reopen: the editor re-detects workload identity and the token-file source from the stored block.
+      await providersPage.openKeyEditor(keyName);
+      await expect(page.getByTestId("apikey-anthropic-workload-identity-tab")).toHaveAttribute("data-state", "active");
+      await expect(page.getByTestId("key-input-anthropic-api-key")).toHaveCount(0);
+      await expect(page.getByTestId("key-select-anthropic-wif-token-source")).toContainText("Token File");
+      await expect(page.getByTestId("key-input-anthropic-wif-federation-rule-id")).toHaveValue(federationRuleId);
+      await expect(page.getByTestId("key-input-anthropic-wif-organization-id")).toHaveValue(organizationId);
+      await expect(page.getByTestId("key-input-anthropic-wif-service-account-id")).toHaveValue(serviceAccountId);
+      await expect(page.getByTestId("key-input-anthropic-wif-identity-token-file")).toHaveValue(identityTokenFile);
+      await expect(page.getByTestId("key-input-anthropic-wif-identity-token")).toHaveCount(0);
+      await providersPage.keyCancelBtn.click();
+      await expect(providersPage.keyForm).not.toBeVisible({ timeout: 5000 });
+    });
+
+    // Switching a federated key back to the API key method must remove the federation block, or the
+    // server would keep it beside the new value.
+    test("should drop workload identity when an Anthropic key is switched back to an API key", async ({
+      providersPage,
+      page,
+      request,
+    }) => {
+      const providerData = createCustomProviderData({
+        name: `test-anthropic-wif-switch-${Date.now()}`,
+        baseProviderType: "anthropic",
+        baseUrl: "https://api.anthropic.com",
+      });
+      createdProviders.push(providerData.name);
+
+      await providersPage.createProvider(providerData);
+      await expect(providersPage.getProviderItem(providerData.name)).toBeVisible({ timeout: 15000 });
+      await providersPage.selectProvider(providerData.name);
+
+      const keyName = `anthropic-wif-switch-key-${Date.now()}`;
+      await providersPage.addAnthropicWorkloadIdentityKey({
+        name: keyName,
+        federationRuleId: "fdrl_e2e01",
+        organizationId: "00000000-0000-4000-8000-0000000000e2",
+        serviceAccountId: "svac_e2e01",
+        identityTokenFile: "/var/run/secrets/anthropic/token",
+      });
+      await expect(providersPage.getKeyRow(keyName)).toBeVisible();
+
+      await providersPage.openKeyEditor(keyName);
+      await page.getByTestId("apikey-anthropic-api-key-tab").click();
+      await page.getByTestId("key-input-anthropic-api-key").fill("sk-ant-e2e-switched-key");
+      await providersPage.keySaveBtn.click();
+      await providersPage.waitForSuccessToast();
+      await expect(providersPage.keyForm).not.toBeVisible({ timeout: 5000 });
+
+      const response = await request.get(`/api/providers/${encodeURIComponent(providerData.name)}/keys`);
+      expect(response.ok(), await response.text()).toBe(true);
+      const body = (await response.json()) as {
+        keys: { name: string; value?: { value?: string; ref?: string }; anthropic_key_config?: unknown }[];
+      };
+      const saved = body.keys.find((k) => k.name === keyName);
+      expect(saved, "saved key must be listed").toBeTruthy();
+      expect(saved?.value?.value ?? "", "the new API key must be stored").not.toBe("");
+      expect(saved?.anthropic_key_config ?? null, "the federation block must be gone").toBeNull();
+
+      // Reopen: the editor now shows the API key method.
+      await providersPage.openKeyEditor(keyName);
+      await expect(page.getByTestId("apikey-anthropic-api-key-tab")).toHaveAttribute("data-state", "active");
+      await expect(page.getByTestId("key-input-anthropic-wif-federation-rule-id")).toHaveCount(0);
+      await providersPage.keyCancelBtn.click();
+      await expect(providersPage.keyForm).not.toBeVisible({ timeout: 5000 });
+    });
+
+    // A key can carry both a static value and a workload identity block when it comes from the API or
+    // config.json, and the server keeps using the value. Editing it without switching the auth method
+    // must not delete that value and silently move the key onto federation.
+    test("should keep the static key of an Anthropic key that also carries workload identity on edit", async ({
+      providersPage,
+      page,
+    }) => {
+      const providerData = createCustomProviderData({
+        name: `test-anthropic-wif-both-${Date.now()}`,
+        baseProviderType: "anthropic",
+        baseUrl: "https://api.anthropic.com",
+      });
+      createdProviders.push(providerData.name);
+
+      await providersPage.createProvider(providerData);
+      await expect(providersPage.getProviderItem(providerData.name)).toBeVisible({ timeout: 15000 });
+
+      const keyName = `anthropic-wif-both-key-${Date.now()}`;
+      const keysPath = `/api/providers/${encodeURIComponent(providerData.name)}/keys`;
+      const created = await page.request.post(keysPath, {
+        data: {
+          name: keyName,
+          value: "sk-ant-e2e-static-key",
+          models: ["*"],
+          weight: 1,
+          anthropic_key_config: {
+            workload_identity: {
+              federation_rule_id: "fdrl_e2e01",
+              organization_id: "00000000-0000-4000-8000-0000000000e2",
+              service_account_id: "svac_e2e01",
+              identity_source: { type: "file", path: "/var/run/secrets/anthropic/token" },
+            },
+          },
+        },
+      });
+      expect(created.ok(), await created.text()).toBe(true);
+      await page.reload();
+      await providersPage.selectProvider(providerData.name);
+      await expect(providersPage.getKeyRow(keyName)).toBeVisible();
+
+      // Change only the weight, then save without touching the auth method.
+      await providersPage.openKeyEditor(keyName);
+      await page.getByLabel("Weight").fill("2");
+      await providersPage.keySaveBtn.click();
+      await providersPage.waitForSuccessToast();
+      await expect(providersPage.keyForm).not.toBeVisible({ timeout: 5000 });
+
+      const response = await page.request.get(keysPath);
+      expect(response.ok(), await response.text()).toBe(true);
+      const body = (await response.json()) as { keys: { name: string; weight?: number; value?: { value?: string; ref?: string } }[] };
+      const saved = body.keys.find((k) => k.name === keyName);
+      expect(saved, "saved key must be listed").toBeTruthy();
+      expect(saved?.weight).toBe(2);
+      expect(saved?.value?.value ?? "", "the static key the server uses must survive the edit").not.toBe("");
     });
 
     test("should cancel custom provider creation", async ({

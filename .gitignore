@@ -51,6 +51,7 @@ transports/bifrost-http/v1.5.x
 # Test reports
 test-reports
 tests/e2e/api/newman-reports
+tests/e2e/api/collections/mcp-harness.json
 
 # AI Agent specific
 settings.local.json
@@ -120,6 +121,7 @@ playwright/.cache/
 # Terraform
 .terraform/
 .terraform.lock.hcl
+.terraform.tfstate.lock.info
 terraform.tfstate
 terraform.tfstate.backup
 *.tfvars

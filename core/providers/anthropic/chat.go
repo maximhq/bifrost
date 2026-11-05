@@ -349,7 +349,7 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 		return nil, fmt.Errorf("bifrost request is nil or input is nil")
 	}
 
-	messages := bifrostReq.Input
+	messages := providerUtils.ChatBreakpointsAsCacheControl(bifrostReq.Input, bifrostReq.Params, AnthropicMaxCacheBreakpoints)
 	if ctx.Value(schemas.BifrostContextKeySupportsAssistantPrefill) == false {
 		trimmed := len(messages)
 		for trimmed > 0 && messages[trimmed-1].Role == schemas.ChatMessageRoleAssistant {
@@ -365,7 +365,9 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 
 	// capModel is the canonical model string used only for capability/version
 	capModel := schemas.ResolveCanonicalModel(ctx, bifrostReq.Model)
-	caps := schemas.ResolveModelCaps(bifrostReq.Provider, capModel)
+	// A custom provider resolves to the built-in provider it wraps, so its datasheet row
+	// applies here as it already does in the request builder's re-strip.
+	caps := schemas.ResolveModelCaps(schemas.ResolveBaseProvider(ctx, bifrostReq.Provider), capModel)
 	// Fable 5.1+ rejects tool_choice "any"/"tool" outright, so every forced
 	// choice below — the caller's and the synthetic structured-output pin — is
 	// dropped and the model answers under the default "auto".
@@ -1011,13 +1013,13 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 						IsError:   toolMsg.ChatToolMessage.IsError,
 					}
 
-					// Convert tool result content
-					if toolMsg.Content != nil {
-						if toolMsg.Content.ContentStr != nil && *toolMsg.Content.ContentStr != "" {
-							toolResult.Content = &AnthropicContent{ContentStr: toolMsg.Content.ContentStr}
-						} else if toolMsg.Content.ContentBlocks != nil {
-							blocks := make([]AnthropicContentBlock, 0, len(toolMsg.Content.ContentBlocks))
-							for _, block := range toolMsg.Content.ContentBlocks {
+					// Convert tool result content; images are sent as images.
+					if content := schemas.FlattenToolResultMedia(toolMsg.Content, schemas.IsImageBlock); content != nil {
+						if content.ContentStr != nil && *content.ContentStr != "" {
+							toolResult.Content = &AnthropicContent{ContentStr: content.ContentStr}
+						} else if content.ContentBlocks != nil {
+							blocks := make([]AnthropicContentBlock, 0, len(content.ContentBlocks))
+							for _, block := range content.ContentBlocks {
 								// Anthropic rejects cache_control nested inside tool_result.content
 								// ("cache_control may not be specified within `tool_result.content`.
 								// Instead, place it directly on `tool_result`"), so hoist it onto the

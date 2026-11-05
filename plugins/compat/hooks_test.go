@@ -185,7 +185,9 @@ func TestReasoningWithToolsResponsesRouting(t *testing.T) {
 			"no-reasoning-with-tools": {"reasoning", "tools"},
 			"reasoning-with-tools":    {"reasoning", "tools", "reasoning_with_tool_calls"},
 		})
-		p, err := Init(Config{ShouldDropParams: true, ForceReasoningOnlyModelsToResponses: enabled}, bifrost.NewNoOpLogger(), modelcatalog.NewTestCatalogWithDatasheet(ds))
+		mc := modelcatalog.NewTestCatalogWithDatasheet(ds)
+		mc.SetKeyConfigForProvider(schemas.OpenAI, []schemas.Key{{ID: "openai-key", Aliases: schemas.KeyAliases{"team-reasoner": {ModelID: "no-reasoning-with-tools"}}}})
+		p, err := Init(Config{ShouldDropParams: true, ForceReasoningOnlyModelsToResponses: enabled}, bifrost.NewNoOpLogger(), mc)
 		if err != nil {
 			t.Fatalf("Init: %v", err)
 		}
@@ -215,6 +217,7 @@ func TestReasoningWithToolsResponsesRouting(t *testing.T) {
 		{name: "flag false with tools", enabled: true, model: "no-reasoning-with-tools", requestType: schemas.ChatCompletionRequest, withTools: true, wantConverted: true, wantReasoning: true},
 		{name: "flag false with tools stream", enabled: true, model: "no-reasoning-with-tools", requestType: schemas.ChatCompletionStreamRequest, withTools: true, wantConverted: true, wantReasoning: true},
 		{name: "flag false without tools", enabled: true, model: "no-reasoning-with-tools", requestType: schemas.ChatCompletionRequest, wantConverted: true, wantReasoning: true},
+		{name: "alias resolved to flag false model", enabled: true, model: "team-reasoner", requestType: schemas.ChatCompletionRequest, withTools: true, wantConverted: true, wantReasoning: true},
 		{name: "reasoning with tools supported", enabled: true, model: "reasoning-with-tools", requestType: schemas.ChatCompletionRequest, withTools: true, wantReasoning: true},
 		{name: "no datasheet entry", enabled: true, model: "unknown", requestType: schemas.ChatCompletionRequest, withTools: true, wantReasoning: true},
 		{name: "toggle off forces reasoning off", model: "no-reasoning-with-tools", requestType: schemas.ChatCompletionRequest, withTools: true},
@@ -257,7 +260,7 @@ func TestConfigForceReasoningOnlyModelsToResponsesDefaultsOn(t *testing.T) {
 // emulation unless the model catalog lists the model as a native decisions model:
 // a supports_decisions row decides in either direction, and without a row the
 // gpt-6-luna on OpenAI, Typesafe, Clef on Cloudflare, deciders on Perplexity, System One
-// models on Ollama and Microsoft's decision models on Azure are native. Typesafe and other
+// models on Ollama and Microsoft's decision models and gpt-6-luna on Azure are native. Typesafe and other
 // request types are never marked.
 func TestDecisionToResponsesEmulationOptIn(t *testing.T) {
 	rows := map[string]bool{"microsoft/decision-1": true, "typesafe/jev-router": false, "clef": false}
@@ -318,16 +321,23 @@ func TestDecisionToResponsesEmulationOptIn(t *testing.T) {
 		{name: "tagged system one model on ollama is native", enabled: true, req: decision(schemas.Ollama, "tev1:0.8b")},
 		{name: "clef on ollama is native", enabled: true, req: decision(schemas.Ollama, "clef-flash")},
 		{name: "chat model on ollama marked", enabled: true, req: decision(schemas.Ollama, "llama3.1:latest"), wantConverted: true},
-		{name: "gpt-6-luna on azure marked", enabled: true, req: decision(schemas.Azure, "gpt-6-luna"), wantConverted: true},
+		{name: "gpt-6-luna on azure is native", enabled: true, req: decision(schemas.Azure, "gpt-6-luna")},
+		{name: "dated gpt-6-luna on azure is native", enabled: true, req: decision(schemas.Azure, "gpt-6-luna-2026-09-22")},
 		{name: "gpt-6-luna on groq marked", enabled: true, req: decision(schemas.Groq, "gpt-6-luna"), wantConverted: true},
 		{name: "gpt-6-luna on a custom provider marked", enabled: true, req: decision(schemas.ModelProvider("my-openai"), "gpt-6-luna"), wantConverted: true},
 		{name: "microsoft decision model on azure is native", enabled: true, req: decision(schemas.Azure, "Microsoft-Decision-1")},
 		{name: "chat model on azure marked", enabled: true, req: decision(schemas.Azure, "gpt-4o"), wantConverted: true},
 		{name: "microsoft decision model on openai marked", enabled: true, req: decision(schemas.OpenAI, "Microsoft-Decision-1"), wantConverted: true},
 		{name: "ai_decide on databricks is native", enabled: true, req: decision(schemas.Databricks, "ai_decide")},
+		{name: "openjev on databricks is native", enabled: true, req: decision(schemas.Databricks, "system.ai.openjev-qwen35-4b")},
+		{name: "typesafe jev on databricks is native", enabled: true, req: decision(schemas.Databricks, "system.ai.typesafeai-jev-1-14-0")},
 		{name: "serving endpoint model on databricks marked", enabled: true, req: decision(schemas.Databricks, "databricks-claude-sonnet-4"), wantConverted: true},
 		{name: "ai_decide on openai marked", enabled: true, req: decision(schemas.OpenAI, "ai_decide"), wantConverted: true},
 		{name: "typesafe provider never marked", enabled: true, req: decision(schemas.Typesafe, "jev-latest")},
+		{name: "vllm provider never marked", enabled: true, req: decision(schemas.VLLM, "Qwen/Qwen3-0.6B")},
+		{name: "vllm provider never marked by header", override: true, req: decision(schemas.VLLM, "clef-flash")},
+		{name: "sgl provider never marked", enabled: true, req: decision(schemas.SGL, "clef-flash")},
+		{name: "sgl provider never marked by header", override: true, req: decision(schemas.SGL, "jaredpalmer/kev-4b")},
 		{name: "chat request untouched", enabled: true, req: chat},
 	}
 	for _, tt := range tests {
@@ -365,5 +375,135 @@ func TestConfigConvertDecisionToResponsesDefaultsOff(t *testing.T) {
 	}
 	if !c.ConvertDecisionToResponses {
 		t.Error("convert_decision_to_responses should be true when set")
+	}
+}
+
+// newAliasDropTestPlugin builds a drop-params plugin whose bedrock key maps
+// key-level aliases onto models that carry a supported-parameter list.
+func newAliasDropTestPlugin(t *testing.T, supported map[string][]string, aliases schemas.KeyAliases) *CompatPlugin {
+	t.Helper()
+	ds := datasheet.NewTestStore(nil)
+	ds.SetSupportedParamsForTest(supported)
+	mc := modelcatalog.NewTestCatalogWithDatasheet(ds)
+	mc.SetKeyConfigForProvider(schemas.Bedrock, []schemas.Key{{ID: "bedrock-key", Aliases: aliases}})
+	p, err := Init(Config{ShouldDropParams: true}, bifrost.NewNoOpLogger(), mc)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	return p
+}
+
+func newStopChatRequest(provider schemas.ModelProvider, model string) *schemas.BifrostRequest {
+	return &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Provider: provider,
+			Model:    model,
+			Params: &schemas.ChatParameters{
+				Stop:        []string{"</block>"},
+				Temperature: schemas.Ptr(0.5),
+			},
+		},
+	}
+}
+
+// TestPluginDropParamsResolvesKeyAlias guards that drop-params reads the
+// supported-parameter list of the model an alias names, not the alias string,
+// which the catalog never has a row for.
+func TestPluginDropParamsResolvesKeyAlias(t *testing.T) {
+	cases := []struct {
+		name      string
+		supported map[string][]string
+		aliases   schemas.KeyAliases
+		model     string
+	}{
+		{
+			name:      "model_id",
+			supported: map[string][]string{"deepseek.v3.2": {"temperature"}},
+			aliases:   schemas.KeyAliases{"claude-deepseek-v3": {ModelID: "deepseek.v3.2"}},
+			model:     "claude-deepseek-v3",
+		},
+		{
+			name:      "model_name wins over an opaque model_id",
+			supported: map[string][]string{"deepseek.v3.2": {"temperature"}},
+			aliases:   schemas.KeyAliases{"claude-deepseek-v3": {ModelID: "abc12xyz", ModelName: schemas.Ptr("deepseek.v3.2")}},
+			model:     "claude-deepseek-v3",
+		},
+		{
+			name:      "alias case-insensitive",
+			supported: map[string][]string{"deepseek.v3.2": {"temperature"}},
+			aliases:   schemas.KeyAliases{"claude-deepseek-v3": {ModelID: "deepseek.v3.2"}},
+			model:     "Claude-DeepSeek-V3",
+		},
+		{
+			// Migrated deployment maps keep the real model as the alias name and an opaque deployment id as model_id.
+			name:      "deployment alias falls back to the alias name's list",
+			supported: map[string][]string{"gpt-4o": {"temperature"}},
+			aliases:   schemas.KeyAliases{"gpt-4o": {ModelID: "my-gpt4o-prod-east"}},
+			model:     "gpt-4o",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := newAliasDropTestPlugin(t, tc.supported, tc.aliases)
+			ctx := newTestContext()
+			out, _, err := p.PreLLMHook(ctx, newStopChatRequest(schemas.Bedrock, tc.model))
+			if err != nil {
+				t.Fatalf("PreLLMHook: %v", err)
+			}
+			if out.ChatRequest.Params.Stop != nil {
+				t.Errorf("stop = %v, want it dropped", out.ChatRequest.Params.Stop)
+			}
+			if out.ChatRequest.Params.Temperature == nil {
+				t.Errorf("temperature was dropped, want it kept")
+			}
+			if out.ChatRequest.Model != tc.model {
+				t.Errorf("model = %q, want the alias %q left for core to resolve", out.ChatRequest.Model, tc.model)
+			}
+			dropped, _ := ctx.Value(schemas.BifrostContextKeyCompatDroppedParams).([]string)
+			if !slices.Equal(dropped, []string{"stop"}) {
+				t.Errorf("dropped = %v, want [stop]", dropped)
+			}
+		})
+	}
+}
+
+// TestPluginDropParamsAliasOnOtherProvider guards that an alias is resolved
+// against the request's own provider only.
+func TestPluginDropParamsAliasOnOtherProvider(t *testing.T) {
+	p := newAliasDropTestPlugin(t,
+		map[string][]string{"deepseek.v3.2": {"temperature"}},
+		schemas.KeyAliases{"claude-deepseek-v3": {ModelID: "deepseek.v3.2"}})
+	ctx := newTestContext()
+	out, _, err := p.PreLLMHook(ctx, newStopChatRequest(schemas.OpenAI, "claude-deepseek-v3"))
+	if err != nil {
+		t.Fatalf("PreLLMHook: %v", err)
+	}
+	if out.ChatRequest.Params.Stop == nil {
+		t.Errorf("stop dropped on a provider that has no such alias")
+	}
+}
+
+// BenchmarkPreLLMHookDropParams measures the drop-params PreLLMHook for a plain
+// model and for a key alias, which adds one alias-index lookup.
+func BenchmarkPreLLMHookDropParams(b *testing.B) {
+	ds := datasheet.NewTestStore(nil)
+	ds.SetSupportedParamsForTest(map[string][]string{"deepseek.v3.2": {"temperature"}})
+	mc := modelcatalog.NewTestCatalogWithDatasheet(ds)
+	mc.SetKeyConfigForProvider(schemas.Bedrock, []schemas.Key{{ID: "bedrock-key", Aliases: schemas.KeyAliases{"claude-deepseek-v3": {ModelID: "deepseek.v3.2"}}}})
+	p, err := Init(Config{ShouldDropParams: true}, bifrost.NewNoOpLogger(), mc)
+	if err != nil {
+		b.Fatalf("Init: %v", err)
+	}
+	for _, model := range []string{"deepseek.v3.2", "claude-deepseek-v3"} {
+		b.Run(model, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				ctx := newTestContext()
+				if _, _, err := p.PreLLMHook(ctx, newStopChatRequest(schemas.Bedrock, model)); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
 	}
 }

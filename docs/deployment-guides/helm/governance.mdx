@@ -260,7 +260,7 @@ bifrost:
 |-------|-------------|
 | `expires_at` | RFC3339 expiry. Once passed, requests with the key are rejected |
 | `delete_after_expire` | Delete the key once `expires_at` passes. Omit to follow `bifrost.client.deleteExpiredVirtualKeys` (default `false`); `true` or `false` overrides it for this key |
-| `disable_content_logging` | Per-key override of `bifrost.client.disableContentLogging`. Omit to inherit; `false` forces content into the log store even when the client setting is `true` |
+| `disable_content_logging` | Per-key override of `bifrost.client.disableContentLogging`. Omit to inherit; `false` forces content into the log store even when the client setting is `true`. A project's own `disable_content_logging` overrides it for requests scoped to that project |
 | `business_unit_id` | Owning business unit. Mutually exclusive with `team_id` and `customer_id` |
 
 To delete expired keys globally, set `bifrost.client.deleteExpiredVirtualKeys: true` (renders into `client.delete_expired_virtual_keys`). A daily job then removes every expired key except those with `delete_after_expire: false`.
@@ -441,7 +441,7 @@ bifrost:
         complex_keywords: ["design a solution under several competing constraints."]
 ```
 
-`decision.provider` and `decision.model` are set together; omit both to use `typesafe`/`jev-latest`. `decision.previous_message_count` accepts 0 to 5 earlier user messages in addition to the current request. Decision-model usage counts toward request cost and budgets.
+`decision.provider` and `decision.model` are set together; omit both to use `typesafe`/`jev-latest`. `decision.previous_message_count` accepts 0 to 5 earlier user messages in addition to the current request. `decision.min_confidence` (0 to 1, default `0`) is the confidence an answer must reach to publish its tier. Decision-model usage counts toward request cost and budgets.
 
 `decision.criteria` optionally overrides the tier guidance the decision model classifies against. Its keys are `SIMPLE`, `MEDIUM`, and `COMPLEX`, each with an optional `definition` (max 500 characters), `signals`, and `examples` (each max 12 items of 300 characters). A supplied list replaces the whole default list, and anything omitted uses the shipped default. See [Tier guidance](/features/complexity-router#tier-guidance) for the defaults and how to write your own. To use the decision model after an inconclusive semantic result, keep the semantic configuration below, set `semantic.fallback: decision`, and optionally include the `decision` settings above.
 

@@ -25,18 +25,18 @@
     "langsmith": "0.6.0",
     "openai": "6.15.0",
     "yaml": "2.9.0",
-    "zod": "3.25.76"
+    "zod": "4.6.7"
   },
   "devDependencies": {
     "@types/node": "22.10.0",
-    "@typescript-eslint/eslint-plugin": "8.50.0",
-    "@typescript-eslint/parser": "8.50.0",
-    "@vitest/coverage-v8": "4.1.11",
-    "@vitest/ui": "4.1.11",
+    "@typescript-eslint/eslint-plugin": "8.72.1",
+    "@typescript-eslint/parser": "8.72.1",
+    "@vitest/coverage-v8": "4.1.12",
+    "@vitest/ui": "4.1.12",
     "dotenv": "16.4.0",
-    "eslint": "9.0.0",
+    "eslint": "10.14.0",
     "typescript": "5.7.3",
-    "vitest": "4.1.11"
+    "vitest": "4.1.12"
   },
   "overrides": {
     "ast-v8-to-istanbul": "1.0.0",
@@ -44,12 +44,14 @@
     "brace-expansion@2": "2.1.7",
     "esbuild": "0.28.1",
     "js-yaml": "4.3.2",
+    "minimatch": "11.0.3",
     "nanoid": "3.3.18",
     "obug": "2.1.4",
     "rollup": "4.60.4",
-    "vite": "6.4.4"
+    "vite": "6.4.5",
+    "zod": "$zod"
   },
   "engines": {
-    "node": ">=22.0.0"
+    "node": "^22.13.0 || >=24"
   }
 }

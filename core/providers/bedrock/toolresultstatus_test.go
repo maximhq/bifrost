@@ -3,6 +3,7 @@ package bedrock
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -209,5 +210,38 @@ func BenchmarkConvertToolMessagesSingleTextBlock(b *testing.B) {
 				}
 			}
 		})
+	}
+}
+
+// Converse takes images in a toolResult; audio a tool returned becomes a placeholder beside them.
+func TestToolResultKeepsImagesNamesOtherMedia(t *testing.T) {
+	converted, err := convertToolMessages(context.Background(), "anthropic.claude-sonnet-4-5-20250929-v1:0", []schemas.ChatMessage{{
+		Role:            schemas.ChatMessageRoleTool,
+		ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: schemas.Ptr("toolu_1")},
+		Content:         &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{
+		{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr("chart below")},
+		{Type: schemas.ChatContentBlockTypeImage, ImageURLStruct: &schemas.ChatInputImage{URL: "data:image/png;base64,iVBORw0KGgo="}},
+		{Type: schemas.ChatContentBlockTypeInputAudio, InputAudio: &schemas.ChatInputAudio{Data: "SUQz", Format: schemas.Ptr("mp3")}},
+	}},
+	}})
+	if err != nil {
+		t.Fatalf("convert tool messages: %v", err)
+	}
+	var images, placeholders int
+	for _, block := range converted.Content {
+		if block.ToolResult == nil {
+			continue
+		}
+		for _, inner := range block.ToolResult.Content {
+			if inner.Image != nil {
+				images++
+			}
+			if inner.Text != nil && strings.Contains(*inner.Text, "[audio/mp3") {
+				placeholders++
+			}
+		}
+	}
+	if images != 1 || placeholders != 1 {
+		t.Fatalf("expected the image kept and the audio named, got %d images, %d placeholders", images, placeholders)
 	}
 }

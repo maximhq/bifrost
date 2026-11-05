@@ -16,7 +16,7 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
-// TestRewriteGenAIRawRequestBodyRedactsOnlyContentFields verifies Gemini redaction covers native text and function-result values without touching metadata or function-call arguments.
+// TestRewriteGenAIRawRequestBodyRedactsOnlyContentFields verifies Gemini redaction covers native text, function-call argument values, and function-result values without touching metadata.
 func TestRewriteGenAIRawRequestBodyRedactsOnlyContentFields(t *testing.T) {
 	rawBody := []byte(`{
 		"systemInstruction":{"parts":[{"text":"system alice@example.com"}]},
@@ -40,6 +40,7 @@ func TestRewriteGenAIRawRequestBodyRedactsOnlyContentFields(t *testing.T) {
 		"systemInstruction.parts.0.text",
 		"contents.0.parts.0.text",
 		"contents.1.parts.0.text",
+		"contents.1.parts.1.functionCall.args.email",
 		"contents.2.parts.0.functionResponse.response.output",
 		`contents.2.parts.0.functionResponse.response.nested\.value.contact:key`,
 		"instances.0.prompt",
@@ -52,7 +53,6 @@ func TestRewriteGenAIRawRequestBodyRedactsOnlyContentFields(t *testing.T) {
 
 	untouchedPaths := []string{
 		"contents.1.parts.0.thoughtSignature",
-		"contents.1.parts.1.functionCall.args.email",
 		"labels.owner",
 		"tools.0.functionDeclarations.0.description",
 	}
@@ -79,6 +79,20 @@ func TestRewriteGenAIRawRequestBodyRejectsUnmappedLiteral(t *testing.T) {
 		map[string]string{"alice@example.com": "[EMAIL]"},
 	)
 	require.Error(t, err)
+}
+
+// TestRewriteGenAIRawRequestBodyMatchesEscapedArgumentLiterals verifies a literal cut from escaped argument JSON text
+// redacts the decoded function-call argument value it stands for, keeping argument keys and other values.
+func TestRewriteGenAIRawRequestBodyMatchesEscapedArgumentLiterals(t *testing.T) {
+	got, err := rewriteGenAIRawRequestBody(
+		[]byte(`{"contents":[{"role":"model","parts":[{"functionCall":{"name":"write","args":{"path":"key.pem","content":"head\nkey line one\nkey line two\ntail","mode":420}}}]}]}`),
+		map[string]string{`key line one\nkey line two`: "[SECRET]"},
+	)
+	require.NoError(t, err)
+	args := gjson.GetBytes(got, "contents.0.parts.0.functionCall.args")
+	assert.Equal(t, "head\n[SECRET]\ntail", args.Get("content").String())
+	assert.Equal(t, "key.pem", args.Get("path").String())
+	assert.Equal(t, int64(420), args.Get("mode").Int())
 }
 
 // TestRewriteGenAIRawRequestBodyRejectsSensitiveObjectKeys verifies unsupported key mutation fails closed inside a function-result subtree.
