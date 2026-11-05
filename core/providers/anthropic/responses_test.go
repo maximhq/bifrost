@@ -4123,3 +4123,73 @@ func TestSearchToolVersionDefaultsAndOpenAIWire(t *testing.T) {
 		t.Fatal("OpenAI conversion mutated the caller's tool")
 	}
 }
+
+// The neutral /v1/responses route reaches the same model gates as chat: on Haiku
+// 5.5 reasoning.effort becomes adaptive thinking plus output_config.effort, and
+// temperature/top_p are dropped rather than forwarded into a 400.
+func TestToAnthropicResponsesRequest_Haiku55_EffortAndSampling(t *testing.T) {
+	temp, topP := 0.0, 0.9
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+
+	out, err := ToAnthropicResponsesRequest(ctx, &schemas.BifrostResponsesRequest{
+		Provider: schemas.Anthropic,
+		Model:    "claude-haiku-5-5",
+		Input:    makeSimpleInput("think"),
+		Params: &schemas.ResponsesParameters{
+			MaxOutputTokens: new(8192),
+			Temperature:     &temp,
+			TopP:            &topP,
+			Reasoning:       &schemas.ResponsesParametersReasoning{Effort: new("xhigh")},
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if out.Thinking == nil || out.Thinking.Type != "adaptive" || out.Thinking.BudgetTokens != nil {
+		t.Errorf("thinking = %+v, want adaptive without budget_tokens", out.Thinking)
+	}
+	if out.OutputConfig == nil || out.OutputConfig.Effort == nil || *out.OutputConfig.Effort != "xhigh" {
+		t.Errorf("output_config = %+v, want effort \"xhigh\"", out.OutputConfig)
+	}
+	if out.Temperature != nil || out.TopP != nil {
+		t.Errorf("sampling forwarded: temperature=%v top_p=%v", out.Temperature, out.TopP)
+	}
+}
+
+// The Responses converter resolves a custom provider to its base the same way.
+func TestToAnthropicResponsesRequest_CustomProviderUsesBaseProviderRow(t *testing.T) {
+	const model = "claude-datasheet-only-test"
+	yes, no := true, false
+	setOverride(t, model, schemas.ModelCapabilities{SupportsAdaptiveThinking: &yes, SupportsNativeEffort: &yes, SupportsSamplingParams: &no})
+
+	temp := 0.0
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	ctx.SetValue(schemas.BifrostContextKeyBaseProviderType, schemas.Anthropic)
+
+	out, err := ToAnthropicResponsesRequest(ctx, &schemas.BifrostResponsesRequest{
+		Provider: schemas.ModelProvider("my-claude"),
+		Model:    model,
+		Input:    makeSimpleInput("think"),
+		Params: &schemas.ResponsesParameters{
+			MaxOutputTokens: new(8192),
+			Temperature:     &temp,
+			Reasoning:       &schemas.ResponsesParametersReasoning{Effort: new("medium")},
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if out.Thinking == nil || out.Thinking.Type != "adaptive" {
+		t.Errorf("thinking = %+v, want adaptive from the base provider's row", out.Thinking)
+	}
+	if out.OutputConfig == nil || out.OutputConfig.Effort == nil || *out.OutputConfig.Effort != "medium" {
+		t.Errorf("output_config = %+v, want effort \"medium\"", out.OutputConfig)
+	}
+	if out.Temperature != nil {
+		t.Errorf("temperature forwarded: %v", *out.Temperature)
+	}
+}
