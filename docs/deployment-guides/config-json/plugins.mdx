@@ -139,6 +139,7 @@ Exports distributed traces to any OTel-compatible collector (Jaeger, Zipkin, Tem
 | `config.insecure` | No | `false` | Skip TLS verification |
 | `config.tls_ca_cert` | No | - | Path to TLS CA certificate |
 | `config.plugin_span_filter` | No | - | Filter which plugin hook spans are exported. See [Filtering Plugin Spans](/features/observability/otel#filtering-plugin-spans) |
+| `config.disable_content_logging` | No | `false` | Drop message content from exported spans while keeping metadata, usage, and cost attributes. The client-level `disable_content_logging` setting does not suppress OTel span content — set this field on the plugin |
 
 ```json
 {
@@ -147,7 +148,7 @@ Exports distributed traces to any OTel-compatible collector (Jaeger, Zipkin, Tem
       "name": "otel",
       "enabled": true,
       "config": {
-        "collector_url": "http://otel-collector:4318",
+        "collector_url": "http://otel-collector:4318/v1/traces",
         "trace_type": "genai_extension",
         "protocol": "http",
         "service_name": "bifrost-gateway"
@@ -188,7 +189,7 @@ Exports distributed traces to any OTel-compatible collector (Jaeger, Zipkin, Tem
       "name": "otel",
       "enabled": true,
       "config": {
-        "collector_url": "http://otel-collector:4318",
+        "collector_url": "http://otel-collector:4318/v1/traces",
         "trace_type": "genai_extension",
         "protocol": "http",
         "metrics_enabled": true,
