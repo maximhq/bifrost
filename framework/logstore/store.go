@@ -76,6 +76,10 @@ type LogStore interface {
 	// WarpTopicStore is where Warp's topics, and each request's place among
 	// them, are kept. See warptopics.go.
 	WarpTopicStore
+	// ComplexitySuggestionStore is where the complexity router's phrase
+	// suggestions, and the runs that wrote them, are kept. See
+	// complexitysuggestions.go.
+	ComplexitySuggestionStore
 
 	Ping(ctx context.Context) error
 	Create(ctx context.Context, entry *Log) error
