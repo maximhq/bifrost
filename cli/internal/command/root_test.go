@@ -1785,3 +1785,92 @@ func TestSupplementalManagementOperationsDispatch(t *testing.T) {
 		}
 	}
 }
+
+// TestProjectInferenceHeaders exercises the command boundary for buffered and streamed calls.
+func TestProjectInferenceHeaders(t *testing.T) {
+	for _, args := range [][]string{
+		{"chat", "--model", "test", "--message", "hello", "--project-id", "p-one"},
+		{"chat", "--model", "test", "--message", "hello", "--project-id", "p-one", "--stream"},
+		{"infer", "responses", "--body", `{"model":"test","input":"hello"}`, "--project-id", "p-one", "--header", "X-BF-PROJECT-NAME: old", "--header", "X-Trace: keep"},
+		{"request", "POST", "/v1/responses", "--body", `{}`, "--project-id", "p-one", "--stream"},
+	} {
+		t.Run(strings.Join(args[:2], "-"), func(t *testing.T) {
+			calls := 0
+			runner, _, secrets := newTestRunner(t, testRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+				calls++
+				if req.Header.Get("x-bf-project-id") != "p-one" || req.Header.Get("x-bf-project-name") != "" {
+					t.Fatalf("wrong project headers: %v", req.Header)
+				}
+				if req.Header.Get("x-bf-vk") != "sk-bf-test" {
+					t.Fatalf("lost identity: %v", req.Header)
+				}
+				return jsonResponse(req, `{}`), nil
+			}))
+			secrets["test:virtual-key"] = "sk-bf-test"
+			if err := runner.Run(context.Background(), args); err != nil {
+				t.Fatal(err)
+			}
+			if calls != 1 {
+				t.Fatalf("calls=%d", calls)
+			}
+		})
+	}
+}
+
+// TestInvalidProjectSelectionMakesNoRequests rejects ambiguous and injectable input early.
+func TestInvalidProjectSelectionMakesNoRequests(t *testing.T) {
+	for _, flags := range [][]string{{"--project-id", ""}, {"--project-name", " "}, {"--project-id", "one", "--project-name", "two"}, {"--project-name", "one\r\nX-Other: bad"}} {
+		runner, _, _ := newTestRunner(t, testRoundTripFunc(func(req *http.Request) (*http.Response, error) { t.Fatal("unexpected request"); return nil, nil }))
+		args := append([]string{"chat", "--model", "test", "--message", "hello"}, flags...)
+		if err := runner.Run(context.Background(), args); err == nil {
+			t.Fatalf("accepted %q", flags)
+		}
+	}
+}
+
+// TestDesktopProjectHelper emits exactly the documented token-plus-headers contract.
+func TestDesktopProjectHelper(t *testing.T) {
+	runner, out, secrets := newTestRunner(t, testRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.Header.Get("x-bf-project-name") != "customer-alpha" {
+			t.Fatalf("unscoped helper validation: %v", req.Header)
+		}
+		return jsonResponse(req, `{"data":[]}`), nil
+	}))
+	secrets["test:agent-token"] = "ck-bf-agent-test"
+	if err := runner.Run(context.Background(), []string{"auth", "print-token", "--format", "claude-desktop", "--project-name", "customer-alpha"}); err != nil {
+		t.Fatal(err)
+	}
+	var payload struct {
+		Token   string            `json:"token"`
+		Headers map[string]string `json:"headers"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Token != "ck-bf-agent-test" || payload.Headers["x-bf-project-name"] != "customer-alpha" {
+		t.Fatalf("wrong helper output: %#v", payload)
+	}
+}
+
+// TestProjectAliasFlagsStayWithWrapper preserves native passthrough after the separator.
+func TestProjectAliasFlagsStayWithWrapper(t *testing.T) {
+	got := normalizeHarnessAliasArgs([]string{"--project-name", "alpha", "--", "--project-id", "native"})
+	want := []string{"--project-name", "alpha", "--", "--project-id", "native"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("got=%v", got)
+	}
+}
+
+// TestDesktopHelperDenialPrintsNoCredential prevents rejected project selections leaking a usable helper result.
+func TestDesktopHelperDenialPrintsNoCredential(t *testing.T) {
+	runner, out, secrets := newTestRunner(t, testRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		response := jsonResponse(req, `{"type":"access_blocked"}`)
+		response.StatusCode = http.StatusForbidden
+		return response, nil
+	}))
+	secrets["test:agent-token"] = "ck-bf-agent-test"
+	err := runner.Run(context.Background(), []string{"auth", "print-token", "--format", "claude-desktop", "--project-id", "denied"})
+	if err == nil || out.Len() != 0 {
+		t.Fatalf("err=%v stdout=%q", err, out.String())
+	}
+}
