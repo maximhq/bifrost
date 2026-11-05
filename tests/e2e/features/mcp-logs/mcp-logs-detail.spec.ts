@@ -5,6 +5,9 @@ const listLog = {
   id: 'mcp-detail-e2e',
   request_id: 'req-mcp-detail-e2e',
   llm_request_id: 'llm-mcp-detail-e2e',
+  virtual_key_id: 'vk-mcp-detail-e2e',
+  // Long enough to truncate in Request Details, so the full name has to come from the tooltip.
+  virtual_key_name: `mcp-detail-vk-${'long-name-'.repeat(12)}end`,
   timestamp: '2026-05-10T10:00:00Z',
   tool_name: 'search_docs',
   server_label: 'docs',
@@ -126,6 +129,22 @@ test.describe('MCP Log Detail Hydration', () => {
 
     // An ordinary successful execution has nothing to explain, so More details opens on Timings.
     await expect(mcpLogsPage.logDetailSheet.getByTestId('mcplogdetails-status-description')).toHaveCount(0)
+
+    // The virtual key is shown once, in Request Details, as the link to the key. toHaveCount also counts
+    // hidden elements, so the link is pinned inside More details by being hidden until it opens.
+    await expect(mcpLogsPage.logDetailSheet.getByText(listLog.virtual_key_name, { exact: true })).toHaveCount(1)
+    const virtualKeyLink = mcpLogsPage.logDetailSheet.getByTestId('mcplogdetails-virtual-key-link')
+    await expect(virtualKeyLink).toHaveCount(1)
+    await expect(virtualKeyLink).toBeHidden()
+    await mcpLogsPage.logDetailSheet.getByTestId('mcplogdetails-more-details-toggle').click()
+    await expect(virtualKeyLink).toBeVisible()
+    await expect(virtualKeyLink).toHaveText(listLog.virtual_key_name)
+    const href = new URL((await virtualKeyLink.getAttribute('href')) ?? '', page.url())
+    expect(href.pathname).toMatch(/\/workspace\/governance\/virtual-keys$/)
+    expect(href.searchParams.get('selected_vk')).toBe(listLog.virtual_key_id)
+    // The link truncates, and hovering it shows the full name.
+    await virtualKeyLink.hover()
+    await expect(page.getByRole('tooltip')).toContainText(listLog.virtual_key_name)
   })
 
   test('opens the sheet from a selected_log link when that log is not on the loaded page', async ({ mcpLogsPage, page }) => {
@@ -361,7 +380,7 @@ test.describe('MCP Log Round Trips and MCP Apps', () => {
 
     await mcpLogsPage.viewLogDetails(3)
     const sheet = mcpLogsPage.logDetailSheet
-    await sheet.getByText('More details').click()
+    await sheet.getByTestId('mcplogdetails-more-details-toggle').click()
     const apps = sheet.getByTestId('mcplogdetails-mcp-apps')
     for (const marker of ['Caller hosts MCP Apps', 'App-only tool', 'Opens ui://dash/view', 'Called as refresh']) {
       await expect(apps).toContainText(marker)

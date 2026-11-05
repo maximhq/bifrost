@@ -501,21 +501,6 @@ export function MCPLogDetailSheet({
 										<CopyInlineButton text={displayLog.llm_request_id} testId="mcplogdetails-copy-llm-request-id-button" />
 									</div>
 								)}
-								{(displayLog.virtual_key || displayLog.virtual_key_id) && (
-									<div className="mt-1 flex items-center gap-2">
-										<div className="text-muted-foreground w-24 shrink-0 text-[10.5px] font-semibold tracking-wider uppercase">
-											{t("mcpLogs.detail.key")}
-										</div>
-										<Link
-											to="/workspace/governance/virtual-keys"
-											search={{ selected_vk: displayLog.virtual_key?.id || displayLog.virtual_key_id! }}
-											className="truncate font-mono text-[13px] text-blue-600 hover:underline dark:text-blue-400"
-											data-testid="mcplogdetails-virtual-key-link"
-										>
-											{displayLog.virtual_key?.name || displayLog.virtual_key_name || displayLog.virtual_key_id}
-										</Link>
-									</div>
-								)}
 							</div>
 							<div className="flex shrink-0 items-center gap-1.5 rounded-sm border bg-white px-2 py-1 text-[12px] font-medium dark:bg-zinc-900">
 								{appIcon && <img src={appIcon} alt={app.name} width={14} height={14} />}
@@ -568,7 +553,10 @@ export function MCPLogDetailSheet({
 						</div>
 					</div>
 					<details className="group bg-card rounded-sm border" open={false}>
-						<summary className="hover:bg-muted/30 flex cursor-pointer items-center justify-between px-4 py-2.5 text-sm transition">
+						<summary
+							className="hover:bg-muted/30 flex cursor-pointer items-center justify-between px-4 py-2.5 text-sm transition"
+							data-testid="mcplogdetails-more-details-toggle"
+						>
 							<span className="text-foreground font-medium">{t("mcpLogs.detail.moreDetails")}</span>
 							<span className="text-muted-foreground flex items-center gap-2 text-xs">
 								<span className="hidden md:inline">
@@ -715,7 +703,17 @@ export function MCPLogDetailSheet({
 										<LogEntryDetailsView
 											className="w-full"
 											label={t("mcpLogs.detail.virtualKey")}
-											value={displayLog.virtual_key?.name || displayLog.virtual_key_name || displayLog.virtual_key_id}
+											valueTooltip={displayLog.virtual_key?.name || displayLog.virtual_key_name || displayLog.virtual_key_id}
+											value={
+												<Link
+													to="/workspace/governance/virtual-keys"
+													search={{ selected_vk: displayLog.virtual_key?.id || displayLog.virtual_key_id! }}
+													className="text-sm font-normal text-blue-600 underline-offset-2 hover:underline dark:text-blue-400"
+													data-testid="mcplogdetails-virtual-key-link"
+												>
+													{displayLog.virtual_key?.name || displayLog.virtual_key_name || displayLog.virtual_key_id}
+												</Link>
+											}
 										/>
 									)}
 									{displayLog.decision && (
