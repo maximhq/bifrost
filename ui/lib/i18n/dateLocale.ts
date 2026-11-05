@@ -1,4 +1,4 @@
-import { de, es, fr, it, ja, ko, pt, ru, zhCN, zhTW, type Locale } from "date-fns/locale";
+import { de, es, fr, it, ja, ko, pt, ptBR, ru, zhCN, zhTW, type Locale } from "date-fns/locale";
 
 const DATE_LOCALES: Record<string, Locale> = {
 	"zh-CN": zhCN,
@@ -6,6 +6,7 @@ const DATE_LOCALES: Record<string, Locale> = {
 	ja,
 	ko,
 	es,
+	"pt-BR": ptBR,
 	pt,
 	fr,
 	de,

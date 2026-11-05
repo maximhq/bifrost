@@ -42,3 +42,39 @@ describe("document language", () => {
 		expect(documentElement.lang).toBe("en");
 	});
 });
+
+describe("Portuguese variants", () => {
+	it("offers pt-BR and pt as separate, distinguishable languages", async () => {
+		const { SUPPORTED_LOCALES } = await loadI18n();
+		const labels = SUPPORTED_LOCALES.filter((locale) => locale.code.startsWith("pt")).map((locale) => [locale.code, locale.label]);
+		expect(labels).toEqual([
+			["pt-BR", "Português (Brasil)"],
+			["pt", "Português (Portugal)"],
+		]);
+	});
+
+	it.each([
+		[["pt-BR"], "pt-BR"],
+		[["pt-PT"], "pt"],
+		[["pt"], "pt"],
+	])("resolves a browser asking for %j to %s", async (languages, expected) => {
+		vi.stubGlobal("navigator", { languages, language: languages[0] });
+		const { getLocale, i18nReady, default: i18n } = await loadI18n();
+		await i18nReady;
+		// vi.resetModules() keeps the i18next singleton, so detection has to be re-run for this navigator.
+		await i18n.changeLanguage();
+		expect(getLocale()).toBe(expected);
+		expect(documentElement.lang).toBe(expected);
+	});
+
+	it("serves pt-BR from its own catalog, not the European one or English", async () => {
+		const { changeLocale, i18nReady, default: i18n } = await loadI18n();
+		await i18nReady;
+		const label = () => i18n.t("nav.modelProviders", { ns: "shell" });
+		await changeLocale("pt");
+		const european = label();
+		await changeLocale("pt-BR");
+		expect(i18n.resolvedLanguage).toBe("pt-BR");
+		expect(label()).not.toBe(european);
+	});
+});
