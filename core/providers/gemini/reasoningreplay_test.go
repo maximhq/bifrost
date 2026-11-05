@@ -218,6 +218,43 @@ func TestNonStreamSignatureOnToolPartsHasID(t *testing.T) {
 	}
 }
 
+// Non-streamed item ids are replayed as-is to OpenAI and Azure, which reject any item id
+// longer than 64 characters ("Invalid 'input[1].id': string too long"). Scoping them by the
+// 55-character response id produced 66-71 character ids; they must fit like streamed ids do.
+func TestNonStreamItemIDsFitOpenAIIDLimit(t *testing.T) {
+	parts := []*Part{{Thought: true, Text: "thinking"}, {Text: "OK"}}
+	for i := 0; i < 10; i++ { // two-digit output indexes
+		parts = append(parts, &Part{Thought: true, Text: "more"}, &Part{Text: "more"})
+	}
+	resp := (&GenerateContentResponse{Candidates: []*Candidate{{
+		Content:           &Content{Role: "model", Parts: parts},
+		GroundingMetadata: &GroundingMetadata{WebSearchQueries: []string{"bifrost"}},
+	}}}).ToResponsesBifrostResponsesResponse()
+	require.Greater(t, len(resp.Output), 20)
+	for _, item := range resp.Output {
+		require.NotNil(t, item.ID, "item without an id: %+v", item)
+		require.LessOrEqual(t, len(*item.ID), 64, "item id %q is %d characters", *item.ID, len(*item.ID))
+	}
+}
+
+// A web_search_call built from groundingMetadata (no server-side toolCall part to take an id
+// from) carries an id in the streaming path's generateItemID("ws", index) form, not null.
+func TestNonStreamGroundingWebSearchCallHasID(t *testing.T) {
+	resp := (&GenerateContentResponse{Candidates: []*Candidate{{
+		Content:           &Content{Role: "model", Parts: []*Part{{Text: "OK"}}},
+		GroundingMetadata: &GroundingMetadata{WebSearchQueries: []string{"bifrost"}},
+	}}}).ToResponsesBifrostResponsesResponse()
+	var found bool
+	for _, item := range resp.Output {
+		if item.Type != nil && *item.Type == schemas.ResponsesMessageTypeWebSearchCall {
+			found = true
+			require.NotNil(t, item.ID, "web_search_call id is null")
+			require.Regexp(t, `^msg_\w+_ws_\d+$`, *item.ID)
+		}
+	}
+	require.True(t, found, "no web_search_call emitted: %+v", resp.Output)
+}
+
 // responsesMessagesForThoughtPart runs the real ingress converter over a single
 // candidate holding one part, and returns the reasoning messages it produced.
 func responsesMessagesForThoughtPart(t *testing.T, part *Part) []schemas.ResponsesMessage {
