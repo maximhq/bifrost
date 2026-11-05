@@ -913,7 +913,16 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 			}
 		}
 
-		if message.ResponsesReasoning != nil {
+		// Codex replays assistant message items with summary:null and encrypted_content, which
+		// decode into the embedded ResponsesReasoning. The content is the turn itself: keep it.
+		// Drop the token for every model: OpenAI never mints encrypted_content on a message item
+		// and rejects any it receives, and the fail-soft retry would then also strip the genuine
+		// reasoning items' tokens. Separate reasoning items are handled below, unchanged.
+		if message.ResponsesReasoning != nil && len(message.ResponsesReasoning.Summary) == 0 &&
+			message.Type != nil && *message.Type == schemas.ResponsesMessageTypeMessage {
+			message.ResponsesReasoning = nil
+			messages = append(messages, message)
+		} else if message.ResponsesReasoning != nil {
 			usesContentBlocks := caps.SupportsReasoningContentBlocks(defaultSupportsReasoningContentBlocks(baseProvider, capModel))
 			isReasoning := caps.SupportsReasoning(IsOpenAIReasoningModel(capModel))
 
