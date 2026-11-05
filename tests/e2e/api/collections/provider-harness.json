@@ -201519,7 +201519,7 @@
           ]
         },
         {
-          "name": "162.14 bedrock ListInferenceProfiles under /bedrock is signed, forwarded to the control plane with its query and the listing returns untouched, not the dashboard HTML - #9531 (bedrock inference profiles)",
+          "name": "162.14 bedrock ListInferenceProfiles under /bedrock is signed, forwarded to the control plane with its query and the listing returns untouched, not the dashboard HTML (bedrock inference profiles) - #9531",
           "request": {
             "method": "GET",
             "header": [
@@ -201587,7 +201587,7 @@
           ]
         },
         {
-          "name": "162.15 bedrock GetInferenceProfile under /bedrock is signed and forwarded to the control plane with the dotted profile id intact - #9531 (bedrock inference profiles)",
+          "name": "162.15 bedrock GetInferenceProfile under /bedrock is signed and forwarded to the control plane with the dotted profile id intact (bedrock inference profiles) - #9531",
           "request": {
             "method": "GET",
             "header": [
@@ -201645,7 +201645,7 @@
           ]
         },
         {
-          "name": "162.16 bedrock ListFoundationModels under /bedrock is signed, forwarded to the control plane with its filter and the listing returns untouched - #9531 (bedrock foundation models)",
+          "name": "162.16 bedrock ListFoundationModels under /bedrock is signed, forwarded to the control plane with its filter and the listing returns untouched (bedrock foundation models) - #9531",
           "request": {
             "method": "GET",
             "header": [
@@ -201709,7 +201709,7 @@
           ]
         },
         {
-          "name": "162.17 bedrock GetFoundationModel under /bedrock is signed and forwarded to the control plane with the versioned model id intact - #9531 (bedrock foundation models)",
+          "name": "162.17 bedrock GetFoundationModel under /bedrock is signed and forwarded to the control plane with the versioned model id intact (bedrock foundation models) - #9531",
           "request": {
             "method": "GET",
             "header": [
@@ -201767,7 +201767,7 @@
           ]
         },
         {
-          "name": "162.18 [EXPECT-404] bedrock GetInferenceProfile under /bedrock returns an upstream not-found verbatim with its AWS error headers - #9531 (bedrock inference profiles)",
+          "name": "162.18 [EXPECT-404] bedrock GetInferenceProfile under /bedrock returns an upstream not-found verbatim with its AWS error headers (bedrock inference profiles) - #9531",
           "request": {
             "method": "GET",
             "header": [],
@@ -201809,7 +201809,7 @@
           ]
         },
         {
-          "name": "162.19 bedrock ListInferenceProfiles under /bedrock sends an API-key-only key as a bearer token, as the native list-models call does - #9531 (bedrock api key inference profiles)",
+          "name": "162.19 bedrock ListInferenceProfiles under /bedrock sends an API-key-only key as a bearer token, as the native list-models call does (bedrock api key inference profiles) - #9531",
           "request": {
             "method": "GET",
             "header": [
