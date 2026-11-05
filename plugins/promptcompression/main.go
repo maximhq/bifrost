@@ -151,8 +151,15 @@ func (p *Plugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostReq
 
 // afterIfWorthwhile returns the estimated token count of the compressed
 // request, or -1 when the original should be sent: nothing changed, nothing
-// was eligible, the compression saved fewer than MinSavingsTokens eligible
-// tokens, or the whole request did not get strictly smaller.
+// was eligible, or the compression saved fewer than MinSavingsTokens eligible
+// tokens.
+//
+// There is deliberately no "estimate got smaller" check. Every edit makes its
+// output strictly shorter in bytes, so a changed request is always smaller on
+// the wire, but the estimate (ceil(len/4)) can round a 1-3 byte whitespace
+// edit to a saving of zero tokens. Gating on a strictly smaller estimate would
+// send such an edit's original text, and then send the edit later, once a real
+// trim appears: the edit would show up late and break byte stability.
 //
 // Stability: edits are fixed once made and the eligible set only grows, so
 // while the client's protected (cache-marked) prefix does not move, saved never
@@ -170,10 +177,7 @@ func (p *Plugin) afterIfWorthwhile(before int, st stats) int {
 	if saved < p.s.MinSavingsTokens {
 		return -1
 	}
-	if after := before - saved; after < before {
-		return after
-	}
-	return -1
+	return before - saved
 }
 
 func clearEstimates(ctx *schemas.BifrostContext) {

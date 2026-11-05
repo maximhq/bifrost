@@ -1278,6 +1278,74 @@ func TestHookMovingCacheMarker(t *testing.T) {
 	require.Equal(t, mustJSON(t, outN[5]), mustJSON(t, outN1[5]), "B outside the prefix stays byte-identical")
 }
 
+// TestHookZeroTokenEditStaysStable: a whitespace edit that removes fewer than
+// four bytes saves zero estimated tokens. It must still be sent (the request
+// is smaller in bytes) and stay byte-identical when a later request adds a
+// real trim, in both APIs.
+func TestHookZeroTokenEditStaysStable(t *testing.T) {
+	const ws = "abcdefg " // one trailing space: ceil(len/4) is unchanged
+	big := bigOutput(300)
+	p, _ := newHookPlugin(t)
+
+	// Chat: ws is at index 3 (age 2 at both requests); big at index 5 turns old at N+1.
+	sendChat := func(in []schemas.ChatMessage) ([]schemas.ChatMessage, bool) {
+		req := &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{Model: "m", Input: in}}
+		res, _, err := p.PreLLMHook(hookCtx(), req)
+		require.NoError(t, err)
+		return res.ChatRequest.Input, res != req
+	}
+	outN, compN := sendChat(rounds(ws, big, "d"))
+	outN1, compN1 := sendChat(rounds(ws, big, "d", "e"))
+	require.True(t, compN, "chat N: the zero-token edit is sent")
+	require.True(t, compN1, "chat N+1: compressed")
+	require.Equal(t, "abcdefg", strOf(outN[3]), "chat N: ws edited")
+	require.Equal(t, big, strOf(outN[5]), "chat N: big still young")
+	require.NotEqual(t, big, strOf(outN1[5]), "chat N+1: big trimmed")
+	require.Equal(t, mustJSON(t, outN[3]), mustJSON(t, outN1[3]), "chat: earlier edit byte-identical")
+
+	sendResp := func(in []schemas.ResponsesMessage) ([]schemas.ResponsesMessage, bool) {
+		req := &schemas.BifrostRequest{RequestType: schemas.ResponsesRequest, ResponsesRequest: &schemas.BifrostResponsesRequest{Model: "m", Input: in}}
+		res, _, err := p.PreLLMHook(hookCtx(), req)
+		require.NoError(t, err)
+		return res.ResponsesRequest.Input, res != req
+	}
+	rN, rcN := sendResp(respRounds(ws, big, "d"))
+	rN1, rcN1 := sendResp(respRounds(ws, big, "d", "e"))
+	require.True(t, rcN, "responses N: the zero-token edit is sent")
+	require.True(t, rcN1, "responses N+1: compressed")
+	require.Equal(t, "abcdefg", rmOutStr(rN[3]), "responses N: ws edited")
+	require.NotEqual(t, big, rmOutStr(rN1[5]), "responses N+1: big trimmed")
+	require.Equal(t, mustJSON(t, rN[3]), mustJSON(t, rN1[3]), "responses: earlier edit byte-identical")
+}
+
+// TestHookMovingCacheMarkerZeroTokenEdit is TestHookMovingCacheMarker with B
+// a zero-token edit: moving the marker removes A's saving, and B's edit must
+// still stay as it was.
+func TestHookMovingCacheMarkerZeroTokenEdit(t *testing.T) {
+	a := bigOutput(300)
+	const b = "abcdefg "
+	build := func() []schemas.ChatMessage {
+		return rounds(a, b, "c", "d")
+	}
+	n := build()
+	n1 := append(build(), assistantCall("call_5"), toolMsg("call_5", "e"))
+	n1[4].ChatAssistantMessage.ToolCalls[0].CacheControl = &schemas.CacheControl{Type: "ephemeral"}
+	require.Equal(t, 5, chatProtectedPrefix(n1, 1), "marker protects A but not B")
+
+	p, _ := newHookPlugin(t)
+	send := func(in []schemas.ChatMessage) []schemas.ChatMessage {
+		req := &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{Model: "m", Input: in}}
+		res, _, err := p.PreLLMHook(hookCtx(), req)
+		require.NoError(t, err)
+		return res.ChatRequest.Input
+	}
+	outN, outN1 := send(n), send(n1)
+	require.NotEqual(t, a, strOf(outN[3]), "precondition: A trimmed at N")
+	require.Equal(t, "abcdefg", strOf(outN[5]), "precondition: B edited at N")
+	require.Equal(t, a, strOf(outN1[3]), "A inside the new prefix equals the client's original")
+	require.Equal(t, mustJSON(t, outN[5]), mustJSON(t, outN1[5]), "B outside the prefix stays byte-identical")
+}
+
 // savedTokens runs the hook and returns the tokens it saved (0 when the
 // original request was sent).
 func savedTokens(t *testing.T, p *Plugin, req *schemas.BifrostRequest) int {
