@@ -826,6 +826,10 @@
                 "type": "string",
                 "description": "ID of the customer this budget belongs to (mutually exclusive with the other owner IDs)"
               },
+              "business_unit_id": {
+                "type": "string",
+                "description": "ID of the business unit this budget belongs to (mutually exclusive with the other owner IDs)"
+              },
               "team_id": {
                 "type": "string",
                 "description": "ID of the team this budget belongs to (mutually exclusive with virtual_key_id and provider_config_id)"
@@ -1191,9 +1195,21 @@
                 "type": "string",
                 "description": "Business unit name"
               },
+              "budgets": {
+                "type": "array",
+                "description": "Inline budget configurations for this business unit. Each entry must have a unique reset_duration. Mutually exclusive with budget_id.",
+                "items": {
+                  "$ref": "#/$defs/budget_line"
+                }
+              },
               "budget_id": {
                 "type": "string",
-                "description": "Associated budget ID"
+                "description": "Deprecated: use budgets. ID of a budget declared in governance.budgets that this business unit holds."
+              },
+              "calendar_aligned": {
+                "type": "boolean",
+                "description": "When true, the business unit's budgets and rate limit reset at calendar boundaries (start of hour, day, week, month, quarter or year) instead of rolling windows.",
+                "default": false
               },
               "rate_limit_id": {
                 "type": "string",

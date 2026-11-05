@@ -5598,6 +5598,12 @@ func updateGovernanceConfigInStore(
 				pendingCustomerBudgetsToAdd = append(pendingCustomerBudgetsToAdd, budget)
 				continue
 			}
+			// A budget a business unit holds is written directly: nothing in this store has to exist
+			// first, since the column that names the unit carries no constraint. It is still skipped
+			// while an access profile governs the unit, as a team's or customer's would be.
+			if governed.skipBudget(ctx, governance.LegacyLimitHolderBusinessUnit, budget.BusinessUnitID, budget.ID) {
+				continue
+			}
 			if err := config.ConfigStore.CreateBudget(ctx, &budget, tx); err != nil {
 				return fmt.Errorf("failed to create budget %s: %w", budget.ID, err)
 			}
@@ -5622,6 +5628,9 @@ func updateGovernanceConfigInStore(
 			}
 			if budget.CustomerID != nil {
 				pendingCustomerBudgetsToUpdate = append(pendingCustomerBudgetsToUpdate, budget)
+				continue
+			}
+			if governed.skipBudget(ctx, governance.LegacyLimitHolderBusinessUnit, budget.BusinessUnitID, budget.ID) {
 				continue
 			}
 			if err := config.ConfigStore.UpdateBudget(ctx, &budget, tx); err != nil {
@@ -11337,6 +11346,10 @@ func governingAccessProfile(ctx context.Context, store configstore.ConfigStore, 
 			return "", nil, fmt.Errorf("failed to read customer %s before applying its limits: %w", id, err)
 		}
 		rateLimitID = customer.RateLimitID
+	case governance.LegacyLimitHolderBusinessUnit:
+		// The unit's own row lives with the build that provides business units, which applies the
+		// file's declaration of it and reads its rate limit there. Here only the budgets naming the
+		// unit are at stake, and the answer is whether a profile governs it.
 	default:
 		return "", nil, fmt.Errorf("cannot read the limits of %q %s: not a legacy limit holder", holderKind, id)
 	}
