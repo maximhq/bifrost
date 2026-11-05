@@ -12,6 +12,7 @@ import (
 type governanceSnapshotTarget struct {
 	virtualKeyID, virtualKeyName       **string
 	userID, userName                   **string
+	userEmail                          **string // nil for tables without a user_email column
 	teamID, teamName                   **string
 	customerID, customerName           **string
 	businessUnitID, businessUnitName   **string
@@ -39,7 +40,7 @@ func (l *MCPToolLog) ApplyGovernanceContext(ctx *schemas.BifrostContext) {
 	}
 	applyGovernanceContext(ctx, governanceSnapshotTarget{
 		virtualKeyID: &l.VirtualKeyID, virtualKeyName: &l.VirtualKeyName,
-		userID: &l.UserID, userName: &l.UserName,
+		userID: &l.UserID, userName: &l.UserName, userEmail: &l.UserEmail,
 		teamID: &l.TeamID, teamName: &l.TeamName,
 		customerID: &l.CustomerID, customerName: &l.CustomerName,
 		businessUnitID: &l.BusinessUnitID, businessUnitName: &l.BusinessUnitName,
@@ -72,6 +73,17 @@ func (l *AgentLog) ApplyGovernanceContext(ctx *schemas.BifrostContext) {
 func applyGovernanceContext(ctx *schemas.BifrostContext, target governanceSnapshotTarget) {
 	if ctx == nil {
 		return
+	}
+	// Runs before the dimension loop overwrites userID: the email belongs to the user id it was read with.
+	if target.userEmail != nil {
+		if id := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyUserID); id != "" {
+			if *target.userID == nil || **target.userID != id {
+				*target.userEmail = nil
+			}
+			if email := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyUserEmail); email != "" && (*target.userEmail == nil || **target.userEmail == "") {
+				*target.userEmail = &email
+			}
+		}
 	}
 	for _, dimension := range []struct {
 		idKey, nameKey schemas.BifrostContextKey
@@ -139,7 +151,7 @@ func (l *RelayLog) ApplyGovernanceContext(ctx *schemas.BifrostContext) {
 	}
 	applyGovernanceContext(ctx, governanceSnapshotTarget{
 		virtualKeyID: &l.VirtualKeyID, virtualKeyName: &l.VirtualKeyName,
-		userID: &l.UserID, userName: &l.UserName,
+		userID: &l.UserID, userName: &l.UserName, userEmail: &l.UserEmail,
 		teamID: &l.TeamID, teamName: &l.TeamName,
 		customerID: &l.CustomerID, customerName: &l.CustomerName,
 		businessUnitID: &l.BusinessUnitID, businessUnitName: &l.BusinessUnitName,

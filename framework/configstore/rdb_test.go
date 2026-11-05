@@ -5360,6 +5360,48 @@ func TestUpsertModelPricesBatch_VideoTokenColumnSurvivesResync(t *testing.T) {
 	assert.Equal(t, rate, *found.OutputCostPerVideoToken)
 }
 
+func TestUpsertModelPricesBatch_CacheCreationAbove12hrColumnsSurviveResync(t *testing.T) {
+	s := setupRDBTestStore(t)
+	require.NoError(t, s.DB().AutoMigrate(&tables.TableModelPricing{}))
+	ctx := context.Background()
+
+	row := tables.TableModelPricing{Model: "gpt-5.6-sol", Provider: "openai", Mode: "chat"}
+	require.NoError(t, s.UpsertModelPricesBatch(ctx, []tables.TableModelPricing{row}))
+
+	row.CacheCreationInputTokenCostAbove12hr = schemas.Ptr(0.00001)
+	row.CacheCreationInputTokenCostAbove12hrAbove272kTokens = schemas.Ptr(0.00002)
+	row.CacheCreationInputTokenCostAbove12hrPriority = schemas.Ptr(0.00002)
+	row.CacheCreationInputTokenCostAbove12hrAbove272kTokensPriority = schemas.Ptr(0.00004)
+	row.CacheCreationInputTokenCostAbove12hrFlex = schemas.Ptr(0.000005)
+	row.CacheCreationInputTokenCostAbove12hrAbove272kTokensFlex = schemas.Ptr(0.00001)
+	row.CacheCreationInputTokenCostAbove12hrUltrafast = schemas.Ptr(0.00015)
+	row.CacheCreationInputTokenCostAbove12hrAbove272kTokensUltrafast = schemas.Ptr(0.0003)
+	require.NoError(t, s.UpsertModelPricesBatch(ctx, []tables.TableModelPricing{row}))
+
+	got, err := s.GetModelPrices(ctx)
+	require.NoError(t, err)
+	var found *tables.TableModelPricing
+	for i := range got {
+		if got[i].Model == "gpt-5.6-sol" {
+			found = &got[i]
+			break
+		}
+	}
+	require.NotNil(t, found)
+	for name, v := range map[string]*float64{
+		"cache_creation_input_token_cost_above_12hr":                      found.CacheCreationInputTokenCostAbove12hr,
+		"cache_creation_input_token_cost_above_12hr_above_272k_tokens":    found.CacheCreationInputTokenCostAbove12hrAbove272kTokens,
+		"cache_creation_input_token_cost_above_12hr_priority":             found.CacheCreationInputTokenCostAbove12hrPriority,
+		"cache_creation_input_token_cost_above_12hr_above_272k_priority":  found.CacheCreationInputTokenCostAbove12hrAbove272kTokensPriority,
+		"cache_creation_input_token_cost_above_12hr_flex":                 found.CacheCreationInputTokenCostAbove12hrFlex,
+		"cache_creation_input_token_cost_above_12hr_above_272k_flex":      found.CacheCreationInputTokenCostAbove12hrAbove272kTokensFlex,
+		"cache_creation_input_token_cost_above_12hr_ultrafast":            found.CacheCreationInputTokenCostAbove12hrUltrafast,
+		"cache_creation_input_token_cost_above_12hr_above_272k_ultrafast": found.CacheCreationInputTokenCostAbove12hrAbove272kTokensUltrafast,
+	} {
+		assert.NotNil(t, v, "%s missing from pricingSyncUpdateColumns", name)
+	}
+}
+
 // TestRDBConfigStore_CreatedAtSurvivesConfigSync is the general form of
 // TestRDBConfigStore_RoutingRuleCreatedAtSurvivesUpdate. GORM's Save selects every
 // column, so any entity rebuilt from config.json — which carries no created_at —
@@ -6734,9 +6776,21 @@ func TestMCPClientPendingVerification_ReadFromTheOldSignalsWithoutTheFlag(t *tes
 		require.NoError(t, store.DB().Model(&tables.TableMCPClient{}).Where("client_id = ?", id).Updates(columns).Error)
 	}
 
+	// Completing the sign-in stores the tools it discovered and clears the stash.
 	create("oauth_done_elsewhere", schemas.MCPAuthTypePerUserOauth, false)
+	require.NoError(t, store.UpdateMCPClientDiscovery(ctx, "oauth_done_elsewhere", &schemas.MCPDiscovery{Tools: map[string]schemas.ChatTool{}}))
 	setColumns("oauth_done_elsewhere", map[string]any{"pending_oauth_config_json": nil})
-	assert.False(t, pending("oauth_done_elsewhere"), "the stash cleared without the record: verified")
+	assert.False(t, pending("oauth_done_elsewhere"), "the stash cleared and tools stored without the record: verified")
+
+	// Registered but holding no admin discovery, as turning per_user_discovery off leaves it.
+	create("oauth_turned_off", schemas.MCPAuthTypePerUserOauth, false)
+	setColumns("oauth_turned_off", map[string]any{"pending_oauth_config_json": nil, "pending_verification": true})
+	assert.True(t, pending("oauth_turned_off"), "no stash and no tools, recorded: pending")
+
+	// The same without the record, as a row from before it can be: read as it always was.
+	create("oauth_without_tools", schemas.MCPAuthTypePerUserOauth, false)
+	setColumns("oauth_without_tools", map[string]any{"pending_oauth_config_json": nil, "pending_verification": false})
+	assert.False(t, pending("oauth_without_tools"), "no stash and no tools, not recorded: verified")
 
 	create("oauth_created_elsewhere", schemas.MCPAuthTypePerUserOauth, false)
 	setColumns("oauth_created_elsewhere", map[string]any{"pending_verification": false})
@@ -6789,12 +6843,21 @@ func TestUpdateMCPClientConfig_TurningPerUserDiscoveryOnOrOff(t *testing.T) {
 			wantCredentials: []string{"tok-alice", "cred-alice"}, wantDiscoveries: []string{"user/alice/notes", "user/alice/wiki"}, wantPending: true,
 		},
 		{
+			// One from before the record, with no tool list: verified, as it always read.
+			name: "on, a per_user_oauth client with no tools and no record", authType: schemas.MCPAuthTypePerUserOauth, from: false, to: true,
+			wantCredentials: []string{"tok-alice", "cred-alice"}, wantDiscoveries: []string{"user/alice/notes", "user/alice/wiki"},
+		},
+		{
+			name: "on, a per_user_oauth client turned off and not verified since", authType: schemas.MCPAuthTypePerUserOauth, from: false, to: true, record: true,
+			wantCredentials: []string{"tok-alice", "cred-alice"}, wantDiscoveries: []string{"user/alice/notes", "user/alice/wiki"}, wantPending: true,
+		},
+		{
 			name: "off, a per_user_headers client goes back to its admin step", authType: schemas.MCPAuthTypePerUserHeaders, from: true, to: false,
 			wantCredentials: []string{"tok-admin", "tok-alice", "cred-admin", "cred-alice"}, wantDiscoveries: []string{"user/alice/wiki"}, wantPending: true,
 		},
 		{
-			name: "off, a per_user_oauth client stays verified", authType: schemas.MCPAuthTypePerUserOauth, from: true, to: false,
-			wantCredentials: []string{"tok-admin", "tok-alice", "cred-admin", "cred-alice"}, wantDiscoveries: []string{"user/alice/wiki"},
+			name: "off, a per_user_oauth client goes back to its admin step", authType: schemas.MCPAuthTypePerUserOauth, from: true, to: false,
+			wantCredentials: []string{"tok-admin", "tok-alice", "cred-admin", "cred-alice"}, wantDiscoveries: []string{"user/alice/wiki"}, wantPending: true,
 		},
 		{
 			name: "kept, an ordinary edit", authType: schemas.MCPAuthTypePerUserHeaders, from: false, to: false, tools: true,

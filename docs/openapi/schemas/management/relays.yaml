@@ -519,6 +519,10 @@ RelayLog:
       type: string
     user_name:
       type: string
+    user_email:
+      type: string
+      description: Email of the user the request was attributed to, recorded at request time. Set by enterprise governance for user sessions and for virtual keys assigned to a user.
+      nullable: true
     virtual_key_id:
       type: string
     virtual_key_name:
@@ -564,12 +568,19 @@ RelayLog:
       type: array
       items:
         type: string
+    session_id:
+      type: string
+      description: Session identity resolved at ingress (x-bf-session-id), as on LLM and MCP log rows.
     user_agent:
       type: string
       description: Raw HTTP `User-Agent` of the calling client.
     app:
       type: string
       description: Client application detected from `user_agent`.
+    client_ip:
+      type: string
+      description: The caller's IP, taken from the leftmost `X-Forwarded-For` entry, else `X-Real-IP`, else the TCP peer address. The headers are sent by the caller and not verified. Recorded only when `logs_store.capture_client_ip` is true.
+      nullable: true
     request_id:
       type: string
     request_body:
@@ -669,12 +680,16 @@ RelayLogStats:
     error_count:
       type: integer
       format: int64
+    cancelled_count:
+      type: integer
+      format: int64
+      description: Calls the caller hung up on, answered with 499, or whose own deadline expired.
     success_rate:
       type: number
-      description: Percentage of requests that succeeded.
+      description: Percentage of finished calls (success, error, cancelled) that succeeded, as on /api/logs/stats; calls still processing are left out.
     average_latency:
       type: number
-      description: Milliseconds.
+      description: Milliseconds, over finished calls.
     total_cost:
       type: number
     total_units:

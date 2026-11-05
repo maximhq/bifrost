@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net"
 	"net/url"
 	"regexp"
@@ -22,6 +23,7 @@ import (
 	"github.com/mark3labs/mcp-go/client/transport"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
 
@@ -192,6 +194,7 @@ func (m *MCPManager) GetToolPerClient(ctx context.Context) map[string][]schemas.
 // tools when withConnect is set and its instructions when withInstructions is set.
 func (m *MCPManager) resolveCallerDiscovery(ctx context.Context, withConnect, withInstructions bool) CallerDiscovery {
 	var includeClients []string
+	appTools := listsAppTools(ctx)
 
 	// Extract client filtering from request context
 	if existingIncludeClients, ok := ctx.Value(schemas.MCPContextKeyIncludeClients).([]string); ok && existingIncludeClients != nil {
@@ -254,6 +257,7 @@ func (m *MCPManager) resolveCallerDiscovery(ctx context.Context, withConnect, wi
 		// FILTERING HIERARCHY (restrictive, not permissive):
 		// 1. Client-level configuration (ToolsToExecute) - Global allow-list, most restrictive
 		// 2. Request context (MCPContextKeyIncludeTools) - Can only further narrow, not expand
+		// 3. MCP Apps visibility - app-only tools only for callers AppToolsAllowed admits
 		// Context filtering CANNOT override client configuration - it can only be more restrictive.
 		// The names kept are gathered first, so the tools are copied once into a
 		// slice of exactly their count instead of being grown one by one.
@@ -268,6 +272,11 @@ func (m *MCPManager) resolveCallerDiscovery(ctx context.Context, withConnect, wi
 			// Second check: Request context can further narrow the allowed tools
 			// Context can only restrict, not expand beyond client configuration
 			if shouldSkipToolForRequest(ctx, clientName, toolName) {
+				continue
+			}
+
+			// Third check: app-only MCP Apps tools need a caller AppToolsAllowed admits
+			if !appTools && !toolMap[toolName].MCP.ModelVisible() {
 				continue
 			}
 
@@ -339,7 +348,7 @@ func (m *MCPManager) GetClientByName(clientName string) *schemas.MCPClientState 
 //
 // It deliberately skips tools_to_execute and the request include lists that
 // GetToolPerClient applies: the provider config is the authorization. Only a client
-// that is missing or disabled, or a tool the client does not expose, is refused.
+// that is missing or disabled, a tool the client does not expose, or an app-only tool is refused.
 func (m *MCPManager) GetInjectedTool(ctx context.Context, clientName, toolName string) (schemas.ChatTool, error) {
 	// Find the client under the lock, then read its tools outside it: a ctx-aware
 	// discovery store may read through to slower backing, which must not run under m.mu.
@@ -364,6 +373,9 @@ func (m *MCPManager) GetInjectedTool(ctx context.Context, clientName, toolName s
 	tool, ok := m.discoveryStore.GetDiscovery(ctx, config).GetTools()[clientName+"-"+toolName]
 	if !ok {
 		return schemas.ChatTool{}, fmt.Errorf("mcp client %q does not expose tool %q", clientName, toolName)
+	}
+	if !tool.MCP.ModelVisible() {
+		return schemas.ChatTool{}, fmt.Errorf("mcp client %q tool %q is only callable from an MCP App", clientName, toolName)
 	}
 	// A deep copy: the caller owns the returned schema, and an edit to it must never
 	// reach the stored definition every later request is built from.
@@ -770,12 +782,319 @@ func isDeadSessionError(err error) bool {
 // error that merely mentions "multi round-trip:" is not one.
 const unfulfilledInputPrefix = "multi round-trip: fulfilling input request "
 
+// relayedClientCapabilities are the client capabilities Bifrost can pass through to a gateway caller.
+var relayedClientCapabilities = mcp.ClientCapabilities{
+	Elicitation: &mcp.ElicitationCapability{},
+	Extensions:  map[string]any{schemas.MCPAppsExtension: struct{}{}},
+}
+
+// BifrostContextKeyMCPToolListing values.
+const (
+	listModelTools = "model"
+	listAllTools   = "all"
+)
+
+// WithModelToolsOnly hides app-only tools from listings on ctx. Code mode uses it, since a model writes its scripts.
+// A derived context, not SetValue, so the override never reaches the rest of the request.
+func WithModelToolsOnly(ctx context.Context) context.Context {
+	return context.WithValue(ctx, schemas.BifrostContextKeyMCPToolListing, listModelTools)
+}
+
+// WithAllTools lists app-only tools on ctx too. Only for the gateway's sync; calls still follow AppToolsAllowed.
+func WithAllTools(ctx context.Context) context.Context {
+	return context.WithValue(ctx, schemas.BifrostContextKeyMCPToolListing, listAllTools)
+}
+
+// AppToolsAllowed reports whether the request may see and call app-only tools: a /mcp/<slug> request for
+// one MCP client, from a caller that declared MCP Apps. ctx must carry the caller's capabilities.
+func AppToolsAllowed(ctx context.Context) bool {
+	if listing, _ := ctx.Value(schemas.BifrostContextKeyMCPToolListing).(string); listing == listModelTools {
+		return false
+	}
+	if gateway, _ := ctx.Value(schemas.BifrostContextKeyIsMCPGateway).(bool); !gateway {
+		return false
+	}
+	if client, _ := ctx.Value(schemas.BifrostContextKeyMCPGatewayClient).(string); client == "" {
+		return false
+	}
+	return CallerDeclaresApps(ctx)
+}
+
+// InputRequiredForLog returns, for the MCP log, what a relayed input_required result asked the caller;
+// ok is false for any other message.
+func InputRequiredForLog(message *schemas.ChatMessage) (asked any, ok bool) {
+	if message == nil || message.ChatToolMessage == nil {
+		return nil, false
+	}
+	result := message.ChatToolMessage.MCPResult(message.Content)
+	if result == nil || !result.NeedsInput() {
+		return nil, false
+	}
+	if len(result.InputRequests) == 0 {
+		return nil, true // a retry-later round asks nothing
+	}
+	return map[string]any{"input_requests": result.InputRequests}, true
+}
+
+// InputResumptionForLog returns the answers a gateway caller's retry carried.
+func InputResumptionForLog(ctx context.Context) any {
+	resume, _ := ctx.Value(schemas.BifrostContextKeyMCPInputResumption).(*mcp.MultiRoundTripParams)
+	if resume == nil || len(resume.InputResponses) == 0 {
+		return nil
+	}
+	return resume.InputResponses
+}
+
+// roundTripStatePrefix marks a requestState Bifrost wrapped: "bfrt1.<round-trip id>.<upstream's state>".
+const roundTripStatePrefix = "bfrt1."
+
+const roundTripIDLen = 16
+
+// RoundTripID is the id every round of one gateway tool call shares in the MCP logs: a short hash of the
+// first round's request id.
+func RoundTripID(requestID string) string {
+	sum := sha256.Sum256([]byte(requestID))
+	return hex.EncodeToString(sum[:roundTripIDLen/2])
+}
+
+// CallRoundTripID is the round-trip id of the gateway tool call on ctx: the one its retry carried, else
+// one derived from this request.
+func CallRoundTripID(ctx context.Context) string {
+	if carried, _ := ctx.Value(schemas.BifrostContextKeyMCPRoundTripID).(string); carried != "" {
+		return carried
+	}
+	requestID, _ := ctx.Value(schemas.BifrostContextKeyRequestID).(string)
+	return RoundTripID(requestID)
+}
+
+// WrapRoundTripState is the requestState Bifrost hands its caller: the upstream's state behind the call's
+// round-trip id, so the retry names the call it continues.
+func WrapRoundTripState(id, state string) string {
+	return roundTripStatePrefix + id + "." + state
+}
+
+// UnwrapRoundTripState splits a caller's requestState into the round-trip id and the upstream's state. A
+// state Bifrost did not wrap comes back unchanged, with no id.
+func UnwrapRoundTripState(state string) (id, upstream string) {
+	rest, ok := strings.CutPrefix(state, roundTripStatePrefix)
+	if !ok || len(rest) <= roundTripIDLen || rest[roundTripIDLen] != '.' {
+		return "", state
+	}
+	for _, c := range rest[:roundTripIDLen] {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return "", state
+		}
+	}
+	return rest[:roundTripIDLen], rest[roundTripIDLen+1:]
+}
+
+// CallerDeclaresApps reports whether ctx carries a gateway caller's capabilities that declare MCP Apps,
+// on any gateway endpoint.
+func CallerDeclaresApps(ctx context.Context) bool {
+	caller, _ := ctx.Value(schemas.BifrostContextKeyMCPCallerCapabilities).(*mcp.ClientCapabilities)
+	if caller == nil {
+		return false
+	}
+	_, ok := caller.Extensions[schemas.MCPAppsExtension]
+	return ok
+}
+
+// listsAppTools reports whether a tool listing on ctx includes app-only tools.
+func listsAppTools(ctx context.Context) bool {
+	if listing, _ := ctx.Value(schemas.BifrostContextKeyMCPToolListing).(string); listing == listAllTools {
+		return true
+	}
+	return AppToolsAllowed(ctx)
+}
+
+// GatewayAggregate reports whether ctx is a gateway request that may reach several MCP clients
+// (/mcp or a Virtual MCP), where ui:// resources are namespaced by client.
+func GatewayAggregate(ctx context.Context) bool {
+	gateway, _ := ctx.Value(schemas.BifrostContextKeyIsMCPGateway).(bool)
+	client, _ := ctx.Value(schemas.BifrostContextKeyMCPGatewayClient).(string)
+	return gateway && client == ""
+}
+
+// GatewayUIResourceURI is uri as aggregate gateway requests see it: ui://<client>/<rest>, the client
+// name path-escaped since names may contain "/", "?" or "#".
+func GatewayUIResourceURI(clientName, uri string) string {
+	rest, ok := strings.CutPrefix(uri, "ui://")
+	if !ok {
+		return uri
+	}
+	return "ui://" + url.PathEscape(clientName) + "/" + rest
+}
+
+// ToolClientName is the MCP client a prefixed tool name belongs to (client names have no hyphens),
+// or "" for an unprefixed name such as a code-mode tool.
+func ToolClientName(toolName string) string {
+	clientName, _, found := strings.Cut(toolName, "-")
+	if !found {
+		return ""
+	}
+	return clientName
+}
+
+// upstreamUIResourceURI undoes GatewayUIResourceURI for clientName's resources.
+func upstreamUIResourceURI(clientName, uri string) (string, bool) {
+	rest, ok := strings.CutPrefix(uri, "ui://"+url.PathEscape(clientName)+"/")
+	if !ok {
+		return uri, false
+	}
+	return "ui://" + rest, true
+}
+
+// readRelayedCapabilities are what resource and prompt reads pass through: MCP Apps, so an upstream
+// serves its ui:// resources to an apps caller.
+var readRelayedCapabilities = mcp.ClientCapabilities{Extensions: map[string]any{schemas.MCPAppsExtension: struct{}{}}}
+
+// bifrostClientCapabilities is declared at connect time so upstreams list their MCP Apps tools.
+var bifrostClientCapabilities = mcp.ClientCapabilities{
+	Extensions: map[string]any{schemas.MCPAppsExtension: map[string]any{"mimeTypes": []string{schemas.MCPAppsMimeType}}},
+}
+
+// manualInputRoundTrips leaves an upstream's input_required to CallUpstreamTool instead of mcp-go's loop.
+var manualInputRoundTrips = client.WithManualInputRoundTrips()
+
+// maxRetryLaterRounds bounds how often Bifrost itself retries an upstream that answers "retry later"
+// (input_required with no input requests), as mcp-go's own round-trip loop does.
+const maxRetryLaterRounds = 3
+
+// upstreamContext sets what a 2026-07-28 request declares: the capabilities in relayed that the gateway
+// caller declared, otherwise none. Legacy connections declared theirs at initialize.
+func upstreamContext(ctx context.Context, conn *client.Client, relayed mcp.ClientCapabilities) (_ context.Context, answerable mcp.ClientCapabilities, hasCaller bool) {
+	caller, _ := ctx.Value(schemas.BifrostContextKeyMCPCallerCapabilities).(*mcp.ClientCapabilities)
+	hasCaller = caller != nil
+	if hasCaller {
+		answerable = relayableCapabilities(*caller, relayed)
+	}
+	if version := conn.ProtocolVersion(); version != "" && !mcp.IsModernProtocol(version) {
+		return ctx, answerable, hasCaller
+	}
+	return client.WithRequestClientCapabilities(ctx, answerable), answerable, hasCaller
+}
+
+// CallUpstreamTool sends call on conn. With relay, a gateway caller gets an upstream's input_required
+// result back unchanged when it can answer every request in it, or when the upstream only asks it to
+// retry later, and its retry's answers and requestState are sent upstream. Anyone else gets an
+// *UnservableInputError once Bifrost has retried a "retry later" answer itself. Exported for code
+// mode's nested tool calls, which cannot pass a request back mid-script.
+func CallUpstreamTool(ctx context.Context, conn *client.Client, call mcp.CallToolRequest, relay bool) (*mcp.CallToolResult, error) {
+	var relayed mcp.ClientCapabilities
+	if relay {
+		relayed = relayedClientCapabilities
+	}
+	ctx, answerable, hasCaller := upstreamContext(ctx, conn, relayed)
+	relay = relay && hasCaller
+	if relay {
+		if resume, _ := ctx.Value(schemas.BifrostContextKeyMCPInputResumption).(*mcp.MultiRoundTripParams); resume != nil {
+			call.Params.MultiRoundTripParams = *resume
+		}
+	}
+	for round := 1; ; round++ {
+		result, err := CallToolWithin(ctx, conn, call)
+		if err != nil || !result.NeedsInput() {
+			return result, err
+		}
+		if relay && canAnswer(answerable, result.InputRequests) {
+			return result, nil
+		}
+		if len(result.InputRequests) > 0 || round >= maxRetryLaterRounds {
+			return nil, &UnservableInputError{Requests: result.InputRequests}
+		}
+		call.Params.InputResponses = nil
+		call.Params.RequestState = result.RequestState
+	}
+}
+
+// canAnswer reports whether a caller declaring answerable can answer every request. An empty set asks
+// only for a retry, which any caller can do.
+func canAnswer(answerable mcp.ClientCapabilities, requests mcp.InputRequests) bool {
+	for _, request := range requests {
+		switch request.Method {
+		case mcp.MethodElicitationCreate:
+			if !canElicit(answerable.Elicitation, request.Elicitation) {
+				return false
+			}
+		case mcp.MethodSamplingCreateMessage:
+			if answerable.Sampling == nil {
+				return false
+			}
+		case mcp.MethodListRoots:
+			if answerable.Roots == nil {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// canElicit reports whether a caller declaring capability can answer an elicitation in params' mode.
+// An empty capability declares form mode only.
+func canElicit(capability *mcp.ElicitationCapability, params *mcp.ElicitationParams) bool {
+	if capability == nil {
+		return false
+	}
+	if params != nil && params.Mode == mcp.ElicitationModeURL {
+		return capability.URL != nil
+	}
+	return capability.Form != nil || capability.URL == nil
+}
+
+// UnservableInputError is an upstream's input_required that Bifrost could not pass to its caller. No
+// requests means the upstream kept asking for a retry.
+type UnservableInputError struct {
+	Requests   mcp.InputRequests
+	ServerName string // when set, Error explains the requests in full
+}
+
+func (e *UnservableInputError) Error() string {
+	if e.ServerName != "" {
+		return describeInputRequests(e.Requests, e.ServerName)
+	}
+	if len(e.Requests) == 0 {
+		return "upstream kept asking to retry without completing the call"
+	}
+	return "upstream needs input the caller cannot provide"
+}
+
+// relayableCapabilities keeps the parts of caller that relayed also has, using the caller's values.
+// Experimental and task capabilities are never relayed.
+func relayableCapabilities(caller, relayed mcp.ClientCapabilities) mcp.ClientCapabilities {
+	var out mcp.ClientCapabilities
+	if relayed.Elicitation != nil {
+		out.Elicitation = caller.Elicitation
+	}
+	if relayed.Sampling != nil {
+		out.Sampling = caller.Sampling
+	}
+	if relayed.Roots != nil {
+		out.Roots = caller.Roots
+	}
+	for name, value := range caller.Extensions {
+		if _, ok := relayed.Extensions[name]; !ok {
+			continue
+		}
+		if out.Extensions == nil {
+			out.Extensions = make(map[string]any, len(relayed.Extensions))
+		}
+		out.Extensions[name] = value
+	}
+	return out
+}
+
 // unservableInputKinds maps mcp-go's wording for an input request it had no handler for (Bifrost
 // registers none, so declares no capability) to what the upstream was asking for.
-var unservableInputKinds = []struct{ marker, what string }{
-	{"no elicitation handler configured", "input from the user (elicitation)"},
-	{"no sampling handler configured", "an LLM completion (sampling)"},
-	{"no roots handler configured", "the client's filesystem roots (roots)"},
+var unservableInputKinds = []struct {
+	marker string
+	method mcp.MCPMethod
+	what   string
+}{
+	{"no elicitation handler configured", mcp.MethodElicitationCreate, "input from the user (elicitation)"},
+	{"no sampling handler configured", mcp.MethodSamplingCreateMessage, "an LLM completion (sampling)"},
+	{"no roots handler configured", mcp.MethodListRoots, "the client's filesystem roots (roots)"},
 }
 
 // DescribeUnservableInput explains a tool call that failed because the upstream needed something
@@ -785,7 +1104,10 @@ var unservableInputKinds = []struct{ marker, what string }{
 func DescribeUnservableInput(err error, serverName string) (string, bool) {
 	var urlNeeded mcp.URLElicitationRequiredError
 	var capability mcp.MissingRequiredClientCapabilityError
+	var unservable *UnservableInputError
 	switch {
+	case errors.As(err, &unservable):
+		return describeInputRequests(unservable.Requests, serverName), true
 	case errors.As(err, &urlNeeded):
 		steps := make([]string, 0, len(urlNeeded.Elicitations))
 		for _, e := range urlNeeded.Elicitations {
@@ -807,6 +1129,29 @@ func DescribeUnservableInput(err error, serverName string) (string, bool) {
 		}
 	}
 	return fmt.Sprintf("MCP server %q asked for input Bifrost cannot provide", serverName), true
+}
+
+// describeInputRequests explains an input_required result Bifrost could not pass on, in the words
+// DescribeUnservableInput uses for the same requests reported as errors.
+func describeInputRequests(requests mcp.InputRequests, serverName string) string {
+	if len(requests) == 0 {
+		return fmt.Sprintf("MCP server %q kept asking Bifrost to retry the call without completing it", serverName)
+	}
+	var steps []string
+	for _, id := range slices.Sorted(maps.Keys(requests)) {
+		request := requests[id]
+		if request.Method == mcp.MethodElicitationCreate && request.Elicitation != nil && request.Elicitation.Mode == "url" {
+			steps = append(steps, strings.TrimSpace(request.Elicitation.Message+" "+request.Elicitation.URL))
+			continue
+		}
+		for _, kind := range unservableInputKinds {
+			if kind.method == request.Method {
+				return fmt.Sprintf("MCP server %q asked for %s, which Bifrost cannot provide", serverName, kind.what)
+			}
+		}
+		return fmt.Sprintf("MCP server %q asked for input Bifrost cannot provide", serverName)
+	}
+	return fmt.Sprintf("MCP server %q needs a step completed in the browser before this tool can run: %s", serverName, strings.Join(steps, "; "))
 }
 
 // hasProtocolSession reports whether conn speaks a revision with protocol-level sessions, which
@@ -1140,7 +1485,7 @@ func shouldSkipToolForConfig(toolName string, config *schemas.MCPClientConfig) b
 		// Strip client prefix from tool name before checking
 		// Tool names in config are stored without prefix (e.g., "add")
 		// but tool names in ToolMap are stored with prefix (e.g., "calculator/add")
-		unprefixedToolName := stripClientPrefix(toolName, config.Name)
+		unprefixedToolName := StripClientPrefix(toolName, config.Name)
 
 		// Check if specific tool is in the allowed list
 		return !config.ToolsToExecute.Contains(unprefixedToolName) // Tool not in allowed list
@@ -1172,7 +1517,7 @@ func CanAutoExecuteTool(toolName string, config *schemas.MCPClientConfig) bool {
 		// Strip client prefix from tool name before checking
 		// Tool names in config are stored without prefix (e.g., "add")
 		// but tool names in ToolMap are stored with prefix (e.g., "calculator/add")
-		unprefixedToolName := stripClientPrefix(toolName, config.Name)
+		unprefixedToolName := StripClientPrefix(toolName, config.Name)
 
 		// Check if specific tool is in the auto-execute list
 		return config.ToolsToAutoExecute.Contains(unprefixedToolName)
@@ -1316,10 +1661,36 @@ func toolMetadata(mcpTool *mcp.Tool) *schemas.MCPToolMetadata {
 			outputSchema, _ = sjson.DeleteBytes(outputSchema, "type")
 		}
 	}
-	if mcpTool.Title == "" && len(mcpTool.Icons) == 0 && outputSchema == nil {
+	var meta json.RawMessage
+	if mcpTool.Meta != nil && (mcpTool.Meta.ProgressToken != nil || len(mcpTool.Meta.AdditionalFields) > 0) {
+		meta, _ = json.Marshal(mcpTool.Meta)
+	}
+	if mcpTool.Title == "" && len(mcpTool.Icons) == 0 && outputSchema == nil && meta == nil {
 		return nil
 	}
-	return &schemas.MCPToolMetadata{Title: mcpTool.Title, Icons: mcpTool.Icons, OutputSchema: outputSchema}
+	metadata := &schemas.MCPToolMetadata{Title: mcpTool.Title, Icons: mcpTool.Icons, OutputSchema: outputSchema, Meta: meta}
+	if meta != nil {
+		metadata.UIResourceURI, metadata.Visibility = appsUIMeta(meta)
+	}
+	return metadata
+}
+
+// appsUIMeta reads ui.resourceUri (or the deprecated "ui/resourceUri") and ui.visibility from a tool's _meta.
+func appsUIMeta(meta json.RawMessage) (resourceURI string, visibility []string) {
+	ui := gjson.GetBytes(meta, "ui")
+	resourceURI = ui.Get("resourceUri").String()
+	if resourceURI == "" {
+		resourceURI = gjson.GetBytes(meta, "ui/resourceUri").String()
+	}
+	if !strings.HasPrefix(resourceURI, "ui://") {
+		resourceURI = ""
+	}
+	for _, v := range ui.Get("visibility").Array() {
+		if v.Type == gjson.String {
+			visibility = append(visibility, v.String())
+		}
+	}
+	return resourceURI, visibility
 }
 
 // declaresOutputSchema reports whether any part of the output schema is set; type is optional.
@@ -1678,7 +2049,7 @@ func hasToolCallsForResponsesResponse(response *schemas.BifrostResponsesResponse
 	return false
 }
 
-// stripClientPrefix removes the client name prefix from a tool name.
+// StripClientPrefix removes the client name prefix from a tool name.
 // Tool names are stored with format "{clientName}-{toolName}", but when calling
 // the MCP server, we need the original tool name without the prefix.
 //
@@ -1688,7 +2059,7 @@ func hasToolCallsForResponsesResponse(response *schemas.BifrostResponsesResponse
 //
 // Returns:
 //   - string: Sanitized tool name without prefix (e.g., "add")
-func stripClientPrefix(prefixedToolName, clientName string) string {
+func StripClientPrefix(prefixedToolName, clientName string) string {
 	prefix := clientName + "-"
 	if strings.HasPrefix(prefixedToolName, prefix) {
 		return strings.TrimPrefix(prefixedToolName, prefix)

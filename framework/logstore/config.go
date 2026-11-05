@@ -21,6 +21,7 @@ type Config struct {
 	ObjectStorageExcludeFields []string `json:"object_storage_exclude_fields,omitempty"`
 	// ObjectStorageExcludeRequestTypes lists request types (log object_type values) whose logs stay fully in the database and are never offloaded.
 	ObjectStorageExcludeRequestTypes []string `json:"object_storage_exclude_request_types,omitempty"`
+	CaptureClientIP                  bool     `json:"capture_client_ip,omitempty"` // records client_ip on LLM, MCP and relay logs; off by default
 }
 
 const (
@@ -76,6 +77,7 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 		ObjectStorage                    *objectstore.Config `json:"object_storage,omitempty"`
 		ObjectStorageExcludeFields       []string            `json:"object_storage_exclude_fields,omitempty"`
 		ObjectStorageExcludeRequestTypes []string            `json:"object_storage_exclude_request_types,omitempty"`
+		CaptureClientIP                  bool                `json:"capture_client_ip,omitempty"`
 	}
 
 	var temp TempConfig
@@ -91,6 +93,7 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 	c.ObjectStorage = temp.ObjectStorage
 	c.ObjectStorageExcludeFields = temp.ObjectStorageExcludeFields
 	c.ObjectStorageExcludeRequestTypes = temp.ObjectStorageExcludeRequestTypes
+	c.CaptureClientIP = temp.CaptureClientIP
 	if !temp.Enabled {
 		c.Config = nil
 		return nil
