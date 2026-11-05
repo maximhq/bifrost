@@ -196,6 +196,9 @@ type LogManager interface {
 	// GetMCPHistogram returns time-bucketed MCP tool call volume
 	GetMCPHistogram(ctx context.Context, filters logstore.MCPToolLogSearchFilters, bucketSizeSeconds int64) (*logstore.MCPHistogramResult, error)
 
+	// GetMCPLatencyHistogram returns time-bucketed latency percentiles of finished MCP tool calls
+	GetMCPLatencyHistogram(ctx context.Context, filters logstore.MCPToolLogSearchFilters, bucketSizeSeconds int64) (*logstore.LatencyHistogramResult, error)
+
 	// GetMCPCostHistogram returns time-bucketed MCP cost data
 	GetMCPCostHistogram(ctx context.Context, filters logstore.MCPToolLogSearchFilters, bucketSizeSeconds int64) (*logstore.MCPCostHistogramResult, error)
 
@@ -611,6 +614,14 @@ func (p *PluginLogManager) GetMCPHistogram(ctx context.Context, filters logstore
 		return &logstore.MCPHistogramResult{}, nil
 	}
 	return p.plugin.store.GetMCPHistogram(ctx, filters, bucketSizeSeconds)
+}
+
+// GetMCPLatencyHistogram returns time-bucketed latency percentiles of finished MCP tool calls
+func (p *PluginLogManager) GetMCPLatencyHistogram(ctx context.Context, filters logstore.MCPToolLogSearchFilters, bucketSizeSeconds int64) (*logstore.LatencyHistogramResult, error) {
+	if p.plugin == nil || p.plugin.store == nil {
+		return &logstore.LatencyHistogramResult{}, nil
+	}
+	return p.plugin.store.GetMCPLatencyHistogram(ctx, filters, bucketSizeSeconds)
 }
 
 // GetMCPCostHistogram returns time-bucketed MCP cost data

@@ -1065,6 +1065,12 @@ func TestClickHouseMCPKeyPairs(t *testing.T) {
 	assertMCPKeyPairs(t, store.RDBLogStore, store.BatchCreateMCPToolLogsIfNotExists)
 }
 
+// The MCP latency histogram reads its percentiles from ClickHouse's own quantile functions.
+func TestClickHouseMCPStatsAndHistograms(t *testing.T) {
+	store := trySetupClickHouseStore(t)
+	assertMCPFinishedCallAggregates(t, store.RDBLogStore, store.BatchCreateMCPToolLogsIfNotExists)
+}
+
 // The keyset cursor bound its timestamp as a time.Time, which the driver sends
 // at seconds precision. Ascending, every page re-read the rows earlier in the
 // cursor's second, and a second holding a full page never advanced; descending,

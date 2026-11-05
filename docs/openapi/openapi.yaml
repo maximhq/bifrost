@@ -1262,6 +1262,8 @@ paths:
     $ref: "./paths/management/logging.yaml#/mcp-logs-histogram"
   /api/mcp-logs/histogram/cost:
     $ref: "./paths/management/logging.yaml#/mcp-logs-histogram-cost"
+  /api/mcp-logs/histogram/latency:
+    $ref: "./paths/management/logging.yaml#/mcp-logs-histogram-latency"
   /api/mcp-logs/histogram/top-tools:
     $ref: "./paths/management/logging.yaml#/mcp-logs-histogram-top-tools"
 

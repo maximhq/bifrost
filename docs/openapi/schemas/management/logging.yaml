@@ -402,16 +402,49 @@ MCPToolLogStats:
   properties:
     total_executions:
       type: integer
-      description: Total number of tool executions
+      description: Total number of tool executions, including calls still running
+    success_count:
+      type: integer
+      description: Finished calls that succeeded
+    error_count:
+      type: integer
+      description: Finished calls that failed
+    cancelled_count:
+      type: integer
+      description: Finished calls the caller cancelled
     success_rate:
       type: number
-      description: Success rate percentage
+      description: >-
+        Percentage of finished calls (succeeded, failed or cancelled) that succeeded,
+        as on the LLM logs stats
     average_latency:
       type: number
-      description: Average execution latency in milliseconds
+      description: Average execution latency in milliseconds, over finished calls
     total_cost:
       type: number
-      description: Total cost in dollars for all executions
+      description: Total cost in dollars of finished calls
+
+MCPLogStatsResponse:
+  description: >-
+    MCP tool log statistics for the requested window. The current period's fields
+    are at the top level, so a request without `compare_to_previous` returns exactly
+    the MCPToolLogStats shape.
+  allOf:
+    - $ref: '#/MCPToolLogStats'
+    - type: object
+      properties:
+        has_previous_period:
+          type: boolean
+          description: >-
+            True when `previous` is populated. False when the comparison was not
+            requested, the window is unbounded, or the previous-period query failed.
+        previous:
+          allOf:
+            - $ref: '#/MCPToolLogStats'
+          description: >-
+            The same statistics for the preceding window of equal length, ending
+            immediately before the requested window starts. Present only when
+            `compare_to_previous` is true and `has_previous_period` is true.
 
 SearchMCPLogsResponse:
   type: object
@@ -1004,6 +1037,18 @@ LatencyHistogramBucket:
       type: number
     p99_latency:
       type: number
+    avg_overhead:
+      type: number
+      description: Average Bifrost overhead in milliseconds (total minus upstream latency). Always 0 for MCP tool calls, which record no overhead.
+    p90_overhead:
+      type: number
+      description: 90th percentile Bifrost overhead in milliseconds. Always 0 for MCP tool calls.
+    p95_overhead:
+      type: number
+      description: 95th percentile Bifrost overhead in milliseconds. Always 0 for MCP tool calls.
+    p99_overhead:
+      type: number
+      description: 99th percentile Bifrost overhead in milliseconds. Always 0 for MCP tool calls.
     total_requests:
       type: integer
       format: int64
@@ -1408,6 +1453,10 @@ MCPHistogramBucket:
     error:
       type: integer
       format: int64
+    cancelled:
+      type: integer
+      format: int64
+      description: Calls the caller cancelled
 
 MCPHistogramResult:
   type: object

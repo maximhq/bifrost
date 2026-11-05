@@ -675,6 +675,90 @@ func TestGetDistinctMCPKeyPairsAppliesDimensionCeiling(t *testing.T) {
 	require.Error(t, err)
 }
 
+// TestMCPStatsAndHistogramsCountFinishedCalls checks the MCP stats and histograms count calls as the
+// LLM and Relay logs do.
+func TestMCPStatsAndHistogramsCountFinishedCalls(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(t, err)
+	require.NoError(t, db.AutoMigrate(&MCPToolLog{}))
+	store := &RDBLogStore{db: db, logger: bifrost.NewDefaultLogger(schemas.LogLevelInfo)}
+	assertMCPFinishedCallAggregates(t, store, store.BatchCreateMCPToolLogsIfNotExists)
+}
+
+// TestPostgresMCPStatsAndHistograms runs the aggregate checks on Postgres, whose latency percentiles
+// come from percentile_cont rather than the in-process ranking SQLite uses.
+func TestPostgresMCPStatsAndHistograms(t *testing.T) {
+	db := trySetupPostgresDB(t)
+	if db == nil {
+		t.Skip("Postgres not available")
+	}
+	require.NoError(t, db.AutoMigrate(&MCPToolLog{}))
+	store := &RDBLogStore{db: db, logger: bifrost.NewDefaultLogger(schemas.LogLevelInfo)}
+	// The logstore_test schema is the suite's own, so the check starts from an empty table.
+	clear := func() { require.NoError(t, db.Exec("DELETE FROM mcp_tool_logs").Error) }
+	t.Cleanup(clear)
+	clear()
+	assertMCPFinishedCallAggregates(t, store, store.BatchCreateMCPToolLogsIfNotExists)
+}
+
+// assertMCPFinishedCallAggregates pins how MCP stats and histograms count calls, as the LLM and Relay
+// logs do: a cancelled call is a finished call, counted in the success rate, the average latency, the
+// cost and the volume histogram, while a call still running counts only toward the total. The latency
+// histogram reads the same finished calls, and has no overhead to report for MCP tool calls. create is
+// the store's own writer, since ClickHouse writes MCP tool logs its own way.
+func assertMCPFinishedCallAggregates(t *testing.T, store *RDBLogStore, create func(context.Context, []*MCPToolLog) error) {
+	t.Helper()
+	ctx := context.Background()
+	at := time.Now().UTC().Truncate(time.Hour).Add(30 * time.Minute)
+	ptr := func(v float64) *float64 { return &v }
+	require.NoError(t, create(ctx, []*MCPToolLog{
+		{ID: "agg-success", ToolName: "Read", Timestamp: at, Status: "success", Latency: ptr(10), Cost: ptr(0.1)},
+		{ID: "agg-error", ToolName: "Read", Timestamp: at, Status: "error", Latency: ptr(20), Cost: ptr(0.2)},
+		{ID: "agg-cancelled", ToolName: "Read", Timestamp: at, Status: "cancelled", Latency: ptr(30), Cost: ptr(0.3)},
+		{ID: "agg-processing", ToolName: "Read", Timestamp: at, Status: "processing", Latency: ptr(1000), Cost: ptr(5)},
+	}))
+	start, end := at.Add(-time.Hour), at.Add(time.Hour)
+	filters := MCPToolLogSearchFilters{StartTime: &start, EndTime: &end}
+
+	stats, err := store.GetMCPToolLogStats(ctx, filters)
+	require.NoError(t, err)
+	require.EqualValues(t, 4, stats.TotalExecutions)
+	require.EqualValues(t, 1, stats.SuccessCount)
+	require.EqualValues(t, 1, stats.ErrorCount)
+	require.EqualValues(t, 1, stats.CancelledCount)
+	require.InDelta(t, 100.0/3, stats.SuccessRate, 1e-9)
+	require.InDelta(t, 20, stats.AverageLatency, 1e-9)
+	require.InDelta(t, 0.6, stats.TotalCost, 1e-9)
+
+	histogram, err := store.GetMCPHistogram(ctx, filters, 3600)
+	require.NoError(t, err)
+	var total MCPHistogramBucket
+	for _, bucket := range histogram.Buckets {
+		total.Count += bucket.Count
+		total.Success += bucket.Success
+		total.Error += bucket.Error
+		total.Cancelled += bucket.Cancelled
+	}
+	require.Equal(t, MCPHistogramBucket{Count: 3, Success: 1, Error: 1, Cancelled: 1}, total)
+
+	latency, err := store.GetMCPLatencyHistogram(ctx, filters, 3600)
+	require.NoError(t, err)
+	require.EqualValues(t, 3600, latency.BucketSizeSeconds)
+	var timed []LatencyHistogramBucket
+	for _, bucket := range latency.Buckets {
+		if bucket.TotalRequests > 0 {
+			timed = append(timed, bucket)
+		}
+	}
+	require.Len(t, timed, 1)
+	require.EqualValues(t, 3, timed[0].TotalRequests)
+	require.InDelta(t, 20, timed[0].AvgLatency, 1e-9)
+	require.Greater(t, timed[0].P95Latency, 20.0)
+	require.LessOrEqual(t, timed[0].P95Latency, 30.0)
+	require.Zero(t, timed[0].AvgOverhead)
+	require.Zero(t, timed[0].P95Overhead)
+}
+
 // TestMCPAttributionFiltersApplyToRowsAndStats checks each stored scope filters records, stats and the histogram.
 func TestMCPAttributionFiltersApplyToRowsAndStats(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})

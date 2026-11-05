@@ -109,6 +109,31 @@ func TestGetMCPLogsFilterDataServesScopeDimensions(t *testing.T) {
 	require.Equal(t, map[string][]loggingplugin.KeyPair{"teams": {{ID: "team-1", Name: "Platform"}}}, fetch(t, "teams"))
 }
 
+// TestGetMCPLatencyHistogramServesPercentiles pins GET /api/mcp-logs/histogram/latency: it reads the MCP
+// filters and the window's bucket size, as /api/mcp-logs/histogram does, and returns the store's buckets
+// in the /api/logs/histogram/latency shape.
+func TestGetMCPLatencyHistogramServesPercentiles(t *testing.T) {
+	SetLogger(&mockLogger{})
+	mgr := &dashboardLogManager{}
+	h := &LoggingHandler{logManager: mgr}
+	var req fasthttp.Request
+	req.SetRequestURI("/api/mcp-logs/histogram/latency?tool_names=calculator&period=24h")
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Init(&req, &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 12345}, nil)
+
+	h.getMCPLatencyHistogram(ctx)
+
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	require.Equal(t, []string{"calculator"}, mgr.lastMCPFilters.ToolNames)
+	require.NotNil(t, mgr.lastMCPFilters.StartTime)
+	require.Equal(t, calculateBucketSize(mgr.lastMCPFilters.StartTime, mgr.lastMCPFilters.EndTime), mgr.mcpLatencyBucketSize)
+	var body logstore.LatencyHistogramResult
+	require.NoError(t, json.Unmarshal(ctx.Response.Body(), &body))
+	require.Len(t, body.Buckets, 1)
+	require.EqualValues(t, 3, body.Buckets[0].TotalRequests)
+	require.InDelta(t, 29, body.Buckets[0].P95Latency, 1e-9)
+}
+
 func TestParseComplexityFilters(t *testing.T) {
 	t.Run("parses tier and mechanism", func(t *testing.T) {
 		ctx := &fasthttp.RequestCtx{}
@@ -1215,6 +1240,9 @@ type dashboardLogManager struct {
 	// statsFunc, when set, supplies the SearchStats for each GetStats call so a
 	// test can tell the current and previous periods apart.
 	statsFunc              func(filters *logstore.SearchFilters) (*logstore.SearchStats, error)
+	mcpStatsCalls          []logstore.MCPToolLogSearchFilters // every GetMCPToolLogStats filter, in call order
+	mcpStatsFunc           func(filters *logstore.MCPToolLogSearchFilters) (*logstore.MCPToolLogStats, error)
+	mcpLatencyBucketSize   int64
 	projects               []loggingplugin.KeyPair
 	mcpLog                 *logstore.MCPToolLog
 	lastLLMFilters         logstore.SearchFilters
@@ -1459,7 +1487,11 @@ func (m *dashboardLogManager) SearchMCPToolLogs(ctx context.Context, filters *lo
 
 // GetMCPToolLogStats implements the test double used by logging handler tests.
 func (m *dashboardLogManager) GetMCPToolLogStats(ctx context.Context, filters *logstore.MCPToolLogSearchFilters) (*logstore.MCPToolLogStats, error) {
-	return nil, nil
+	m.mcpStatsCalls = append(m.mcpStatsCalls, *filters)
+	if m.mcpStatsFunc != nil {
+		return m.mcpStatsFunc(filters)
+	}
+	return &logstore.MCPToolLogStats{}, nil
 }
 
 // GetAvailableToolNames implements the test double used by logging handler tests.
@@ -1506,6 +1538,16 @@ func (m *dashboardLogManager) GetAvailableMCPProjects(ctx context.Context, limit
 func (m *dashboardLogManager) GetMCPHistogram(ctx context.Context, filters logstore.MCPToolLogSearchFilters, bucketSizeSeconds int64) (*logstore.MCPHistogramResult, error) {
 	m.lastMCPFilters = filters
 	return &logstore.MCPHistogramResult{}, nil
+}
+
+// GetMCPLatencyHistogram implements the test double used by logging handler tests.
+func (m *dashboardLogManager) GetMCPLatencyHistogram(ctx context.Context, filters logstore.MCPToolLogSearchFilters, bucketSizeSeconds int64) (*logstore.LatencyHistogramResult, error) {
+	m.lastMCPFilters = filters
+	m.mcpLatencyBucketSize = bucketSizeSeconds
+	return &logstore.LatencyHistogramResult{
+		Buckets:           []logstore.LatencyHistogramBucket{{AvgLatency: 20, P95Latency: 29, TotalRequests: 3}},
+		BucketSizeSeconds: bucketSizeSeconds,
+	}, nil
 }
 
 // GetMCPCostHistogram implements the test double used by logging handler tests.
