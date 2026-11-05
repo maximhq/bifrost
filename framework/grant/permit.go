@@ -88,6 +88,7 @@ type Permit struct {
 	allowAllProviders bool
 
 	relayPermits []string
+	level        int
 }
 
 // PermitOption configures a Permit at construction. Options keep NewPermit's required arguments
@@ -110,6 +111,16 @@ func WithRelayPermits(endpointNames []string) PermitOption {
 // still applies that permit's rules. See schemas.Permit.AllowsAllProviders.
 func WithAllowAllProviders(allow bool) PermitOption {
 	return func(p *Permit) { p.allowAllProviders = allow }
+}
+
+// WithLevel places the permit on the caller's side when levels intersect (see schemas.Permit.Level).
+// The default, 0, is the caller's own; negative levels are ignored.
+func WithLevel(level int) PermitOption {
+	return func(p *Permit) {
+		if level > 0 {
+			p.level = level
+		}
+	}
 }
 
 // NewPermit builds a Permit. See schemas.Permit for what each value means. The lists are deep
@@ -230,6 +241,14 @@ func (p *Permit) AgentPermits() []string {
 // AllowsAllProviders implements schemas.Permit.
 func (p *Permit) AllowsAllProviders() bool {
 	return p != nil && p.allowAllProviders
+}
+
+// Level implements schemas.Permit.
+func (p *Permit) Level() int {
+	if p == nil {
+		return 0
+	}
+	return p.level
 }
 
 // RelayPermits implements schemas.Permit. See ProviderPermits for why this returns a copy.
