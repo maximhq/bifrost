@@ -1294,28 +1294,14 @@ func TestUpstreamLatencyNotObservedWithoutProviderCall(t *testing.T) {
 	if got := histogramSampleCount(t, p.registry, "bifrost_upstream_latency_seconds"); got != 0 {
 		t.Fatalf("samples = %d, want 0 for an attempt that made no provider call", got)
 	}
-	if got := histogramSampleCount(t, p.registry, "bifrost_upstream_queue_wait_seconds"); got != 0 {
+	if got := histogramSampleCount(t, p.registry, "bifrost_provider_queue_wait_seconds"); got != 0 {
 		t.Fatalf("queue wait samples = %d, want 0 for an attempt that never reached a worker", got)
 	}
 }
 
-// Without an accumulator the plugin cannot know provider time, so it records nothing rather
-// than falling back to the hook window, which is the number this change removes.
-func TestUpstreamLatencyNotObservedWithoutAccumulator(t *testing.T) {
-	p := newTestPlugin(t)
-	ctx := newHookContext(schemas.ChatCompletionRequest)
-	runAttempt(t, p, ctx, schemas.ChatCompletionRequest, func() { time.Sleep(20 * time.Millisecond) }, overheadResponse(), nil)
-	settle(t, p, 1)
-
-	if got := histogramSampleCount(t, p.registry, "bifrost_upstream_latency_seconds"); got != 0 {
-		t.Fatalf("samples = %d, want 0 with no accumulator", got)
-	}
-}
-
-// WebSocket and realtime turns run the LLM hooks without core opening an attempt window, so
-// there is no per-attempt provider time to read even though an accumulator may be present.
-// They keep a duration under their own metric instead of dropping out.
-func TestNoAttemptWindowReportsTurnDurationNotUpstreamLatency(t *testing.T) {
+// WebSocket and realtime turns run the LLM hooks without core opening an attempt window, and they
+// skip the provider queue, so they keep the pre-hook to post-hook duration they always reported.
+func TestNoAttemptWindowReportsHookWindow(t *testing.T) {
 	p := newTestPlugin(t)
 	ctx := newHookContext(schemas.ChatCompletionRequest)
 	ctx.ResetUpstreamLatency()
@@ -1329,27 +1315,11 @@ func TestNoAttemptWindowReportsTurnDurationNotUpstreamLatency(t *testing.T) {
 	}
 	settle(t, p, 1)
 
-	if got := histogramSampleCount(t, p.registry, "bifrost_upstream_latency_seconds"); got != 0 {
-		t.Fatalf("upstream samples = %d, want 0 when no attempt window was opened", got)
+	if got := histogramSampleCount(t, p.registry, "bifrost_upstream_latency_seconds"); got != 1 {
+		t.Fatalf("upstream samples = %d, want 1", got)
 	}
-	if got := histogramSampleCount(t, p.registry, "bifrost_turn_duration_seconds"); got != 1 {
-		t.Fatalf("turn duration samples = %d, want 1", got)
-	}
-	if got := histogramSum(t, p.registry, "bifrost_turn_duration_seconds"); got < 0.02 {
-		t.Fatalf("turn duration = %vs, want at least the 20ms between the hooks", got)
-	}
-}
-
-// An attempt with an open window is provider traffic and must not also land in the turn metric.
-func TestAttemptWindowNotCountedAsTurn(t *testing.T) {
-	p := newTestPlugin(t)
-	ctx := newHookContext(schemas.ChatCompletionRequest)
-	ctx.ResetUpstreamLatency()
-	runAttempt(t, p, ctx, schemas.ChatCompletionRequest, func() { schemas.AddUpstreamLatency(ctx, 5*time.Millisecond) }, overheadResponse(), nil)
-	settle(t, p, 1)
-
-	if got := histogramSampleCount(t, p.registry, "bifrost_turn_duration_seconds"); got != 0 {
-		t.Fatalf("turn duration samples = %d, want 0 for a normal attempt", got)
+	if got := histogramSum(t, p.registry, "bifrost_upstream_latency_seconds"); got < 0.02 || got >= 0.05 {
+		t.Fatalf("upstream latency = %vs, want the ~20ms hook window, not the 50ms accumulated before the hooks", got)
 	}
 }
 
@@ -1433,8 +1403,8 @@ func TestQueueWaitHistogramObservesRecordedWait(t *testing.T) {
 	}, overheadResponse(), nil)
 	settle(t, p, 1)
 
-	waitForSamples(t, p, "bifrost_upstream_queue_wait_seconds", 1)
-	if got := histogramSum(t, p.registry, "bifrost_upstream_queue_wait_seconds"); got != 2 {
+	waitForSamples(t, p, "bifrost_provider_queue_wait_seconds", 1)
+	if got := histogramSum(t, p.registry, "bifrost_provider_queue_wait_seconds"); got != 2 {
 		t.Fatalf("queue wait = %vs, want 2s", got)
 	}
 	if got := histogramSum(t, p.registry, "bifrost_upstream_latency_seconds"); got != 0.04 {
