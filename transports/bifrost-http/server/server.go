@@ -2636,6 +2636,9 @@ func (s *BifrostHTTPServer) ReloadPlugin(ctx context.Context, name string, path 
 	if routingDecisionPlugin, ok := plugin.(routing.DecisionExecutorSetter); ok {
 		routingDecisionPlugin.SetDecisionRequestExecutor(s.Client.DecisionRequest)
 	}
+	if routingPlugin, ok := plugin.(*routing.RoutingPlugin); ok {
+		s.wireRoutingSuggestions(routingPlugin)
+	}
 	if err := s.SyncLoadedPlugin(ctx, name, plugin, placement, order); err != nil {
 		return err
 	}
@@ -3787,25 +3790,16 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 		routingPlugin.SetChatRequestExecutor(s.Client.ChatCompletionRequest)
 		routingPlugin.SetResponsesRequestExecutor(s.Client.ResponsesRequest)
 		routingPlugin.SetDecisionRequestExecutor(s.Client.DecisionRequest)
-		// Captured request vectors must not outlive their logs. Read at each
-		// sweep: the cleaner is built later in Bootstrap and its retention can
-		// change at runtime.
-		routingPlugin.SetLogRetention(func() int {
-			if s.LogsCleaner == nil {
-				return 0
-			}
-			return s.LogsCleaner.RetentionDays()
-		})
-		// Deletes that fail with their log's delete are kept beside the logs
-		// and retried by the capture upkeep, as Warp's are.
-		if s.Config.LogsStore != nil {
-			routingPlugin.SetComplexityCaptureDeleteRecorder(complexityCaptureDeletes{store: s.Config.LogsStore})
-		}
 	}
 
 	// Initialize Sidekiq runner for background jobs
 	if s.Config != nil && s.Config.ConfigStore != nil {
 		s.SidekiqRunner = sidekiq.New(s.Config.ConfigStore, logger, 4, "")
+		s.registerComplexitySuggestionsJob(s.SidekiqRunner)
+	}
+	// After the runner exists, so phrase suggestion runs are queued on it.
+	if routingPlugin, err := s.getRoutingPlugin(); err == nil {
+		s.wireRoutingSuggestions(routingPlugin)
 	}
 
 	// Initialize the Agent Gateway once before either management or protocol

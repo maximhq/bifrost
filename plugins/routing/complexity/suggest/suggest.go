@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"slices"
 	"sort"
+	"strings"
 )
 
 // Request is one distinct request text as the router embedded it.
@@ -70,6 +71,9 @@ const (
 	// CategoryIncoherent: the LLM found several request types, or gave no
 	// usable tier or phrase.
 	CategoryIncoherent Category = "incoherent"
+	// CategoryUnreadable: none of the cluster's examples could be read back
+	// (their logs were deleted or hide their content), so it was not sent.
+	CategoryUnreadable Category = "unreadable"
 )
 
 // Actionable reports whether a category is worth showing as a suggestion.
@@ -106,6 +110,11 @@ type Options struct {
 	Guidance string
 	// Workers is how many clusters are sent to the LLM at once.
 	Workers int
+	// Texts, when set, supplies the text of requests clustered without it,
+	// keyed by Request.ID. It is asked only for the members a cluster shows
+	// the LLM; a member it returns no text for is left out. Without it every
+	// request must carry its Text.
+	Texts   func(ctx context.Context, ids []string) (map[string]string, error)
 	Cluster ClusterOptions
 }
 
@@ -235,7 +244,13 @@ func (s *Suggester) SuggestAll(ctx context.Context, clusters []*Cluster) ([]Sugg
 // MinCoverage, or that only leaked, is sent back once with feedback; the
 // better of the two attempts is kept.
 func (s *Suggester) Suggest(ctx context.Context, cl *Cluster) (Suggestion, error) {
-	reps := representatives(cl, s.opts.Representatives)
+	reps, err := s.withTexts(ctx, representatives(cl, s.opts.Representatives))
+	if err != nil {
+		return Suggestion{}, err
+	}
+	if len(reps) == 0 {
+		return Suggestion{Cluster: cl, Category: CategoryUnreadable}, nil
+	}
 	base := Suggestion{Cluster: cl, Examples: reps}
 	if i, sim := nearest(cl.Centroid, s.live); i >= 0 {
 		base.Nearest, base.NearestSim = s.live[i], sim
@@ -290,7 +305,11 @@ func (s *Suggester) Suggest(ctx context.Context, cl *Cluster) (Suggestion, error
 		if len(cand.Phrases) == 0 && len(leaked) > 0 {
 			messages = append(messages, Message{Role: "user", Content: leakFeedback(leaked)})
 		} else {
-			messages = append(messages, Message{Role: "user", Content: coverageFeedback(cand.Coverage, s.missed(cl, cand.vectors, 5))})
+			missed, err := s.withTexts(ctx, s.missed(cl, cand.vectors, 5))
+			if err != nil {
+				return Suggestion{}, err
+			}
+			messages = append(messages, Message{Role: "user", Content: coverageFeedback(cand.Coverage, missed)})
 		}
 	}
 
@@ -309,6 +328,37 @@ func (s *Suggester) Suggest(ctx context.Context, cl *Cluster) (Suggestion, error
 	}
 	sg.Category = s.categorize(&sg)
 	return sg, nil
+}
+
+// withTexts fills in the text of members clustered without it, through
+// Options.Texts, and drops the members it cannot read.
+func (s *Suggester) withTexts(ctx context.Context, members []Member) ([]Member, error) {
+	if s.opts.Texts == nil {
+		return members, nil
+	}
+	var ids []string
+	for _, m := range members {
+		if m.Text == "" {
+			ids = append(ids, m.ID)
+		}
+	}
+	if len(ids) == 0 {
+		return members, nil
+	}
+	texts, err := s.opts.Texts(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Member, 0, len(members))
+	for _, m := range members {
+		if m.Text == "" {
+			m.Text = texts[m.ID]
+		}
+		if strings.TrimSpace(m.Text) != "" {
+			out = append(out, m)
+		}
+	}
+	return out, nil
 }
 
 // adopt embeds candidate phrases, drops near-copies of live phrases, and
