@@ -3325,6 +3325,53 @@ func TestToOpenAIResponsesRequest_StripsGeminiResidueFromResponsesInput(t *testi
 	}
 }
 
+// Mantle requires an id on a replayed reasoning item and accepts any value, including the
+// msg_ ids it mints itself, so the non-rs_ strip must not reach it. OpenAI keeps the strip.
+func TestToOpenAIResponsesRequest_ReasoningIDOnMantle(t *testing.T) {
+	reasoningType := schemas.ResponsesMessageTypeReasoning
+	for _, tc := range []struct {
+		provider schemas.ModelProvider
+		wantID   bool
+	}{
+		{schemas.BedrockMantle, true},
+		{schemas.Bedrock, true},
+		{schemas.OpenAI, false},
+		{schemas.Azure, false},
+	} {
+		t.Run(string(tc.provider), func(t *testing.T) {
+			req := &schemas.BifrostResponsesRequest{
+				Provider: tc.provider,
+				Model:    "openai.gpt-oss-120b",
+				Input: []schemas.ResponsesMessage{{
+					Type: &reasoningType,
+					ID:   schemas.Ptr("msg_b742cb8249a3aff3"),
+					Content: &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{
+						{Type: schemas.ResponsesOutputMessageContentTypeReasoning, Text: schemas.Ptr("run ls")},
+					}},
+					ResponsesReasoning: &schemas.ResponsesReasoning{Summary: []schemas.ResponsesReasoningSummary{}},
+				}},
+			}
+			wire, err := sonic.Marshal(ToOpenAIResponsesRequest(nil, req))
+			if err != nil {
+				t.Fatalf("marshal wire request: %v", err)
+			}
+			var payload struct {
+				Input []map[string]json.RawMessage `json:"input"`
+			}
+			if err := sonic.Unmarshal(wire, &payload); err != nil || len(payload.Input) != 1 {
+				t.Fatalf("unmarshal wire request: %v (%s)", err, wire)
+			}
+			id, has := payload.Input[0]["id"]
+			if tc.wantID && string(id) != `"msg_b742cb8249a3aff3"` {
+				t.Errorf("id = %s, want the replayed msg_ id kept", id)
+			}
+			if !tc.wantID && has {
+				t.Errorf("id = %s, want it stripped", id)
+			}
+		})
+	}
+}
+
 // TestToOpenAIResponsesRequest_DefaultsImageDetail verifies input_image blocks
 // missing the detail field get "auto" on the wire (OpenAI's schema requires it
 // and strict validators like vLLM reject requests without it), explicit values
@@ -5405,4 +5452,27 @@ func TestToOpenAIResponsesRequest_DisableStoreContextKey(t *testing.T) {
 		require.True(t, *out.Store)
 		require.Equal(t, true, out.ExtraParams["store"])
 	})
+}
+
+// BenchmarkToOpenAIResponsesRequestReasoningReplay measures the replayed-reasoning id handling
+// on the OpenAI path (strips) and the Mantle path (keeps).
+func BenchmarkToOpenAIResponsesRequestReasoningReplay(b *testing.B) {
+	reasoningType := schemas.ResponsesMessageTypeReasoning
+	for _, provider := range []schemas.ModelProvider{schemas.OpenAI, schemas.BedrockMantle} {
+		b.Run(string(provider), func(b *testing.B) {
+			req := &schemas.BifrostResponsesRequest{
+				Provider: provider,
+				Model:    "openai.gpt-oss-120b",
+				Input: []schemas.ResponsesMessage{{
+					Type:               &reasoningType,
+					ID:                 schemas.Ptr("msg_b742cb8249a3aff3"),
+					ResponsesReasoning: &schemas.ResponsesReasoning{Summary: []schemas.ResponsesReasoningSummary{}},
+				}},
+			}
+			b.ReportAllocs()
+			for b.Loop() {
+				_ = ToOpenAIResponsesRequest(nil, req)
+			}
+		})
+	}
 }
