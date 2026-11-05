@@ -1045,8 +1045,7 @@
 			"blockedDescription": "Bloccato prima dell'esecuzione.",
 			"observedDescription": "L'attività del tool è stata acquisita, ma l'esito dell'esecuzione non è noto.",
 			"inputRequiredDescription": "Il server MCP ha chiesto un input al chiamante prima di completare. Il nuovo tentativo che risponde è una voce separata.",
-			"retryLaterDescription": "Il server MCP ha chiesto al chiamante di riprovare più tardi, senza richiedere alcun input. Il nuovo tentativo è una voce separata.",
-			"executionDescription": "Esito dell'esecuzione del tool registrato."
+			"retryLaterDescription": "Il server MCP ha chiesto al chiamante di riprovare più tardi, senza richiedere alcun input. Il nuovo tentativo è una voce separata."
 		},
 		"noResults": "Nessun risultato trovato. Prova a modificare i filtri e/o l'intervallo di tempo.",
 		"observedRoundTrip": "Round trip osservato"

@@ -1045,8 +1045,7 @@
 			"blockedDescription": "Bloqué avant l'exécution.",
 			"observedDescription": "L'activité de l'outil a été capturée, mais le résultat de son exécution n'est pas connu.",
 			"inputRequiredDescription": "Le serveur MCP a demandé une saisie à l'appelant avant de terminer. La nouvelle tentative qui y répond est une entrée distincte.",
-			"retryLaterDescription": "Le serveur MCP a demandé à l'appelant de réessayer plus tard, sans demander de saisie. La nouvelle tentative est une entrée distincte.",
-			"executionDescription": "Résultat d'exécution de l'outil enregistré."
+			"retryLaterDescription": "Le serveur MCP a demandé à l'appelant de réessayer plus tard, sans demander de saisie. La nouvelle tentative est une entrée distincte."
 		},
 		"noResults": "Aucun résultat trouvé. Essayez d'ajuster vos filtres et/ou votre plage horaire.",
 		"observedRoundTrip": "Aller-retour observé"

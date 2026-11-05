@@ -123,6 +123,9 @@ test.describe('MCP Log Detail Hydration', () => {
     // The LLM request ID is shown once, as the header link to the LLM log, not repeated in Request Details.
     await expect(mcpLogsPage.logDetailSheet.getByTestId('mcplogdetails-llm-request-id-link')).toHaveText(listLog.llm_request_id)
     await expect(mcpLogsPage.logDetailSheet.getByText(listLog.llm_request_id, { exact: true })).toHaveCount(1)
+
+    // An ordinary successful execution has nothing to explain, so More details opens on Timings.
+    await expect(mcpLogsPage.logDetailSheet.getByTestId('mcplogdetails-status-description')).toHaveCount(0)
   })
 
   test('opens the sheet from a selected_log link when that log is not on the loaded page', async ({ mcpLogsPage, page }) => {
@@ -323,6 +326,7 @@ test.describe('MCP Log Round Trips and MCP Apps', () => {
     const sheet = mcpLogsPage.logDetailSheet
     await expect(sheet.getByText('Needs input').first()).toBeVisible()
     await expect(sheet.getByTestId('mcplogdetails-input-requested')).toContainText('Which environment?')
+    await expect(sheet.getByTestId('mcplogdetails-status-description')).toContainText('asked the caller for input')
 
     const roundsTab = sheet.getByTestId('mcplogdetails-rounds-tab')
     await expect(roundsTab).toContainText('Rounds')

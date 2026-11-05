@@ -1045,8 +1045,7 @@
 			"blockedDescription": "Bloqueado antes de la ejecución.",
 			"observedDescription": "La actividad de la herramienta fue capturada, pero su resultado de ejecución no es conocido.",
 			"inputRequiredDescription": "El servidor MCP pidió una entrada al llamador antes de completar. El reintento que la responde es una entrada aparte.",
-			"retryLaterDescription": "El servidor MCP pidió al llamador que lo reintentara más tarde, sin solicitar ninguna entrada. El reintento es una entrada aparte.",
-			"executionDescription": "Resultado de ejecución de herramientas grabada."
+			"retryLaterDescription": "El servidor MCP pidió al llamador que lo reintentara más tarde, sin solicitar ninguna entrada. El reintento es una entrada aparte."
 		},
 		"noResults": "No se han encontrado resultados. Intente ajustar tus filtros y/o rango de tiempo.",
 		"observedRoundTrip": "Viaje redondo observado"

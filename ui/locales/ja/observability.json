@@ -1039,8 +1039,7 @@
 			"blockedDescription": "実行前にブロックされました。",
 			"observedDescription": "ツールの活動は記録されましたが、その実行結果は不明です。",
 			"inputRequiredDescription": "MCP サーバーが完了前に呼び出し元へ入力を求めました。それに応答する再試行は別のエントリです。",
-			"retryLaterDescription": "MCP サーバーは入力を求めずに、後で再試行するよう呼び出し元に求めました。再試行は別のエントリです。",
-			"executionDescription": "記録されたツール実行の結果。"
+			"retryLaterDescription": "MCP サーバーは入力を求めずに、後で再試行するよう呼び出し元に求めました。再試行は別のエントリです。"
 		},
 		"noResults": "結果が見つかりませんでした。フィルターや期間を調整してみてください。",
 		"observedRoundTrip": "観測された往復"

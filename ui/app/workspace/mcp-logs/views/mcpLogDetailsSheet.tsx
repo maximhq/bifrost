@@ -578,8 +578,14 @@ export function MCPLogDetailSheet({
 							</span>
 						</summary>
 						<div className="space-y-4 border-t px-4 py-4 md:px-6">
-							<p className="text-muted-foreground text-sm">{presentation.description}</p>
-							<DottedSeparator />
+							{presentation.description && (
+								<>
+									<p className="text-muted-foreground text-sm" data-testid="mcplogdetails-status-description">
+										{presentation.description}
+									</p>
+									<DottedSeparator />
+								</>
+							)}
 							<div className="space-y-4">
 								<BlockHeader title={t("mcpLogs.detail.timings")} />
 								<div className="grid w-full grid-cols-1 items-center justify-between gap-4 md:grid-cols-3">

@@ -1040,8 +1040,7 @@
 			"blockedDescription": "在执行前被阻止。",
 			"observedDescription": "已捕获工具活动，但执行结果未知。",
 			"inputRequiredDescription": "MCP 服务器在完成前向调用方请求了输入。回答该请求的重试是单独的条目。",
-			"retryLaterDescription": "MCP 服务器要求调用方稍后重试，未请求任何输入。重试是一条单独的记录。",
-			"executionDescription": "已记录的工具执行结果。"
+			"retryLaterDescription": "MCP 服务器要求调用方稍后重试，未请求任何输入。重试是一条单独的记录。"
 		},
 		"noResults": "未找到结果，请尝试调整筛选条件或时间范围。",
 		"observedRoundTrip": "观测往返时延"
