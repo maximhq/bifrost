@@ -4050,15 +4050,51 @@ func betaListContains(t *testing.T, fields *schemas.OrderedMap, header string) b
 	return false
 }
 
-// TestBedrockAnthropicChatStructuredOutputUsesSyntheticTool locks in Route A:
-// Bedrock + Anthropic + json_schema response_format routes through the
-// synthetic `bf_so_*` tool path (same as non-Anthropic Bedrock providers),
-// not Bedrock's native `output_config.format`. Bedrock Converse's support for
-// `output_config.format` is inconsistent across Claude variants (Opus 4.7
-// rejects with "output_config.format: Extra inputs are not permitted"); the
-// synthetic-tool path is a regular Converse tool call that all variants
-// accept reliably.
-func TestBedrockAnthropicChatStructuredOutputUsesSyntheticTool(t *testing.T) {
+// additionalFieldsJSON renders a Converse request's additionalModelRequestFields
+// as JSON so a test can read nested fields such as output_config with gjson.
+func additionalFieldsJSON(t *testing.T, fields *schemas.OrderedMap) string {
+	t.Helper()
+	require.NotNil(t, fields, "expected additionalModelRequestFields")
+	raw, err := json.Marshal(fields)
+	require.NoError(t, err)
+	return string(raw)
+}
+
+// classificationResponsesRequest is a Responses request with a json_schema
+// text.format, the shape the Anthropic Messages SDK sends for
+// output_config.format (/v1/messages -> ToBifrostResponsesRequest).
+func classificationResponsesRequest(model string) *schemas.BifrostResponsesRequest {
+	schemaObj := schemas.NewOrderedMapFromPairs(
+		schemas.KV("type", "object"),
+		schemas.KV("properties", schemas.NewOrderedMapFromPairs(
+			schemas.KV("isNewTopic", schemas.NewOrderedMapFromPairs(schemas.KV("type", "boolean"))),
+			schemas.KV("title", schemas.NewOrderedMapFromPairs(schemas.KV("type", "string"))),
+			schemas.KV("result", schemas.NewOrderedMapFromPairs(schemas.KV("type", "number"))),
+		)),
+		schemas.KV("required", []string{"isNewTopic", "title", "result"}),
+	)
+	return &schemas.BifrostResponsesRequest{
+		Model: model,
+		Params: &schemas.ResponsesParameters{
+			Text: &schemas.ResponsesTextConfig{
+				Format: &schemas.ResponsesTextConfigFormat{
+					Type: "json_schema",
+					Name: schemas.Ptr("classification"),
+					JSONSchema: &schemas.ResponsesTextConfigFormatJSONSchema{
+						Schema: &schemas.JSONSchemaOrBool{SchemaMap: schemaObj},
+					},
+				},
+			},
+		},
+	}
+}
+
+// TestBedrockAnthropicChatStructuredOutputUsesNativeOutputConfig: a json_schema
+// response_format on Claude 4.5+ reaches Converse as output_config.format in
+// additionalModelRequestFields, with no synthetic bf_so_* tool, no forced
+// tool_choice and no structured-outputs beta. Opus 4.7 is the model the
+// synthetic tool was introduced for (#3184).
+func TestBedrockAnthropicChatStructuredOutputUsesNativeOutputConfig(t *testing.T) {
 	responseFormat := any(map[string]any{
 		"type": "json_schema",
 		"json_schema": map[string]any{
@@ -4095,53 +4131,61 @@ func TestBedrockAnthropicChatStructuredOutputUsesSyntheticTool(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, result)
 
-	// Negative: no `output_config` and no structured-outputs beta tunnel
-	// in additionalModelRequestFields. PR #3053 added both; Route A removes them.
-	if result.AdditionalModelRequestFields != nil {
-		_, hasOutputConfig := result.AdditionalModelRequestFields.Get("output_config")
-		assert.False(t, hasOutputConfig, "expected NO output_config for Anthropic on Bedrock under Route A")
-		assert.False(
-			t,
-			betaListContains(t, result.AdditionalModelRequestFields, "structured-outputs-2025-11-13"),
-			"additionalModelRequestFields.anthropic_beta should NOT contain structured-outputs-2025-11-13",
-		)
-	}
-
-	// Positive: synthetic bf_so_* tool present and forced via tool_choice —
-	// this is the contract that replaces output_config.format on Bedrock.
-	require.NotNil(t, result.ToolConfig, "expected toolConfig with synthetic bf_so_* tool")
-	require.NotEmpty(t, result.ToolConfig.Tools, "expected at least one tool (the synthetic bf_so_*)")
-	require.NotNil(t, result.ToolConfig.ToolChoice, "expected forced tool_choice")
-	require.NotNil(t, result.ToolConfig.ToolChoice.Tool, "expected tool_choice to target a specific tool")
-	assert.Contains(t, result.ToolConfig.ToolChoice.Tool.Name, "bf_so_", "expected forced tool_choice to target bf_so_*")
-	assert.Equal(t, "bf_so_classification", result.ToolConfig.ToolChoice.Tool.Name)
+	fields := additionalFieldsJSON(t, result.AdditionalModelRequestFields)
+	assert.Equal(t, "json_schema", gjson.Get(fields, "output_config.format.type").String())
+	assert.Equal(t, "boolean", gjson.Get(fields, "output_config.format.schema.properties.isNewTopic.type").String())
+	additionalProperties := gjson.Get(fields, "output_config.format.schema.additionalProperties")
+	assert.True(t, additionalProperties.Exists() && !additionalProperties.Bool(), "Anthropic requires additionalProperties false on objects")
+	assert.False(t, gjson.Get(fields, "output_config.format.name").Exists(), "name is not part of Anthropic's output_config.format")
+	assert.False(
+		t,
+		betaListContains(t, result.AdditionalModelRequestFields, "structured-outputs-2025-11-13"),
+		"output_config.format is GA and needs no structured-outputs beta",
+	)
+	assert.Nil(t, result.ToolConfig, "expected no synthetic bf_so_* tool")
+	_, hasToolName := ctx.Value(schemas.BifrostContextKeyStructuredOutputToolName).(string)
+	assert.False(t, hasToolName, "no structured-output tool name to map back on the response")
 }
 
-// TestToBedrockResponsesRequest_AnthropicStructuredOutputUsesSyntheticTool
-// is the responses-path twin of TestBedrockAnthropicChatStructuredOutputUsesSyntheticTool.
-// The user's failing request comes through the Anthropic Messages SDK
-// (`client.messages.create`), routed via /v1/messages -> ToBifrostResponsesRequest
-// -> ToBedrockResponsesRequest with Params.Text.Format set.
-func TestToBedrockResponsesRequest_AnthropicStructuredOutputUsesSyntheticTool(t *testing.T) {
-	schemaObj := schemas.NewOrderedMapFromPairs(
-		schemas.KV("type", "object"),
-		schemas.KV("properties", schemas.NewOrderedMapFromPairs(
-			schemas.KV("isNewTopic", schemas.NewOrderedMapFromPairs(schemas.KV("type", "boolean"))),
-			schemas.KV("title", schemas.NewOrderedMapFromPairs(schemas.KV("type", "string"))),
-			schemas.KV("result", schemas.NewOrderedMapFromPairs(schemas.KV("type", "number"))),
-		)),
-		schemas.KV("required", []string{"isNewTopic", "title", "result"}),
-	)
+// TestBedrockAnthropicChatNativeStructuredOutputLeavesUserToolsUnforced: with
+// the format sent natively, the caller's tools are the only tools and the
+// caller's tool_choice is kept, so the model can still call them before it
+// answers in the schema.
+func TestBedrockAnthropicChatNativeStructuredOutputLeavesUserToolsUnforced(t *testing.T) {
+	responseFormat := any(map[string]any{
+		"type": "json_schema",
+		"json_schema": map[string]any{
+			"name": "answer",
+			"schema": map[string]any{
+				"type":       "object",
+				"properties": map[string]any{"reply": map[string]any{"type": "string"}},
+				"required":   []any{"reply"},
+			},
+		},
+	})
 
-	req := &schemas.BifrostResponsesRequest{
-		Model: "anthropic.claude-opus-4-7-v1:0",
-		Params: &schemas.ResponsesParameters{
-			Text: &schemas.ResponsesTextConfig{
-				Format: &schemas.ResponsesTextConfigFormat{
-					Type: "json_schema",
-					Name: schemas.Ptr("classification"),
-					JSONSchema: &schemas.ResponsesTextConfigFormatJSONSchema{
-						Schema: &schemas.JSONSchemaOrBool{SchemaMap: schemaObj},
+	bifrostReq := &schemas.BifrostChatRequest{
+		Model: "eu.anthropic.claude-sonnet-4-6",
+		Input: []schemas.ChatMessage{
+			{
+				Role:    schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("What's the weather in Paris?")},
+			},
+		},
+		Params: &schemas.ChatParameters{
+			ResponseFormat: &responseFormat,
+			Tools: []schemas.ChatTool{
+				{
+					Type: schemas.ChatToolTypeFunction,
+					Function: &schemas.ChatToolFunction{
+						Name:        "get_weather",
+						Description: schemas.Ptr("Get weather information"),
+						Parameters: &schemas.ToolFunctionParameters{
+							Type: "object",
+							Properties: schemas.NewOrderedMapFromPairs(
+								schemas.KV("city", schemas.NewOrderedMapFromPairs(schemas.KV("type", "string"))),
+							),
+						},
 					},
 				},
 			},
@@ -4149,28 +4193,60 @@ func TestToBedrockResponsesRequest_AnthropicStructuredOutputUsesSyntheticTool(t 
 	}
 
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	result, err := bedrock.ToBedrockChatCompletionRequest(ctx, bifrostReq)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	fields := additionalFieldsJSON(t, result.AdditionalModelRequestFields)
+	assert.Equal(t, "json_schema", gjson.Get(fields, "output_config.format.type").String())
+	require.NotNil(t, result.ToolConfig)
+	require.Len(t, result.ToolConfig.Tools, 1, "expected only the caller's tool")
+	require.NotNil(t, result.ToolConfig.Tools[0].ToolSpec)
+	assert.Equal(t, "get_weather", result.ToolConfig.Tools[0].ToolSpec.Name)
+	if result.ToolConfig.ToolChoice != nil {
+		assert.Nil(t, result.ToolConfig.ToolChoice.Tool, "expected no forced tool_choice")
+	}
+}
+
+// TestToBedrockResponsesRequest_AnthropicStructuredOutputUsesNativeOutputConfig
+// is the Responses-path twin of
+// TestBedrockAnthropicChatStructuredOutputUsesNativeOutputConfig.
+func TestToBedrockResponsesRequest_AnthropicStructuredOutputUsesNativeOutputConfig(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bedrockReq, err := bedrock.ToBedrockResponsesRequest(ctx, classificationResponsesRequest("anthropic.claude-opus-4-7-v1:0"))
+	require.NoError(t, err)
+	require.NotNil(t, bedrockReq)
+
+	fields := additionalFieldsJSON(t, bedrockReq.AdditionalModelRequestFields)
+	assert.Equal(t, "json_schema", gjson.Get(fields, "output_config.format.type").String())
+	assert.Equal(t, "boolean", gjson.Get(fields, "output_config.format.schema.properties.isNewTopic.type").String())
+	additionalProperties := gjson.Get(fields, "output_config.format.schema.additionalProperties")
+	assert.True(t, additionalProperties.Exists() && !additionalProperties.Bool(), "Anthropic requires additionalProperties false on objects")
+	assert.False(
+		t,
+		betaListContains(t, bedrockReq.AdditionalModelRequestFields, "structured-outputs-2025-11-13"),
+		"output_config.format is GA and needs no structured-outputs beta",
+	)
+	assert.Nil(t, bedrockReq.ToolConfig, "expected no synthetic bf_so_* tool")
+	_, hasToolName := ctx.Value(schemas.BifrostContextKeyStructuredOutputToolName).(string)
+	assert.False(t, hasToolName, "no structured-output tool name to map back on the response")
+}
+
+// TestToBedrockResponsesRequest_AnthropicNativeStructuredOutputKeepsEffort: with
+// thinking on, effort and format share one output_config object.
+func TestToBedrockResponsesRequest_AnthropicNativeStructuredOutputKeepsEffort(t *testing.T) {
+	req := classificationResponsesRequest("eu.anthropic.claude-opus-5-5")
+	req.Params.Reasoning = &schemas.ResponsesParametersReasoning{Effort: schemas.Ptr("low")}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	bedrockReq, err := bedrock.ToBedrockResponsesRequest(ctx, req)
 	require.NoError(t, err)
 	require.NotNil(t, bedrockReq)
 
-	// Negative: no output_config, no structured-outputs beta tunnel.
-	if bedrockReq.AdditionalModelRequestFields != nil {
-		_, hasOutputConfig := bedrockReq.AdditionalModelRequestFields.Get("output_config")
-		assert.False(t, hasOutputConfig, "expected NO output_config for Anthropic on Bedrock under Route A")
-		assert.False(
-			t,
-			betaListContains(t, bedrockReq.AdditionalModelRequestFields, "structured-outputs-2025-11-13"),
-			"additionalModelRequestFields.anthropic_beta should NOT contain structured-outputs-2025-11-13",
-		)
-	}
-
-	// Positive: synthetic bf_so_* tool injected and forced.
-	require.NotNil(t, bedrockReq.ToolConfig, "expected toolConfig with synthetic bf_so_* tool")
-	require.NotEmpty(t, bedrockReq.ToolConfig.Tools, "expected at least one tool (the synthetic bf_so_*)")
-	require.NotNil(t, bedrockReq.ToolConfig.ToolChoice, "expected forced tool_choice")
-	require.NotNil(t, bedrockReq.ToolConfig.ToolChoice.Tool, "expected tool_choice to target a specific tool")
-	assert.Contains(t, bedrockReq.ToolConfig.ToolChoice.Tool.Name, "bf_so_", "expected forced tool_choice to target bf_so_*")
-	assert.Equal(t, "bf_so_classification", bedrockReq.ToolConfig.ToolChoice.Tool.Name)
+	fields := additionalFieldsJSON(t, bedrockReq.AdditionalModelRequestFields)
+	assert.Equal(t, "low", gjson.Get(fields, "output_config.effort").String())
+	assert.Equal(t, "json_schema", gjson.Get(fields, "output_config.format.type").String())
+	assert.Nil(t, bedrockReq.ToolConfig, "expected no synthetic bf_so_* tool")
 }
 
 // TestNonAnthropicStructuredOutputStillUsesToolConversion ensures Bedrock models

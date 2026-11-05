@@ -1745,6 +1745,34 @@ func DefaultSupportsNativeEffort(model string) bool {
 	return false
 }
 
+// DefaultSupportsNativeStructuredOutput reports whether the model accepts
+// output_config.format natively: Claude Fable / Mythos, the 5.x families, Opus
+// 4.5 to 4.8, Sonnet 4.5 and 4.6, and Haiku 4.5. Claude 3.x, Opus 4, Opus 4.1 and
+// Sonnet 4 do not, so providers that serve them keep a synthetic structured-output
+// tool.
+//
+// Source: https://platform.claude.com/docs/en/build-with-claude/structured-outputs
+func DefaultSupportsNativeStructuredOutput(model string) bool {
+	m := strings.ToLower(model)
+	if IsFableFamily(m) || IsOpus5Plus(m) || IsSonnet5Plus(m) || IsHaiku5Plus(m) {
+		return true
+	}
+	if strings.Contains(m, "opus") {
+		return strings.Contains(m, "4-5") || strings.Contains(m, "4.5") ||
+			strings.Contains(m, "4-6") || strings.Contains(m, "4.6") ||
+			strings.Contains(m, "4-7") || strings.Contains(m, "4.7") ||
+			strings.Contains(m, "4-8") || strings.Contains(m, "4.8")
+	}
+	if strings.Contains(m, "sonnet") {
+		return strings.Contains(m, "4-5") || strings.Contains(m, "4.5") ||
+			strings.Contains(m, "4-6") || strings.Contains(m, "4.6")
+	}
+	if strings.Contains(m, "haiku") {
+		return strings.Contains(m, "4-5") || strings.Contains(m, "4.5")
+	}
+	return false
+}
+
 // appendToSystemContent merges newContent into existing.
 // If existing is nil the new content is returned as-is (preserving ContentStr
 // vs ContentBlocks wire format). When both sides are non-empty both are

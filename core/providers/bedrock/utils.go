@@ -614,13 +614,22 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 		bedrockReq.InferenceConfig = inferenceConfig
 	}
 
-	// Handle structured output conversion through the synthetic `bf_so_*` tool
-	// path for all Bedrock models, including Anthropic. We avoid native
-	// `output_config.format` because Bedrock Converse rejects it on some Claude
-	// variants (e.g. Opus 4.7 returns "output_config.format: Extra inputs are not
-	// permitted"), whereas the synthetic-tool path is a regular Converse tool
-	// call accepted by all variants.
-	responseFormatTool, _ := convertResponseFormatToTool(ctx, bifrostReq.Model, bifrostReq.Params)
+	// Claude 4.5+ takes structured output natively as output_config.format in
+	// additionalModelRequestFields: the model's decoding is constrained, and no
+	// synthetic tool competes with the caller's tools or needs a forced
+	// tool_choice. Other models go through the synthetic `bf_so_*` tool, a
+	// regular Converse tool call.
+	var responseFormatTool *BedrockTool
+	if schemas.IsAnthropicModelFamily(ctx, bifrostReq.Model) && anthropic.DefaultSupportsNativeStructuredOutput(caps.Model()) {
+		if outputFormat := nativeAnthropicOutputFormat(chatResponseFormatSchema(bifrostReq.Params)); outputFormat != nil {
+			if bedrockReq.AdditionalModelRequestFields == nil {
+				bedrockReq.AdditionalModelRequestFields = schemas.NewOrderedMap()
+			}
+			setOutputConfigField(bedrockReq.AdditionalModelRequestFields, "format", outputFormat)
+		}
+	} else {
+		responseFormatTool, _ = convertResponseFormatToTool(ctx, bifrostReq.Model, bifrostReq.Params)
+	}
 
 	// Filter provider-unsupported server tools once; both convertToolConfig and
 	// collectBedrockServerTools consume the same filtered set, and
@@ -2605,6 +2614,55 @@ func convertImageToBedrockSource(ctx context.Context, model, imageURL string) (*
 	}, nil
 }
 
+// nativeAnthropicOutputFormat is the output_config.format Claude takes for
+// structured output, built from the same schema the synthetic bf_so_* tool would
+// carry. Anthropic requires additionalProperties false on objects, so a
+// top-level object schema that leaves it unset gets it. Nil when there is no
+// schema to constrain the reply to.
+func nativeAnthropicOutputFormat(schema json.RawMessage) json.RawMessage {
+	if len(schema) == 0 {
+		return nil
+	}
+	schema = anthropic.NormalizeSchemaForAnthropicRaw(schema)
+	if gjson.GetBytes(schema, "type").String() == "object" && !gjson.GetBytes(schema, "additionalProperties").Exists() {
+		if withDefault, err := sjson.SetBytes(schema, "additionalProperties", false); err == nil {
+			schema = withDefault
+		}
+	}
+	format, err := sjson.SetRawBytes([]byte(`{"type":"json_schema"}`), "schema", schema)
+	if err != nil {
+		return nil
+	}
+	return json.RawMessage(format)
+}
+
+// chatResponseFormatSchema is the JSON schema of a json_schema response_format,
+// as the client sent it.
+func chatResponseFormatSchema(params *schemas.ChatParameters) json.RawMessage {
+	if params == nil || params.ResponseFormat == nil {
+		return nil
+	}
+	rf, ok := schemas.ParseChatResponseFormat(params.ResponseFormat)
+	if !ok || rf.Type != "json_schema" || !rf.HasJSONSchema() {
+		return nil
+	}
+	return rf.RawSchema()
+}
+
+// textFormatSchema is the JSON schema of a json_schema text.format, in either
+// its composite or decomposed shape. Nil for the boolean schema `true`, which
+// constrains nothing.
+func textFormatSchema(textConfig *schemas.ResponsesTextConfig) (json.RawMessage, error) {
+	if textConfig == nil || textConfig.Format == nil || textConfig.Format.Type != "json_schema" || textConfig.Format.JSONSchema == nil {
+		return nil, nil
+	}
+	_, acceptAll, err := textConfig.Format.JSONSchema.CompositeSchema()
+	if err != nil || acceptAll {
+		return nil, err
+	}
+	return extractJSONSchemaObject(textConfig.Format.JSONSchema), nil
+}
+
 // convertResponseFormatToTool converts a response_format parameter to a Bedrock tool
 // Returns nil if no response_format is present or if it's not a json_schema type
 // Ref: https://aws.amazon.com/blogs/machine-learning/structured-data-response-with-amazon-bedrock-prompt-engineering-and-tool-use/
@@ -2629,10 +2687,6 @@ func convertResponseFormatToTool(
 	if len(schemaBytes) == 0 {
 		return nil, nil
 	}
-
-	// All Bedrock models (including Anthropic) use the synthetic `bf_so_*` tool
-	// path; native `output_config.format` is intentionally avoided due to
-	// Converse's inconsistent support across Claude variants.
 
 	// Extract name and schema
 	toolName, ok := rf.Name()
@@ -2791,9 +2845,6 @@ func convertTextFormatToTool(ctx *schemas.BifrostContext, model string, textConf
 	if format.JSONSchema.Description != nil {
 		description = *format.JSONSchema.Description
 	}
-
-	// All Bedrock models use the synthetic `bf_so_*` tool path here as well.
-	// See convertResponseFormatToTool for the rationale.
 
 	toolName = fmt.Sprintf("bf_so_%s", toolName)
 	ctx.SetValue(schemas.BifrostContextKeyStructuredOutputToolName, toolName)
