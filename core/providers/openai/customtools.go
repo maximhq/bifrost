@@ -272,10 +272,24 @@ func restoreCustomToolCall(item *schemas.ResponsesMessage, names map[string]stru
 }
 
 // restoreCustomToolCalls applies restoreCustomToolCall to every output item.
-func restoreCustomToolCalls(output []schemas.ResponsesMessage, names map[string]struct{}) {
+// Reports whether any item was rewritten.
+func restoreCustomToolCalls(output []schemas.ResponsesMessage, names map[string]struct{}) bool {
+	restored := false
 	for i := range output {
-		restoreCustomToolCall(&output[i], names)
+		if restoreCustomToolCall(&output[i], names) {
+			restored = true
+		}
 	}
+	return restored
+}
+
+// dropStaleRawResponse removes the provider payload from a response whose parsed
+// form was rewritten. The raw bytes still describe the function call the provider
+// sent, so a raw passthrough would contradict the restored event: the SSE event
+// line would name the custom tool event while the data still said function call.
+func dropStaleRawResponse(extra *schemas.BifrostResponseExtraFields) {
+	extra.RawResponse = nil
+	extra.RawResponseFormat = ""
 }
 
 // customToolStreamRestorer restores custom tool calls across one Responses stream.
@@ -302,11 +316,22 @@ func (r *customToolStreamRestorer) restore(event *schemas.BifrostResponsesStream
 	if r == nil || event == nil {
 		return nil, false
 	}
+	// Once an event is synthesized, every later sequence number moves, so the raw
+	// payloads no longer match what the client sees either.
+	rewritten := r.shift > 0
 	event.SequenceNumber += r.shift
+	defer func() {
+		if rewritten && !drop {
+			dropStaleRawResponse(&event.ExtraFields)
+		}
+	}()
 	switch event.Type {
 	case schemas.ResponsesStreamResponseTypeOutputItemAdded, schemas.ResponsesStreamResponseTypeOutputItemDone:
-		if restoreCustomToolCall(event.Item, r.names) && event.Item.ID != nil {
-			r.itemIDs[*event.Item.ID] = struct{}{}
+		if restoreCustomToolCall(event.Item, r.names) {
+			rewritten = true
+			if event.Item.ID != nil {
+				r.itemIDs[*event.Item.ID] = struct{}{}
+			}
 		}
 	case schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta:
 		if r.tracked(event.ItemID) {
@@ -327,6 +352,7 @@ func (r *customToolStreamRestorer) restore(event *schemas.BifrostResponsesStream
 			ItemID:         event.ItemID,
 			Delta:          schemas.Ptr(input),
 		}
+		rewritten = true
 		r.shift++
 		event.SequenceNumber++
 		event.Type = schemas.ResponsesStreamResponseTypeCustomToolCallInputDone
@@ -334,8 +360,8 @@ func (r *customToolStreamRestorer) restore(event *schemas.BifrostResponsesStream
 		event.Input = schemas.Ptr(input)
 		return prefix, false
 	case schemas.ResponsesStreamResponseTypeCompleted, schemas.ResponsesStreamResponseTypeIncomplete:
-		if event.Response != nil {
-			restoreCustomToolCalls(event.Response.Output, r.names)
+		if event.Response != nil && restoreCustomToolCalls(event.Response.Output, r.names) {
+			rewritten = true
 		}
 	}
 	return nil, false

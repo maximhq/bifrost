@@ -493,3 +493,66 @@ func TestRestoreCustomToolCall_MatchesNamespace(t *testing.T) {
 	require.Equal(t, schemas.ResponsesMessageTypeFunctionCall, *function.Type)
 	require.Equal(t, `{"input":"ls"}`, *function.Arguments)
 }
+
+// TestCustomToolStreamRestorerDropsStaleRawResponse keeps a raw passthrough from sending the
+// provider's function call payload under a restored custom tool event name.
+func TestCustomToolStreamRestorerDropsStaleRawResponse(t *testing.T) {
+	r := newCustomToolStreamRestorer(map[string]struct{}{"apply_patch": {}})
+	itemID := schemas.Ptr("fc_1")
+	withRaw := func(event *schemas.BifrostResponsesStreamResponse) *schemas.BifrostResponsesStreamResponse {
+		event.ExtraFields.RawResponse = `{"type":"` + string(event.Type) + `"}`
+		event.ExtraFields.RawResponseFormat = schemas.RawResponseFormatOpenAIResponsesStreamEvent
+		return event
+	}
+
+	// An unrelated event before any rewrite keeps its raw payload.
+	untouched := withRaw(&schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeOutputTextDelta, SequenceNumber: 1, Delta: schemas.Ptr("hi")})
+	r.restore(untouched)
+	require.NotNil(t, untouched.ExtraFields.RawResponse)
+
+	added := withRaw(&schemas.BifrostResponsesStreamResponse{
+		Type:           schemas.ResponsesStreamResponseTypeOutputItemAdded,
+		SequenceNumber: 2,
+		Item: &schemas.ResponsesMessage{
+			ID:                   itemID,
+			Type:                 schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+			ResponsesToolMessage: &schemas.ResponsesToolMessage{Name: schemas.Ptr("apply_patch"), Arguments: schemas.Ptr("")},
+		},
+	})
+	r.restore(added)
+	require.Nil(t, added.ExtraFields.RawResponse, "restored item event kept the function_call payload")
+	require.Empty(t, added.ExtraFields.RawResponseFormat)
+
+	done := withRaw(&schemas.BifrostResponsesStreamResponse{
+		Type:           schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDone,
+		SequenceNumber: 3,
+		ItemID:         itemID,
+		Arguments:      schemas.Ptr(`{"input":"abc"}`),
+	})
+	prefix, drop := r.restore(done)
+	require.False(t, drop)
+	require.NotNil(t, prefix)
+	require.Equal(t, schemas.ResponsesStreamResponseTypeCustomToolCallInputDone, done.Type)
+	require.Nil(t, done.ExtraFields.RawResponse, "custom_tool_call_input.done kept the function_call_arguments.done payload")
+
+	// After the synthesized delta every sequence number moves, so later raw payloads are stale too.
+	later := withRaw(&schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeOutputTextDelta, SequenceNumber: 4, Delta: schemas.Ptr("x")})
+	r.restore(later)
+	require.Equal(t, 5, later.SequenceNumber)
+	require.Nil(t, later.ExtraFields.RawResponse)
+}
+
+// TestRestoreCustomToolCallsReportsRewrite reports a rewrite only when an output item changed.
+func TestRestoreCustomToolCallsReportsRewrite(t *testing.T) {
+	names := map[string]struct{}{"apply_patch": {}}
+	plain := []schemas.ResponsesMessage{{
+		Type:                 schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+		ResponsesToolMessage: &schemas.ResponsesToolMessage{Name: schemas.Ptr("search"), Arguments: schemas.Ptr(`{}`)},
+	}}
+	require.False(t, restoreCustomToolCalls(plain, names))
+	custom := []schemas.ResponsesMessage{{
+		Type:                 schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+		ResponsesToolMessage: &schemas.ResponsesToolMessage{Name: schemas.Ptr("apply_patch"), Arguments: schemas.Ptr(`{"input":"x"}`)},
+	}}
+	require.True(t, restoreCustomToolCalls(custom, names))
+}
