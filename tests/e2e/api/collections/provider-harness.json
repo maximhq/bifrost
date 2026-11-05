@@ -312307,6 +312307,260 @@
           ]
         }
       ]
+    },
+    {
+      "name": "321. Invalid tool_calls arguments replay as {} (invalid tool arguments)",
+      "description": "T1 Agent stage report 2026-11-05, defect 2. An assistant turn whose tool_calls[].function.arguments is not valid JSON (concatenated objects here; truncated-at-max_tokens arguments are the other real-world source) used to fail with HTTP 500 \"failed to marshal request body to JSON\" in ~10ms, before any provider call. The Anthropic converters put the raw bytes into json.RawMessage (core/providers/anthropic/chat.go ToAnthropicChatRequest for chat, parseJSONInput for /v1/responses) and the request marshal rejected them. OpenAI SDKs retry a 5xx twice, so each turn became three 500s. Fix: replay invalid arguments as tool_use.input {} (the Gemini and Bedrock Converse converters already do this). Anthropic does not check history tool_use inputs against the tool schema, so the turn succeeds. On Bedrock only the InvokeModel path uses the Anthropic converter; plain chat goes through Converse. The Bedrock cases carry the regex tool_search tool, which forces InvokeModel (bedrock.go toolNeedsAnthropicInvokePath), as stage traffic did. 321.1 Anthropic direct chat; 321.2 Bedrock InvokeModel chat; 321.3 same, streaming (the stage shape; the bug failed before the stream opened); 321.4 Bedrock InvokeModel /v1/responses function_call input item.",
+      "item": [
+        {
+          "name": "anthropic claude-sonnet-4-6 /v1/chat/completions invalid tool arguments non-streaming",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-4-6\",\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"[bf-321 321.1] find my notes about the morning brief\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": \"\",\n      \"tool_calls\": [\n        {\n          \"id\": \"toolu_bf321_1\",\n          \"type\": \"function\",\n          \"function\": {\n            \"name\": \"memory_search\",\n            \"arguments\": \"{\\\"query\\\": \\\"a\\\"}{\\\"pattern\\\": \\\"b\\\"}\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"tool\",\n      \"tool_call_id\": \"toolu_bf321_1\",\n      \"content\": \"Error: arguments were not valid JSON, tool not called.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"memory_search\",\n        \"description\": \"Search the user notes\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"query\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"query\"\n          ]\n        }\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('321.1 status 200 (was 500 failed to marshal request body to JSON)', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('321.1 no request marshal failure', function () {",
+                  "  pm.expect(pm.response.text()).to.not.include('failed to marshal request body');",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var rr = ((pm.response.json() || {}).extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('321.1 raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + pm.response.text()).to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "var toolUses = [];",
+                  "(rr.messages || []).forEach(function (m) {",
+                  "  (Array.isArray(m.content) ? m.content : []).forEach(function (b) { if (b && b.type === 'tool_use') { toolUses.push(b); } });",
+                  "});",
+                  "pm.test('321.1 invalid arguments replayed as tool_use.input {}', function () {",
+                  "  pm.expect(toolUses.length, 'messages: ' + JSON.stringify(rr.messages)).to.equal(1);",
+                  "  pm.expect(toolUses[0].input, 'tool_use: ' + JSON.stringify(toolUses[0])).to.deep.equal({});",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "bedrock/global.anthropic.claude-sonnet-4-6 /v1/chat/completions tool_search invalid tool arguments non-streaming",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-sonnet-4-6\",\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"[bf-321 321.2] find my notes about the morning brief\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": \"\",\n      \"tool_calls\": [\n        {\n          \"id\": \"toolu_bf321_1\",\n          \"type\": \"function\",\n          \"function\": {\n            \"name\": \"memory_search\",\n            \"arguments\": \"{\\\"query\\\": \\\"a\\\"}{\\\"pattern\\\": \\\"b\\\"}\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"tool\",\n      \"tool_call_id\": \"toolu_bf321_1\",\n      \"content\": \"Error: arguments were not valid JSON, tool not called.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"memory_search\",\n        \"description\": \"Search the user notes\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"query\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"query\"\n          ]\n        }\n      }\n    },\n    {\n      \"type\": \"tool_search_tool_regex_20251119\",\n      \"name\": \"tool_search_tool_regex\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('321.2 status 200 (was 500 failed to marshal request body to JSON)', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('321.2 no request marshal failure', function () {",
+                  "  pm.expect(pm.response.text()).to.not.include('failed to marshal request body');",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var rr = ((pm.response.json() || {}).extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('321.2 raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + pm.response.text()).to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "var toolUses = [];",
+                  "(rr.messages || []).forEach(function (m) {",
+                  "  (Array.isArray(m.content) ? m.content : []).forEach(function (b) { if (b && b.type === 'tool_use') { toolUses.push(b); } });",
+                  "});",
+                  "pm.test('321.2 invalid arguments replayed as tool_use.input {}', function () {",
+                  "  pm.expect(toolUses.length, 'messages: ' + JSON.stringify(rr.messages)).to.equal(1);",
+                  "  pm.expect(toolUses[0].input, 'tool_use: ' + JSON.stringify(toolUses[0])).to.deep.equal({});",
+                  "});",
+                  "pm.test('321.2 request took the InvokeModel path (tool_search tool in body)', function () {",
+                  "  var found = (rr.tools || []).some(function (t) { return t && typeof t.type === 'string' && t.type.indexOf('tool_search_tool_regex') === 0; });",
+                  "  pm.expect(found, 'tools: ' + JSON.stringify(rr.tools)).to.equal(true);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "bedrock/global.anthropic.claude-sonnet-4-6 /v1/chat/completions tool_search invalid tool arguments streaming",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-sonnet-4-6\",\n  \"max_tokens\": 64,\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"[bf-321 321.3] find my notes about the morning brief\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": \"\",\n      \"tool_calls\": [\n        {\n          \"id\": \"toolu_bf321_1\",\n          \"type\": \"function\",\n          \"function\": {\n            \"name\": \"memory_search\",\n            \"arguments\": \"{\\\"query\\\": \\\"a\\\"}{\\\"pattern\\\": \\\"b\\\"}\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"tool\",\n      \"tool_call_id\": \"toolu_bf321_1\",\n      \"content\": \"Error: arguments were not valid JSON, tool not called.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"memory_search\",\n        \"description\": \"Search the user notes\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"query\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"query\"\n          ]\n        }\n      }\n    },\n    {\n      \"type\": \"tool_search_tool_regex_20251119\",\n      \"name\": \"tool_search_tool_regex\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('321.3 status 200 (was 500 failed to marshal request body to JSON)', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('321.3 no request marshal failure', function () {",
+                  "  pm.expect(pm.response.text()).to.not.include('failed to marshal request body');",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var text = pm.response.text() || '';",
+                  "pm.test('321.3 stream completed with [DONE]', function () {",
+                  "  pm.expect(text, 'stream: ' + text.slice(0, 2000)).to.include('[DONE]');",
+                  "});",
+                  "pm.test('321.3 stream carried no error event', function () {",
+                  "  pm.expect(/\"error\"\\s*:\\s*\\{/.test(text), 'stream: ' + text.slice(0, 2000)).to.equal(false);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "bedrock/global.anthropic.claude-sonnet-4-6 /v1/responses tool_search invalid function_call arguments non-streaming",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-sonnet-4-6\",\n  \"max_output_tokens\": 64,\n  \"input\": [\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": \"[bf-321 321.4] find my notes about the morning brief\"\n    },\n    {\n      \"type\": \"function_call\",\n      \"call_id\": \"toolu_bf321_4\",\n      \"name\": \"memory_search\",\n      \"arguments\": \"{\\\"query\\\": \\\"a\\\"}{\\\"pattern\\\": \\\"b\\\"}\"\n    },\n    {\n      \"type\": \"function_call_output\",\n      \"call_id\": \"toolu_bf321_4\",\n      \"output\": \"Error: arguments were not valid JSON, tool not called.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"memory_search\",\n      \"description\": \"Search the user notes\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"query\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"query\"\n        ]\n      }\n    },\n    {\n      \"type\": \"tool_search\",\n      \"name\": \"tool_search_tool_regex\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('321.4 status 200 (was 500 failed to marshal request body to JSON)', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('321.4 no request marshal failure', function () {",
+                  "  pm.expect(pm.response.text()).to.not.include('failed to marshal request body');",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var rr = ((pm.response.json() || {}).extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('321.4 raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + pm.response.text()).to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "var toolUses = [];",
+                  "(rr.messages || []).forEach(function (m) {",
+                  "  (Array.isArray(m.content) ? m.content : []).forEach(function (b) { if (b && b.type === 'tool_use') { toolUses.push(b); } });",
+                  "});",
+                  "pm.test('321.4 invalid arguments replayed as tool_use.input {}', function () {",
+                  "  pm.expect(toolUses.length, 'messages: ' + JSON.stringify(rr.messages)).to.equal(1);",
+                  "  pm.expect(toolUses[0].input, 'tool_use: ' + JSON.stringify(toolUses[0])).to.deep.equal({});",
+                  "});",
+                  "pm.test('321.4 request took the InvokeModel path (tool_search tool in body)', function () {",
+                  "  var found = (rr.tools || []).some(function (t) { return t && typeof t.type === 'string' && t.type.indexOf('tool_search_tool_regex') === 0; });",
+                  "  pm.expect(found, 'tools: ' + JSON.stringify(rr.tools)).to.equal(true);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }

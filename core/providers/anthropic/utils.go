@@ -4279,8 +4279,9 @@ func parseJSONInput(jsonStr string) json.RawMessage {
 		return json.RawMessage(compacted)
 	}
 
-	// If compaction fails (invalid JSON), return json.RawMessage of the raw string
-	return json.RawMessage(jsonStr)
+	// Invalid JSON as raw bytes fails the request marshal with a 500.
+	// Replay {} like the chat converter and the other providers do.
+	return json.RawMessage("{}")
 }
 
 // compactJSONBytes compacts JSON bytes, removing insignificant whitespace while

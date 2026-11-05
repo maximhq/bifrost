@@ -6214,3 +6214,24 @@ func TestAddMissingBetaHeaders_SingleMCPClientDate(t *testing.T) {
 		})
 	}
 }
+
+// parseJSONInput backs every /v1/responses tool_use site (function_call,
+// mcp_call, mcp_approval_request). Invalid arguments must come back as {}:
+// the raw bytes would fail the request marshal with a 500.
+func TestParseJSONInput(t *testing.T) {
+	cases := map[string]struct{ in, want string }{
+		"empty":            {``, `{}`},
+		"empty object":     {`{}`, `{}`},
+		"valid keeps keys": {`{"z": 1, "a": {"b": true}}`, `{"z":1,"a":{"b":true}}`},
+	}
+	for name, arguments := range invalidToolArgumentCases {
+		cases[name] = struct{ in, want string }{arguments, `{}`}
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			if got := string(parseJSONInput(tc.in)); got != tc.want {
+				t.Errorf("parseJSONInput(%q) = %s, want %s", tc.in, got, tc.want)
+			}
+		})
+	}
+}
