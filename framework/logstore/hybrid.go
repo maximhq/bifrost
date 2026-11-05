@@ -2987,14 +2987,20 @@ func (h *HybridLogStore) UpsertComplexitySuggestionRun(ctx context.Context, run 
 	return h.inner.UpsertComplexitySuggestionRun(ctx, run)
 }
 
-// ListComplexitySuggestionRuns returns up to limit runs, newest first.
-func (h *HybridLogStore) ListComplexitySuggestionRuns(ctx context.Context, ids []string, limit int) ([]ComplexitySuggestionRun, error) {
-	return h.inner.ListComplexitySuggestionRuns(ctx, ids, limit)
+// ListComplexitySuggestionRuns returns up to limit of the selected runs,
+// newest first.
+func (h *HybridLogStore) ListComplexitySuggestionRuns(ctx context.Context, filter ComplexitySuggestionRunFilter, limit int) ([]ComplexitySuggestionRun, error) {
+	return h.inner.ListComplexitySuggestionRuns(ctx, filter, limit)
 }
 
-// PruneComplexitySuggestionRuns keeps the newest keep runs.
-func (h *HybridLogStore) PruneComplexitySuggestionRuns(ctx context.Context, keep int) (int64, error) {
-	return h.inner.PruneComplexitySuggestionRuns(ctx, keep)
+// PruneComplexitySuggestionRuns keeps one router's newest keep runs.
+func (h *HybridLogStore) PruneComplexitySuggestionRuns(ctx context.Context, routerID string, keep int) (int64, error) {
+	return h.inner.PruneComplexitySuggestionRuns(ctx, routerID, keep)
+}
+
+// DeleteComplexityRouterSuggestions removes a router's suggestions and runs.
+func (h *HybridLogStore) DeleteComplexityRouterSuggestions(ctx context.Context, routerID string) error {
+	return h.inner.DeleteComplexityRouterSuggestions(ctx, routerID)
 }
 
 // AddComplexityVectorDeletes records deleted logs whose captured vector delete

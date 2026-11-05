@@ -129,17 +129,22 @@ func TestComplexitySuggestionRuns(t *testing.T) {
 		base := warpTopicTestTime()
 		for i, id := range []string{"r1", "r2", "r3", "r4"} {
 			require.NoError(t, store.UpsertComplexitySuggestionRun(ctx, &ComplexitySuggestionRun{
-				ID: id, StartedAt: base.Add(time.Duration(i) * time.Hour), EmbeddingSignature: "sig",
+				ID: id, RouterID: "engineering", StartedAt: base.Add(time.Duration(i) * time.Hour), EmbeddingSignature: "sig",
 			}))
 		}
+		// Another router's run, older than all of them: pruning engineering
+		// down to two must not touch it.
+		require.NoError(t, store.UpsertComplexitySuggestionRun(ctx, &ComplexitySuggestionRun{
+			ID: "office-1", RouterID: "office", StartedAt: base.Add(-time.Hour), EmbeddingSignature: "sig",
+		}))
 		finished := base.Add(3*time.Hour + time.Minute)
 		require.NoError(t, store.UpsertComplexitySuggestionRun(ctx, &ComplexitySuggestionRun{
-			ID: "r4", StartedAt: base.Add(3 * time.Hour), TriggeredBy: ComplexitySuggestionTriggerManual,
+			ID: "r4", RouterID: "engineering", StartedAt: base.Add(3 * time.Hour), TriggeredBy: ComplexitySuggestionTriggerManual,
 			Status: ComplexitySuggestionRunSucceeded, FinishedAt: &finished, EmbeddingSignature: "sig",
 			Model: "openai/gpt-5", PromptHash: "abc123", RequestsRead: 900, Clusters: 30, Created: 4, Refreshed: 2, Superseded: 1, Cost: 0.0125,
 		}))
 
-		runs, err := store.ListComplexitySuggestionRuns(ctx, nil, 10)
+		runs, err := store.ListComplexitySuggestionRuns(ctx, ComplexitySuggestionRunFilter{RouterID: "engineering"}, 10)
 		require.NoError(t, err)
 		require.Len(t, runs, 4, "writing a run again replaces it")
 		assert.Equal(t, []string{"r4", "r3", "r2", "r1"}, []string{runs[0].ID, runs[1].ID, runs[2].ID, runs[3].ID}, "newest first")
@@ -154,27 +159,30 @@ func TestComplexitySuggestionRuns(t *testing.T) {
 		assert.Equal(t, ComplexitySuggestionTriggerSchedule, runs[1].TriggeredBy, "an unset trigger is the schedule")
 		assert.Nil(t, runs[1].FinishedAt)
 
-		one, err := store.ListComplexitySuggestionRuns(ctx, []string{"r2"}, 10)
+		one, err := store.ListComplexitySuggestionRuns(ctx, ComplexitySuggestionRunFilter{IDs: []string{"r2"}}, 10)
 		require.NoError(t, err)
 		require.Len(t, one, 1)
 		assert.Equal(t, "r2", one[0].ID)
-		_, err = store.ListComplexitySuggestionRuns(ctx, nil, 0)
+		_, err = store.ListComplexitySuggestionRuns(ctx, ComplexitySuggestionRunFilter{}, 0)
 		require.Error(t, err, "an unbounded read is refused")
 		require.Error(t, store.UpsertComplexitySuggestionRun(ctx, &ComplexitySuggestionRun{}), "a run needs an id")
 
-		deleted, err := store.PruneComplexitySuggestionRuns(ctx, 2)
+		deleted, err := store.PruneComplexitySuggestionRuns(ctx, "engineering", 2)
 		require.NoError(t, err)
 		assert.EqualValues(t, 2, deleted)
-		runs, err = store.ListComplexitySuggestionRuns(ctx, nil, 10)
+		runs, err = store.ListComplexitySuggestionRuns(ctx, ComplexitySuggestionRunFilter{RouterID: "engineering"}, 10)
 		require.NoError(t, err)
 		require.Len(t, runs, 2)
 		assert.Equal(t, "r4", runs[0].ID)
 		assert.Equal(t, "r3", runs[1].ID)
-		deleted, err = store.PruneComplexitySuggestionRuns(ctx, 2)
+		deleted, err = store.PruneComplexitySuggestionRuns(ctx, "engineering", 2)
 		require.NoError(t, err)
 		assert.Zero(t, deleted, "nothing beyond the newest keep")
-		_, err = store.PruneComplexitySuggestionRuns(ctx, 0)
+		_, err = store.PruneComplexitySuggestionRuns(ctx, "engineering", 0)
 		require.Error(t, err, "keeping nothing is refused")
+		office, err := store.ListComplexitySuggestionRuns(ctx, ComplexitySuggestionRunFilter{RouterID: "office"}, 10)
+		require.NoError(t, err)
+		require.Len(t, office, 1, "pruning one router leaves another's runs")
 	})
 }
 
@@ -261,7 +269,7 @@ func TestComplexitySuggestionsAreScopedToARouter(t *testing.T) {
 			ID: "run-eng", RouterID: "engineering", RouterVersion: "v3", StartedAt: warpTopicTestTime(), WindowStart: window,
 		}))
 		require.NoError(t, store.UpsertComplexitySuggestionRun(ctx, &ComplexitySuggestionRun{ID: "run-unwindowed", StartedAt: warpTopicTestTime()}))
-		runs, err := store.ListComplexitySuggestionRuns(ctx, []string{"run-eng", "run-unwindowed"}, 10)
+		runs, err := store.ListComplexitySuggestionRuns(ctx, ComplexitySuggestionRunFilter{IDs: []string{"run-eng", "run-unwindowed"}}, 10)
 		require.NoError(t, err)
 		require.Len(t, runs, 2)
 		byID := map[string]ComplexitySuggestionRun{runs[0].ID: runs[0], runs[1].ID: runs[1]}
@@ -269,5 +277,31 @@ func TestComplexitySuggestionsAreScopedToARouter(t *testing.T) {
 		assert.Equal(t, "v3", byID["run-eng"].RouterVersion)
 		assert.True(t, byID["run-eng"].WindowStart.Equal(window))
 		assert.True(t, byID["run-unwindowed"].WindowStart.Equal(warpTopicTestTime()), "an unset window starts with the run")
+	})
+}
+
+// Deleting a router removes its suggestions and runs and nothing of another
+// router's.
+func TestDeleteComplexityRouterSuggestions(t *testing.T) {
+	forEachComplexitySuggestionStore(t, func(t *testing.T, store LogStore) {
+		ctx := context.Background()
+		gone := testComplexitySuggestion(t, "gone", 5, []float32{1, 0})
+		gone.RouterID = "retired"
+		kept := testComplexitySuggestion(t, "kept", 5, []float32{1, 0})
+		kept.RouterID = "engineering"
+		require.NoError(t, store.UpsertComplexitySuggestions(ctx, []ComplexitySuggestion{gone, kept}))
+		require.NoError(t, store.UpsertComplexitySuggestionRun(ctx, &ComplexitySuggestionRun{ID: "run-gone", RouterID: "retired"}))
+		require.NoError(t, store.UpsertComplexitySuggestionRun(ctx, &ComplexitySuggestionRun{ID: "run-kept", RouterID: "engineering"}))
+
+		require.NoError(t, store.DeleteComplexityRouterSuggestions(ctx, "retired"))
+		require.Error(t, store.DeleteComplexityRouterSuggestions(ctx, ""), "an empty router id would match every unscoped row")
+		rows, err := store.ListComplexitySuggestions(ctx, ComplexitySuggestionFilter{})
+		require.NoError(t, err)
+		require.Len(t, rows, 1)
+		assert.Equal(t, "kept", rows[0].ID)
+		runs, err := store.ListComplexitySuggestionRuns(ctx, ComplexitySuggestionRunFilter{}, 10)
+		require.NoError(t, err)
+		require.Len(t, runs, 1)
+		assert.Equal(t, "run-kept", runs[0].ID)
 	})
 }

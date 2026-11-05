@@ -2122,7 +2122,30 @@
 				"timezoneRequired": "Introduzca una zona horaria",
 				"timezoneUnknown": "No es una zona horaria conocida",
 				"modelRequired": "Seleccione un modelo para este proveedor",
-				"providerRequired": "Seleccione el proveedor de este modelo"
+				"providerRequired": "Seleccione el proveedor de este modelo",
+				"runDialogTitle": "Ejecutar sugerencias ahora",
+				"runDialogDescription": "Lee el tráfico capturado de este enrutador en la ventana que elijas y propone frases para él. Nada cambia hasta que aceptes y guardes.",
+				"runWindowLabel": "Ventana",
+				"runWindow": {
+					"24h": "Últimas 24 horas",
+					"7d": "Últimos 7 días",
+					"14d": "Últimos 14 días",
+					"30d": "Últimos 30 días"
+				},
+				"estimating": "Calculando…",
+				"estimateFailed": "No se pudo estimar la ejecución: {{error}}",
+				"estimateRequests_one": "{{formatted}} solicitud en la ventana",
+				"estimateRequests_other": "{{formatted}} solicitudes en la ventana",
+				"estimateClustered_one": "{{formatted}} se agrupa en clústeres; el resto se cuenta en ellos.",
+				"estimateClustered_other": "{{formatted}} se agrupan en clústeres; el resto se cuenta en ellos.",
+				"estimateSkipped_one": "{{formatted}} más supera el límite de la ejecución y no se cuenta.",
+				"estimateSkipped_other": "{{formatted}} más superan el límite de la ejecución y no se cuentan.",
+				"estimateModelCalls_one": "Como máximo {{formatted}} llamada al modelo de sugerencias",
+				"estimateModelCalls_other": "Como máximo {{formatted}} llamadas al modelo de sugerencias",
+				"runInBackground": "Se ejecuta en segundo plano dentro de tu gateway, fuera de la ruta de las solicitudes.",
+				"runStart": "Iniciar ejecución",
+				"stale": "Banco de frases anterior",
+				"staleTip": "Calculada antes del último cambio en las listas de frases. Pruébala con las frases actuales antes de añadirla."
 			}
 		},
 		"editDescription": "Actualizar la configuración de reglas de enrutamiento",

@@ -129,7 +129,7 @@ func newStore(t *testing.T) logstore.LogStore {
 }
 
 func settings(id string, now time.Time) Settings {
-	return Settings{RunID: id, TriggeredBy: logstore.ComplexitySuggestionTriggerSchedule, Now: now, Lookback: 7 * 24 * time.Hour,
+	return Settings{RunID: id, RouterID: "engineering", TriggeredBy: logstore.ComplexitySuggestionTriggerSchedule, Now: now, Lookback: 7 * 24 * time.Hour,
 		MaxClustered: 1000, MinClusterRequests: 6, Model: "openai/gpt-5", Seed: 1, Cost: func() float64 { return 0.02 }}
 }
 
@@ -207,7 +207,7 @@ func TestRunCreatesRefreshesAndSupersedes(t *testing.T) {
 	assert.Equal(t, logstore.ComplexitySuggestionStatusSuperseded, gone[0].Status)
 	require.NotNil(t, gone[0].ResolvedAt)
 
-	runs, err := store.ListComplexitySuggestionRuns(ctx, nil, 10)
+	runs, err := store.ListComplexitySuggestionRuns(ctx, logstore.ComplexitySuggestionRunFilter{RouterID: "engineering"}, 10)
 	require.NoError(t, err)
 	assert.Len(t, runs, 3)
 }
@@ -260,7 +260,7 @@ func TestRunFailures(t *testing.T) {
 
 	_, err = Run(ctx, space, store, texts, nil, settings("no-model", now))
 	require.ErrorContains(t, err, "no suggestion model")
-	runs, err := store.ListComplexitySuggestionRuns(ctx, []string{"no-model"}, 1)
+	runs, err := store.ListComplexitySuggestionRuns(ctx, logstore.ComplexitySuggestionRunFilter{IDs: []string{"no-model"}}, 1)
 	require.NoError(t, err)
 	require.Len(t, runs, 1)
 	assert.Equal(t, logstore.ComplexitySuggestionRunFailed, runs[0].Status)
@@ -272,4 +272,106 @@ func TestPromptHashFollowsThePrompt(t *testing.T) {
 	assert.Equal(t, PromptHash("", ""), PromptHash(suggest.DefaultInstructions(), complexity.DefaultLLMClassifierGuidance()), "empty means the shipped prompt")
 	assert.NotEqual(t, PromptHash("", ""), PromptHash("be brief", ""))
 	assert.NotEqual(t, PromptHash("", ""), PromptHash("", "SIMPLE means short"))
+}
+
+// A run reads and writes one router's suggestions: another router's, for the
+// same request type, are neither matched nor superseded, and every row it
+// writes names the router and the version it was computed against.
+func TestRunIsScopedToItsRouter(t *testing.T) {
+	ctx := context.Background()
+	store := newStore(t)
+	now := time.Date(2026, 11, 4, 3, 0, 0, 0, time.UTC)
+	space := &fakeSpace{live: []complexity.SuggestionPhrase{{Tier: "COMPLEX", Text: "write a poem", Vector: axis(5)}}}
+	space.add("refund", 0, 12, now.Add(-time.Hour))
+
+	office := logstore.ComplexitySuggestion{ID: "office-refund", RouterID: "office", Status: logstore.ComplexitySuggestionStatusOpen,
+		Tier: "MEDIUM", Category: "uncovered", Centroid: logstore.EncodeWarpVector(axis(0)), EmbeddingSignature: space.Namespace()}
+	require.NoError(t, office.SetPhrases([]string{"refund help"}))
+	require.NoError(t, store.UpsertComplexitySuggestions(ctx, []logstore.ComplexitySuggestion{office}))
+
+	s := settings("run-eng", now)
+	s.RouterVersion = "bank-v3"
+	result, err := Run(ctx, space, store, texts, &kindLLM{}, s)
+	require.NoError(t, err)
+	assert.EqualValues(t, 1, result.Run.Created, "the office router's row is not this router's to refresh")
+	assert.Equal(t, "engineering", result.Run.RouterID)
+	assert.Equal(t, "bank-v3", result.Run.RouterVersion)
+
+	eng, err := store.ListComplexitySuggestions(ctx, logstore.ComplexitySuggestionFilter{RouterID: "engineering"})
+	require.NoError(t, err)
+	require.Len(t, eng, 1)
+	assert.Equal(t, "bank-v3", eng[0].RouterVersion)
+	kept, err := store.ListComplexitySuggestions(ctx, logstore.ComplexitySuggestionFilter{RouterID: "office"})
+	require.NoError(t, err)
+	require.Len(t, kept, 1)
+	assert.Equal(t, logstore.ComplexitySuggestionStatusOpen, kept[0].Status, "another router's open suggestion is not superseded")
+
+	_, err = Run(ctx, space, store, texts, &kindLLM{}, Settings{RunID: "no-router", Lookback: time.Hour, MaxClustered: 10})
+	require.ErrorContains(t, err, "needs a router")
+}
+
+// A window shorter than the lookback reads only its own span, and the run
+// records where it started.
+func TestRunReadsItsWindow(t *testing.T) {
+	ctx := context.Background()
+	store := newStore(t)
+	now := time.Date(2026, 11, 4, 3, 0, 0, 0, time.UTC)
+	space := &fakeSpace{live: []complexity.SuggestionPhrase{{Tier: "COMPLEX", Text: "write a poem", Vector: axis(5)}}}
+	space.add("refund", 0, 12, now.Add(-time.Hour))
+	space.add("invoice", 1, 12, now.Add(-3*24*time.Hour))
+
+	s := settings("run-day", now)
+	s.Window = 24 * time.Hour
+	result, err := Run(ctx, space, store, texts, &kindLLM{}, s)
+	require.NoError(t, err)
+	assert.EqualValues(t, 12, result.Run.RequestsRead, "only the last day's requests")
+	assert.True(t, result.Run.WindowStart.Equal(now.Add(-24*time.Hour)))
+
+	s = settings("run-long", now)
+	s.Window = 30 * 24 * time.Hour
+	result, err = Run(ctx, space, store, texts, &kindLLM{}, s)
+	require.NoError(t, err)
+	assert.True(t, result.Run.WindowStart.Equal(now.Add(-7*24*time.Hour)), "a window past the lookback reads the lookback")
+}
+
+// listedTraffic is a traffic source other than the capture scan, as the logs
+// will be with several routers.
+type listedTraffic struct{ requests []complexity.CapturedRequest }
+
+func (l listedTraffic) EachRequest(_ context.Context, _, _ time.Time, fn func([]complexity.CapturedRequest) error) error {
+	return fn(l.requests)
+}
+
+func TestRunReadsTheTrafficItIsGiven(t *testing.T) {
+	ctx := context.Background()
+	store := newStore(t)
+	now := time.Date(2026, 11, 4, 3, 0, 0, 0, time.UTC)
+	space := &fakeSpace{live: []complexity.SuggestionPhrase{{Tier: "COMPLEX", Text: "write a poem", Vector: axis(5)}}}
+	space.add("refund", 0, 12, now.Add(-time.Hour)) // in the space, but not this router's
+	var mine []complexity.CapturedRequest
+	for j := range 9 {
+		mine = append(mine, complexity.CapturedRequest{LogID: fmt.Sprintf("invoice-%d", j), Vector: nearAxis(1, j), At: now.Add(-time.Hour)})
+	}
+	s := settings("run-listed", now)
+	s.Traffic = listedTraffic{mine}
+	result, err := Run(ctx, space, store, texts, &kindLLM{}, s)
+	require.NoError(t, err)
+	assert.EqualValues(t, 9, result.Run.RequestsRead)
+	rows, err := store.ListComplexitySuggestions(ctx, logstore.ComplexitySuggestionFilter{RouterID: "engineering"})
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	assert.Equal(t, []string{"where is my invoice"}, rows[0].Phrases())
+}
+
+func TestEstimateRunBoundsClusteringAndModelCalls(t *testing.T) {
+	s := Settings{MaxClustered: 1000, MinClusterRequests: 6}
+	small := EstimateRun(600, s)
+	assert.Equal(t, Estimate{Requests: 600, Clustered: 600, MaxModelCalls: 200}, small, "600 requests make at most 100 clusters of 6")
+
+	big := EstimateRun(15000, s)
+	assert.Equal(t, 1000, big.Clustered)
+	assert.Equal(t, 10000, big.Assigned, "assignment stops at ten times the clustered sample")
+	assert.Equal(t, 4000, big.Skipped)
+	assert.Equal(t, 2*DefaultMaxSuggestedClusters, big.MaxModelCalls, "never more clusters sent than the per-run bound")
+	assert.Zero(t, EstimateRun(0, s).MaxModelCalls)
 }

@@ -2122,7 +2122,30 @@
 				"timezoneRequired": "Saisissez un fuseau horaire",
 				"timezoneUnknown": "Fuseau horaire inconnu",
 				"modelRequired": "Sélectionnez un modèle pour ce fournisseur",
-				"providerRequired": "Sélectionnez le fournisseur de ce modèle"
+				"providerRequired": "Sélectionnez le fournisseur de ce modèle",
+				"runDialogTitle": "Lancer les suggestions maintenant",
+				"runDialogDescription": "Lit le trafic capturé de ce routeur sur la période choisie et propose des phrases. Rien ne change tant que vous n’acceptez pas et n’enregistrez pas.",
+				"runWindowLabel": "Période",
+				"runWindow": {
+					"24h": "24 dernières heures",
+					"7d": "7 derniers jours",
+					"14d": "14 derniers jours",
+					"30d": "30 derniers jours"
+				},
+				"estimating": "Estimation…",
+				"estimateFailed": "Impossible d’estimer l’exécution : {{error}}",
+				"estimateRequests_one": "{{formatted}} requête sur la période",
+				"estimateRequests_other": "{{formatted}} requêtes sur la période",
+				"estimateClustered_one": "{{formatted}} est regroupée en clusters ; les autres y sont comptées.",
+				"estimateClustered_other": "{{formatted}} sont regroupées en clusters ; les autres y sont comptées.",
+				"estimateSkipped_one": "{{formatted}} de plus dépasse la limite de l’exécution et n’est pas comptée.",
+				"estimateSkipped_other": "{{formatted}} de plus dépassent la limite de l’exécution et ne sont pas comptées.",
+				"estimateModelCalls_one": "Au plus {{formatted}} appel au modèle de suggestions",
+				"estimateModelCalls_other": "Au plus {{formatted}} appels au modèle de suggestions",
+				"runInBackground": "S’exécute en arrière-plan dans votre gateway, hors du chemin des requêtes.",
+				"runStart": "Lancer l’exécution",
+				"stale": "Ancienne base de phrases",
+				"staleTip": "Calculée avant la dernière modification des listes de phrases. Testez-la avec les phrases actuelles avant de l’ajouter."
 			}
 		},
 		"editDescription": "Mettez à jour la configuration de la règle de routage",

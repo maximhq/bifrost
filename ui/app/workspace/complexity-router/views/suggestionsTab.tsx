@@ -9,11 +9,11 @@ import { getErrorMessage } from "@/lib/store";
 import {
 	useGetComplexitySuggestionQuery,
 	useGetComplexitySuggestionsQuery,
-	useStartComplexitySuggestionRunMutation,
 	useUpdateComplexitySuggestionStatusMutation,
 } from "@/lib/store/apis/governanceApi";
 import {
 	COMPLEXITY_TIER_VALUES,
+	DEFAULT_COMPLEXITY_ROUTER_ID,
 	DecisionTier,
 	SUGGESTION_CATEGORIES,
 	Suggestion,
@@ -26,9 +26,12 @@ import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import PhraseTestDialog from "./phraseTestDialog";
+import RunNowDialog from "./runNowDialog";
 import { categoryCounts, filterSuggestions, StagedSuggestion } from "./suggestions.utils";
 
 interface Props {
+	// The router these suggestions belong to.
+	routerId?: string;
 	canUpdate: boolean;
 	// Whether the saved config has suggestions on; the form may differ until
 	// it is saved.
@@ -49,6 +52,7 @@ type ListTab = "open" | "dismissed";
 // stages its phrases into the draft phrase lists, where they can be edited or
 // taken back; the page's Save applies them and marks the suggestion accepted.
 export default function SuggestionsTab({
+	routerId = DEFAULT_COMPLEXITY_ROUTER_ID,
 	canUpdate,
 	enabled,
 	lookbackDays,
@@ -67,10 +71,13 @@ export default function SuggestionsTab({
 
 	// Polled only while a run is going, so its outcome replaces the spinner.
 	const [pollInterval, setPollInterval] = useState(0);
-	const { data, isLoading, error, refetch } = useGetComplexitySuggestionsQuery({ statuses: [listTab] }, { pollingInterval: pollInterval });
+	const { data, isLoading, error, refetch } = useGetComplexitySuggestionsQuery(
+		{ statuses: [listTab], routerId },
+		{ pollingInterval: pollInterval },
+	);
 	const running = data?.last_run?.status === "running";
 	useEffect(() => setPollInterval(running ? 5000 : 0), [running]);
-	const [startRun, { isLoading: isStarting }] = useStartComplexitySuggestionRunMutation();
+	const [runDialogOpen, setRunDialogOpen] = useState(false);
 	const [updateStatus] = useUpdateComplexitySuggestionStatusMutation();
 
 	const stagedIds = useMemo(() => new Set(staged.map((entry) => entry.id)), [staged]);
@@ -99,25 +106,21 @@ export default function SuggestionsTab({
 	};
 
 	const setStatus = (suggestion: Suggestion, status: "dismissed" | "open") => {
-		updateStatus({ id: suggestion.id, status })
+		updateStatus({ id: suggestion.id, status, routerId: suggestion.router_id })
 			.unwrap()
 			.then(() => {
 				toast.success(status === "dismissed" ? t("dismissed") : t("restored"), {
 					position: "top-right",
 					action:
 						status === "dismissed"
-							? { label: t("undo"), onClick: () => void updateStatus({ id: suggestion.id, status: "open" }) }
+							? {
+									label: t("undo"),
+									onClick: () => void updateStatus({ id: suggestion.id, status: "open", routerId: suggestion.router_id }),
+								}
 							: undefined,
 				});
 			})
 			.catch((err) => toast.error(t("statusFailed", { error: getErrorMessage(err) }), { position: "top-right" }));
-	};
-
-	const runNow = () => {
-		startRun()
-			.unwrap()
-			.then(() => toast.success(t("runStarted"), { position: "top-right" }))
-			.catch((err) => toast.error(t("runFailedToStart", { error: getErrorMessage(err) }), { position: "top-right" }));
 	};
 
 	// 503 means this deployment cannot keep suggestions (no log store); that is
@@ -142,11 +145,11 @@ export default function SuggestionsTab({
 							type="button"
 							variant="outline"
 							size="sm"
-							onClick={runNow}
-							disabled={isStarting || running}
+							onClick={() => setRunDialogOpen(true)}
+							disabled={running}
 							data-testid="complexity-suggestions-run-now-button"
 						>
-							{isStarting || running ? <LoaderCircle className="size-3.5 animate-spin" /> : <Play className="size-3.5" />}
+							{running ? <LoaderCircle className="size-3.5 animate-spin" /> : <Play className="size-3.5" />}
 							{running ? t("running") : t("runNow")}
 						</Button>
 					)}
@@ -274,6 +277,8 @@ export default function SuggestionsTab({
 				<StagedPanel staged={staged} tierLabel={tierLabel} canUpdate={canUpdate} onUnstage={onUnstage} onEdit={onEditStaged} />
 			</div>
 
+			<RunNowDialog open={runDialogOpen} onOpenChange={setRunDialogOpen} routerId={routerId} lookbackDays={lookbackDays} />
+
 			<PhraseTestDialog
 				suggestion={testing}
 				onOpenChange={(open) => !open && setTesting(null)}
@@ -342,6 +347,11 @@ function SuggestionRow({ suggestion, dismissed, canUpdate, atCap, tierLabel, onS
 								</span>
 							))}
 							<Badge variant="secondary">{tierLabel(suggestion.tier)}</Badge>
+							{suggestion.stale && (
+								<Badge variant="warning" title={t("staleTip")} data-testid={`complexity-suggestion-stale-${id}`}>
+									{t("stale")}
+								</Badge>
+							)}
 						</div>
 						<p className="text-muted-foreground flex items-center gap-1 text-xs">
 							<ChevronDown className={cn("size-3 transition-transform", open && "rotate-180")} />
@@ -421,7 +431,7 @@ function SuggestionRow({ suggestion, dismissed, canUpdate, atCap, tierLabel, onS
 						{suggestion.reason && <p className="text-muted-foreground italic">{suggestion.reason}</p>}
 						<p className="text-muted-foreground">{t("coverageLine", { percent: percent(suggestion.coverage) })}</p>
 					</div>
-					{open && <SuggestionExamples id={id} count={suggestion.request_count} />}
+					{open && <SuggestionExamples id={id} routerId={suggestion.router_id} count={suggestion.request_count} />}
 				</div>
 			</CollapsibleContent>
 		</Collapsible>
@@ -430,9 +440,9 @@ function SuggestionRow({ suggestion, dismissed, canUpdate, atCap, tierLabel, onS
 
 // SuggestionExamples reads the requests a suggestion came from, only once its
 // row is opened.
-function SuggestionExamples({ id, count }: { id: string; count: number }) {
+function SuggestionExamples({ id, routerId, count }: { id: string; routerId: string; count: number }) {
 	const { t } = useTranslation("models", { keyPrefix: "routing.complexityUi.suggestions" });
-	const { data, isLoading } = useGetComplexitySuggestionQuery(id);
+	const { data, isLoading } = useGetComplexitySuggestionQuery({ id, routerId });
 	const readable = (data?.examples ?? []).filter((example) => example.text);
 	const hidden = (data?.examples.length ?? 0) - readable.length;
 	return (

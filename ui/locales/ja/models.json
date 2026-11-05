@@ -2120,7 +2120,30 @@
 				"timezoneRequired": "タイムゾーンを入力してください",
 				"timezoneUnknown": "不明なタイムゾーンです",
 				"modelRequired": "このプロバイダーのモデルを選択してください",
-				"providerRequired": "このモデルのプロバイダーを選択してください"
+				"providerRequired": "このモデルのプロバイダーを選択してください",
+				"runDialogTitle": "今すぐ提案を実行",
+				"runDialogDescription": "選択した期間にこのルーターが受けたトラフィックを読み取り、フレーズを提案します。承認して保存するまで何も変わりません。",
+				"runWindowLabel": "期間",
+				"runWindow": {
+					"24h": "過去 24 時間",
+					"7d": "過去 7 日間",
+					"14d": "過去 14 日間",
+					"30d": "過去 30 日間"
+				},
+				"estimating": "見積もり中…",
+				"estimateFailed": "実行を見積もれませんでした: {{error}}",
+				"estimateRequests_one": "期間内のリクエスト {{formatted}} 件",
+				"estimateRequests_other": "期間内のリクエスト {{formatted}} 件",
+				"estimateClustered_one": "{{formatted}} 件をクラスタにまとめ、残りはそのクラスタに数えます。",
+				"estimateClustered_other": "{{formatted}} 件をクラスタにまとめ、残りはそのクラスタに数えます。",
+				"estimateSkipped_one": "さらに {{formatted}} 件は実行の上限を超えるため数えません。",
+				"estimateSkipped_other": "さらに {{formatted}} 件は実行の上限を超えるため数えません。",
+				"estimateModelCalls_one": "提案モデルの呼び出しは最大 {{formatted}} 回",
+				"estimateModelCalls_other": "提案モデルの呼び出しは最大 {{formatted}} 回",
+				"runInBackground": "ゲートウェイ内のバックグラウンドで、リクエストの経路の外で実行されます。",
+				"runStart": "実行を開始",
+				"stale": "以前のフレーズ集",
+				"staleTip": "フレーズリストが最後に変更される前に計算されました。追加する前に現在のフレーズでテストしてください。"
 			}
 		},
 		"editDescription": "ルーティングルールの設定を更新する",

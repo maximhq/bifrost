@@ -31,6 +31,7 @@ type SuggestionSpace struct {
 	Dimension           int
 	MessageHistoryCount int
 	MinSimilarity       float64 // the router's acceptance floor; 0 accepts any nearest phrase
+	Version             string  // the phrase bank served, as ServingVersion names it
 	Phrases             []SuggestionPhrase
 
 	semantic   *SemanticConfig
@@ -66,6 +67,7 @@ func (c *SemanticClassifier) SuggestionSpace(ctx context.Context) (*SuggestionSp
 		Dimension:           generation.dimension,
 		MessageHistoryCount: generation.semantic.MessageHistoryCount,
 		MinSimilarity:       generation.semantic.MinSimilarity,
+		Version:             servingVersion(generation.namespace),
 		semantic:            cloneSemanticConfig(generation.semantic),
 		embed:               generation.embed,
 		embedBatch:          embedBatch,
@@ -162,3 +164,11 @@ func (s *SuggestionSpace) Namespace() string { return s.CaptureNamespace }
 
 // LivePhrases returns the serving phrases.
 func (s *SuggestionSpace) LivePhrases() []SuggestionPhrase { return s.Phrases }
+
+// ServedVersion names the phrase bank the space was taken from.
+func (s *SuggestionSpace) ServedVersion() string { return s.Version }
+
+// CountCaptured counts the space's captured requests from from through to.
+func (s *SuggestionSpace) CountCaptured(ctx context.Context, from, to time.Time) (int, error) {
+	return CountCaptured(ctx, s.Store, s.CaptureNamespace, from, to)
+}

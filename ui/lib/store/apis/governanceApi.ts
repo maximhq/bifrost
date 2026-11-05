@@ -47,8 +47,11 @@ import {
 	PhraseTestRequest,
 	PhraseTestResult,
 	SemanticStatusInfo,
+	DEFAULT_COMPLEXITY_ROUTER_ID,
 	SuggestionDetail,
 	SuggestionRun,
+	SuggestionRunEstimate,
+	SuggestionRunWindow,
 	Suggestion,
 	SuggestionsList,
 	SuggestionStatus,
@@ -909,50 +912,67 @@ export const governanceApi = baseApi.injectEndpoints({
 			invalidatesTags: ["ComplexityAnalyzerConfig"],
 		}),
 
-		// Phrase suggestions
-		getComplexitySuggestions: builder.query<SuggestionsList, { statuses: SuggestionStatus[] }>({
-			query: ({ statuses }) => ({
+		// Phrase suggestions. Every call is about one router; routerId defaults
+		// to the gateway's one router until it can define several.
+		getComplexitySuggestions: builder.query<SuggestionsList, { statuses: SuggestionStatus[]; routerId?: string }>({
+			query: ({ statuses, routerId }) => ({
 				url: "/routing/complexity-suggestions",
 				method: "GET",
-				params: { status: statuses.join(",") },
+				params: { status: statuses.join(","), router_id: routerId ?? DEFAULT_COMPLEXITY_ROUTER_ID },
 			}),
 			// A config save changes whether suggestions are on and when they run.
 			providesTags: ["ComplexitySuggestions", "ComplexityAnalyzerConfig"],
 		}),
-		getComplexitySuggestion: builder.query<SuggestionDetail, string>({
-			query: (id) => ({
+		getComplexitySuggestion: builder.query<SuggestionDetail, { id: string; routerId?: string }>({
+			query: ({ id, routerId }) => ({
 				url: `/routing/complexity-suggestions/${encodeURIComponent(id)}`,
 				method: "GET",
+				params: { router_id: routerId ?? DEFAULT_COMPLEXITY_ROUTER_ID },
 			}),
-			providesTags: (_result, _error, id) => [{ type: "ComplexitySuggestions", id }],
+			providesTags: (_result, _error, { id }) => [{ type: "ComplexitySuggestions", id }],
 		}),
-		updateComplexitySuggestionStatus: builder.mutation<Suggestion, { id: string; status: Exclude<SuggestionStatus, "superseded"> }>({
-			query: ({ id, status }) => ({
+		updateComplexitySuggestionStatus: builder.mutation<
+			Suggestion,
+			{ id: string; status: Exclude<SuggestionStatus, "superseded">; routerId?: string }
+		>({
+			query: ({ id, status, routerId }) => ({
 				url: `/routing/complexity-suggestions/${encodeURIComponent(id)}/status`,
 				method: "PUT",
+				params: { router_id: routerId ?? DEFAULT_COMPLEXITY_ROUTER_ID },
 				body: { status },
 			}),
 			invalidatesTags: ["ComplexitySuggestions"],
 		}),
-		testComplexitySuggestionPhrases: builder.mutation<PhraseTestResult, PhraseTestRequest>({
-			query: (body) => ({
+		testComplexitySuggestionPhrases: builder.mutation<PhraseTestResult, PhraseTestRequest & { routerId?: string }>({
+			query: ({ routerId, ...body }) => ({
 				url: "/routing/complexity-suggestions/test",
 				method: "POST",
+				params: { router_id: routerId ?? DEFAULT_COMPLEXITY_ROUTER_ID },
 				body,
 			}),
 		}),
-		getComplexitySuggestionRuns: builder.query<{ runs: SuggestionRun[]; next_run_at?: string }, { limit?: number }>({
-			query: ({ limit }) => ({
+		getComplexitySuggestionRuns: builder.query<{ runs: SuggestionRun[]; next_run_at?: string }, { limit?: number; routerId?: string }>({
+			query: ({ limit, routerId }) => ({
 				url: "/routing/complexity-suggestions/runs",
 				method: "GET",
-				params: limit ? { limit } : undefined,
+				params: { router_id: routerId ?? DEFAULT_COMPLEXITY_ROUTER_ID, ...(limit ? { limit } : {}) },
 			}),
 			providesTags: ["ComplexitySuggestions"],
 		}),
-		startComplexitySuggestionRun: builder.mutation<{ run_id: string }, void>({
-			query: () => ({
+		getComplexitySuggestionRunEstimate: builder.query<SuggestionRunEstimate, { window: SuggestionRunWindow; routerId?: string }>({
+			query: ({ window, routerId }) => ({
+				url: "/routing/complexity-suggestions/runs/estimate",
+				method: "GET",
+				params: { router_id: routerId ?? DEFAULT_COMPLEXITY_ROUTER_ID, window },
+			}),
+			// Captured traffic grows by the minute; an estimate is read fresh.
+			keepUnusedDataFor: 0,
+		}),
+		startComplexitySuggestionRun: builder.mutation<{ run_id: string }, { window?: SuggestionRunWindow; routerId?: string }>({
+			query: ({ window, routerId }) => ({
 				url: "/routing/complexity-suggestions/runs",
 				method: "POST",
+				params: { router_id: routerId ?? DEFAULT_COMPLEXITY_ROUTER_ID, ...(window ? { window } : {}) },
 			}),
 			invalidatesTags: ["ComplexitySuggestions"],
 		}),
@@ -1032,6 +1052,7 @@ export const {
 	useUpdateComplexitySuggestionStatusMutation,
 	useTestComplexitySuggestionPhrasesMutation,
 	useGetComplexitySuggestionRunsQuery,
+	useGetComplexitySuggestionRunEstimateQuery,
 	useStartComplexitySuggestionRunMutation,
 
 	// Lazy queries

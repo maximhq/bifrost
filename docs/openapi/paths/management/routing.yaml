@@ -593,6 +593,13 @@ complexity-suggestions:
       - ManagementBearerAuth: []
       - BasicAuth: []
     parameters:
+      - name: router_id
+        in: query
+        required: false
+        description: The model router the suggestions belong to. Defaults to the gateway's one router, `default`; an unknown router is 404.
+        schema:
+          type: string
+          default: default
       - name: status
         in: query
         required: false
@@ -601,6 +608,12 @@ complexity-suggestions:
           type: string
           example: open,dismissed
     responses:
+      '404':
+        description: The model router does not exist
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
       '200':
         description: Suggestions retrieved
         content:
@@ -641,6 +654,13 @@ complexity-suggestion:
       - ManagementBearerAuth: []
       - BasicAuth: []
     parameters:
+      - name: router_id
+        in: query
+        required: false
+        description: The model router the suggestions belong to. Defaults to the gateway's one router, `default`; an unknown router is 404.
+        schema:
+          type: string
+          default: default
       - name: suggestion_id
         in: path
         required: true
@@ -687,6 +707,13 @@ complexity-suggestion-status:
       - ManagementBearerAuth: []
       - BasicAuth: []
     parameters:
+      - name: router_id
+        in: query
+        required: false
+        description: The model router the suggestions belong to. Defaults to the gateway's one router, `default`; an unknown router is 404.
+        schema:
+          type: string
+          default: default
       - name: suggestion_id
         in: path
         required: true
@@ -744,6 +771,14 @@ complexity-suggestion-test:
     security:
       - ManagementBearerAuth: []
       - BasicAuth: []
+    parameters:
+      - name: router_id
+        in: query
+        required: false
+        description: The model router the suggestions belong to. Defaults to the gateway's one router, `default`; an unknown router is 404.
+        schema:
+          type: string
+          default: default
     requestBody:
       required: true
       content:
@@ -803,6 +838,13 @@ complexity-suggestion-runs:
       - ManagementBearerAuth: []
       - BasicAuth: []
     parameters:
+      - name: router_id
+        in: query
+        required: false
+        description: The model router the suggestions belong to. Defaults to the gateway's one router, `default`; an unknown router is 404.
+        schema:
+          type: string
+          default: default
       - name: limit
         in: query
         required: false
@@ -812,6 +854,12 @@ complexity-suggestion-runs:
           maximum: 200
           default: 20
     responses:
+      '404':
+        description: The model router does not exist
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
       '200':
         description: Runs retrieved
         content:
@@ -857,7 +905,28 @@ complexity-suggestion-runs:
     security:
       - ManagementBearerAuth: []
       - BasicAuth: []
+    parameters:
+      - name: window
+        in: query
+        required: false
+        description: How much of the lookback the run reads, as hours or days (24h, 7d). Omitted reads the whole lookback; longer than the lookback is 400.
+        schema:
+          type: string
+          example: 7d
+      - name: router_id
+        in: query
+        required: false
+        description: The model router the suggestions belong to. Defaults to the gateway's one router, `default`; an unknown router is 404.
+        schema:
+          type: string
+          default: default
     responses:
+      '404':
+        description: The model router does not exist
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
       '202':
         description: Run started
         content:
@@ -867,6 +936,12 @@ complexity-suggestion-runs:
               properties:
                 run_id:
                   type: string
+      '400':
+        description: The window is not a duration, or is longer than the lookback
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
       '409':
         description: Suggestions are off, or a run is already queued or running
         content:
@@ -875,6 +950,73 @@ complexity-suggestion-runs:
               $ref: '../../openapi.yaml#/components/schemas/BifrostError'
       '503':
         description: Phrase suggestions are not available (no log store, or the routing plugin is not loaded)
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+
+complexity-suggestion-run-estimate:
+  get:
+    operationId: estimateComplexitySuggestionRun
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Governance:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Estimate a phrase suggestion run
+    description: |
+      Sizes a run of the router's current settings over a window without starting it: how many captured requests the window holds, how many would be clustered and how many counted into the clusters found, and at most how many suggestion-model calls the run would make. Only captured timestamps are read.
+    tags:
+      - Routing
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    parameters:
+      - name: router_id
+        in: query
+        required: false
+        description: The model router the suggestions belong to. Defaults to the gateway's one router, `default`; an unknown router is 404.
+        schema:
+          type: string
+          default: default
+      - name: window
+        in: query
+        required: false
+        description: Hours or days (24h, 7d); omitted is the whole lookback.
+        schema:
+          type: string
+          example: 7d
+    responses:
+      '200':
+        description: Run estimated
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/governance.yaml#/ComplexitySuggestionRunEstimate'
+      '400':
+        description: The window is not a duration, or is longer than the lookback
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+      '404':
+        description: The model router does not exist
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+      '409':
+        description: Suggestions are off for this router
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+      '503':
+        description: The router has no warmed phrase bank, or suggestions are not available
         content:
           application/json:
             schema:
