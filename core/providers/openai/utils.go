@@ -411,7 +411,7 @@ func defaultSupportsMidConversationSystem(model string) bool {
 }
 
 // wrapSystemReminder renders system text for a user turn, matching the Anthropic converter's fallback.
-// Text that already opens with <system-reminder>, as Claude Code sends it, is left as it is.
+// Text that already opens with <system-reminder>, as some clients send it, is left as it is.
 func wrapSystemReminder(text string) string {
 	if strings.HasPrefix(strings.TrimSpace(text), "<system-reminder>") {
 		return text

@@ -123,6 +123,39 @@ function runFilter(extraArgs, { expectExit = 0, source = SOURCE } = {}) {
 // Deterministic, only used to keep each case's output file distinct.
 const hash = (s) => [...s].reduce((a, c) => (a * 31 + c.charCodeAt(0)) | 0, 7);
 
+// ----- provider routing ------------------------------------------------------------------------
+
+// A groq/ model on the Anthropic route names "anthropic" only through its URL. The upstream call
+// goes to Groq, so an Anthropic-only run must leave the row to the groq partition.
+test("a groq/ model on the Anthropic route runs in the groq partition only", () => {
+  const name = "groq model on the anthropic route";
+  const source = join(WORK, "source-groq-route.json");
+  writeFileSync(
+    source,
+    JSON.stringify({
+      ...COLLECTION,
+      item: [
+        {
+          name: "Routes",
+          item: [
+            row(1),
+            {
+              name,
+              request: {
+                method: "POST",
+                url: "http://localhost:8080/anthropic/v1/messages",
+                body: { mode: "raw", raw: JSON.stringify({ model: "groq/qwen/qwen3.8-27b", messages: [] }) },
+              },
+            },
+          ],
+        },
+      ],
+    })
+  );
+  assert.ok(!runFilter(["--provider", "anthropic"], { source }).includes(name));
+  assert.ok(runFilter(["--provider", "groq"], { source }).includes(name));
+});
+
 // ----- the partition property ------------------------------------------------------------------
 
 // The one invariant the whole axis rests on. A sharded sweep that quietly tests less than an
