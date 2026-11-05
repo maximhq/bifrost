@@ -307954,6 +307954,68 @@
               }
             }
           ]
+        },
+        {
+          "name": "bedrock_mantle/anthropic.claude-fable-5-1 /v1/responses codex web search with tool search: web_search and code_interpreter are dropped, not rejected",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock_mantle/anthropic.claude-fable-5-1\",\"max_output_tokens\":128,\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":\"Say hello in one word.\"}],\"tools\":[{\"type\":\"tool_search\"},{\"type\":\"web_search\",\"external_web_access\":false},{\"type\":\"code_interpreter\",\"container\":{\"type\":\"auto\"}},{\"type\":\"function\",\"name\":\"get_weather\",\"description\":\"Get the current weather for a city\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]},\"defer_loading\":true}]}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "pm.test('codex web search Mantle: 200 (web_search and code_interpreter did not reach Mantle)', function () {",
+                  "  pm.expect(txt, 'Mantle rejected a server tool: ' + txt.slice(0, 600)).to.not.include('is not supported for this model');",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var tools = (rr && rr.tools) || [];",
+                  "var types = JSON.stringify(tools.map(function (t) { return t.type || ('fn:' + t.name); }));",
+                  "pm.test('codex web search Mantle: raw_request captured', function () {",
+                  "  pm.expect(rr, 'extra_fields.raw_request missing: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "});",
+                  "pm.test('codex web search Mantle: get_weather reached the provider', function () {",
+                  "  var weather = tools.filter(function (t) { return t.name === 'get_weather'; })[0];",
+                  "  pm.expect(weather, 'get_weather missing upstream: ' + types).to.be.an('object');",
+                  "});",
+                  "pm.test('codex web search Mantle: no web_search_* or code_execution_* tool sent, although the catalog marks the model supports_web_search', function () {",
+                  "  var server = tools.filter(function (t) { return /^(web_search|code_execution)/.test(String(t.type || '')); });",
+                  "  pm.expect(server, 'Mantle Claude serves neither server tool; both must be dropped: ' + types).to.be.empty;",
+                  "});"
+                ]
+              }
+            }
+          ]
         }
       ]
     },
