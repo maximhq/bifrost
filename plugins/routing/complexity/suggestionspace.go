@@ -30,6 +30,7 @@ type SuggestionSpace struct {
 	CaptureNamespace    string
 	Dimension           int
 	MessageHistoryCount int
+	MinSimilarity       float64 // the router's acceptance floor; 0 accepts any nearest phrase
 	Phrases             []SuggestionPhrase
 
 	semantic   *SemanticConfig
@@ -64,6 +65,7 @@ func (c *SemanticClassifier) SuggestionSpace(ctx context.Context) (*SuggestionSp
 		CaptureNamespace:    generation.captureNamespace,
 		Dimension:           generation.dimension,
 		MessageHistoryCount: generation.semantic.MessageHistoryCount,
+		MinSimilarity:       generation.semantic.MinSimilarity,
 		semantic:            cloneSemanticConfig(generation.semantic),
 		embed:               generation.embed,
 		embedBatch:          embedBatch,

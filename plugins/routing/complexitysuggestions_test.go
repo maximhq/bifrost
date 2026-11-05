@@ -16,6 +16,8 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/logstore"
+	"github.com/maximhq/bifrost/plugins/routing/complexity"
+	"github.com/maximhq/bifrost/plugins/routing/complexity/suggestrun"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -196,4 +198,43 @@ func TestComplexitySuggestionsJobWhenTurnedOff(t *testing.T) {
 	runs, err := store.ListComplexitySuggestionRuns(context.Background(), nil, 10)
 	require.NoError(t, err)
 	assert.Empty(t, runs)
+}
+
+// A run started by hand runs outside the schedule under a fresh UUID, is
+// recorded as manual, and is refused while another is in flight or when suggestions are off.
+func TestComplexitySuggestionsRunNow(t *testing.T) {
+	p, store, _ := suggestionPlugin(t)
+	ctx := context.Background()
+	runID, err := p.StartComplexitySuggestionRunNow(ctx)
+	require.NoError(t, err)
+	_, err = uuid.Parse(runID)
+	require.NoError(t, err, "a manual run ID is the run row's varchar(36) key, so a bare UUID; got %q", runID)
+	assert.Len(t, runID, 36)
+	run := waitForRun(t, store)
+	assert.Equal(t, runID, run.ID)
+	assert.Equal(t, logstore.ComplexitySuggestionTriggerManual, run.TriggeredBy)
+
+	queue := &recordingQueue{}
+	p.SetComplexitySuggestionJobs(queue, &inFlightJobs{job: &tables.TableSidekiqJob{ID: "busy"}})
+	_, err = p.StartComplexitySuggestionRunNow(ctx)
+	require.ErrorIs(t, err, ErrComplexitySuggestionRunInFlight)
+	assert.Empty(t, queue.ids)
+
+	require.NoError(t, p.storeComplexityAnalyzerConfig(captureTestConfig(nil)))
+	_, err = p.StartComplexitySuggestionRunNow(ctx)
+	require.ErrorIs(t, err, ErrComplexitySuggestionsOff)
+}
+
+// Testing a phrase uses the serving bank and the router's own floor.
+func TestComplexitySuggestionsTestPhrases(t *testing.T) {
+	p, _, _ := suggestionPlugin(t)
+	got, err := p.TestComplexitySuggestionPhrases(context.Background(),
+		[]complexity.SuggestionPhrase{{Tier: "COMPLEX", Text: "simple request"}},
+		[]suggestrun.TestExample{{LogID: "log-0", Text: "simple request"}})
+	require.NoError(t, err)
+	require.Len(t, got.Examples, 1)
+	assert.Equal(t, "SIMPLE", got.Examples[0].Current.Tier)
+	assert.Equal(t, "simple exemplar", got.Phrases[0].Nearest.Phrase, "the tested phrase duplicates a live one")
+	assert.InDelta(t, 1, got.Phrases[0].Nearest.Similarity, 1e-6)
+	assert.Equal(t, 1, p.ComplexitySuggestionMessageHistoryCount())
 }
