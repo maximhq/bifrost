@@ -22,8 +22,13 @@ import (
 //
 // Every fallback is "keep the field": a workspace can serve a model the datasheet has never
 // heard of, and a silent drop is worse than an upstream error the caller can read.
-// reasoning_effort and parallel_tool_calls are the exceptions — see resolveParamSupport.
+// reasoning_effort, parallel_tool_calls and the Anthropic-native fields are the exceptions —
+// see resolveParamSupport.
 type paramSupport struct {
+	safeguards        bool // safeguards
+	inferenceGeo      bool // inference_geo
+	fastMode          bool // speed
+	taskBudgets       bool // task_budget
 	reasoningEffort   bool // reasoning_effort
 	samplingParams    bool // temperature, top_p, top_k
 	toolChoice        bool // tool_choice
@@ -59,6 +64,12 @@ func resolveParamSupport(ctx *schemas.BifrostContext, model string) paramSupport
 		(caps.SupportsReasoning(false) && !isAnthropic)
 
 	return paramSupport{
+		// Anthropic-native fields gated as on the Anthropic hosts: the row decides, and without
+		// one the field is dropped because both surfaces are OpenAI-shaped and reject it.
+		safeguards:           caps.SupportsSafeguards(anthropic.DefaultSupportsSafeguards(schemas.Databricks, canonicalModel)),
+		inferenceGeo:         caps.SupportsInferenceGeo(false),
+		fastMode:             caps.SupportsFastMode(false),
+		taskBudgets:          caps.SupportsTaskBudgets(false),
 		anthropicThinking:    isAnthropic,
 		adaptiveOnlyThinking: caps.AdaptiveOnlyThinking(anthropic.DefaultAdaptiveOnlyThinking(canonicalModel)),
 		reasoningEffort: !caps.FieldUnsupported(schemas.FieldReasoningEffort,
@@ -78,14 +89,50 @@ func resolveParamSupport(ctx *schemas.BifrostContext, model string) paramSupport
 	}
 }
 
+// rejectsExtraParam reports whether an Anthropic-native field carried in ExtraParams must not
+// reach the wire. The Anthropic ingress puts every field the neutral parameters do not model
+// into ExtraParams, and Databricks forwards ExtraParams verbatim, so anything left here 400s
+// as "Extra inputs are not permitted". Any other key is the documented passthrough for
+// endpoint-specific knobs and is forwarded untouched.
+//
+// Fields with a datasheet flag follow the row. The rest have no flag that answers for this
+// wire: supports_prompt_caching and supports_context_editing are true on Claude-on-Databricks
+// rows even though the OpenAI-shaped surfaces reject the request fields, and the others are
+// gated by the code-side feature table on Anthropic hosts too.
+func (support paramSupport) rejectsExtraParam(name string) bool {
+	switch name {
+	case "safeguards":
+		return !support.safeguards
+	case "inference_geo":
+		return !support.inferenceGeo
+	case "speed":
+		return !support.fastMode
+	case "task_budget":
+		return !support.taskBudgets
+	case "context_management", "cache_control", "container", "diagnostics", "fallbacks", "fallback_credit_token":
+		return true
+	}
+	return false
+}
+
+// hasRejectedExtraParam reports whether extraParams carries a field rejectsExtraParam drops.
+func (support paramSupport) hasRejectedExtraParam(extraParams map[string]any) bool {
+	for name := range extraParams {
+		if support.rejectsExtraParam(name) {
+			return true
+		}
+	}
+	return false
+}
+
 // stripUnsupportedChatFields removes request fields the resolved Databricks model rejects.
 // Work on a copy because the original request may be reused by fallbacks and post-hooks.
 //
-// The Anthropic-native knobs are dropped unconditionally rather than per model. They are
-// carried on the neutral chat parameters and serialize straight onto the wire, but both
-// Databricks surfaces speak OpenAI shapes that reject them whichever model backs the
-// endpoint — a fact about the surface, not a model capability. context_management is the one
-// that surfaced first, as a 400 on Claude Code requests.
+// context_management, cache_control, container and mcp_servers are dropped whatever the model:
+// they serialize straight onto the wire, but both Databricks surfaces speak OpenAI shapes that
+// reject them, a fact about the surface and not a model capability. context_management is the
+// one that surfaced first, as a 400 on Claude Code requests. See rejectsExtraParam for the
+// fields a datasheet row can enable.
 func stripUnsupportedChatFields(ctx *schemas.BifrostContext, request *schemas.BifrostChatRequest) *schemas.BifrostChatRequest {
 	if request == nil || request.Params == nil {
 		return request
@@ -93,10 +140,12 @@ func stripUnsupportedChatFields(ctx *schemas.BifrostContext, request *schemas.Bi
 	params := request.Params
 	support := resolveParamSupport(ctx, request.Model)
 
-	_, hasExtraContextManagement := params.ExtraParams["context_management"]
-	dropAnthropicFields := len(params.ContextManagement) > 0 || hasExtraContextManagement ||
-		params.CacheControl != nil || params.Speed != nil || params.InferenceGeo != nil ||
-		params.TaskBudget != nil || params.Container != nil || len(params.MCPServers) > 0
+	dropExtraParams := support.hasRejectedExtraParam(params.ExtraParams)
+	dropAnthropicFields := len(params.ContextManagement) > 0 || params.CacheControl != nil ||
+		params.Container != nil || len(params.MCPServers) > 0
+	dropSpeed := !support.fastMode && params.Speed != nil
+	dropInferenceGeo := !support.inferenceGeo && params.InferenceGeo != nil
+	dropTaskBudget := !support.taskBudgets && params.TaskBudget != nil
 
 	_, hasExtraReasoningEffort := params.ExtraParams["reasoning_effort"]
 	hasReasoningEffort := hasExtraReasoningEffort || (params.Reasoning != nil &&
@@ -120,9 +169,9 @@ func stripUnsupportedChatFields(ctx *schemas.BifrostContext, request *schemas.Bi
 		thinking, thinkingMaxTokens = thinkingParam(support, params)
 	}
 
-	if !dropAnthropicFields && !dropReasoningEffort && !dropSamplingParams && !dropToolChoice &&
-		!dropParallelToolCalls && !dropResponseFormat && !dropStop && !dropPresencePenalty &&
-		!dropFrequencyPenalty {
+	if !dropExtraParams && !dropAnthropicFields && !dropSpeed && !dropInferenceGeo && !dropTaskBudget &&
+		!dropReasoningEffort && !dropSamplingParams && !dropToolChoice && !dropParallelToolCalls &&
+		!dropResponseFormat && !dropStop && !dropPresencePenalty && !dropFrequencyPenalty {
 		return request
 	}
 
@@ -144,11 +193,17 @@ func stripUnsupportedChatFields(ctx *schemas.BifrostContext, request *schemas.Bi
 	if dropAnthropicFields {
 		paramsCopy.ContextManagement = nil
 		paramsCopy.CacheControl = nil
-		paramsCopy.Speed = nil
-		paramsCopy.InferenceGeo = nil
-		paramsCopy.TaskBudget = nil
 		paramsCopy.Container = nil
 		paramsCopy.MCPServers = nil
+	}
+	if dropSpeed {
+		paramsCopy.Speed = nil
+	}
+	if dropInferenceGeo {
+		paramsCopy.InferenceGeo = nil
+	}
+	if dropTaskBudget {
+		paramsCopy.TaskBudget = nil
 	}
 	if dropReasoningEffort && paramsCopy.Reasoning != nil {
 		reasoningCopy := *paramsCopy.Reasoning
@@ -181,13 +236,10 @@ func stripUnsupportedChatFields(ctx *schemas.BifrostContext, request *schemas.Bi
 	if dropFrequencyPenalty {
 		paramsCopy.FrequencyPenalty = nil
 	}
-	// Only the extra-param spellings of fields dropped above are removed. Everything else in
-	// ExtraParams is the documented passthrough for endpoint-specific knobs Bifrost does not
-	// model, so it is forwarded untouched.
-	if paramsCopy.ExtraParams != nil && (dropAnthropicFields || dropReasoningEffort) {
+	if paramsCopy.ExtraParams != nil && (dropExtraParams || dropReasoningEffort) {
 		paramsCopy.ExtraParams = maps.Clone(paramsCopy.ExtraParams)
-		if dropAnthropicFields {
-			delete(paramsCopy.ExtraParams, "context_management")
+		if dropExtraParams {
+			maps.DeleteFunc(paramsCopy.ExtraParams, func(name string, _ any) bool { return support.rejectsExtraParam(name) })
 		}
 		if dropReasoningEffort {
 			delete(paramsCopy.ExtraParams, "reasoning_effort")
@@ -285,8 +337,8 @@ func stripUnsupportedResponsesFields(ctx *schemas.BifrostContext, request *schem
 	params := request.Params
 	support := resolveParamSupport(ctx, request.Model)
 
-	_, hasExtraContextManagement := params.ExtraParams["context_management"]
-	dropContextManagement := len(params.ContextManagement) > 0 || hasExtraContextManagement
+	dropExtraParams := support.hasRejectedExtraParam(params.ExtraParams)
+	dropContextManagement := len(params.ContextManagement) > 0
 
 	_, hasExtraReasoningEffort := params.ExtraParams["reasoning_effort"]
 	hasReasoningEffort := hasExtraReasoningEffort || (params.Reasoning != nil &&
@@ -298,8 +350,8 @@ func stripUnsupportedResponsesFields(ctx *schemas.BifrostContext, request *schem
 	dropParallelToolCalls := !support.parallelToolCalls && params.ParallelToolCalls != nil
 	dropTextFormat := !support.responseSchema && params.Text != nil && params.Text.Format != nil
 
-	if !dropContextManagement && !dropReasoningEffort && !dropSamplingParams && !dropToolChoice &&
-		!dropParallelToolCalls && !dropTextFormat {
+	if !dropExtraParams && !dropContextManagement && !dropReasoningEffort && !dropSamplingParams &&
+		!dropToolChoice && !dropParallelToolCalls && !dropTextFormat {
 		return request
 	}
 
@@ -328,10 +380,10 @@ func stripUnsupportedResponsesFields(ctx *schemas.BifrostContext, request *schem
 		textCopy.Format = nil
 		paramsCopy.Text = &textCopy
 	}
-	if paramsCopy.ExtraParams != nil && (dropContextManagement || dropReasoningEffort) {
+	if paramsCopy.ExtraParams != nil && (dropExtraParams || dropReasoningEffort) {
 		paramsCopy.ExtraParams = maps.Clone(paramsCopy.ExtraParams)
-		if dropContextManagement {
-			delete(paramsCopy.ExtraParams, "context_management")
+		if dropExtraParams {
+			maps.DeleteFunc(paramsCopy.ExtraParams, func(name string, _ any) bool { return support.rejectsExtraParam(name) })
 		}
 		if dropReasoningEffort {
 			delete(paramsCopy.ExtraParams, "reasoning_effort")
