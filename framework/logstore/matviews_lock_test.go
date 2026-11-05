@@ -309,15 +309,6 @@ func TestMatViewRefreshTickSkippedWhileMigrating(t *testing.T) {
 	assert.False(t, ready.Load(), "a skipped tick must not mark the matviews ready")
 }
 
-// refreshBackendCount counts sessions running a REFRESH MATERIALIZED VIEW.
-func refreshBackendCount(t *testing.T, db *gorm.DB) int {
-	t.Helper()
-	var n int
-	require.NoError(t, db.Raw(`SELECT count(*) FROM pg_stat_activity
-		WHERE state = 'active' AND ltrim(query) ILIKE 'REFRESH MATERIALIZED VIEW%'`).Scan(&n).Error)
-	return n
-}
-
 // backendAlive reports whether the backend with pid still exists.
 func backendAlive(t *testing.T, db *gorm.DB, pid int) bool {
 	t.Helper()
@@ -477,7 +468,13 @@ func TestCloseCancelsRunningMatViewRefresh(t *testing.T) {
 		defer cancel()
 		passErr <- refreshMatViewsLimited(ctx, storeDB, 0, store.matViewLimits)
 	}))
-	require.Eventually(t, func() bool { return refreshBackendCount(t, observer) == 1 },
+	// Observe this test's blocked refresh, not another package's maintenance.
+	var refreshPID int
+	require.Eventually(t, func() bool {
+		return observer.Raw(`SELECT pid FROM pg_stat_activity
+			WHERE datname = current_database() AND state = 'active'
+			AND query = 'REFRESH MATERIALIZED VIEW CONCURRENTLY mv_logs_hourly'`).Scan(&refreshPID).Error == nil && refreshPID != 0
+	},
 		10*time.Second, 50*time.Millisecond, "the refresh must be running before Close")
 
 	started := time.Now()
@@ -487,7 +484,9 @@ func TestCloseCancelsRunningMatViewRefresh(t *testing.T) {
 	err := <-passErr
 	require.Error(t, err)
 	require.True(t, errors.Is(err, context.Canceled) || errors.Is(store.maintenanceCtx.Err(), context.Canceled))
-	require.Zero(t, refreshBackendCount(t, observer), "no REFRESH may keep running after Close")
+	// The driver's cancellation cleanup is asynchronous; the blocked backend must still exit promptly.
+	require.Eventually(t, func() bool { return !backendAlive(t, observer, refreshPID) },
+		5*time.Second, 50*time.Millisecond, "the refresh backend must exit after Close")
 	other := awaitTestAdvisoryLock(t, db, matviewRefreshAdvisoryLockKey, 5*time.Second)
 	releaseTestAdvisoryLock(t, other, matviewRefreshAdvisoryLockKey)
 
