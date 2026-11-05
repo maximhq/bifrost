@@ -80,11 +80,12 @@ A virtual key is required; Enterprise SSO tokens are not persisted. See
 
 ## Configure Codex manually with a virtual key
 
-<Warning>
-Codex prefers an existing OpenAI OAuth session over custom API credentials. Run
-`/logout` before using a manually configured Bifrost provider. This is not
-required for `bifrost run codex`, which uses an isolated temporary home.
-</Warning>
+<Note>
+An existing ChatGPT or OpenAI login does not need `/logout`. With
+`requires_openai_auth = false`, Codex authenticates the `bifrost` provider with
+its own key (`env_key` here, or `experimental_bearer_token` when written by
+`bifrost configure codex`) and leaves the login in `auth.json` for other providers.
+</Note>
 
 Export the virtual key in the same terminal used to start Codex:
 

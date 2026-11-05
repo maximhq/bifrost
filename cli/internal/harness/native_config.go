@@ -1,6 +1,7 @@
 package harness
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
@@ -543,7 +544,11 @@ func readNativeJSON(path string) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := sonic.Unmarshal(normalizeJSONC(body), &settings); err != nil {
+	normalized := normalizeJSONC(body)
+	if len(bytes.TrimSpace(normalized)) == 0 {
+		return settings, nil
+	}
+	if err := sonic.Unmarshal(normalized, &settings); err != nil {
 		return nil, fmt.Errorf("parse %s: %w", path, err)
 	}
 	if settings == nil {

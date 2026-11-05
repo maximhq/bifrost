@@ -432,7 +432,7 @@
         "tags": [
           "Config"
         ],
-        "x-source": "OSS:transports/handlers/config.go"
+        "x-source": "OSS:transports/bifrost-http/handlers/config.go"
       }
     },
     "/api/devices": {
@@ -609,7 +609,7 @@
         "tags": [
           "Feature Flags"
         ],
-        "x-source": "OSS:transports/handlers/featureflags.go"
+        "x-source": "OSS:transports/bifrost-http/handlers/featureflags.go"
       }
     },
     "/api/feature-flags/{id}": {
@@ -619,7 +619,7 @@
         "tags": [
           "Feature Flags"
         ],
-        "x-source": "OSS:transports/handlers/featureflags.go"
+        "x-source": "OSS:transports/bifrost-http/handlers/featureflags.go"
       }
     },
     "/api/governance/budget-requests": {
@@ -1142,7 +1142,7 @@
         "tags": [
           "Logs"
         ],
-        "x-source": "OSS:transports/handlers/logging.go"
+        "x-source": "OSS:transports/bifrost-http/handlers/logging.go"
       },
       "post": {
         "operationId": "managementPostLogsUserAgentMappings",
@@ -1150,7 +1150,7 @@
         "tags": [
           "Logs"
         ],
-        "x-source": "OSS:transports/handlers/logging.go"
+        "x-source": "OSS:transports/bifrost-http/handlers/logging.go"
       }
     },
     "/api/logs/user-agent-mappings/{id}": {
@@ -1160,7 +1160,7 @@
         "tags": [
           "Logs"
         ],
-        "x-source": "OSS:transports/handlers/logging.go"
+        "x-source": "OSS:transports/bifrost-http/handlers/logging.go"
       },
       "delete": {
         "operationId": "managementDeleteLogsUserAgentMappingsId",
@@ -1168,7 +1168,7 @@
         "tags": [
           "Logs"
         ],
-        "x-source": "OSS:transports/handlers/logging.go"
+        "x-source": "OSS:transports/bifrost-http/handlers/logging.go"
       }
     },
     "/api/mcp-servers": {
@@ -1218,7 +1218,7 @@
         "tags": [
           "Mcp"
         ],
-        "x-source": "OSS:transports/handlers/mcp.go"
+        "x-source": "OSS:transports/bifrost-http/handlers/mcp.go"
       },
       "post": {
         "operationId": "managementPostMcpLibrary",
@@ -1226,7 +1226,7 @@
         "tags": [
           "Mcp"
         ],
-        "x-source": "OSS:transports/handlers/mcp.go"
+        "x-source": "OSS:transports/bifrost-http/handlers/mcp.go"
       }
     },
     "/api/mcp/library/filterdata": {
@@ -1236,7 +1236,7 @@
         "tags": [
           "Mcp"
         ],
-        "x-source": "OSS:transports/handlers/mcp.go"
+        "x-source": "OSS:transports/bifrost-http/handlers/mcp.go"
       }
     },
     "/api/mcp/library/force-sync": {
@@ -1246,7 +1246,7 @@
         "tags": [
           "Mcp"
         ],
-        "x-source": "OSS:transports/handlers/mcp.go"
+        "x-source": "OSS:transports/bifrost-http/handlers/mcp.go"
       }
     },
     "/api/mcp/library/{id}": {
@@ -1256,7 +1256,7 @@
         "tags": [
           "Mcp"
         ],
-        "x-source": "OSS:transports/handlers/mcp.go"
+        "x-source": "OSS:transports/bifrost-http/handlers/mcp.go"
       }
     },
     "/api/mcp/virtual-mcps/{id}/access-profiles": {
@@ -1276,7 +1276,7 @@
         "tags": [
           "Models"
         ],
-        "x-source": "OSS:transports/handlers/providers.go"
+        "x-source": "OSS:transports/bifrost-http/handlers/providers.go"
       }
     },
     "/api/network-trust": {
@@ -1312,7 +1312,7 @@
         "tags": [
           "Oauth2"
         ],
-        "x-source": "OSS:transports/handlers/mcpoauth2sessions.go"
+        "x-source": "OSS:transports/bifrost-http/handlers/mcpoauth2sessions.go"
       }
     },
     "/api/oauth2/sessions/{id}": {
@@ -1322,7 +1322,7 @@
         "tags": [
           "Oauth2"
         ],
-        "x-source": "OSS:transports/handlers/mcpoauth2sessions.go"
+        "x-source": "OSS:transports/bifrost-http/handlers/mcpoauth2sessions.go"
       }
     },
     "/api/plugins/loaded": {
@@ -1332,7 +1332,7 @@
         "tags": [
           "Plugins"
         ],
-        "x-source": "OSS:transports/handlers/plugins.go"
+        "x-source": "OSS:transports/bifrost-http/handlers/plugins.go"
       }
     },
     "/api/prompt-repo/deployments": {
@@ -1386,7 +1386,7 @@
         "tags": [
           "Providers"
         ],
-        "x-source": "OSS:transports/handlers/providers.go"
+        "x-source": "OSS:transports/bifrost-http/handlers/providers.go"
       }
     },
     "/api/providers/{provider}/refresh-models": {
@@ -1396,7 +1396,7 @@
         "tags": [
           "Providers"
         ],
-        "x-source": "OSS:transports/handlers/providers.go"
+        "x-source": "OSS:transports/bifrost-http/handlers/providers.go"
       }
     },
     "/api/scim/oauth/config": {

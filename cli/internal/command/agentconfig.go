@@ -40,13 +40,16 @@ type configSnapshot struct {
 	LinkTarget       string `json:"link_target,omitempty"`
 }
 
+// lookupConfigHarness resolves the agent configure writes; tests wrap its writer.
+var lookupConfigHarness = harness.Get
+
 // configureHarness explicitly writes reversible native configuration for an agent.
 func (r *Runner) configureHarness(env *environment, args []string) error {
 	if len(args) == 0 || args[0] == "--help" || args[0] == "-h" {
 		_, err := fmt.Fprint(r.Out, "Usage: bifrost configure <claude|codex|gemini|opencode|pi|antigravity> [--model MODEL] [--force]\n")
 		return err
 	}
-	agent, ok := harness.Get(args[0])
+	agent, ok := lookupConfigHarness(args[0])
 	if !ok || agent.WriteNativeConfig == nil {
 		return fmt.Errorf("agent %q does not support persistent Bifrost configuration", args[0])
 	}
@@ -206,6 +209,14 @@ func (r *Runner) unconfigureHarness(env *environment, args []string) error {
 		return fmt.Errorf("configuration receipt for %q in context %q does not match", agentID, env.ProfileID)
 	}
 	paths, err := nativeConfigPaths(agentID)
+	// The Antigravity profile depends on SHELL and ZDOTDIR, which may differ
+	// from configure time; only unconfigure trusts the validated recorded paths
+	// (and verifyConfiguredFiles still checks their configured hashes).
+	if agentID == "antigravity" && (err != nil || !receiptMatchesManifest(receipt, env.ProfileID, agentID, paths)) {
+		if recorded, ok := recordedAntigravityPaths(receipt); ok {
+			paths, err = recorded, nil
+		}
+	}
 	if err != nil {
 		return err
 	}
@@ -396,4 +407,20 @@ func receiptConfigPaths(agent string, paths []string, receipt *configReceipt) []
 		return legacy
 	}
 	return paths
+}
+
+// recordedAntigravityPaths returns the profile paths an earlier configure
+// recorded, so unconfigure can restore them after SHELL or ZDOTDIR changed.
+func recordedAntigravityPaths(receipt *configReceipt) ([]string, bool) {
+	if receipt == nil {
+		return nil, false
+	}
+	recorded := make([]string, len(receipt.Files))
+	for i, file := range receipt.Files {
+		recorded[i] = file.Path
+	}
+	if !harness.ValidRecordedAntigravityPaths(recorded) {
+		return nil, false
+	}
+	return recorded, true
 }
