@@ -102,6 +102,8 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 				ca_cert_pem: toSecretVarFormValue(provider.network_config?.ca_cert_pem as SecretVar | string | undefined),
 				stream_idle_timeout_in_seconds:
 					provider.network_config?.stream_idle_timeout_in_seconds ?? DefaultNetworkConfig.stream_idle_timeout_in_seconds,
+				list_models_timeout_in_seconds:
+					provider.network_config?.list_models_timeout_in_seconds ?? DefaultNetworkConfig.list_models_timeout_in_seconds,
 				keep_alive_timeout_in_seconds:
 					provider.network_config?.keep_alive_timeout_in_seconds ?? DefaultNetworkConfig.keep_alive_timeout_in_seconds,
 				max_conns_per_host: provider.network_config?.max_conns_per_host ?? DefaultNetworkConfig.max_conns_per_host,
@@ -155,6 +157,8 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 				ca_cert_pem: toOptionalSecretVarPayload(data.network_config?.ca_cert_pem),
 				stream_idle_timeout_in_seconds:
 					data.network_config?.stream_idle_timeout_in_seconds ?? DefaultNetworkConfig.stream_idle_timeout_in_seconds,
+				list_models_timeout_in_seconds:
+					data.network_config?.list_models_timeout_in_seconds ?? DefaultNetworkConfig.list_models_timeout_in_seconds,
 				keep_alive_timeout_in_seconds:
 					data.network_config?.keep_alive_timeout_in_seconds ?? DefaultNetworkConfig.keep_alive_timeout_in_seconds,
 				max_conns_per_host: data.network_config?.max_conns_per_host ?? DefaultNetworkConfig.max_conns_per_host,
@@ -194,6 +198,8 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 				ca_cert_pem: toSecretVarFormValue(provider.network_config?.ca_cert_pem as SecretVar | string | undefined),
 				stream_idle_timeout_in_seconds:
 					provider.network_config?.stream_idle_timeout_in_seconds ?? DefaultNetworkConfig.stream_idle_timeout_in_seconds,
+				list_models_timeout_in_seconds:
+					provider.network_config?.list_models_timeout_in_seconds ?? DefaultNetworkConfig.list_models_timeout_in_seconds,
 				keep_alive_timeout_in_seconds:
 					provider.network_config?.keep_alive_timeout_in_seconds ?? DefaultNetworkConfig.keep_alive_timeout_in_seconds,
 				max_conns_per_host: provider.network_config?.max_conns_per_host ?? DefaultNetworkConfig.max_conns_per_host,
@@ -462,6 +468,40 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 										</FormControl>
 										<FormDescription>
 											{field.value ? secondsToHumanReadable(field.value, t) : ""} {t("providers.network.keepAliveHelp")}
+										</FormDescription>
+										<FormMessage />
+									</FormItem>
+								)}
+							/>
+							<FormField
+								control={form.control}
+								name="network_config.list_models_timeout_in_seconds"
+								render={({ field }) => (
+									<FormItem className="flex-1">
+										<FormLabel>List Models Timeout (seconds)</FormLabel>
+										<FormControl>
+											<Input
+												data-testid="network-config-list-models-timeout-input"
+												placeholder="5"
+												{...field}
+												value={field.value === undefined || Number.isNaN(field.value) ? "" : field.value}
+												disabled={!hasUpdateProviderAccess}
+												onChange={(e) => {
+													const value = e.target.value;
+													if (value === "") {
+														field.onChange(undefined);
+														return;
+													}
+													const parsed = Number(value);
+													if (!Number.isNaN(parsed)) {
+														field.onChange(parsed);
+													}
+													form.trigger("network_config");
+												}}
+											/>
+										</FormControl>
+										<FormDescription>
+											{field.value ? secondsToHumanReadable(field.value) : ""} Timeout when polling this provider for models list in /v1/models (default: 5s).
 										</FormDescription>
 										<FormMessage />
 									</FormItem>
