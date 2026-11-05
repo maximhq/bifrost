@@ -23093,6 +23093,156 @@
               }
             },
             {
+              "name": "Bedrock: stop sequences omitted for DeepSeek V3.2 via /anthropic/v1/messages",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "anthropic-version",
+                    "value": "2023-06-01"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"bedrock/deepseek.v3.2\",\n  \"max_tokens\": 200,\n  \"messages\": [{\"role\":\"user\",\"content\":\"Count: one, two, three, four in lowercase\"}],\n  \"stop_sequences\": [\"</block>\"]\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/anthropic/v1/messages",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "anthropic",
+                    "v1",
+                    "messages"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// Converse rejects inferenceConfig.stopSequences for DeepSeek V3.2 with a 400. Claude Code's auto-mode",
+                      "// classifier sends stop_sequences on every call, so the gateway must omit the field rather than fail.",
+                      "pm.test('Status 200: stopSequences was not forwarded to Converse', function () {",
+                      "  pm.expect(pm.response.code, 'expected 200, got ' + pm.response.code + ': ' + pm.response.text()).to.equal(200);",
+                      "});",
+                      "pm.test('Anthropic message with text content', function () {",
+                      "  var j = pm.response.json();",
+                      "  pm.expect(j.type, pm.response.text()).to.equal('message');",
+                      "  var text = (j.content || []).filter(function (b) { return b.type === 'text'; }).map(function (b) { return b.text; }).join('');",
+                      "  pm.expect(text, 'no text content: ' + pm.response.text()).to.not.be.empty;",
+                      "});"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "Bedrock: stop sequences omitted for DeepSeek V3.2 via /v1/chat/completions",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"bedrock/deepseek.v3.2\",\n  \"max_tokens\": 200,\n  \"messages\": [{\"role\":\"user\",\"content\":\"Count: one, two, three, four in lowercase\"}],\n  \"stop\": [\"</block>\"]\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/v1/chat/completions",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "chat",
+                    "completions"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// Same Converse rejection on the chat route: stop must be omitted for DeepSeek V3.2, not forwarded.",
+                      "pm.test('Status 200: stopSequences was not forwarded to Converse', function () {",
+                      "  pm.expect(pm.response.code, 'expected 200, got ' + pm.response.code + ': ' + pm.response.text()).to.equal(200);",
+                      "});",
+                      "pm.test('Assistant content returned', function () {",
+                      "  var j = pm.response.json();",
+                      "  var m = (j.choices && j.choices[0] && j.choices[0].message) || {};",
+                      "  pm.expect(m.content, 'no assistant content: ' + pm.response.text()).to.be.a('string').and.not.empty;",
+                      "});"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "Bedrock: stop sequences still honored for Claude via /anthropic/v1/messages",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "anthropic-version",
+                    "value": "2023-06-01"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0\",\n  \"max_tokens\": 200,\n  \"messages\": [{\"role\":\"user\",\"content\":\"Count: one, two, three, four in lowercase. Output only the words.\"}],\n  \"stop_sequences\": [\"three\"]\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/anthropic/v1/messages",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "anthropic",
+                    "v1",
+                    "messages"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// Control for the DeepSeek omission: families that accept stopSequences on Converse must still get it.",
+                      "pm.test('Status 200', function () {",
+                      "  pm.expect(pm.response.code, 'expected 200, got ' + pm.response.code + ': ' + pm.response.text()).to.equal(200);",
+                      "});",
+                      "pm.test('Stop sequence: halted before stop token', function () {",
+                      "  var j = pm.response.json();",
+                      "  var c = (j.content || []).filter(function (b) { return b.type === 'text'; }).map(function (b) { return b.text; }).join('').toLowerCase();",
+                      "  pm.expect(c, 'the answer before the stop word is missing: ' + pm.response.text()).to.include('two');",
+                      "  pm.expect(c, 'stop token \"three\" leaked, so stopSequences did not reach Converse: ' + pm.response.text()).to.not.include('three');",
+                      "  pm.expect(c, 'text after the stop word leaked: ' + pm.response.text()).to.not.include('four');",
+                      "});"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
               "name": "Bedrock: parallel_tool_calls disabled",
               "request": {
                 "method": "POST",
@@ -308790,6 +308940,523 @@
                 "v1",
                 "chat",
                 "completions"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "304. Bedrock DeepSeek V3.2 DSML tag leak (dsml leak)",
+      "description": "DeepSeek V3.2 writes tool calls as DSML markup. Bedrock (Converse and Mantle) parses them into structured tool calls but leaves the opening tag `<｜DSML｜function_calls` at the end of the text before them, so Claude Code transcripts showed the tag instead of a clean sentence. Bifrost now strips that trailing tag on bedrock/ and bedrock_mantle/ for deepseek.v3.2, only when a parsed tool call follows (core/providers/bedrock/dsml.go). Cases cover both providers, the /anthropic route Claude Code uses (streaming and not) and /v1/chat/completions (the Converse chat stream loop). Each asserts a structured tool call is present and no `DSML` reaches the client. The Mantle chat case also asserts the raw upstream response still carries the tag, so it fails loudly if Bedrock stops leaking and the strip is no longer exercised. Azure, DeepSeek native and OpenRouter do not leak and are not covered here.",
+      "item": [
+        {
+          "name": "bedrock deepseek.v3.2 /anthropic/v1/messages dsml leak non-streaming",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('status is 200', function () { pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200); });",
+                  "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var blocks = body.content || [];",
+                  "pm.test('a structured tool call is returned', function () {",
+                  "  var calls = blocks.filter(function (b) { return b.type === 'tool_use'; });",
+                  "  pm.expect(calls.length, 'no tool_use block: ' + txt.slice(0, 400)).to.be.above(0);",
+                  "  pm.expect((calls[0].input || {}).command, 'tool_use without a command: ' + JSON.stringify(calls[0])).to.be.a('string');",
+                  "  pm.expect(body.stop_reason, 'stop_reason: ' + txt.slice(0, 300)).to.eql('tool_use');",
+                  "});",
+                  "pm.test('no leaked DSML tag in the text', function () {",
+                  "  blocks.forEach(function (b) {",
+                  "    if (b.type === 'text') { pm.expect(b.text || '', 'leaked tag reached the client: ' + JSON.stringify(b)).to.not.include('DSML'); }",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/deepseek.v3.2\",\n  \"max_tokens\": 800,\n  \"system\": \"You are a coding agent. Use the provided tools to act. Call tools; do not describe them.\",\n  \"tools\": [\n    {\n      \"name\": \"Bash\",\n      \"description\": \"Executes a bash command and returns its output.\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"command\": {\n            \"type\": \"string\"\n          },\n          \"description\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"command\"\n        ]\n      }\n    },\n    {\n      \"name\": \"Read\",\n      \"description\": \"Reads a file from the local filesystem.\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"file_path\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"file_path\"\n        ]\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"List the files in the current directory and then read README.md.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock deepseek.v3.2 /anthropic/v1/messages dsml leak streaming",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('status is 200', function () { pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200); });",
+                  "var text = '', calls = 0, stop = null;",
+                  "txt.split('\\n').forEach(function (line) {",
+                  "  if (line.indexOf('data:') !== 0) { return; }",
+                  "  var ev; try { ev = JSON.parse(line.slice(5)); } catch (e) { return; }",
+                  "  if (ev.type === 'content_block_delta' && ev.delta && ev.delta.type === 'text_delta') { text += ev.delta.text || ''; }",
+                  "  if (ev.type === 'content_block_start' && ev.content_block && ev.content_block.type === 'tool_use') { calls++; }",
+                  "  if (ev.type === 'message_delta' && ev.delta && ev.delta.stop_reason) { stop = ev.delta.stop_reason; }",
+                  "});",
+                  "pm.test('a structured tool call is streamed', function () {",
+                  "  pm.expect(calls, 'no tool_use content_block_start: ' + txt.slice(0, 600)).to.be.above(0);",
+                  "  pm.expect(stop, 'stop_reason').to.eql('tool_use');",
+                  "});",
+                  "pm.test('no leaked DSML tag anywhere in the stream', function () {",
+                  "  pm.expect(txt, 'leaked tag reached the client; streamed text: ' + JSON.stringify(text)).to.not.include('DSML');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/deepseek.v3.2\",\n  \"max_tokens\": 800,\n  \"system\": \"You are a coding agent. Use the provided tools to act. Call tools; do not describe them.\",\n  \"tools\": [\n    {\n      \"name\": \"Bash\",\n      \"description\": \"Executes a bash command and returns its output.\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"command\": {\n            \"type\": \"string\"\n          },\n          \"description\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"command\"\n        ]\n      }\n    },\n    {\n      \"name\": \"Read\",\n      \"description\": \"Reads a file from the local filesystem.\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"file_path\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"file_path\"\n        ]\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"List the files in the current directory and then read README.md.\"\n    }\n  ],\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock deepseek.v3.2 /v1/chat/completions dsml leak streaming",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('status is 200', function () { pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200); });",
+                  "var text = '', calls = 0, finish = null;",
+                  "txt.split('\\n').forEach(function (line) {",
+                  "  if (line.indexOf('data: {') !== 0) { return; }",
+                  "  var ev; try { ev = JSON.parse(line.slice(6)); } catch (e) { return; }",
+                  "  (ev.choices || []).forEach(function (c) {",
+                  "    var d = c.delta || {};",
+                  "    if (typeof d.content === 'string') { text += d.content; }",
+                  "    if (d.tool_calls && d.tool_calls.length) { calls += d.tool_calls.length; }",
+                  "    if (c.finish_reason) { finish = c.finish_reason; }",
+                  "  });",
+                  "});",
+                  "pm.test('a structured tool call is streamed', function () {",
+                  "  pm.expect(calls, 'no tool_calls delta: ' + txt.slice(0, 600)).to.be.above(0);",
+                  "  pm.expect(finish, 'finish_reason').to.eql('tool_calls');",
+                  "});",
+                  "pm.test('no leaked DSML tag anywhere in the stream', function () {",
+                  "  pm.expect(txt, 'leaked tag reached the client; streamed text: ' + JSON.stringify(text)).to.not.include('DSML');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/deepseek.v3.2\",\n  \"max_tokens\": 800,\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"You are a coding agent. Use the provided tools to act. Call tools; do not describe them.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"List the files in the current directory and then read README.md.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"Bash\",\n        \"description\": \"Executes a bash command and returns its output.\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"command\": {\n              \"type\": \"string\"\n            },\n            \"description\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"command\"\n          ]\n        }\n      }\n    },\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"Read\",\n        \"description\": \"Reads a file from the local filesystem.\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"file_path\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"file_path\"\n          ]\n        }\n      }\n    }\n  ],\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock_mantle deepseek.v3.2 /anthropic/v1/messages dsml leak non-streaming",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('status is 200', function () { pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200); });",
+                  "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var blocks = body.content || [];",
+                  "pm.test('a structured tool call is returned', function () {",
+                  "  var calls = blocks.filter(function (b) { return b.type === 'tool_use'; });",
+                  "  pm.expect(calls.length, 'no tool_use block: ' + txt.slice(0, 400)).to.be.above(0);",
+                  "  pm.expect((calls[0].input || {}).command, 'tool_use without a command: ' + JSON.stringify(calls[0])).to.be.a('string');",
+                  "  pm.expect(body.stop_reason, 'stop_reason: ' + txt.slice(0, 300)).to.eql('tool_use');",
+                  "});",
+                  "pm.test('no leaked DSML tag in the text', function () {",
+                  "  blocks.forEach(function (b) {",
+                  "    if (b.type === 'text') { pm.expect(b.text || '', 'leaked tag reached the client: ' + JSON.stringify(b)).to.not.include('DSML'); }",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock_mantle/deepseek.v3.2\",\n  \"max_tokens\": 800,\n  \"system\": \"You are a coding agent. Use the provided tools to act. Call tools; do not describe them.\",\n  \"tools\": [\n    {\n      \"name\": \"Bash\",\n      \"description\": \"Executes a bash command and returns its output.\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"command\": {\n            \"type\": \"string\"\n          },\n          \"description\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"command\"\n        ]\n      }\n    },\n    {\n      \"name\": \"Read\",\n      \"description\": \"Reads a file from the local filesystem.\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"file_path\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"file_path\"\n        ]\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"List the files in the current directory and then read README.md.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock_mantle deepseek.v3.2 /anthropic/v1/messages dsml leak streaming",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('status is 200', function () { pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200); });",
+                  "var text = '', calls = 0, stop = null;",
+                  "txt.split('\\n').forEach(function (line) {",
+                  "  if (line.indexOf('data:') !== 0) { return; }",
+                  "  var ev; try { ev = JSON.parse(line.slice(5)); } catch (e) { return; }",
+                  "  if (ev.type === 'content_block_delta' && ev.delta && ev.delta.type === 'text_delta') { text += ev.delta.text || ''; }",
+                  "  if (ev.type === 'content_block_start' && ev.content_block && ev.content_block.type === 'tool_use') { calls++; }",
+                  "  if (ev.type === 'message_delta' && ev.delta && ev.delta.stop_reason) { stop = ev.delta.stop_reason; }",
+                  "});",
+                  "pm.test('a structured tool call is streamed', function () {",
+                  "  pm.expect(calls, 'no tool_use content_block_start: ' + txt.slice(0, 600)).to.be.above(0);",
+                  "  pm.expect(stop, 'stop_reason').to.eql('tool_use');",
+                  "});",
+                  "pm.test('no leaked DSML tag anywhere in the stream', function () {",
+                  "  pm.expect(txt, 'leaked tag reached the client; streamed text: ' + JSON.stringify(text)).to.not.include('DSML');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock_mantle/deepseek.v3.2\",\n  \"max_tokens\": 800,\n  \"system\": \"You are a coding agent. Use the provided tools to act. Call tools; do not describe them.\",\n  \"tools\": [\n    {\n      \"name\": \"Bash\",\n      \"description\": \"Executes a bash command and returns its output.\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"command\": {\n            \"type\": \"string\"\n          },\n          \"description\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"command\"\n        ]\n      }\n    },\n    {\n      \"name\": \"Read\",\n      \"description\": \"Reads a file from the local filesystem.\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"file_path\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"file_path\"\n        ]\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"List the files in the current directory and then read README.md.\"\n    }\n  ],\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock_mantle deepseek.v3.2 /v1/chat/completions dsml leak non-streaming",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('status is 200', function () { pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200); });",
+                  "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var msg = (((body.choices || [])[0]) || {}).message || {};",
+                  "pm.test('a structured tool call is returned', function () {",
+                  "  pm.expect((msg.tool_calls || []).length, 'no tool_calls: ' + txt.slice(0, 400)).to.be.above(0);",
+                  "});",
+                  "pm.test('no leaked DSML tag in message content', function () {",
+                  "  pm.expect(String(msg.content || ''), 'leaked tag reached the client').to.not.include('DSML');",
+                  "});",
+                  "pm.test('upstream did send the tag (the case exercised the strip)', function () {",
+                  "  var raw = (body.extra_fields || {}).raw_response;",
+                  "  pm.expect(raw, 'raw_response missing; is allow_per_request_raw_override on? ' + txt.slice(0, 300)).to.exist;",
+                  "  pm.expect(typeof raw === 'string' ? raw : JSON.stringify(raw), 'Bedrock no longer leaks the tag; this case no longer exercises the strip').to.include('DSML');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-response",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock_mantle/deepseek.v3.2\",\n  \"max_tokens\": 800,\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"You are a coding agent. Use the provided tools to act. Call tools; do not describe them.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"List the files in the current directory and then read README.md.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"Bash\",\n        \"description\": \"Executes a bash command and returns its output.\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"command\": {\n              \"type\": \"string\"\n            },\n            \"description\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"command\"\n          ]\n        }\n      }\n    },\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"Read\",\n        \"description\": \"Reads a file from the local filesystem.\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"file_path\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"file_path\"\n          ]\n        }\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "305. Text kept alongside tool calls on the Responses to Chat fallback (text alongside tool calls)",
+      "description": "When a provider has no Responses API, Bifrost serves /anthropic and /v1/responses through Chat Completions and converts back. ChatMessage.ToResponsesMessages used to return early when an assistant message had tool calls, so the model's sentence before the call was dropped on non-streaming replies (streaming already kept it). The reverse conversion, ToChatMessages, also split a replayed turn with text and tool calls into two assistant messages, which made DeepSeek turn thinking off for a tool-call turn without reasoning (core/schemas/mux.go). bedrock_mantle/deepseek.v3.2 takes this fallback. The first two cases pin the reply direction on /anthropic and /v1/responses; the system prompt asks the model to say what it will do so the text is present. The third replays a text + tool_use turn and checks, via raw_request, that the provider receives one assistant message carrying both, followed by the tool result.",
+      "item": [
+        {
+          "name": "bedrock_mantle deepseek.v3.2 /anthropic/v1/messages text alongside tool calls non-streaming",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('status is 200', function () { pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200); });",
+                  "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var blocks = body.content || [];",
+                  "var toolAt = -1; blocks.forEach(function (b, i) { if (toolAt < 0 && b.type === 'tool_use') { toolAt = i; } });",
+                  "pm.test('a structured tool call is returned', function () {",
+                  "  pm.expect(toolAt, 'no tool_use block: ' + txt.slice(0, 400)).to.be.at.least(0);",
+                  "});",
+                  "pm.test('the model text is kept before the tool call', function () {",
+                  "  var spoken = blocks.slice(0, toolAt).filter(function (b) { return b.type === 'text' && String(b.text || '').trim() !== ''; });",
+                  "  pm.expect(spoken.length, 'text before the tool call was dropped: ' + JSON.stringify(blocks).slice(0, 500)).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock_mantle/deepseek.v3.2\",\n  \"max_tokens\": 800,\n  \"system\": \"You are a coding agent. Before calling a tool, say in one short sentence what you will do, then call it.\",\n  \"tools\": [\n    {\n      \"name\": \"Bash\",\n      \"description\": \"Executes a bash command and returns its output.\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"command\": {\n            \"type\": \"string\"\n          },\n          \"description\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"command\"\n        ]\n      }\n    },\n    {\n      \"name\": \"Read\",\n      \"description\": \"Reads a file from the local filesystem.\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"file_path\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"file_path\"\n        ]\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"List the files in the current directory and then read README.md.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock_mantle deepseek.v3.2 /v1/responses text alongside tool calls non-streaming",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('status is 200', function () { pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200); });",
+                  "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var out = body.output || [];",
+                  "var callAt = -1; out.forEach(function (o, i) { if (callAt < 0 && o.type === 'function_call') { callAt = i; } });",
+                  "pm.test('a function_call item is returned', function () {",
+                  "  pm.expect(callAt, 'no function_call item: ' + txt.slice(0, 400)).to.be.at.least(0);",
+                  "});",
+                  "pm.test('a message item with the model text precedes the function_call', function () {",
+                  "  var spoken = out.slice(0, callAt).filter(function (o) {",
+                  "    return o.type === 'message' && (o.content || []).some(function (c) { return c.type === 'output_text' && String(c.text || '').trim() !== ''; });",
+                  "  });",
+                  "  pm.expect(spoken.length, 'text before the function_call was dropped: ' + JSON.stringify(out).slice(0, 500)).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock_mantle/deepseek.v3.2\",\n  \"max_output_tokens\": 800,\n  \"instructions\": \"You are a coding agent. Before calling a tool, say in one short sentence what you will do, then call it.\",\n  \"input\": \"List the files in the current directory and then read README.md.\",\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"Bash\",\n      \"description\": \"Executes a bash command and returns its output.\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"command\": {\n            \"type\": \"string\"\n          },\n          \"description\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"command\"\n        ]\n      }\n    },\n    {\n      \"type\": \"function\",\n      \"name\": \"Read\",\n      \"description\": \"Reads a file from the local filesystem.\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"file_path\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"file_path\"\n        ]\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock_mantle deepseek.v3.2 /anthropic/v1/messages turn-2 history keeps text and tool call on one assistant message",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('status is 200', function () { pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200); });",
+                  "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('the replayed assistant turn reaches the provider as one message with text and tool call', function () {",
+                  "  pm.expect(rr, 'raw_request missing; is allow_per_request_raw_override on? ' + txt.slice(0, 300)).to.be.an('object');",
+                  "  var msgs = rr.messages || [];",
+                  "  var assistants = msgs.filter(function (m) { return m.role === 'assistant'; });",
+                  "  pm.expect(assistants.length, 'history split into several assistant messages: ' + JSON.stringify(msgs).slice(0, 600)).to.eql(1);",
+                  "  var a = assistants[0];",
+                  "  pm.expect(String(a.content || ''), 'assistant text dropped: ' + JSON.stringify(a)).to.include('list the files');",
+                  "  pm.expect((a.tool_calls || []).length, 'tool call missing on the text turn: ' + JSON.stringify(a)).to.eql(1);",
+                  "  var next = msgs[msgs.indexOf(a) + 1] || {};",
+                  "  pm.expect(next.role, 'tool result must follow the assistant turn: ' + JSON.stringify(msgs).slice(0, 600)).to.eql('tool');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock_mantle/deepseek.v3.2\",\n  \"max_tokens\": 800,\n  \"system\": \"You are a coding agent. Use the provided tools to act. Call tools; do not describe them.\",\n  \"tools\": [\n    {\n      \"name\": \"Bash\",\n      \"description\": \"Executes a bash command and returns its output.\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"command\": {\n            \"type\": \"string\"\n          },\n          \"description\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"command\"\n        ]\n      }\n    },\n    {\n      \"name\": \"Read\",\n      \"description\": \"Reads a file from the local filesystem.\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"file_path\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"file_path\"\n        ]\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"List the files in the current directory and then read README.md.\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"I will list the files first.\"\n        },\n        {\n          \"type\": \"tool_use\",\n          \"id\": \"toolu_harness_1\",\n          \"name\": \"Bash\",\n          \"input\": {\n            \"command\": \"ls -la\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"tool_result\",\n          \"tool_use_id\": \"toolu_harness_1\",\n          \"content\": \"total 16\\n-rw-r--r-- 1 u s 120 README.md\\n-rw-r--r-- 1 u s 300 main.go\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
               ]
             }
           }
