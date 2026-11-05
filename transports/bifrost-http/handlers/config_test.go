@@ -645,6 +645,53 @@ func TestUpdateConfig_ExtraFieldsPlacement(t *testing.T) {
 	assert.Equal(t, configtables.ExtraFieldsPlacementBody, stored())
 }
 
+// entity_access_profile_mode is copied only when sent, so a partial save keeps the stored mode,
+// and anything other than union/intersect is refused before any live mutation.
+func TestUpdateConfig_EntityAccessProfileMode(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := newRealOAuth2Store(t)
+	cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false)
+	require.NoError(t, store.UpdateClientConfig(bgCtx(), cfg.ClientConfig))
+	h := &ConfigHandler{store: cfg, configManager: stubConfigManager{}}
+	stored := func() configtables.EntityAccessProfileMode {
+		t.Helper()
+		persisted, err := store.GetClientConfig(bgCtx())
+		require.NoError(t, err)
+		return persisted.EntityAccessProfileMode
+	}
+	assert.False(t, cfg.ShouldIntersectEntityAccessProfiles(), "union until set")
+
+	intersect := putConfigCtx(`{"client_config":{"log_retention_days":8,"entity_access_profile_mode":"intersect"}}`)
+	h.updateConfig(intersect)
+	require.Equal(t, fasthttp.StatusOK, intersect.Response.StatusCode(), string(intersect.Response.Body()))
+	assert.True(t, cfg.ShouldIntersectEntityAccessProfiles())
+	assert.Equal(t, configtables.EntityAccessProfileModeIntersect, stored())
+
+	omitted := putConfigCtx(`{"client_config":{"log_retention_days":8}}`)
+	h.updateConfig(omitted)
+	require.Equal(t, fasthttp.StatusOK, omitted.Response.StatusCode(), string(omitted.Response.Body()))
+	assert.True(t, cfg.ShouldIntersectEntityAccessProfiles(), "an omitted field keeps the live value")
+	assert.Equal(t, configtables.EntityAccessProfileModeIntersect, stored(), "an omitted field keeps the stored value")
+
+	for _, body := range []string{
+		`{"client_config":{"log_retention_days":8,"entity_access_profile_mode":"restrictive"}}`,
+		`{"client_config":{"log_retention_days":8,"entity_access_profile_mode":""}}`,
+		`{"client_config":{"log_retention_days":8,"entity_access_profile_mode":null}}`,
+	} {
+		refused := putConfigCtx(body)
+		h.updateConfig(refused)
+		assert.Equal(t, fasthttp.StatusBadRequest, refused.Response.StatusCode(), "%s: %s", body, refused.Response.Body())
+		assert.True(t, cfg.ShouldIntersectEntityAccessProfiles(), "%s left the live value unchanged", body)
+		assert.Equal(t, configtables.EntityAccessProfileModeIntersect, stored(), "%s left the stored value unchanged", body)
+	}
+
+	union := putConfigCtx(`{"client_config":{"log_retention_days":8,"entity_access_profile_mode":"union"}}`)
+	h.updateConfig(union)
+	require.Equal(t, fasthttp.StatusOK, union.Response.StatusCode(), string(union.Response.Body()))
+	assert.False(t, cfg.ShouldIntersectEntityAccessProfiles())
+	assert.Equal(t, configtables.EntityAccessProfileModeUnion, stored())
+}
+
 // TestUpdateConfig_MCPOAuthPrivateAllowlist pins how PUT /api/config handles
 // mcp_oauth_private_allowlist: an authenticated admin sets it and it is
 // persisted; an omitted field keeps it; a caller admitted with auth bypassed
