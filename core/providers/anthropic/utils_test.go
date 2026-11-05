@@ -2026,6 +2026,52 @@ func TestStripUnsupportedAnthropicFields_ToolSearchGating(t *testing.T) {
 			t.Errorf("expected defer_loading to survive for Bedrock (ToolSearch=true via InvokeModel routing), got %v", req.Tools[0].DeferLoading)
 		}
 	})
+
+	t.Run("github_copilot_keeps_defer_loading", func(t *testing.T) {
+		// Copilot serves tool search without the beta header, so the body survives.
+		req := &AnthropicMessageRequest{
+			Model: "claude-opus-5.5",
+			Tools: []AnthropicTool{{Name: "search", DeferLoading: schemas.Ptr(true)}},
+		}
+		stripUnsupportedAnthropicFields(req, schemas.GithubCopilot, "claude-opus-5.5")
+		if req.Tools[0].DeferLoading == nil || !*req.Tools[0].DeferLoading {
+			t.Errorf("expected defer_loading to survive for GitHub Copilot, got %v", req.Tools[0].DeferLoading)
+		}
+	})
+}
+
+// TestToolSearchBetaHeaderPerProvider pins that GitHub Copilot serves tool search but answers
+// 400 "unsupported beta header(s): tool-search-tool-2025-10-19" to the header, whether Bifrost
+// derives it from defer_loading or the client (Claude Code) sends it.
+func TestToolSearchBetaHeaderPerProvider(t *testing.T) {
+	for provider, want := range map[schemas.ModelProvider]bool{
+		schemas.Anthropic:     true,
+		schemas.Vertex:        true,
+		schemas.GithubCopilot: false,
+	} {
+		t.Run(string(provider), func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(nil, time.Time{})
+			AddMissingBetaHeadersToContext(ctx, &AnthropicMessageRequest{
+				Tools: []AnthropicTool{{Name: "search", DeferLoading: schemas.Ptr(true)}},
+			}, provider)
+			var derived []string
+			if extraHeaders, ok := ctx.Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string); ok {
+				derived = extraHeaders[AnthropicBetaHeader]
+			}
+			if got := slices.Contains(derived, AnthropicToolSearchBetaHeader); got != want {
+				t.Errorf("derived from defer_loading = %v, want %v (headers %v)", got, want, derived)
+			}
+
+			forwarded := FilterBetaHeadersForProvider([]string{AnthropicToolSearchBetaHeader, AnthropicAdvancedToolUseBetaHeader}, provider)
+			if got := slices.Contains(forwarded, AnthropicToolSearchBetaHeader); got != want {
+				t.Errorf("client header forwarded = %v, want %v (got %v)", got, want, forwarded)
+			}
+			// Copilot serves tool search under advanced-tool-use, so that header must survive.
+			if provider == schemas.GithubCopilot && !slices.Contains(forwarded, AnthropicAdvancedToolUseBetaHeader) {
+				t.Errorf("advanced-tool-use must still be forwarded, got %v", forwarded)
+			}
+		})
+	}
 }
 
 // TestStripUnsupportedAnthropicFields_StrictGating covers the typed path for
@@ -4349,7 +4395,7 @@ func TestStripEmptyThinkingBlocks(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			out, err := StripEmptyThinkingBlocks([]byte(tt.input))
+			out, err := StripEmptyThinkingBlocks([]byte(tt.input), false)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -4417,7 +4463,7 @@ func TestStripEmptyThinkingBlocks_AllocationScaling(t *testing.T) {
 		b.WriteString(`]}`)
 		return b.Bytes()
 	}, func(body []byte) {
-		if _, err := StripEmptyThinkingBlocks(body); err != nil {
+		if _, err := StripEmptyThinkingBlocks(body, false); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 	})

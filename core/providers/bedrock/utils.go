@@ -4121,6 +4121,27 @@ func stripCachePointsFromBedrockRequest(req *BedrockConverseRequest) {
 	}
 }
 
+// stripNonTextCachePoints keeps a message cachePoint only directly after a text block, for
+// Nova, which 400s on one after a toolResult or image ("extraneous key [cachePoint] is not
+// permitted"). A cachePoint nested in a toolResult goes too.
+func stripNonTextCachePoints(req *BedrockConverseRequest) {
+	for i := range req.Messages {
+		content := req.Messages[i].Content
+		n := 0
+		for j := range content {
+			if content[j].CachePoint != nil && (n == 0 || content[n-1].Text == nil) {
+				continue
+			}
+			if tr := content[j].ToolResult; tr != nil {
+				tr.Content = slices.DeleteFunc(tr.Content, func(b BedrockContentBlock) bool { return b.CachePoint != nil })
+			}
+			content[n] = content[j]
+			n++
+		}
+		req.Messages[i].Content = content[:n]
+	}
+}
+
 // downgradeExtendedCacheTTLInBedrockRequest drops the 1h (extended) cache TTL to
 // the default for models that support cache points but not extended TTL (e.g. Nova),
 // which otherwise 400 with "Extended TTL prompt caching is only supported for
