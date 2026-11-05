@@ -788,8 +788,8 @@ func GroupPluginLogsByName(logs []PluginLogEntry) map[string][]PluginLogEntry {
 	return grouped
 }
 
-// NOTE: for custom plugin implementation dealing with streaming short circuit,
-// make sure to mark BifrostContextKeyStreamEndIndicator as true at the end of the stream.
+// Custom short-circuit stream producers should set BifrostStreamChunk.Finality
+// on every chunk instead of updating a shared stream-end indicator asynchronously.
 
 // LargePayloadMetadata holds routing-relevant metadata selectively extracted from large payloads.
 // This is used when the full request body is too large to parse (e.g., 400MB video upload).
@@ -2230,9 +2230,21 @@ type BifrostRoutingCall struct {
 	CountTowardBudgets bool `json:"count_toward_budgets,omitempty"`
 }
 
+// StreamChunkFinality identifies whether a short-circuit chunk ends its stream.
+// Unspecified preserves legacy context-based signaling. Producers using explicit
+// finality must mark every chunk, including non-final chunks, before sending it.
+type StreamChunkFinality uint8
+
+const (
+	StreamChunkFinalityUnspecified StreamChunkFinality = iota
+	StreamChunkFinalityNonFinal
+	StreamChunkFinalityFinal
+)
+
 // BifrostStreamChunk represents a stream of responses from the Bifrost system.
 // Either BifrostResponse or BifrostError will be non-nil.
 type BifrostStreamChunk struct {
+	Finality StreamChunkFinality `json:"-"` // Internal metadata; never serialized to provider or client JSON.
 	*BifrostTextCompletionResponse
 	*BifrostChatResponse
 	*BifrostResponsesStreamResponse

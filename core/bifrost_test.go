@@ -9309,3 +9309,310 @@ func TestVideo_ListResumesFromNativeCursor(t *testing.T) {
 		t.Fatalf("cursor = %+v (%v), want the third key", decoded, decodeErr)
 	}
 }
+
+// shortCircuitFinalityPlugin lets tests control producer scheduling independently
+// of the post-hook that observes a chunk's finality.
+type shortCircuitFinalityPlugin struct {
+	fakeRoutingPlugin
+	produce func(*schemas.BifrostContext) chan *schemas.BifrostStreamChunk
+	observe func(*schemas.BifrostContext, *schemas.BifrostResponse, *schemas.BifrostError)
+}
+
+func (p *shortCircuitFinalityPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	return req, &schemas.LLMPluginShortCircuit{Stream: p.produce(ctx.Root())}, nil
+}
+
+func (p *shortCircuitFinalityPlugin) PostLLMHook(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	if p.observe != nil {
+		p.observe(ctx, resp, err)
+	}
+	return resp, err, nil
+}
+
+func newShortCircuitFinalityClient(t testing.TB, p *shortCircuitFinalityPlugin) (*Bifrost, *schemas.BifrostContext) {
+	t.Helper()
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	account := NewMockAccount()
+	account.AddProvider(schemas.OpenAI, 1, 10)
+	client, err := Init(ctx, schemas.BifrostConfig{Account: account, LLMPlugins: []schemas.LLMPlugin{p}, Logger: NewDefaultLogger(schemas.LogLevelError)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { client.Shutdown(); ctx.Cancel() })
+	ctx.SetValue(schemas.BifrostContextKeyStreamStartTime, time.Now())
+	return client, ctx
+}
+
+func shortCircuitFinalityRequest() *schemas.BifrostRequest {
+	return &schemas.BifrostRequest{RequestType: schemas.ChatCompletionStreamRequest, ChatRequest: &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: "test-model"}}
+}
+
+func shortCircuitFinalityChunk(i int) *schemas.BifrostStreamChunk {
+	finality := schemas.StreamChunkFinalityNonFinal
+	if i == 2 {
+		finality = schemas.StreamChunkFinalityFinal
+	}
+	return &schemas.BifrostStreamChunk{Finality: finality, BifrostChatResponse: &schemas.BifrostChatResponse{ExtraFields: schemas.BifrostResponseExtraFields{ChunkIndex: i}}}
+}
+
+func TestShortCircuitStreamFinality(t *testing.T) {
+	for _, mode := range []string{"buffered", "asynchronous", "legacy-synchronous", "mixed-legacy"} {
+		t.Run(mode, func(t *testing.T) {
+			secondHook := make(chan struct{})
+			marked := make(chan struct{})
+			finals := []bool{}
+			p := &shortCircuitFinalityPlugin{fakeRoutingPlugin: fakeRoutingPlugin{name: "finality"}}
+			p.produce = func(ctx *schemas.BifrostContext) chan *schemas.BifrostStreamChunk {
+				if mode != "asynchronous" {
+					ch := make(chan *schemas.BifrostStreamChunk, 3)
+					for i := range 3 {
+						c := shortCircuitFinalityChunk(i)
+						if mode == "legacy-synchronous" || (mode == "mixed-legacy" && i == 2) {
+							c.Finality = schemas.StreamChunkFinalityUnspecified
+						}
+						ch <- c
+					}
+					close(ch)
+					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, mode != "legacy-synchronous")
+					return ch
+				}
+				ch := make(chan *schemas.BifrostStreamChunk)
+				go func() {
+					defer close(ch)
+					ch <- shortCircuitFinalityChunk(0)
+					ch <- shortCircuitFinalityChunk(1)
+					<-secondHook
+					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+					close(marked)
+					ch <- shortCircuitFinalityChunk(2)
+				}()
+				return ch
+			}
+			p.observe = func(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, _ *schemas.BifrostError) {
+				i := len(finals)
+				if i == 1 && mode == "asynchronous" {
+					close(secondHook)
+					<-marked
+				}
+				if mode == "legacy-synchronous" {
+					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, i == 2)
+				}
+				finals = append(finals, IsFinalChunk(ctx))
+				// Direct context readers (telemetry, JSON parser, custom plugins) must agree.
+				if final, _ := ctx.Value(schemas.BifrostContextKeyStreamEndIndicator).(bool); final != (i == 2) {
+					t.Errorf("chunk %d context final=%v", i, final)
+				}
+				if resp.GetExtraFields().RequestType != schemas.ChatCompletionStreamRequest {
+					t.Error("missing streaming request metadata")
+				}
+			}
+			client, ctx := newShortCircuitFinalityClient(t, p)
+			stream, err := client.tryStreamRequest(ctx, shortCircuitFinalityRequest(), 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if n := drainStream(stream); n != 3 {
+				t.Errorf("received %d chunks, want 3", n)
+			}
+			if !reflect.DeepEqual(finals, []bool{false, false, true}) {
+				t.Errorf("finality=%v, want [false false true]", finals)
+			}
+		})
+	}
+}
+
+func TestShortCircuitStreamDeliversBeforeNextChunk(t *testing.T) {
+	next := make(chan struct{})
+	defer close(next)
+	p := &shortCircuitFinalityPlugin{fakeRoutingPlugin: fakeRoutingPlugin{name: "finality"}}
+	p.produce = func(_ *schemas.BifrostContext) chan *schemas.BifrostStreamChunk {
+		ch := make(chan *schemas.BifrostStreamChunk)
+		go func() {
+			defer close(ch)
+			ch <- shortCircuitFinalityChunk(0)
+			<-next
+			ch <- shortCircuitFinalityChunk(2)
+		}()
+		return ch
+	}
+	client, ctx := newShortCircuitFinalityClient(t, p)
+	stream, err := client.tryStreamRequest(ctx, shortCircuitFinalityRequest(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case c := <-stream:
+		if c == nil || c.Finality != schemas.StreamChunkFinalityNonFinal {
+			t.Errorf("first chunk=%+v", c)
+		}
+	case <-time.After(time.Second):
+		ctx.Cancel()
+		t.Fatal("first chunk waited for the next chunk")
+	}
+	// Cleanup drains the producer after the deferred release above unblocks it.
+	ctx.Cancel()
+}
+
+func TestShortCircuitStreamFinalityTermination(t *testing.T) {
+	for _, kind := range []string{"nil-and-final", "empty", "error"} {
+		t.Run(kind, func(t *testing.T) {
+			finals := []bool{}
+			p := &shortCircuitFinalityPlugin{fakeRoutingPlugin: fakeRoutingPlugin{name: "finality"}}
+			p.produce = func(ctx *schemas.BifrostContext) chan *schemas.BifrostStreamChunk {
+				ch := make(chan *schemas.BifrostStreamChunk, 2)
+				if kind != "empty" {
+					ch <- nil
+					c := shortCircuitFinalityChunk(2)
+					if kind == "error" {
+						c.BifrostChatResponse = nil
+						c.BifrostError = createBifrostError("test error", schemas.Ptr(500), nil, false)
+					}
+					ch <- c
+				}
+				close(ch)
+				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, false)
+				return ch
+			}
+			p.observe = func(ctx *schemas.BifrostContext, _ *schemas.BifrostResponse, _ *schemas.BifrostError) {
+				finals = append(finals, IsFinalChunk(ctx))
+			}
+			client, ctx := newShortCircuitFinalityClient(t, p)
+			stream, err := client.tryStreamRequest(ctx, shortCircuitFinalityRequest(), 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			drainStream(stream)
+			if kind == "empty" {
+				if len(finals) != 0 {
+					t.Errorf("empty stream ran %d hooks", len(finals))
+				}
+			} else if !reflect.DeepEqual(finals, []bool{true}) {
+				t.Errorf("finality=%v, want [true]", finals)
+			}
+			for _, final := range []bool{false, true} {
+				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, final)
+				if IsFinalChunk(ctx) != final {
+					t.Error("chunk override survived stream close")
+				}
+			}
+		})
+	}
+}
+
+func BenchmarkShortCircuitStreamFinality(b *testing.B) {
+	for _, explicit := range []bool{false, true} {
+		b.Run(fmt.Sprintf("explicit=%v", explicit), func(b *testing.B) {
+			p := &shortCircuitFinalityPlugin{fakeRoutingPlugin: fakeRoutingPlugin{name: "finality"}}
+			p.produce = func(_ *schemas.BifrostContext) chan *schemas.BifrostStreamChunk {
+				ch := make(chan *schemas.BifrostStreamChunk, 3)
+				for i := range 3 {
+					c := shortCircuitFinalityChunk(i)
+					if !explicit {
+						c.Finality = schemas.StreamChunkFinalityUnspecified
+					}
+					ch <- c
+				}
+				close(ch)
+				return ch
+			}
+			client, _ := newShortCircuitFinalityClient(b, p)
+			req := shortCircuitFinalityRequest()
+			b.ReportAllocs()
+			for b.Loop() {
+				ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+				ctx.SetValue(schemas.BifrostContextKeyStreamStartTime, time.Now())
+				stream, err := client.tryStreamRequest(ctx, req, 0)
+				if err != nil {
+					b.Fatal(err)
+				}
+				drainStream(stream)
+			}
+		})
+	}
+}
+
+func TestShortCircuitStreamFinalityResponseTypes(t *testing.T) {
+	cases := []struct {
+		req   *schemas.BifrostRequest
+		chunk *schemas.BifrostStreamChunk
+	}{
+		{&schemas.BifrostRequest{RequestType: schemas.TextCompletionStreamRequest, TextCompletionRequest: &schemas.BifrostTextCompletionRequest{Provider: schemas.OpenAI, Model: "test-model"}}, &schemas.BifrostStreamChunk{BifrostTextCompletionResponse: &schemas.BifrostTextCompletionResponse{}}},
+		{&schemas.BifrostRequest{RequestType: schemas.ResponsesStreamRequest, ResponsesRequest: &schemas.BifrostResponsesRequest{Provider: schemas.OpenAI, Model: "test-model"}}, &schemas.BifrostStreamChunk{BifrostResponsesStreamResponse: &schemas.BifrostResponsesStreamResponse{}}},
+		{&schemas.BifrostRequest{RequestType: schemas.SpeechStreamRequest, SpeechRequest: &schemas.BifrostSpeechRequest{Provider: schemas.OpenAI, Model: "test-model"}}, &schemas.BifrostStreamChunk{BifrostSpeechStreamResponse: &schemas.BifrostSpeechStreamResponse{}}},
+		{&schemas.BifrostRequest{RequestType: schemas.TranscriptionStreamRequest, TranscriptionRequest: &schemas.BifrostTranscriptionRequest{Provider: schemas.OpenAI, Model: "test-model"}}, &schemas.BifrostStreamChunk{BifrostTranscriptionStreamResponse: &schemas.BifrostTranscriptionStreamResponse{}}},
+		{&schemas.BifrostRequest{RequestType: schemas.ImageGenerationStreamRequest, ImageGenerationRequest: &schemas.BifrostImageGenerationRequest{Provider: schemas.OpenAI, Model: "test-model"}}, &schemas.BifrostStreamChunk{BifrostImageGenerationStreamResponse: &schemas.BifrostImageGenerationStreamResponse{}}},
+	}
+	for _, tc := range cases {
+		t.Run(string(tc.req.RequestType), func(t *testing.T) {
+			tc.chunk.Finality = schemas.StreamChunkFinalityFinal
+			p := &shortCircuitFinalityPlugin{fakeRoutingPlugin: fakeRoutingPlugin{name: "finality"}}
+			p.produce = func(_ *schemas.BifrostContext) chan *schemas.BifrostStreamChunk {
+				ch := make(chan *schemas.BifrostStreamChunk, 1)
+				ch <- tc.chunk
+				close(ch)
+				return ch
+			}
+			p.observe = func(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, err *schemas.BifrostError) {
+				if !IsFinalChunk(ctx) {
+					t.Error("final chunk not recognized")
+				}
+				rt, provider, model, _ := GetResponseFields(resp, err)
+				if rt != tc.req.RequestType || provider != schemas.OpenAI || model != "test-model" {
+					t.Errorf("metadata=%v %v %v", rt, provider, model)
+				}
+			}
+			client, ctx := newShortCircuitFinalityClient(t, p)
+			stream, err := client.tryStreamRequest(ctx, tc.req, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if n := drainStream(stream); n != 1 {
+				t.Errorf("received %d chunks, want 1", n)
+			}
+		})
+	}
+}
+
+func TestShortCircuitStreamCancellationDrainsProducer(t *testing.T) {
+	producerDone := make(chan struct{})
+	finals := []bool{}
+	p := &shortCircuitFinalityPlugin{fakeRoutingPlugin: fakeRoutingPlugin{name: "finality"}}
+	p.produce = func(ctx *schemas.BifrostContext) chan *schemas.BifrostStreamChunk {
+		ch := make(chan *schemas.BifrostStreamChunk)
+		go func() {
+			defer close(producerDone)
+			defer close(ch)
+			for i := range 3 {
+				if i == 2 {
+					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+				}
+				ch <- shortCircuitFinalityChunk(i)
+			}
+		}()
+		return ch
+	}
+	p.observe = func(ctx *schemas.BifrostContext, _ *schemas.BifrostResponse, _ *schemas.BifrostError) {
+		finals = append(finals, IsFinalChunk(ctx))
+		ctx.Root().Cancel()
+	}
+	client, ctx := newShortCircuitFinalityClient(t, p)
+	stream, err := client.tryStreamRequest(ctx, shortCircuitFinalityRequest(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// No downstream reader until the cancelled send has drained the producer.
+	select {
+	case <-producerDone:
+	case <-time.After(time.Second):
+		t.Fatal("cancelled stream left its producer blocked")
+	}
+	if n := drainStream(stream); n != 0 {
+		t.Errorf("delivered %d chunks after cancellation", n)
+	}
+	if !reflect.DeepEqual(finals, []bool{false}) {
+		t.Errorf("post-hook finality=%v, want [false]", finals)
+	}
+	if IsFinalChunk(ctx) {
+		t.Error("upstream terminal flag marked an abandoned stream complete")
+	}
+}

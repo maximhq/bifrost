@@ -6922,12 +6922,21 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 					pipeline.FinalizeStreamingPostHookSpans(ctx)
 					bifrost.releasePluginPipeline(pipeline)
 				}()
-				defer providerUtils.CloseStream(ctx, outputStream)
+				defer func() {
+					// Preserve the terminal state for stream cleanup, then remove the
+					// chunk override before closing output allows this context to be reused.
+					if finality, ok := ctx.Value(schemas.BifrostContextKeyStreamEndIndicator).(bool); ok {
+						ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, finality)
+					}
+					ctx.SetStreamChunkFinality(schemas.StreamChunkFinalityUnspecified)
+					providerUtils.CloseStream(ctx, outputStream)
+				}()
 
 				for streamMsg := range shortCircuit.Stream {
 					if streamMsg == nil {
 						continue
 					}
+					ctx.SetStreamChunkFinality(streamMsg.Finality)
 
 					bifrostResponse := &schemas.BifrostResponse{}
 					if streamMsg.BifrostTextCompletionResponse != nil {
@@ -6956,6 +6965,7 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 					// request/response fields when in logging-only mode without mutating the
 					// shared processedResponse or processedError objects.
 					streamResponse := providerUtils.BuildClientStreamChunk(ctx, processedResponse, processedError)
+					streamResponse.Finality = streamMsg.Finality
 
 					// Guarded send: if the consumer abandons outputStream (client
 					// disconnect, ctx cancel), drain the upstream shortCircuit.Stream

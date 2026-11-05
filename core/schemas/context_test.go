@@ -774,3 +774,47 @@ func TestBifrostContextFromContext(t *testing.T) {
 		}
 	})
 }
+
+func TestBifrostContextStreamChunkFinality(t *testing.T) {
+	ctx := NewBifrostContext(context.Background(), NoDeadline)
+	scoped := ctx.WithPluginScope(new("plugin"))
+	defer scoped.ReleasePluginScope()
+	for _, final := range []bool{false, true} {
+		ctx.SetStreamChunkFinality(StreamChunkFinalityNonFinal)
+		if final {
+			ctx.SetStreamChunkFinality(StreamChunkFinalityFinal)
+		}
+		ctx.SetValue(BifrostContextKeyStreamEndIndicator, !final)
+		for _, c := range []*BifrostContext{ctx, scoped} {
+			if got := c.Value(BifrostContextKeyStreamEndIndicator); got != final {
+				t.Errorf("finality=%v, want %v", got, final)
+			}
+		}
+		ctx.BlockRestrictedWrites()
+		scoped.SetStreamChunkFinality(StreamChunkFinalityUnspecified)
+		ctx.UnblockRestrictedWrites()
+		if ctx.Value(BifrostContextKeyStreamEndIndicator) != final {
+			t.Error("plugin overwrote chunk finality")
+		}
+	}
+	ctx.SetStreamChunkFinality(StreamChunkFinalityUnspecified)
+	if ctx.Value(BifrostContextKeyStreamEndIndicator) != false {
+		t.Error("legacy indicator not restored")
+	}
+}
+
+func BenchmarkBifrostContextStreamFinality(b *testing.B) {
+	for _, explicit := range []bool{false, true} {
+		b.Run(fmt.Sprintf("explicit=%v", explicit), func(b *testing.B) {
+			ctx := NewBifrostContext(context.Background(), NoDeadline)
+			ctx.SetValue(BifrostContextKeyStreamEndIndicator, true)
+			if explicit {
+				ctx.SetStreamChunkFinality(StreamChunkFinalityFinal)
+			}
+			b.ReportAllocs()
+			for b.Loop() {
+				_ = ctx.Value(BifrostContextKeyStreamEndIndicator)
+			}
+		})
+	}
+}

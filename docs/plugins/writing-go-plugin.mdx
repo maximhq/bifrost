@@ -1098,6 +1098,22 @@ Called on Bifrost shutdown. Use this to:
 - Save state
 - Release resources
 
+### Short-circuit stream finality
+
+When `PreLLMHook` returns `LLMPluginShortCircuit.Stream`, set `Finality` on every chunk before sending it:
+
+```go
+chunk.Finality = schemas.StreamChunkFinalityNonFinal
+if isLast {
+    chunk.Finality = schemas.StreamChunkFinalityFinal
+}
+stream <- chunk
+```
+
+This metadata is internal and does not change response JSON. Post-hooks can continue using `bifrost.IsFinalChunk(ctx)` or reading `BifrostContextKeyStreamEndIndicator`; core makes explicit chunk metadata authoritative. Do not mutate a chunk after sending it.
+
+The zero value, `StreamChunkFinalityUnspecified`, retains legacy context-based signaling. Existing synchronous signaling remains supported, but an asynchronous producer updating the shared indicator can still race its consumer; migrate such producers to explicit finality. Delivery does not wait for the next chunk or channel closure.
+
 ## Step 3: Create a Makefile
 
 Create a `Makefile` to automate building your plugin:
