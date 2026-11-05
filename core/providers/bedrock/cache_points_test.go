@@ -776,3 +776,169 @@ func TestToBedrockChatCompletionRequest_ToolResultCacheControlBecomesSiblingCach
 		t.Fatalf("block 2 must be the unmarked berlin toolResult with no cachePoint after it, got %+v", blocks[2])
 	}
 }
+
+// TestBedrockPromptCacheBreakpointBecomesCachePoint pins that an OpenAI
+// prompt_cache_breakpoint reaches Converse as a cachePoint on both request shapes.
+func TestBedrockPromptCacheBreakpointBecomesCachePoint(t *testing.T) {
+	breakpoint := &schemas.PromptCacheBreakpoint{Mode: schemas.Ptr("explicit"), TTL: schemas.Ptr("12h")}
+	hasCachePoint := func(messages []BedrockMessage) bool {
+		for _, m := range messages {
+			for _, b := range m.Content {
+				if b.CachePoint != nil {
+					if b.CachePoint.TTL != nil {
+						t.Errorf("a 12h breakpoint must fall back to the default lifetime, got ttl %q", *b.CachePoint.TTL)
+					}
+					return true
+				}
+			}
+		}
+		return false
+	}
+
+	t.Run("responses", func(t *testing.T) {
+		ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+		defer cancel()
+		result, err := ToBedrockResponsesRequest(ctx, &schemas.BifrostResponsesRequest{
+			Provider: schemas.Bedrock,
+			Model:    "anthropic.claude-sonnet-4-6",
+			Input: []schemas.ResponsesMessage{{
+				Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{{
+					Type: schemas.ResponsesInputMessageContentBlockTypeText, Text: schemas.Ptr("stable prefix"),
+					PromptCacheBreakpoint: breakpoint,
+				}}},
+			}},
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !hasCachePoint(result.Messages) {
+			t.Fatalf("expected a cachePoint for the breakpoint, got %+v", result.Messages)
+		}
+	})
+
+	t.Run("chat", func(t *testing.T) {
+		ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+		defer cancel()
+		result, err := ToBedrockChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+			Provider: schemas.Bedrock,
+			Model:    "anthropic.claude-sonnet-4-6",
+			Input: []schemas.ChatMessage{{
+				Role: schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{{
+					Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr("stable prefix"),
+					PromptCacheBreakpoint: breakpoint,
+				}}},
+			}},
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !hasCachePoint(result.Messages) {
+			t.Fatalf("expected a cachePoint for the breakpoint, got %+v", result.Messages)
+		}
+	})
+}
+
+// TestStripNonTextCachePoints pins the Nova rule: a message cachePoint survives only directly
+// after a text block. Nova 400s on one after a toolResult or an image with "extraneous key
+// [cachePoint] is not permitted".
+func TestStripNonTextCachePoints(t *testing.T) {
+	req := &BedrockConverseRequest{Messages: []BedrockMessage{{
+		Role: BedrockMessageRoleUser,
+		Content: []BedrockContentBlock{
+			{Text: new("prefix")},
+			{CachePoint: cachePoint()},
+			{CachePoint: cachePoint()},
+			{ToolResult: &BedrockToolResult{ToolUseID: "call_1", Content: []BedrockContentBlock{{Text: new("18C")}, {CachePoint: cachePoint()}}}},
+			{CachePoint: cachePoint()},
+			{Image: &BedrockImageSource{Format: "png"}},
+			{CachePoint: cachePoint()},
+		},
+	}}}
+	stripNonTextCachePoints(req)
+
+	content := req.Messages[0].Content
+	if len(content) != 4 || content[0].Text == nil || content[1].CachePoint == nil || content[2].ToolResult == nil || content[3].Image == nil {
+		t.Fatalf("want [text cachePoint toolResult image], got %+v", content)
+	}
+	if inner := content[2].ToolResult.Content; len(inner) != 1 || inner[0].Text == nil {
+		t.Errorf("a cachePoint nested in a toolResult must go too, got %+v", inner)
+	}
+}
+
+// TestBedrockNovaCachePointsOnlyAfterText drives the chat and responses converters for Nova and
+// Claude with breakpoints on text, an image and a tool result. Nova keeps only the text one;
+// Claude keeps all three.
+func TestBedrockNovaCachePointsOnlyAfterText(t *testing.T) {
+	breakpoint := &schemas.PromptCacheBreakpoint{Mode: schemas.Ptr("explicit")}
+	const png = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+	countAfter := func(messages []BedrockMessage) (afterText, other int) {
+		for _, m := range messages {
+			for j, b := range m.Content {
+				if b.CachePoint == nil {
+					continue
+				}
+				if j > 0 && m.Content[j-1].Text != nil {
+					afterText++
+				} else {
+					other++
+				}
+			}
+		}
+		return afterText, other
+	}
+	chatInput := []schemas.ChatMessage{
+		{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{
+			{Type: schemas.ChatContentBlockTypeText, Text: new("stable prefix"), PromptCacheBreakpoint: breakpoint},
+			{Type: schemas.ChatContentBlockTypeImage, ImageURLStruct: &schemas.ChatInputImage{URL: png}, PromptCacheBreakpoint: breakpoint},
+		}}},
+		{Role: schemas.ChatMessageRoleAssistant, ChatAssistantMessage: &schemas.ChatAssistantMessage{ToolCalls: []schemas.ChatAssistantMessageToolCall{{
+			ID: new("call_1"), Type: new("function"), Function: schemas.ChatAssistantMessageToolCallFunction{Name: new("get_weather"), Arguments: "{}"},
+		}}}},
+		{Role: schemas.ChatMessageRoleTool, ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: new("call_1")},
+			Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{{Type: schemas.ChatContentBlockTypeText, Text: new("18C"), PromptCacheBreakpoint: breakpoint}}}},
+	}
+	responsesInput := []schemas.ResponsesMessage{
+		{Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{
+			{Type: schemas.ResponsesInputMessageContentBlockTypeText, Text: new("stable prefix"), PromptCacheBreakpoint: breakpoint},
+			{Type: schemas.ResponsesInputMessageContentBlockTypeImage, ResponsesInputMessageContentBlockImage: &schemas.ResponsesInputMessageContentBlockImage{ImageURL: new(png)}, PromptCacheBreakpoint: breakpoint},
+		}}},
+		{Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall), ResponsesToolMessage: &schemas.ResponsesToolMessage{CallID: new("call_1"), Name: new("get_weather"), Arguments: new("{}")}},
+		{Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput), ResponsesToolMessage: &schemas.ResponsesToolMessage{CallID: new("call_1"),
+			Output: &schemas.ResponsesToolMessageOutputStruct{ResponsesFunctionToolCallOutputBlocks: []schemas.ResponsesMessageContentBlock{
+				{Type: schemas.ResponsesInputMessageContentBlockTypeText, Text: new("18C"), PromptCacheBreakpoint: breakpoint},
+			}}}},
+	}
+
+	for _, tc := range []struct {
+		model             string
+		afterText, other int
+	}{
+		{"amazon.nova-lite-v1:0", 1, 0},
+		{"anthropic.claude-sonnet-4-6", 1, 2},
+	} {
+		t.Run("chat/"+tc.model, func(t *testing.T) {
+			ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+			defer cancel()
+			result, err := ToBedrockChatCompletionRequest(ctx, &schemas.BifrostChatRequest{Provider: schemas.Bedrock, Model: tc.model, Input: chatInput})
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if afterText, other := countAfter(result.Messages); afterText != tc.afterText || other != tc.other {
+				t.Errorf("cachePoints after text = %d, elsewhere = %d; want %d and %d", afterText, other, tc.afterText, tc.other)
+			}
+		})
+		t.Run("responses/"+tc.model, func(t *testing.T) {
+			ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+			defer cancel()
+			result, err := ToBedrockResponsesRequest(ctx, &schemas.BifrostResponsesRequest{Provider: schemas.Bedrock, Model: tc.model, Input: responsesInput})
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if afterText, other := countAfter(result.Messages); afterText != tc.afterText || other != tc.other {
+				t.Errorf("cachePoints after text = %d, elsewhere = %d; want %d and %d", afterText, other, tc.afterText, tc.other)
+			}
+		})
+	}
+}
