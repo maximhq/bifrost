@@ -443,6 +443,9 @@ func (provider *AzureProvider) ChatCompletion(ctx *schemas.BifrostContext, key s
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
+	if bifrostErr := applyAzureServiceTierHeader(ctx, authHeader); bifrostErr != nil {
+		return nil, bifrostErr
+	}
 	return openai.HandleOpenAIChatCompletionRequest(
 		ctx,
 		provider.client,
@@ -512,6 +515,9 @@ func (provider *AzureProvider) ChatCompletionStream(ctx *schemas.BifrostContext,
 		authHeader, err := provider.getAzureAuthHeaders(ctx, key, false)
 		if err != nil {
 			return nil, err
+		}
+		if bifrostErr := applyAzureServiceTierHeader(ctx, authHeader); bifrostErr != nil {
+			return nil, bifrostErr
 		}
 		url = fmt.Sprintf("%s/openai/v1/chat/completions", endpoint)
 
@@ -596,6 +602,9 @@ func (provider *AzureProvider) Responses(ctx *schemas.BifrostContext, key schema
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
+	if bifrostErr := applyAzureServiceTierHeader(ctx, authHeader); bifrostErr != nil {
+		return nil, bifrostErr
+	}
 	path := "openai/v1/responses"
 	if v := resolveAPIVersion(ctx, ""); v != "" {
 		path += "?api-version=" + v
@@ -675,6 +684,9 @@ func (provider *AzureProvider) ResponsesStream(ctx *schemas.BifrostContext, post
 		authHeader, err := provider.getAzureAuthHeaders(ctx, key, false)
 		if err != nil {
 			return nil, err
+		}
+		if bifrostErr := applyAzureServiceTierHeader(ctx, authHeader); bifrostErr != nil {
+			return nil, bifrostErr
 		}
 		path := "openai/v1/responses"
 		if v := resolveAPIVersion(ctx, ""); v != "" {

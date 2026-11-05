@@ -33,14 +33,16 @@ Azure is a cloud provider offering access to OpenAI and Anthropic models through
 | Decisions        | ✅            | -         | `/openai/v1/decisions` (`gpt-6-luna`), `/providers/microsoft/v1/systemone` (`Microsoft-Decision-1`) |
 | GPT Live         | -             | ✅        | `/openai/v1/live/sessions`      |
 | Image Variation  | ❌            | ❌        | -                               |
-| Batch            | ❌            | ❌        | -                               |
+| Batch            | ✅            | -         | `/openai/v1/batches`            |
 | Text Completions | ❌            | ❌        | -                               |
 | Speech (TTS)     | ✅            | ✅        | `/openai/v1/audio/speech`, or `/tts/cognitiveservices/v1` for [Azure AI Speech](#11-azure-ai-speech) |
 | Transcription    | ✅            | -         | `/openai/deployments/{model}/audio/transcriptions`, or `/speechtotext/transcriptions:transcribe` for [Azure AI Speech](#11-azure-ai-speech) |
 
 <Note>
-  **Azure-specific**: Batch operations and Text Completions are not supported by
-  Azure OpenAI Service. Responses API is available for both OpenAI and Anthropic models.
+  **Azure-specific**: Text Completions is not supported by Azure OpenAI Service.
+  Responses API is available for both OpenAI and Anthropic models. Batch uses the
+  Batch API deployment type (`Global-Batch` / `Data Zone Batch`) — see
+  [Service Tiers](#service-tiers).
 </Note>
 
 ---
@@ -764,6 +766,133 @@ For OpenAI models through Azure, see [OpenAI Responses API documentation](/provi
 
 **Anthropic Models:**
 Refer to [Anthropic Responses API](/providers/supported-providers/anthropic#2-responses-api) for parameter details.
+
+---
+
+## Service Tiers
+
+Azure OpenAI offers three processing tiers: **Flex** (50% discount, variable
+latency), **Priority** (low latency, pay-as-you-go), and **Batch** (50%
+discount, 24-hour turnaround). Bifrost supports all three on the OpenAI-family
+Chat Completions and Responses APIs.
+
+### 1. Request body `service_tier`
+
+Set `service_tier` per request on the Chat Completions or Responses API:
+
+| Value     | Processing tier |
+| --------- | --------------- |
+| `flex`    | Flex processing (50% discount) |
+| `priority`| Priority processing |
+| `default` | Standard processing |
+| `auto`    | Standard (Azure body semantics) |
+
+<Tabs>
+<Tab title="Gateway">
+
+```bash
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "api-key: YOUR_API_KEY" \
+  -d '{
+    "model": "my-gpt-deployment",
+    "messages": [{"role": "user", "content": "Analyze these records"}],
+    "service_tier": "flex"
+  }'
+```
+
+</Tab>
+<Tab title="Go SDK">
+
+```go
+flex := schemas.BifrostServiceTierFlex
+resp, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostChatRequest{
+    Provider: schemas.Azure,
+    Model:    "my-gpt-deployment",
+    Input:    messages,
+    Params: &schemas.ChatParameters{
+        ServiceTier: &flex,
+    },
+})
+```
+
+</Tab>
+</Tabs>
+
+The served tier is echoed back in the response's `service_tier` field, which is
+also what Bifrost bills from — Flex and Priority requests are priced at their
+tier rates.
+
+### 2. `x-ms-service-tier` header
+
+For gateway, proxy, or centralized routing use cases, Azure accepts the
+processing tier through the `x-ms-service-tier` request header instead of the
+body. Bifrost forwards it to Azure, where **a valid header takes precedence
+over the body's `service_tier`**:
+
+```bash
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "api-key: YOUR_API_KEY" \
+  -H "x-ms-service-tier: flex" \
+  -d '{
+    "model": "my-gpt-deployment",
+    "messages": [{"role": "user", "content": "Analyze these records"}]
+  }'
+```
+
+Accepted header values are `flex`, `priority`, `default`, and `auto`. An
+invalid value is rejected with HTTP 400 before the request reaches Azure —
+Azure itself does not fall back to the body value in that case either.
+
+### 3. Batch deployments
+
+Batch processing uses a separate deployment type (`Global-Batch` or
+`Data Zone Batch`) created in the Foundry portal, and is submitted through the
+OpenAI-compatible Batch API (`/v1/batches`): upload a JSONL input file (or send
+requests inline), then create, list, retrieve, cancel, and fetch results for
+batch jobs. Each input line's `model` field must name the batch deployment.
+
+<Tabs>
+<Tab title="Gateway">
+
+```bash
+curl -X POST http://localhost:8080/v1/batches \
+  -H "Content-Type: application/json" \
+  -H "api-key: YOUR_API_KEY" \
+  -d '{
+    "input_file_id": "file-abc123",
+    "endpoint": "/v1/chat/completions",
+    "completion_window": "24h"
+  }'
+```
+
+</Tab>
+<Tab title="Go SDK">
+
+```go
+resp, err := client.BatchCreateRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostBatchCreateRequest{
+    Provider:      schemas.Azure,
+    InputFileID:   "file-abc123",
+    Endpoint:      "/v1/chat/completions",
+    CompletionWindow: "24h",
+})
+```
+
+</Tab>
+</Tabs>
+
+### Notes
+
+- Flex and Priority are **request-level** choices on a Global Standard
+  deployment; Priority can also be enabled **deployment-level** in the Foundry
+  portal (or via the deployment REST API's `service_tier` property).
+- Flex has limited model availability. A `service_tier: flex` request to an
+  unsupported model returns HTTP 400 from Azure with no automatic fallback to
+  Standard — retry with `service_tier: default` when Standard pricing and
+  performance are acceptable.
+- Priority requests can be re-routed to Standard during ramp-rate limits or
+  peak load; the response's `service_tier` reflects the tier actually served.
 
 ---
 
