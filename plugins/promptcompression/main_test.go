@@ -1199,13 +1199,13 @@ func BenchmarkPreLLMHookNoopEnabledChat(b *testing.B) {
 // longPressureRounds is enough untrimmable single-line rounds that a
 // percentage threshold on the eligible region would eventually fall below 5%
 // and flip the hook back to the original request (it did at about 74 rounds).
-const longPressureRounds = 80
+const longPressureRounds = 90
 
 func chatLongPressureVariant(t *testing.T) []schemas.ChatMessage {
 	msgs := chatBase(t)
 	for i := 0; i < longPressureRounds; i++ {
 		cid := fmt.Sprintf("call_%d", 200+i)
-		msgs = append(msgs, assistantCall(cid), toolMsg(cid, singleLine(i, 2400)))
+		msgs = append(msgs, assistantCall(cid), toolMsg(cid, singleLine(i, 8000)))
 	}
 	return chatFinal(msgs)
 }
@@ -1214,24 +1214,38 @@ func respLongPressureVariant(t *testing.T) []schemas.ResponsesMessage {
 	msgs := respBase(t)
 	for i := 0; i < longPressureRounds; i++ {
 		cid := fmt.Sprintf("call_%d", 200+i)
-		msgs = append(msgs, rmCall(cid), rmOut(cid, singleLine(i, 2400)))
+		msgs = append(msgs, rmCall(cid), rmOut(cid, singleLine(i, 8000)))
 	}
 	return respFinal(msgs)
 }
 
 // Hook level only: compression must never switch off once it is on, however
-// much untrimmable output accumulates, with the default threshold and with an
-// explicit one (the saved tokens only grow, so both stay on).
-func longPressureLevels() []stabilityLevel {
-	return []stabilityLevel{hookLevel("hook_default", nil), hookLevel("hook_200", &Config{MinSavingsTokens: intp(200)})}
-}
-
+// much untrimmable output accumulates. The final eligible-region savings must
+// be below the old 5% percentage threshold, so the test would catch a return
+// to that rule.
 func TestHookStabilityLongThresholdPressureChat(t *testing.T) {
-	runChatStability(t, chatLongPressureVariant(t), true, longPressureLevels()...)
+	msgs := chatLongPressureVariant(t)
+	_, st := compressChat(msgs[:len(msgs)-1], defaults(t))
+	pct := (st.EligibleBefore - st.EligibleAfter) * 100 / st.EligibleBefore
+	t.Logf("final eligible-region savings: %d%%", pct)
+	require.Less(t, pct, 5, "variant must push savings below the old 5% line")
+	runChatStability(t, msgs, true, hookLevel("hook_default", nil))
 }
 
 func TestHookStabilityLongThresholdPressureResponses(t *testing.T) {
-	runRespStability(t, respLongPressureVariant(t), true, longPressureLevels()...)
+	msgs := respLongPressureVariant(t)
+	_, st := compressResponses(msgs[:len(msgs)-1], defaults(t))
+	pct := (st.EligibleBefore - st.EligibleAfter) * 100 / st.EligibleBefore
+	t.Logf("final eligible-region savings: %d%%", pct)
+	require.Less(t, pct, 5, "variant must push savings below the old 5% line")
+	runRespStability(t, msgs, true, hookLevel("hook_default", nil))
+}
+
+// An explicit non-zero threshold also stays on over a shorter pressure run.
+func TestHookStabilityExplicitThresholdPressure(t *testing.T) {
+	lvl := hookLevel("hook_200", &Config{MinSavingsTokens: intp(200)})
+	runChatStability(t, chatPressureVariant(t), true, lvl)
+	runRespStability(t, respPressureVariant(t), true, lvl)
 }
 
 // TestHookMovingCacheMarker: when a client adds a cache marker to a later
