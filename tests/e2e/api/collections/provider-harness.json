@@ -180590,6 +180590,64 @@
           }
         },
         {
+          "name": "bedrock/us.openai.gpt-5.6-luna /v1/chat/completions replay of a Mantle rsn_ token (pair A2 chat, GPT consumer) - encrypted reasoning provider switch",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('a Mantle rsn_ token replayed over chat completions is dropped, and the turn completes', function () {",
+                  "  var body = pm.response.text();",
+                  "  // On the old code the bare rsn_ token went out as Converse redactedContent, which is not base64, and Bedrock answered 400 SerializationException.",
+                  "  pm.expect(pm.response.code, 'chat replay of a foreign encrypted token failed: ' + body).to.equal(200);",
+                  "  var scanned = body;",
+                  "  try { var scanObj = JSON.parse(body); delete scanObj.extra_fields; scanned = JSON.stringify(scanObj); } catch (e) { scanned = body; }",
+                  "  var lower = scanned.toLowerCase();",
+                  "  [\"serializationexception\",\"redactedcontent\",\"reasoningcontent\",\"invalid_request_error\"].forEach(function (marker) {",
+                  "    pm.expect(lower, 'an upstream token refusal reached the client: ' + body).to.not.include(marker);",
+                  "  });",
+                  "  var response = pm.response.json();",
+                  "  pm.expect(response.error, 'response error: ' + body).to.not.be.ok;",
+                  "  var choice = (response.choices || [])[0] || {};",
+                  "  var content = choice.message && choice.message.content;",
+                  "  pm.expect(content, 'no assistant text: ' + body).to.be.a('string').and.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/us.openai.gpt-5.6-luna\",\"max_completion_tokens\":2048,\"reasoning_effort\":\"low\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with one short greeting.\"},{\"role\":\"assistant\",\"content\":\"Hello!\",\"reasoning_details\":[{\"index\":0,\"type\":\"reasoning.encrypted\",\"data\":\"rsn_eyJhbGciOiJFUzI1NiIsInR5cCI6ImFyY2grandzIn0.e30.c2ln\"}]},{\"role\":\"user\",\"content\":\"Now reply with one word that means goodbye.\"}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
           "name": "openai/gpt-5.6-luna capture encrypted reasoning (pair A3, GPT producer) - encrypted reasoning provider switch",
           "event": [
             {
