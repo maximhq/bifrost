@@ -1141,6 +1141,31 @@ func TestPatchPricing_VideoTokenRate(t *testing.T) {
 	assert.Equal(t, 0.0000077, *patched.OutputCostPerVideoToken)
 }
 
+func TestPatchPricing_CacheCreationAbove12hrFields(t *testing.T) {
+	base := configstoreTables.TableModelPricing{Model: "gpt-5.6-sol", Provider: "openai", Mode: "chat"}
+	patched := patchPricing(base, Options{
+		CacheCreationInputTokenCostAbove12hr:                         bifrost.Ptr(0.00001),
+		CacheCreationInputTokenCostAbove12hrAbove272kTokens:          bifrost.Ptr(0.00002),
+		CacheCreationInputTokenCostAbove12hrPriority:                 bifrost.Ptr(0.00002),
+		CacheCreationInputTokenCostAbove12hrAbove272kTokensPriority:  bifrost.Ptr(0.00004),
+		CacheCreationInputTokenCostAbove12hrFlex:                     bifrost.Ptr(0.000005),
+		CacheCreationInputTokenCostAbove12hrAbove272kTokensFlex:      bifrost.Ptr(0.00001),
+		CacheCreationInputTokenCostAbove12hrUltrafast:                bifrost.Ptr(0.00015),
+		CacheCreationInputTokenCostAbove12hrAbove272kTokensUltrafast: bifrost.Ptr(0.0003),
+	})
+	require.NotNil(t, patched.CacheCreationInputTokenCostAbove12hrUltrafast)
+	require.NotNil(t, patched.CacheCreationInputTokenCostAbove12hrAbove272kTokensUltrafast)
+	for name, got := range map[string]*float64{
+		"base":       patched.CacheCreationInputTokenCostAbove12hr,
+		"above_272k": patched.CacheCreationInputTokenCostAbove12hrAbove272kTokens, "priority": patched.CacheCreationInputTokenCostAbove12hrPriority,
+		"above_272k_priority": patched.CacheCreationInputTokenCostAbove12hrAbove272kTokensPriority, "flex": patched.CacheCreationInputTokenCostAbove12hrFlex,
+		"flex_above_272k": patched.CacheCreationInputTokenCostAbove12hrAbove272kTokensFlex,
+	} {
+		assert.NotNil(t, got, name)
+	}
+	assert.Equal(t, 0.00004, *patched.CacheCreationInputTokenCostAbove12hrAbove272kTokensPriority)
+}
+
 // TestPatchPricing_TimeOfDayFields covers the two peak/off-peak fields. The
 // multiplier rides the *float64 loop; PeakHours is patched separately because
 // it is a struct pointer, so both paths need pinning.

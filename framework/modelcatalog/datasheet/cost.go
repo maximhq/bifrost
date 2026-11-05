@@ -1138,13 +1138,9 @@ func computeTextCost(pricing *configstoreTables.TableModelPricing, usage *schema
 	// Extract cached token counts
 	cachedReadTokens := 0
 	cachedWriteTokens := 0
-	cachedWriteTokensAbove1hr := 0
 	if usage.PromptTokensDetails != nil {
 		cachedReadTokens = usage.PromptTokensDetails.CachedReadTokens
 		cachedWriteTokens = usage.PromptTokensDetails.CachedWriteTokens
-		if usage.PromptTokensDetails.CachedWriteTokenDetails != nil {
-			cachedWriteTokensAbove1hr = usage.PromptTokensDetails.CachedWriteTokenDetails.CachedWriteTokens1h
-		}
 	}
 
 	// Long-context pricing tiers are selected by input context size. Once
@@ -1156,6 +1152,7 @@ func computeTextCost(pricing *configstoreTables.TableModelPricing, usage *schema
 	cacheReadInputRate := tieredCacheReadInputTokenRate(pricing, tierTokens, tier)
 	cacheCreationInputRate := tieredCacheCreationInputTokenRate(pricing, tierTokens, tier)
 	cacheCreationInputAbove1hrInputRate := tieredCacheCreationInputAbove1hrTokenRate(pricing, tierTokens, tier)
+	cacheCreationInputAbove12hrInputRate := tieredCacheCreationInputAbove12hrTokenRate(pricing, tierTokens, tier)
 
 	// Clamp cached token counts to avoid negative billing on malformed provider payloads
 	if cachedReadTokens > promptTokens {
@@ -1164,10 +1161,7 @@ func computeTextCost(pricing *configstoreTables.TableModelPricing, usage *schema
 	if cachedWriteTokens > promptTokens-cachedReadTokens {
 		cachedWriteTokens = promptTokens - cachedReadTokens
 	}
-	// Should not happen, but just in case
-	if cachedWriteTokensAbove1hr > cachedWriteTokens {
-		cachedWriteTokensAbove1hr = cachedWriteTokens
-	}
+	cachedWriteTokensAbove1hr, cachedWriteTokensAbove12hr := longTTLCacheWriteTokens(usage.PromptTokensDetails, cachedWriteTokens)
 
 	// Input cost components, tracked separately so the breakdown reports each
 	// category; together they sum to the input token cost.
@@ -1181,10 +1175,9 @@ func computeTextCost(pricing *configstoreTables.TableModelPricing, usage *schema
 
 	cacheWriteCost := 0.0
 	if cachedWriteTokens > 0 {
-		if cachedWriteTokensAbove1hr > 0 {
-			cacheWriteCost += float64(cachedWriteTokensAbove1hr) * cacheCreationInputAbove1hrInputRate
-		}
-		cacheWriteCost += float64(cachedWriteTokens-cachedWriteTokensAbove1hr) * cacheCreationInputRate
+		cacheWriteCost += float64(cachedWriteTokensAbove1hr) * cacheCreationInputAbove1hrInputRate
+		cacheWriteCost += float64(cachedWriteTokensAbove12hr) * cacheCreationInputAbove12hrInputRate
+		cacheWriteCost += float64(cachedWriteTokens-cachedWriteTokensAbove1hr-cachedWriteTokensAbove12hr) * cacheCreationInputRate
 	}
 
 	textOutputCost := float64(completionTokens) * outputRate
@@ -1363,23 +1356,20 @@ func computeBatchTextCost(pricing *configstoreTables.TableModelPricing, usage *s
 		promptTokens := usage.PromptTokens
 		cachedReadTokens := 0
 		cachedWriteTokens := 0
-		cachedWriteTokensAbove1hr := 0
 		if usage.PromptTokensDetails != nil {
 			cachedReadTokens = usage.PromptTokensDetails.CachedReadTokens
 			cachedWriteTokens = usage.PromptTokensDetails.CachedWriteTokens
-			if usage.PromptTokensDetails.CachedWriteTokenDetails != nil {
-				cachedWriteTokensAbove1hr = usage.PromptTokensDetails.CachedWriteTokenDetails.CachedWriteTokens1h
-			}
 		}
 		cachedReadTokens = min(max(cachedReadTokens, 0), promptTokens)
 		cachedWriteTokens = min(max(cachedWriteTokens, 0), promptTokens-cachedReadTokens)
-		cachedWriteTokensAbove1hr = min(max(cachedWriteTokensAbove1hr, 0), cachedWriteTokens)
+		cachedWriteTokensAbove1hr, cachedWriteTokensAbove12hr := longTTLCacheWriteTokens(usage.PromptTokensDetails, cachedWriteTokens)
 
 		batchInputRate := *resolvedInputRate
 		inputRate := batchInputRate
 		cacheReadRate := batchInputRate
 		cacheWriteRate := batchInputRate
 		cacheWriteAbove1hrRate := batchInputRate
+		cacheWriteAbove12hrRate := batchInputRate
 		// Catalog long-context tiers and cache rates describe synchronous pricing.
 		// Batch discounts stack with them, so scale each category by the same
 		// batch/input ratio instead of charging every token at the flat batch rate.
@@ -1428,13 +1418,22 @@ func computeBatchTextCost(pricing *configstoreTables.TableModelPricing, usage *s
 			} else {
 				cacheWriteAbove1hrRate = cacheWriteRate
 			}
+
+			if promptTokens > TokenTierAbove272K && pricing.CacheCreationInputTokenCostAbove12hrAbove272kTokens != nil {
+				cacheWriteAbove12hrRate = *pricing.CacheCreationInputTokenCostAbove12hrAbove272kTokens * batchRatio
+			} else if pricing.CacheCreationInputTokenCostAbove12hr != nil {
+				cacheWriteAbove12hrRate = *pricing.CacheCreationInputTokenCostAbove12hr * batchRatio
+			} else {
+				cacheWriteAbove12hrRate = cacheWriteRate
+			}
 		}
 
 		nonCachedPrompt := promptTokens - cachedReadTokens - cachedWriteTokens
 		inputCost = float64(nonCachedPrompt)*inputRate +
 			float64(cachedReadTokens)*cacheReadRate +
-			float64(cachedWriteTokens-cachedWriteTokensAbove1hr)*cacheWriteRate +
-			float64(cachedWriteTokensAbove1hr)*cacheWriteAbove1hrRate
+			float64(cachedWriteTokens-cachedWriteTokensAbove1hr-cachedWriteTokensAbove12hr)*cacheWriteRate +
+			float64(cachedWriteTokensAbove1hr)*cacheWriteAbove1hrRate +
+			float64(cachedWriteTokensAbove12hr)*cacheWriteAbove12hrRate
 	}
 
 	outputCost := 0.0
@@ -1582,14 +1581,12 @@ func computeDecisionCost(pricing *configstoreTables.TableModelPricing, usage *sc
 
 	// Clamp cached token counts as computeTextCost does, so a malformed
 	// payload never bills more cached tokens than the prompt holds.
-	cachedReadTokens, cachedWriteTokens, cachedWriteTokensAbove1hr := 0, 0, 0
+	cachedReadTokens, cachedWriteTokens := 0, 0
 	if details := usage.PromptTokensDetails; details != nil {
 		cachedReadTokens = min(max(details.CachedReadTokens, 0), usage.PromptTokens)
 		cachedWriteTokens = min(max(details.CachedWriteTokens, 0), usage.PromptTokens-cachedReadTokens)
-		if details.CachedWriteTokenDetails != nil {
-			cachedWriteTokensAbove1hr = min(max(details.CachedWriteTokenDetails.CachedWriteTokens1h, 0), cachedWriteTokens)
-		}
 	}
+	cachedWriteTokensAbove1hr, cachedWriteTokensAbove12hr := longTTLCacheWriteTokens(usage.PromptTokensDetails, cachedWriteTokens)
 	if cachedReadTokens == 0 && cachedWriteTokens == 0 {
 		return newInputOutputCost(float64(usage.PromptTokens)*inputRate, outputCost)
 	}
@@ -1597,6 +1594,7 @@ func computeDecisionCost(pricing *configstoreTables.TableModelPricing, usage *sc
 	cacheReadRate := tieredCacheReadInputTokenRate(pricing, tierTokens, tier)
 	cacheWriteRate := tieredCacheCreationInputTokenRate(pricing, tierTokens, tier)
 	cacheWriteAbove1hrRate := tieredCacheCreationInputAbove1hrTokenRate(pricing, tierTokens, tier)
+	cacheWriteAbove12hrRate := tieredCacheCreationInputAbove12hrTokenRate(pricing, tierTokens, tier)
 	if pricing.InputCostPerTokenDecisions != nil {
 		// A decision rate is flat across the context window, and so are the
 		// cache rates billed beside it; the tiered helpers would fall back to
@@ -1609,16 +1607,20 @@ func computeDecisionCost(pricing *configstoreTables.TableModelPricing, usage *sc
 		if pricing.CacheCreationInputTokenCost != nil {
 			cacheWriteRate = *pricing.CacheCreationInputTokenCost
 		}
-		cacheWriteAbove1hrRate = cacheWriteRate
+		cacheWriteAbove1hrRate, cacheWriteAbove12hrRate = cacheWriteRate, cacheWriteRate
 		if pricing.CacheCreationInputTokenCostAbove1hr != nil {
 			cacheWriteAbove1hrRate = *pricing.CacheCreationInputTokenCostAbove1hr
+		}
+		if pricing.CacheCreationInputTokenCostAbove12hr != nil {
+			cacheWriteAbove12hrRate = *pricing.CacheCreationInputTokenCostAbove12hr
 		}
 	}
 
 	inputDetails := &schemas.InputCostDetails{
-		TextCost:        float64(usage.PromptTokens-cachedReadTokens-cachedWriteTokens) * inputRate,
-		CachedReadCost:  float64(cachedReadTokens) * cacheReadRate,
-		CachedWriteCost: float64(cachedWriteTokens-cachedWriteTokensAbove1hr)*cacheWriteRate + float64(cachedWriteTokensAbove1hr)*cacheWriteAbove1hrRate,
+		TextCost:       float64(usage.PromptTokens-cachedReadTokens-cachedWriteTokens) * inputRate,
+		CachedReadCost: float64(cachedReadTokens) * cacheReadRate,
+		CachedWriteCost: float64(cachedWriteTokens-cachedWriteTokensAbove1hr-cachedWriteTokensAbove12hr)*cacheWriteRate +
+			float64(cachedWriteTokensAbove1hr)*cacheWriteAbove1hrRate + float64(cachedWriteTokensAbove12hr)*cacheWriteAbove12hrRate,
 	}
 	inputCost := inputDetails.TextCost + inputDetails.CachedReadCost + inputDetails.CachedWriteCost
 	return newInputOutputCostWithDetails(inputCost, outputCost, inputDetails, nil)
@@ -2479,7 +2481,7 @@ func tieredCacheCreationInputTokenRate(pricing *configstoreTables.TableModelPric
 	return tieredInputRate(pricing, totalTokens, tier)
 }
 
-// tieredCacheCreationInputAbove1hrTokenRate returns the configured long-lived cache-write rate.
+// tieredCacheCreationInputAbove1hrTokenRate returns the configured Anthropic 1h cache-write rate.
 func tieredCacheCreationInputAbove1hrTokenRate(pricing *configstoreTables.TableModelPricing, totalTokens int, tier serviceTier) float64 {
 	// Fast mode (Anthropic) is a flat rate across the full context window.
 	if tier.isFast && pricing.CacheCreationInputTokenCostAbove1hrFast != nil {
@@ -2495,6 +2497,51 @@ func tieredCacheCreationInputAbove1hrTokenRate(pricing *configstoreTables.TableM
 		return *pricing.CacheCreationInputTokenCostAbove1hr
 	}
 	return tieredCacheCreationInputTokenRate(pricing, totalTokens, tier)
+}
+
+// tieredCacheCreationInputAbove12hrTokenRate returns the OpenAI 12h cache-write rate, tiered like tieredCacheCreationInputTokenRate.
+func tieredCacheCreationInputAbove12hrTokenRate(pricing *configstoreTables.TableModelPricing, totalTokens int, tier serviceTier) float64 {
+	if tier.isUltrafast {
+		if totalTokens > TokenTierAbove272K && pricing.CacheCreationInputTokenCostAbove12hrAbove272kTokensUltrafast != nil {
+			return *pricing.CacheCreationInputTokenCostAbove12hrAbove272kTokensUltrafast
+		}
+		if pricing.CacheCreationInputTokenCostAbove12hrUltrafast != nil {
+			return *pricing.CacheCreationInputTokenCostAbove12hrUltrafast
+		}
+	}
+	if tier.isFlex {
+		if totalTokens > TokenTierAbove272K && pricing.CacheCreationInputTokenCostAbove12hrAbove272kTokensFlex != nil {
+			return *pricing.CacheCreationInputTokenCostAbove12hrAbove272kTokensFlex
+		}
+		if pricing.CacheCreationInputTokenCostAbove12hrFlex != nil {
+			return *pricing.CacheCreationInputTokenCostAbove12hrFlex
+		}
+	}
+	if tier.isPriority {
+		if totalTokens > TokenTierAbove272K && pricing.CacheCreationInputTokenCostAbove12hrAbove272kTokensPriority != nil {
+			return *pricing.CacheCreationInputTokenCostAbove12hrAbove272kTokensPriority
+		}
+		if pricing.CacheCreationInputTokenCostAbove12hrPriority != nil {
+			return *pricing.CacheCreationInputTokenCostAbove12hrPriority
+		}
+	}
+	if totalTokens > TokenTierAbove272K && pricing.CacheCreationInputTokenCostAbove12hrAbove272kTokens != nil {
+		return *pricing.CacheCreationInputTokenCostAbove12hrAbove272kTokens
+	}
+	if pricing.CacheCreationInputTokenCostAbove12hr != nil {
+		return *pricing.CacheCreationInputTokenCostAbove12hr
+	}
+	return tieredCacheCreationInputTokenRate(pricing, totalTokens, tier)
+}
+
+// longTTLCacheWriteTokens returns the Anthropic 1h and OpenAI 12h write tokens, clamped to cachedWriteTokens.
+func longTTLCacheWriteTokens(details *schemas.ChatPromptTokensDetails, cachedWriteTokens int) (above1hr, above12hr int) {
+	if details == nil || details.CachedWriteTokenDetails == nil {
+		return 0, 0
+	}
+	above1hr = min(max(details.CachedWriteTokenDetails.CachedWriteTokens1h, 0), cachedWriteTokens)
+	above12hr = min(max(details.CachedWriteTokenDetails.CachedWriteTokens12h, 0), cachedWriteTokens-above1hr)
+	return above1hr, above12hr
 }
 
 // inputTierTokens returns prompt tokens used to select a pricing tier.
