@@ -28,17 +28,17 @@ import (
 // through without a code change. Exact-match types (currently just
 // "mcp_toolset") are handled separately.
 // The provider flag is the fallback; a datasheet row for this (provider, model)
-// overrides it. computer_ has no datasheet field, so it stays provider-level.
+// overrides it, except for web_search_ and code_execution_, where the host flag is an
+// upper bound (hostServesWebSearch). computer_ has no datasheet field, so it stays
+// provider-level.
 var anthropicToolTypePrefixToFeature = map[string]func(ProviderFeatureSupport, schemas.ModelCaps) bool{
-	// OR in the Nova carve-outs to match ValidateResponsesToolsForProvider —
-	// WebSearch/CodeExecution are false for Bedrock, but WebSearchNova/CodeExecNova
-	// are true for Nova 2 (nova_grounding / nova_code_interpreter system tools).
+	// Host-bounded to match ValidateResponsesToolsForProvider — see hostServesWebSearch.
 	"web_search_": func(f ProviderFeatureSupport, c schemas.ModelCaps) bool {
-		return c.SupportsWebSearch(f.WebSearch || novaCarveOut(f.WebSearchNova, c))
+		return hostServesWebSearch(f, c)
 	},
 	"web_fetch_": func(f ProviderFeatureSupport, c schemas.ModelCaps) bool { return c.SupportsWebFetch(f.WebFetch) },
 	"code_execution_": func(f ProviderFeatureSupport, c schemas.ModelCaps) bool {
-		return c.SupportsCodeExecution(f.CodeExecution || novaCarveOut(f.CodeExecNova, c))
+		return hostServesCodeExecution(f, c)
 	},
 	"computer_": func(f ProviderFeatureSupport, c schemas.ModelCaps) bool { return f.ComputerUse },
 	"bash_":     func(f ProviderFeatureSupport, c schemas.ModelCaps) bool { return c.SupportsBashTool(f.Bash) },
@@ -57,6 +57,22 @@ var anthropicToolTypePrefixToFeature = map[string]func(ProviderFeatureSupport, s
 // reach InvokeModel as web_search_* / code_execution_*, which Bedrock rejects with 400.
 func novaCarveOut(flag bool, caps schemas.ModelCaps) bool {
 	return flag && schemas.IsNova2Model(caps.Model())
+}
+
+// hostServesWebSearch reports whether the web_search server tool may be sent to this host
+// and model. Unlike the other server tools, the host flag (or the Nova 2 carve-out) is an
+// upper bound, not a fallback: the datasheet marks Claude supports_web_search on hosts
+// that do not serve the tool (Bedrock, Bedrock Mantle), and letting that record win sent
+// web_search_20250305 to InvokeModel, which answers 400. A record can still narrow it.
+func hostServesWebSearch(f ProviderFeatureSupport, caps schemas.ModelCaps) bool {
+	host := f.WebSearch || novaCarveOut(f.WebSearchNova, caps)
+	return host && caps.SupportsWebSearch(host)
+}
+
+// hostServesCodeExecution is hostServesWebSearch for the code_execution server tool.
+func hostServesCodeExecution(f ProviderFeatureSupport, caps schemas.ModelCaps) bool {
+	host := f.CodeExecution || novaCarveOut(f.CodeExecNova, caps)
+	return host && caps.SupportsCodeExecution(host)
 }
 
 // ErrReasoningMaxTokensTooLow marks a reasoning/thinking configuration error caused by
@@ -163,11 +179,11 @@ func ValidateResponsesToolsForProvider(tools []schemas.ResponsesTool, caps schem
 		supported := true
 		switch tool.Type {
 		case schemas.ResponsesToolTypeWebSearch, schemas.ResponsesToolTypeWebSearchPreview:
-			supported = caps.SupportsWebSearch(features.WebSearch || novaCarveOut(features.WebSearchNova, caps))
+			supported = hostServesWebSearch(features, caps)
 		case schemas.ResponsesToolTypeWebFetch:
 			supported = caps.SupportsWebFetch(features.WebFetch)
 		case schemas.ResponsesToolTypeCodeInterpreter:
-			supported = caps.SupportsCodeExecution(features.CodeExecution || novaCarveOut(features.CodeExecNova, caps))
+			supported = hostServesCodeExecution(features, caps)
 		case schemas.ResponsesToolTypeComputerUsePreview:
 			supported = features.ComputerUse
 		case schemas.ResponsesToolTypeComputer:
