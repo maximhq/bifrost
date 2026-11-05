@@ -350,6 +350,7 @@
 		"disableAutoToolInjection": "禁用自动工具注入",
 		"allowTempToken": "允许临时令牌认证链接",
 		"codeModeBinding": "代码模式绑定级别",
+		"codeModeSettings": "代码模式设置",
 		"selectBindingLevel": "选择绑定级别",
 		"serverLevel": "服务器级",
 		"toolLevel": "工具级",

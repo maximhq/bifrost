@@ -490,7 +490,8 @@ func (h *MCPServerHandler) runTool(ctx context.Context, toolName string, declare
 	}
 
 	// Execute the tool via tool executor
-	toolMessage, err := h.toolManager.ExecuteChatMCPTool(withInputResumption(withCallerCapabilities(ctx), request.Params.MultiRoundTripParams), &toolCall)
+	ctx = withInputResumption(withCallerCapabilities(ctx), request.Params.MultiRoundTripParams)
+	toolMessage, err := h.toolManager.ExecuteChatMCPTool(ctx, &toolCall)
 	if err != nil {
 		logger.Debug("[mcp-server] tool handler error tool=%q error=%s", toolName, bifrost.GetErrorMessage(err))
 		if authReq := err.ExtraFields.MCPAuthRequired; authReq != nil {
@@ -500,7 +501,12 @@ func (h *MCPServerHandler) runTool(ctx context.Context, toolName string, declare
 	}
 	logger.Debug("[mcp-server] tool handler success tool=%q", toolName)
 
-	return gatewayToolResult(toolMessage, declaresOutputSchema)
+	result := gatewayToolResult(toolMessage, declaresOutputSchema)
+	if result.NeedsInput() {
+		// The caller's retry names this call, so its rounds share one id in the MCP logs.
+		result.RequestState = coremcp.WrapRoundTripState(coremcp.CallRoundTripID(ctx), result.RequestState)
+	}
+	return result
 }
 
 // gatewayTool is the MCP form of a Bifrost tool, as tools/list sends it.

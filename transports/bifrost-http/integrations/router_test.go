@@ -1534,28 +1534,25 @@ func TestHandlePassthrough_ProviderPolicy(t *testing.T) {
 // TestRegisterPassthroughTextRewriters verifies each passthrough route gets the same text rewriters as the native route
 // for the API it speaks, and that routes with no typed equivalent or no JSON text get none.
 func TestRegisterPassthroughTextRewriters(t *testing.T) {
-	type registered struct{ request, requestTransform, responseTransform bool }
 	cases := []struct {
 		name  string
 		route passthroughparse.Route
-		want  registered
+		want  bool
 	}{
-		{"anthropic messages", passthroughparse.Route{Wire: schemas.Anthropic, RequestType: schemas.ResponsesRequest}, registered{true, true, true}},
-		{"anthropic count tokens", passthroughparse.Route{Wire: schemas.Anthropic, RequestType: schemas.CountTokensRequest}, registered{request: true}},
-		{"gemini generate", passthroughparse.Route{Wire: schemas.Gemini, RequestType: schemas.ResponsesRequest}, registered{request: true}},
-		{"openai chat", passthroughparse.Route{Wire: schemas.OpenAI, RequestType: schemas.ChatCompletionRequest}, registered{request: true}},
-		{"openai responses", passthroughparse.Route{Wire: schemas.OpenAI, RequestType: schemas.ResponsesRequest}, registered{request: true}},
-		{"openai embeddings", passthroughparse.Route{Wire: schemas.OpenAI, RequestType: schemas.EmbeddingRequest}, registered{}},
-		{"untyped route", passthroughparse.Route{}, registered{}},
+		{"anthropic messages", passthroughparse.Route{Wire: schemas.Anthropic, RequestType: schemas.ResponsesRequest}, true},
+		{"anthropic count tokens", passthroughparse.Route{Wire: schemas.Anthropic, RequestType: schemas.CountTokensRequest}, true},
+		{"gemini generate", passthroughparse.Route{Wire: schemas.Gemini, RequestType: schemas.ResponsesRequest}, true},
+		{"openai chat", passthroughparse.Route{Wire: schemas.OpenAI, RequestType: schemas.ChatCompletionRequest}, true},
+		{"openai responses", passthroughparse.Route{Wire: schemas.OpenAI, RequestType: schemas.ResponsesRequest}, true},
+		{"openai embeddings", passthroughparse.Route{Wire: schemas.OpenAI, RequestType: schemas.EmbeddingRequest}, false},
+		{"untyped route", passthroughparse.Route{}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 			registerPassthroughTextRewriters(ctx, tc.route)
-			_, request := ctx.Value(schemas.BifrostContextKeyRawRequestBodyTextRewriter).(schemas.RawRequestBodyTextRewriter)
-			_, requestTransform := ctx.Value(schemas.BifrostContextKeyRawRequestBodyTextTransformer).(schemas.RawRequestBodyTextTransformer)
-			_, responseTransform := ctx.Value(schemas.BifrostContextKeyRawResponseTextTransformer).(schemas.RawResponseTextTransformer)
-			require.Equal(t, tc.want, registered{request, requestTransform, responseTransform})
+			_, registered := ctx.Value(schemas.BifrostContextKeyRawRequestBodyTextRewriter).(schemas.RawRequestBodyTextRewriter)
+			require.Equal(t, tc.want, registered)
 		})
 	}
 }

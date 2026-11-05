@@ -1935,6 +1935,13 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 					},
 				}
 
+				// Claude calling a client-run tool_search goes back as the caller's
+				// tool_search_call; its arguments arrive whole on output_item.done.
+				if restoreClientToolSearchCall(item, clientToolSearchFrom(ctx)) {
+					item.Status = &statusInProgress
+					item.Arguments = nil
+				}
+
 				// Initialize argument buffer for this tool call
 				state.ToolArgumentBuffers[outputIndex] = ""
 
@@ -2208,6 +2215,10 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 					// Check if this is the structured output tool - if so, just accumulate without emitting
 					if state.StructuredOutputIndex != nil && *state.StructuredOutputIndex == outputIndex {
 						// This is the structured output tool - accumulate without emitting delta events
+						return nil, nil, false
+					}
+					// A client tool_search_call has no argument events; done carries them.
+					if isStreamedClientToolSearchCall(state, outputIndex) {
 						return nil, nil, false
 					}
 
@@ -3023,7 +3034,15 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 			// Check if this is a tool call (function_call or MCP call)
 			// If we have accumulated arguments, emit appropriate arguments.done first
 			// Note: we check hasArgs only (not accumulatedArgs != "") to handle zero-arg tool calls
-			if accumulatedArgs, hasArgs := state.ToolArgumentBuffers[outputIndex]; hasArgs {
+			if accumulatedArgs, hasArgs := state.ToolArgumentBuffers[outputIndex]; hasArgs && isStreamedClientToolSearchCall(state, outputIndex) {
+				if accumulatedArgs == "" {
+					accumulatedArgs = "{}"
+				}
+				storedItem := state.OutputItems[outputIndex]
+				storedItem.ResponsesToolMessage.Arguments = &accumulatedArgs
+				storedItem.Status = schemas.Ptr("completed")
+				delete(state.ToolArgumentBuffers, outputIndex)
+			} else if hasArgs {
 				// Update the stored output item with the final arguments
 				if storedItem, exists := state.OutputItems[outputIndex]; exists && storedItem.ResponsesToolMessage != nil {
 					storedItem.ResponsesToolMessage.Arguments = &accumulatedArgs
@@ -4841,7 +4860,9 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 	// capModel is the canonical model string used only for capability/version
 	// lookups; the wire Model below stays exactly as the caller sent it.
 	capModel := schemas.ResolveCanonicalModel(ctx, bifrostReq.Model)
-	caps := schemas.ResolveModelCaps(bifrostReq.Provider, capModel)
+	// A custom provider resolves to the built-in provider it wraps, so its datasheet row
+	// applies here as it already does in the request builder's re-strip.
+	caps := schemas.ResolveModelCaps(schemas.ResolveBaseProvider(ctx, bifrostReq.Provider), capModel)
 	var requestTools []schemas.ResponsesTool
 	if bifrostReq.Params != nil {
 		requestTools = bifrostReq.Params.Tools
@@ -4849,6 +4870,26 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 	input, err := prepareInlineToolDefinitions(bifrostReq.Input, requestTools, caps, bifrostReq.Provider)
 	if err != nil {
 		return nil, err
+	}
+	// A client-run tool_search, declared in tools or added by a tool_addition block, goes
+	// upstream as a function; see clienttoolsearch.go.
+	tools := requestTools
+	var inlineSearch *schemas.ResponsesTool
+	var searchName string
+	// A context reused from an earlier request must not restore by that request's name.
+	if ctx != nil && ctx.Value(anthropicEgressClientToolSearchKey) != nil {
+		ctx.ClearValue(anthropicEgressClientToolSearchKey)
+	}
+	if declared := hasClientToolSearchTool(requestTools); declared || inlineClientToolSearch(input) != nil {
+		if !declared {
+			inlineSearch = inlineClientToolSearch(input)
+		}
+		searchName = clientToolSearchName(requestTools, input)
+		if ctx != nil {
+			ctx.SetValue(anthropicEgressClientToolSearchKey, searchName)
+		}
+		tools, input = lowerClientToolSearch(requestTools, input, searchName)
+		input = rewriteClientToolSearchHistory(input, searchName, bifrostReq.NamespaceToolAliases)
 	}
 	// Fable 5.1+ rejects tool_choice "any"/"tool" outright, so every forced
 	// choice below — the caller's and the synthetic structured-output pin — is
@@ -5255,7 +5296,7 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 
 		// Convert tools
 		if bifrostReq.Params.Tools != nil {
-			anthropicTools, mcpServers, err := convertBifrostToolsToAnthropic(caps, bifrostReq.Params.Tools, bifrostReq.Provider)
+			anthropicTools, mcpServers, err := convertBifrostToolsToAnthropic(caps, tools, bifrostReq.Provider)
 			if err != nil {
 				return nil, err
 			}
@@ -5300,6 +5341,18 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 
 	if bifrostReq.Input != nil {
 		anthropicMessages, systemContent := ConvertBifrostMessagesToAnthropicMessages(ctx, input, true, caps)
+		// A search added only by a tool_addition the model or its placement cannot take
+		// would leave the history and the restore naming an undeclared tool, so it is
+		// declared in tools instead.
+		// It goes through the regular conversion so its own flags (cache_control,
+		// defer_loading, allowed_callers) carry over as they do from tools.
+		if inlineSearch != nil && !messagesAddTool(anthropicMessages, searchName) {
+			searchTools, _, err := convertBifrostToolsToAnthropic(caps, []schemas.ResponsesTool{clientToolSearchAsFunction(inlineSearch, searchName)}, bifrostReq.Provider)
+			if err != nil {
+				return nil, err
+			}
+			anthropicReq.Tools = append(anthropicReq.Tools, searchTools...)
+		}
 
 		// Instructions lead the system prompt, ahead of any system/developer input (OpenAI semantics)
 		if bifrostReq.Params != nil && bifrostReq.Params.Instructions != nil && *bifrostReq.Params.Instructions != "" {
@@ -5550,6 +5603,11 @@ func (response *AnthropicMessageResponse) ToBifrostResponsesResponse(ctx *schema
 						}
 						m.ResponsesToolMessage.ResponsesCodeExecutionCall.ContainerExpiresAt = response.Container.ExpiresAt
 					}
+				}
+			}
+			if searchName := clientToolSearchFrom(ctx); searchName != "" {
+				for i := range outputMessages {
+					restoreClientToolSearchCall(&outputMessages[i], searchName)
 				}
 			}
 			bifrostResp.Output = outputMessages
@@ -6726,10 +6784,46 @@ func convertSingleAnthropicMessageToBifrostMessages(ctx *schemas.BifrostContext,
 	// Handle content blocks
 	if msg.Content.ContentBlocks != nil {
 		roleVal := schemas.ResponsesMessageRoleType(msg.Role)
-		return attachPerMessageEffort(msg, convertAnthropicContentBlocksToResponsesMessagesOrdered(ctx, msg.Content.ContentBlocks, &roleVal, isOutput, structuredOutputToolName, preserveThinkingOrder))
+		converted := convertAnthropicContentBlocksToResponsesMessagesOrdered(ctx, msg.Content.ContentBlocks, &roleVal, isOutput, structuredOutputToolName, preserveThinkingOrder)
+		if !isOutput {
+			converted = mergeAdjacentUserInputMessages(converted)
+		}
+		return attachPerMessageEffort(msg, converted)
 	}
 
 	return attachPerMessageEffort(msg, nil)
+}
+
+// mergeAdjacentUserInputMessages folds consecutive input message items converted from one
+// Anthropic user turn back into a single item. The block converters emit one item per text,
+// image or document block, and egress maps items to messages one to one, so without this a
+// three-block user turn went upstream as three user messages: the provider indexed its errors
+// against messages the client never sent, and OpenAI-shaped egresses saw the same split.
+// Only items from the same turn are merged; tool results, compaction and fallback items
+// (which carry a type other than message, or an ID) stay where they are, so block order holds.
+func mergeAdjacentUserInputMessages(msgs []schemas.ResponsesMessage) []schemas.ResponsesMessage {
+	if len(msgs) < 2 {
+		return msgs
+	}
+	merged := msgs[:1]
+	for i := 1; i < len(msgs); i++ {
+		last := &merged[len(merged)-1]
+		if isMergeableUserInputMessage(last) && isMergeableUserInputMessage(&msgs[i]) {
+			last.Content.ContentBlocks = append(last.Content.ContentBlocks, msgs[i].Content.ContentBlocks...)
+			continue
+		}
+		merged = append(merged, msgs[i])
+	}
+	return merged
+}
+
+// isMergeableUserInputMessage reports whether an item is a plain user message holding content
+// blocks, the only shape mergeAdjacentUserInputMessages folds together.
+func isMergeableUserInputMessage(msg *schemas.ResponsesMessage) bool {
+	return msg.Type != nil && *msg.Type == schemas.ResponsesMessageTypeMessage &&
+		msg.Role != nil && *msg.Role == schemas.ResponsesInputMessageRoleUser &&
+		msg.ID == nil && msg.Status == nil && msg.OutputConfig == nil &&
+		msg.Content != nil && msg.Content.ContentStr == nil && len(msg.Content.ContentBlocks) > 0
 }
 
 // attachPerMessageEffort carries an Anthropic per-message output_config (beta
@@ -6780,7 +6874,11 @@ func convertSingleAnthropicMessageToBifrostMessagesGrouped(msg *AnthropicMessage
 	// Handle content blocks with grouping for text and tool calls
 	if msg.Content.ContentBlocks != nil {
 		roleVal := schemas.ResponsesMessageRoleType(msg.Role)
-		return attachPerMessageEffort(msg, convertAnthropicContentBlocksToResponsesMessagesGrouped(msg.Content.ContentBlocks, &roleVal, isOutput))
+		converted := convertAnthropicContentBlocksToResponsesMessagesGrouped(msg.Content.ContentBlocks, &roleVal, isOutput)
+		if !isOutput {
+			converted = mergeAdjacentUserInputMessages(converted)
+		}
+		return attachPerMessageEffort(msg, converted)
 	}
 
 	return attachPerMessageEffort(msg, nil)
@@ -10443,6 +10541,10 @@ func convertBifrostToolToAnthropic(caps schemas.ModelCaps, tool *schemas.Respons
 		}
 		return anthropicTool
 	case schemas.ResponsesToolTypeToolSearch:
+		if isClientToolSearchTool(tool) {
+			// The caller runs this search over tools only it holds; see clienttoolsearch.go.
+			return clientToolSearchFunction(tool, clientToolSearchFunctionName)
+		}
 		toolSearchType := AnthropicToolTypeToolSearchBM2520251119
 		toolSearchName := AnthropicToolNameToolSearchBM25
 		if tool.Name != nil && strings.Contains(*tool.Name, "regex") {
@@ -10801,47 +10903,10 @@ func (block AnthropicContentBlock) toBifrostResponsesDocumentBlock() schemas.Res
 		}
 	}
 
-	// Anthropic's document block has an optional `title`; OpenAI's Responses
-	// API rejects an input_file that carries inline file_data without a
-	// filename. Synthesize one so a title-less document (the common case when
-	// a tool returns a PDF) still converts into an acceptable request.
-	file := resultBlock.ResponsesInputMessageContentBlockFile
-	if file.FileData != nil && (file.Filename == nil || *file.Filename == "") {
-		file.Filename = schemas.Ptr(defaultDocumentFilename(src))
-	}
-
+	// A title-less document stays title-less here: a synthesized filename would
+	// come back to Anthropic as a title the client never sent. Egresses that
+	// require a filename beside inline file_data (OpenAI) default it themselves.
 	return resultBlock
-}
-
-// defaultDocumentFilename builds a filename for a document block that has no
-// title, picking the extension from the source's media type. Anthropic
-// defaults document blocks to PDF, so that's the fallback.
-func defaultDocumentFilename(src *AnthropicSource) string {
-	mediaType := ""
-	if src != nil && src.MediaType != nil {
-		mediaType = *src.MediaType
-	}
-	if src != nil && src.Type == "text" {
-		mediaType = "text/plain"
-	}
-
-	ext := ".pdf"
-	switch mediaType {
-	case "", "application/pdf":
-		ext = ".pdf"
-	case "text/plain":
-		ext = ".txt"
-	default:
-		// "application/json" -> ".json", "text/markdown" -> ".markdown".
-		if _, subtype, found := strings.Cut(mediaType, "/"); found && subtype != "" {
-			// Strip vendor/suffix decorations: "vnd.ms-excel+xml" -> "xml".
-			if _, suffix, hasSuffix := strings.Cut(subtype, "+"); hasSuffix && suffix != "" {
-				subtype = suffix
-			}
-			ext = "." + subtype
-		}
-	}
-	return "document" + ext
 }
 
 // Helper functions for MCP tool/server conversion

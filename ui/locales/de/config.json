@@ -350,6 +350,7 @@
 		"disableAutoToolInjection": "Automatische Tool-Injektion deaktivieren",
 		"allowTempToken": "Temporäre Token-Authentifizierungs-Links erlauben",
 		"codeModeBinding": "Code-Modus-Bindungsebene",
+		"codeModeSettings": "Code-Modus-Einstellungen",
 		"selectBindingLevel": "Bindungsebene auswählen",
 		"serverLevel": "Server-Ebene",
 		"toolLevel": "Tool-Ebene",
