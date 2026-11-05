@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/maximhq/bifrost/cli/internal/client"
+	"github.com/maximhq/bifrost/cli/internal/config"
 	"github.com/maximhq/bifrost/cli/internal/harness"
 	"github.com/maximhq/bifrost/cli/internal/runtime"
 )
@@ -52,7 +53,7 @@ func (r *Runner) runChat(ctx context.Context, env *environment, args []string) e
 		args = args[1:]
 	}
 	if len(args) == 0 || args[0] == "--help" || args[0] == "-h" {
-		_, err := fmt.Fprint(r.Out, "Usage: bifrost chat [completions] [MODEL] [--message role:content ...] [--body JSON|--file PATH] [--stream] [flags]\n")
+		_, err := fmt.Fprint(r.Out, "Usage: bifrost chat [completions] [MODEL] [--message role:content ...] [--body JSON|--file PATH] [--stream] [--project-id ID|--project-name NAME] [flags]\n")
 		return err
 	}
 	positionalModel := ""
@@ -62,6 +63,8 @@ func (r *Runner) runChat(ctx context.Context, env *environment, args []string) e
 	}
 	fs := flag.NewFlagSet("bifrost chat", flag.ContinueOnError)
 	fs.SetOutput(r.ErrOut)
+	var project config.Project
+	project.BindFlags(fs)
 	var model string
 	var messages repeatedValue
 	var system string
@@ -91,6 +94,9 @@ func (r *Runner) runChat(ctx context.Context, env *environment, args []string) e
 	fs.Float64Var(&frequencyPenalty, "frequency-penalty", 0, "frequency penalty")
 	fs.StringVar(&user, "user", "", "end-user identifier")
 	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if err := project.ValidateFlags(fs); err != nil {
 		return err
 	}
 	if len(fs.Args()) > 0 {
@@ -138,7 +144,7 @@ func (r *Runner) runChat(ctx context.Context, env *environment, args []string) e
 			stream, _ = payload["stream"].(bool)
 		}
 	}
-	request := client.Request{Method: http.MethodPost, Path: inferencePaths["chat"], Body: body, Auth: client.AuthInference}
+	request := client.Request{Method: http.MethodPost, Path: inferencePaths["chat"], Headers: project.Apply(nil), Body: body, Auth: client.AuthInference}
 	if stream {
 		return env.Client.Stream(ctx, request, r.Out)
 	}
@@ -189,7 +195,7 @@ func (r *Runner) runInfer(ctx context.Context, env *environment, args []string) 
 			operations = append(operations, operation)
 		}
 		sort.Strings(operations)
-		_, err := fmt.Fprintf(r.Out, "Usage: bifrost infer <operation> --body JSON|--file PATH [--header 'Name: value'] [--stream]\n\nOperations:\n  %s\n", strings.Join(operations, "\n  "))
+		_, err := fmt.Fprintf(r.Out, "Usage: bifrost infer <operation> --body JSON|--file PATH [--header 'Name: value'] [--project-id ID|--project-name NAME] [--stream]\n\nOperations:\n  %s\n", strings.Join(operations, "\n  "))
 		return err
 	}
 	operation := args[0]
@@ -202,6 +208,8 @@ func (r *Runner) runInfer(ctx context.Context, env *environment, args []string) 
 	}
 	fs := flag.NewFlagSet("bifrost infer "+operation, flag.ContinueOnError)
 	fs.SetOutput(r.ErrOut)
+	var project config.Project
+	project.BindFlags(fs)
 	var bodyValue string
 	var bodyFile string
 	var headerFlags repeatedValue
@@ -211,6 +219,9 @@ func (r *Runner) runInfer(ctx context.Context, env *environment, args []string) 
 	fs.Var(&headerFlags, "header", "request header as Name: value; repeatable")
 	fs.BoolVar(&stream, "stream", false, "copy a streaming response incrementally")
 	if err := fs.Parse(args[1:]); err != nil {
+		return err
+	}
+	if err := project.ValidateFlags(fs); err != nil {
 		return err
 	}
 	if len(fs.Args()) > 0 {
@@ -231,7 +242,7 @@ func (r *Runner) runInfer(ctx context.Context, env *environment, args []string) 
 	if (contentType == "" || strings.Contains(contentType, "json")) && !json.Valid(body) {
 		return fmt.Errorf("request body must be valid JSON")
 	}
-	request := client.Request{Method: http.MethodPost, Path: path, Headers: headers, Body: body, Auth: client.AuthInference}
+	request := client.Request{Method: http.MethodPost, Path: path, Headers: project.Apply(headers), Body: body, Auth: client.AuthInference}
 	if stream {
 		return env.Client.Stream(ctx, request, r.Out)
 	}
@@ -241,7 +252,7 @@ func (r *Runner) runInfer(ctx context.Context, env *environment, args []string) 
 // runHarness launches one coding agent directly with argument passthrough.
 func (r *Runner) runHarness(ctx context.Context, env *environment, args []string) error {
 	if len(args) == 0 || args[0] == "--help" || args[0] == "-h" {
-		_, err := fmt.Fprint(r.Out, "Usage: bifrost run <claude|codex|gemini|opencode|pi|antigravity> [--model MODEL] [--worktree NAME] [--skip-verify] [-- agent arguments]\n")
+		_, err := fmt.Fprint(r.Out, "Usage: bifrost run <claude|codex|gemini|opencode|pi|antigravity> [--model MODEL] [--project-id ID|--project-name NAME] [--worktree NAME] [--skip-verify] [-- agent arguments]\n")
 		return err
 	}
 	agent, ok := harness.Get(args[0])
@@ -250,6 +261,8 @@ func (r *Runner) runHarness(ctx context.Context, env *environment, args []string
 	}
 	fs := flag.NewFlagSet("bifrost run "+agent.ID, flag.ContinueOnError)
 	fs.SetOutput(r.ErrOut)
+	var project config.Project
+	project.BindFlags(fs)
 	var model string
 	var worktree string
 	var skipVerify bool
@@ -259,11 +272,17 @@ func (r *Runner) runHarness(ctx context.Context, env *environment, args []string
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
 	}
+	if err := project.ValidateFlags(fs); err != nil {
+		return err
+	}
+	if err := harness.ValidateProject(agent.ID, project, false); err != nil {
+		return err
+	}
 	if !skipVerify {
 		if _, err := exec.LookPath(agent.Binary); err != nil {
 			return fmt.Errorf("%s is not installed or not in PATH", agent.Label)
 		}
-		if _, err := env.Client.Do(ctx, client.Request{Path: "/v1/models", Auth: client.AuthInference}); err != nil {
+		if _, err := env.Client.Do(ctx, client.Request{Path: "/v1/models", Headers: project.Apply(nil), Auth: client.AuthInference}); err != nil {
 			return fmt.Errorf("gateway preflight failed: %w", err)
 		}
 	}
@@ -276,7 +295,7 @@ func (r *Runner) runHarness(ctx context.Context, env *environment, args []string
 	return runtime.RunInteractive(ctx, r.Out, r.ErrOut, runtime.LaunchSpec{
 		Harness: agent, BaseURL: env.Client.BaseURL, VirtualKey: env.VirtualKey, AgentToken: agentToken,
 		Context: env.ProfileID, StatePath: env.StatePath, TokenHelperCommand: tokenHelperCommand,
-		Model: strings.TrimSpace(model), Worktree: strings.TrimSpace(worktree), Args: fs.Args(),
+		Project: project, Model: strings.TrimSpace(model), Worktree: strings.TrimSpace(worktree), Args: fs.Args(),
 	})
 }
 

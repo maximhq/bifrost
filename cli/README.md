@@ -4,6 +4,22 @@ The Bifrost CLI combines the existing interactive coding-agent launcher with a
 non-interactive gateway management client. Running `bifrost` without a command
 continues to open the launcher.
 
+## Project selection (Enterprise)
+
+Use `--project-id ID` or `--project-name NAME` on `chat`, `infer`, `request`, direct harness launches, and supported `configure` commands. The flags are mutually exclusive and keep user authentication separate from cost attribution.
+
+```sh
+bifrost claude --project-name customer-alpha
+bifrost infer responses --project-id PROJECT_ID --file request.json --stream
+bifrost configure claude --project-name customer-alpha
+bifrost auth print-token --format claude-desktop --project-id PROJECT_ID
+```
+
+Project-scoped launches support Claude Code, Codex, OpenCode, Pi, and Gemini. Persistent project configuration supports Claude Code, Codex, OpenCode, and Pi. Other combinations return an error. The interactive chooser has no project selector. Native arguments belong after `--`; managed native settings can override generated settings. Desktop helper JSON contains a token and must not be logged or committed.
+
+See [coding-agent project configuration](https://docs.getbifrost.ai/quickstart/cli/coding-agents#attribute-requests-to-a-project) and [Claude Desktop project attribution](https://docs.getbifrost.ai/cli-agents/claude-desktop#attribute-inference-to-a-bifrost-project) for setup, membership, and accounting details.
+
+
 ## Build
 
 From the repository root:

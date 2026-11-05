@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/bytedance/sonic"
+	"github.com/maximhq/bifrost/cli/internal/config"
 )
 
 func TestClaudePreLaunchPinsSelectedModelAcrossClaudeTiers(t *testing.T) {
@@ -762,6 +763,15 @@ func TestReadNativeJSONTreatsEmptyFilesAsEmptySettings(t *testing.T) {
 		}
 		if _, err := readNativeJSON(path); err == nil {
 			t.Errorf("%s: malformed JSONC must fail to parse", name)
+		}
+	}
+}
+
+// TestProjectRejectsNativeExpressions prevents harness interpolation from changing attribution.
+func TestProjectRejectsNativeExpressions(t *testing.T) {
+	for _, tc := range []struct{ agent, value string }{{"pi", "!command"}, {"pi", "customer-$USER"}, {"opencode", "{env:PROJECT}"}, {"opencode", "{file:project.txt}"}, {"gemini", "one,two"}} {
+		if err := ValidateProject(tc.agent, config.Project{Name: tc.value}, false); err == nil {
+			t.Fatalf("accepted %s expression %q", tc.agent, tc.value)
 		}
 	}
 }
