@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"time"
 
 	"github.com/bytedance/sonic"
@@ -258,13 +259,16 @@ func (s *BifrostHTTPServer) updateKeyStatus(
 			continue
 		}
 
-		// Find and update the specific key in the Keys slice
+		// Find and update the specific key in the Keys slice. The slice is
+		// copied first: GetProviderConfigRaw hands the same backing array to
+		// core, which reads it without holding Config.Mu.
 		updated := false
 		for i := range providerConfig.Keys {
 			if providerConfig.Keys[i].ID == ks.KeyID {
-				// Update Status and Description fields
-				providerConfig.Keys[i].Status = ks.Status
-				providerConfig.Keys[i].Description = errorMsg
+				keys := slices.Clone(providerConfig.Keys)
+				keys[i].Status = ks.Status
+				keys[i].Description = errorMsg
+				providerConfig.Keys = keys
 				updated = true
 				break
 			}
