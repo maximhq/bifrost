@@ -8,13 +8,17 @@ icon: "compress"
 
 Coding and research agents re-send the whole conversation on every turn. Tool outputs (file reads, logs, search results) are usually the largest part of it, and the model rarely needs a 2,000-line log from ten turns ago.
 
-The Prompt Compression plugin shortens **old** tool outputs before the request is sent to the provider. When whitespace normalisation is enabled (the default once the plugin is on), it also tidies trailing whitespace in those same old tool outputs. User, assistant and system text and recent tool outputs are never modified. It works on Chat Completions and Responses API requests, including streaming. It is **disabled by default** and does nothing until you enable it. There is no LLM summarisation: the plugin only trims, de-duplicates and cleans up text.
+The Prompt Compression plugin shortens **old** tool outputs before the request is sent to the provider. It edits only tool results that are at least `tool_output_min_age_turns` assistant turns old and outside the cache-protected prefix: `tool` messages in Chat Completions and `function_call_output` items in Responses. User, assistant and system text, other output types and recent tool outputs are never modified. It works on Chat Completions and Responses API requests, including streaming. It is **disabled by default** and does nothing until you enable it. There is no LLM summarisation: the plugin only trims, de-duplicates and cleans up text.
 
 It helps most when your agents:
 
 - run long tool-calling loops (many turns per task),
 - read large files or dump big logs and search results,
 - re-read the same file or re-run the same command.
+
+<Warning>
+Check [what the plugin can reach](#limitations) before relying on it. Requests that go to the provider as a raw body, which includes Claude Code traffic to Claude models, are not compressed.
+</Warning>
 
 ## Enabling
 
@@ -54,29 +58,29 @@ You can also enable it at runtime through the plugins API (`POST /api/plugins` t
 
 ## What it does
 
-Three strategies run in this order on each request:
+Three strategies run in this order on each request. All of them edit **eligible** outputs only: tool results outside the protected prefix that are at least `tool_output_min_age_turns` assistant turns old.
 
 <Steps>
   <Step title="Deduplicate tool outputs">
-    If an older tool output is byte-identical to a newer one, the older copy is replaced with a pointer to the immediately next newer identical copy:
+    If an eligible tool output is byte-identical to a newer one, it is replaced with a pointer to the immediately next newer identical copy:
 
     ```text
     [identical to the output of call <call id>]
     ```
 
-    The call id is the Chat `tool_call_id` or the Responses `call_id`. With three identical outputs, the first points at the second and the second points at the third, so a stub never changes when a later duplicate appears. Only outputs made entirely of text are compared. This applies to every tool output outside the protected prefix regardless of age. An older copy is replaced only if the next newer copy has a call id to point at and the stub is shorter than the text. Controlled by `dedupe_tool_outputs`.
+    The call id is the Chat `tool_call_id` or the Responses `call_id`. The decision is made once, when the older copy becomes eligible: it is stubbed only if the newer copy already existed at that moment. A duplicate that arrives later never rewrites an output that was already sent (the older copy can still be trimmed). Only outputs made entirely of text are compared. A copy is replaced only if the next newer copy has a call id to point at and the stub is shorter than the text. Controlled by `dedupe_tool_outputs`.
   </Step>
   <Step title="Trim old, large tool outputs">
-    A tool output is trimmed when it is at least `tool_output_min_age_turns` assistant turns old **and** its estimated size is at least `tool_output_min_tokens`. The first `keep_head_lines` and last `keep_tail_lines` lines are kept, and the lines in between are replaced by one marker line:
+    An eligible tool output is trimmed when its estimated size is at least `tool_output_min_tokens`. The first `keep_head_lines` and last `keep_tail_lines` lines are kept, and the lines in between are replaced by one marker line:
 
     ```text
     [… 1840 tokens trimmed by promptcompression …]
     ```
 
-    Any `tool_output_min_age_turns` of 1 or more (the default is 2) keeps the newest tool outputs untouched; 0 makes every large tool output eligible, including the newest. Only text is changed; images, files and audio are left as they are.
+    `tool_output_min_age_turns` must be 1 or more (the default is 2), so the newest tool output, which the model has not read yet, is never edited. Trimming is idempotent: text that already carries a marker at the cut point is left alone. Only text is changed; images, files and audio are left as they are.
   </Step>
   <Step title="Normalise whitespace">
-    When `normalize_whitespace` is on, this applies only to old tool outputs (those at least `tool_output_min_age_turns` old, outside the protected prefix), together with trimming. User messages, assistant messages, system text and recent tool outputs are never modified, so the file a coding agent just read still matches the disk byte for byte. Trailing spaces and tabs are stripped from every line, and runs of three or more blank lines are squeezed into one. Leading indentation is **never** touched, so code and YAML stay valid. Controlled by `normalize_whitespace`.
+    Eligible tool outputs also lose trailing spaces and tabs on every line, and runs of three or more blank lines are squeezed into one. Leading indentation is **never** touched, so code and YAML stay valid. An output is never emptied: a whitespace-only output is kept as it was. Controlled by `normalize_whitespace`.
   </Step>
 </Steps>
 
@@ -87,29 +91,36 @@ The plugin is designed so that, in the worst case, your request goes out exactly
 </Note>
 
 - **Structure is preserved.** No message is removed or reordered. Roles, tool call IDs and call/output pairing stay intact.
-- **The cache-protected prefix is byte-identical.** Provider prompt caches match on an exact prefix, so everything up to and including the last cache marker is never modified. Recognised markers:
+- **Stable edits.** While the client's cache-protected prefix does not move, every message already sent stays byte-identical on later requests. The only new edits are at tool outputs that just became old enough. If a client moves a cache marker forward, outputs inside the new protected prefix go back to the text the client sent (they must match it); edits outside the prefix stay.
+- **The cache-protected prefix is byte-identical.** Provider prompt caches match on an exact prefix, so everything up to and including the last client-supplied cache marker is never modified. Recognised markers:
   - Anthropic `cache_control` on content blocks, and on assistant tool calls (Chat)
   - OpenAI `prompt_cache_breakpoint` on content blocks
   - Bedrock `cachePoint` on content blocks
   - Responses API: `cache_control` on a message, and `cache_control` or `prompt_cache_breakpoint` on content blocks (including blocks inside a function-call output)
 - **Leading messages are protected.** The first `protected_leading_messages` messages (default 1, typically the system prompt) are never modified, even without a cache marker.
-- **Automatic caching means no compression.** A Chat request with a request-level `cache_control` (automatic caching) is passed through untouched, because the breakpoint sits at the end of the prompt. This check is Chat-only: the Responses API has no request-level field for it.
-- **Edits must pay off.** A trim or a dedupe stub is kept only if the result is strictly shorter. If the whole request saves less than `min_savings_percent`, the original is sent.
+- **Automatic caching means no compression.** A request with a request-level `cache_control` is passed through untouched, because the breakpoint sits at the end of the prompt. This covers Chat (`cache_control` parameter) and Responses (`cache_control` in the extra params, for example an Anthropic SDK request on `/anthropic/v1/messages`).
+- **Edits must pay off.** A trim or a dedupe stub is kept only if the result is strictly shorter, and the whole request must get strictly smaller. If the eligible outputs save fewer than `min_savings_tokens`, the original is sent.
 - **Fail-open.** Any panic inside the plugin is recovered, a warning is logged, and the original request is sent.
 - **The incoming request is never mutated.** Compression builds a copy, which matters because Bifrost retries and fallbacks reuse the same request.
 
-## Caching trade-off
+## Caching trade-offs
 
 Compression and provider prompt caching pull in opposite directions, so it is worth understanding how they interact.
 
-- **Clients that put a cache breakpoint on the latest message every turn** (for example Claude Code style clients) already protect the entire conversation. The plugin correctly does nothing for them, since changing anything would turn a cache hit into a full-price miss.
-- **Automatic prefix caching without markers** (for example OpenAI) is where the plugin acts. When an output just aged past the threshold and gets trimmed, the cached part of the prompt after it no longer matches, so it is re-billed **once**. From the next turn on, the shorter prefix is cached again. Raise `tool_output_min_age_turns` if you want trimming to happen less often.
-- **Edits stay put once made.** A trimmed or normalised output is rewritten the same way on every later turn, and a dedupe stub points at the next newer identical copy, so it does not change when another duplicate arrives.
+- **Clients that mark the latest message every turn** (for example Claude Code style clients) already protect the entire conversation. For client-supplied markers the plugin does nothing, since changing anything would turn a cache hit into a full-price miss.
+- **Clients that move a marker forward** each turn get the stability guarantee above: outputs that fall inside the new protected prefix revert to the text the client sent, so the prefix still matches.
+- **Automatic prefix caching without markers** (for example OpenAI) is where the plugin acts. When an output just aged past the threshold and gets edited, the cached part of the prompt after it no longer matches and is re-billed.
+- **Steady state.** Each new edit sits at the newest output that became old enough, so every request re-bills the cached content after that edit, roughly the last `tool_output_min_age_turns` turns. Raise `tool_output_min_age_turns` to trade a smaller saving for fewer new edits per request.
+- **A non-zero `min_savings_tokens`** can switch compression on later than the first possible edit, and off again when a client moves a cache marker and the savings drop below the threshold. That is a cache-miss risk, so the default is 0.
+- **Bifrost's own `prompt_cache` injection is invisible to this plugin.** The provider-level `prompt_cache` setting adds cache markers after plugins run. Do not combine the plugin with injection at the last message (`cache_control_injection_points` with `index: -1`, or a `role: user` point, which also matches tool results): every turn would move the marker onto the newest message and the plugin cannot see it. Prefer `auto_inject` (marks the first cacheable block) or an injection point on the system prompt, which leave the edited region alone.
 
 ## Limitations
 
-- **Raw passthrough requests are skipped.** Requests sent with the raw request body (for example Anthropic OAuth / Claude Code subscription passthrough) bypass the structured input, so the plugin leaves them alone.
-- **Line-based trimming.** A single huge line (minified JSON, a one-line log) cannot be shortened, because trimming works on whole lines.
+- **Passthrough reach.** Requests sent with the raw request body skip the plugin because they bypass the structured input. That includes Claude Code requests to Claude models (OAuth or API key) and `/genai` requests with an explicit Gemini model. Large-payload mode is also skipped.
+- **Only `function_call_output` and `tool` outputs are compressed.** Other output types (shell, computer, custom tool and so on) and non-text content are left as they are.
+- **Line-based trimming.** A single huge line (minified JSON, a one-line log) cannot be shortened. A JSON output with many lines can be cut in the middle of a structure, so the model sees invalid JSON around the marker.
+- **The logging plugin stores the uncompressed request.** It runs before this plugin (order 3 versus 10), so logs and the cost shown there do not show what was sent to the provider.
+- **Requests that end on an assistant message or prefill.** For Responses, two model responses can merge into one turn, so the turn count, and with it a dedupe decision, can differ from the one the previous request saw. The stability guarantee assumes each request ends on a whole model response followed by new client input.
 - **Only Chat and Responses requests.** Other request types (embeddings, speech, and so on) pass through.
 - **No LLM summarisation.** Trimmed content is gone from the request; the model sees only the marker.
 
@@ -119,32 +130,33 @@ All fields are optional.
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `tool_output_min_age_turns` | integer (>= 0) | `2` | Number of assistant turns that must come after a tool output before it can be trimmed (1 or more keeps the newest outputs untouched, 0 makes them eligible). In Chat this counts assistant messages; in Responses, runs of consecutive assistant items count once. |
-| `tool_output_min_tokens` | integer (>= 0) | `500` | Estimated size (bytes ÷ 4, rounded up) a tool output must reach (at least this many) before it is trimmed. |
+| `tool_output_min_age_turns` | integer (>= 1) | `2` | Assistant turns that must come after a tool output before it is edited. In Chat this counts assistant messages; in Responses, each run of consecutive model-produced items counts once. |
+| `tool_output_min_tokens` | integer (>= 0) | `500` | Estimated size (bytes ÷ 4, rounded up) an eligible output must reach (at least this many) before it is trimmed. |
 | `keep_head_lines` | integer (>= 0) | `20` | Lines kept from the start of a trimmed output. |
 | `keep_tail_lines` | integer (>= 0) | `20` | Lines kept from the end of a trimmed output. |
-| `dedupe_tool_outputs` | boolean | `true` | Replace each older identical tool output with a pointer to the call of the next newer identical copy. |
-| `normalize_whitespace` | boolean | `true` | In old tool outputs only, strip trailing whitespace and squeeze 3+ blank lines. Indentation is never changed. |
+| `dedupe_tool_outputs` | boolean | `true` | Replace an older identical tool output with a pointer to the call of the next newer identical copy (decided when the older copy becomes eligible). |
+| `normalize_whitespace` | boolean | `true` | In eligible outputs only, strip trailing whitespace and squeeze 3+ blank lines. Indentation is never changed. |
 | `protected_leading_messages` | integer (>= 0) | `1` | Leading messages that are never modified (for example the system prompt). |
-| `min_savings_percent` | integer (0-100) | `5` | Minimum estimated savings required before the compressed request replaces the original. |
+| `min_savings_tokens` | integer (>= 0) | `0` | Minimum estimated tokens the edits must save across the eligible outputs before the compressed request replaces the original. |
 
-Invalid values (negative numbers, `min_savings_percent` above 100) make the plugin fail to start.
+Invalid values (negative numbers, `tool_output_min_age_turns` of 0) make the plugin fail to start.
 
 ## Observability
 
-When a request is actually compressed, the plugin logs one Info line from the post-response hook. For streaming requests it is logged once, on the final chunk, when usage is available:
+When a request is actually compressed, the plugin logs one Info line from the post-response hook. For streaming requests it is logged once, on the final chunk, when usage is available (Chat and Responses streams):
 
 ```text
-promptcompression: request compressed estimated_before=9485 estimated_after=1700 prompt_tokens=1812 cached_read_tokens=0
+promptcompression: request compressed request_id=9f1c2d estimated_before=9485 estimated_after=1700 prompt_tokens=1812 cached_read_tokens=0
 ```
 
 | Field | Meaning |
 |---|---|
+| `request_id` | The Bifrost request id, to match the line with a logged request. |
 | `estimated_before` / `estimated_after` | The plugin's own estimate (bytes ÷ 4) of the text tokens before and after compression. |
 | `prompt_tokens` | Prompt tokens reported by the provider for the request that was sent (0 if not reported). |
 | `cached_read_tokens` | Cached tokens the provider reports reading (0 if not reported). |
 
-Requests that are skipped or fall below `min_savings_percent` log nothing.
+Requests that are skipped, change nothing or fall below `min_savings_tokens` log nothing.
 
 ## Results
 
@@ -155,20 +167,25 @@ These numbers are **estimates** (characters ÷ 4) on a synthetic 12-round coding
 | Metric | Value |
 |---|---|
 | Total across 13 requests, before | 88,399 est. tokens |
-| Total across 13 requests, after | 31,001 est. tokens |
-| Total saved | 64.9% |
-| Mean saved per request | 47.9% |
-| First four requests | 0% (nothing old enough to trim) |
+| Total across 13 requests, after | 32,352 est. tokens |
+| Total saved | 63.4% |
+| Mean saved per request | 46.8% |
+| First four requests | 0% (nothing old enough to edit) |
 
 Savings start once tool outputs age past the threshold, so short sessions see little benefit. The per-turn table is in `plugins/promptcompression/benchmark/estimates.md`. To measure real provider usage with the plugin off and on, use the live replay script described in `plugins/promptcompression/benchmark/README.md`.
 
 ## Performance
 
-Measured with the Go benchmarks in `plugins/promptcompression/main_test.go` on a developer laptop (i7-1265U):
+Measured with the Go benchmarks in `plugins/promptcompression/main_test.go` on a developer laptop (i7-1265U), median of 3 runs:
 
 | Case | Cost |
 |---|---|
-| Request type the plugin skips | ~5 ns/op, 0 allocations |
-| Enabled, nothing to compress (short chat) | ~0.3 µs/op, 3 allocations |
-| Full 12-turn agent fixture (Chat) | ~36 µs/op, 73 allocations |
-| Full 12-turn agent fixture (Responses) | ~40 µs/op, 77 allocations |
+| Request type the plugin skips | ~11 ns/op, 0 allocations |
+| Enabled, short chat, nothing to compress | ~0.11 µs/op, 0 allocations |
+| Enabled, nothing old enough to edit | ~0.12 µs/op, 0 allocations |
+| 12-turn agent fixture (Chat) | ~28 µs/op, 42 allocations |
+| 12-turn agent fixture (Responses) | ~33 µs/op, 46 allocations |
+| 100-round, ~800 KB mixed history (Chat) | ~0.38 ms/op, 457 allocations |
+| 100-round, ~800 KB mixed history (Responses) | ~0.92 ms/op, 541 allocations |
+
+Cost grows with the size of the conversation text. The plugin keeps nothing between requests.

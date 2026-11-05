@@ -1,1 +1,1 @@
-- feat: add cache-aware prompt compression plugin that shortens old tool outputs in Chat and Responses agent-loop requests
+- feat: add cache-aware prompt compression plugin that trims, de-duplicates and cleans up old tool outputs (tool / function_call_output) in Chat and Responses agent-loop requests, with edits that stay byte-identical across turns while the client's cache prefix is unchanged

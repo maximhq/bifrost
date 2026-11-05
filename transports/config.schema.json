@@ -4671,8 +4671,8 @@
                   "properties": {
                     "tool_output_min_age_turns": {
                       "type": "integer",
-                      "description": "Number of assistant turns that must come after a tool output before it can be trimmed (Chat counts assistant messages; Responses counts runs of consecutive assistant items once). Any value of 1 or more keeps the newest tool outputs untouched; 0 makes every tool output eligible",
-                      "minimum": 0,
+                      "description": "Number of assistant turns that must come after a tool output before it is edited (trimmed, whitespace-normalised or replaced by a dedupe stub). Chat counts assistant messages; Responses counts each run of consecutive model-produced items once. Must be at least 1 so the newest tool output, which the model has not read yet, is never edited. Only role tool (Chat) and function_call_output (Responses) outputs are ever edited",
+                      "minimum": 1,
                       "default": 2
                     },
                     "tool_output_min_tokens": {
@@ -4695,12 +4695,12 @@
                     },
                     "dedupe_tool_outputs": {
                       "type": "boolean",
-                      "description": "Replace each older tool output that is byte-identical to a newer one with a short stub naming the call of the next newer identical copy, so existing stubs do not change when another duplicate arrives. Applies regardless of age",
+                      "description": "Replace an older tool output that is byte-identical to a newer one with a short stub naming the call of the next newer identical copy. Decided once, when the older copy becomes old enough to edit: only if the newer copy already existed then, so a duplicate that arrives later never rewrites an output already sent (the older copy may still be trimmed)",
                       "default": true
                     },
                     "normalize_whitespace": {
                       "type": "boolean",
-                      "description": "Strip trailing spaces and tabs and squeeze runs of 3 or more blank lines, in old tool outputs only (those at least tool_output_min_age_turns old). User, assistant and system text and newer tool outputs are never changed. Leading indentation is never changed.",
+                      "description": "Strip trailing spaces and tabs and squeeze runs of 3 or more blank lines, in old tool outputs only (those at least tool_output_min_age_turns old and outside the cache-protected prefix). User, assistant and system text and newer tool outputs are never changed. Leading indentation is never changed, and an output is never emptied (a whitespace-only output is kept as is)",
                       "default": true
                     },
                     "protected_leading_messages": {
@@ -4709,12 +4709,11 @@
                       "minimum": 0,
                       "default": 1
                     },
-                    "min_savings_percent": {
+                    "min_savings_tokens": {
                       "type": "integer",
-                      "description": "Minimum estimated savings, in percent, required before the compressed request replaces the original",
+                      "description": "Minimum estimated tokens (ceil(bytes/4)) the edits must save across the eligible old tool outputs before the compressed request replaces the original. The default 0 compresses whenever an edit makes the request smaller. A higher value can start compression later than the first possible edit, and can switch it off again when a client moves a cache marker forward",
                       "minimum": 0,
-                      "maximum": 100,
-                      "default": 5
+                      "default": 0
                     }
                   },
                   "additionalProperties": false
