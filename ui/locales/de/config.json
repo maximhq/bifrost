@@ -248,7 +248,11 @@
 		"skipAccessProfileKeyCreation": "Keine virtuellen Benutzerschlüssel für Zugriffsprofile erstellen",
 		"skipAccessProfileKeyCreationHelp": "Wenn aktiviert, wird für einen Benutzer beim ersten Zugriffsprofil kein virtueller Schlüssel erstellt. Schlüssel, die der Benutzer bereits besitzt oder die du für ihn hinzufügst, werden weiterhin durch das Profil verwaltet, solange es ihm zugewiesen ist.",
 		"skipAccessProfileKeyDeletion": "Virtuelle Benutzerschlüssel beim Entfernen von Zugriffsprofilen nicht löschen",
-		"skipAccessProfileKeyDeletionHelp": "Wenn aktiviert, bleiben die virtuellen Schlüssel eines Benutzers beim Entfernen seines letzten Zugriffsprofils als normale Schlüssel bestehen, ohne die Anbieter oder Zugriffsrechte des Profils. Beim Löschen des Benutzers werden seine Schlüssel weiterhin gelöscht."
+		"skipAccessProfileKeyDeletionHelp": "Wenn aktiviert, bleiben die virtuellen Schlüssel eines Benutzers beim Entfernen seines letzten Zugriffsprofils als normale Schlüssel bestehen, ohne die Anbieter oder Zugriffsrechte des Profils. Beim Löschen des Benutzers werden seine Schlüssel weiterhin gelöscht.",
+		"entityAccessProfileMode": "Modus für Entitäts-Zugriffsprofile",
+		"entityAccessProfileModeHelp": "Legt fest, wie die Zugriffsprofile der Teams, Geschäftsbereiche und Kunden eines Benutzers mit seinem eigenen Zugriff kombiniert werden, wie die Zugriffsregel eines Projekts. Erweitern: Jedes dieser Profile erweitert, was der Benutzer erreichen kann. Einschränken: Sie begrenzen den Zugriff stattdessen, sodass eine Anfrage nur erlaubt ist, wenn das eigene Profil oder der virtuelle Schlüssel des Benutzers, eines seiner Team- oder Geschäftsbereichsprofile und eines seiner Kundenprofile sie alle erlauben. Gruppen ohne aktives Profil werden übersprungen. Budgets und Ratenlimits werden in beiden Modi gleich belastet.",
+		"entityAccessProfileModeExtend": "Erweitern",
+		"entityAccessProfileModeRestrict": "Einschränken"
 	},
 	"logging": {
 		"title": "Protokolleinstellungen",
