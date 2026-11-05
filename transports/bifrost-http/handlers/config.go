@@ -98,6 +98,7 @@ type ConfigManager interface {
 	UpdateSyncConfig(ctx context.Context) error
 	ForceReloadPricing(ctx context.Context) error
 	UpdateDropExcessRequests(ctx context.Context, value bool)
+	UpdateUsageEstimationTokenizers(ctx context.Context, families []string)
 	UpdateMCPToolManagerConfig(ctx context.Context, maxAgentDepth int, toolExecutionTimeoutInSeconds int, codeModeBindingLevel string, disableAutoToolInject bool, maxInstructionsPerClient int, maxInstructionsTotal int, codeModeLimits *schemas.MCPCodeModeLimits) error
 	ReloadPlugin(ctx context.Context, name string, path *string, pluginConfig any, placement *schemas.PluginPlacement, order *int) error
 	RemovePlugin(ctx context.Context, name string) error
@@ -685,11 +686,30 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		}
 	}
 
+	// Omitted keeps the stored tokenizer families. Validated here, before any live
+	// mutation below, so a rejected name never leaves the runtime changed.
+	_, tokenizersSent := clientConfigFields["usage_estimation_tokenizers"]
+	var tokenizers []string
+	if tokenizersSent {
+		var err error
+		if tokenizers, err = lib.NormalizeUsageEstimationTokenizers(payload.ClientConfig.UsageEstimationTokenizers); err != nil {
+			SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+			return
+		}
+	}
+
 	var restartReasons []string
 
 	if payload.ClientConfig.DropExcessRequests != currentConfig.DropExcessRequests {
 		h.configManager.UpdateDropExcessRequests(ctx, payload.ClientConfig.DropExcessRequests)
 		updatedConfig.DropExcessRequests = payload.ClientConfig.DropExcessRequests
+	}
+
+	// No restart needed: the enabled families take effect on the next cancelled
+	// stream, and newly enabled vocabularies preload in the background.
+	if tokenizersSent && !slices.Equal(tokenizers, currentConfig.UsageEstimationTokenizers) {
+		h.configManager.UpdateUsageEstimationTokenizers(ctx, tokenizers)
+		updatedConfig.UsageEstimationTokenizers = tokenizers
 	}
 
 	if payload.ClientConfig.MCPCodeModeBindingLevel != "" {

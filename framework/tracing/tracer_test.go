@@ -2,6 +2,7 @@ package tracing
 
 import (
 	"context"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -14,6 +15,7 @@ import (
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/grant"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
+	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet"
 	"github.com/stretchr/testify/require"
 )
 
@@ -1638,4 +1640,35 @@ func TestTracer_CancelledStreamEstimatedFromAccumulator(t *testing.T) {
 	require.Equal(t, 8, usage.PromptTokens)
 	require.NotNil(t, usage.Estimation)
 	require.Equal(t, "o200k_base", usage.Estimation.Tokenizer)
+}
+
+// The span of a cancelled stream carries the cost of its estimated usage, priced
+// by the framework at the same catalog rates as reported usage.
+func TestPopulateLLMResponseAttributes_PricesEstimatedCancelledUsage(t *testing.T) {
+	abs, err := filepath.Abs("../modelcatalog/datasheet/testdata/pricing.json")
+	require.NoError(t, err)
+	ds := datasheet.New(nil, bifrost.NewNoOpLogger(), datasheet.Config{URL: "file://" + abs})
+	require.NoError(t, ds.LoadFromURLIntoMemory(context.Background()))
+	tracer := NewTracer(NewTraceStore(time.Hour, nil), modelcatalog.NewTestCatalogWithDatasheet(ds), bifrost.NewNoOpLogger())
+	defer tracer.Stop()
+
+	_, ctx := newHandleTestCtx(tracer)
+	_, handle := tracer.StartSpanID(ctx, "llm", schemas.SpanKindLLMCall)
+	span := tracer.SpanFromHandle(handle)
+	require.NotNil(t, span)
+	span.LLM = &schemas.LLMSpanData{RequestType: schemas.ChatCompletionStreamRequest}
+
+	cancelled := &schemas.BifrostError{Error: &schemas.ErrorField{Type: schemas.Ptr(schemas.RequestCancelled)}}
+	cancelled.PopulateExtraFields(schemas.ChatCompletionStreamRequest, schemas.OpenAI, "gpt-4o", "gpt-4o")
+	cancelled.ExtraFields.BilledUsage = &schemas.BifrostLLMUsage{
+		PromptTokens: 120, CompletionTokens: 40, TotalTokens: 160,
+		Estimation: &schemas.TokenUsageEstimation{Prompt: true, Completion: true, Tokenizer: "o200k_base"},
+	}
+
+	tracer.PopulateLLMResponseAttributes(schemas.NewBifrostContext(ctx, time.Now()), handle, nil, cancelled)
+
+	got, ok := span.GetAttribute(schemas.AttrUsageCost)
+	require.True(t, ok, "no cost recorded for the estimated usage")
+	// gpt-4o testdata: 2.5e-6 input, 1e-5 output.
+	require.InDelta(t, float64(120)*2.5e-6+float64(40)*1e-5, got, 1e-12)
 }

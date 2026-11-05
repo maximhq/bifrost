@@ -46,6 +46,10 @@ type BifrostConfig struct {
 	ModelCatalog             ModelInfoProvider
 	MCPSharedDiscoveryStore  MCPDiscoveryStore
 	MCPPerUserDiscoveryStore MCPDiscoveryStore
+	// UsageEstimationTokenizers lists the embedded tokenizer families
+	// ("anthropic", "deepseek", "llama2", "llama3", or "all") a cancelled stream's
+	// usage is estimated with. Empty uses only o200k_base and cl100k_base.
+	UsageEstimationTokenizers []string
 }
 
 // ModelProvider represents the different AI model providers supported by Bifrost.

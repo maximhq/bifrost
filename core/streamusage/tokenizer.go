@@ -8,8 +8,10 @@ import (
 	"fmt"
 	"math"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"unicode/utf8"
 
 	"github.com/tiktoken-go/tokenizer"
@@ -51,13 +53,85 @@ type counterEntry struct {
 	err   error
 }
 
-// selectCounter picks the model family's vocabulary, loading it on first use,
-// and falls back to an OpenAI encoding when there is none.
+// Families lists the embedded vocabularies Configure can enable.
+var Families = []string{"anthropic", "deepseek", "llama2", "llama3"}
+
+// FamilyAll enables every embedded vocabulary.
+const FamilyAll = "all"
+
+// enabled holds the families Configure turned on. A nil set (the default) means
+// only the base tiktoken encodings are used.
+var enabled atomic.Pointer[map[string]struct{}]
+
+// Configure sets the embedded vocabularies estimation may use. A model whose
+// family is not enabled is counted with o200k_base or cl100k_base. Enabled
+// vocabularies start loading in the background, so the first cancelled stream
+// does not pay the 40-220 ms parse; disabled ones are dropped from the cache to
+// release their 4-18 MB. Names are matched case-insensitively and FamilyAll
+// enables every family. It returns the names it did not recognise.
+func Configure(families []string) (unknown []string) {
+	set := make(map[string]struct{}, len(Families))
+	for _, f := range families {
+		switch f = strings.ToLower(strings.TrimSpace(f)); {
+		case f == FamilyAll:
+			for _, kind := range Families {
+				set[kind] = struct{}{}
+			}
+		case slices.Contains(Families, f):
+			set[f] = struct{}{}
+		case f != "":
+			unknown = append(unknown, f)
+		}
+	}
+	enabled.Store(&set)
+	var preload []string
+	for _, kind := range Families {
+		if _, ok := set[kind]; ok {
+			preload = append(preload, kind)
+		} else {
+			counters.Delete(kind)
+		}
+	}
+	// The entry is stored before the goroutine starts, so a cancel racing the
+	// preload waits on the same once instead of parsing the vocabulary twice.
+	entries := make([]*counterEntry, 0, len(preload))
+	for _, kind := range preload {
+		v, _ := counters.LoadOrStore(kind, &counterEntry{})
+		entries = append(entries, v.(*counterEntry))
+	}
+	if len(entries) > 0 {
+		go func() {
+			for i, e := range entries {
+				e.load(preload[i])
+			}
+		}()
+	}
+	return unknown
+}
+
+// familyEnabled reports whether Configure turned on the family's vocabulary.
+func familyEnabled(kind string) bool {
+	set := enabled.Load()
+	if set == nil {
+		return false
+	}
+	_, ok := (*set)[kind]
+	return ok
+}
+
+// load parses the family's embedded vocabulary exactly once.
+func (e *counterEntry) load(kind string) {
+	e.once.Do(func() { e.value.counter, e.err = loadVocabularyCounter(kind); e.value.name = kind })
+}
+
+// selectCounter picks the model family's vocabulary when that family is
+// enabled, loading it on first use, and falls back to an OpenAI encoding
+// otherwise.
 func selectCounter(model string) (namedCounter, error) {
-	if kind := family(model); kind != "" {
+	if kind := family(model); kind != "" && familyEnabled(kind) {
 		v, _ := counters.LoadOrStore(kind, &counterEntry{})
 		e := v.(*counterEntry)
-		e.once.Do(func() { e.value.counter, e.err = loadVocabularyCounter(kind); e.value.name = kind })
+		e.load(kind)
 		if e.err == nil {
 			return e.value, nil
 		}

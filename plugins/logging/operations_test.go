@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -1377,6 +1378,57 @@ func TestApplyErrorBillingFromBilledUsage_ComputesCostWhenTokensAlreadyParsed(t 
 	}
 	if d := entry.OutputCost - wantOut; d < -1e-9 || d > 1e-9 {
 		t.Fatalf("output_cost %v != %v", entry.OutputCost, wantOut)
+	}
+}
+
+// TestApplyErrorBillingFromBilledUsage_PricesEstimatedUsage covers a cancelled
+// stream whose usage was estimated: the estimate replaces the accumulator's
+// partial usage and its cost, and is priced at the same catalog rates with the
+// input/output split carried on the stored usage.
+func TestApplyErrorBillingFromBilledUsage_PricesEstimatedUsage(t *testing.T) {
+	store := newTestStore(t)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, newTestPricingManager(t), nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	// The accumulator saw no usage chunk, so it priced zero completion tokens.
+	staleCost := 1e-6
+	entry := &logstore.Log{
+		Provider:         string(schemas.OpenAI),
+		Model:            "gpt-4o",
+		PromptTokens:     0,
+		Cost:             &staleCost,
+		TokenUsageParsed: &schemas.BifrostLLMUsage{Cost: &schemas.BifrostCost{TotalCost: staleCost}},
+	}
+	const promptTokens, completionTokens = 120, 40
+	billed := &schemas.BifrostLLMUsage{
+		PromptTokens: promptTokens, CompletionTokens: completionTokens, TotalTokens: promptTokens + completionTokens,
+		Estimation: &schemas.TokenUsageEstimation{Prompt: true, Completion: true, Tokenizer: "o200k_base"},
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	plugin.applyErrorBillingFromBilledUsage(ctx, entry, billed, schemas.ChatCompletionStreamRequest)
+
+	// gpt-4o testdata rates: input 2.5e-6/token, output 1e-5/token.
+	wantIn, wantOut := float64(promptTokens)*2.5e-6, float64(completionTokens)*1e-5
+	if entry.Cost == nil {
+		t.Fatal("no cost computed for the estimated usage")
+	}
+	if math.Abs(*entry.Cost-(wantIn+wantOut)) > 1e-9 {
+		t.Fatalf("cost = %v, want %v from the estimated tokens", *entry.Cost, wantIn+wantOut)
+	}
+	if entry.PromptTokens != promptTokens || entry.CompletionTokens != completionTokens || entry.TotalTokens != promptTokens+completionTokens {
+		t.Fatalf("tokens = %d/%d/%d, want the estimate", entry.PromptTokens, entry.CompletionTokens, entry.TotalTokens)
+	}
+	if entry.TokenUsageParsed.Estimation == nil || entry.TokenUsageParsed.Cost == nil {
+		t.Fatalf("stored usage = %+v, want the estimation provenance and a cost breakdown", entry.TokenUsageParsed)
+	}
+	if err := entry.SerializeFields(); err != nil {
+		t.Fatalf("SerializeFields: %v", err)
+	}
+	if math.Abs(entry.InputCost-wantIn) > 1e-9 || math.Abs(entry.OutputCost-wantOut) > 1e-9 {
+		t.Fatalf("split = %v/%v, want %v/%v", entry.InputCost, entry.OutputCost, wantIn, wantOut)
 	}
 }
 

@@ -334,6 +334,16 @@
           "default": [],
           "description": "Request types excluded from dashboard and log API reads. Logs are still stored; an empty array shows all request types. Editable from the UI under Logs Settings."
         },
+        "usage_estimation_tokenizers": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": ["anthropic", "deepseek", "llama2", "llama3", "all"]
+          },
+          "uniqueItems": true,
+          "default": [],
+          "description": "Embedded tokenizer vocabularies used to estimate the usage of a cancelled or timed-out stream whose provider never reported it. An empty array counts every model with o200k_base or cl100k_base. Each listed family preloads in the background at startup and keeps 4-18 MB in memory; \"all\" enables every family."
+        },
         "allowed_headers": {
           "type": "array",
           "items": {
