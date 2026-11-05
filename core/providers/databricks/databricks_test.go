@@ -18,6 +18,7 @@ import (
 
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/internal/llmtests"
+	"github.com/maximhq/bifrost/core/providers/anthropic"
 	"github.com/maximhq/bifrost/core/providers/databricks"
 	"github.com/maximhq/bifrost/core/schemas"
 )
@@ -886,12 +887,13 @@ func TestDatabricksChatParamsFollowDatasheet(t *testing.T) {
 	}
 }
 
-// TestDatabricksChatStripsAnthropicOnlyFields pins the fields that are dropped whatever the
-// datasheet says. They ride on the neutral chat parameters and serialize straight onto the
-// wire, but both Databricks surfaces are OpenAI-shaped and reject them regardless of which
-// model backs the endpoint — so this is a fact about the surface, not a model capability.
-// The datasheet marks Claude-on-Databricks as supporting prompt caching and context editing,
-// which would otherwise forward Anthropic-native fields onto an OpenAI-shaped request.
+// TestDatabricksChatStripsAnthropicOnlyFields pins the Anthropic-native fields dropped for a
+// model whose row does not opt in. They ride on the neutral chat parameters and serialize
+// straight onto the wire, but both Databricks surfaces are OpenAI-shaped and reject them. The
+// datasheet marks Claude-on-Databricks as supporting prompt caching and context editing, which
+// would otherwise forward Anthropic-native fields onto an OpenAI-shaped request, so those two
+// stay dropped whatever the row says. TestDatabricksAnthropicFieldsFollowDatasheet covers the
+// fields a row can enable.
 func TestDatabricksChatStripsAnthropicOnlyFields(t *testing.T) {
 	t.Parallel()
 
@@ -954,6 +956,318 @@ func TestDatabricksChatStripsAnthropicOnlyFields(t *testing.T) {
 	if request.Params.CacheControl == nil || request.Params.Speed == nil || len(request.Params.MCPServers) == 0 {
 		t.Error("sanitizing the wire request mutated the original request")
 	}
+}
+
+// anthropicExtraParamsStub returns the extra params the Anthropic ingress carries for fields
+// the neutral Responses parameters do not model, plus one passthrough knob that must survive.
+func anthropicExtraParamsStub() map[string]any {
+	return map[string]any{
+		"safeguards":            json.RawMessage(`{"classifier":"auto_mode"}`),
+		"inference_geo":         "us",
+		"speed":                 "fast",
+		"task_budget":           map[string]any{"type": "tokens", "total": 1000},
+		"cache_control":         map[string]any{"type": "ephemeral"},
+		"container":             "container-1",
+		"context_management":    json.RawMessage(`{"edits":[]}`),
+		"diagnostics":           map[string]any{"previous_message_id": "msg_1"},
+		"fallbacks":             "default",
+		"fallback_credit_token": "credit-1",
+		"databricks_test_param": "kept",
+	}
+}
+
+// newBodyCaptureProvider returns a stub provider answering every surface and streaming mode,
+// and a function returning the last request body it received.
+func newBodyCaptureProvider(t *testing.T) (*databricks.DatabricksProvider, schemas.Key, func() map[string]any) {
+	t.Helper()
+	var mu sync.Mutex
+	var gotBody map[string]any
+	provider, server := newStubProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode request body: %v", err)
+		}
+		mu.Lock()
+		gotBody = body
+		mu.Unlock()
+		stream := body["stream"] == true
+		isResponses := strings.HasSuffix(r.URL.Path, "/responses")
+		switch {
+		case stream && isResponses:
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte(stubResponsesStream))
+		case stream:
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte(stubChatStream))
+		case isResponses:
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(stubResponsesResponse))
+		default:
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(stubChatResponse))
+		}
+	})
+	key := schemas.Key{
+		Models: []string{"*"},
+		Value:  *schemas.NewSecretVar("dapi-test"),
+		DatabricksKeyConfig: &schemas.DatabricksKeyConfig{
+			WorkspaceURL: *schemas.NewSecretVar(serverHost(t, server)),
+		},
+	}
+	return provider, key, func() map[string]any {
+		mu.Lock()
+		defer mu.Unlock()
+		return gotBody
+	}
+}
+
+func databricksTestChatRequest(model string, extras map[string]any) *schemas.BifrostChatRequest {
+	return &schemas.BifrostChatRequest{
+		Provider: schemas.Databricks,
+		Model:    model,
+		Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hey")}}},
+		Params:   &schemas.ChatParameters{ExtraParams: extras},
+	}
+}
+
+func databricksTestResponsesRequest(model string, extras map[string]any) *schemas.BifrostResponsesRequest {
+	return &schemas.BifrostResponsesRequest{
+		Provider: schemas.Databricks,
+		Model:    model,
+		Input:    []schemas.ResponsesMessage{{Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hey")}}},
+		Params:   &schemas.ResponsesParameters{ExtraParams: extras},
+	}
+}
+
+func passThroughPostHook(_ *schemas.BifrostContext, result *schemas.BifrostResponse, bErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	return result, bErr
+}
+
+// databricksExtraParamRoutes is every provider entry point that serializes extra params.
+var databricksExtraParamRoutes = []struct {
+	name string
+	send func(t *testing.T, ctx *schemas.BifrostContext, provider *databricks.DatabricksProvider, key schemas.Key, model string, extras map[string]any)
+}{
+	{"chat", func(t *testing.T, ctx *schemas.BifrostContext, provider *databricks.DatabricksProvider, key schemas.Key, model string, extras map[string]any) {
+		t.Helper()
+		if _, bErr := provider.ChatCompletion(ctx, key, databricksTestChatRequest(model, extras)); bErr != nil {
+			t.Fatalf("ChatCompletion returned an error: %v", bErr.Error)
+		}
+	}},
+	{"chat stream", func(t *testing.T, ctx *schemas.BifrostContext, provider *databricks.DatabricksProvider, key schemas.Key, model string, extras map[string]any) {
+		t.Helper()
+		stream, bErr := provider.ChatCompletionStream(ctx, passThroughPostHook, nil, key, databricksTestChatRequest(model, extras))
+		if bErr != nil {
+			t.Fatalf("ChatCompletionStream returned an error: %v", bErr.Error)
+		}
+		for range stream {
+		}
+	}},
+	{"responses", func(t *testing.T, ctx *schemas.BifrostContext, provider *databricks.DatabricksProvider, key schemas.Key, model string, extras map[string]any) {
+		t.Helper()
+		if _, bErr := provider.Responses(ctx, key, databricksTestResponsesRequest(model, extras)); bErr != nil {
+			t.Fatalf("Responses returned an error: %v", bErr.Error)
+		}
+	}},
+	{"responses stream", func(t *testing.T, ctx *schemas.BifrostContext, provider *databricks.DatabricksProvider, key schemas.Key, model string, extras map[string]any) {
+		t.Helper()
+		stream, bErr := provider.ResponsesStream(ctx, passThroughPostHook, nil, key, databricksTestResponsesRequest(model, extras))
+		if bErr != nil {
+			t.Fatalf("ResponsesStream returned an error: %v", bErr.Error)
+		}
+		for range stream {
+		}
+	}},
+}
+
+// TestDatabricksStripsAnthropicExtraParams reproduces "safeguards: Extra inputs are not
+// permitted". Extra params bypass the typed strip and Databricks forwards them verbatim, so
+// every Anthropic-only key has to be removed on both surfaces, streaming or not, while a real
+// passthrough knob and the caller's own request stay untouched.
+func TestDatabricksStripsAnthropicExtraParams(t *testing.T) {
+	t.Parallel()
+	for _, model := range []string{"databricks-claude-sonnet-5", "system.ai.claude-sonnet-5"} {
+		for _, route := range databricksExtraParamRoutes {
+			t.Run(model+" "+route.name, func(t *testing.T) {
+				t.Parallel()
+				provider, key, body := newBodyCaptureProvider(t)
+				ctx, cancel := schemas.NewBifrostContextWithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+
+				extras := anthropicExtraParamsStub()
+				route.send(t, ctx, provider, key, model, extras)
+
+				gotBody := body()
+				for field := range anthropicExtraParamsStub() {
+					_, exists := gotBody[field]
+					if field == "databricks_test_param" {
+						if !exists {
+							t.Errorf("passthrough knob %s was dropped", field)
+						}
+						continue
+					}
+					if exists {
+						t.Errorf("%s reached Databricks: %#v", field, gotBody[field])
+					}
+				}
+				if len(extras) != len(anthropicExtraParamsStub()) {
+					t.Errorf("sanitizing the wire request mutated the caller's extra params: %v", extras)
+				}
+			})
+		}
+	}
+}
+
+// TestDatabricksAnthropicIngressStripsClaudeCodeFields drives the body Claude Code really sends
+// to /anthropic/v1/messages through the ingress converter into the provider.
+func TestDatabricksAnthropicIngressStripsClaudeCodeFields(t *testing.T) {
+	t.Parallel()
+	const claudeCodeBody = `{"model":"databricks-claude-sonnet-5","max_tokens":32,"stream":true,
+		"messages":[{"role":"user","content":"hey"}],
+		"safeguards":{"classifier":"auto_mode"},"diagnostics":{"previous_message_id":"msg_1"},
+		"inference_geo":"us","speed":"fast","fallback_credit_token":"credit-1"}`
+
+	for _, stream := range []bool{false, true} {
+		t.Run(fmt.Sprintf("stream=%v", stream), func(t *testing.T) {
+			t.Parallel()
+			provider, key, body := newBodyCaptureProvider(t)
+			ctx, cancel := schemas.NewBifrostContextWithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+
+			var anthropicReq anthropic.AnthropicMessageRequest
+			if err := json.Unmarshal([]byte(claudeCodeBody), &anthropicReq); err != nil {
+				t.Fatalf("unmarshal Claude Code body: %v", err)
+			}
+			request := anthropicReq.ToBifrostResponsesRequest(ctx)
+			request.Provider = schemas.Databricks
+			request.Model = "databricks-claude-sonnet-5"
+			if request.Params.ExtraParams["safeguards"] == nil {
+				t.Fatal("the ingress did not carry safeguards, so this test pins nothing")
+			}
+
+			if stream {
+				chunks, bErr := provider.ResponsesStream(ctx, passThroughPostHook, nil, key, request)
+				if bErr != nil {
+					t.Fatalf("ResponsesStream returned an error: %v", bErr.Error)
+				}
+				for range chunks {
+				}
+			} else if _, bErr := provider.Responses(ctx, key, request); bErr != nil {
+				t.Fatalf("Responses returned an error: %v", bErr.Error)
+			}
+
+			gotBody := body()
+			for _, field := range []string{"safeguards", "diagnostics", "inference_geo", "speed", "fallback_credit_token"} {
+				if _, exists := gotBody[field]; exists {
+					t.Errorf("%s reached Databricks: %#v", field, gotBody[field])
+				}
+			}
+		})
+	}
+}
+
+// TestDatabricksAnthropicFieldsFollowDatasheet pins the gate the Anthropic hosts use: a field
+// with a datasheet flag is decided by the model's row, and no row means the field is dropped.
+// Fields without a usable flag are dropped even when the row carries related capabilities,
+// since Claude-on-Databricks rows advertise prompt caching the OpenAI-shaped surface rejects.
+func TestDatabricksAnthropicFieldsFollowDatasheet(t *testing.T) {
+	const model = "databricks-datasheet-endpoint"
+	gated := []struct {
+		field string
+		caps  func(*bool) *schemas.ModelCapabilities
+	}{
+		{"safeguards", func(v *bool) *schemas.ModelCapabilities { return &schemas.ModelCapabilities{SupportsSafeguards: v} }},
+		{"inference_geo", func(v *bool) *schemas.ModelCapabilities { return &schemas.ModelCapabilities{SupportsInferenceGeo: v} }},
+		{"speed", func(v *bool) *schemas.ModelCapabilities { return &schemas.ModelCapabilities{SupportsFastMode: v} }},
+		{"task_budget", func(v *bool) *schemas.ModelCapabilities { return &schemas.ModelCapabilities{SupportsTaskBudgets: v} }},
+	}
+	useResolver := func(t *testing.T, caps *schemas.ModelCapabilities) {
+		t.Helper()
+		// The resolver is process-global, so answer only for this test's model.
+		schemas.SetCapabilityResolver(func(provider schemas.ModelProvider, m string) *schemas.ModelCapabilities {
+			if provider == schemas.Databricks && m == model {
+				return caps
+			}
+			return nil
+		})
+		t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+	}
+
+	for _, tt := range gated {
+		for _, state := range []struct {
+			name string
+			caps *schemas.ModelCapabilities
+			want bool
+		}{
+			{"no row", nil, false},
+			{"flag unset", &schemas.ModelCapabilities{}, false},
+			{"flag false", tt.caps(schemas.Ptr(false)), false},
+			{"flag true", tt.caps(schemas.Ptr(true)), true},
+		} {
+			for _, route := range databricksExtraParamRoutes {
+				t.Run(tt.field+" "+state.name+" "+route.name, func(t *testing.T) {
+					useResolver(t, state.caps)
+					provider, key, body := newBodyCaptureProvider(t)
+					ctx, cancel := schemas.NewBifrostContextWithTimeout(context.Background(), 10*time.Second)
+					defer cancel()
+
+					extras := map[string]any{tt.field: anthropicExtraParamsStub()[tt.field]}
+					route.send(t, ctx, provider, key, model, extras)
+
+					if _, got := body()[tt.field]; got != state.want {
+						t.Errorf("%s on the wire: got %v, want %v", tt.field, got, state.want)
+					}
+				})
+			}
+		}
+	}
+
+	t.Run("typed chat fields follow the same flags", func(t *testing.T) {
+		useResolver(t, &schemas.ModelCapabilities{
+			SupportsInferenceGeo: schemas.Ptr(true),
+			SupportsFastMode:     schemas.Ptr(true),
+			SupportsTaskBudgets:  schemas.Ptr(false),
+		})
+		provider, key, body := newBodyCaptureProvider(t)
+		ctx, cancel := schemas.NewBifrostContextWithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		request := databricksTestChatRequest(model, nil)
+		request.Params.InferenceGeo = schemas.Ptr("us")
+		request.Params.Speed = schemas.Ptr("fast")
+		request.Params.TaskBudget = &schemas.ChatTaskBudget{}
+		if _, bErr := provider.ChatCompletion(ctx, key, request); bErr != nil {
+			t.Fatalf("ChatCompletion returned an error: %v", bErr.Error)
+		}
+		gotBody := body()
+		if gotBody["inference_geo"] != "us" || gotBody["speed"] != "fast" {
+			t.Errorf("flagged fields were dropped: %#v", gotBody)
+		}
+		if _, exists := gotBody["task_budget"]; exists {
+			t.Errorf("task_budget reached Databricks with its flag false: %#v", gotBody["task_budget"])
+		}
+	})
+
+	t.Run("related capability flags do not rescue surface-only fields", func(t *testing.T) {
+		useResolver(t, &schemas.ModelCapabilities{
+			SupportsPromptCaching:  schemas.Ptr(true),
+			SupportsContextEditing: schemas.Ptr(true),
+		})
+		provider, key, body := newBodyCaptureProvider(t)
+		ctx, cancel := schemas.NewBifrostContextWithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		extras := anthropicExtraParamsStub()
+		if _, bErr := provider.ChatCompletion(ctx, key, databricksTestChatRequest(model, extras)); bErr != nil {
+			t.Fatalf("ChatCompletion returned an error: %v", bErr.Error)
+		}
+		gotBody := body()
+		for _, field := range []string{"cache_control", "context_management", "container", "diagnostics", "fallbacks", "fallback_credit_token"} {
+			if _, exists := gotBody[field]; exists {
+				t.Errorf("%s reached Databricks: %#v", field, gotBody[field])
+			}
+		}
+	})
 }
 
 // TestDatabricksGeminiSingleSystemPrompt pins the one-system-prompt rule for Gemini-backed

@@ -142525,6 +142525,227 @@
           }
         },
         {
+          "name": "databricks/databricks-claude-sonnet-4-5 /anthropic/v1/messages streaming strips Claude Code safeguards",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Claude Code fields stay off the Databricks wire', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(body, 'Databricks rejected a field Bifrost should have stripped').to.not.include('Extra inputs are not permitted');",
+                  "  pm.expect(body, 'the Unity AI Gateway rejected a field Bifrost should have stripped').to.not.include('unknown field');",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.be.below(400);",
+                  "  pm.expect(body, 'no SSE data frames').to.include('data:');",
+                  "  pm.expect(body, 'stream did not finish').to.include('message_stop');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"databricks/databricks-claude-sonnet-4-5\", \"max_tokens\": 32, \"stream\": true, \"messages\": [{\"role\": \"user\", \"content\": \"What is 2+2?\"}], \"safeguards\": {\"classifier\": \"auto_mode\"}, \"diagnostics\": {\"previous_message_id\": \"msg_1\"}, \"inference_geo\": \"us\", \"speed\": \"fast\"}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "databricks/databricks-claude-sonnet-4-5 /anthropic/v1/messages non-streaming strips Claude Code safeguards",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Claude Code fields stay off the Databricks wire', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(body, 'Databricks rejected a field Bifrost should have stripped').to.not.include('Extra inputs are not permitted');",
+                  "  pm.expect(body, 'the Unity AI Gateway rejected a field Bifrost should have stripped').to.not.include('unknown field');",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.be.below(400);",
+                  "  pm.expect(pm.response.json().content, 'no content blocks: ' + body).to.be.an('array').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"databricks/databricks-claude-sonnet-4-5\", \"max_tokens\": 32, \"messages\": [{\"role\": \"user\", \"content\": \"What is 2+2?\"}], \"safeguards\": {\"classifier\": \"auto_mode\"}, \"diagnostics\": {\"previous_message_id\": \"msg_1\"}, \"inference_geo\": \"us\", \"speed\": \"fast\"}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "databricks/system.ai.claude-sonnet-4-5 /v1/chat/completions streaming strips safeguards on the unity ai gateway surface",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('safeguards stays off the Unity AI Gateway wire', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(body, 'Databricks rejected a field Bifrost should have stripped').to.not.include('Extra inputs are not permitted');",
+                  "  pm.expect(body, 'the Unity AI Gateway rejected a field Bifrost should have stripped').to.not.include('unknown field');",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.be.below(400);",
+                  "  pm.expect(body, 'no SSE data frames').to.include('data:');",
+                  "  pm.expect(body, 'no chat.completion.chunk objects in the stream').to.include('chat.completion.chunk');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"databricks/system.ai.claude-sonnet-4-5\", \"max_completion_tokens\": 32, \"stream\": true, \"messages\": [{\"role\": \"user\", \"content\": \"What is 2+2?\"}], \"safeguards\": {\"classifier\": \"auto_mode\"}}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "databricks/databricks-claude-sonnet-4-5 /v1/chat/completions strips safeguards on the model serving surface",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('safeguards stays off the Model Serving wire', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(body, 'Databricks rejected a field Bifrost should have stripped').to.not.include('Extra inputs are not permitted');",
+                  "  pm.expect(body, 'the Unity AI Gateway rejected a field Bifrost should have stripped').to.not.include('unknown field');",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.be.below(400);",
+                  "  pm.expect(pm.response.json().choices, 'no choices: ' + body).to.be.an('array').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"databricks/databricks-claude-sonnet-4-5\", \"max_tokens\": 32, \"messages\": [{\"role\": \"user\", \"content\": \"What is 2+2?\"}], \"safeguards\": {\"classifier\": \"auto_mode\"}}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "databricks/databricks-gpt-5 /v1/responses strips safeguards",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('safeguards stays off the native Responses wire', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(body, 'Databricks rejected a field Bifrost should have stripped').to.not.include('Extra inputs are not permitted');",
+                  "  pm.expect(body, 'the Unity AI Gateway rejected a field Bifrost should have stripped').to.not.include('unknown field');",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.be.below(400);",
+                  "  pm.expect(pm.response.json().output, 'no output: ' + body).to.be.an('array').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"databricks/databricks-gpt-5\", \"max_output_tokens\": 64, \"input\": \"What is 2+2? Answer with just the number.\", \"safeguards\": {\"classifier\": \"auto_mode\"}}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
           "name": "databricks/databricks-gemini-3-8-flash merges multi-part system prompts on chat",
           "event": [
             {
