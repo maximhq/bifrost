@@ -86,6 +86,16 @@ export interface SessionConfig {
 	enabled: boolean;
 }
 
+// Phrase suggestions: samples classified requests' vectors so suggestions can
+// cluster real traffic. Edited through config.json and the API until the
+// suggestions page exists; the complexity router page carries it through
+// saves unchanged.
+export interface SuggestionsConfig {
+	enabled: boolean;
+	sample_rate?: number;
+	lookback_days?: number;
+}
+
 // The llm classifier has no warmup: it holds no corpus and makes its first
 // provider call on the first classified request, so it is simply ready the
 // moment its block is saved.
@@ -145,6 +155,7 @@ export interface AnalyzerConfig {
 	// fixed 24-hour inactivity window. The gateway owns that policy; there are no
 	// client-tunable thresholds or downgrade controls.
 	session?: SessionConfig;
+	suggestions?: SuggestionsConfig;
 }
 
 export type KeywordListKey = keyof EditableKeywordConfig;

@@ -280,6 +280,10 @@ type BifrostHTTPServer struct {
 	// from it.
 	ShellRewriter handlers.ShellRewriter
 
+	// unsubscribeCaptureDeletes releases the log-delete subscription that
+	// drops complexity request capture's vectors with their logs.
+	unsubscribeCaptureDeletes func()
+
 	WebSocketHandler     *handlers.WebSocketHandler
 	NotificationService  *handlers.NotificationService
 	RSSFeedsHandler      *handlers.RSSFeedsHandler
@@ -3048,6 +3052,22 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	if loggingHandler != nil {
 		loggingHandler.SetTopicLister(s.WarpHandler.Service())
 	}
+	// Complexity request capture keeps vectors under log IDs, so a deleted
+	// log takes its captured vector with it, as Warp's do. The routing plugin
+	// is looked up per delete rather than captured here: a plugin reload
+	// replaces the instance, and the subscription must follow it. Released
+	// first, like Warp's, so a second registration cannot leak the first.
+	if s.unsubscribeCaptureDeletes != nil {
+		s.unsubscribeCaptureDeletes()
+		s.unsubscribeCaptureDeletes = nil
+	}
+	if loggerPlugin != nil {
+		s.unsubscribeCaptureDeletes = loggerPlugin.SubscribeLogDeleteCallback(func(ctx context.Context, ids []string) {
+			if routingPlugin, err := s.getRoutingPlugin(); err == nil {
+				routingPlugin.ForgetComplexityCapturedRequests(ctx, ids)
+			}
+		})
+	}
 	// Read at each sweep rather than once: the cleaner is built in Bootstrap,
 	// after this, and its retention can change at runtime.
 	s.WarpHandler.Service().SetLogRetention(func() int {
@@ -3767,6 +3787,15 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 		routingPlugin.SetChatRequestExecutor(s.Client.ChatCompletionRequest)
 		routingPlugin.SetResponsesRequestExecutor(s.Client.ResponsesRequest)
 		routingPlugin.SetDecisionRequestExecutor(s.Client.DecisionRequest)
+		// Captured request vectors must not outlive their logs. Read at each
+		// sweep: the cleaner is built later in Bootstrap and its retention can
+		// change at runtime.
+		routingPlugin.SetLogRetention(func() int {
+			if s.LogsCleaner == nil {
+				return 0
+			}
+			return s.LogsCleaner.RetentionDays()
+		})
 	}
 
 	// Initialize Sidekiq runner for background jobs

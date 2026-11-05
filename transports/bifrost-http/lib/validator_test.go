@@ -2556,6 +2556,30 @@ func TestSchemaComplexityAnalyzerDependencies(t *testing.T) {
 			analyzer: complexityAnalyzerSchemaConfig(`,"session":{"enabled":true}`, `,"semantic":{"provider":"openai","embedding_model":"text-embedding-3-small"}`),
 		},
 		{
+			name:     "suggestions accept sample rate and lookback",
+			analyzer: complexityAnalyzerSchemaConfig(`,"suggestions":{"enabled":true,"sample_rate":0.25,"lookback_days":14}`),
+		},
+		{
+			name:      "suggestions require enabled",
+			analyzer:  complexityAnalyzerSchemaConfig(`,"suggestions":{"sample_rate":0.25}`),
+			wantError: true,
+		},
+		{
+			name:      "suggestions reject a zero sample rate",
+			analyzer:  complexityAnalyzerSchemaConfig(`,"suggestions":{"enabled":true,"sample_rate":0}`),
+			wantError: true,
+		},
+		{
+			name:      "suggestions reject a lookback past 90 days",
+			analyzer:  complexityAnalyzerSchemaConfig(`,"suggestions":{"enabled":true,"lookback_days":91}`),
+			wantError: true,
+		},
+		{
+			name:      "suggestions reject unknown fields",
+			analyzer:  complexityAnalyzerSchemaConfig(`,"suggestions":{"enabled":true,"samplerate":0.5}`),
+			wantError: true,
+		},
+		{
 			name:     "semantic fallback none does not require llm config",
 			analyzer: complexityAnalyzerSchemaConfig(`,"semantic":{"provider":"openai","embedding_model":"text-embedding-3-small","fallback":"none"}`),
 		},
