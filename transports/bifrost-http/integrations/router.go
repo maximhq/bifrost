@@ -588,7 +588,7 @@ func (c *PassthroughConfig) streams(method, path string, bodyStream bool) bool {
 // StripPrefix gets no route match (404) instead of being forwarded upstream.
 type PassthroughRoute struct {
 	Method string
-	Path   string // full path including the StripPrefix, matched exactly — no wildcard
+	Path   string // full path including the StripPrefix, registered as a router pattern — a {param} segment matches one path segment, no catch-all
 }
 
 // LargePayloadHook is called before body parsing to detect and set up large payload streaming.

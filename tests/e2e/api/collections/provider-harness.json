@@ -61,7 +61,7 @@
           "var __u = (pm.request && pm.request.url && pm.request.url.toString()) || '';",
           "// Management API (/api/...) and OAuth (/oauth2/...) responses carry no inference content, so the shape check does not apply to them; those rows assert their own bodies.",
           "// Rows tagged [NO-CONTENT] expect an empty reply (a provider refusal) and assert their own bodies.",
-          "var __skipShape = __rn.indexOf('[NO-CONTENT]') !== -1 || __u.indexOf('/health') !== -1 || __u.indexOf('/.well-known/') !== -1 || __u.indexOf('/api/') !== -1 || __u.indexOf('/oauth2/') !== -1 || (__u.indexOf('/files/') !== -1 && (__u.indexOf('/content?') !== -1 || __u.slice(-8) === '/content')) || __u.indexOf('storage.googleapis.com') !== -1 || __u.indexOf('batchPredictionJobs') !== -1 || (__u.indexOf('/genai/v1beta/batches/') !== -1 && __u.indexOf(':cancel') !== -1) || (__u.indexOf('cachedContents') !== -1 && (pm.request.method !== 'GET' || __u.indexOf('/cachedContents/') !== -1)) || __u.indexOf('/v1/containers') !== -1 || __u.indexOf('/upload/v1beta/files') !== -1 || (__u.indexOf('/genai/v1beta/files/') !== -1 && pm.request.method === 'DELETE') || (__u.indexOf('/model-invocation-job/') !== -1 && __u.slice(-5) === '/stop') || (__u.indexOf('/messages/batches/') !== -1 && __u.indexOf('/results') !== -1) || __u.indexOf('/tunedModels') !== -1 || __u.indexOf('/bedrock_passthrough/') !== -1 || (__u.indexOf('/interactions/') !== -1 && pm.request.method === 'DELETE');",
+          "var __skipShape = __rn.indexOf('[NO-CONTENT]') !== -1 || __u.indexOf('/health') !== -1 || __u.indexOf('/.well-known/') !== -1 || __u.indexOf('/api/') !== -1 || __u.indexOf('/oauth2/') !== -1 || (__u.indexOf('/files/') !== -1 && (__u.indexOf('/content?') !== -1 || __u.slice(-8) === '/content')) || __u.indexOf('storage.googleapis.com') !== -1 || __u.indexOf('batchPredictionJobs') !== -1 || (__u.indexOf('/genai/v1beta/batches/') !== -1 && __u.indexOf(':cancel') !== -1) || (__u.indexOf('cachedContents') !== -1 && (pm.request.method !== 'GET' || __u.indexOf('/cachedContents/') !== -1)) || __u.indexOf('/v1/containers') !== -1 || __u.indexOf('/upload/v1beta/files') !== -1 || (__u.indexOf('/genai/v1beta/files/') !== -1 && pm.request.method === 'DELETE') || (__u.indexOf('/model-invocation-job/') !== -1 && __u.slice(-5) === '/stop') || (__u.indexOf('/messages/batches/') !== -1 && __u.indexOf('/results') !== -1) || __u.indexOf('/tunedModels') !== -1 || __u.indexOf('/bedrock_passthrough/') !== -1 || __u.indexOf('/bedrock/inference-profiles') !== -1 || __u.indexOf('/bedrock/foundation-models') !== -1 || (__u.indexOf('/interactions/') !== -1 && pm.request.method === 'DELETE');",
           "if (pm.response.code < 400 && !__skipShape && (pm.response.headers.get('content-type') || '').indexOf('text/event-stream') === -1 && (pm.response.headers.get('content-type') || '').indexOf('vnd.amazon.eventstream') === -1 && (pm.response.headers.get('content-type') || '').indexOf('audio/') === -1) {",
           "  pm.test('Response has content (text or tool_use)', function () {",
           "    var j;",
@@ -200871,7 +200871,7 @@
     },
     {
       "name": "162. Bedrock passthrough for operations without native routes (bedrock passthrough fixture)",
-      "description": "Local fixture regression, no network traffic leaves the machine. Run tests/e2e/api/runners/bedrock-endpoint-fixture.mjs --app-dir <dir> (it writes config.json: one Bedrock key with throwaway credentials in us-west-2, every Bedrock service endpoint overridden to the fixture, the fixture CA as network_config.ca_cert_pem, and the pricing datasheet URLs pointed at the fixture so the gateway starts offline), then start an isolated gateway with -app-dir <dir> and HTTPS_PROXY set to a dead port as a tripwire (the Bedrock client honours HTTPS_PROXY, and loopback is exempt, so only an accidental external call would fail), and run with bedrockEndpointFixture=1; every case is skipped otherwise. /bedrock_passthrough forwards exactly three AWS operations Bifrost has no native route for: InvokeAgent and knowledge-base Retrieve (bedrock-agent-runtime, fixture port 8796) and ApplyGuardrail (bedrock-runtime, fixture port 8798). The cases assert the request is SigV4 signed by the gateway for the key region and the bedrock service, that caller credentials and x-bf headers are not forwarded, that the upstream body, status, Content-Type and AWS error headers come back verbatim, and that every other path, a traversal and a non-POST method are refused with a 400 before any request is built. The /bedrock_passthrough/ bodies are carved out of the generic shape check in __skipShape because they are not inference responses.",
+      "description": "Local fixture regression, no network traffic leaves the machine. Run tests/e2e/api/runners/bedrock-endpoint-fixture.mjs --app-dir <dir> (it writes config.json: one Bedrock key with throwaway credentials in us-west-2, every Bedrock service endpoint overridden to the fixture, the fixture CA as network_config.ca_cert_pem, and the pricing datasheet URLs pointed at the fixture so the gateway starts offline), then start an isolated gateway with -app-dir <dir> and HTTPS_PROXY set to a dead port as a tripwire (the Bedrock client honours HTTPS_PROXY, and loopback is exempt, so only an accidental external call would fail), and run with bedrockEndpointFixture=1; every case is skipped otherwise. /bedrock_passthrough forwards exactly three AWS operations Bifrost has no native route for: InvokeAgent and knowledge-base Retrieve (bedrock-agent-runtime, fixture port 8796) and ApplyGuardrail (bedrock-runtime, fixture port 8798). The cases assert the request is SigV4 signed by the gateway for the key region and the bedrock service, that caller credentials and x-bf headers are not forwarded, that the upstream body, status, Content-Type and AWS error headers come back verbatim, and that every other path, a traversal and a non-POST method are refused with a 400 before any request is built. Under /bedrock, the read-only control-plane listings (ListInferenceProfiles, GetInferenceProfile, ListFoundationModels, GetFoundationModel, #9531) take the same path to the control-plane endpoint (fixture port 8798): signed for the key region, query forwarded, AWS JSON and errors returned as sent instead of the dashboard HTML. The /bedrock_passthrough/ bodies are carved out of the generic shape check in __skipShape because they are not inference responses.",
       "item": [
         {
           "name": "162.1 bedrock passthrough InvokeAgent is signed, forwarded to agent-runtime and the event stream returns untouched (bedrock agents)",
@@ -201670,6 +201670,349 @@
                 "exec": [
                   "pm.test('the 4s Retrieve is cut off by the 3s request timeout, not streamed through', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(500); var j = pm.response.json(); pm.expect(j.is_bifrost_error, pm.response.text()).to.equal(true); pm.expect(j.error.error, pm.response.text()).to.include('context deadline exceeded'); });",
                   "pm.test('it was refused before the 4s upstream finished', function () { pm.expect(pm.response.responseTime, 'finished in ' + pm.response.responseTime + 'ms').to.be.below(3900); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "162.14 bedrock ListInferenceProfiles under /bedrock is signed, forwarded to the control plane with its query and the listing returns untouched, not the dashboard HTML (bedrock inference profiles) - #9531",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer attacker-token"
+              },
+              {
+                "key": "X-Amz-Security-Token",
+                "value": "attacker-session"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/inference-profiles?type=SYSTEM_DEFINED&maxResults=2",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "inference-profiles"
+              ],
+              "query": [
+                {
+                  "key": "type",
+                  "value": "SYSTEM_DEFINED"
+                },
+                {
+                  "key": "maxResults",
+                  "value": "2"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('bedrockEndpointFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "} else {",
+                  "  pm.sendRequest({ url: 'http://127.0.0.1:8794/__reset', method: 'POST' }, function () {});",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('AWS\\'s JSON comes back as sent, not the dashboard HTML', function () { pm.expect(pm.response.headers.get('Content-Type')).to.include('application/json'); pm.expect(pm.response.json(), pm.response.text()).to.eql({ inferenceProfileSummaries: [{ inferenceProfileId: 'us.anthropic.claude-sonnet-4-6', inferenceProfileName: 'US Claude Sonnet 4.6', status: 'ACTIVE', type: 'SYSTEM_DEFINED' }], nextToken: 'fixture-next' }); pm.expect(pm.response.headers.get('X-Amzn-Requestid')).to.equal('req-profiles'); });",
+                  "pm.sendRequest({ url: 'http://127.0.0.1:8794/__connects', method: 'GET' }, function (err, res) {",
+                  "  pm.test('fixture reachable', function () { pm.expect(err, String(err)).to.equal(null); });",
+                  "  var calls = res.json().data[0].requests.filter(function (q) { return q.method === 'GET' && /^\\/inference-profiles$/.test(q.path.split('?')[0]); });",
+                  "  pm.test('exactly one GET reached the bedrock control-plane endpoint', function () { pm.expect(calls.length, JSON.stringify(res.json().data[0].requests.map(function (c) { return c.method + ' ' + c.port + c.path; }))).to.equal(1); pm.expect(calls[0].port).to.equal(8798); });",
+                  "  var call = calls[0] || { port: 0, path: '', headers: {} };",
+                  "  pm.test('the query reaches AWS intact', function () { var q = call.path.split('?')[1] || ''; pm.expect(q.split('&').sort()).to.eql(['maxResults=2', 'type=SYSTEM_DEFINED']); });",
+                  "  pm.test('it is SigV4 signed by the gateway for the key region and the bedrock service, and caller credentials are not forwarded', function () { pm.expect(call.headers.authorization, JSON.stringify(call.headers)).to.match(/^AWS4-HMAC-SHA256 Credential=AKIAFIXTUREEXAMPLE0\\/\\d{8}\\/us-west-2\\/bedrock\\/aws4_request/); pm.expect(call.headers.authorization).to.not.include('attacker'); pm.expect(call.headers['x-amz-security-token']).to.equal(undefined); pm.expect(Object.keys(call.headers).filter(function (h) { return h.indexOf('x-bf-') === 0; }), JSON.stringify(call.headers)).to.eql([]); });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "162.15 bedrock GetInferenceProfile under /bedrock is signed and forwarded to the control plane with the dotted profile id intact (bedrock inference profiles) - #9531",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer attacker-token"
+              },
+              {
+                "key": "X-Amz-Security-Token",
+                "value": "attacker-session"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/inference-profiles/us.anthropic.claude-sonnet-4-6",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "inference-profiles",
+                "us.anthropic.claude-sonnet-4-6"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('bedrockEndpointFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "} else {",
+                  "  pm.sendRequest({ url: 'http://127.0.0.1:8794/__reset', method: 'POST' }, function () {});",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('AWS\\'s JSON comes back as sent, not the dashboard HTML', function () { pm.expect(pm.response.headers.get('Content-Type')).to.include('application/json'); pm.expect(pm.response.json(), pm.response.text()).to.eql({ inferenceProfileId: 'us.anthropic.claude-sonnet-4-6', inferenceProfileName: 'fixture profile', status: 'ACTIVE', type: 'SYSTEM_DEFINED' }); pm.expect(pm.response.headers.get('X-Amzn-Requestid')).to.equal('req-profile'); });",
+                  "pm.sendRequest({ url: 'http://127.0.0.1:8794/__connects', method: 'GET' }, function (err, res) {",
+                  "  pm.test('fixture reachable', function () { pm.expect(err, String(err)).to.equal(null); });",
+                  "  var calls = res.json().data[0].requests.filter(function (q) { return q.method === 'GET' && /^\\/inference-profiles\\/us\\.anthropic\\.claude-sonnet-4-6$/.test(q.path.split('?')[0]); });",
+                  "  pm.test('exactly one GET reached the bedrock control-plane endpoint', function () { pm.expect(calls.length, JSON.stringify(res.json().data[0].requests.map(function (c) { return c.method + ' ' + c.port + c.path; }))).to.equal(1); pm.expect(calls[0].port).to.equal(8798); });",
+                  "  var call = calls[0] || { port: 0, path: '', headers: {} };",
+                  "  pm.test('it is SigV4 signed by the gateway for the key region and the bedrock service, and caller credentials are not forwarded', function () { pm.expect(call.headers.authorization, JSON.stringify(call.headers)).to.match(/^AWS4-HMAC-SHA256 Credential=AKIAFIXTUREEXAMPLE0\\/\\d{8}\\/us-west-2\\/bedrock\\/aws4_request/); pm.expect(call.headers.authorization).to.not.include('attacker'); pm.expect(call.headers['x-amz-security-token']).to.equal(undefined); pm.expect(Object.keys(call.headers).filter(function (h) { return h.indexOf('x-bf-') === 0; }), JSON.stringify(call.headers)).to.eql([]); });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "162.16 bedrock ListFoundationModels under /bedrock is signed, forwarded to the control plane with its filter and the listing returns untouched (bedrock foundation models) - #9531",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer attacker-token"
+              },
+              {
+                "key": "X-Amz-Security-Token",
+                "value": "attacker-session"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/foundation-models?byProvider=Anthropic",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "foundation-models"
+              ],
+              "query": [
+                {
+                  "key": "byProvider",
+                  "value": "Anthropic"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('bedrockEndpointFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "} else {",
+                  "  pm.sendRequest({ url: 'http://127.0.0.1:8794/__reset', method: 'POST' }, function () {});",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('AWS\\'s JSON comes back as sent, not the dashboard HTML', function () { pm.expect(pm.response.headers.get('Content-Type')).to.include('application/json'); pm.expect(pm.response.json(), pm.response.text()).to.eql({ modelSummaries: [{ modelId: 'anthropic.claude-3-haiku-20240307-v1:0', providerName: 'Anthropic', inputModalities: ['TEXT'], outputModalities: ['TEXT'] }] }); pm.expect(pm.response.headers.get('X-Amzn-Requestid')).to.equal('req-models'); });",
+                  "pm.sendRequest({ url: 'http://127.0.0.1:8794/__connects', method: 'GET' }, function (err, res) {",
+                  "  pm.test('fixture reachable', function () { pm.expect(err, String(err)).to.equal(null); });",
+                  "  var calls = res.json().data[0].requests.filter(function (q) { return q.method === 'GET' && /^\\/foundation-models$/.test(q.path.split('?')[0]); });",
+                  "  pm.test('exactly one GET reached the bedrock control-plane endpoint', function () { pm.expect(calls.length, JSON.stringify(res.json().data[0].requests.map(function (c) { return c.method + ' ' + c.port + c.path; }))).to.equal(1); pm.expect(calls[0].port).to.equal(8798); });",
+                  "  var call = calls[0] || { port: 0, path: '', headers: {} };",
+                  "  pm.test('the filter reaches AWS intact', function () { pm.expect(call.path.split('?')[1]).to.equal('byProvider=Anthropic'); });",
+                  "  pm.test('it is SigV4 signed by the gateway for the key region and the bedrock service, and caller credentials are not forwarded', function () { pm.expect(call.headers.authorization, JSON.stringify(call.headers)).to.match(/^AWS4-HMAC-SHA256 Credential=AKIAFIXTUREEXAMPLE0\\/\\d{8}\\/us-west-2\\/bedrock\\/aws4_request/); pm.expect(call.headers.authorization).to.not.include('attacker'); pm.expect(call.headers['x-amz-security-token']).to.equal(undefined); pm.expect(Object.keys(call.headers).filter(function (h) { return h.indexOf('x-bf-') === 0; }), JSON.stringify(call.headers)).to.eql([]); });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "162.17 bedrock GetFoundationModel under /bedrock is signed and forwarded to the control plane with the versioned model id intact (bedrock foundation models) - #9531",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer attacker-token"
+              },
+              {
+                "key": "X-Amz-Security-Token",
+                "value": "attacker-session"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/foundation-models/anthropic.claude-3-haiku-20240307-v1:0",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "foundation-models",
+                "anthropic.claude-3-haiku-20240307-v1:0"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('bedrockEndpointFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "} else {",
+                  "  pm.sendRequest({ url: 'http://127.0.0.1:8794/__reset', method: 'POST' }, function () {});",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('AWS\\'s JSON comes back as sent, not the dashboard HTML', function () { pm.expect(pm.response.headers.get('Content-Type')).to.include('application/json'); pm.expect(pm.response.json(), pm.response.text()).to.eql({ modelDetails: { modelId: 'anthropic.claude-3-haiku-20240307-v1:0', providerName: 'Anthropic' } }); pm.expect(pm.response.headers.get('X-Amzn-Requestid')).to.equal('req-model'); });",
+                  "pm.sendRequest({ url: 'http://127.0.0.1:8794/__connects', method: 'GET' }, function (err, res) {",
+                  "  pm.test('fixture reachable', function () { pm.expect(err, String(err)).to.equal(null); });",
+                  "  var calls = res.json().data[0].requests.filter(function (q) { return q.method === 'GET' && /^\\/foundation-models\\/anthropic\\.claude-3-haiku-20240307-v1(:|%3A)0$/.test(q.path.split('?')[0]); });",
+                  "  pm.test('exactly one GET reached the bedrock control-plane endpoint', function () { pm.expect(calls.length, JSON.stringify(res.json().data[0].requests.map(function (c) { return c.method + ' ' + c.port + c.path; }))).to.equal(1); pm.expect(calls[0].port).to.equal(8798); });",
+                  "  var call = calls[0] || { port: 0, path: '', headers: {} };",
+                  "  pm.test('it is SigV4 signed by the gateway for the key region and the bedrock service, and caller credentials are not forwarded', function () { pm.expect(call.headers.authorization, JSON.stringify(call.headers)).to.match(/^AWS4-HMAC-SHA256 Credential=AKIAFIXTUREEXAMPLE0\\/\\d{8}\\/us-west-2\\/bedrock\\/aws4_request/); pm.expect(call.headers.authorization).to.not.include('attacker'); pm.expect(call.headers['x-amz-security-token']).to.equal(undefined); pm.expect(Object.keys(call.headers).filter(function (h) { return h.indexOf('x-bf-') === 0; }), JSON.stringify(call.headers)).to.eql([]); });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "162.18 [EXPECT-404] bedrock GetInferenceProfile under /bedrock returns an upstream not-found verbatim with its AWS error headers (bedrock inference profiles) - #9531",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/inference-profiles/us.fixture.missing-v1",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "inference-profiles",
+                "us.fixture.missing-v1"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('bedrockEndpointFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "} else {",
+                  "  pm.sendRequest({ url: 'http://127.0.0.1:8794/__reset', method: 'POST' }, function () {});",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status, body and exception type are AWS\\'s own', function () { pm.expect(pm.response.json(), pm.response.text()).to.eql({ message: 'inference profile not found' }); pm.expect(pm.response.headers.get('X-Amzn-Errortype')).to.include('ResourceNotFoundException'); pm.expect(pm.response.headers.get('X-Amzn-Requestid')).to.equal('req-profile-missing'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "162.19 bedrock ListInferenceProfiles under /bedrock sends an API-key-only key as a bearer token, as the native list-models call does (bedrock api key inference profiles) - #9531",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-bf-api-key",
+                "value": "bedrock-api-key-only"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/inference-profiles",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "inference-profiles"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('bedrockEndpointFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "} else {",
+                  "  pm.sendRequest({ url: 'http://127.0.0.1:8794/__reset', method: 'POST' }, function () {});",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the listing comes back', function () { pm.expect(pm.response.json(), pm.response.text()).to.have.property('inferenceProfileSummaries'); });",
+                  "pm.sendRequest({ url: 'http://127.0.0.1:8794/__connects', method: 'GET' }, function (err, res) {",
+                  "  pm.test('fixture reachable', function () { pm.expect(err, String(err)).to.equal(null); });",
+                  "  var calls = res.json().data[0].requests.filter(function (q) { return q.method === 'GET' && /^\\/inference-profiles$/.test(q.path.split('?')[0]); });",
+                  "  pm.test('exactly one GET reached the bedrock control-plane endpoint', function () { pm.expect(calls.length, JSON.stringify(res.json().data[0].requests.map(function (c) { return c.method + ' ' + c.port + c.path; }))).to.equal(1); pm.expect(calls[0].port).to.equal(8798); });",
+                  "  var call = calls[0] || { port: 0, path: '', headers: {} };",
+                  "  pm.test('it carries the Bedrock API key as a bearer token and is not SigV4 signed', function () { pm.expect(call.headers.authorization).to.equal('Bearer fixture-bedrock-api-key'); pm.expect(call.headers['x-amz-date']).to.equal(undefined); });",
+                  "});"
                 ]
               }
             }

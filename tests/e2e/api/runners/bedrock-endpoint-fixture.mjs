@@ -4,7 +4,8 @@ import { argValue, createTlsEndpoints } from "./lib/tls-intercept-proxy.mjs";
 
 // Local stand-in for the AWS Bedrock services, used to observe what the gateway sends for the
 // operations it forwards through /bedrock_passthrough: InvokeAgent and knowledge-base Retrieve
-// (bedrock-agent-runtime) and ApplyGuardrail (bedrock-runtime).
+// (bedrock-agent-runtime) and ApplyGuardrail (bedrock-runtime), and for the read-only control-plane
+// listings it forwards under /bedrock (inference profiles and foundation models).
 //
 // The Bedrock provider honours per-service endpoint overrides and a trusted CA but not
 // proxy_config, so the fixture is a TLS server the gateway is pointed at directly (see
@@ -61,6 +62,24 @@ const endpoints = createTlsEndpoints({
 		}
 		if (/\/guardrail\/[^/]+\/version\/[^/]+\/apply$/.test(url)) {
 			return { status: 200, headers: { "X-Amzn-Requestid": "req-guardrail" }, body: JSON.stringify({ action: "NONE", outputs: [], assessments: [] }) };
+		}
+		// Control-plane listings (GET only). The path is matched without the query, which the gateway forwards
+		// as sent; cases read it back from /__connects.
+		const pathOnly = url.split("?")[0];
+		if (req.method === "GET" && pathOnly === "/inference-profiles/us.fixture.missing-v1") {
+			return { status: 404, headers: { "X-Amzn-Errortype": "ResourceNotFoundException:http://internal.amazon.com/coral/", "X-Amzn-Requestid": "req-profile-missing" }, body: JSON.stringify({ message: "inference profile not found" }) };
+		}
+		if (req.method === "GET" && pathOnly === "/inference-profiles") {
+			return { status: 200, headers: { "X-Amzn-Requestid": "req-profiles" }, body: JSON.stringify({ inferenceProfileSummaries: [{ inferenceProfileId: "us.anthropic.claude-sonnet-4-6", inferenceProfileName: "US Claude Sonnet 4.6", status: "ACTIVE", type: "SYSTEM_DEFINED" }], nextToken: "fixture-next" }) };
+		}
+		if (req.method === "GET" && /^\/inference-profiles\/[^/]+$/.test(pathOnly)) {
+			return { status: 200, headers: { "X-Amzn-Requestid": "req-profile" }, body: JSON.stringify({ inferenceProfileId: decodeURIComponent(pathOnly.slice("/inference-profiles/".length)), inferenceProfileName: "fixture profile", status: "ACTIVE", type: "SYSTEM_DEFINED" }) };
+		}
+		if (req.method === "GET" && pathOnly === "/foundation-models") {
+			return { status: 200, headers: { "X-Amzn-Requestid": "req-models" }, body: JSON.stringify({ modelSummaries: [{ modelId: "anthropic.claude-3-haiku-20240307-v1:0", providerName: "Anthropic", inputModalities: ["TEXT"], outputModalities: ["TEXT"] }] }) };
+		}
+		if (req.method === "GET" && /^\/foundation-models\/[^/]+$/.test(pathOnly)) {
+			return { status: 200, headers: { "X-Amzn-Requestid": "req-model" }, body: JSON.stringify({ modelDetails: { modelId: decodeURIComponent(pathOnly.slice("/foundation-models/".length)), providerName: "Anthropic" } }) };
 		}
 		return { status: 404, body: JSON.stringify({ message: "fixture does not serve " + url }) };
 	},
