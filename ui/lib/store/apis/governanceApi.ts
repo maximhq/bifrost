@@ -42,7 +42,17 @@ import {
 	UpdateVirtualKeyRequest,
 	VirtualKey,
 } from "@/lib/types/governance";
-import { AnalyzerConfig, SemanticStatusInfo } from "@/lib/types/complexityRouter";
+import {
+	AnalyzerConfig,
+	PhraseTestRequest,
+	PhraseTestResult,
+	SemanticStatusInfo,
+	SuggestionDetail,
+	SuggestionRun,
+	Suggestion,
+	SuggestionsList,
+	SuggestionStatus,
+} from "@/lib/types/complexityRouter";
 import { baseApi } from "./baseApi";
 
 type PricingOverrideQueryArgs = {
@@ -898,6 +908,54 @@ export const governanceApi = baseApi.injectEndpoints({
 			}),
 			invalidatesTags: ["ComplexityAnalyzerConfig"],
 		}),
+
+		// Phrase suggestions
+		getComplexitySuggestions: builder.query<SuggestionsList, { statuses: SuggestionStatus[] }>({
+			query: ({ statuses }) => ({
+				url: "/routing/complexity-suggestions",
+				method: "GET",
+				params: { status: statuses.join(",") },
+			}),
+			// A config save changes whether suggestions are on and when they run.
+			providesTags: ["ComplexitySuggestions", "ComplexityAnalyzerConfig"],
+		}),
+		getComplexitySuggestion: builder.query<SuggestionDetail, string>({
+			query: (id) => ({
+				url: `/routing/complexity-suggestions/${encodeURIComponent(id)}`,
+				method: "GET",
+			}),
+			providesTags: (_result, _error, id) => [{ type: "ComplexitySuggestions", id }],
+		}),
+		updateComplexitySuggestionStatus: builder.mutation<Suggestion, { id: string; status: Exclude<SuggestionStatus, "superseded"> }>({
+			query: ({ id, status }) => ({
+				url: `/routing/complexity-suggestions/${encodeURIComponent(id)}/status`,
+				method: "PUT",
+				body: { status },
+			}),
+			invalidatesTags: ["ComplexitySuggestions"],
+		}),
+		testComplexitySuggestionPhrases: builder.mutation<PhraseTestResult, PhraseTestRequest>({
+			query: (body) => ({
+				url: "/routing/complexity-suggestions/test",
+				method: "POST",
+				body,
+			}),
+		}),
+		getComplexitySuggestionRuns: builder.query<{ runs: SuggestionRun[]; next_run_at?: string }, { limit?: number }>({
+			query: ({ limit }) => ({
+				url: "/routing/complexity-suggestions/runs",
+				method: "GET",
+				params: limit ? { limit } : undefined,
+			}),
+			providesTags: ["ComplexitySuggestions"],
+		}),
+		startComplexitySuggestionRun: builder.mutation<{ run_id: string }, void>({
+			query: () => ({
+				url: "/routing/complexity-suggestions/runs",
+				method: "POST",
+			}),
+			invalidatesTags: ["ComplexitySuggestions"],
+		}),
 	}),
 });
 
@@ -969,6 +1027,12 @@ export const {
 	useResetComplexityAnalyzerConfigMutation,
 	useGetComplexitySemanticStatusQuery,
 	useRetryComplexitySemanticWarmupMutation,
+	useGetComplexitySuggestionsQuery,
+	useGetComplexitySuggestionQuery,
+	useUpdateComplexitySuggestionStatusMutation,
+	useTestComplexitySuggestionPhrasesMutation,
+	useGetComplexitySuggestionRunsQuery,
+	useStartComplexitySuggestionRunMutation,
 
 	// Lazy queries
 	useLazyGetVirtualKeysQuery,
