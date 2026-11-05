@@ -248,7 +248,11 @@
 		"skipAccessProfileKeyCreation": "Non creare chiavi virtuali utente per i profili di accesso",
 		"skipAccessProfileKeyCreationHelp": "Se attivata, il primo profilo di accesso di un utente non gli crea una chiave virtuale. Le chiavi già possedute dall'utente, o aggiunte per suo conto, restano governate dal profilo finché è assegnato.",
 		"skipAccessProfileKeyDeletion": "Non eliminare le chiavi virtuali utente quando vengono rimossi i profili di accesso",
-		"skipAccessProfileKeyDeletionHelp": "Se attivata, la rimozione dell'ultimo profilo di accesso di un utente lascia le sue chiavi virtuali come chiavi ordinarie, senza i provider né gli accessi del profilo. L'eliminazione dell'utente elimina comunque le sue chiavi."
+		"skipAccessProfileKeyDeletionHelp": "Se attivata, la rimozione dell'ultimo profilo di accesso di un utente lascia le sue chiavi virtuali come chiavi ordinarie, senza i provider né gli accessi del profilo. L'eliminazione dell'utente elimina comunque le sue chiavi.",
+		"accessProfileHierarchy": "Gerarchia dei profili di accesso",
+		"accessProfileHierarchyHelp": "Come i profili di accesso dei team, delle business unit e dei clienti di un utente si combinano con il suo accesso. Additivo: ciascuno di essi amplia ciò che l'utente può raggiungere. Restrittivo: ogni livello con un profilo attivo lo limita, quindi l'utente mantiene solo ciò che consente il proprio profilo o la propria chiave virtuale e che consente anche almeno un profilo di ciascuno di quei livelli. Budget e limiti di frequenza vengono addebitati allo stesso modo in entrambe le modalità.",
+		"accessProfileHierarchyAdditive": "Additivo",
+		"accessProfileHierarchyRestrictive": "Restrittivo"
 	},
 	"logging": {
 		"title": "Impostazioni dei log",

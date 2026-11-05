@@ -248,7 +248,11 @@
 		"skipAccessProfileKeyCreation": "Keine virtuellen Benutzerschlüssel für Zugriffsprofile erstellen",
 		"skipAccessProfileKeyCreationHelp": "Wenn aktiviert, wird für einen Benutzer beim ersten Zugriffsprofil kein virtueller Schlüssel erstellt. Schlüssel, die der Benutzer bereits besitzt oder die du für ihn hinzufügst, werden weiterhin durch das Profil verwaltet, solange es ihm zugewiesen ist.",
 		"skipAccessProfileKeyDeletion": "Virtuelle Benutzerschlüssel beim Entfernen von Zugriffsprofilen nicht löschen",
-		"skipAccessProfileKeyDeletionHelp": "Wenn aktiviert, bleiben die virtuellen Schlüssel eines Benutzers beim Entfernen seines letzten Zugriffsprofils als normale Schlüssel bestehen, ohne die Anbieter oder Zugriffsrechte des Profils. Beim Löschen des Benutzers werden seine Schlüssel weiterhin gelöscht."
+		"skipAccessProfileKeyDeletionHelp": "Wenn aktiviert, bleiben die virtuellen Schlüssel eines Benutzers beim Entfernen seines letzten Zugriffsprofils als normale Schlüssel bestehen, ohne die Anbieter oder Zugriffsrechte des Profils. Beim Löschen des Benutzers werden seine Schlüssel weiterhin gelöscht.",
+		"accessProfileHierarchy": "Zugriffsprofil-Hierarchie",
+		"accessProfileHierarchyHelp": "Legt fest, wie die Zugriffsprofile der Teams, Geschäftsbereiche und Kunden eines Benutzers mit seinem eigenen Zugriff kombiniert werden. Additiv: Jedes dieser Profile erweitert, was der Benutzer erreichen kann. Restriktiv: Jede Ebene mit einem aktiven Profil begrenzt den Zugriff stattdessen, sodass der Benutzer nur behält, was sein eigenes Profil oder sein virtueller Schlüssel erlaubt und was zusätzlich mindestens ein Profil auf jeder dieser Ebenen erlaubt. Budgets und Ratenlimits werden in beiden Modi gleich belastet.",
+		"accessProfileHierarchyAdditive": "Additiv",
+		"accessProfileHierarchyRestrictive": "Restriktiv"
 	},
 	"logging": {
 		"title": "Protokolleinstellungen",

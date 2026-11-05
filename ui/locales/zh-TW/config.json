@@ -248,7 +248,11 @@
 		"skipAccessProfileKeyCreation": "不要為存取設定檔建立使用者虛擬金鑰",
 		"skipAccessProfileKeyCreationHelp": "啟用後，使用者首次套用存取設定檔時不會為其建立虛擬金鑰。使用者已擁有的金鑰或你為其新增的金鑰，在使用者套用此設定檔期間仍會受其管理。",
 		"skipAccessProfileKeyDeletion": "移除存取設定檔時不要刪除使用者虛擬金鑰",
-		"skipAccessProfileKeyDeletionHelp": "啟用後，移除使用者最後一個存取設定檔時，會保留其虛擬金鑰並轉為一般金鑰，不再套用該設定檔的供應商或存取權限。刪除使用者時仍會刪除其金鑰。"
+		"skipAccessProfileKeyDeletionHelp": "啟用後，移除使用者最後一個存取設定檔時，會保留其虛擬金鑰並轉為一般金鑰，不再套用該設定檔的供應商或存取權限。刪除使用者時仍會刪除其金鑰。",
+		"accessProfileHierarchy": "存取設定檔階層",
+		"accessProfileHierarchyHelp": "設定使用者所屬團隊、業務單位和客戶的存取設定檔如何與使用者自身的存取權限組合。疊加：每個設定檔都會擴大使用者可存取的範圍。限制：每個具有作用中設定檔的層級都會改為限制該範圍，使用者只保留其自身設定檔或虛擬金鑰允許、且每個此類層級中至少有一個設定檔也允許的內容。兩種模式下預算和速率限制的計費方式相同。",
+		"accessProfileHierarchyAdditive": "疊加",
+		"accessProfileHierarchyRestrictive": "限制"
 	},
 	"logging": {
 		"title": "日誌設定",

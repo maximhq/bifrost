@@ -248,7 +248,11 @@
 		"skipAccessProfileKeyCreation": "Não criar chaves virtuais de usuário para perfis de acesso",
 		"skipAccessProfileKeyCreationHelp": "Quando ativado, o primeiro perfil de acesso de um usuário não cria uma chave virtual para ele. As chaves que o usuário já possui, ou que você adicionar para ele, continuam sendo governadas pelo perfil enquanto ele tiver um.",
 		"skipAccessProfileKeyDeletion": "Não excluir chaves virtuais de usuário ao remover perfis de acesso",
-		"skipAccessProfileKeyDeletionHelp": "Quando ativado, remover o último perfil de acesso de um usuário mantém as chaves virtuais como chaves comuns, sem os provedores nem o acesso do perfil. Excluir o usuário ainda exclui as chaves dele."
+		"skipAccessProfileKeyDeletionHelp": "Quando ativado, remover o último perfil de acesso de um usuário mantém as chaves virtuais como chaves comuns, sem os provedores nem o acesso do perfil. Excluir o usuário ainda exclui as chaves dele.",
+		"accessProfileHierarchy": "Hierarquia de perfis de acesso",
+		"accessProfileHierarchyHelp": "Como os perfis de acesso das equipes, unidades de negócio e clientes de um usuário se combinam com o acesso do próprio usuário. Aditivo: cada um deles amplia o que o usuário pode alcançar. Restritivo: cada nível com um perfil ativo o limita, de modo que o usuário mantém apenas o que seu próprio perfil ou chave virtual permite e que pelo menos um perfil de cada um desses níveis também permite. Orçamentos e limites de taxa são cobrados da mesma forma nos dois modos.",
+		"accessProfileHierarchyAdditive": "Aditivo",
+		"accessProfileHierarchyRestrictive": "Restritivo"
 	},
 	"logging": {
 		"title": "Definições de registos",

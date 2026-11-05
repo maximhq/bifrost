@@ -248,7 +248,11 @@
 		"skipAccessProfileKeyCreation": "액세스 프로필용 사용자 가상 키 만들지 않기",
 		"skipAccessProfileKeyCreationHelp": "사용 설정하면 사용자의 첫 액세스 프로필이 해당 사용자의 가상 키를 만들지 않습니다. 사용자가 이미 소유한 키나 사용자를 위해 추가한 키는 프로필이 있는 동안 계속 프로필의 관리를 받습니다.",
 		"skipAccessProfileKeyDeletion": "액세스 프로필 제거 시 사용자 가상 키 삭제하지 않기",
-		"skipAccessProfileKeyDeletionHelp": "사용 설정하면 사용자의 마지막 액세스 프로필을 제거해도 가상 키는 일반 키로 유지되며, 프로필의 공급자나 액세스 권한은 적용되지 않습니다. 사용자를 삭제하면 키도 삭제됩니다."
+		"skipAccessProfileKeyDeletionHelp": "사용 설정하면 사용자의 마지막 액세스 프로필을 제거해도 가상 키는 일반 키로 유지되며, 프로필의 공급자나 액세스 권한은 적용되지 않습니다. 사용자를 삭제하면 키도 삭제됩니다.",
+		"accessProfileHierarchy": "액세스 프로필 계층",
+		"accessProfileHierarchyHelp": "사용자의 팀, 사업부, 고객의 액세스 프로필이 사용자 자신의 액세스와 어떻게 결합되는지 설정합니다. 추가: 각 프로필이 사용자가 사용할 수 있는 범위를 넓힙니다. 제한: 활성 프로필이 있는 각 계층이 대신 범위를 제한하므로, 사용자는 자신의 프로필이나 가상 키가 허용하고 해당 계층마다 최소 하나의 프로필도 허용하는 항목만 사용할 수 있습니다. 예산과 속도 제한은 두 모드에서 동일하게 청구됩니다.",
+		"accessProfileHierarchyAdditive": "추가",
+		"accessProfileHierarchyRestrictive": "제한"
 	},
 	"logging": {
 		"title": "로그 설정",

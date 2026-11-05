@@ -248,7 +248,11 @@
 		"skipAccessProfileKeyCreation": "不为访问配置文件创建用户虚拟密钥",
 		"skipAccessProfileKeyCreationHelp": "启用后，用户首次获得访问配置文件时不会为其创建虚拟密钥。用户已拥有的密钥或你为其添加的密钥，在用户持有访问配置文件期间仍由该配置文件治理。",
 		"skipAccessProfileKeyDeletion": "移除访问配置文件时不删除用户虚拟密钥",
-		"skipAccessProfileKeyDeletionHelp": "启用后，移除用户的最后一个访问配置文件时，其虚拟密钥会保留为普通密钥，不再继承该配置文件的供应商或访问权限。删除用户仍会删除其密钥。"
+		"skipAccessProfileKeyDeletionHelp": "启用后，移除用户的最后一个访问配置文件时，其虚拟密钥会保留为普通密钥，不再继承该配置文件的供应商或访问权限。删除用户仍会删除其密钥。",
+		"accessProfileHierarchy": "访问配置文件层级",
+		"accessProfileHierarchyHelp": "设置用户所属团队、业务部门和客户的访问配置文件如何与用户自身的访问权限组合。叠加：每个配置文件都会扩大用户可访问的范围。限制：每个具有活动配置文件的层级都会改为限制该范围，用户只保留其自身配置文件或虚拟密钥允许、且每个此类层级中至少有一个配置文件也允许的内容。两种模式下预算和速率限制的计费方式相同。",
+		"accessProfileHierarchyAdditive": "叠加",
+		"accessProfileHierarchyRestrictive": "限制"
 	},
 	"logging": {
 		"title": "日志设置",
