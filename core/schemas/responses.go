@@ -535,6 +535,7 @@ type PromptCacheOptions struct {
 // block (OpenAI gpt-5.6+). Only "explicit" is valid for Mode.
 type PromptCacheBreakpoint struct {
 	Mode *string `json:"mode,omitempty"`
+	TTL  *string `json:"ttl,omitempty"` // "30m" or "12h"; defaults to prompt_cache_options.ttl
 }
 
 type ResponsesParameters struct {
@@ -1411,17 +1412,24 @@ type ResponsesResponseInputTokens struct {
 	CustomSpeechAudioTokens   int `json:"custom_speech_audio_tokens,omitempty"`
 }
 
+// openAICacheWriteTokensDetails is OpenAI's per-lifetime cache write split.
+type openAICacheWriteTokensDetails struct {
+	TTL30mTokens int `json:"ttl_30m_tokens"`
+	TTL12hTokens int `json:"ttl_12h_tokens"`
+}
+
 // UnmarshalJSON maps OpenAI's cached_tokens into CachedReadTokens for compatibility.
 func (d *ResponsesResponseInputTokens) UnmarshalJSON(data []byte) error {
 	var raw struct {
-		TextTokens              int                          `json:"text_tokens"`
-		AudioTokens             int                          `json:"audio_tokens"`
-		ImageTokens             int                          `json:"image_tokens"`
-		CachedReadTokens        int                          `json:"cached_read_tokens"`
-		CachedWriteTokens       int                          `json:"cached_write_tokens"`
-		CachedWriteTokenDetails *ChatCachedWriteTokenDetails `json:"cached_write_token_details"`
-		CachedTokens            *int                         `json:"cached_tokens"`
-		CacheWriteTokens        *int                         `json:"cache_write_tokens"`
+		TextTokens              int                            `json:"text_tokens"`
+		AudioTokens             int                            `json:"audio_tokens"`
+		ImageTokens             int                            `json:"image_tokens"`
+		CachedReadTokens        int                            `json:"cached_read_tokens"`
+		CachedWriteTokens       int                            `json:"cached_write_tokens"`
+		CachedWriteTokenDetails *ChatCachedWriteTokenDetails   `json:"cached_write_token_details"`
+		CachedTokens            *int                           `json:"cached_tokens"`
+		CacheWriteTokens        *int                           `json:"cache_write_tokens"`
+		CacheWriteTokensDetails *openAICacheWriteTokensDetails `json:"cache_write_tokens_details"`
 
 		StandardSpeechAudioTokens int `json:"standard_speech_audio_tokens"`
 		CustomSpeechAudioTokens   int `json:"custom_speech_audio_tokens"`
@@ -1445,6 +1453,15 @@ func (d *ResponsesResponseInputTokens) UnmarshalJSON(data []byte) error {
 	if raw.CacheWriteTokens != nil && d.CachedWriteTokens == 0 {
 		d.CachedWriteTokens = *raw.CacheWriteTokens
 	}
+	// OpenAI gpt-5.6+ splits writes by lifetime; fill Bifrost's buckets unless already set.
+	if s := raw.CacheWriteTokensDetails; s != nil && (s.TTL30mTokens > 0 || s.TTL12hTokens > 0) {
+		if d.CachedWriteTokenDetails == nil {
+			d.CachedWriteTokenDetails = &ChatCachedWriteTokenDetails{}
+		}
+		if wd := d.CachedWriteTokenDetails; wd.CachedWriteTokens30m == 0 && wd.CachedWriteTokens12h == 0 {
+			wd.CachedWriteTokens30m, wd.CachedWriteTokens12h = s.TTL30mTokens, s.TTL12hTokens
+		}
+	}
 	return nil
 }
 
@@ -1452,6 +1469,10 @@ func (d *ResponsesResponseInputTokens) UnmarshalJSON(data []byte) error {
 // Cache writes are reported separately via cached_write_tokens and are excluded from cached_tokens so that
 // OpenAI-spec consumers do not price cache writes as cache reads.
 func (d ResponsesResponseInputTokens) MarshalJSON() ([]byte, error) {
+	var split *openAICacheWriteTokensDetails // only OpenAI lifetimes; Anthropic 5m/1h are never relabelled
+	if wd := d.CachedWriteTokenDetails; wd != nil && (wd.CachedWriteTokens30m > 0 || wd.CachedWriteTokens12h > 0) {
+		split = &openAICacheWriteTokensDetails{TTL30mTokens: wd.CachedWriteTokens30m, TTL12hTokens: wd.CachedWriteTokens12h}
+	}
 	type raw struct {
 		TextTokens              int                          `json:"text_tokens,omitempty"`
 		AudioTokens             int                          `json:"audio_tokens,omitempty"`
@@ -1462,7 +1483,8 @@ func (d ResponsesResponseInputTokens) MarshalJSON() ([]byte, error) {
 		CachedTokens            int                          `json:"cached_tokens"`
 		// OpenAI's field name for cache writes (mirrors cached_tokens for reads) so the
 		// OpenAI SDK — which reads cache_write_tokens, not cached_write_tokens — finds it.
-		CacheWriteTokens int `json:"cache_write_tokens"`
+		CacheWriteTokens        int                            `json:"cache_write_tokens"`
+		CacheWriteTokensDetails *openAICacheWriteTokensDetails `json:"cache_write_tokens_details,omitempty"`
 
 		StandardSpeechAudioTokens int `json:"standard_speech_audio_tokens,omitempty"`
 		CustomSpeechAudioTokens   int `json:"custom_speech_audio_tokens,omitempty"`
@@ -1476,6 +1498,7 @@ func (d ResponsesResponseInputTokens) MarshalJSON() ([]byte, error) {
 		CachedWriteTokenDetails: d.CachedWriteTokenDetails,
 		CachedTokens:            d.CachedReadTokens,
 		CacheWriteTokens:        d.CachedWriteTokens,
+		CacheWriteTokensDetails: split,
 
 		StandardSpeechAudioTokens: d.StandardSpeechAudioTokens,
 		CustomSpeechAudioTokens:   d.CustomSpeechAudioTokens,

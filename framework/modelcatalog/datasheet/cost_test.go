@@ -1072,6 +1072,123 @@ func TestComputeTextCost_With1hrCacheCreationTokens(t *testing.T) {
 	assert.InDelta(t, 0.0165, cost, 1e-12)
 }
 
+// OpenAI gpt-5.6+ 12h cache writes bill at cache_creation_input_token_cost_above_12hr (2.5x input);
+// 30m writes at the standard write rate (1.25x).
+func TestComputeTextCost_OpenAI12hCacheWriteTokens(t *testing.T) {
+	p := chatPricing(0.000004, 0.00002)
+	p.CacheReadInputTokenCost = bifrost.Ptr(4e-7)
+	p.CacheCreationInputTokenCost = bifrost.Ptr(0.000005)
+	p.CacheCreationInputTokenCostAbove12hr = bifrost.Ptr(0.00001)
+
+	usage := &schemas.BifrostLLMUsage{
+		PromptTokens:     12000,
+		CompletionTokens: 100,
+		TotalTokens:      12100,
+		PromptTokensDetails: &schemas.ChatPromptTokensDetails{
+			CachedReadTokens:  4000,
+			CachedWriteTokens: 7000,
+			CachedWriteTokenDetails: &schemas.ChatCachedWriteTokenDetails{
+				CachedWriteTokens30m: 3000,
+				CachedWriteTokens12h: 4000,
+			},
+		},
+	}
+
+	cost := computeTextCostTotal(&p, usage, serviceTier{})
+
+	// Ordinary: 1000*4e-6 = 0.004; read: 4000*4e-7 = 0.0016
+	// 30m write: 3000*5e-6 = 0.015; 12h write: 4000*1e-5 = 0.04; output: 100*2e-5 = 0.002
+	assert.InDelta(t, 0.0626, cost, 1e-12)
+}
+
+// Anthropic 1h and OpenAI 12h writes each bill at their own rate, never the other's.
+func TestComputeTextCost_1hrAnd12hrCacheWritesUseSeparateRates(t *testing.T) {
+	p := chatPricing(0.000004, 0.00002)
+	p.CacheCreationInputTokenCost = bifrost.Ptr(0.000005)
+	p.CacheCreationInputTokenCostAbove1hr = bifrost.Ptr(0.000008)
+	p.CacheCreationInputTokenCostAbove12hr = bifrost.Ptr(0.00001)
+
+	usage := func(oneHour, twelveHour int) *schemas.BifrostLLMUsage {
+		return &schemas.BifrostLLMUsage{
+			PromptTokens: 10000,
+			TotalTokens:  10000,
+			PromptTokensDetails: &schemas.ChatPromptTokensDetails{
+				CachedWriteTokens: 4000,
+				CachedWriteTokenDetails: &schemas.ChatCachedWriteTokenDetails{
+					CachedWriteTokens1h:  oneHour,
+					CachedWriteTokens12h: twelveHour,
+				},
+			},
+		}
+	}
+
+	// Text: 6000*4e-6 = 0.024. 12h: 4000*1e-5 = 0.04.
+	assert.InDelta(t, 0.064, computeTextCostTotal(&p, usage(0, 4000), serviceTier{}), 1e-12)
+	// 1h: 4000*8e-6 = 0.032.
+	assert.InDelta(t, 0.056, computeTextCostTotal(&p, usage(4000, 0), serviceTier{}), 1e-12)
+
+	// Without an above_12hr rate, 12h writes fall back to the 30m write rate, not above_1hr.
+	p.CacheCreationInputTokenCostAbove12hr = nil
+	// 12h: 4000*5e-6 = 0.02.
+	assert.InDelta(t, 0.044, computeTextCostTotal(&p, usage(0, 4000), serviceTier{}), 1e-12)
+}
+
+// gpt-5.6-sol 12h write rates from the OpenAI pricing page, by tier and 272k context.
+func TestComputeTextCost_OpenAI12hCacheWriteTierRates(t *testing.T) {
+	p := chatPricing(0.000004, 0.00002)
+	p.InputCostPerTokenAbove272kTokens = bifrost.Ptr(0.000008)
+	p.CacheCreationInputTokenCost = bifrost.Ptr(0.000005)
+	p.CacheCreationInputTokenCostAbove12hr = bifrost.Ptr(0.00001)
+	p.CacheCreationInputTokenCostAbove12hrAbove272kTokens = bifrost.Ptr(0.00002)
+	p.CacheCreationInputTokenCostAbove12hrPriority = bifrost.Ptr(0.00002)
+	p.CacheCreationInputTokenCostAbove12hrAbove272kTokensPriority = bifrost.Ptr(0.00004)
+	p.CacheCreationInputTokenCostAbove12hrFlex = bifrost.Ptr(0.000005)
+	p.CacheCreationInputTokenCostAbove12hrAbove272kTokensFlex = bifrost.Ptr(0.00001)
+
+	cases := []struct {
+		name   string
+		tier   serviceTier
+		prompt int
+		want   float64
+	}{
+		{"standard/short", serviceTier{}, 10000, 0.00001},
+		{"standard/long", serviceTier{}, 300000, 0.00002},
+		{"priority/short", serviceTier{isPriority: true}, 10000, 0.00002},
+		{"priority/long", serviceTier{isPriority: true}, 300000, 0.00004},
+		{"flex/short", serviceTier{isFlex: true}, 10000, 0.000005},
+		{"flex/long", serviceTier{isFlex: true}, 300000, 0.00001},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.InDelta(t, tc.want, tieredCacheCreationInputAbove12hrTokenRate(&p, tc.prompt, tc.tier), 1e-15)
+		})
+	}
+
+	// gpt-6-astra ultrafast: 12h write $150/M short, $300/M above 272k.
+	u := chatPricing(0.00001, 0.00005)
+	u.CacheCreationInputTokenCostAbove12hr = bifrost.Ptr(0.000025)
+	u.CacheCreationInputTokenCostUltrafast = bifrost.Ptr(0.000075)
+	u.CacheCreationInputTokenCostAbove12hrUltrafast = bifrost.Ptr(0.00015)
+	u.CacheCreationInputTokenCostAbove12hrAbove272kTokensUltrafast = bifrost.Ptr(0.0003)
+	assert.InDelta(t, 0.00015, tieredCacheCreationInputAbove12hrTokenRate(&u, 10000, serviceTier{isUltrafast: true}), 1e-15)
+	assert.InDelta(t, 0.0003, tieredCacheCreationInputAbove12hrTokenRate(&u, 300000, serviceTier{isUltrafast: true}), 1e-15)
+
+	// Batch scales the long-context 12h rate by the batch/input ratio (0.5).
+	usage := &schemas.BifrostLLMUsage{
+		PromptTokens: 300000,
+		TotalTokens:  300000,
+		PromptTokensDetails: &schemas.ChatPromptTokensDetails{
+			CachedWriteTokens:       1000,
+			CachedWriteTokenDetails: &schemas.ChatCachedWriteTokenDetails{CachedWriteTokens12h: 1000},
+		},
+	}
+	p.InputCostPerTokenBatches = bifrost.Ptr(0.000002)
+	cost := computeBatchTextCost(&p, usage, serviceTier{})
+	require.NotNil(t, cost)
+	// Text: 299000*8e-6*0.5 = 1.196; 12h write: 1000*2e-5*0.5 = 0.01
+	assert.InDelta(t, 1.206, cost.InputCost, 1e-9)
+}
+
 func TestComputeTextCost_StandardCacheCreationPricingLesserThan1hr(t *testing.T) {
 	// Standard (5-min TTL) cache creation is cheaper than 1hr TTL cache creation.
 	// 1hr rate ($7.50/M) is 2x the standard rate ($3.75/M).
