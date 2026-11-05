@@ -21,13 +21,13 @@ func ValidateProject(agent string, project config.Project, persistent bool) erro
 	case "pi":
 		_, value := project.Header()
 		if strings.HasPrefix(value, "!") || strings.Contains(value, "$") {
-			return fmt.Errorf("Pi project selectors must be literal values; use --project-id")
+			return fmt.Errorf("project selectors for Pi must be literal values; use --project-id")
 		}
 		return nil
 	case "opencode":
 		_, value := project.Header()
 		if strings.Contains(value, "{env:") || strings.Contains(value, "{file:") {
-			return fmt.Errorf("OpenCode project selectors must be literal values; use --project-id")
+			return fmt.Errorf("project selectors for OpenCode must be literal values; use --project-id")
 		}
 		return nil
 	case "claude", "codex":
@@ -35,7 +35,7 @@ func ValidateProject(agent string, project config.Project, persistent bool) erro
 	case "gemini":
 		if !persistent {
 			if _, value := project.Header(); containsComma(value) {
-				return fmt.Errorf("Gemini project selectors cannot contain commas; use --project-id")
+				return fmt.Errorf("project selectors for Gemini cannot contain commas; use --project-id")
 			}
 			return nil
 		}
