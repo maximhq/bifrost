@@ -310022,7 +310022,658 @@
       ]
     },
     {
-      "name": "317. Bedrock Request Metadata Headers (#9297 / PR #9189)",
+      "name": "317. Message-level cache_control reaches the provider (message-level cache_control) (#8712 / PR #8713)",
+      "description": "OpenAI-compatible clients (LiteLLM, the AI SDK openai-compatible provider used by opencode) put cache_control on the message object instead of a content block, most often on tool messages. schemas.ChatMessage and openai.OpenAIMessage had no such field, so the marker was dropped when the request was decoded and Claude only ever cached what a block-level marker covered.\n\nChatMessage.AttachMessageCacheControl (core/schemas/chatcompletions.go) now moves the marker onto the last content block (string content becomes one text block), or onto the last tool call when there is no content, so every provider converter handles it like a block marker. A tool result carries one marker on Anthropic, hoisted onto tool_result; the last nested marker is the one kept.\n\nEvery row asserts the OUTBOUND payload via x-bf-send-back-raw-request. Rows: (1) Anthropic /v1/chat/completions, (2) the same streaming, (3) Anthropic through the /openai drop-in, which decodes into OpenAIMessage, (4) Vertex Claude, (5) Bedrock Claude Converse: a system cachePoint and one for the toolResult, (6) Bedrock Nova: the system cachePoint only, since Nova 400s on a cachePoint after a toolResult, (7) OpenRouter Claude keeps both markers, (8-10) OpenAI, Azure and xAI accept the promoted text-block tool content and get no cache_control. Rows 1-7 are red before the fix (no marker reaches the provider); 8-10 guard the string to text-block promotion.",
+      "item": [
+        {
+          "name": "anthropic claude-sonnet-4-6 /v1/chat/completions message-level cache_control non-streaming",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('317.1 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var rr = null;",
+                  "rr = ((pm.response.json() || {}).extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var rawStr = rr ? JSON.stringify(rr) : '';",
+                  "pm.test('317.1 raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "var sys = Array.isArray(rr.system) ? rr.system : [];",
+                  "pm.test('317.1 system message marker became system cache_control', function () {",
+                  "  var last = sys.length ? sys[sys.length - 1] : null;",
+                  "  pm.expect(last && last.cache_control, 'system: ' + JSON.stringify(rr.system)).to.be.an('object');",
+                  "});",
+                  "var toolResult = null;",
+                  "(rr.messages || []).forEach(function (m) {",
+                  "  (Array.isArray(m.content) ? m.content : []).forEach(function (b) { if (b && b.type === 'tool_result') { toolResult = b; } });",
+                  "});",
+                  "pm.test('317.1 tool message marker became tool_result.cache_control', function () {",
+                  "  pm.expect(toolResult, 'messages: ' + JSON.stringify(rr.messages)).to.be.an('object');",
+                  "  pm.expect(toolResult.cache_control, 'tool_result: ' + JSON.stringify(toolResult)).to.be.an('object');",
+                  "});",
+                  "pm.test('317.1 no cache_control nested inside tool_result.content (Anthropic rejects it)', function () {",
+                  "  var nested = JSON.stringify((toolResult && toolResult.content) || '');",
+                  "  pm.expect(nested, nested).to.not.include('cache_control');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-4-6\",\n  \"max_tokens\": 16,\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"[bf-317 system] You are a coding agent. Reply with OK.\",\n      \"cache_control\": {\n        \"type\": \"ephemeral\"\n      }\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Create notes.txt\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": null,\n      \"tool_calls\": [\n        {\n          \"id\": \"call_bf317\",\n          \"type\": \"function\",\n          \"function\": {\n            \"name\": \"write_file\",\n            \"arguments\": \"{\\\"path\\\":\\\"notes.txt\\\"}\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"tool\",\n      \"tool_call_id\": \"call_bf317\",\n      \"content\": \"Wrote notes.txt\",\n      \"cache_control\": {\n        \"type\": \"ephemeral\"\n      }\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"write_file\",\n        \"description\": \"Write a file.\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"path\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"path\"\n          ]\n        }\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "anthropic claude-sonnet-4-6 /v1/chat/completions message-level cache_control streaming",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('317.2 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var rr = null;",
+                  "pm.response.text().split('\\n').forEach(function (line) {",
+                  "  if (line.indexOf('data:') !== 0) { return; }",
+                  "  var chunk; try { chunk = JSON.parse(line.slice(5)); } catch (e) { return; }",
+                  "  if (chunk && chunk.extra_fields && chunk.extra_fields.raw_request) { rr = chunk.extra_fields.raw_request; }",
+                  "});",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var rawStr = rr ? JSON.stringify(rr) : '';",
+                  "pm.test('317.2 raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "var sys = Array.isArray(rr.system) ? rr.system : [];",
+                  "pm.test('317.2 system message marker became system cache_control', function () {",
+                  "  var last = sys.length ? sys[sys.length - 1] : null;",
+                  "  pm.expect(last && last.cache_control, 'system: ' + JSON.stringify(rr.system)).to.be.an('object');",
+                  "});",
+                  "var toolResult = null;",
+                  "(rr.messages || []).forEach(function (m) {",
+                  "  (Array.isArray(m.content) ? m.content : []).forEach(function (b) { if (b && b.type === 'tool_result') { toolResult = b; } });",
+                  "});",
+                  "pm.test('317.2 tool message marker became tool_result.cache_control', function () {",
+                  "  pm.expect(toolResult, 'messages: ' + JSON.stringify(rr.messages)).to.be.an('object');",
+                  "  pm.expect(toolResult.cache_control, 'tool_result: ' + JSON.stringify(toolResult)).to.be.an('object');",
+                  "});",
+                  "pm.test('317.2 no cache_control nested inside tool_result.content (Anthropic rejects it)', function () {",
+                  "  var nested = JSON.stringify((toolResult && toolResult.content) || '');",
+                  "  pm.expect(nested, nested).to.not.include('cache_control');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-4-6\",\n  \"max_tokens\": 16,\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"[bf-317 system] You are a coding agent. Reply with OK.\",\n      \"cache_control\": {\n        \"type\": \"ephemeral\"\n      }\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Create notes.txt\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": null,\n      \"tool_calls\": [\n        {\n          \"id\": \"call_bf317\",\n          \"type\": \"function\",\n          \"function\": {\n            \"name\": \"write_file\",\n            \"arguments\": \"{\\\"path\\\":\\\"notes.txt\\\"}\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"tool\",\n      \"tool_call_id\": \"call_bf317\",\n      \"content\": \"Wrote notes.txt\",\n      \"cache_control\": {\n        \"type\": \"ephemeral\"\n      }\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"write_file\",\n        \"description\": \"Write a file.\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"path\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"path\"\n          ]\n        }\n      }\n    }\n  ],\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "anthropic claude-sonnet-4-6 /openai/v1/chat/completions message-level cache_control non-streaming",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('317.3 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var rr = null;",
+                  "rr = ((pm.response.json() || {}).extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var rawStr = rr ? JSON.stringify(rr) : '';",
+                  "pm.test('317.3 raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "var sys = Array.isArray(rr.system) ? rr.system : [];",
+                  "pm.test('317.3 system message marker became system cache_control', function () {",
+                  "  var last = sys.length ? sys[sys.length - 1] : null;",
+                  "  pm.expect(last && last.cache_control, 'system: ' + JSON.stringify(rr.system)).to.be.an('object');",
+                  "});",
+                  "var toolResult = null;",
+                  "(rr.messages || []).forEach(function (m) {",
+                  "  (Array.isArray(m.content) ? m.content : []).forEach(function (b) { if (b && b.type === 'tool_result') { toolResult = b; } });",
+                  "});",
+                  "pm.test('317.3 tool message marker became tool_result.cache_control', function () {",
+                  "  pm.expect(toolResult, 'messages: ' + JSON.stringify(rr.messages)).to.be.an('object');",
+                  "  pm.expect(toolResult.cache_control, 'tool_result: ' + JSON.stringify(toolResult)).to.be.an('object');",
+                  "});",
+                  "pm.test('317.3 no cache_control nested inside tool_result.content (Anthropic rejects it)', function () {",
+                  "  var nested = JSON.stringify((toolResult && toolResult.content) || '');",
+                  "  pm.expect(nested, nested).to.not.include('cache_control');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-4-6\",\n  \"max_tokens\": 16,\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"[bf-317 system] You are a coding agent. Reply with OK.\",\n      \"cache_control\": {\n        \"type\": \"ephemeral\"\n      }\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Create notes.txt\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": null,\n      \"tool_calls\": [\n        {\n          \"id\": \"call_bf317\",\n          \"type\": \"function\",\n          \"function\": {\n            \"name\": \"write_file\",\n            \"arguments\": \"{\\\"path\\\":\\\"notes.txt\\\"}\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"tool\",\n      \"tool_call_id\": \"call_bf317\",\n      \"content\": \"Wrote notes.txt\",\n      \"cache_control\": {\n        \"type\": \"ephemeral\"\n      }\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"write_file\",\n        \"description\": \"Write a file.\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"path\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"path\"\n          ]\n        }\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "vertex claude-sonnet-4-6 /v1/chat/completions message-level cache_control non-streaming",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('317.4 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var rr = null;",
+                  "rr = ((pm.response.json() || {}).extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var rawStr = rr ? JSON.stringify(rr) : '';",
+                  "pm.test('317.4 raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "var sys = Array.isArray(rr.system) ? rr.system : [];",
+                  "pm.test('317.4 system message marker became system cache_control', function () {",
+                  "  var last = sys.length ? sys[sys.length - 1] : null;",
+                  "  pm.expect(last && last.cache_control, 'system: ' + JSON.stringify(rr.system)).to.be.an('object');",
+                  "});",
+                  "var toolResult = null;",
+                  "(rr.messages || []).forEach(function (m) {",
+                  "  (Array.isArray(m.content) ? m.content : []).forEach(function (b) { if (b && b.type === 'tool_result') { toolResult = b; } });",
+                  "});",
+                  "pm.test('317.4 tool message marker became tool_result.cache_control', function () {",
+                  "  pm.expect(toolResult, 'messages: ' + JSON.stringify(rr.messages)).to.be.an('object');",
+                  "  pm.expect(toolResult.cache_control, 'tool_result: ' + JSON.stringify(toolResult)).to.be.an('object');",
+                  "});",
+                  "pm.test('317.4 no cache_control nested inside tool_result.content (Anthropic rejects it)', function () {",
+                  "  var nested = JSON.stringify((toolResult && toolResult.content) || '');",
+                  "  pm.expect(nested, nested).to.not.include('cache_control');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/claude-sonnet-4-6\",\n  \"max_tokens\": 16,\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"[bf-317 system] You are a coding agent. Reply with OK.\",\n      \"cache_control\": {\n        \"type\": \"ephemeral\"\n      }\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Create notes.txt\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": null,\n      \"tool_calls\": [\n        {\n          \"id\": \"call_bf317\",\n          \"type\": \"function\",\n          \"function\": {\n            \"name\": \"write_file\",\n            \"arguments\": \"{\\\"path\\\":\\\"notes.txt\\\"}\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"tool\",\n      \"tool_call_id\": \"call_bf317\",\n      \"content\": \"Wrote notes.txt\",\n      \"cache_control\": {\n        \"type\": \"ephemeral\"\n      }\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"write_file\",\n        \"description\": \"Write a file.\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"path\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"path\"\n          ]\n        }\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock claude-haiku-4-5 /v1/chat/completions message-level cache_control non-streaming",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('317.5 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var rr = null;",
+                  "rr = ((pm.response.json() || {}).extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var rawStr = rr ? JSON.stringify(rr) : '';",
+                  "pm.test('317.5 raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "var sysPoints = (rr.system || []).filter(function (s) { return s && s.cachePoint; }).length;",
+                  "pm.test('317.5 system message marker became a system cachePoint', function () {",
+                  "  pm.expect(sysPoints, 'system: ' + JSON.stringify(rr.system)).to.equal(1);",
+                  "});",
+                  "var afterToolResult = 0;",
+                  "(rr.messages || []).forEach(function (m) {",
+                  "  var c = Array.isArray(m.content) ? m.content : [];",
+                  "  c.forEach(function (b, j) {",
+                  "    if (b && b.cachePoint && j > 0 && c[j - 1] && c[j - 1].toolResult) { afterToolResult++; }",
+                  "    if (b && b.toolResult && JSON.stringify(b.toolResult).indexOf('cachePoint') !== -1) { afterToolResult++; }",
+                  "  });",
+                  "});",
+                  "pm.test('317.5 tool message marker became a cachePoint for the toolResult', function () {",
+                  "  pm.expect(afterToolResult, 'messages: ' + JSON.stringify(rr.messages).slice(0, 1500)).to.equal(1);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0\",\n  \"max_tokens\": 16,\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"[bf-317 system] You are a coding agent. Reply with OK.\",\n      \"cache_control\": {\n        \"type\": \"ephemeral\"\n      }\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Create notes.txt\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": null,\n      \"tool_calls\": [\n        {\n          \"id\": \"call_bf317\",\n          \"type\": \"function\",\n          \"function\": {\n            \"name\": \"write_file\",\n            \"arguments\": \"{\\\"path\\\":\\\"notes.txt\\\"}\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"tool\",\n      \"tool_call_id\": \"call_bf317\",\n      \"content\": \"Wrote notes.txt\",\n      \"cache_control\": {\n        \"type\": \"ephemeral\"\n      }\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"write_file\",\n        \"description\": \"Write a file.\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"path\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"path\"\n          ]\n        }\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock nova-lite /v1/chat/completions message-level cache_control non-streaming",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('317.6 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var rr = null;",
+                  "rr = ((pm.response.json() || {}).extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var rawStr = rr ? JSON.stringify(rr) : '';",
+                  "pm.test('317.6 raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "var sysPoints = (rr.system || []).filter(function (s) { return s && s.cachePoint; }).length;",
+                  "pm.test('317.6 system message marker became a system cachePoint', function () {",
+                  "  pm.expect(sysPoints, 'system: ' + JSON.stringify(rr.system)).to.equal(1);",
+                  "});",
+                  "var afterToolResult = 0;",
+                  "(rr.messages || []).forEach(function (m) {",
+                  "  var c = Array.isArray(m.content) ? m.content : [];",
+                  "  c.forEach(function (b, j) {",
+                  "    if (b && b.cachePoint && j > 0 && c[j - 1] && c[j - 1].toolResult) { afterToolResult++; }",
+                  "    if (b && b.toolResult && JSON.stringify(b.toolResult).indexOf('cachePoint') !== -1) { afterToolResult++; }",
+                  "  });",
+                  "});",
+                  "pm.test('317.6 no cachePoint after the toolResult (Nova rejects it)', function () {",
+                  "  pm.expect(afterToolResult, 'messages: ' + JSON.stringify(rr.messages).slice(0, 1500)).to.equal(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/us.amazon.nova-lite-v1:0\",\n  \"max_tokens\": 16,\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"[bf-317 system] You are a coding agent. Reply with OK.\",\n      \"cache_control\": {\n        \"type\": \"ephemeral\"\n      }\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Create notes.txt\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": null,\n      \"tool_calls\": [\n        {\n          \"id\": \"call_bf317\",\n          \"type\": \"function\",\n          \"function\": {\n            \"name\": \"write_file\",\n            \"arguments\": \"{\\\"path\\\":\\\"notes.txt\\\"}\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"tool\",\n      \"tool_call_id\": \"call_bf317\",\n      \"content\": \"Wrote notes.txt\",\n      \"cache_control\": {\n        \"type\": \"ephemeral\"\n      }\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"write_file\",\n        \"description\": \"Write a file.\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"path\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"path\"\n          ]\n        }\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openrouter claude-sonnet-5 /v1/chat/completions message-level cache_control non-streaming",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('317.7 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var rr = null;",
+                  "rr = ((pm.response.json() || {}).extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var rawStr = rr ? JSON.stringify(rr) : '';",
+                  "pm.test('317.7 raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "pm.test('317.7 both message markers reach OpenRouter as block cache_control', function () {",
+                  "  pm.expect(rawStr.split('\"cache_control\"').length - 1, rawStr.slice(0, 1500)).to.equal(2);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openrouter/anthropic/claude-sonnet-5\",\n  \"max_tokens\": 16,\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"[bf-317 system] You are a coding agent. Reply with OK.\",\n      \"cache_control\": {\n        \"type\": \"ephemeral\"\n      }\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Create notes.txt\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": null,\n      \"tool_calls\": [\n        {\n          \"id\": \"call_bf317\",\n          \"type\": \"function\",\n          \"function\": {\n            \"name\": \"write_file\",\n            \"arguments\": \"{\\\"path\\\":\\\"notes.txt\\\"}\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"tool\",\n      \"tool_call_id\": \"call_bf317\",\n      \"content\": \"Wrote notes.txt\",\n      \"cache_control\": {\n        \"type\": \"ephemeral\"\n      }\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"write_file\",\n        \"description\": \"Write a file.\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"path\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"path\"\n          ]\n        }\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai gpt-4o-mini /v1/chat/completions message-level cache_control non-streaming",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('317.8 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var rr = null;",
+                  "rr = ((pm.response.json() || {}).extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var rawStr = rr ? JSON.stringify(rr) : '';",
+                  "pm.test('317.8 raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "pm.test('317.8 cache_control is not forwarded to an OpenAI-family provider', function () {",
+                  "  pm.expect(rawStr, rawStr.slice(0, 1500)).to.not.include('cache_control');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"max_tokens\": 16,\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"[bf-317 system] You are a coding agent. Reply with OK.\",\n      \"cache_control\": {\n        \"type\": \"ephemeral\"\n      }\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Create notes.txt\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": null,\n      \"tool_calls\": [\n        {\n          \"id\": \"call_bf317\",\n          \"type\": \"function\",\n          \"function\": {\n            \"name\": \"write_file\",\n            \"arguments\": \"{\\\"path\\\":\\\"notes.txt\\\"}\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"tool\",\n      \"tool_call_id\": \"call_bf317\",\n      \"content\": \"Wrote notes.txt\",\n      \"cache_control\": {\n        \"type\": \"ephemeral\"\n      }\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"write_file\",\n        \"description\": \"Write a file.\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"path\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"path\"\n          ]\n        }\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "azure gpt-4o-mini /v1/chat/completions message-level cache_control non-streaming",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('317.9 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var rr = null;",
+                  "rr = ((pm.response.json() || {}).extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var rawStr = rr ? JSON.stringify(rr) : '';",
+                  "pm.test('317.9 raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "pm.test('317.9 cache_control is not forwarded to an OpenAI-family provider', function () {",
+                  "  pm.expect(rawStr, rawStr.slice(0, 1500)).to.not.include('cache_control');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"azure/gpt-4o-mini\",\n  \"max_tokens\": 16,\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"[bf-317 system] You are a coding agent. Reply with OK.\",\n      \"cache_control\": {\n        \"type\": \"ephemeral\"\n      }\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Create notes.txt\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": null,\n      \"tool_calls\": [\n        {\n          \"id\": \"call_bf317\",\n          \"type\": \"function\",\n          \"function\": {\n            \"name\": \"write_file\",\n            \"arguments\": \"{\\\"path\\\":\\\"notes.txt\\\"}\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"tool\",\n      \"tool_call_id\": \"call_bf317\",\n      \"content\": \"Wrote notes.txt\",\n      \"cache_control\": {\n        \"type\": \"ephemeral\"\n      }\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"write_file\",\n        \"description\": \"Write a file.\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"path\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"path\"\n          ]\n        }\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "xai grok-4-0709 /v1/chat/completions message-level cache_control non-streaming",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('317.10 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var rr = null;",
+                  "rr = ((pm.response.json() || {}).extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var rawStr = rr ? JSON.stringify(rr) : '';",
+                  "pm.test('317.10 raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "pm.test('317.10 cache_control is not forwarded to an OpenAI-family provider', function () {",
+                  "  pm.expect(rawStr, rawStr.slice(0, 1500)).to.not.include('cache_control');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"xai/grok-4-0709\",\n  \"max_tokens\": 16,\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"[bf-317 system] You are a coding agent. Reply with OK.\",\n      \"cache_control\": {\n        \"type\": \"ephemeral\"\n      }\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Create notes.txt\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": null,\n      \"tool_calls\": [\n        {\n          \"id\": \"call_bf317\",\n          \"type\": \"function\",\n          \"function\": {\n            \"name\": \"write_file\",\n            \"arguments\": \"{\\\"path\\\":\\\"notes.txt\\\"}\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"tool\",\n      \"tool_call_id\": \"call_bf317\",\n      \"content\": \"Wrote notes.txt\",\n      \"cache_control\": {\n        \"type\": \"ephemeral\"\n      }\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"write_file\",\n        \"description\": \"Write a file.\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"path\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"path\"\n          ]\n        }\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "318. Bedrock Request Metadata Headers (#9297 / PR #9189)",
       "description": "x-bf-bedrock-metadata-<key> request headers must reach the outgoing Bedrock Converse requestMetadata without x-bf-passthrough-extra-params, so routes that try another provider first never forward them there. Cases pin the neutral Chat Completions and Responses routes, the Anthropic messages route, and body precedence on the PydanticAI route, where an extra_params requestMetadata value beats the header for the same key.",
       "item": [
         {
