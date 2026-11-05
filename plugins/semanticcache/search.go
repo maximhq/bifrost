@@ -371,22 +371,15 @@ func (plugin *Plugin) buildStreamingResponseFromResult(ctx *schemas.BifrostConte
 				ef.RequestType = req.RequestType
 			}
 
+			finality := schemas.StreamChunkFinalityNonFinal
 			if i == len(streamArray)-1 {
-				// stampCacheMetadataForHit marks this chunk as the cache-hit final
-				// chunk; cache.PostLLMHook keys off the compatibility field's CacheHit=true to
-				// set BifrostContextKeyStreamEndIndicator on the root ctx
-				// synchronously (same goroutine as logging.PostLLMHook).
-				//
-				// We deliberately do NOT call ctx.Root().SetValue here. Doing
-				// so races against the receiver's PostLLMHook for the previous
-				// chunk: the cache replay can advance to iteration N (and
-				// write the indicator) while the receiver is still running
-				// PostLLMHooks for chunk N-1, poisoning that chunk's
-				// IsFinalChunk read and causing duplicate "final" events.
+				finality = schemas.StreamChunkFinalityFinal
+				// Only the final replay chunk carries cache-hit metadata.
 				plugin.stampCacheMetadataForHit(state, cachedResponse.GetExtraFields(), result.ID, requestedProvider, requestedModel, cacheType, threshold, similarity, inputTokens)
 			}
 
 			chunk := &schemas.BifrostStreamChunk{
+				Finality:                             finality,
 				BifrostTextCompletionResponse:        cachedResponse.TextCompletionResponse,
 				BifrostChatResponse:                  cachedResponse.ChatResponse,
 				BifrostResponsesStreamResponse:       cachedResponse.ResponsesStreamResponse,
