@@ -5075,6 +5075,48 @@ func TestPrepareResponsesRequest_NormalizesEmbeddedToolSchemasForKimi(t *testing
 	}
 }
 
+// A Codex thread whose tool definitions changed mid-session carries a second
+// additional_tools item re-declaring functions.exec. Every wire that hoists those items
+// must send exec once, with the later definition, instead of rejecting the request
+// with "tool name \"exec\" is not unique after flattening namespace tools".
+func TestPrepareResponsesRequest_AdditionalToolsRedeclaration(t *testing.T) {
+	first := `[{"type":"namespace","name":"functions","tools":[{"type":"function","name":"exec","description":"v1","parameters":{"type":"object"}},{"type":"function","name":"wait","parameters":{"type":"object"}}]}]`
+	second := `[{"type":"namespace","name":"functions","tools":[{"type":"function","name":"exec","description":"v2","parameters":{"type":"object"}}]}]`
+	for _, tc := range []struct {
+		name     string
+		provider schemas.ModelProvider
+		model    string
+	}{
+		{"bedrock converse", schemas.Bedrock, "us.anthropic.claude-sonnet-4-5-20250929-v1:0"},
+		{"anthropic", schemas.Anthropic, "claude-sonnet-4-5"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			req := &schemas.BifrostResponsesRequest{Provider: tc.provider, Model: tc.model, Input: []schemas.ResponsesMessage{
+				{Type: new(schemas.ResponsesMessageTypeAdditionalTools), AdditionalTools: []byte(first)},
+				{Type: new(schemas.ResponsesMessageTypeAdditionalTools), AdditionalTools: []byte(second)},
+			}}
+			prepared, bifrostErr := prepareResponsesRequest(ctx, &schemas.ProviderConfig{}, stubProvider{key: tc.provider}, schemas.Key{}, req)
+			if bifrostErr != nil {
+				t.Fatalf("prepare failed: %v", bifrostErr.Error.Message)
+			}
+			var names []string
+			for _, tool := range prepared.Params.Tools {
+				names = append(names, *tool.Name)
+			}
+			if len(names) != 2 || names[0] != "exec" || names[1] != "wait" {
+				t.Fatalf("want [exec wait] on the wire, got %v", names)
+			}
+			if got := *prepared.Params.Tools[0].Description; got != "v2" {
+				t.Fatalf("want the later exec definition, got description %q", got)
+			}
+			if len(prepared.Input) != 0 {
+				t.Fatalf("additional_tools items must be consumed, got %d input items", len(prepared.Input))
+			}
+		})
+	}
+}
+
 // The Chat Completions path reaches kimi-k3 too and must normalize the same way.
 func TestHandleProviderRequest_ChatNormalizesToolSchemasForKimi(t *testing.T) {
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)

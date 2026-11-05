@@ -361,7 +361,7 @@ func (response *GenerateContentResponse) ToResponsesBifrostResponsesResponse() *
 		// are carried verbatim on ProviderExtraFields below rather than appended here, where
 		// they would read as extra assistant turns and merge into one GenAI candidate.
 		// Same message id form as the stream state, so item ids match the streaming path.
-		outputMessages := convertGeminiCandidatesToResponsesOutput(response.Candidates[:1], *bifrostResp.ID)
+		outputMessages := convertGeminiCandidatesToResponsesOutput(response.Candidates[:1], "msg_"+schemas.GetRandomString(24))
 		if len(outputMessages) > 0 {
 			bifrostResp.Output = outputMessages
 		}
@@ -4222,6 +4222,7 @@ func convertGeminiCandidatesToResponsesOutput(candidates []*Candidate, messageID
 		// check if gemini used google search tool
 		if candidate.GroundingMetadata != nil {
 			webSearchmessage := schemas.ResponsesMessage{
+				ID:     schemas.Ptr(generateItemID(&messageID, "ws", len(messages))),
 				Type:   schemas.Ptr(schemas.ResponsesMessageTypeWebSearchCall),
 				Status: schemas.Ptr("completed"),
 				ResponsesToolMessage: &schemas.ResponsesToolMessage{
