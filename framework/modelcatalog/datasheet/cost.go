@@ -224,7 +224,7 @@ func (s *Store) CalculateCostBreakdownForUsage(usage *schemas.BifrostLLMUsage, p
 	if requestType == schemas.ResponsesRequest && len(usage.Iterations) > 0 {
 		cost = cost.Add(s.calculateAdvisorIterationCost(usage.Iterations, routingInfo, input.tier, lookupScopes))
 	}
-	return cost
+	return cost.Add(s.calculateContainerSessionCost(usage, routingInfo, lookupScopes))
 }
 
 // CalculateGuardrailCost computes judge cost when no parent response is available.
@@ -586,9 +586,14 @@ func (s *Store) calculateBaseCost(result *schemas.BifrostResponse, scopes Lookup
 	// real cost of whatever underlying model Azure actually routed to. The
 	// response's own model field carries that real model, distinct from the
 	// "model-router" deployment name on RoutingInfo.Model.
-	if result.PassthroughResponse == nil && routingInfo.Provider == schemas.Azure && schemas.IsAzureModelRouter(routingInfo.Model) &&
+	if result.PassthroughResponse == nil && routingInfo.Provider == schemas.Azure && routesToAzureModelRouter(routingInfo) &&
 		(requestType == schemas.TextCompletionRequest || requestType == schemas.ChatCompletionRequest || requestType == schemas.ResponsesRequest) {
-		return s.calculateAzureModelRouterCost(result, input, routingInfo, requestType, scopes)
+		sessionRouting := routingInfo
+		if servedModel := result.ServedModel(); servedModel != "" {
+			sessionRouting.Model = servedModel
+			sessionRouting.ResolvedKeyAlias = nil
+		}
+		return s.calculateAzureModelRouterCost(result, input, routingInfo, requestType, scopes).Add(s.calculateContainerSessionCost(input.usage, sessionRouting, scopes))
 	}
 
 	cost := s.computeCostFromInput(input, routingInfo, requestType, scopes)
@@ -597,7 +602,53 @@ func (s *Store) calculateBaseCost(result *schemas.BifrostResponse, scopes Lookup
 			cost = cost.Add(s.calculateAdvisorIterationCost(iterations, routingInfo, input.tier, scopes))
 		}
 	}
-	return cost
+	return cost.Add(s.calculateContainerSessionCost(input.usage, routingInfo, scopes))
+}
+
+// calculateContainerSessionCost prices the containers a request started through a server tool. The
+// fee is flat, so service tier, data residency and batch discounts do not scale it.
+func (s *Store) calculateContainerSessionCost(usage *schemas.BifrostLLMUsage, routingInfo schemas.RoutingInfo, scopes LookupScopes) *schemas.BifrostCost {
+	if usage == nil || usage.ToolUsage == nil || len(usage.ToolUsage.ContainerSessions) == 0 {
+		return nil
+	}
+	provider := routingInfo.Provider
+	// Claude on Azure runs Anthropic's containers and bills at Anthropic's rates, not azure/container.
+	if provider == schemas.Azure && routesToClaude(routingInfo) {
+		provider = schemas.Anthropic
+	}
+	var total *schemas.BifrostCost
+	for tier, sessions := range usage.ToolUsage.ContainerSessions {
+		pricing := s.resolvePricing(schemas.RoutingInfo{Provider: provider, Model: schemas.ContainerPricingModel(tier)}, schemas.ContainerCreateRequest, scopes)
+		if pricing == nil || pricing.CodeInterpreterCostPerSession == nil {
+			pricing = s.resolvePricing(schemas.RoutingInfo{Provider: provider, Model: schemas.ContainerPricingModel(schemas.ContainerTierDefault)}, schemas.ContainerCreateRequest, scopes)
+		}
+		if pricing == nil || pricing.CodeInterpreterCostPerSession == nil {
+			continue
+		}
+		total = total.Add(totalOnlyCost(float64(sessions) * *pricing.CodeInterpreterCostPerSession))
+	}
+	return total
+}
+
+// resolvedModelIdentity follows resolvePricing's order: alias canonical name, alias wire model, then the requested model.
+func resolvedModelIdentity(routingInfo schemas.RoutingInfo) string {
+	if rka := routingInfo.ResolvedKeyAlias; rka != nil {
+		if rka.ModelName != nil && *rka.ModelName != "" {
+			return *rka.ModelName
+		}
+		if rka.ModelID != "" {
+			return rka.ModelID
+		}
+	}
+	return routingInfo.Model
+}
+
+func routesToAzureModelRouter(routingInfo schemas.RoutingInfo) bool {
+	return schemas.IsAzureModelRouter(resolvedModelIdentity(routingInfo))
+}
+
+func routesToClaude(routingInfo schemas.RoutingInfo) bool {
+	return schemas.IsAnthropicModel(resolvedModelIdentity(routingInfo))
 }
 
 // advisorIterationType marks the usage.iterations[] entry of an Anthropic advisor pass: a sub-inference
@@ -673,7 +724,7 @@ func (s *Store) calculateAzureModelRouterCost(result *schemas.BifrostResponse, i
 
 	cost := s.computeCostFromInput(input, routingInfo, pricingRequestType, scopes)
 
-	if servedModel := result.ServedModel(); servedModel != "" && servedModel != routingInfo.Model {
+	if servedModel := result.ServedModel(); servedModel != "" && servedModel != routingInfo.Model && !schemas.IsAzureModelRouter(servedModel) {
 		underlyingRoutingInfo := schemas.RoutingInfo{
 			Provider: routingInfo.Provider,
 			Model:    servedModel,
