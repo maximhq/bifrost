@@ -35,8 +35,8 @@ output "service_url" {
 output "health_check_url" {
   description = "URL to the Bifrost health check endpoint."
   value = var.create_load_balancer ? (
-    var.domain_name != null ? "http://${var.domain_name}${var.health_check_path}" : (
-      try("http://${kubernetes_ingress_v1.bifrost[0].status[0].load_balancer[0].ingress[0].ip}${var.health_check_path}", null)
+    var.domain_name != null ? "http://${var.domain_name}${trimsuffix(var.ingress_path, "/")}${var.health_check_path}" : (
+      try("http://${kubernetes_ingress_v1.bifrost[0].status[0].load_balancer[0].ingress[0].ip}${trimsuffix(var.ingress_path, "/")}${var.health_check_path}", null)
     )
   ) : "http://${kubernetes_service.bifrost.metadata[0].name}.${kubernetes_namespace.this.metadata[0].name}.svc.cluster.local${var.health_check_path}"
 }

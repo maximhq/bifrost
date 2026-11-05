@@ -158,8 +158,8 @@ func (failingMCPManager) AddMCPClient(context.Context, *schemas.MCPClientConfig)
 	return errors.New("manager must not be reached")
 }
 
-func (failingMCPManager) VerifyHeadersConnection(context.Context, *schemas.MCPClientConfig, map[string]string) (map[string]schemas.ChatTool, map[string]string, string, error) {
-	return nil, nil, "", errors.New("manager must not be reached")
+func (failingMCPManager) VerifyHeadersConnection(context.Context, *schemas.MCPClientConfig, map[string]string) (*schemas.MCPDiscovery, error) {
+	return nil, errors.New("manager must not be reached")
 }
 
 func (failingMCPManager) RequiresPerCallConnection(*schemas.MCPClientConfig) bool { return false }

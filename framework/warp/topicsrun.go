@@ -8,6 +8,7 @@ import (
 	"math"
 	"math/bits"
 	"math/rand"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -108,6 +109,7 @@ type topicCluster struct {
 	// samples are the members nearest the centre, nearest first.
 	samples   []topicSample
 	sampleIDs []string
+	drawn     []string // a fixed random draw of member ids, for naming from beyond the centre
 	// members is every request k-means put in the cluster. A seed run hands
 	// them to its writer once the topics are written; discovery, whose pool is
 	// bounded, files them itself.
@@ -155,6 +157,7 @@ func (c *topicCluster) absorb(other topicCluster) {
 	}
 	c.absorbed = append(c.absorbed, other.absorbed...)
 	c.setSamples(append(c.samples, other.samples...))
+	c.drawn = drawMembers(c.drawn, other.drawn...)
 }
 
 func (c *topicCluster) setSamples(candidates []topicSample) {
@@ -164,17 +167,94 @@ func (c *topicCluster) setSamples(candidates []topicSample) {
 	})
 	c.samples, c.sampleIDs = c.samples[:0:0], nil
 	seen := map[string]struct{}{}
+	var repeats []topicSample
 	for _, candidate := range candidates {
 		if _, repeat := seen[candidate.logID]; repeat {
 			continue
 		}
 		seen[candidate.logID] = struct{}{}
+		if c.repeatsSample(candidate.vector) {
+			repeats = append(repeats, candidate)
+			continue
+		}
 		c.samples = append(c.samples, candidate)
 		c.sampleIDs = append(c.sampleIDs, candidate.logID)
 		if len(c.samples) == topicsLabelSamples {
-			break
+			return
 		}
 	}
+	// A cluster with too few distinct requests to fill its samples fills
+	// them with the repeats, nearest first, rather than show fewer.
+	for _, candidate := range repeats {
+		if len(c.samples) == topicsLabelSamples {
+			break
+		}
+		c.samples = append(c.samples, candidate)
+		c.sampleIDs = append(c.sampleIDs, candidate.logID)
+	}
+}
+
+// exampleIDs is what a topic keeps as its examples: the samples and the drawn
+// members, alternately and each once, so the few a reader links to and the
+// share a later merge names from both reach past the centre.
+func (c *topicCluster) exampleIDs() []string {
+	ids := make([]string, 0, len(c.sampleIDs)+len(c.drawn))
+	seen := make(map[string]struct{}, cap(ids))
+	for index := range max(len(c.sampleIDs), len(c.drawn)) {
+		for _, from := range [][]string{c.sampleIDs, c.drawn} {
+			if index >= len(from) {
+				continue
+			}
+			if _, repeat := seen[from[index]]; !repeat {
+				seen[from[index]] = struct{}{}
+				ids = append(ids, from[index])
+			}
+		}
+	}
+	return ids
+}
+
+// repeatsSample reports whether a vector is all but the same as a sample
+// already chosen. The same prompt sent to several providers, or retried, is
+// several requests with one text, and without this a subject's four examples
+// can be one request several times over, which is then most of what the
+// label is written from.
+func (c *topicCluster) repeatsSample(vector []float32) bool {
+	for _, sample := range c.samples {
+		if dot(sample.vector, vector) >= topicsDuplicateSimilarity {
+			return true
+		}
+	}
+	return false
+}
+
+// drawMembers adds ids to a draw and keeps the topicsLabelDrawn whose hash is
+// lowest. That is a uniform random sample of every id ever offered, the same
+// whichever order they came in, so two clusters' draws merge into the draw
+// of the merged cluster.
+func drawMembers(drawn []string, ids ...string) []string {
+	for _, id := range ids {
+		if slices.Contains(drawn, id) {
+			continue
+		}
+		if len(drawn) == topicsLabelDrawn && memberHash(id) >= memberHash(drawn[len(drawn)-1]) {
+			continue
+		}
+		drawn = append(drawn, id)
+		sort.SliceStable(drawn, func(i, j int) bool { return memberHash(drawn[i]) < memberHash(drawn[j]) })
+		// Clipped, so the next append copies rather than writing into an
+		// array a copy of this cluster may still share.
+		n := min(len(drawn), topicsLabelDrawn)
+		drawn = drawn[:n:n]
+	}
+	return drawn
+}
+
+// memberHash is where an id falls in the draw.
+func memberHash(id string) uint64 {
+	hash := fnv.New64a()
+	hash.Write([]byte(id))
+	return hash.Sum64()
 }
 
 // summarizeClusters turns one k-means result into clusters the run can keep,
@@ -210,6 +290,7 @@ func summarizeClusters(vectors []topicVector, assignments []int, centroids [][]f
 		for _, member := range members[cluster] {
 			similarity := dot(member.vector, centre)
 			clusters[cluster].members = append(clusters[cluster].members, topicMember{logID: member.logID, similarity: similarity})
+			clusters[cluster].drawn = drawMembers(clusters[cluster].drawn, member.logID)
 			if observe != nil {
 				observe(similarity)
 			}
@@ -630,6 +711,7 @@ func (r *topicRun) assign(entry topicVector) {
 		r.clusters[best].sum[d] += value
 	}
 	r.clusters[best].size++
+	r.clusters[best].drawn = drawMembers(r.clusters[best].drawn, entry.logID)
 	r.placed = append(r.placed, requestPlacement{logID: entry.logID, cluster: best, similarity: bestScore})
 	r.assigned++
 }

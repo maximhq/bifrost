@@ -319,6 +319,40 @@ false
 {{- if hasKey . "enableForApi" }}{{- $_ := set $proxy "enable_for_api" .enableForApi }}{{- end }}
 {{- $_ := set $config "proxy_config" $proxy }}
 {{- end }}
+{{- /* Warp: numbers render whenever set, since an explicit 0 means the default (or a reset) */ -}}
+{{- with .Values.bifrost.warp }}
+{{- $warp := dict }}
+{{- if hasKey . "enabled" }}{{- $_ := set $warp "enabled" .enabled }}{{- end }}
+{{- if .provider }}{{- $_ := set $warp "provider" .provider }}{{- end }}
+{{- if .model }}{{- $_ := set $warp "model" .model }}{{- end }}
+{{- if .apiKeyId }}{{- $_ := set $warp "api_key_id" .apiKeyId }}{{- end }}
+{{- if hasKey . "additionalModels" }}
+{{- $models := list }}
+{{- range .additionalModels }}
+{{- $m := dict "provider" .provider "model" .model }}
+{{- if .apiKeyId }}{{- $_ := set $m "api_key_id" .apiKeyId }}{{- end }}
+{{- $models = append $models $m }}
+{{- end }}
+{{- $_ := set $warp "additional_models" $models }}
+{{- end }}
+{{- if hasKey . "maxIterations" }}{{- $_ := set $warp "max_iterations" (.maxIterations | int) }}{{- end }}
+{{- if hasKey . "requestTimeoutSeconds" }}{{- $_ := set $warp "request_timeout_seconds" (.requestTimeoutSeconds | int) }}{{- end }}
+{{- if hasKey . "historyRetentionDays" }}{{- $_ := set $warp "history_retention_days" (.historyRetentionDays | int) }}{{- end }}
+{{- if .systemPromptSuffix }}{{- $_ := set $warp "system_prompt_suffix" .systemPromptSuffix }}{{- end }}
+{{- if hasKey . "temperature" }}{{- $_ := set $warp "temperature" (.temperature | float64) }}{{- end }}
+{{- if .reasoningEffort }}{{- $_ := set $warp "reasoning_effort" .reasoningEffort }}{{- end }}
+{{- /* hasKey: "" must clear the stored embedding provider, model or key, since an omitted one keeps the stored value */ -}}
+{{- if hasKey . "embeddingProvider" }}{{- $_ := set $warp "embedding_provider" .embeddingProvider }}{{- end }}
+{{- if hasKey . "embeddingModel" }}{{- $_ := set $warp "embedding_model" .embeddingModel }}{{- end }}
+{{- if hasKey . "embeddingApiKeyId" }}{{- $_ := set $warp "embedding_api_key_id" .embeddingApiKeyId }}{{- end }}
+{{- if hasKey . "embeddingDimension" }}{{- $_ := set $warp "embedding_dimension" (.embeddingDimension | int) }}{{- end }}
+{{- /* hasKey: "" must reset to the default namespace, since an omitted one keeps the stored value */ -}}
+{{- if hasKey . "logVectorStoreNamespace" }}{{- $_ := set $warp "log_vector_store_namespace" .logVectorStoreNamespace }}{{- end }}
+{{- if hasKey . "semanticSearchThreshold" }}{{- $_ := set $warp "semantic_search_threshold" (.semanticSearchThreshold | float64) }}{{- end }}
+{{- if hasKey . "semanticSearchLimit" }}{{- $_ := set $warp "semantic_search_limit" (.semanticSearchLimit | int) }}{{- end }}
+{{- if hasKey . "topicDiscoveryMinRequests" }}{{- $_ := set $warp "topic_discovery_min_requests" (.topicDiscoveryMinRequests | int) }}{{- end }}
+{{- if $warp }}{{- $_ := set $config "warp" $warp }}{{- end }}
+{{- end }}
 {{- if .Values.bifrost.client }}
 {{- $client := dict }}
 {{- if hasKey .Values.bifrost.client "dropExcessRequests" }}
@@ -509,6 +543,9 @@ false
 {{- $server := dict }}
 {{- if .Values.bifrost.server.readBufferSize }}
 {{- $_ := set $server "read_buffer_size" .Values.bifrost.server.readBufferSize }}
+{{- end }}
+{{- if .Values.bifrost.server.basePath }}
+{{- $_ := set $server "base_path" .Values.bifrost.server.basePath }}
 {{- end }}
 {{- if not (kindIs "invalid" .Values.bifrost.server.bodyBufferPoolLimitBytes) }}
 {{- $_ := set $server "body_buffer_pool_limit_bytes" .Values.bifrost.server.bodyBufferPoolLimitBytes }}
@@ -715,6 +752,8 @@ false
 {{- if hasKey . "allow_all_providers" }}{{- $_ := set $vk "allow_all_providers" .allow_all_providers }}{{- end }}
 {{- if .provider_configs }}{{- $_ := set $vk "provider_configs" .provider_configs }}{{- end }}
 {{- if .mcp_configs }}{{- $_ := set $vk "mcp_configs" .mcp_configs }}{{- end }}
+{{- /* Rendered as declared; [] must survive so the key hash records an explicit empty list. */ -}}
+{{- if hasKey . "relay_grants" }}{{- $_ := set $vk "relay_grants" (default (list) .relay_grants) }}{{- end }}
 {{- $vks = append $vks $vk }}
 {{- end }}
 {{- $_ := set $governance "virtual_keys" $vks }}
@@ -1042,6 +1081,19 @@ false
 {{- end }}
 {{- $_ := set $config "agents" .Values.bifrost.agents }}
 {{- end }}
+{{- /* Relays. Rendered whenever the key is declared, [] included: with config.json as the source of
+       truth an explicit list prunes stored relays it does not name, and omitting the key leaves them.
+       Startup skips every copy of a repeated name, so a duplicate is refused here instead. */ -}}
+{{- if hasKey .Values.bifrost "relays" }}
+{{- $seenRelayNames := list }}
+{{- range .Values.bifrost.relays }}
+{{- if has .name $seenRelayNames }}
+{{- fail (printf "ERROR: bifrost.relays[].name '%s' is used by more than one relay. Names must be unique; startup reconciliation identifies relays by name." .name) }}
+{{- end }}
+{{- $seenRelayNames = append $seenRelayNames .name }}
+{{- end }}
+{{- $_ := set $config "relays" (default (list) .Values.bifrost.relays) }}
+{{- end }}
 {{- /* Config Store */ -}}
 {{- if .Values.storage.configStore.enabled }}
 {{- $configStoreType := .Values.storage.configStore.type | default .Values.storage.mode }}
@@ -1298,6 +1350,9 @@ false
 {{- if .Values.storage.logsStore.objectStorageExcludeRequestTypes }}
 {{- $_ := set (index $config "logs_store") "object_storage_exclude_request_types" .Values.storage.logsStore.objectStorageExcludeRequestTypes }}
 {{- end }}
+{{- if hasKey .Values.storage.logsStore "captureClientIp" }}
+{{- $_ := set (index $config "logs_store") "capture_client_ip" .Values.storage.logsStore.captureClientIp }}
+{{- end }}
 {{- end }}
 {{- /* Vector Store */ -}}
 {{- if and .Values.vectorStore.enabled (ne .Values.vectorStore.type "none") }}
@@ -1443,6 +1498,18 @@ false
 {{- if and (eq $client.connectionType "sse") $client.connectionString }}
 {{- $_ := set $cc "connection_string" $client.connectionString }}
 {{- end }}
+{{- /* Map openapiConfig -> openapi_config (connection_type "openapi" synthesizes an in-process MCP server from the document) */ -}}
+{{- if and (eq $client.connectionType "openapi") $client.openapiConfig }}
+{{- $oa := dict }}
+{{- with $client.openapiConfig.spec }}{{- $_ := set $oa "spec" . }}{{- end }}
+{{- with $client.openapiConfig.specFile }}{{- $_ := set $oa "spec_file" . }}{{- end }}
+{{- with $client.openapiConfig.specUrl }}{{- $_ := set $oa "spec_url" . }}{{- end }}
+{{- with $client.openapiConfig.baseUrl }}{{- $_ := set $oa "base_url" . }}{{- end }}
+{{- with $client.openapiConfig.securityCredentials }}{{- $_ := set $oa "security_credentials" . }}{{- end }}
+{{- if hasKey $client.openapiConfig "includeDeprecated" }}{{- $_ := set $oa "include_deprecated" $client.openapiConfig.includeDeprecated }}{{- end }}
+{{- if hasKey $client.openapiConfig "maxResponseBytes" }}{{- $_ := set $oa "max_response_bytes" $client.openapiConfig.maxResponseBytes }}{{- end }}
+{{- $_ := set $cc "openapi_config" $oa }}
+{{- end }}
 {{- /* Map stdioConfig -> stdio_config */ -}}
 {{- if $client.stdioConfig }}
 {{- $stdio := dict "command" $client.stdioConfig.command }}
@@ -1468,6 +1535,16 @@ false
 {{- else if hasKey $client "toolsToAutoExecute" }}
 {{- $_ := set $cc "tools_to_auto_execute" $client.toolsToAutoExecute }}
 {{- end }}
+{{- if hasKey $client "prompts_to_expose" }}
+{{- $_ := set $cc "prompts_to_expose" $client.prompts_to_expose }}
+{{- else if hasKey $client "promptsToExpose" }}
+{{- $_ := set $cc "prompts_to_expose" $client.promptsToExpose }}
+{{- end }}
+{{- if hasKey $client "resources_to_expose" }}
+{{- $_ := set $cc "resources_to_expose" $client.resources_to_expose }}
+{{- else if hasKey $client "resourcesToExpose" }}
+{{- $_ := set $cc "resources_to_expose" $client.resourcesToExpose }}
+{{- end }}
 {{- if hasKey $client "auth_type" }}
 {{- $_ := set $cc "auth_type" $client.auth_type }}
 {{- else if hasKey $client "authType" }}
@@ -1482,6 +1559,8 @@ false
 {{- with $client.oauthConfig.tokenUrl }}{{- $_ := set $oauthCfg "token_url" . }}{{- end }}
 {{- with $client.oauthConfig.registrationUrl }}{{- $_ := set $oauthCfg "registration_url" . }}{{- end }}
 {{- with $client.oauthConfig.scopes }}{{- $_ := set $oauthCfg "scopes" . }}{{- end }}
+{{- with $client.oauthConfig.resource }}{{- $_ := set $oauthCfg "resource" . }}{{- end }}
+{{- with $client.oauthConfig.useClientMetadataDocument }}{{- $_ := set $oauthCfg "use_client_metadata_document" . }}{{- end }}
 {{- /* Only emit oauth_config when at least one field resolved; an all-empty block would render "oauth_config": {} instead of relying on discovery. */ -}}
 {{- if $oauthCfg }}
 {{- $_ := set $cc "oauth_config" $oauthCfg }}
@@ -1514,6 +1593,9 @@ false
 {{- if hasKey $client "needsSessionStickiness" }}
 {{- $_ := set $cc "needs_session_stickiness" $client.needsSessionStickiness }}
 {{- end }}
+{{- if hasKey $client "perUserDiscovery" }}
+{{- $_ := set $cc "per_user_discovery" $client.perUserDiscovery }}
+{{- end }}
 {{- if $client.clientId }}
 {{- $_ := set $cc "client_id" $client.clientId }}
 {{- end }}
@@ -1522,6 +1604,9 @@ false
 {{- end }}
 {{- if $client.toolSyncInterval }}
 {{- $_ := set $cc "tool_sync_interval" $client.toolSyncInterval }}
+{{- end }}
+{{- if $client.maxProtocolVersion }}
+{{- $_ := set $cc "max_protocol_version" $client.maxProtocolVersion }}
 {{- end }}
 {{- if hasKey $client "toolExecutionTimeout" }}
 {{- $_ := set $cc "tool_execution_timeout" $client.toolExecutionTimeout }}
@@ -1631,6 +1716,9 @@ false
 {{- end }}
 {{- if hasKey .Values.bifrost.mcp "toolSyncInterval" }}
 {{- $_ := set $mcpConfig "tool_sync_interval" .Values.bifrost.mcp.toolSyncInterval }}
+{{- end }}
+{{- if .Values.bifrost.mcp.maxProtocolVersion }}
+{{- $_ := set $mcpConfig "max_protocol_version" .Values.bifrost.mcp.maxProtocolVersion }}
 {{- end }}
 {{- if hasKey .Values.bifrost.mcp "toolGroups" }}
 {{- $toolGroups := list }}
@@ -2807,7 +2895,7 @@ Call this template at the beginning of deployment/stateful templates
 {{- fail (printf "ERROR: bifrost.mcp.clientConfigs[%d].name is required." $idx) }}
 {{- end }}
 {{- if not $client.connectionType }}
-{{- fail (printf "ERROR: bifrost.mcp.clientConfigs[%d].connectionType is required for client '%s'. Values: stdio, websocket, http" $idx $client.name) }}
+{{- fail (printf "ERROR: bifrost.mcp.clientConfigs[%d].connectionType is required for client '%s'. Values: stdio, websocket, http, sse, openapi" $idx $client.name) }}
 {{- end }}
 {{- if eq $client.connectionType "stdio" }}
 {{- if not $client.stdioConfig }}
@@ -2831,6 +2919,34 @@ Call this template at the beginning of deployment/stateful templates
 {{- end }}
 {{- if not $client.httpConfig.url }}
 {{- fail (printf "ERROR: bifrost.mcp.clientConfigs[%d].httpConfig.url is required for client '%s'." $idx $client.name) }}
+{{- end }}
+{{- end }}
+{{- if eq $client.connectionType "openapi" }}
+{{- if not $client.openapiConfig }}
+{{- fail (printf "ERROR: bifrost.mcp.clientConfigs[%d].openapiConfig is required when connectionType is 'openapi' for client '%s'." $idx $client.name) }}
+{{- end }}
+{{- if not (or $client.openapiConfig.spec $client.openapiConfig.specFile $client.openapiConfig.specUrl) }}
+{{- fail (printf "ERROR: bifrost.mcp.clientConfigs[%d].openapiConfig needs one of spec, specFile or specUrl for client '%s'." $idx $client.name) }}
+{{- end }}
+{{- $oaAuth := default "none" (default $client.authType $client.auth_type) }}
+{{- if not (has $oaAuth (list "none" "headers" "per_user_headers")) }}
+{{- fail (printf "ERROR: bifrost.mcp.clientConfigs[%d].authType '%s' is not supported for connectionType 'openapi' (client '%s'). Use none, headers or per_user_headers; upstream API credentials go in openapiConfig.securityCredentials." $idx $oaAuth $client.name) }}
+{{- end }}
+{{- else if $client.openapiConfig }}
+{{- fail (printf "ERROR: bifrost.mcp.clientConfigs[%d].openapiConfig only applies to connectionType 'openapi' (client '%s' is '%s')." $idx $client.name $client.connectionType) }}
+{{- end }}
+{{- $ccAuth := default "none" (default $client.authType $client.auth_type) }}
+{{- $perUserAuthTypes := list "per_user_oauth" "per_user_headers" "token_exchange" }}
+{{- /* websocket renders as sse, so it takes the same restriction. */ -}}
+{{- if and (has $client.connectionType (list "sse" "stdio" "websocket")) (has $ccAuth $perUserAuthTypes) }}
+{{- fail (printf "ERROR: bifrost.mcp.clientConfigs[%d].authType '%s' is not supported for connectionType '%s' (client '%s'). Per-user auth types open a connection per call, which SSE and STDIO cannot serve; use none, headers or oauth." $idx $ccAuth $client.connectionType $client.name) }}
+{{- end }}
+{{- if $client.perUserDiscovery }}
+{{- if eq $client.connectionType "openapi" }}
+{{- fail (printf "ERROR: bifrost.mcp.clientConfigs[%d].perUserDiscovery does not apply to connectionType 'openapi' (client '%s'): its tools come from the OpenAPI document." $idx $client.name) }}
+{{- end }}
+{{- if not (has $ccAuth $perUserAuthTypes) }}
+{{- fail (printf "ERROR: bifrost.mcp.clientConfigs[%d].perUserDiscovery requires authType per_user_oauth, per_user_headers or token_exchange (client '%s' has '%s')." $idx $client.name $ccAuth) }}
 {{- end }}
 {{- end }}
 {{- end }}

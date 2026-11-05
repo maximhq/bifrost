@@ -25,11 +25,11 @@ import (
 	schemas "github.com/maximhq/bifrost/core/schemas"
 )
 
-// awsRegionRegex matches valid AWS region identifiers (e.g. "us-east-1", "eu-north-1", "us-gov-east-1").
+// AWSRegionRegex matches valid AWS region identifiers (e.g. "us-east-1", "eu-north-1", "us-gov-east-1").
 // (?:-[a-z]+)+ allows multi-segment directional parts so GovCloud regions (us-gov-east-1) are
 // recognised alongside standard single-segment ones (eu-north-1, ap-southeast-2).
 var (
-	awsRegionRegex                 = regexp.MustCompile(`^[a-z]{2,3}(?:-[a-z]+)+-\d+$`)
+	AWSRegionRegex                 = regexp.MustCompile(`^[a-z]{2,3}(?:-[a-z]+)+-\d+$`)
 	bedrockUnsafeToolNameCharRegex = regexp.MustCompile(`[^A-Za-z0-9_-]+`)
 )
 
@@ -62,7 +62,7 @@ func resolveMantleProjectID(ctx *schemas.BifrostContext, key schemas.Key) string
 func parseBedrockRegionAndModel(model string) (region, bareModel string) {
 	if idx := strings.IndexByte(model, '/'); idx > 0 {
 		prefix := model[:idx]
-		if awsRegionRegex.MatchString(prefix) {
+		if AWSRegionRegex.MatchString(prefix) {
 			return prefix, model[idx+1:]
 		}
 	}
@@ -2267,6 +2267,11 @@ func convertToolMessages(ctx context.Context, model string, msgs []schemas.ChatM
 		var toolResultContent []BedrockContentBlock
 		// Converse ignores a cachePoint inside toolResult content, so the last marker trails the block.
 		var cacheControl *schemas.CacheControl
+		if content := schemas.FlattenToolResultMedia(msg.Content, schemas.IsImageBlock); content != msg.Content {
+			flattened := msg
+			flattened.Content = content
+			msg = flattened
+		}
 		if msg.Content.ContentStr != nil {
 			// Bedrock expects JSON to be a parsed object, not a string. The helper
 			// validates, compacts, wraps arrays and primitives, falls back to a text
@@ -2879,6 +2884,25 @@ func converseRequiresSignedReasoning(model string) bool {
 	return schemas.ResolveModelCaps(schemas.Bedrock, model).BedrockRequiresSignedReasoning(schemas.IsAnthropicModel(model))
 }
 
+// converseAcceptsStopSequences reports whether Converse accepts inferenceConfig.stopSequences for model
+// most newer families 400 on it, so unknown models default to omitting it.
+func converseAcceptsStopSequences(model string) bool {
+	m := strings.ToLower(model)
+	switch {
+	case schemas.IsAnthropicModel(m), schemas.IsNovaModel(m), schemas.IsTitanModel(m),
+		schemas.IsLlamaModel(m), schemas.IsCohereModel(m):
+		return true
+	case strings.Contains(m, "deepseek.r1"), strings.Contains(m, "writer.palmyra-x"):
+		return true
+	}
+	for _, legacy := range []string{"mistral-7b", "mixtral-8x7b", "mistral-large-2402", "mistral-large-2407", "mistral-small-2402", "pixtral-large-2502"} {
+		if strings.Contains(m, legacy) {
+			return true
+		}
+	}
+	return false
+}
+
 // setConverseReasoningEffort writes the OpenAI-shaped reasoning field, mapping
 // the requested effort onto a rung the model publishes.
 func setConverseReasoningEffort(fields *schemas.OrderedMap, caps schemas.ModelCaps, levels *schemas.EffortControl, effort string) {
@@ -2927,8 +2951,7 @@ func convertInferenceConfig(params *schemas.ChatParameters, caps schemas.ModelCa
 		config.TopP = params.TopP
 	}
 
-	// GLM models on Bedrock reject the stopSequences field.
-	if params.Stop != nil && !caps.FieldUnsupported(schemas.FieldStop, schemas.IsGLMModel(caps.Model())) {
+	if params.Stop != nil && !caps.FieldUnsupported(schemas.FieldStop, !converseAcceptsStopSequences(caps.Model())) {
 		config.StopSequences = params.Stop
 	}
 
@@ -4095,6 +4118,27 @@ func stripCachePointsFromBedrockRequest(req *BedrockConverseRequest) {
 			}
 		}
 		req.ToolConfig.Tools = req.ToolConfig.Tools[:nt]
+	}
+}
+
+// stripNonTextCachePoints keeps a message cachePoint only directly after a text block, for
+// Nova, which 400s on one after a toolResult or image ("extraneous key [cachePoint] is not
+// permitted"). A cachePoint nested in a toolResult goes too.
+func stripNonTextCachePoints(req *BedrockConverseRequest) {
+	for i := range req.Messages {
+		content := req.Messages[i].Content
+		n := 0
+		for j := range content {
+			if content[j].CachePoint != nil && (n == 0 || content[n-1].Text == nil) {
+				continue
+			}
+			if tr := content[j].ToolResult; tr != nil {
+				tr.Content = slices.DeleteFunc(tr.Content, func(b BedrockContentBlock) bool { return b.CachePoint != nil })
+			}
+			content[n] = content[j]
+			n++
+		}
+		req.Messages[i].Content = content[:n]
 	}
 }
 

@@ -1,6 +1,7 @@
 package bedrock
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -111,23 +112,28 @@ func TestSonicSessionStartsLazilyWithConfiguredPrompt(t *testing.T) {
 }
 
 func TestSonicSessionRejectsUnsupportedConfig(t *testing.T) {
-	for _, tc := range []struct{ name, event string }{
-		{"g711 GA format", `{"type":"session.update","session":{"audio":{"input":{"format":{"type":"audio/pcmu"}}}}}`},
-		{"unsupported rate", `{"type":"session.update","session":{"audio":{"output":{"format":{"type":"audio/pcm","rate":44100}}}}}`},
-		{"g711 beta format", `{"type":"session.update","session":{"input_audio_format":"g711_ulaw"}}`},
-		{"non-function tool", `{"type":"session.update","session":{"tools":[{"type":"mcp","server_label":"x"}]}}`},
+	for _, tc := range []struct{ name, event, code string }{
+		{"g711 GA format", `{"type":"session.update","session":{"audio":{"input":{"format":{"type":"audio/pcmu"}}}}}`, "invalid_session_config"},
+		{"unsupported rate", `{"type":"session.update","session":{"audio":{"output":{"format":{"type":"audio/pcm","rate":44100}}}}}`, "invalid_session_config"},
+		{"g711 beta format", `{"type":"session.update","session":{"input_audio_format":"g711_ulaw"}}`, "invalid_session_config"},
+		{"non-function tool", `{"type":"session.update","session":{"tools":[{"type":"mcp","server_label":"x"}]}}`, "invalid_session_config"},
 		// Nova Sonic's live limits; OpenAI allows temperatures up to 1.2.
-		{"temperature above 1", `{"type":"session.update","session":{"temperature":1.1}}`},
-		{"negative temperature", `{"type":"session.update","session":{"temperature":-0.1}}`},
-		{"zero max tokens", `{"type":"session.update","session":{"max_output_tokens":0}}`},
-		{"max tokens above 65536", `{"type":"session.update","session":{"max_output_tokens":100000}}`},
-		{"named tool choice without the tool", `{"type":"session.update","session":{"tool_choice":{"type":"function","name":"get_weather"}}}`},
-		{"mcp tool choice", `{"type":"session.update","session":{"tool_choice":{"type":"mcp","server_label":"x"}}}`},
+		{"temperature above 1", `{"type":"session.update","session":{"temperature":1.1}}`, "invalid_session_config"},
+		{"negative temperature", `{"type":"session.update","session":{"temperature":-0.1}}`, "invalid_session_config"},
+		{"zero max tokens", `{"type":"session.update","session":{"max_output_tokens":0}}`, "invalid_session_config"},
+		{"max tokens above 65535", `{"type":"session.update","session":{"max_output_tokens":65536}}`, "invalid_session_config"},
+		// Forcing a tool on an unrelated question leaves live Nova Sonic silent, so only auto and none are served.
+		{"required tool choice", `{"type":"session.update","session":{"tools":[{"type":"function","name":"get_weather","parameters":{"type":"object"}}],"tool_choice":"required"}}`, "invalid_session_config"},
+		{"named tool choice", `{"type":"session.update","session":{"tools":[{"type":"function","name":"get_weather","parameters":{"type":"object"}}],"tool_choice":{"type":"function","name":"get_weather"}}}`, "invalid_session_config"},
+		{"mcp tool choice", `{"type":"session.update","session":{"tool_choice":{"type":"mcp","server_label":"x"}}}`, "invalid_session_config"},
+		// Nova Sonic refuses a prompt without audio output, so text-only replies cannot be served.
+		{"text output", `{"type":"session.update","session":{"output_modalities":["text"]}}`, "unsupported_modalities"},
+		{"beta text modality", `{"type":"session.update","session":{"modalities":["text"]}}`, "unsupported_modalities"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s := newSonicSession("amazon.nova-2-sonic-v1:0")
 			upstream, replies := s.clientEvent([]byte(tc.event))
-			if len(upstream) != 0 || len(replies) != 1 || gjson.GetBytes(replies[0], "error.code").String() != "invalid_session_config" {
+			if len(upstream) != 0 || len(replies) != 1 || gjson.GetBytes(replies[0], "error.code").String() != tc.code {
 				t.Fatalf("got upstream=%d replies=%s", len(upstream), replies)
 			}
 			if s.config.inputRate != sonicDefaultSampleRate || s.config.outputRate != sonicDefaultSampleRate || s.config.tools != nil ||
@@ -135,6 +141,21 @@ func TestSonicSessionRejectsUnsupportedConfig(t *testing.T) {
 				t.Fatal("a rejected session.update must not change the configuration")
 			}
 		})
+	}
+}
+
+// Nova Sonic refuses a conversation whose first content is not SYSTEM, so a session without instructions gets a default.
+func TestSonicSessionWithoutInstructionsStartsWithSystemPrompt(t *testing.T) {
+	for _, event := range []string{"", `{"type":"session.update","session":{"instructions":""}}`} {
+		s := newSonicSession("amazon.nova-2-sonic-v1:0")
+		if event != "" {
+			s.clientEvent([]byte(event))
+		}
+		upstream, _ := s.clientEvent([]byte(`{"type":"input_audio_buffer.append","audio":"AAAA"}`))
+		system := gjson.ParseBytes(upstream[2]).Get("event.contentStart")
+		if system.Get("role").String() != "SYSTEM" || gjson.ParseBytes(upstream[3]).Get("event.textInput.content").String() == "" {
+			t.Fatalf("%q: first content after promptStart = %s %s", event, upstream[2], upstream[3])
+		}
 	}
 }
 
@@ -153,25 +174,6 @@ func TestSonicSessionToolChoiceNoneWithholdsTools(t *testing.T) {
 	}
 }
 
-// required and named choices map to Nova Sonic's undocumented toolConfiguration.toolChoice.
-func TestSonicSessionToolChoiceForcesTools(t *testing.T) {
-	for choice, want := range map[string]string{
-		`"required"`: `{"any":{}}`,
-		`{"type":"function","name":"get_weather"}`: `{"tool":{"name":"get_weather"}}`,
-	} {
-		s := newSonicSession("amazon.nova-2-sonic-v1:0")
-		_, replies := s.clientEvent([]byte(`{"type":"session.update","session":{"tool_choice":` + choice + `,
-			"tools":[{"type":"function","name":"get_weather","parameters":{"type":"object"}}]}}`))
-		if len(replies) != 1 || gjson.GetBytes(replies[0], "type").String() != "session.updated" || gjson.GetBytes(replies[0], "session.tool_choice").Raw != choice {
-			t.Fatalf("%s: unexpected reply: %s", choice, replies)
-		}
-		upstream, _ := s.clientEvent([]byte(`{"type":"input_audio_buffer.append","audio":"AAAA"}`))
-		if got := gjson.GetBytes(upstream[1], "event.promptStart.toolConfiguration.toolChoice").Raw; got != want {
-			t.Fatalf("%s: toolChoice = %s, want %s", choice, got, want)
-		}
-	}
-}
-
 // The boundaries live Nova Sonic accepts; "inf" keeps the default.
 func TestSonicSessionAcceptsInferenceLimits(t *testing.T) {
 	for _, tc := range []struct {
@@ -180,7 +182,7 @@ func TestSonicSessionAcceptsInferenceLimits(t *testing.T) {
 		maxTokens   int
 	}{
 		{`{"type":"session.update","session":{"temperature":0,"max_output_tokens":1}}`, 0, 1},
-		{`{"type":"session.update","session":{"temperature":1,"max_output_tokens":65536}}`, 1, 65536},
+		{`{"type":"session.update","session":{"temperature":1,"max_output_tokens":65535}}`, 1, 65535},
 		{`{"type":"session.update","session":{"temperature":0.8,"max_output_tokens":"inf"}}`, 0.8, sonicDefaultMaxTokens},
 	} {
 		s := newSonicSession("amazon.nova-2-sonic-v1:0")
@@ -222,7 +224,7 @@ func TestSonicHistoryThenResponseCreateAnswersTrailingUserText(t *testing.T) {
 			blocks = append(blocks, start.Get("type").String()+"/"+start.Get("role").String()+"/"+start.Get("interactive").String())
 		}
 	}
-	want := []string{"TEXT/USER/false", "TEXT/ASSISTANT/false", "AUDIO/USER/true", "TEXT/USER/true"}
+	want := []string{"TEXT/SYSTEM/false", "TEXT/USER/false", "TEXT/ASSISTANT/false", "AUDIO/USER/true", "TEXT/USER/true"}
 	if strings.Join(blocks, ",") != strings.Join(want, ",") {
 		t.Fatalf("content blocks = %v, want %v", blocks, want)
 	}
@@ -275,6 +277,25 @@ func TestSonicClientEventsWithoutUpstreamEquivalent(t *testing.T) {
 	}
 }
 
+func TestSonicResponseCreateOutputModalities(t *testing.T) {
+	s := newSonicSession("amazon.nova-2-sonic-v1:0")
+	upstream, replies := s.clientEvent([]byte(`{"type":"response.create","response":{"output_modalities":["text"]}}`))
+	if len(upstream) != 0 || len(replies) != 1 || gjson.GetBytes(replies[0], "error.code").String() != "unsupported_modalities" || s.started {
+		t.Fatalf("a text-only response must be refused before the stream opens, got upstream=%d replies=%s", len(upstream), replies)
+	}
+	for _, event := range []string{
+		`{"type":"session.update","session":{"output_modalities":["audio"]}}`,
+		`{"type":"session.update","session":{"modalities":["text","audio"]}}`,
+	} {
+		if _, replies := s.clientEvent([]byte(event)); gjson.GetBytes(replies[0], "type").String() != "session.updated" {
+			t.Fatalf("%s must be accepted, got %s", event, replies)
+		}
+	}
+	if upstream, replies := s.clientEvent([]byte(`{"type":"response.create","response":{"output_modalities":["audio"]}}`)); len(upstream) == 0 || len(replies) != 0 {
+		t.Fatalf("an audio response must start the stream, got upstream=%d replies=%s", len(upstream), replies)
+	}
+}
+
 // novaVoiceTurn is a Nova Sonic response to one spoken user turn, in wire order.
 var novaVoiceTurn = []string{
 	`{"event":{"usageEvent":{"details":{"total":{"input":{"speechTokens":40,"textTokens":10},"output":{"speechTokens":0,"textTokens":0}}}}}}`,
@@ -299,6 +320,8 @@ func TestSonicVoiceTurnTranslatesToRealtimeEvents(t *testing.T) {
 	out := feedModel(s, novaVoiceTurn...)
 	want := []string{
 		"input_audio_buffer.committed",
+		"conversation.item.added",
+		"conversation.item.done",
 		"conversation.item.input_audio_transcription.delta",
 		"conversation.item.input_audio_transcription.completed",
 		"response.created",
@@ -319,6 +342,14 @@ func TestSonicVoiceTurnTranslatesToRealtimeEvents(t *testing.T) {
 	completed := findClientEvent(t, out, "conversation.item.input_audio_transcription.completed")
 	if completed.Get("transcript").String() != "what's the weather" || completed.Get("item_id").String() != committed.Get("item_id").String() {
 		t.Fatalf("unexpected transcription completion: %s", completed.Raw)
+	}
+	// The user's audio item is announced like OpenAI does, so the transcript has an item to land on.
+	for _, eventType := range []string{"conversation.item.added", "conversation.item.done"} {
+		item := findClientEvent(t, out, eventType).Get("item")
+		if item.Get("id").String() != committed.Get("item_id").String() || item.Get("role").String() != "user" ||
+			item.Get("content.0.type").String() != "input_audio" {
+			t.Fatalf("unexpected %s item: %s", eventType, item.Raw)
+		}
 	}
 	if part := findClientEvent(t, out, "response.content_part.done"); part.Get("content_index").Int() != 0 || part.Get("part.transcript").String() != "It is sunny." {
 		t.Fatalf("the audio part must close with its transcript: %s", part.Raw)
@@ -374,6 +405,75 @@ func TestSonicBargeInCancelsResponse(t *testing.T) {
 	}
 }
 
+// A multi-sentence reply in live wire order: Nova marks only the first FINAL segment END_TURN, after the audio ended.
+func TestSonicMultiSegmentReplyIsOneResponse(t *testing.T) {
+	s := newSonicSession("amazon.nova-2-sonic-v1:0")
+	var events []string
+	for i, text := range []string{"One.", " Two.", " Three."} {
+		stop := "PARTIAL_TURN"
+		if i == 2 {
+			stop = "END_TURN"
+		}
+		events = append(events,
+			`{"event":{"contentStart":{"contentId":"s`+fmt.Sprint(i)+`","type":"TEXT","role":"ASSISTANT","additionalModelFields":"{\"generationStage\":\"SPECULATIVE\"}"}}}`,
+			`{"event":{"textOutput":{"contentId":"s`+fmt.Sprint(i)+`","role":"ASSISTANT","content":"`+text+`"}}}`,
+			`{"event":{"contentEnd":{"contentId":"s`+fmt.Sprint(i)+`","type":"TEXT","stopReason":"PARTIAL_TURN"}}}`,
+			`{"event":{"contentStart":{"contentId":"a`+fmt.Sprint(i)+`","type":"AUDIO","role":"ASSISTANT"}}}`,
+			`{"event":{"audioOutput":{"contentId":"a`+fmt.Sprint(i)+`","content":"AAAA"}}}`,
+			`{"event":{"contentEnd":{"contentId":"a`+fmt.Sprint(i)+`","type":"AUDIO","stopReason":"`+stop+`"}}}`,
+		)
+	}
+	for i, text := range []string{"One.", " Two.", " Three."} {
+		stop := "PARTIAL_TURN"
+		if i == 0 {
+			stop = "END_TURN"
+		}
+		events = append(events,
+			`{"event":{"contentStart":{"contentId":"f`+fmt.Sprint(i)+`","type":"TEXT","role":"ASSISTANT","additionalModelFields":"{\"generationStage\":\"FINAL\"}"}}}`,
+			`{"event":{"textOutput":{"contentId":"f`+fmt.Sprint(i)+`","role":"ASSISTANT","content":"`+text+`"}}}`,
+			`{"event":{"contentEnd":{"contentId":"f`+fmt.Sprint(i)+`","type":"TEXT","stopReason":"`+stop+`"}}}`,
+		)
+	}
+	out := feedModel(s, events...)
+	types := clientTypes(out)
+	if n := strings.Count(strings.Join(types, ","), "response.created"); n != 1 {
+		t.Fatalf("one reply must be one response, got %d: %v", n, types)
+	}
+	if types[len(types)-1] != "response.done" {
+		t.Fatalf("late FINAL text must not open another response: %v", types)
+	}
+	if got := findClientEvent(t, out, "response.done").Get("response.output.0.content.0.transcript").String(); got != "One. Two. Three." {
+		t.Fatalf("response.done transcript = %q, want the whole reply", got)
+	}
+}
+
+// After barge-in, the interrupted reply's late FINAL text belongs to the cancelled response, not a new one.
+func TestSonicBargeInLateFinalTextOpensNoResponse(t *testing.T) {
+	s := newSonicSession("amazon.nova-2-sonic-v1:0")
+	out := feedModel(s,
+		`{"event":{"contentStart":{"contentId":"s1","type":"TEXT","role":"ASSISTANT","additionalModelFields":"{\"generationStage\":\"SPECULATIVE\"}"}}}`,
+		`{"event":{"textOutput":{"contentId":"s1","role":"ASSISTANT","content":"Once upon a time"}}}`,
+		`{"event":{"contentEnd":{"contentId":"s1","type":"TEXT","stopReason":"PARTIAL_TURN"}}}`,
+		`{"event":{"contentStart":{"contentId":"a1","type":"AUDIO","role":"ASSISTANT"}}}`,
+		`{"event":{"audioOutput":{"contentId":"a1","content":"AAAA"}}}`,
+		`{"event":{"contentEnd":{"contentId":"a1","type":"AUDIO","stopReason":"INTERRUPTED"}}}`,
+		`{"event":{"contentStart":{"contentId":"i1","type":"TEXT","role":"ASSISTANT","additionalModelFields":"{\"generationStage\":\"FINAL\"}"}}}`,
+		`{"event":{"textOutput":{"contentId":"i1","role":"ASSISTANT","content":"{ \"interrupted\" : true }"}}}`,
+		`{"event":{"contentEnd":{"contentId":"i1","type":"TEXT","stopReason":"INTERRUPTED"}}}`,
+		`{"event":{"contentStart":{"contentId":"f1","type":"TEXT","role":"ASSISTANT","additionalModelFields":"{\"generationStage\":\"FINAL\"}"}}}`,
+		`{"event":{"textOutput":{"contentId":"f1","role":"ASSISTANT","content":"Once upon a time"}}}`,
+		`{"event":{"contentEnd":{"contentId":"f1","type":"TEXT","stopReason":"PARTIAL_TURN"}}}`,
+		`{"event":{"contentStart":{"contentId":"u2","type":"TEXT","role":"USER","additionalModelFields":"{\"generationStage\":\"FINAL\"}"}}}`,
+	)
+	types := strings.Join(clientTypes(out), ",")
+	if n := strings.Count(types, "response.done"); n != 1 || strings.Count(types, "response.created") != 1 {
+		t.Fatalf("barge-in must leave exactly one (cancelled) response, got %s", types)
+	}
+	if status := findClientEvent(t, out, "response.done").Get("response.status").String(); status != "cancelled" {
+		t.Fatalf("status = %q", status)
+	}
+}
+
 func TestSonicToolUseEndsResponseWithFunctionCall(t *testing.T) {
 	s := newSonicSession("amazon.nova-2-sonic-v1:0")
 	out := feedModel(s,
@@ -401,7 +501,7 @@ func TestSonicNewUserTurnClosesOpenResponse(t *testing.T) {
 		`{"event":{"contentStart":{"contentId":"a1","type":"AUDIO","role":"ASSISTANT"}}}`,
 		`{"event":{"contentStart":{"contentId":"u2","type":"TEXT","role":"USER","additionalModelFields":"{\"generationStage\":\"FINAL\"}"}}}`,
 	)
-	if got := clientTypes(out); got[len(got)-2] != "response.done" || got[len(got)-1] != "input_audio_buffer.committed" {
+	if got := clientTypes(out); strings.Join(got[len(got)-4:], ",") != "response.done,input_audio_buffer.committed,conversation.item.added,conversation.item.done" {
 		t.Fatalf("a new user turn must close the open response first, got %v", got)
 	}
 }

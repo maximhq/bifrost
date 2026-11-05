@@ -31,6 +31,8 @@ const (
 	// Beta headers for various Anthropic features
 	// AnthropicFilesAPIBetaHeader is the required beta header for the Files API.
 	AnthropicFilesAPIBetaHeader = "files-api-2025-04-14"
+	// AnthropicOAuthBetaHeader must accompany every request authenticated with an OAuth bearer.
+	AnthropicOAuthBetaHeader = "oauth-2025-04-20"
 	// AnthropicStructuredOutputsBetaHeader is required for strict tool validation and output_format.
 	AnthropicStructuredOutputsBetaHeader = "structured-outputs-2025-11-13"
 	// AnthropicAdvancedToolUseBetaHeader now gates only allowed_callers (programmatic
@@ -97,12 +99,8 @@ const (
 	AnthropicServerSideFallbackDefaultBetaHeader = "server-side-fallback-2026-07-01"
 	// AnthropicFallbackCreditBetaHeader is required to receive fallback_credit_token
 	// on a refusal and to redeem it on the retry. Unlike server-side fallback this is
-	// supported on every Anthropic-family surface — but AWS ships it under its own date.
+	// supported on every Anthropic-family surface, under the same date.
 	AnthropicFallbackCreditBetaHeader = "fallback-credit-2026-06-01"
-	// AnthropicFallbackCreditBetaHeaderAWS is the same feature's header on the
-	// AWS-operated surfaces (Bedrock Converse and Bedrock Mantle), which are a
-	// release behind the Claude API. See betaHeaderProviderVersion in utils.go.
-	AnthropicFallbackCreditBetaHeaderAWS = "fallback-credit-2026-06-09"
 	// AnthropicMidConversationToolChangesBetaHeader enables tool_addition / tool_removal
 	// blocks inside mid_conv_system messages, so tools can be offered/withdrawn mid-turn
 	// while the tools array (and the cached prefix) stays fixed. Native Anthropic surface
@@ -196,6 +194,7 @@ type ProviderFeatureSupport struct {
 	Memory                 bool // memory client tool — on Bedrock bundled under context-management-2025-06-27 (cite: A, B-header)
 	TextEditor             bool // text_editor client tool (cite: A)
 	ToolSearch             bool // tool_search server tool + tool.defer_loading — tool-search-tool-2025-10-19 (cite: A). On classic Amazon Bedrock AWS restricts this to InvokeModel/InvokeModelWithResponseStream, never Converse (cite: TS-bedrock); the Bedrock provider routes any request carrying a tool_search tool or defer_loading to InvokeModel (bedrock.go, InvokeModel section), so the flag is on.
+	ToolSearchHeaderless   bool // tool search served without (and rejecting) the tool-search-tool-* beta header
 	MCP                    bool // MCP connector — explicit "not supported on Bedrock/Vertex" (cite: MCP-excl)
 	AdvancedToolUse        bool // advanced-tool-use-2025-11-20 bundle: allowed_callers only as of current docs — defer_loading now has its own beta, see ToolSearch (cite: A)
 	InputExamples          bool // tool.input_examples standalone — tool-examples-2025-10-29. Bedrock supports this independently of the AdvancedToolUse bundle (cite: B-header). On Anthropic / Azure the bundle implicitly covers it.
@@ -220,7 +219,7 @@ type ProviderFeatureSupport struct {
 	ServiceTier            bool // service_tier request field — strip when false (Vertex uses headers instead)
 	Diagnostics            bool // diagnostics request field — cache diagnostics (cache-diagnosis-2026-04-07 beta, diagnostics.previous_message_id). Claude API only per docs ("not supported on Amazon Bedrock or Vertex AI"); stripped elsewhere fail-closed. Azure rejects it.
 	ServerSideFallback     bool // native "fallbacks" request field — server-side-fallback-2026-06-01. Claude API only per docs ("not available on Amazon Bedrock, Google Cloud, or Microsoft Foundry").
-	FallbackCredit         bool // fallback_credit_token request field + stop_details credit fields — fallback-credit-2026-06-01 (AWS surfaces: -2026-06-09). Documented on the Claude API, Amazon Bedrock, Google Cloud and Microsoft Foundry, i.e. the inverse of ServerSideFallback.
+	FallbackCredit         bool // fallback_credit_token request field + stop_details credit fields — fallback-credit-2026-06-01. Documented on the Claude API, Amazon Bedrock, Google Cloud and Microsoft Foundry, i.e. the inverse of ServerSideFallback.
 	Safeguards             bool // Opaque Claude auto-mode classifier payloads; supported models require the dangerous-tool-use beta.
 	MidConvToolChanges     bool // tool_addition/tool_removal blocks — mid-conversation-tool-changes-2026-07-01. Native Anthropic surface (Claude API + Bedrock Mantle); Bedrock is Opus 5 only, enforced upstream.
 	MidConvOutputConfig    bool // per-message output_config.effort on role:"system" messages — mid-conversation-output-config-2026-07-01. Claude API direct only; model-gated by DefaultSupportsMidConversationOutputConfig.
@@ -309,7 +308,7 @@ var ProviderFeatures = map[schemas.ModelProvider]ProviderFeatureSupport{
 		// (advanced-tool-use-2025-11-20) is not listed in B-header; only the
 		// narrow tool-examples-2025-10-29 header is, gated via InputExamples above.
 		ServiceTier:    true, // Bedrock handles service_tier via its own typed conversion
-		FallbackCredit: true, // fallback-credit-2026-06-09 (AWS date) per the Bedrock userguide
+		FallbackCredit: true, // fallback-credit-2026-06-01 per docs.aws.amazon.com/bedrock/latest/userguide/claude-messages-fallback-credit.html; -07-01 also enables it (verified live)
 		Safeguards:     true, // Claude Code auto-mode classifier, model-gated via SupportsSafeguards (Sonnet 5 / Opus 4.7+ / Fable). Converse has no slot for this undocumented Anthropic-native field, so responsesUsesAnthropicInvokePath (bedrock.go) routes a safeguards-bearing request to InvokeModel — same pattern as Compaction/ToolSearch above (#6825) — which reuses this package's builder end to end and this flag applies there.
 
 		ThinkingDisplayUpdates: true, // thinking-display-updates-2026-08-18 — accepted on Converse (verified live, beta in additionalModelRequestFields.anthropic_beta); InvokeModel carries the same body field.
@@ -324,7 +323,7 @@ var ProviderFeatures = map[schemas.ModelProvider]ProviderFeatureSupport{
 	// does support it is "Claude Platform on AWS"
 	// (aws-external-anthropic.{region}.api.aws), a separate Anthropic-operated
 	// endpoint Bifrost does not implement. FallbackCredit is a different feature and
-	// is supported here — see AnthropicFallbackCreditBetaHeaderAWS for the date skew.
+	// is supported here.
 	//
 	// WebSearchNova / CodeExecNova are intentionally OFF here. They exist only to
 	// keep web_search / code_interpreter tools so the Bedrock Converse/Responses
@@ -353,7 +352,7 @@ var ProviderFeatures = map[schemas.ModelProvider]ProviderFeatureSupport{
 		EagerInputStreaming:    true,
 		InputExamples:          true,
 		ServiceTier:            true,
-		FallbackCredit:         true, // fallback-credit-2026-06-09 (AWS date) per the Bedrock userguide
+		FallbackCredit:         true, // same date as Bedrock; the AWS userguide covers bedrock-mantle
 		MidConvToolChanges:     true, // mid-conversation-tool-changes-2026-07-01 — Opus 5 on Bedrock, enforced upstream.
 		ThinkingDisplayUpdates: true, // thinking-display-updates-2026-08-18 — accepted on Mantle (verified live with the beta forwarded).
 		Safeguards:             true,
@@ -449,9 +448,11 @@ var ProviderFeatures = map[schemas.ModelProvider]ProviderFeatureSupport{
 	schemas.VLLM: {},
 	schemas.SGL:  {},
 	// GitHub documents no feature list, so the cells are what the first-party
-	// VS Code Copilot Chat client sends.
+	// VS Code Copilot Chat client sends. Tool search works with no beta header or
+	// advanced-tool-use-2025-11-20, but tool-search-tool-2025-10-19 is a 400.
 	schemas.GithubCopilot: {
 		ToolSearch:             true,
+		ToolSearchHeaderless:   true,
 		AdvancedToolUse:        true,
 		ContextEditing:         true,
 		ContextManagementField: true,
@@ -2128,6 +2129,8 @@ type AnthropicUsage struct {
 	Speed                    *string                       `json:"speed,omitempty"`                 // "fast" or "standard" — which speed was actually served (fast mode research preview)
 	InferenceGeo             *string                       `json:"inference_geo,omitempty"`         // the geographic region for inference processing. If not specified, the workspace's default_inference_geo is used.
 	Iterations               []AnthropicUsage              `json:"iterations,omitempty"`            // Iterations statistics
+
+	absentPromptCounters uint8 // prompt counters to render as absent, not zero; see MarshalJSON in streamdeltausage.go
 }
 
 // AnthropicOutputTokensDetails breaks down output_tokens for extended-thinking responses.

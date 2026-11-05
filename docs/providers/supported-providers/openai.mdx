@@ -676,7 +676,9 @@ OpenAI takes text where `/v1/decisions` also carries TypeSafe's structured value
 
 A request whose `input` is `null` is rejected with a `400` for the OpenAI attempt, since OpenAI requires one; a configured fallback can still serve it, and if every fallback fails too, the response carries the first attempt's error. A request with no `input` key at all is rejected before any provider is tried.
 
-Input messages are sent unchanged, including `input_image` parts with their `detail`: OpenAI's decision models read images, unlike TypeSafe-based models. A part of any other type is rejected with a `400`.
+Input items are sent unchanged: messages with their `input_text`, `input_image` (with its `detail`), `input_json`, `output_text`, and `refusal` parts, an assistant message's `phase`, and function calls, custom tool calls, and their outputs. OpenAI's decision models read images, unlike TypeSafe-based models. A part of any other type is rejected with a `400`, and a message's `id` and `status` are not sent.
+
+Instructions written as a list of `input_text`, `input_image`, and `input_json` parts are sent as parts; a predicate's `criteria` are added as a final text part. `prompt_cache_key`, `prompt_cache_options`, and `prompt_cache_breakpoint` on input parts are forwarded.
 
 OpenAI SDKs can call the same endpoint through Bifrost at `/openai/v1/decisions`, which takes OpenAI's request: a top-level `state`, and a field a question, choice, or level does not define (such as `criteria`), are rejected with a `400`, while other top-level fields a newer SDK sends are forwarded unchanged. See [OpenAI SDK](/integrations/openai-sdk/overview#decisions-api).
 

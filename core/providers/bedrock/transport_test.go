@@ -919,6 +919,50 @@ func TestBedrockTransportTLSInsecureSkipVerify(t *testing.T) {
 	assert.True(t, transport.ForceAttemptHTTP2)
 }
 
+// TestBedrockTransportInsecureTargetsStillVerifyHTTPSProxy pins that
+// network_config.insecure_skip_verify only reaches targets: net/http would handshake
+// with an https:// proxy using TLSClientConfig, so without the hop dialer the proxy's
+// certificate would go unchecked although proxy_config.skip_tls_verify is off.
+func TestBedrockTransportInsecureTargetsStillVerifyHTTPSProxy(t *testing.T) {
+	recorder := proxytest.NewHTTPSRecorder(t, "bedrock-tls")
+	for _, enforceHTTP2 := range []bool{true, false} {
+		recorder.Reset()
+		config := &schemas.ProviderConfig{
+			NetworkConfig: schemas.NetworkConfig{
+				DefaultRequestTimeoutInSeconds: 30,
+				InsecureSkipVerify:             true,
+				EnforceHTTP2:                   enforceHTTP2,
+			},
+			ProxyConfig: &schemas.ProxyConfig{
+				Type: schemas.HTTPProxy,
+				URL:  schemas.NewSecretVar("https://127.0.0.1:" + recorder.Port()),
+			},
+		}
+		config.CheckAndSetDefaults()
+
+		provider, err := NewBedrockProvider(config, noopLogger{})
+		require.NoError(t, err)
+
+		for name, client := range map[string]*http.Client{"client": provider.client, "realtime": provider.realtimeClient} {
+			resp, err := client.Get("http://bedrock-runtime.us-east-1.amazonaws.com/")
+			if err == nil {
+				resp.Body.Close()
+				t.Errorf("enforce_http2=%v %s: an https proxy whose certificate is not trusted was used", enforceHTTP2, name)
+			}
+		}
+		assert.Empty(t, recorder.Seen(), "enforce_http2=%v: the unverified proxy saw traffic", enforceHTTP2)
+
+		// With the proxy's CA in proxy_config, the same proxy is verified and used.
+		config.ProxyConfig.CACertPEM = schemas.NewSecretVar(recorder.CAPEM)
+		trusted, err := NewBedrockProvider(config, noopLogger{})
+		require.NoError(t, err)
+		resp, err := trusted.client.Get("http://bedrock-runtime.us-east-1.amazonaws.com/")
+		require.NoError(t, err, "enforce_http2=%v: the trusted https proxy was refused", enforceHTTP2)
+		resp.Body.Close()
+		assert.NotEmpty(t, recorder.Seen(), "enforce_http2=%v: the trusted proxy saw no traffic", enforceHTTP2)
+	}
+}
+
 func TestBedrockTransportTLSCACert(t *testing.T) {
 	testCACert := generateTestCACert(t)
 
@@ -1172,4 +1216,59 @@ func TestBedrockTransportProxyMatrix(t *testing.T) {
 			}
 		}
 	}
+}
+
+// TestResponsesStreamAttachesEachRawEventOnce verifies a Converse event that expands into several Responses events
+// rides on exactly one of them, the one streaming its text, declared as Bedrock's format, so its raw text never
+// reaches the client ahead of (or apart from) the normalized text it backs.
+func TestResponsesStreamAttachesEachRawEventOnce(t *testing.T) {
+	events := []struct{ eventType, payload string }{
+		{"messageStart", `{"role":"assistant"}`},
+		{"contentBlockDelta", `{"contentBlockIndex":0,"delta":{"text":"mail alex@example.com"}}`},
+		{"contentBlockStop", `{"contentBlockIndex":0}`},
+		{"messageStop", `{"stopReason":"end_turn"}`},
+		{"metadata", `{"usage":{"inputTokens":3,"outputTokens":4,"totalTokens":7},"metrics":{"latencyMs":10}}`},
+	}
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/vnd.amazon.eventstream")
+		w.WriteHeader(http.StatusOK)
+		for _, event := range events {
+			writeEventStreamEvent(t, w, event.eventType, []byte(event.payload))
+		}
+	}))
+	defer ts.Close()
+
+	ctx := testBedrockCtx()
+	ctx.SetValue(schemas.BifrostContextKeyCaptureRawResponse, true)
+	req := testResponsesRequest()
+	req.Model = testConverseStreamModel
+	stream, bifrostErr := newTestProviderWithServer(t, ts).ResponsesStream(ctx, noopPostHookRunner, nil, testBedrockKey(), req)
+	require.Nil(t, bifrostErr)
+
+	carried := map[string]int{}
+	var textCarrier *schemas.BifrostResponsesStreamResponse
+	for chunk := range stream {
+		event := chunk.BifrostResponsesStreamResponse
+		if event == nil {
+			continue
+		}
+		if raw, ok := event.ExtraFields.RawResponse.(string); ok {
+			carried[raw]++
+			if raw == events[1].payload {
+				textCarrier = event
+			}
+		}
+	}
+	for _, event := range events {
+		assert.LessOrEqual(t, carried[event.payload], 1, "%s raw attached more than once", event.eventType)
+	}
+	require.NotNil(t, textCarrier, "the text event's raw payload was not attached")
+	assert.Equal(t, schemas.ResponsesStreamResponseTypeOutputTextDelta, textCarrier.Type)
+	assert.Equal(t, schemas.RawResponseFormatBedrockConverseStreamEvent, textCarrier.ExtraFields.RawResponseFormat)
+
+	redacted := *textCarrier
+	redacted.Delta = schemas.Ptr("mail [EMAIL]")
+	synced, err := schemas.SyncRawResponseText(textCarrier.ExtraFields.RawResponse, textCarrier.ExtraFields.RawResponseFormat, textCarrier, &redacted)
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"contentBlockIndex":0,"delta":{"text":"mail [EMAIL]"}}`, synced.(string))
 }

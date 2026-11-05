@@ -7,6 +7,7 @@ export class MCPSettingsPage extends BasePage {
   readonly saveBtn: Locator
   readonly maxAgentDepthInput: Locator
   readonly toolTimeoutInput: Locator
+  readonly codeModeTrigger: Locator
   readonly codeModeLimits: Locator
   readonly oauthPrivateAllowlistInput: Locator
   readonly advancedTrigger: Locator
@@ -19,6 +20,7 @@ export class MCPSettingsPage extends BasePage {
   readonly securityIssuerUrlInput: Locator
   readonly securityIssuerUrlChangeWarning: Locator
   readonly securitySaveBtn: Locator
+  readonly maxProtocolVersionSelect: Locator
 
   constructor(page: Page) {
     super(page)
@@ -27,6 +29,7 @@ export class MCPSettingsPage extends BasePage {
     this.saveBtn = page.getByTestId('mcp-settings-save-btn')
     this.maxAgentDepthInput = page.getByTestId('mcp-agent-depth-input').or(page.locator('#mcp-agent-depth'))
     this.toolTimeoutInput = page.getByTestId('mcp-tool-timeout-input').or(page.locator('#mcp-tool-execution-timeout'))
+    this.codeModeTrigger = page.getByTestId('mcp-settings-code-mode-trigger')
     this.codeModeLimits = page.getByTestId('mcp-code-mode-limits')
     this.oauthPrivateAllowlistInput = page.getByTestId('mcp-oauth-private-allowlist-input')
     this.advancedTrigger = page.getByTestId('mcp-settings-advanced-trigger')
@@ -40,6 +43,7 @@ export class MCPSettingsPage extends BasePage {
     this.securityIssuerUrlInput = page.getByTestId('oauth2-issuer-url-input')
     this.securityIssuerUrlChangeWarning = page.getByTestId('oauth2-issuer-url-change-warning')
     this.securitySaveBtn = page.getByTestId('security-save-btn')
+    this.maxProtocolVersionSelect = page.getByTestId('mcp-max-protocol-version-select')
   }
 
   /** The remove button of one OAuth private allowlist entry, present while the entry is listed. */
@@ -52,9 +56,21 @@ export class MCPSettingsPage extends BasePage {
     return this.page.getByRole('button', { name: `Remove ${uri}`, exact: true })
   }
 
+  /** Expands the collapsed Code Mode Settings section, which holds the binding level and the limits. */
+  async openCodeModeSettings(): Promise<void> {
+    await this.codeModeTrigger.click()
+    await this.codeModeLimits.waitFor({ state: 'visible' })
+  }
+
   /** Input for one code mode limit, keyed by its config field (e.g. 'max_tool_calls'). */
   codeModeLimitInput(field: string): Locator {
     return this.page.getByTestId(`mcp-code-mode-${field.replace(/_/g, '-')}-input`)
+  }
+
+  /** Picks a global max protocol version ('auto' or a version) from the select. */
+  async selectMaxProtocolVersion(value: string): Promise<void> {
+    await this.maxProtocolVersionSelect.click()
+    await this.page.getByTestId(`mcp-max-protocol-version-${value}`).click()
   }
 
   async goto(): Promise<void> {

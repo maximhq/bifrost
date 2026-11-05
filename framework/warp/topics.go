@@ -76,6 +76,15 @@ const (
 	topicsMinClusterSize = 2
 	topicsSmallCorpus    = 10
 	topicsLabelSamples   = 4
+	// topicsLabelDrawn is how many members drawn at random a topic is named
+	// from beside its samples. The samples sit at the centre, and the centre
+	// of a broad topic is its most generic request: named from those alone,
+	// a topic of fifteen thousand coding sessions took the name of one
+	// session summary that happened to sit in the middle of them.
+	topicsLabelDrawn = 6
+	// topicsDuplicateSimilarity is how alike two requests' vectors are when
+	// they are the same text: one prompt fanned out to several providers.
+	topicsDuplicateSimilarity = 0.98
 	// topicsLabelWorkers is how many naming calls run at once. Enough to stop
 	// naming from being the slowest part of a run, few enough not to look
 	// like a burst to the provider's rate limiter.
@@ -92,6 +101,10 @@ const (
 	// silently, which is also why the backfill pages at the same size.
 	topicsHydrationBatch = backfillBatchSize
 	topicsMaxListed      = 200
+	// topicsExamplesListed is how many of a topic's examples list_topics
+	// offers. Enough for "examples: 1, 2, 3"; each one more is ~65 bytes per
+	// topic against MaxToolResultBytes.
+	topicsExamplesListed = 3
 	// topicsWriteBatch is how many assignments are written in one call, which
 	// is also how often a run that is writing reports progress.
 	topicsWriteBatch = 5000
@@ -133,6 +146,7 @@ type Topic struct {
 	// Series is the window bucket by bucket, when the caller asked for one.
 	Series       []TopicPoint `json:"series,omitempty"`
 	SampleLogIDs []string     `json:"example_log_ids,omitempty"`
+
 	// SampleLinks each open one of the requests nearest the topic's
 	// centre. Named as examples on the wire, because a link on a row is
 	// otherwise read as "the requests behind this row".
@@ -302,6 +316,12 @@ func (r *TopicReader) ListTopics(ctx context.Context, query TopicQuery) (*TopicL
 		return nil, fmt.Errorf("read Warp configuration: %w", err)
 	}
 	config := configFromRow(row)
+	// No saved configuration means no embedding space, so no topic can be
+	// filed under one. Only a missing row is refused: a disabled Warp still
+	// lists the topics it already built.
+	if config == nil {
+		return nil, ErrUnavailable
+	}
 	if query.Limit < 1 || query.Limit > topicsMaxListed {
 		query.Limit = topicsMaxListed
 	}
@@ -399,7 +419,9 @@ func (r *TopicReader) ListTopics(ctx context.Context, query TopicQuery) (*TopicL
 		if label, ok := themeLabel[row.ParentID]; ok {
 			topic.ThemeID, topic.Theme = row.ParentID, label
 		}
-		topic.SampleLogIDs = row.ExampleLogIDs()
+		// Linked: the first few, which mix the centre with the members drawn.
+		examples := row.ExampleLogIDs()
+		topic.SampleLogIDs = examples[:min(len(examples), topicsLabelSamples)]
 		topics = append(topics, topic)
 	}
 	sortTopics(topics)
@@ -683,13 +705,7 @@ func propertyInt(value interface{}) int {
 	case int:
 		return number
 	case int64:
-		if number > math.MaxInt {
-			return math.MaxInt
-		}
-		if number < math.MinInt {
-			return math.MinInt
-		}
-		return int(number)
+		return int64ToInt(number)
 	case float64:
 		return floatToInt(number)
 	case float32:
@@ -704,19 +720,30 @@ func propertyInt(value interface{}) int {
 	}
 }
 
+// int64ToInt saturates at int's bounds before narrowing on 32-bit builds.
+func int64ToInt(number int64) int {
+	if number > math.MaxInt {
+		return math.MaxInt
+	}
+	if number < math.MinInt {
+		return math.MinInt
+	}
+	return int(number)
+}
+
 // floatToInt truncates toward zero, saturating at int's bounds; NaN is 0.
-// The upper bound is -float64(math.MinInt), which is exact, rather than
-// float64(math.MaxInt), which rounds up past the largest int.
+// Convert through int64 so the final narrowing uses integer range checks.
+// float64(math.MaxInt64) rounds up to 1<<63, so it is excluded before the cast.
 func floatToInt(number float64) int {
 	switch {
 	case math.IsNaN(number):
 		return 0
-	case number >= -float64(math.MinInt):
+	case number >= float64(math.MaxInt64):
 		return math.MaxInt
-	case number < float64(math.MinInt):
+	case number < float64(math.MinInt64):
 		return math.MinInt
 	default:
-		return int(number)
+		return int64ToInt(int64(number))
 	}
 }
 
@@ -836,7 +863,7 @@ func listTopicsTool() Tool {
 			"The window defaults to the last 7 days; filters narrow it to a team, customer, user, virtual key, model, provider, app, status or session, like the other tools. " +
 			"Each topic carries requests, share, distinct sessions, errors, cost, tokens, average latency, a trend block against the period of equal length before the window (has_previous_period, requests_trend, tokens_trend, cost_trend), when it was first seen (new_in_window marks one that appeared inside the window), " +
 			"and example_links that each open one example request. With interval, each topic also carries its series, bucket by bucket. " +
-			"With group_by theme, the answer is the themes the topics are grouped into - broad subjects such as Billing over the topics Refund Requests and Invoice Questions - each with the same counts added up over its topics, and the topics inside it; the call for 'what broad areas', 'what kinds of things', or a deployment with too many topics to list. " +
+			"With group_by theme, the answer is the themes the topics are grouped into - broad subjects such as Billing over the topics Refund Requests and Invoice Questions - each with the same counts added up over its topics, and the topics inside it by name, requests, share and link (group_by topic carries a topic's full counts); the call for 'what broad areas', 'what kinds of things', or a deployment with too many topics to list. " +
 			"Requests, shares and sessions count requests and sessions, not people: every model call is one request, so a five-turn chat is five.",
 		schemaJSON: `{
   "type": "object",
@@ -895,9 +922,12 @@ func listTopicsTool() Tool {
 				narrowed.TopicIDs = []string{id}
 				return logsViewLink(&narrowed)
 			}
+			// The example ids already travel inside example_links; sending both
+			// cost a fifth of every row against MaxToolResultBytes.
 			linkTopics := func(topics []Topic) {
 				for index := range topics {
 					topics[index].Link = linkTo(topics[index].ID)
+					topics[index].SampleLogIDs = nil
 				}
 			}
 			linkTopics(list.Topics)
@@ -906,6 +936,8 @@ func listTopicsTool() Tool {
 				list.Themes[index].Link = linkTo(list.Themes[index].ID)
 				linkTopics(list.Themes[index].Topics)
 			}
+			compactTopics(list.Topics)
+			compactTopics(list.Ungrouped)
 			out := map[string]any{
 				"total_requests":     list.TotalRequests,
 				"unmatched_requests": list.Unmatched,
@@ -914,7 +946,7 @@ func listTopicsTool() Tool {
 				"scope":              scopeNote(filters, deps.scope),
 			}
 			if query.ByTheme {
-				out["themes"] = list.Themes
+				out["themes"] = listedThemes(list.Themes)
 				out["returned"] = len(list.Themes)
 				out["total_themes"] = list.MatchedThemes
 				out["ungrouped_topics"] = list.Ungrouped
@@ -940,19 +972,247 @@ func listTopicsTool() Tool {
 				out["links"] = "Each topic's and theme's link opens its requests in the Logs view, over this window and these filters: link the name to it. " +
 					"Each entry of example_links opens one example request from the topic; offer those as examples, after the name."
 				out["requests"] = "For the requests behind a topic or theme - a list, a count, a breakdown, who sent them - call query_logs, count_logs or query_usage_by with topic_ids set to its id and the same window and filters."
-				out["cannot_answer"] = "Not available yet: how many people asked about a topic (sessions are sessions, not people; a query_usage_by user ranking with topic_ids counts the users with a request in it). " +
-					"Asked for that, answer what the topics do show, then say it is not available yet."
+				out["people"] = "sessions are sessions, not people. For how many users had a request in a topic or theme, call query_usage_by with dimension user, topic_ids set to its id, " +
+					"the same window and filters, and limit 20, and count the rows other than unassigned and other - each is one user. " +
+					"unassigned and other take rows of the 20 too, so when 20 rows came back more users may be past the limit: say \"at least\" that count, never \"at least 20\"."
 			}
+			fitTopicResult(out, query.ByTheme, *filters.StartTime, query.BucketSeconds)
 			return out, nil
 		},
 	}
 }
 
-// RegisterTopics binds the clustering and discovery jobs to the shared Sidekiq
-// runner. Only clustering pages vectors out of the vector store; discovery
-// reads the pool from the log store, so it is registered without one.
+// listedThemeTopic is a topic as it appears inside a theme: the theme carries
+// the counts, trend and series, and its topics are the detail, so each is
+// named, sized and linked and nothing more. Every inner topic in full
+// multiplied a deployment's topics into the answer and pushed it past
+// MaxToolResultBytes; group_by topic carries each topic's full counts.
+type listedThemeTopic struct {
+	ID       string  `json:"id"`
+	Label    string  `json:"label"`
+	Requests int64   `json:"requests"`
+	Share    float64 `json:"share"`
+	New      bool    `json:"new_in_window,omitempty"`
+	Link     string  `json:"link,omitempty"`
+}
+
+// listedTheme is a TopicTheme as list_topics returns it. TopicCount is how many
+// topics the theme holds, which Topics may be fewer than once fitted.
+type listedTheme struct {
+	TopicTheme
+	Topics     []listedThemeTopic `json:"topics"`
+	TopicCount int                `json:"topic_count"`
+}
+
+func listedThemes(themes []TopicTheme) []listedTheme {
+	out := make([]listedTheme, 0, len(themes))
+	for _, theme := range themes {
+		topics := make([]listedThemeTopic, 0, len(theme.Topics))
+		for _, topic := range theme.Topics {
+			topics = append(topics, listedThemeTopic{ID: topic.ID, Label: topic.Label, Requests: topic.Requests, Share: roundTo(topic.Share, 4), New: topic.New, Link: topic.Link})
+		}
+		theme.Topics = nil
+		theme.Share = roundTo(theme.Share, 4)
+		theme.Cost = roundTo(theme.Cost, 6)
+		theme.AvgLatency = roundTo(theme.AvgLatency, 1)
+		theme.Trend = roundTopicTrend(theme.Trend)
+		out = append(out, listedTheme{TopicTheme: theme, Topics: topics, TopicCount: len(topics)})
+	}
+	return out
+}
+
+// compactTopics trims what a topic row spends on digits and repeats: floats
+// rounded to what an answer quotes, and examples cut to topicsExamplesListed.
+func compactTopics(topics []Topic) {
+	for index := range topics {
+		topic := &topics[index]
+		topic.Share = roundTo(topic.Share, 4)
+		topic.Cost = roundTo(topic.Cost, 6)
+		topic.AvgLatency = roundTo(topic.AvgLatency, 1)
+		topic.Cohesion = roundTo(topic.Cohesion, 3)
+		topic.Trend = roundTopicTrend(topic.Trend)
+		topic.SampleLinks = topic.SampleLinks[:min(len(topic.SampleLinks), topicsExamplesListed)]
+	}
+}
+
+func roundTopicTrend(trend TopicTrend) TopicTrend {
+	trend.RequestsTrend = roundTo(trend.RequestsTrend, 1)
+	if trend.TokensTrend != nil {
+		trend.TokensTrend = new(roundTo(*trend.TokensTrend, 1))
+	}
+	if trend.CostTrend != nil {
+		trend.CostTrend = new(roundTo(*trend.CostTrend, 1))
+	}
+	return trend
+}
+
+// fitTopicResult shrinks a list_topics answer until it fits
+// MaxToolResultBytes, and says what it changed.
+//
+// Over the budget, boundToolResult would replace the whole answer with "too
+// large", which the model reads as a failed call: it retries with a lower
+// limit or turns to another tool, so a topic question costs two or three
+// calls. The rows are ranked largest first, so cutting the tail and stating
+// returned against the count asked for is an honest partial answer, not the
+// silently truncated document boundToolResult refuses to send.
+//
+// With themes the topics inside them go first, a rank at a time across every
+// theme, since the themes are the answer and their topics the detail; then
+// the ungrouped topics; then the smallest themes. Each pass re-encodes the
+// answer, which is a tool call's cost, never a gateway request's.
+//
+// A series is a row's largest part - 200 hourly points with traffic in each
+// outgrow the budget in one row - so with an interval the series are merged
+// into wider buckets first, down to about CoarseBuckets points, which still
+// carry the shape of a trend; then rows are dropped; and a single row still
+// over the budget has its series merged further.
+func fitTopicResult(out map[string]any, byTheme bool, start time.Time, bucketSeconds int64) {
+	if fitsToolResult(out) {
+		return
+	}
+	factor := 1
+	if bucketSeconds > 0 {
+		factor = mergeSeriesToFit(out, start, bucketSeconds, factor, CoarseBuckets)
+	}
+	fitTopicRows(out, byTheme)
+	if bucketSeconds > 0 {
+		mergeSeriesToFit(out, start, bucketSeconds, factor, 1)
+	}
+}
+
+// fitTopicRows drops the smallest rows, in the order fitTopicResult gives,
+// until the answer fits or one row is left.
+func fitTopicRows(out map[string]any, byTheme bool) {
+	if fitsToolResult(out) {
+		return
+	}
+	if !byTheme {
+		topics, _ := out["topics"].([]Topic)
+		asked := len(topics)
+		for len(topics) > 1 && !fitsToolResult(out) {
+			topics = topics[:len(topics)-1]
+			out["topics"] = topics
+			out["returned"] = len(topics)
+			out["trimmed"] = fmt.Sprintf("Only the largest %d of the %d topics asked for are here; the rest did not fit in one answer, and total_topics counts them all. "+
+				"Answer from these and say the list is the largest %d. Do not call again to page through the rest.", len(topics), asked, len(topics))
+		}
+		return
+	}
+	themes, _ := out["themes"].([]listedTheme)
+	ungrouped, _ := out["ungrouped_topics"].([]Topic)
+	asked, askedUngrouped := len(themes), len(ungrouped)
+	perTheme := 0
+	for _, theme := range themes {
+		perTheme = max(perTheme, len(theme.Topics))
+	}
+	for !fitsToolResult(out) {
+		switch {
+		case perTheme > 1:
+			perTheme--
+			for index := range themes {
+				themes[index].Topics = themes[index].Topics[:min(len(themes[index].Topics), perTheme)]
+			}
+		case len(ungrouped) > 0:
+			ungrouped = ungrouped[:len(ungrouped)-1]
+			out["ungrouped_topics"] = ungrouped
+		case len(themes) > 1:
+			themes = themes[:len(themes)-1]
+			out["themes"] = themes
+			out["returned"] = len(themes)
+		default:
+			return
+		}
+		cut := []string{fmt.Sprintf("each theme lists only its largest %d topics (topic_count is how many it has)", perTheme)}
+		if len(ungrouped) < askedUngrouped {
+			cut = append(cut, fmt.Sprintf("ungrouped_topics only the largest %d of %d", len(ungrouped), askedUngrouped))
+		}
+		if len(themes) < asked {
+			cut = append(cut, fmt.Sprintf("only the largest %d of the %d themes asked for are returned", len(themes), asked))
+		}
+		out["trimmed"] = "To fit one result, " + strings.Join(cut, "; ") + ". " +
+			"Answer from these and do not call again to page through the rest; the full rows of a theme's topics are list_topics without group_by."
+	}
+}
+
+// mergeSeriesToFit doubles the width of every series' buckets in the answer
+// until it fits or the longest series is down to floor points, and returns
+// the factor it reached. Buckets are aligned to the window's start truncated to
+// the asked bucket, so doubled widths nest and each pass merges whole buckets
+// of the last; no request is lost, only the resolution.
+func mergeSeriesToFit(out map[string]any, start time.Time, bucketSeconds int64, factor, floor int) int {
+	bucket := time.Duration(bucketSeconds) * time.Second
+	origin := start.UTC().Truncate(bucket)
+	for !fitsToolResult(out) {
+		longest := 0
+		forEachTopicSeries(out, func(series *[]TopicPoint) { longest = max(longest, len(*series)) })
+		if longest <= floor {
+			break
+		}
+		factor *= 2
+		width := time.Duration(factor) * bucket
+		forEachTopicSeries(out, func(series *[]TopicPoint) { *series = mergeTopicSeries(*series, origin, width) })
+		unit, count := "hour", factor*int(bucketSeconds/3600)
+		if bucketSeconds >= 86400 {
+			unit, count = "day", factor*int(bucketSeconds/86400)
+		}
+		out["merged"] = fmt.Sprintf("Each series is merged into %d-%s buckets to fit one result; every request is still counted. "+
+			"Read the trend from these and do not call again for finer buckets.", count, unit)
+	}
+	return factor
+}
+
+// forEachTopicSeries visits every series a list_topics answer carries: each
+// topic's, each ungrouped topic's and each theme's.
+func forEachTopicSeries(out map[string]any, visit func(*[]TopicPoint)) {
+	for _, key := range []string{"topics", "ungrouped_topics"} {
+		topics, _ := out[key].([]Topic)
+		for index := range topics {
+			visit(&topics[index].Series)
+		}
+	}
+	themes, _ := out["themes"].([]listedTheme)
+	for index := range themes {
+		visit(&themes[index].Series)
+	}
+}
+
+// mergeTopicSeries sums a series' points into buckets of width aligned to
+// origin. The series is in time order, so equal buckets are adjacent.
+func mergeTopicSeries(series []TopicPoint, origin time.Time, width time.Duration) []TopicPoint {
+	merged := series[:0]
+	for _, point := range series {
+		at := origin.Add(point.Bucket.Sub(origin) / width * width)
+		if n := len(merged); n > 0 && merged[n-1].Bucket.Equal(at) {
+			merged[n-1].Requests += point.Requests
+			merged[n-1].Errors += point.Errors
+			merged[n-1].Cost += point.Cost
+			merged[n-1].Tokens += point.Tokens
+			continue
+		}
+		point.Bucket = at
+		merged = append(merged, point)
+	}
+	return merged
+}
+
+func fitsToolResult(result any) bool {
+	encoded, err := sonic.MarshalString(result)
+	return err == nil && len(encoded) <= MaxToolResultBytes
+}
+
+// RegisterTopics binds the clustering, discovery and upkeep jobs to the shared
+// Sidekiq runner. Only clustering pages vectors out of the vector store;
+// discovery and upkeep read the log store, so they are registered without one.
+// An upkeep that finished is routine, and is kept out of the jobs listing
+// unless it failed.
+//
+// They are bound whether or not there is a log reader yet: a deployment that
+// turns logging on after startup gets its reader later, through SetLogReader,
+// and without a queue by then its node would skip upkeep until restart. Each
+// job finds the topic store when it runs and does nothing without one, and the
+// timer queues nothing while there is none.
 func (s *Service) RegisterTopics(runner *sidekiq.Runner) {
-	if runner == nil || s.logs == nil || s.store == nil {
+	if runner == nil || s.store == nil {
 		return
 	}
 	if s.vectorStore != nil {
@@ -960,6 +1220,9 @@ func (s *Service) RegisterTopics(runner *sidekiq.Runner) {
 	}
 	runner.Register(TopicDiscoveryJobKind, s.RunDiscoveryJob)
 	runner.RegisterSummarizer(TopicDiscoveryJobKind, SummarizeBackfillMeta)
+	runner.Register(TopicUpkeepJobKind, s.RunTopicUpkeepJob)
+	runner.RegisterSummarizer(TopicUpkeepJobKind, SummarizeTopicUpkeepMeta)
+	runner.RegisterQuietOnSuccess(TopicUpkeepJobKind)
 	s.mu.Lock()
 	s.topicJobs = runner
 	s.mu.Unlock()
@@ -1539,7 +1802,7 @@ func (w *topicWriter) activate(ctx context.Context, clusters []topicCluster) err
 		topic := byID[cluster.id]
 		topic.Label, topic.Centroid, topic.Cohesion = cluster.label, logstore.EncodeWarpVector(cluster.centroid()), cluster.cohesion()
 		topic.Status = logstore.WarpTopicStatusActive
-		if err := topic.SetExampleLogIDs(cluster.sampleIDs); err != nil {
+		if err := topic.SetExampleLogIDs(cluster.exampleIDs()); err != nil {
 			return fmt.Errorf("encode topic examples: %w", err)
 		}
 		active = append(active, topic)
@@ -1625,12 +1888,7 @@ func labelTopics(ctx context.Context, chat ChatFunc, config *schemas.WarpConfig,
 				<-slots
 				group.Done()
 			}()
-			samples := make([]string, 0, len(cluster.sampleIDs))
-			for _, id := range cluster.sampleIDs {
-				if text := texts[id]; text != "" {
-					samples = append(samples, text)
-				}
-			}
+			samples := labelTexts(texts, cluster.sampleIDs, cluster.drawn)
 			label, err := labelTopic(ctx, chat, config, samples)
 			if err != nil {
 				mu.Lock()
@@ -1646,14 +1904,47 @@ func labelTopics(ctx context.Context, chat ChatFunc, config *schemas.WarpConfig,
 	return failed, lastError
 }
 
-// topicSampleTexts hydrates every cluster's sample logs, a batch at a time,
-// and returns what the users asked, by log id. Content-hidden rows are left out:
-// a label must never be derived from text the operator asked not to keep.
-func (s *Service) topicSampleTexts(ctx context.Context, clusters []topicCluster) map[string]string {
-	ids := make([]string, 0, len(clusters)*topicsLabelSamples)
-	for _, cluster := range clusters {
-		ids = append(ids, cluster.sampleIDs...)
+// labelTexts is what a topic is named from: the texts of the given ids, in
+// order, each text once. A prompt sent to several providers is several
+// requests with one text, and showing it to the model more than once would
+// weigh it as more than one request's worth of the topic.
+func labelTexts(texts map[string]string, groups ...[]string) []string {
+	var samples []string
+	seen := map[string]struct{}{}
+	for _, ids := range groups {
+		for _, id := range ids {
+			text := texts[id]
+			if _, repeat := seen[text]; text == "" || repeat {
+				continue
+			}
+			seen[text] = struct{}{}
+			samples = append(samples, text)
+		}
 	}
+	return samples
+}
+
+// topicSampleTexts hydrates every cluster's sample and drawn logs, a batch at
+// a time, and returns what the users asked, by log id.
+func (s *Service) topicSampleTexts(ctx context.Context, clusters []topicCluster) map[string]string {
+	ids := make([]string, 0, len(clusters)*(topicsLabelSamples+topicsLabelDrawn))
+	seen := make(map[string]struct{}, cap(ids))
+	for _, cluster := range clusters {
+		// A member can be both a sample and drawn; it is read once.
+		for _, id := range slices.Concat(cluster.sampleIDs, cluster.drawn) {
+			if _, repeat := seen[id]; !repeat {
+				seen[id] = struct{}{}
+				ids = append(ids, id)
+			}
+		}
+	}
+	return s.logTexts(ctx, ids)
+}
+
+// logTexts hydrates logs, a batch at a time, and returns what the users
+// asked, by log id. Content-hidden rows are left out: a label must never be
+// derived from text the operator asked not to keep.
+func (s *Service) logTexts(ctx context.Context, ids []string) map[string]string {
 	if len(ids) == 0 {
 		return nil
 	}
@@ -1697,14 +1988,36 @@ func logUserText(entry *logstore.Log) string {
 
 const topicLabelInstructions = "You name topics for a dashboard. Given a few user messages from one cluster of requests, " +
 	"reply with a short topic name of two to five words that a product manager would recognise, in title case, " +
-	"with no punctuation, no quotes and no explanation. Name the subject, not the wording."
+	"with no punctuation, no quotes and no explanation. Name the subject, not the wording. " +
+	"Name what most of the messages share; a subject only one message mentions is not the topic."
 
-// labelTopic asks the Warp model for a name. No model means the fallback.
+// labelTopic asks the Warp model for a name, and falls back to one made from
+// the texts' own words when there is no model or its answer holds no name.
 func labelTopic(ctx context.Context, chat ChatFunc, config *schemas.WarpConfig, texts []string) (string, error) {
 	if chat == nil || len(texts) == 0 {
 		return fallbackTopicLabel(texts), nil
 	}
+	label, err := askTopicLabel(ctx, chat, config, texts, nil)
+	if err != nil {
+		return "", err
+	}
+	if label == "" {
+		return fallbackTopicLabel(texts), nil
+	}
+	return label, nil
+}
+
+// askTopicLabel asks the Warp model for a name and returns it cleaned, or ""
+// when the answer holds no name. formerNames are the names of topics that
+// were merged to make this one, for the model to name what they share; nil
+// for a topic named the first time.
+func askTopicLabel(ctx context.Context, chat ChatFunc, config *schemas.WarpConfig, texts, formerNames []string) (string, error) {
 	var prompt strings.Builder
+	if len(formerNames) > 0 {
+		prompt.WriteString("These requests were filed under topics since merged into one, named: ")
+		prompt.WriteString(strings.Join(formerNames, "; "))
+		prompt.WriteString(". Name what they have in common, not any one of them.\n\n")
+	}
 	prompt.WriteString("User messages:\n")
 	for _, text := range texts {
 		prompt.WriteString("- ")
@@ -1733,11 +2046,7 @@ func labelTopic(ctx context.Context, chat ChatFunc, config *schemas.WarpConfig, 
 	if response == nil {
 		return "", fmt.Errorf("label topic: the model returned no output")
 	}
-	label := cleanTopicLabel(responsesText(response.Output))
-	if label == "" {
-		return fallbackTopicLabel(texts), nil
-	}
-	return label, nil
+	return cleanTopicLabel(responsesText(response.Output)), nil
 }
 
 // cleanTopicLabel trims a model's answer down to a label: first line, no

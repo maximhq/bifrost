@@ -2,7 +2,6 @@ package vertex
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/maximhq/bifrost/core/providers/openai"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
@@ -100,10 +99,4 @@ func (provider *VertexProvider) openAIChatCompletionStream(ctx *schemas.BifrostC
 		provider.GetProviderKey(), postHookRunner, nil, nil, provider.openAIEndpointError(key), nil, nil, nil,
 		provider.logger, postHookSpanFinalizer,
 	)
-}
-
-func unsupportedVertexEndpointOperation(operation schemas.RequestType) *schemas.BifrostError {
-	bifrostErr := providerUtils.NewUnsupportedOperationError(operation, schemas.Vertex)
-	bifrostErr.Error.Message = fmt.Sprintf("vertex_endpoint format openai_chat supports chat completions and Responses-to-chat conversion; %s is not supported", operation)
-	return bifrostErr
 }

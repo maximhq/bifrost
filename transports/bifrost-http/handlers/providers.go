@@ -268,6 +268,7 @@ func (h *ProviderHandler) RegisterRoutes(r *router.Router, middlewares ...schema
 	r.GET("/api/models/details", lib.ChainMiddlewares(h.listModelDetails, middlewares...))
 	r.GET("/api/models/parameters", lib.ChainMiddlewares(h.getModelParameters, middlewares...))
 	r.GET("/api/models/base", lib.ChainMiddlewares(h.listBaseModels, middlewares...))
+	r.GET("/api/models/newest", lib.ChainMiddlewares(h.listNewestModels, middlewares...))
 	r.PUT("/api/models/catalog", lib.ChainMiddlewares(h.upsertModelCatalogEntries, middlewares...))
 }
 
@@ -980,6 +981,8 @@ type listedModel struct {
 //   - query: Filter models by name (case-insensitive partial match)
 //   - provider: Filter by specific provider name
 //   - keys: Comma-separated list of provider key UUIDs to filter models accessible by those keys
+//   - unfiltered: If true, list the provider's whole catalog: bypass provider-level model pool
+//     restrictions, and do not narrow to what the caller's virtual key or access allows.
 //   - limit: Maximum number of results to return (default: 5)
 //   - offset: Number of results to skip (for pagination)
 //   - include_deprecated: If true, list deprecated models even when nothing is searched for.
@@ -1036,7 +1039,8 @@ func (h *ProviderHandler) listModels(ctx *fasthttp.RequestCtx) {
 //   - query: Filter models by name (case-insensitive partial match)
 //   - provider: Filter by specific provider name
 //   - keys: Comma-separated list of key IDs to filter models accessible by those keys
-//   - unfiltered: If true, bypass provider-level model pool restrictions only
+//   - unfiltered: If true, list the provider's whole catalog: bypass provider-level model pool
+//     restrictions, and do not narrow to what the caller's virtual key or access allows.
 //   - limit: Maximum number of results to return (default: 20)
 //   - offset: Number of results to skip (for pagination)
 //
@@ -1318,6 +1322,15 @@ func (h *ProviderHandler) parseModelListQuery(ctx *fasthttp.RequestCtx, bifrostC
 		if offset, err := queryArgs.GetUint("offset"); err == nil {
 			query.Offset = offset
 		}
+	}
+
+	// An unfiltered listing is the provider's whole catalog, which is what the pickers that configure
+	// the gateway ask for (a key's allowed models, deployments), so it is not narrowed to what the
+	// caller may reach. Every caller that reaches this route can already read every provider and key
+	// through the provider routes, so narrowing here hid models from whoever was configuring them
+	// without protecting anything.
+	if query.Unfiltered {
+		return query, true
 	}
 
 	// Resolve what a key-authenticated caller may reach, and filter the listing to it. This

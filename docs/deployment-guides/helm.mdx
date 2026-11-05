@@ -547,7 +547,7 @@ kubectl delete pvc -l app.kubernetes.io/instance=bifrost
 
 ### Prometheus Metrics
 
-Bifrost exposes Prometheus metrics at `/metrics`.
+Bifrost exposes Prometheus metrics at `/metrics` (`/<prefix>/metrics` through an ingress when `bifrost.server.basePath` is set).
 
 Enable ServiceMonitor for automatic scraping:
 

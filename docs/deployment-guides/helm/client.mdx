@@ -251,11 +251,13 @@ bifrost:
 | `bifrost.mcp.toolManagerConfig.codeModeBindingLevel` | Code mode binding level (`server` or `tool`) | `server` |
 | `bifrost.mcp.toolManagerConfig.disableAutoToolInject` | Disable automatic MCP tool injection | `false` |
 | `bifrost.mcp.toolSyncInterval` | Global tool sync interval as a Go duration string in whole minutes (for example `10m`). Use `0s` to use the runtime default of 10 minutes; periodic sync cannot be turned off. Legacy `bifrost.client.mcpToolSyncInterval: 0` means the same default. | `10m` |
+| `bifrost.mcp.maxProtocolVersion` | Newest MCP protocol version Bifrost offers MCP servers: `auto` (newest supported), `2026-07-28`, `2025-11-25`, or `2025-06-18`. Unset keeps the stored value. Override per server with `maxProtocolVersion` on a `bifrost.mcp.clientConfigs[]` entry. See [Max Protocol Version](/mcp/connecting-to-servers#max-protocol-version). | unset |
 
 ```yaml
 bifrost:
   mcp:
     toolSyncInterval: "15m"
+    maxProtocolVersion: "auto"
     toolManagerConfig:
       maxAgentDepth: 15
       toolExecutionTimeout: 60

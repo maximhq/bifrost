@@ -1,15 +1,20 @@
 package warp
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"slices"
+	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/bytedance/sonic"
 	"github.com/google/uuid"
+	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/queryscope"
@@ -31,14 +36,18 @@ import (
 // larger, with the requests filed under the smaller still counting through
 // merged_into.
 //
-// Both run on a timer, discovery through Sidekiq because it spends model
-// calls on names and should be visible and cancellable like any other run,
-// upkeep in-process because it is a few row updates.
+// Both are started on a timer and run as Sidekiq jobs in TopicsJobPartition,
+// beside the runs that seed topics. That partition runs its jobs one at a
+// time across every instance, and every write to a topic row is made by one
+// of its jobs, so no two instances rewrite a topic at once: a whole-row write
+// cannot put back what another instance's job changed while it was working.
 
 const (
 	// TopicDiscoveryJobKind is the Sidekiq job that clusters the pool of
 	// requests that matched no topic.
 	TopicDiscoveryJobKind = "warp_topic_discovery"
+	// TopicUpkeepJobKind is the Sidekiq job that retires and merges topics.
+	TopicUpkeepJobKind = "warp_topic_upkeep"
 	// TopicsJobPartition serialises every job that writes topics: a run and a
 	// discovery must not interleave their writes.
 	TopicsJobPartition = "warp_log_topics"
@@ -55,6 +64,10 @@ const (
 	// is retired. A topic younger than this is never retired for silence.
 	topicsRetireAfter   = 30 * 24 * time.Hour
 	topicsUpkeepTimeout = 5 * time.Minute
+	// topicsRenameBudget bounds the naming upkeep does after a merge, all of
+	// it: a model that is slow or down leaves the survivors their names
+	// rather than taking the pass's time.
+	topicsRenameBudget = 90 * time.Second
 )
 
 // TopicJobQueue is what discovery is started through. *sidekiq.Runner is one.
@@ -216,7 +229,7 @@ func (s *Service) RunDiscoveryJob(ctx context.Context, job tables.TableSidekiqJo
 			Centroid: logstore.EncodeWarpVector(cluster.centroid()), AssignFloor: float64(run.floor), Cohesion: cluster.cohesion(),
 			EmbeddingSignature: meta.ConfigSignature, Status: logstore.WarpTopicStatusActive, CreatedAt: now,
 		}
-		if err := topic.SetExampleLogIDs(cluster.sampleIDs); err != nil {
+		if err := topic.SetExampleLogIDs(cluster.exampleIDs()); err != nil {
 			return snapshot(), fmt.Errorf("encode topic examples: %w", err)
 		}
 		created = append(created, topic)
@@ -455,8 +468,8 @@ type TopicUpkeep struct {
 // Merging reuses the run's own test. Each topic is rebuilt as a cluster from
 // what its row keeps - the centre is the direction of the members' sum and
 // the cohesion is that sum's length over their number, so the sum is exactly
-// recoverable - and the clusters are merged at the threshold those clusters
-// derive, then joined by name. The smaller topic is marked merged into the
+// recoverable - and the clusters are merged at the threshold the seed run
+// that made them merged at, then joined by name. The smaller topic is marked merged into the
 // larger, whose centre and cohesion are worked out again from both. Nothing
 // filed under the smaller is rewritten: the reader follows merged_into.
 func (s *Service) MaintainTopics(ctx context.Context) (TopicUpkeep, error) {
@@ -475,7 +488,7 @@ func (s *Service) MaintainTopics(ctx context.Context) (TopicUpkeep, error) {
 		return done, fmt.Errorf("read topics: %w", err)
 	}
 	if len(active) > 0 {
-		if err := s.retireAndMergeTopics(ctx, store, signature, active, &done); err != nil {
+		if err := s.retireAndMergeTopics(ctx, store, config, active, &done); err != nil {
 			return done, err
 		}
 	}
@@ -503,7 +516,8 @@ func (s *Service) MaintainTopics(ctx context.Context) (TopicUpkeep, error) {
 // retireAndMergeTopics is the part of upkeep that needs active topics: it
 // retires the silent and the foreign, merges the alike, and regroups the
 // themes when anything changed.
-func (s *Service) retireAndMergeTopics(ctx context.Context, store logstore.WarpTopicStore, signature string, active []logstore.WarpTopic, done *TopicUpkeep) error {
+func (s *Service) retireAndMergeTopics(ctx context.Context, store logstore.WarpTopicStore, config *schemas.WarpConfig, active []logstore.WarpTopic, done *TopicUpkeep) error {
+	signature := embeddingConfigSignature(config)
 	ids := make([]string, 0, len(active))
 	for _, topic := range active {
 		ids = append(ids, topic.ID)
@@ -536,7 +550,7 @@ func (s *Service) retireAndMergeTopics(ctx context.Context, store logstore.WarpT
 		current = append(current, topic)
 	}
 
-	merged, survivors := mergeStoredTopics(current, totalCount)
+	merged, survivors := mergeStoredTopics(current, totalCount, s.seedMergeThreshold(ctx, signature))
 	changed = append(changed, merged...)
 	changed = append(changed, survivors...)
 	done.Merged = len(merged)
@@ -559,6 +573,13 @@ func (s *Service) retireAndMergeTopics(ctx context.Context, store logstore.WarpT
 	}
 	if err := store.UpsertWarpTopics(ctx, changed); err != nil {
 		return fmt.Errorf("write topics: %w", err)
+	}
+	// Named again only once the merges are written, so a model that is slow
+	// or down costs the survivors their new names and nothing else.
+	if renames := s.renameMergedTopics(ctx, config, current, merged, survivors, totalCount); len(renames) > 0 {
+		if err := saveTopicRenames(ctx, store, renames); err != nil {
+			s.warnf("warp: write renamed topics: %v", err)
+		}
 	}
 	if done.Retired > 0 || done.Merged > 0 {
 		if s.indexer != nil {
@@ -739,7 +760,16 @@ func repointMergedTopics(ctx context.Context, store logstore.WarpTopicStore, liv
 // mergeStoredTopics finds the topics that have come to mean the same thing
 // and returns the ones to mark merged, with MergedInto set, and the survivors
 // whose centre and cohesion changed.
-func mergeStoredTopics(topics []logstore.WarpTopic, sizes map[string]int64) (merged, survivors []logstore.WarpTopic) {
+//
+// Topics are merged on similarity only at threshold, the one the seed run that
+// made them merged its clusters at; nil merges them by name alone. Deriving a
+// threshold from the stored topics instead, as a run derives one from its
+// clusters, gave a lower one: stored topics are already merged, larger and
+// looser than the clusters a run measures, and the largest weigh most. So
+// upkeep merged within the hour topics the seed had just kept apart - four
+// about different coding work became one - and every merge, by loosening the
+// largest topic, lowered the next pass's threshold further.
+func mergeStoredTopics(topics []logstore.WarpTopic, sizes map[string]int64, threshold *float64) (merged, survivors []logstore.WarpTopic) {
 	if len(topics) < 2 {
 		return nil, nil
 	}
@@ -754,8 +784,8 @@ func mergeStoredTopics(topics []logstore.WarpTopic, sizes map[string]int64) (mer
 		clusters = append(clusters, cluster)
 	}
 	sortTopicClusters(clusters)
-	if threshold, ok := topicMergeThreshold(clusters); ok {
-		clusters, _ = mergeTopicClusters(clusters, threshold)
+	if threshold != nil {
+		clusters, _ = mergeTopicClusters(clusters, *threshold)
 	}
 	clusters, _ = joinTopicsByName(clusters)
 	for _, cluster := range clusters {
@@ -776,6 +806,261 @@ func mergeStoredTopics(topics []logstore.WarpTopic, sizes map[string]int64) (mer
 		}
 	}
 	return merged, survivors
+}
+
+// seedMergeThreshold is the threshold the latest seed run merged its clusters
+// at, for upkeep to merge the topics it made at the same one. Every pair of
+// topics a seed leaves is below it, so upkeep merges none of them for being
+// alike until their centres move; a topic discovery made that duplicates one
+// of them is merged as the seed would have merged it.
+//
+// It is nil, and upkeep merges by name alone, when the latest run did not
+// finish, was over another embedding model, or derived no threshold, or when
+// it cannot be read: a pass that does not merge loses nothing the next pass
+// cannot do, and one that merges at a guessed threshold cannot be undone.
+func (s *Service) seedMergeThreshold(ctx context.Context, signature string) *float64 {
+	s.mu.RLock()
+	jobs := s.backfillJobs
+	s.mu.RUnlock()
+	if jobs == nil {
+		return nil
+	}
+	job, err := jobs.GetLatestSidekiqJobByKind(ctx, TopicsJobKind)
+	if err != nil {
+		s.warnf("warp: read the latest topics run for its merge threshold: %v", err)
+		return nil
+	}
+	if job == nil || job.Status != tables.SidekiqStatusCompleted {
+		return nil
+	}
+	var meta BackfillJobMeta
+	if err := sonic.UnmarshalString(job.Metadata, &meta); err != nil {
+		s.warnf("warp: decode topics run %s for its merge threshold: %v", job.ID, err)
+		return nil
+	}
+	if meta.ConfigSignature != signature {
+		return nil
+	}
+	return meta.MergeThreshold
+}
+
+// topicRename is a new name for a survivor, and the row as this pass wrote it,
+// for the rename to be saved only over that row.
+type topicRename struct {
+	written  logstore.WarpTopic
+	label    string
+	examples []string
+}
+
+// saveTopicRenames writes each new name and its examples over the survivor's
+// row as it is now, and only while that row is still the one the pass wrote.
+//
+// Upkeep runs as a job in TopicsJobPartition, so no other topics job writes
+// while it waits on the model. The check is for the one way two can overlap:
+// a job whose heartbeat lapsed is claimed again elsewhere before its first
+// owner notices. Writing the copy taken before naming would then put back
+// what the newer job changed - a merged topic would come back active - so the
+// row is read again, compared on what this pass wrote, and only its name and
+// examples are changed.
+func saveTopicRenames(ctx context.Context, store logstore.WarpTopicStore, renames []topicRename) error {
+	ids := make([]string, 0, len(renames))
+	byID := make(map[string]topicRename, len(renames))
+	for _, rename := range renames {
+		ids = append(ids, rename.written.ID)
+		byID[rename.written.ID] = rename
+	}
+	rows, err := store.ListWarpTopics(ctx, logstore.WarpTopicFilter{IDs: ids})
+	if err != nil {
+		return fmt.Errorf("read renamed topics: %w", err)
+	}
+	var updated []logstore.WarpTopic
+	for _, row := range rows {
+		rename, ok := byID[row.ID]
+		if !ok || !sameTopicVersion(row, rename.written) {
+			continue
+		}
+		if err := row.SetExampleLogIDs(rename.examples); err != nil {
+			return fmt.Errorf("encode examples of topic %s: %w", row.ID, err)
+		}
+		row.Label = rename.label
+		updated = append(updated, row)
+	}
+	if len(updated) == 0 {
+		return nil
+	}
+	return store.UpsertWarpTopics(ctx, updated)
+}
+
+// sameTopicVersion reports whether a topic's row is still the one written:
+// as active, merged into the same topic, named and centred the same.
+// UpdatedAt is the store's to stamp, so it is not what is compared.
+func sameTopicVersion(row, written logstore.WarpTopic) bool {
+	return row.Status == written.Status && row.MergedInto == written.MergedInto && row.Label == written.Label &&
+		row.Cohesion == written.Cohesion && bytes.Equal(row.Centroid, written.Centroid)
+}
+
+// renameMergedTopics names each survivor again when the topics merged into it
+// had other names, and returns the new names for the survivors it named.
+//
+// A survivor's name was written from its own examples when it was made, and
+// a merge can turn it into a small corner of what the topic now holds: three
+// topics about documentation, releases and a desktop app went on being
+// listed under the name of the fourth. So the new name is written from
+// examples of every topic in the merge, in proportion to how many requests
+// each holds, with the old names offered as hints. A survivor that cannot be
+// named again - no model, no text, a failed call, no time left - keeps its
+// name: it is still a name for part of the topic, which a fallback made of
+// common words may not be.
+//
+// The names are asked for a few at a time within topicsRenameBudget, and
+// never past the point that leaves upkeep topicsGroupTimeout for the themes,
+// which are grouped from these names next.
+func (s *Service) renameMergedTopics(ctx context.Context, config *schemas.WarpConfig, current, merged, survivors []logstore.WarpTopic, sizes map[string]int64) []topicRename {
+	byID := make(map[string]logstore.WarpTopic, len(current))
+	for _, topic := range current {
+		byID[topic.ID] = topic
+	}
+	groups := map[string][]logstore.WarpTopic{}
+	for _, topic := range merged {
+		groups[topic.MergedInto] = append(groups[topic.MergedInto], byID[topic.ID])
+	}
+	type rename struct {
+		survivor logstore.WarpTopic
+		names    []string
+		ids      []string
+	}
+	var renames []rename
+	var ids []string
+	for _, survivor := range survivors {
+		group := append([]logstore.WarpTopic{byID[survivor.ID]}, groups[survivor.ID]...)
+		names := distinctTopicNames(group)
+		if len(names) < 2 {
+			// Joined by name, or merged with topics of its own name: the name
+			// still says what the topic holds.
+			continue
+		}
+		picked := mergedTopicExamples(group, sizes, topicsLabelSamples+topicsLabelDrawn)
+		renames = append(renames, rename{survivor: survivor, names: names, ids: picked})
+		ids = append(ids, picked...)
+	}
+	if len(renames) == 0 {
+		return nil
+	}
+	deadline := time.Now().Add(topicsRenameBudget)
+	if upkeepDeadline, ok := ctx.Deadline(); ok && upkeepDeadline.Add(-topicsGroupTimeout).Before(deadline) {
+		deadline = upkeepDeadline.Add(-topicsGroupTimeout)
+	}
+	if !deadline.After(time.Now()) {
+		s.warnf("warp: no time left to rename %d merged topic(s); they keep their names", len(renames))
+		return nil
+	}
+	renameCtx, cancel := context.WithDeadline(withBackgroundWork(ctx), deadline)
+	defer cancel()
+	texts := s.logTexts(renameCtx, ids)
+	chat := s.chatFuncFor(renameCtx, config, "")
+	if chat == nil {
+		return nil
+	}
+
+	var (
+		mu      sync.Mutex
+		group   sync.WaitGroup
+		renamed []topicRename
+	)
+	slots := make(chan struct{}, topicsLabelWorkers)
+	for _, pending := range renames {
+		samples := labelTexts(texts, pending.ids)
+		if len(samples) == 0 {
+			continue
+		}
+		select {
+		case slots <- struct{}{}:
+		case <-renameCtx.Done():
+		}
+		if renameCtx.Err() != nil {
+			break
+		}
+		group.Add(1)
+		go func() {
+			defer func() {
+				<-slots
+				group.Done()
+			}()
+			// Asked, not labelled: an answer with no name keeps the survivor's,
+			// where labelTopic would put one made of common words in its place.
+			label, err := askTopicLabel(renameCtx, chat, config, samples, pending.names)
+			if err != nil || label == "" {
+				if err != nil {
+					s.warnf("warp: rename merged topic %s: %v", pending.survivor.ID, err)
+				}
+				return
+			}
+			var examples []string
+			for _, id := range pending.ids {
+				if texts[id] != "" {
+					examples = append(examples, id)
+				}
+			}
+			mu.Lock()
+			renamed = append(renamed, topicRename{written: pending.survivor, label: label, examples: examples})
+			mu.Unlock()
+		}()
+	}
+	group.Wait()
+	return renamed
+}
+
+// distinctTopicNames is the topics' names, each once however it is spaced or
+// cased, in the order given.
+func distinctTopicNames(topics []logstore.WarpTopic) []string {
+	var names []string
+	seen := map[string]struct{}{}
+	for _, topic := range topics {
+		key := strings.ToLower(strings.Join(strings.Fields(topic.Label), " "))
+		if _, repeat := seen[key]; key == "" || repeat {
+			continue
+		}
+		seen[key] = struct{}{}
+		names = append(names, strings.TrimSpace(topic.Label))
+	}
+	return names
+}
+
+// mergedTopicExamples picks up to limit of the topics' examples, each topic's
+// share in proportion to the requests filed under it and at least one, and
+// interleaves them so the first few already span the larger topics rather
+// than all coming from one.
+func mergedTopicExamples(topics []logstore.WarpTopic, sizes map[string]int64, limit int) []string {
+	examples := make([][]string, len(topics))
+	var total int64
+	for index, topic := range topics {
+		examples[index] = topic.ExampleLogIDs()
+		total += max(sizes[topic.ID], 1)
+	}
+	order := make([]int, len(topics))
+	for index := range order {
+		order[index] = index
+	}
+	sort.SliceStable(order, func(i, j int) bool { return sizes[topics[order[i]].ID] > sizes[topics[order[j]].ID] })
+	quota := make([]int, len(topics))
+	for _, index := range order {
+		share := int(math.Round(float64(limit) * float64(max(sizes[topics[index].ID], 1)) / float64(total)))
+		quota[index] = min(max(share, 1), len(examples[index]))
+	}
+	var picked []string
+	for round := 0; len(picked) < limit; round++ {
+		added := false
+		for _, index := range order {
+			if round < quota[index] && len(picked) < limit {
+				picked = append(picked, examples[index][round])
+				added = true
+			}
+		}
+		if !added {
+			break
+		}
+	}
+	return picked
 }
 
 // storedTopicCluster rebuilds a topic as the cluster its row keeps, from its
@@ -872,7 +1157,7 @@ func countTopicRequests(ctx context.Context, store logstore.WarpTopicStore, ids 
 	return counts, nil
 }
 
-// StartTopicUpkeep runs upkeep on a timer until Shutdown, and starts a
+// StartTopicUpkeep starts upkeep on a timer until Shutdown, and starts a
 // discovery whenever enough requests are pooled and no topics job is in
 // flight. Calling it twice is a no-op.
 func (s *Service) StartTopicUpkeep() {
@@ -929,37 +1214,37 @@ func (s *Service) stopTopicUpkeep() {
 	})
 }
 
-// topicUpkeepTick is one pass: upkeep, then discovery if it is due. A run or
-// discovery in flight rewrites topic rows whole, as upkeep does, so the pass
-// stands aside for one - and when it cannot tell, rather than guess.
+// topicUpkeepTick is one pass of the timer: the vector housekeeping that
+// touches no topic row, upkeep, and discovery if it is due.
 func (s *Service) topicUpkeepTick(ctx context.Context) {
 	if s.topicStore() == nil {
 		return
 	}
-	// Before the check for a topics job: a retried vector delete touches no
-	// topic row, so a long run is no reason to leave deleted logs' vectors.
+	// A retried vector delete and an expired vector touch no topic row, so a
+	// long topics job is no reason to leave either.
 	if retried, err := s.retryVectorDeletes(ctx); err != nil {
 		s.warnf("failed to remove the vectors of deleted logs on retry (%d removed this pass): %v", retried, err)
 	} else if retried > 0 {
 		s.infof("warp: removed %d vector(s) of deleted logs on retry", retried)
 	}
-	busy, err := s.topicsJobInFlight(ctx)
-	if err != nil {
-		s.warnf("failed to check for a running Warp topics job; skipping topic upkeep: %v", err)
-		return
-	}
-	if busy {
-		return
-	}
-	done, err := s.MaintainTopics(ctx)
+	// One mode for every node that shares a job store: upkeep goes through the
+	// queue, where TopicsJobPartition runs one pass at a time. Inline upkeep
+	// holds no lock - another node could start a queued pass the moment after
+	// it looked - so a node that can see the job store but has no runner leaves
+	// upkeep to the nodes that do. Only a node with no job store, which has
+	// nothing to coordinate through, keeps topics in this process.
+	s.mu.RLock()
+	queue, jobs := s.topicJobs, s.backfillJobs
+	s.mu.RUnlock()
 	switch {
-	case errors.Is(err, ErrUnavailable):
-		// Warp is off or unset: no topics to keep, but expired logs' vectors
-		// still go, and discovery sees for itself that it is not due.
-	case err != nil:
-		s.warnf("failed to maintain Warp topics: %v", err)
-	case done.Retired > 0 || done.Merged > 0 || done.Pruned > 0 || done.Dropped > 0:
-		s.infof("warp topics: retired %d, merged %d, pruned %d, dropped %d pooled", done.Retired, done.Merged, done.Pruned, done.Dropped)
+	case queue != nil:
+		if err := s.enqueueTopicUpkeep(ctx, queue, time.Now().UTC()); err != nil {
+			s.warnf("failed to queue Warp topic upkeep: %v", err)
+		}
+	case jobs != nil:
+		s.warnf("Warp topic upkeep skipped on this node: it shares a job store but has no job runner, so upkeep is left to the nodes that queue it")
+	default:
+		s.maintainTopicsInline(ctx)
 	}
 	if swept, err := s.sweepExpiredVectors(ctx, time.Now().UTC()); err != nil {
 		s.warnf("failed to sweep expired Warp vectors: %v", err)
@@ -974,7 +1259,89 @@ func (s *Service) topicUpkeepTick(ctx context.Context) {
 	}
 }
 
-// TopicsJobKinds are the jobs queued in TopicsJobPartition.
+// enqueueTopicUpkeep queues an upkeep job in TopicsJobPartition, behind any
+// topics job already there, unless one is waiting or running.
+//
+// Every instance's timer calls it. The job's id is the hour it was queued
+// in, so two instances queuing in the same hour make one job: the second is
+// refused as a duplicate, which is the mechanism working, not a failure.
+// Without a job store to ask, that id is the only guard: the job is still
+// queued, since a service with a queue never runs upkeep inline.
+func (s *Service) enqueueTopicUpkeep(ctx context.Context, queue TopicJobQueue, now time.Time) error {
+	if busy, err := s.jobInFlight(ctx, TopicUpkeepJobKind); err != nil || busy {
+		return err
+	}
+	id := fmt.Sprintf("%s-%d", TopicUpkeepJobKind, now.Truncate(topicsDiscoveryInterval).Unix())
+	if err := queue.EnqueuePartitioned(ctx, id, TopicUpkeepJobKind, TopicsJobPartition, "{}", ""); err != nil && !sidekiq.IsDuplicateJobError(err) {
+		return err
+	}
+	return nil
+}
+
+// topicUpkeepJobMeta is what an upkeep job reports when it ends.
+type topicUpkeepJobMeta struct {
+	Retired int    `json:"retired"`
+	Merged  int    `json:"merged"`
+	Themes  int    `json:"themes"`
+	Pruned  int    `json:"pruned"`
+	Dropped int64  `json:"dropped"`
+	Message string `json:"message,omitempty"`
+}
+
+// RunTopicUpkeepJob is the Sidekiq handler for one upkeep pass. Warp being
+// off or unset is not a failure: there is nothing to keep.
+func (s *Service) RunTopicUpkeepJob(ctx context.Context, job tables.TableSidekiqJob, _ sidekiq.ProgressFunc) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, topicsUpkeepTimeout)
+	defer cancel()
+	done, err := s.MaintainTopics(ctx)
+	meta := topicUpkeepJobMeta{Retired: done.Retired, Merged: done.Merged, Themes: done.Themes, Pruned: done.Pruned, Dropped: done.Dropped}
+	switch {
+	case errors.Is(err, ErrUnavailable):
+		meta.Message, err = "Warp topics are not available; nothing to keep.", nil
+	case err != nil:
+		meta.Message = "Topic upkeep failed; the topics are as the last pass left them."
+	default:
+		meta.Message = fmt.Sprintf("Retired %d topic(s), merged %d, pruned %d row(s), dropped %d pooled request(s).", done.Retired, done.Merged, done.Pruned, done.Dropped)
+		if done.Retired > 0 || done.Merged > 0 || done.Pruned > 0 || done.Dropped > 0 {
+			s.infof("warp topics: retired %d, merged %d, pruned %d, dropped %d pooled", done.Retired, done.Merged, done.Pruned, done.Dropped)
+		}
+	}
+	encoded, encodeErr := sonic.MarshalString(meta)
+	if encodeErr != nil {
+		encoded = job.Metadata
+	}
+	return encoded, err
+}
+
+// SummarizeTopicUpkeepMeta reports an upkeep job's outcome for generic job
+// views.
+func SummarizeTopicUpkeepMeta(metadata string) sidekiq.JobSummary {
+	var meta topicUpkeepJobMeta
+	if sonic.UnmarshalString(metadata, &meta) != nil {
+		return sidekiq.JobSummary{}
+	}
+	return sidekiq.JobSummary{Message: meta.Message}
+}
+
+// maintainTopicsInline runs upkeep in this process, for a node with no job
+// store: with none, there are no topics jobs it could stand aside for, and no
+// node it could coordinate with.
+func (s *Service) maintainTopicsInline(ctx context.Context) {
+	done, err := s.MaintainTopics(ctx)
+	switch {
+	case errors.Is(err, ErrUnavailable):
+		// Warp is off or unset: no topics to keep.
+	case err != nil:
+		s.warnf("failed to maintain Warp topics: %v", err)
+	case done.Retired > 0 || done.Merged > 0 || done.Pruned > 0 || done.Dropped > 0:
+		s.infof("warp topics: retired %d, merged %d, pruned %d, dropped %d pooled", done.Retired, done.Merged, done.Pruned, done.Dropped)
+	}
+}
+
+// TopicsJobKinds are the jobs in TopicsJobPartition that hold one another
+// back: a run or discovery waiting or running refuses another. Upkeep runs in
+// the same partition but holds nothing back - it takes its turn - so it is not
+// one of them.
 var TopicsJobKinds = []string{TopicsJobKind, TopicDiscoveryJobKind}
 
 // LockTopicsJobAdmission takes the lock a job is admitted to
@@ -999,15 +1366,27 @@ func (s *Service) topicsJobInFlight(ctx context.Context) (bool, error) {
 		return false, nil
 	}
 	for _, kind := range TopicsJobKinds {
-		inFlight, err := jobs.GetInFlightSidekiqJobByKind(ctx, kind)
-		if err != nil {
-			return false, fmt.Errorf("check for a running %s job: %w", kind, err)
-		}
-		if inFlight != nil {
-			return true, nil
+		if busy, err := s.jobInFlight(ctx, kind); err != nil || busy {
+			return busy, err
 		}
 	}
 	return false, nil
+}
+
+// jobInFlight reports whether a job of kind is pending or running. Without a
+// job store there are no jobs to wait for.
+func (s *Service) jobInFlight(ctx context.Context, kind string) (bool, error) {
+	s.mu.RLock()
+	jobs := s.backfillJobs
+	s.mu.RUnlock()
+	if jobs == nil {
+		return false, nil
+	}
+	inFlight, err := jobs.GetInFlightSidekiqJobByKind(ctx, kind)
+	if err != nil {
+		return false, fmt.Errorf("check for a running %s job: %w", kind, err)
+	}
+	return inFlight != nil, nil
 }
 
 // StartDiscoveryIfDue enqueues a discovery when the pool holds enough

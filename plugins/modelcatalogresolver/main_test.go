@@ -87,6 +87,13 @@ func TestResolveProviderFromCatalog(t *testing.T) {
 			wantCandidates: everyCandidate,
 		},
 		{
+			name:           "the azure route prefers azure",
+			model:          "shared-model",
+			integration:    "azure",
+			wantSelected:   schemas.Azure,
+			wantCandidates: everyCandidate,
+		},
+		{
 			name:           "an Azure OpenAI SDK on the openai route prefers azure",
 			model:          "shared-model",
 			integration:    "openai",

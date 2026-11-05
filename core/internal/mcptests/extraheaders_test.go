@@ -94,7 +94,7 @@ func (hr *headerRecorder) anyRequestHasHeader(headerName string) bool {
 // inbound headers of every request. StreamableHTTPServer.ServeHTTP dispatches on
 // HTTP method only (it ignores the path), so delegating from a root-mounted
 // handler is sufficient.
-func buildRecordingHTTPServer(t *testing.T) (*httptest.Server, *headerRecorder) {
+func buildRecordingHTTPServer(t *testing.T, opts ...server.StreamableHTTPOption) (*httptest.Server, *headerRecorder) {
 	t.Helper()
 
 	s := server.NewMCPServer("test-http-headers", "1.0.0", server.WithToolCapabilities(true))
@@ -107,7 +107,7 @@ func buildRecordingHTTPServer(t *testing.T) (*httptest.Server, *headerRecorder) 
 		return mcpgo.NewToolResultText(msg), nil
 	})
 
-	streamable := server.NewStreamableHTTPServer(s)
+	streamable := server.NewStreamableHTTPServer(s, opts...)
 	rec := &headerRecorder{}
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -139,7 +139,7 @@ func buildRecordingHTTPServer(t *testing.T) (*httptest.Server, *headerRecorder) 
 // (the GET stream records as method ""). The SSEServer must advertise an absolute
 // message endpoint back to the client, which is only known once httptest has
 // bound a port — hence sseSrv is wired after ts is created.
-func buildRecordingSSEServer(t *testing.T) (*httptest.Server, *headerRecorder) {
+func buildRecordingSSEServer(t *testing.T, legacy bool) (*httptest.Server, *headerRecorder) {
 	t.Helper()
 
 	s := server.NewMCPServer("test-sse-headers", "1.0.0", server.WithToolCapabilities(true))
@@ -164,6 +164,10 @@ func buildRecordingSSEServer(t *testing.T) (*httptest.Server, *headerRecorder) {
 				}
 				_ = json.Unmarshal(body, &probe)
 				method = probe.Method
+				// A pre-2026-07-28 server answers server/discover with method not found.
+				if legacy && method == string(mcpgo.MethodServerDiscover) {
+					body = bytes.Replace(body, []byte(`"server/discover"`), []byte(`"server/discover-unknown"`), 1)
+				}
 				// Restore the consumed body for the SSE handler.
 				r.Body = io.NopCloser(bytes.NewReader(body))
 			}
@@ -232,7 +236,7 @@ func sseExtraHeaderConfig(clientName, serverURL string) *schemas.MCPClientConfig
 func TestExtraHeadersHealthCheckPingReachWire(t *testing.T) {
 	t.Parallel()
 
-	ts, rec := buildRecordingHTTPServer(t)
+	ts, rec := buildRecordingHTTPServer(t, server.WithStreamableHTTPProtocolVersions(mcpgo.ProtocolVersion20251125))
 	manager, _ := setupBifrostWithPlugins(t, []schemas.MCPPlugin{&extraHeaderInjectPlugin{}})
 
 	cfg := httpExtraHeaderConfig("hc_ping", ts.URL)
@@ -313,7 +317,7 @@ func TestExtraHeadersToolCallReachWire(t *testing.T) {
 func TestExtraHeadersSSEHealthCheckPingReachWire(t *testing.T) {
 	t.Parallel()
 
-	ts, rec := buildRecordingSSEServer(t)
+	ts, rec := buildRecordingSSEServer(t, true)
 	manager, _ := setupBifrostWithPlugins(t, []schemas.MCPPlugin{&extraHeaderInjectPlugin{}})
 
 	cfg := sseExtraHeaderConfig("sse_hc_ping", ts.URL)
@@ -339,7 +343,7 @@ func TestExtraHeadersSSEHealthCheckPingReachWire(t *testing.T) {
 func TestExtraHeadersSSEHealthCheckListToolsReachWire(t *testing.T) {
 	t.Parallel()
 
-	ts, rec := buildRecordingSSEServer(t)
+	ts, rec := buildRecordingSSEServer(t, false)
 	manager, _ := setupBifrostWithPlugins(t, []schemas.MCPPlugin{&extraHeaderInjectPlugin{}})
 
 	cfg := sseExtraHeaderConfig("sse_hc_list", ts.URL)
@@ -362,7 +366,7 @@ func TestExtraHeadersSSEHealthCheckListToolsReachWire(t *testing.T) {
 func TestExtraHeadersSSEToolCallReachWire(t *testing.T) {
 	t.Parallel()
 
-	ts, rec := buildRecordingSSEServer(t)
+	ts, rec := buildRecordingSSEServer(t, false)
 	manager, bf := setupBifrostWithPlugins(t, []schemas.MCPPlugin{&extraHeaderInjectPlugin{}})
 
 	cfg := sseExtraHeaderConfig("sse_call_extra", ts.URL)

@@ -618,6 +618,15 @@ func (c ModelCaps) SupportsRegexNULEscape(fallback bool) bool {
 	return fallback
 }
 
+// SupportsSchemaPattern reports whether the model accepts the `pattern` keyword in
+// tool schemas at all. A row decides in either direction; absent returns fallback.
+func (c ModelCaps) SupportsSchemaPattern(fallback bool) bool {
+	if c.record != nil && c.record.SupportsSchemaPattern != nil {
+		return *c.record.SupportsSchemaPattern
+	}
+	return fallback
+}
+
 // SupportedSchemaFormats returns the string `format` values the model accepts in tool
 // schemas. A non-empty row replaces fallback; absent or empty returns it. A nil result
 // means every format is accepted.

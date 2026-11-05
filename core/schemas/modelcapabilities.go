@@ -50,6 +50,7 @@ type ModelCapabilities struct {
 	SupportsSamplingParams          *bool `json:"supports_sampling_params,omitempty"` // false ⇒ temperature/top_p/top_k rejected (adaptive-only models)
 	SupportsRedactThinking          *bool `json:"supports_redact_thinking,omitempty"`
 	SupportsTaskBudgets             *bool `json:"supports_task_budgets,omitempty"`
+	SupportsReasoningBudget         *bool `json:"supports_reasoning_budget,omitempty"` // false ⇒ token thinking budget rejected, effort level only (Gemini 4)
 	SupportsEagerInputStreaming     *bool `json:"supports_eager_input_streaming,omitempty"`
 	SupportsAdvancedToolUse         *bool `json:"supports_advanced_tool_use,omitempty"`
 	SupportsInputExamples           *bool `json:"supports_input_examples,omitempty"`
@@ -283,6 +284,9 @@ type ModelCapabilities struct {
 
 	// Tool-schema `pattern` accepts the `\0` escape; false ⇒ it is rewritten to `\x00` before dispatch.
 	SupportsRegexNULEscape *bool `json:"supports_regex_nul_escape,omitempty"`
+
+	// Tool-schema `pattern` is accepted at all; false ⇒ the keyword is dropped before dispatch.
+	SupportsSchemaPattern *bool `json:"supports_schema_pattern,omitempty"`
 
 	// String `format` values tool schemas may carry; any other is dropped before dispatch.
 	SupportedSchemaFormats []string `json:"supported_schema_formats,omitempty"`

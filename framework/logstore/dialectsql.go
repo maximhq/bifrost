@@ -10,9 +10,9 @@ import (
 type timeBoundSide int
 
 const (
-	lowerTimeBound timeBoundSide = iota // timestamp >= bound
-	upperTimeBound                      // timestamp <= bound
-	cursorTimeBound                     // a stored row's own timestamp, compared with =, < and >
+	lowerTimeBound  timeBoundSide = iota // timestamp >= bound
+	upperTimeBound                       // timestamp <= bound
+	cursorTimeBound                      // a stored row's own timestamp, compared with =, < and >
 )
 
 // timestampBound returns the placeholder and argument for comparing the
@@ -106,6 +106,16 @@ func dimensionFanoutFrom(dialect, idCol string) (string, bool) {
 		return clickhouseDimensionFanoutFrom(arrIDs, arrNames, idCol, scalarName), true
 	}
 	return "", false
+}
+
+// relayDimensionFanoutFrom is dimensionFanoutFrom over relay_logs, which carries the same
+// scalar and JSON-array team, customer and business unit columns as logs.
+func relayDimensionFanoutFrom(dialect, idCol string) (string, bool) {
+	from, ok := dimensionFanoutFrom(dialect, idCol)
+	if !ok {
+		return "", false
+	}
+	return strings.ReplaceAll(from, "FROM logs", "FROM relay_logs"), true
 }
 
 func agentDimensionFanoutFrom(dialect, idCol string) (string, bool) {

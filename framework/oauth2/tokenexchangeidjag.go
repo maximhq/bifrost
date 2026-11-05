@@ -424,7 +424,7 @@ func (p *OAuth2Provider) resourceTokenEndpoint(ctx context.Context, config *sche
 			return cached, nil
 		}
 	}
-	metadata, err := fetchSingleAuthServerMetadata(ctx, issuer, hasTokenEndpoint)
+	metadata, err := fetchSingleAuthServerMetadata(ctx, issuer, hasTokenEndpoint, false)
 	if err != nil {
 		return resourceEndpoint{}, fmt.Errorf("discover authorization server %s for MCP client %s: %w", issuer, config.Name, err)
 	}

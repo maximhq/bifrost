@@ -18,6 +18,8 @@ export enum RbacResource {
 	MCPGateway = "MCPGateway",
 	AgentGateway = "AgentGateway",
 	AgentLogs = "AgentLogs",
+	Relays = "Relays",
+	RelayLogs = "RelayLogs",
 	MCPToolGroups = "MCPToolGroups",
 	VirtualMCPs = "VirtualMCPs",
 	MCPLogs = "MCPLogs",
@@ -46,6 +48,7 @@ export enum RbacResource {
 	Warp = "Warp",
 	WarpSession = "WarpSession",
 	BackgroundJobs = "BackgroundJobs",
+	Alerting = "Alerting",
 }
 
 // RBAC Operation Names (must match backend definitions)

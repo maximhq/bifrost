@@ -35,6 +35,8 @@ const (
 	// DecisionAgentBlocked reports that the settled grant has no Agent Gateway permit
 	// for the requested agent. It is the A2A analogue of DecisionMCPToolBlocked.
 	DecisionAgentBlocked Decision = "agent_blocked"
+	// DecisionRelayBlocked refuses a relay the caller holds no grant for.
+	DecisionRelayBlocked Decision = "relay_blocked"
 )
 
 // EvaluationRequest contains the context for evaluating a request
@@ -110,7 +112,7 @@ func (r *BudgetResolver) evaluateAccess(ctx *schemas.BifrostContext, evaluationR
 	// model gate has nothing left to check against, so it is skipped with it. A provider the
 	// caller does configure keeps its model allowlist.
 	providerUnconfigured := skipProviderCheck && !access.IsProviderAllowed(string(provider))
-	if !skipProviderCheck && evaluationRequest.RequestType != schemas.MCPToolExecutionRequest && requestType != schemas.ListModelsRequest && !access.IsProviderAllowed(string(provider)) {
+	if !skipProviderCheck && evaluationRequest.RequestType != schemas.MCPToolExecutionRequest && requestType != schemas.RelayRequest && requestType != schemas.ListModelsRequest && !access.IsProviderAllowed(string(provider)) {
 		return &EvaluationResult{
 			Decision: DecisionProviderBlocked,
 			Reason:   denialReason(fmt.Sprintf("Provider '%s' is not allowed", provider), access.DeniedPermitsForModel(string(provider), "")),

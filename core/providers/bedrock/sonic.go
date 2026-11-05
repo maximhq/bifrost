@@ -3,7 +3,6 @@ package bedrock
 import (
 	"encoding/json"
 	"fmt"
-	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -17,16 +16,18 @@ import (
 )
 
 const (
-	sonicDefaultMaxTokens  = 1024
-	sonicMaxOutputTokens   = 65536
-	sonicDefaultVoice      = "matthew"
-	sonicDefaultSampleRate = 24000
-	sonicMediaTypeText     = "text/plain"
-	sonicMediaTypeAudio    = "audio/lpcm"
-	sonicMediaTypeJSON     = "application/json"
+	sonicDefaultMaxTokens    = 1024
+	sonicDefaultInstructions = "You are a helpful assistant."
+	sonicMaxOutputTokens     = 65535
+	sonicDefaultVoice        = "matthew"
+	sonicDefaultSampleRate   = 24000
+	sonicMediaTypeText       = "text/plain"
+	sonicMediaTypeAudio      = "audio/lpcm"
+	sonicMediaTypeJSON       = "application/json"
 
 	sonicStageFinal       = "FINAL"
 	sonicStageSpeculative = "SPECULATIVE"
+	sonicDroppedContent   = "DROPPED" // FINAL text of a reply that already closed
 )
 
 // realtimeCodec: clients speak OpenAI Realtime; the connection translates it to Nova Sonic.
@@ -52,6 +53,7 @@ type sonicSession struct {
 	userItemID     string
 	userTranscript strings.Builder
 	response       *sonicResponse
+	dropFinal      bool // the reply already closed; its late FINAL text opens no response
 	usageTotal     BedrockSonicUsageDirection
 	usageBilled    BedrockSonicUsageDirection
 }
@@ -161,6 +163,9 @@ func (s *sonicSession) clientEvent(raw []byte) (upstream [][]byte, replies [][]b
 		if s.started {
 			return nil, s.errorReply("invalid_request_error", "session_update_after_start", "Nova Sonic fixes the session configuration when the conversation starts; send session.update before audio or response.create")
 		}
+		if err := sonicAudioOutput(gjson.GetBytes(raw, "session")); err != nil {
+			return nil, s.errorReply("invalid_request_error", "unsupported_modalities", err.Error())
+		}
 		if err := s.applySessionUpdate(gjson.GetBytes(raw, "session")); err != nil {
 			return nil, s.errorReply("invalid_request_error", "invalid_session_config", err.Error())
 		}
@@ -180,6 +185,9 @@ func (s *sonicSession) clientEvent(raw []byte) (upstream [][]byte, replies [][]b
 		return s.conversationItem(gjson.GetBytes(raw, "item"))
 
 	case string(schemas.RTEventResponseCreate):
+		if err := sonicAudioOutput(gjson.GetBytes(raw, "response")); err != nil {
+			return nil, s.errorReply("invalid_request_error", "unsupported_modalities", err.Error())
+		}
 		// Nova Sonic answers on its own once input arrives; response.create only starts the stream.
 		return s.ensureStarted(true), nil
 
@@ -255,6 +263,20 @@ func (s *sonicSession) applySessionUpdate(session gjson.Result) error {
 	return nil
 }
 
+// sonicAudioOutput rejects output modalities without audio, since Nova Sonic always answers out loud.
+func sonicAudioOutput(root gjson.Result) error {
+	modalities := firstExisting(root, "output_modalities", "modalities")
+	if !modalities.Exists() {
+		return nil
+	}
+	for _, m := range modalities.Array() {
+		if m.String() == "audio" {
+			return nil
+		}
+	}
+	return fmt.Errorf("output_modalities %s is not supported; Nova Sonic always answers with audio, so include \"audio\"", modalities.Raw)
+}
+
 // sonicAudioRate reads a GA format object or a beta format string and checks Nova Sonic supports it.
 func sonicAudioRate(session gjson.Result, gaPath, betaPath string, current int) (int, error) {
 	if format := session.Get(gaPath); format.Exists() {
@@ -282,27 +304,17 @@ func sonicAudioRate(session gjson.Result, gaPath, betaPath string, current int) 
 
 // sonicToolConfig maps tools and an OpenAI tool_choice to Nova Sonic's tool configuration; nil means no tools.
 func sonicToolConfig(tools []BedrockSonicTool, choice json.RawMessage) (*BedrockSonicToolConfig, error) {
-	cfg := &BedrockSonicToolConfig{Tools: tools}
-	c := gjson.ParseBytes(choice)
-	switch {
+	switch c := gjson.ParseBytes(choice); {
 	case len(choice) == 0, c.String() == "auto":
 	case c.String() == "none":
 		return nil, nil
-	case c.String() == "required":
-		cfg.ToolChoice = &BedrockToolChoice{Any: &BedrockToolChoiceAny{}}
-	case c.Get("type").String() == "function" && c.Get("name").String() != "":
-		name := c.Get("name").String()
-		if !slices.ContainsFunc(tools, func(t BedrockSonicTool) bool { return t.ToolSpec.Name == name }) {
-			return nil, fmt.Errorf("tool_choice names function %q, which is not in the session tools", name)
-		}
-		cfg.ToolChoice = &BedrockToolChoice{Tool: &BedrockToolChoiceTool{Name: name}}
 	default:
-		return nil, fmt.Errorf("tool_choice %s is not supported; Nova Sonic accepts auto, none, required or a function", c.Raw)
+		return nil, fmt.Errorf("tool_choice %s is not supported; Nova Sonic accepts auto or none", c.Raw)
 	}
 	if len(tools) == 0 {
 		return nil, nil
 	}
-	return cfg, nil
+	return &BedrockSonicToolConfig{Tools: tools}, nil
 }
 
 // sonicTools converts OpenAI Realtime function tools into Nova Sonic tool specs.
@@ -441,9 +453,11 @@ func (s *sonicSession) ensureStarted(answerTrailingUser bool) [][]byte {
 	}
 	events = append(events, s.input(&BedrockSonicInputEventBody{PromptStart: prompt}))
 
-	if cfg.instructions != "" {
-		events = append(events, s.textBlock("SYSTEM", cfg.instructions, false)...)
+	instructions := cfg.instructions
+	if instructions == "" {
+		instructions = sonicDefaultInstructions // Nova Sonic refuses a conversation whose first content is not SYSTEM
 	}
+	events = append(events, s.textBlock("SYSTEM", instructions, false)...)
 	history := s.history
 	var trailing []sonicHistoryMessage
 	if answerTrailingUser {
@@ -537,14 +551,29 @@ func (s *sonicSession) contentStart(c *BedrockSonicOutputContent) [][]byte {
 	s.contents[c.ContentID] = content
 	if content.role == "USER" {
 		// A new user turn closes whatever the assistant was still saying.
+		s.dropFinal = false
 		out := s.finishResponse()
 		if s.userItemID == "" {
 			s.userItemID = s.nextID("item")
 			s.userTranscript.Reset()
 			out = append(out, s.clientMessage(map[string]any{"type": "input_audio_buffer.committed", "item_id": s.userItemID}))
+			item := map[string]any{
+				"id": s.userItemID, "object": "realtime.item", "type": "message", "status": "completed", "role": "user",
+				"content": []any{map[string]any{"type": "input_audio", "transcript": nil}},
+			}
+			out = append(out,
+				s.clientMessage(map[string]any{"type": "conversation.item.added", "item": item}),
+				s.clientMessage(map[string]any{"type": "conversation.item.done", "item": item}),
+			)
 		}
 		return out
 	}
+	if content.kind == "TEXT" && content.stage == sonicStageFinal && s.dropFinal && s.response == nil {
+		content.kind = sonicDroppedContent
+		s.contents[c.ContentID] = content
+		return nil
+	}
+	s.dropFinal = false
 	out := s.ensureResponse()
 	if content.kind == "TEXT" || content.kind == "AUDIO" {
 		out = append(out, s.ensureMessageItem()...)
@@ -574,6 +603,9 @@ func (s *sonicSession) textOutput(c *BedrockSonicOutputContent) [][]byte {
 			s.response.cancelled = true
 		}
 		return [][]byte{s.clientMessage(map[string]any{"type": "input_audio_buffer.speech_started", "audio_start_ms": 0})}
+	}
+	if content.kind == sonicDroppedContent {
+		return nil
 	}
 	out := s.ensureResponse()
 	out = append(out, s.ensureMessageItem()...)
@@ -640,10 +672,12 @@ func (s *sonicSession) contentEnd(c *BedrockSonicOutputContent) [][]byte {
 	if c.StopReason == "INTERRUPTED" && s.response != nil {
 		s.response.cancelled = true
 	}
+	turnEnded := c.StopReason == "END_TURN" || c.StopReason == "INTERRUPTED"
 	switch {
 	case content.kind == "TOOL":
 		return s.finishResponse()
-	case content.kind == "TEXT" && content.stage == sonicStageFinal && (c.StopReason == "END_TURN" || c.StopReason == "INTERRUPTED"):
+	case turnEnded && (content.kind == "AUDIO" || content.kind == "TEXT" && content.stage == sonicStageFinal):
+		s.dropFinal = true
 		return s.finishResponse()
 	}
 	return nil
@@ -674,8 +708,10 @@ func (s *sonicSession) ensureMessageItem() [][]byte {
 		s.clientMessage(map[string]any{"type": "response.output_item.added", "response_id": r.id, "output_index": r.messageIndex, "item": map[string]any{
 			"id": r.messageItemID, "object": "realtime.item", "type": "message", "role": "assistant", "status": "in_progress", "content": []any{},
 		}}),
-		s.clientMessage(map[string]any{"type": "response.content_part.added", "response_id": r.id, "item_id": r.messageItemID, "output_index": r.messageIndex,
-			"content_index": 0, "part": map[string]any{"type": "audio", "transcript": ""}}),
+		s.clientMessage(map[string]any{
+			"type": "response.content_part.added", "response_id": r.id, "item_id": r.messageItemID, "output_index": r.messageIndex,
+			"content_index": 0, "part": map[string]any{"type": "audio", "transcript": ""},
+		}),
 	}
 }
 

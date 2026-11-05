@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/mark3labs/mcp-go/client"
+	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 )
 
@@ -83,6 +84,18 @@ const (
 	MCPAuthRequiredKindOAuth    = "oauth"
 	MCPAuthRequiredKindHeaders  = "headers"
 	MCPAuthRequiredKindExchange = "exchange"
+)
+
+// MCPToolCallKind says why core vouches for an MCP tool call it runs, when it
+// does. A plugin that gates MCP tools reads it (bifrost.MCPToolCallKindOf) to
+// authorize such a call differently from a tool the caller picked out of their
+// own grants. Only core can record it, so no plugin or caller can claim it.
+type MCPToolCallKind uint8
+
+const (
+	MCPToolCallKindNone     MCPToolCallKind = iota // a call core does not vouch for
+	MCPToolCallKindInjected                        // a provider-injected tool the operator configured: no tool permit names it, and none applies
+	MCPToolCallKindConnect                         // the connect tool of a client with per_user_discovery on: allowed by access to the client
 )
 
 // MCPAuthRequiredError is returned when a per-user MCP credential is missing
@@ -239,6 +252,8 @@ type MCPConfig struct {
 	ClientConfigs     []*MCPClientConfig    `json:"client_configs,omitempty"`      // Per-client execution configurations
 	ToolManagerConfig *MCPToolManagerConfig `json:"tool_manager_config,omitempty"` // MCP tool manager configuration
 	ToolSyncInterval  time.Duration         `json:"tool_sync_interval,omitempty"`  // Global default interval for syncing tools from MCP servers (0 = use default 10 min)
+	// MaxProtocolVersion caps the MCP protocol version offered to upstreams ("" or "auto" = newest supported).
+	MaxProtocolVersion string `json:"max_protocol_version,omitempty"`
 
 	// VirtualMCPs are Virtual MCP definitions declared in config.json: named bundles of tools from one
 	// or more MCP clients, served at /mcp/<endpoint_slug> and assignable to virtual keys. Reconciled
@@ -267,6 +282,107 @@ type MCPConfig struct {
 	// The transport registers framework/openapimcp.Factory here; Go SDK users opt in
 	// the same way. Nil means openapi clients fail to connect with a clear error.
 	InProcessServerFactory InProcessServerFactory `json:"-"`
+
+	// SharedDiscoveryStore is where the manager keeps the discoveries of
+	// clients without per_user_discovery, one per client served to every
+	// caller. It is used only together with PerUserDiscoveryStore: when either
+	// is nil, these discoveries are kept in memory.
+	// BifrostConfig.MCPSharedDiscoveryStore fills it when it is unset,
+	// including for a manager created on first use.
+	SharedDiscoveryStore MCPDiscoveryStore `json:"-"`
+
+	// PerUserDiscoveryStore is where the manager keeps the discoveries of
+	// clients with per_user_discovery on, one per caller. Nil leaves such a
+	// client with no tools for anyone, and keeps shared discoveries in memory
+	// even when SharedDiscoveryStore is set. BifrostConfig.MCPPerUserDiscoveryStore
+	// fills it when it is unset, including for a manager created on first use.
+	PerUserDiscoveryStore MCPDiscoveryStore `json:"-"`
+}
+
+// MCPDiscovery is what discovering one MCP client produced, as one caller sees
+// it: the tools keyed by "<client>-<tool>", where <tool> is the upstream's own
+// name (execution strips only the client prefix), the upstream's initialize
+// `instructions`, its resources, resource templates and prompts (prompt names
+// prefixed like tools; resource URIs and templates are the server's own), and
+// when the upstream last answered tools/list for it.
+//
+// Everything here comes from one handshake under one credential, so it is
+// stored, replaced and served as a unit: a store that gives a caller its own
+// tools gives that caller the instructions that came with them. Anything else
+// a server advertises per caller belongs here for the same reason.
+//
+// Values handed out by a store are shared snapshots — callers must not
+// mutate the maps or slices.
+type MCPDiscovery struct {
+	Tools             map[string]ChatTool
+	Instructions      string                 // Upstream initialize `instructions`, "" when it advertises none; replaced, never appended to
+	Resources         []mcp.Resource         // As the server lists them
+	ResourceTemplates []mcp.ResourceTemplate // As the server lists them
+	Prompts           []mcp.Prompt           // Names prefixed with the client name, like tools
+	// DiscoveredAt is when this discovery's tools were produced by an
+	// upstream tools/list. The manager compares it against a client's tool
+	// sync interval to decide when a refresh is due. Zero means unknown (e.g.
+	// restored from persisted config), which reads as "not due".
+	DiscoveredAt time.Time
+}
+
+// GetTools returns the discovery's tools; nil-safe, so a store's "nothing
+// recorded for this client" reads as an empty tool list without branching at
+// call sites.
+func (d *MCPDiscovery) GetTools() map[string]ChatTool {
+	if d == nil {
+		return nil
+	}
+	return d.Tools
+}
+
+// GetInstructions returns the discovery's upstream instructions; nil-safe like
+// GetTools.
+func (d *MCPDiscovery) GetInstructions() string {
+	if d == nil {
+		return ""
+	}
+	return d.Instructions
+}
+
+// MCPDiscoveryStore holds the discovery results of MCP clients. It is a plain
+// mapping: discovery, refresh, and every upstream interaction stay with the
+// caller (the MCP manager); the store only records results and answers
+// lookups. An implementation may keep them in memory or persist them; the
+// manager depends on neither.
+//
+// Every method takes the client and the caller's ctx. The manager keeps two:
+// a shared store, holding the one discovery every caller of a shared client
+// sees (MCPConfig.SharedDiscoveryStore, in memory by default), and a per-user
+// store for clients with per_user_discovery on, holding one discovery per
+// caller (MCPConfig.PerUserDiscoveryStore). A per-user store resolves the
+// caller off ctx the way the per-user credential lookup does (user or
+// virtual key), so a discovery lands under the same identity as the
+// credential it was made with when it is written with that credential's ctx.
+//
+// The manager reads and writes the shared store while holding its own lock,
+// so no shared store method may block: a persistent one writes in the
+// background. It calls the per-user store under that lock only with its own
+// ctx, which names no caller, and serves requests from both outside it.
+//
+// Implementations must be safe for concurrent use.
+type MCPDiscoveryStore interface {
+	// GetDiscovery returns the discovery the caller on ctx sees for client,
+	// or nil when there is none.
+	GetDiscovery(ctx context.Context, client *MCPClientConfig) *MCPDiscovery
+	// SetDiscovery replaces the caller's discovery for client wholesale.
+	// Every write carries a complete discovery result; merging would keep
+	// tools the upstream has since withdrawn.
+	//
+	// The manager writes shared discoveries under its own lock so a result
+	// and the connection state it belongs to land atomically, so the built-in
+	// store never blocks on I/O for a shared client. A per-caller store may
+	// read through to a database; the manager calls it outside its lock, and
+	// a write on the manager's own ctx (no caller) is refused before any I/O.
+	SetDiscovery(ctx context.Context, client *MCPClientConfig, discovery *MCPDiscovery) error
+	// DeleteDiscovery removes the caller's discovery for client. Deleting one
+	// that does not exist is not an error.
+	DeleteDiscovery(ctx context.Context, client *MCPClientConfig) error
 }
 
 // ErrMCPOpenAPIConfigInvalid marks a permanent failure to synthesize an openapi
@@ -511,6 +627,30 @@ type MCPServerInstructions struct {
 	MaxLength int `json:"max_length,omitempty"`
 }
 
+// MCP protocol versions an upstream connection can be capped at.
+const (
+	MCPMaxProtocolVersionAuto  = "auto" // newest version Bifrost supports
+	MCPProtocolVersion20260728 = mcp.ProtocolVersion20260728
+	MCPProtocolVersion20251125 = mcp.ProtocolVersion20251125
+	MCPProtocolVersion20250618 = mcp.ProtocolVersion20250618
+)
+
+// MCPMaxProtocolVersions lists the values a max protocol version can be set to, newest first.
+var MCPMaxProtocolVersions = []string{MCPMaxProtocolVersionAuto, MCPProtocolVersion20260728, MCPProtocolVersion20251125, MCPProtocolVersion20250618}
+
+// IsValidMCPMaxProtocolVersion reports whether v is "" (use the default) or one of MCPMaxProtocolVersions.
+func IsValidMCPMaxProtocolVersion(v string) bool {
+	return v == "" || slices.Contains(MCPMaxProtocolVersions, v)
+}
+
+// ValidateMCPMaxProtocolVersion rejects a value IsValidMCPMaxProtocolVersion does not accept, naming field.
+func ValidateMCPMaxProtocolVersion(field, v string) error {
+	if IsValidMCPMaxProtocolVersion(v) {
+		return nil
+	}
+	return fmt.Errorf("%s must be one of %s, got %q", field, strings.Join(MCPMaxProtocolVersions, ", "), v)
+}
+
 // MCPAuthType defines the authentication type for MCP connections
 type MCPAuthType string
 
@@ -522,6 +662,19 @@ const (
 	MCPAuthTypePerUserHeaders MCPAuthType = "per_user_headers" // Per-user header authentication (each user submits API keys / signed tokens; admin declares the required key names via PerUserHeaderKeys)
 	MCPAuthTypeTokenExchange  MCPAuthType = "token_exchange"   // Delegated token exchange: the caller's identity-provider token is exchanged for a short-lived upstream token scoped to this server's audience; requires user-identity authentication to be available
 )
+
+// IsPerUser reports whether callers of a client with this auth type
+// authenticate individually, each with a credential of their own, as opposed
+// to every caller riding one shared credential the admin set up. These are
+// the auth types that can carry per-user discoveries (PerUserDiscovery), since
+// only they have a per-caller credential to discover with.
+func (t MCPAuthType) IsPerUser() bool {
+	switch t {
+	case MCPAuthTypePerUserOauth, MCPAuthTypePerUserHeaders, MCPAuthTypeTokenExchange:
+		return true
+	}
+	return false
+}
 
 // MCPTokenExchangeConfig configures delegated token exchange for one MCP
 // client (AuthType == token_exchange): which resource the exchanged token
@@ -808,7 +961,9 @@ type MCPClientConfig struct {
 	// - nil/omitted => treated as [] (no tools)
 	// - ["tool1", "tool2"] => auto-execute only the specified tools
 	// Note: If a tool is in ToolsToAutoExecute but not in ToolsToExecute, it will be skipped.
-	IsPingAvailable *bool `json:"is_ping_available,omitempty"` // Whether the MCP server supports ping for health checks (nil/true = ping; false = listTools). Defaults to true.
+	PromptsToExpose   WhiteList `json:"prompts_to_expose"`           // Prompt names (unprefixed) served through the gateway; nil = all, [] = none
+	ResourcesToExpose WhiteList `json:"resources_to_expose"`         // Resource URIs and URI templates served through the gateway; nil = all, [] = none
+	IsPingAvailable   *bool     `json:"is_ping_available,omitempty"` // Whether the MCP server supports ping for health checks (nil/true = ping; false = listTools). Defaults to true.
 	// NeedsSessionStickiness controls whether this shared client (auth_type
 	// oauth/headers) maintains one persistent connection reused across every
 	// caller (true) or connects fresh per call, same model as the per-user
@@ -825,6 +980,7 @@ type MCPClientConfig struct {
 	NeedsSessionStickiness *bool              `json:"needs_session_stickiness,omitempty"`
 	RequirePublicTarget    bool               `json:"require_public_target,omitempty"`   // Server-set: registered without admin auth, so every dial must resolve to a public address
 	ToolSyncInterval       time.Duration      `json:"tool_sync_interval,omitempty"`      // Per-client override for tool sync interval (0 = use global; negative values are rejected)
+	MaxProtocolVersion     string             `json:"max_protocol_version,omitempty"`    // Per-client cap on the MCP protocol version ("" = use global, "auto" = newest supported)
 	ToolExecutionTimeout   time.Duration      `json:"tool_execution_timeout,omitempty"`  // Per-client override for tool execution timeout (0 = use global from tool_manager_config)
 	MaxInstructionsLength  int                `json:"max_instructions_length,omitempty"` // Per-client override for the forwarded instruction byte cap (0 = use global from tool_manager_config)
 	ToolPricing            map[string]float64 `json:"tool_pricing,omitempty"`            // Tool pricing for each tool (cost per execution)
@@ -838,12 +994,31 @@ type MCPClientConfig struct {
 	// still written (MarshalJSON), so configuration and clients written against it keep working.
 	AllowByDefault bool `json:"allow_by_default"`
 
+	// PerUserDiscovery makes each caller's discovery (its tools and the
+	// server's instructions, see MCPDiscovery) its own for a client whose
+	// callers authenticate individually (per_user_oauth, per_user_headers,
+	// token_exchange). Off (the default), every caller is served the
+	// discovery made with the retained admin credential, so a tool the
+	// upstream only grants some accounts is either visible to everyone or to
+	// no one. On, discovery runs with each caller's own credential and is
+	// kept per (auth mode, identity, client); the client stores no admin
+	// credential and does no admin discovery at all. Rejected for every other
+	// auth type, where there is no per-caller credential to discover with.
+	// nil means not declared and reads as off; a pointer so an update or a
+	// config.json entry that omits it can keep the stored value.
+	PerUserDiscovery *bool `json:"per_user_discovery,omitempty"`
+
+	PendingVerification bool `json:"-"` // Server-set: the client still needs its one-time admin sign-in or verification
+
 	// Discovered tools for per-user OAuth clients (persisted so they survive restart)
-	DiscoveredTools           map[string]ChatTool `json:"-"` // Discovered tool schemas keyed by prefixed name
-	DiscoveredToolNameMapping map[string]string   `json:"-"` // Mapping from sanitized tool names to original MCP names
+	DiscoveredTools map[string]ChatTool `json:"-"` // Discovered tool schemas keyed by prefixed name
 	// DiscoveredInstructions is the upstream's initialize `instructions`, persisted for the
 	// same reason DiscoveredTools is: per-call clients hold no connection to re-read it from.
 	DiscoveredInstructions string `json:"-"`
+	// The upstream's resources, resource templates and prompts, persisted for the same reason.
+	DiscoveredResources         []mcp.Resource         `json:"-"`
+	DiscoveredResourceTemplates []mcp.ResourceTemplate `json:"-"`
+	DiscoveredPrompts           []mcp.Prompt           `json:"-"` // names prefixed like tools
 
 	// PendingOAuthConfig holds the inline `oauth_config` block declared in
 	// config.json for shared-OAuth MCP clients (auth_type == "oauth").
@@ -1341,23 +1516,21 @@ type MCPInstanceState struct {
 	LastFailure *MCPConnectionFailure `json:"last_failure,omitempty"`
 }
 
-// MCPClientState represents a connected MCP client with its configuration and tools.
-// It is used internally by the MCP manager to track the state of a connected MCP client.
+// MCPClientState represents a connected MCP client: its configuration and
+// connection state. It is used internally by the MCP manager to track the
+// state of a connected MCP client. It carries no discovery data — a client's
+// discovered tools, instructions, resources and prompts live in the manager's
+// MCPDiscoveryStore, fetched separately by whoever needs them.
 type MCPClientState struct {
-	Name            string                   // Unique name for this client
-	Conn            *client.Client           // Active MCP client connection
-	ExecutionConfig *MCPClientConfig         // Tool filtering settings
-	ToolMap         map[string]ChatTool      // Available tools mapped by name
-	ToolNameMapping map[string]string        // Maps sanitized_name -> original_mcp_name (e.g., "notion_search" -> "notion-search")
-	ConnectionInfo  *MCPClientConnectionInfo `json:"connection_info"` // Connection metadata for management
-	// ServerInstructions is the upstream's initialize `instructions`, as of the last handshake.
-	// Overwritten (never appended to) on reconnect, so dropping it upstream drops it here.
-	ServerInstructions string                `json:"server_instructions,omitempty"`
-	CancelFunc         context.CancelFunc    `json:"-"` // Cancel function for SSE connections (not serialized)
-	State              MCPConnectionState    // Connection state (healthy, unstable, needs_reauth, ...)
-	LastFailure        *MCPConnectionFailure `json:"last_failure,omitempty"` // Why State is not Healthy; nil while Healthy (see MCPConnectionFailure)
-	ConnGeneration     uint64                `json:"-"`                      // Counts connection swaps; late writers bound to an older Conn compare against it to detect staleness (not serialized)
-	LastToolsHash      string                `json:"-"`                      // Content hash of the last ToolMap/ToolNameMapping the tools-change callback fired for; gates the funnel to genuine changes only (not serialized)
+	Name              string                   // Unique name for this client
+	Conn              *client.Client           // Active MCP client connection
+	ExecutionConfig   *MCPClientConfig         // Tool filtering settings
+	ConnectionInfo    *MCPClientConnectionInfo `json:"connection_info"` // Connection metadata for management
+	CancelFunc        context.CancelFunc       `json:"-"`               // Cancel function for SSE connections (not serialized)
+	State             MCPConnectionState       // Connection state (healthy, unstable, needs_reauth, ...)
+	LastFailure       *MCPConnectionFailure    `json:"last_failure,omitempty"` // Why State is not Healthy; nil while Healthy (see MCPConnectionFailure)
+	ConnGeneration    uint64                   `json:"-"`                      // Counts connection swaps; late writers bound to an older Conn compare against it to detect staleness (not serialized)
+	LastDiscoveryHash string                   `json:"-"`                      // Content hash of the last discovery (tools, instructions, resources, prompts) the change callback fired for; gates it to genuine changes (not serialized)
 }
 
 // MCPClientConnectionInfo stores metadata about how a client is connected.
@@ -1372,7 +1545,140 @@ type MCPClientConnectionInfo struct {
 // It is returned by GetMCPClients() method in bifrost.
 type MCPClient struct {
 	Config      *MCPClientConfig      `json:"config"`                 // Tool filtering settings
-	Tools       []ChatToolFunction    `json:"tools"`                  // Available tools
+	Tools       []MCPClientTool       `json:"tools"`                  // Available tools
 	State       MCPConnectionState    `json:"state"`                  // Connection state
 	LastFailure *MCPConnectionFailure `json:"last_failure,omitempty"` // Why State is not Healthy; nil while Healthy
+
+	Resources         []mcp.Resource         `json:"resources,omitempty"`
+	ResourceTemplates []mcp.ResourceTemplate `json:"resource_templates,omitempty"`
+	Prompts           []mcp.Prompt           `json:"prompts,omitempty"`
+}
+
+// SetMCPResult keeps the MCP server's own result beside content, the message content Bifrost made from
+// it, so the /mcp gateway can pass the result through unchanged.
+func (m *ChatToolMessage) SetMCPResult(result *mcp.CallToolResult, content *ChatMessageContent) {
+	m.mcpResult = result
+	if content != nil && len(content.ContentBlocks) == 0 && content.ContentStr != nil {
+		m.mcpResultText, m.mcpResultIsText = *content.ContentStr, true
+		return
+	}
+	m.mcpResultContent = toolContentFields(content)
+}
+
+// MCPResult returns the MCP server's own result while content still matches what Bifrost made from it,
+// so a plugin's rewrite (a redaction, say) never leaks the original.
+func (m *ChatToolMessage) MCPResult(content *ChatMessageContent) *mcp.CallToolResult {
+	if m == nil || m.mcpResult == nil {
+		return nil
+	}
+	if m.mcpResultIsText {
+		if content == nil || len(content.ContentBlocks) != 0 || content.ContentStr == nil || *content.ContentStr != m.mcpResultText {
+			return nil
+		}
+		return m.mcpResult
+	}
+	if !slices.Equal(toolContentFields(content), m.mcpResultContent) {
+		return nil
+	}
+	return m.mcpResult
+}
+
+// toolContentFields lists the strings content carries. Copying and comparing unchanged strings copies
+// no data, so this stays cheap for media.
+func toolContentFields(content *ChatMessageContent) []string {
+	if content == nil {
+		return nil
+	}
+	// Presence is recorded apart from the value, so an unset field and a set one never compare equal.
+	value := func(s *string) string {
+		if s == nil {
+			return "0"
+		}
+		return "1" + *s
+	}
+	fields := make([]string, 0, 1+5*len(content.ContentBlocks))
+	fields = append(fields, value(content.ContentStr))
+	for _, block := range content.ContentBlocks {
+		fields = append(fields, string(block.Type), value(block.Text))
+		switch {
+		case block.ImageURLStruct != nil:
+			fields = append(fields, block.ImageURLStruct.URL)
+		case block.InputAudio != nil:
+			fields = append(fields, block.InputAudio.Data, value(block.InputAudio.Format))
+		case block.File != nil:
+			fields = append(fields, value(block.File.FileData), value(block.File.FileURL), value(block.File.Filename), value(block.File.FileType))
+		}
+	}
+	return fields
+}
+
+// MCPClientTool is a tool as an MCP client lists it: its function definition plus what the MCP
+// server declared about it.
+type MCPClientTool struct {
+	ChatToolFunction
+	Title        string              `json:"title,omitempty"`
+	Icons        []mcp.Icon          `json:"icons,omitempty"`
+	OutputSchema json.RawMessage     `json:"output_schema,omitempty"`
+	Annotations  *MCPToolAnnotations `json:"annotations,omitempty"`
+}
+
+// MCPToolMetadata is what an MCP tool declares besides its function definition and annotations.
+// Bifrost-internal: never sent to providers.
+type MCPToolMetadata struct {
+	Title         string          `json:"title,omitempty"`
+	Icons         []mcp.Icon      `json:"icons,omitempty"`
+	OutputSchema  json.RawMessage `json:"output_schema,omitempty"`
+	Meta          json.RawMessage `json:"meta,omitempty"`            // the tool's _meta, as sent
+	UIResourceURI string          `json:"ui_resource_uri,omitempty"` // MCP Apps: ui:// resource rendering the tool
+	Visibility    []string        `json:"visibility,omitempty"`      // MCP Apps: empty means model and app
+}
+
+// MCP Apps (SEP-1865) extension id, resource mime type and _meta.ui.visibility values.
+const (
+	MCPAppsExtension       = "io.modelcontextprotocol/ui"
+	MCPAppsMimeType        = "text/html;profile=mcp-app"
+	MCPToolVisibilityModel = "model"
+	MCPToolVisibilityApp   = "app"
+)
+
+// ModelVisible reports whether a model may see and call the tool; no visibility means yes.
+func (m *MCPToolMetadata) ModelVisible() bool {
+	return m == nil || len(m.Visibility) == 0 || slices.Contains(m.Visibility, MCPToolVisibilityModel)
+}
+
+// AppVisible reports whether an MCP App may call the tool.
+func (m *MCPToolMetadata) AppVisible() bool {
+	return m == nil || len(m.Visibility) == 0 || slices.Contains(m.Visibility, MCPToolVisibilityApp)
+}
+
+// MCPToolDetails is a discovered tool's annotations and metadata, persisted beside the tool because
+// ChatTool's JSON leaves both out.
+type MCPToolDetails struct {
+	Annotations *MCPToolAnnotations `json:"annotations,omitempty"`
+	Metadata    *MCPToolMetadata    `json:"metadata,omitempty"`
+}
+
+// ToolDetails returns, by name, the annotations and metadata of the tools that carry any.
+func ToolDetails(tools map[string]ChatTool) map[string]MCPToolDetails {
+	var details map[string]MCPToolDetails
+	for name, tool := range tools {
+		if tool.Annotations == nil && tool.MCP == nil {
+			continue
+		}
+		if details == nil {
+			details = make(map[string]MCPToolDetails)
+		}
+		details[name] = MCPToolDetails{Annotations: tool.Annotations, Metadata: tool.MCP}
+	}
+	return details
+}
+
+// ApplyToolDetails sets the annotations and metadata of each named tool in tools.
+func ApplyToolDetails(tools map[string]ChatTool, details map[string]MCPToolDetails) {
+	for name, detail := range details {
+		if tool, ok := tools[name]; ok {
+			tool.Annotations, tool.MCP = detail.Annotations, detail.Metadata
+			tools[name] = tool
+		}
+	}
 }

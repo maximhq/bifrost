@@ -9,7 +9,6 @@ import (
 	"context"
 	"fmt"
 	"regexp"
-	"slices"
 	"strings"
 	"unicode/utf8"
 
@@ -22,56 +21,6 @@ const (
 	// in prose are left alone. See instructionTagPattern.
 	instructionTagPrefix = "mcp_server"
 )
-
-// GetServerInstructions returns the initialize `instructions` of every MCP client this
-// request may see, labeled with the client they came from and ordered deterministically.
-//
-// Visibility is not decided here: it rides entirely on GetToolPerClient, which already
-// applies the disabled check, the caller's include-clients/include-tools lists, and the
-// client's own ToolsToExecute allow-list. A client contributing no visible tool is a client
-// this caller cannot reach at all, so its instructions are withheld too — this is what keeps
-// a narrowed caller (x-bf-mcp-include-clients, or a /mcp/<slug> Virtual MCP) from reading
-// the guidance of a server it was never granted.
-//
-// Code mode clients are excluded: their tools are never sent, so their guidance rides in the
-// stub instead. See InstructionsCommentBlock.
-func (m *MCPManager) GetServerInstructions(ctx context.Context) []schemas.MCPServerInstructions {
-	visible := m.GetToolPerClient(ctx)
-
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	instructionsByName := make(map[string]string, len(m.clientMap))
-	maxLengthByName := make(map[string]int, len(m.clientMap))
-	for _, client := range m.clientMap {
-		if client.ExecutionConfig.IsCodeModeClient {
-			continue
-		}
-		if client.ServerInstructions != "" {
-			instructionsByName[client.ExecutionConfig.Name] = client.ServerInstructions
-			maxLengthByName[client.ExecutionConfig.Name] = client.ExecutionConfig.MaxInstructionsLength
-		}
-	}
-
-	names := make([]string, 0, len(visible))
-	for clientName, tools := range visible {
-		if len(tools) == 0 || instructionsByName[clientName] == "" {
-			continue
-		}
-		names = append(names, clientName)
-	}
-	slices.Sort(names)
-
-	result := make([]schemas.MCPServerInstructions, 0, len(names))
-	for _, name := range names {
-		result = append(result, schemas.MCPServerInstructions{
-			ClientName:   name,
-			Instructions: instructionsByName[name],
-			MaxLength:    maxLengthByName[name],
-		})
-	}
-	return result
-}
 
 // InstructionCaps bounds forwarded instructions in bytes. A zero field takes the built-in
 // default, so callers that do not care can pass the zero value.
@@ -246,8 +195,21 @@ func (m *MCPManager) InstructionCaps() InstructionCaps {
 	return m.toolsManager.instructionCaps()
 }
 
-// GetAggregatedServerInstructions renders the instructions of every client visible to ctx
-// into a single labeled, size-bounded block. See GetServerInstructions for the scoping rule.
+// GetAggregatedServerInstructions renders the initialize `instructions` of every MCP client
+// visible to ctx into a single labeled, size-bounded block: the Instructions of the caller's
+// CallerDiscovery, ordered by client name.
+//
+// The scoping rule, which CallerDiscovery applies: visibility is not decided for instructions on
+// their own, it rides entirely on the client's visible tools, which already apply the
+// disabled check, the caller's include-clients/include-tools lists, and the client's own
+// ToolsToExecute allow-list. A client contributing no visible tool is a client this caller
+// cannot reach at all, so its instructions are withheld too — this is what keeps a narrowed
+// caller (x-bf-mcp-include-clients, or a /mcp/<slug> Virtual MCP) from reading the guidance
+// of a server it was never granted. The text is read from the caller's discovery for each
+// client, in the same read as its tools, so a client with per_user_discovery on serves each
+// caller its own instructions with no extra wiring. Code mode clients are excluded: their
+// tools are never sent, so their guidance rides in the stub instead. See
+// InstructionsCommentBlock.
 func (m *MCPManager) GetAggregatedServerInstructions(ctx context.Context) string {
-	return AggregateServerInstructions(m.GetServerInstructions(ctx), m.toolsManager.instructionCaps())
+	return AggregateServerInstructions(m.resolveCallerDiscovery(ctx, false, true).Instructions, m.toolsManager.instructionCaps())
 }

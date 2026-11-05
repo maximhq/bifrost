@@ -134,6 +134,7 @@ func (s testHandlerStore) ShouldAllowPerRequestStorageOverride() bool       { re
 func (s testHandlerStore) ShouldAllowPerRequestRawOverride() bool           { return false }
 func (s testHandlerStore) ShouldAllowDirectKeys() bool                      { return false }
 func (s testHandlerStore) ShouldSendExtraFieldsInHeaders() bool             { return false }
+func (s testHandlerStore) ShouldCaptureClientIP() bool                      { return false }
 func (s testHandlerStore) IsProviderConfigured(schemas.ModelProvider) bool  { return false }
 func (s testHandlerStore) GetMCPExternalServerURL() string                  { return "" }
 func (s testHandlerStore) GetMCPExternalClientURL() string                  { return "" }
@@ -146,20 +147,20 @@ func TestExtractRealtimeTokenFromAuth(t *testing.T) {
 	t.Parallel()
 
 	tests := map[string]struct {
-		auth *authHeaders
-		want string
+		setupHeaders *sessionHeaders
+		want         string
 	}{
-		"authorization bearer": {auth: &authHeaders{authorization: "Bearer ek_auth"}, want: "ek_auth"},
-		"virtual key header":   {auth: &authHeaders{virtualKey: "ek_vk"}, want: "ek_vk"},
-		"api key header":       {auth: &authHeaders{apiKey: "ek_api"}, want: "ek_api"},
-		"google api key":       {auth: &authHeaders{googAPIKey: "ek_google"}, want: "ek_google"},
-		"authorization wins":   {auth: &authHeaders{authorization: "Bearer ek_auth", virtualKey: "ek_vk"}, want: "ek_auth"},
-		"nil":                  {auth: nil, want: ""},
+		"authorization bearer": {setupHeaders: &sessionHeaders{authorization: "Bearer ek_auth"}, want: "ek_auth"},
+		"virtual key header":   {setupHeaders: &sessionHeaders{virtualKey: "ek_vk"}, want: "ek_vk"},
+		"api key header":       {setupHeaders: &sessionHeaders{apiKey: "ek_api"}, want: "ek_api"},
+		"google api key":       {setupHeaders: &sessionHeaders{googAPIKey: "ek_google"}, want: "ek_google"},
+		"authorization wins":   {setupHeaders: &sessionHeaders{authorization: "Bearer ek_auth", virtualKey: "ek_vk"}, want: "ek_auth"},
+		"nil":                  {setupHeaders: nil, want: ""},
 	}
 	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			if got := extractRealtimeTokenFromAuth(test.auth); got != test.want {
+			if got := extractRealtimeTokenFromAuth(test.setupHeaders); got != test.want {
 				t.Fatalf("extractRealtimeTokenFromAuth() = %q, want %q", got, test.want)
 			}
 		})
@@ -361,6 +362,20 @@ func TestNewRealtimeRelayContextCarriesRequestGrant(t *testing.T) {
 	defer bareCancel()
 	if bare.Grant() != nil {
 		t.Fatal("relay of a request with no grant should carry none")
+	}
+}
+
+// The SDP exchange runs on the relay, so the resolved alias must reach it for per-alias provider
+// overrides such as Azure's use_voice_live_endpoints.
+func TestNewRealtimeRelayContextCarriesResolvedAlias(t *testing.T) {
+	requestCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	alias := &schemas.ResolvedAlias{Key: "gpt-realtime-vl", Config: &schemas.AliasConfig{ModelID: "gpt-realtime"}}
+	requestCtx.SetValue(schemas.BifrostContextKeyResolvedAlias, alias)
+
+	relayCtx, relayCancel := newRealtimeRelayContext(requestCtx)
+	defer relayCancel()
+	if got := schemas.GetResolvedAlias(relayCtx); got != alias {
+		t.Fatalf("relay alias = %+v, want the request's", got)
 	}
 }
 
@@ -676,7 +691,7 @@ func TestResolveRealtimeWebRTCKeys_UnmappedEphemeralTokenOnAzureIsRefused(t *tes
 	}
 
 	provider := &azure.AzureProvider{}
-	if _, urlErr := provider.RealtimeWebSocketURL(authKey, "gpt-realtime", ""); urlErr == nil || urlErr.StatusCode == nil || *urlErr.StatusCode != fasthttp.StatusBadRequest {
+	if _, urlErr := provider.RealtimeWebSocketURL(nil, authKey, "gpt-realtime", ""); urlErr == nil || urlErr.StatusCode == nil || *urlErr.StatusCode != fasthttp.StatusBadRequest {
 		t.Fatalf("RealtimeWebSocketURL() error = %#v, want a 400", urlErr)
 	}
 	answer, sdpErr := provider.ExchangeRealtimeWebRTCSDP(bifrostCtx, authKey, "gpt-realtime", "v=0", nil)

@@ -1007,7 +1007,7 @@ func TestGeminiCodeExecutionPartsBecomeCodeInterpreterCall(t *testing.T) {
 			{ExecutableCode: &ExecutableCode{Language: "PYTHON", Code: "print(6*7)"}},
 			{CodeExecutionResult: &CodeExecutionResult{Outcome: OutcomeOK, Output: "42\n"}},
 		}}},
-	})
+	}, "msg_test")
 
 	var calls []schemas.ResponsesMessage
 	for _, msg := range out {
@@ -1054,12 +1054,12 @@ func TestGeminiCodeExecutionFailureKeepsOutput(t *testing.T) {
 		out := convertGeminiCandidatesToResponsesOutput([]*Candidate{{Content: &Content{Role: "model", Parts: []*Part{
 			{ExecutableCode: &ExecutableCode{Language: "PYTHON", Code: "1/0"}},
 			{CodeExecutionResult: failed},
-		}}}})
+		}}}}, "msg_test")
 		assertFailedCall(t, &out[len(out)-1])
 	})
 
 	t.Run("constructed without code", func(t *testing.T) {
-		out := convertGeminiCandidatesToResponsesOutput([]*Candidate{{Content: &Content{Role: "model", Parts: []*Part{{CodeExecutionResult: failed}}}}})
+		out := convertGeminiCandidatesToResponsesOutput([]*Candidate{{Content: &Content{Role: "model", Parts: []*Part{{CodeExecutionResult: failed}}}}}, "msg_test")
 		assertFailedCall(t, &out[len(out)-1])
 	})
 
@@ -2235,4 +2235,107 @@ func TestGeminiContinuationRequestRoundTrip(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestGeminiResponsesRawAttachment verifies a Gemini chunk's raw payload rides on the event carrying its text or its
+// function call's whole arguments, so the closing events a finishing chunk also expands into never hold text they do
+// not back, and that the payload is declared only when that one event carries all of the chunk's text and arguments.
+func TestGeminiResponsesRawAttachment(t *testing.T) {
+	textChunk := func(finish FinishReason, texts ...string) *GenerateContentResponse {
+		parts := make([]*Part, 0, len(texts))
+		for _, text := range texts {
+			parts = append(parts, &Part{Text: text})
+		}
+		return &GenerateContentResponse{Candidates: []*Candidate{{Content: &Content{Role: "model", Parts: parts}, FinishReason: finish}}}
+	}
+	callChunk := func(parts ...*Part) *GenerateContentResponse {
+		return &GenerateContentResponse{Candidates: []*Candidate{{Content: &Content{Role: "model", Parts: parts}}}}
+	}
+	cases := map[string]struct {
+		chunks     []*GenerateContentResponse
+		wantType   schemas.ResponsesStreamResponseType
+		wantFormat schemas.RawResponseFormat
+		notLast    bool // the chunk also expands into closing events after its text
+	}{
+		"first chunk": {
+			chunks:     []*GenerateContentResponse{textChunk("", "Hello")},
+			wantType:   schemas.ResponsesStreamResponseTypeOutputTextDelta,
+			wantFormat: schemas.RawResponseFormatGeminiStreamChunk,
+		},
+		"finishing chunk": {
+			chunks:     []*GenerateContentResponse{textChunk("", "Hello"), textChunk(FinishReasonStop, " there")},
+			wantType:   schemas.ResponsesStreamResponseTypeOutputTextDelta,
+			wantFormat: schemas.RawResponseFormatGeminiStreamChunk,
+			notLast:    true,
+		},
+		"finishing chunk without text": {
+			chunks:     []*GenerateContentResponse{textChunk("", "Hello"), textChunk(FinishReasonStop)},
+			wantType:   schemas.ResponsesStreamResponseTypeCompleted,
+			wantFormat: schemas.RawResponseFormatGeminiStreamChunk,
+		},
+		"text spread over several deltas": {
+			chunks:   []*GenerateContentResponse{textChunk("", "Hello"), textChunk(FinishReasonStop, " there", " friend")},
+			wantType: schemas.ResponsesStreamResponseTypeCompleted,
+		},
+		"one function call": {
+			chunks:     []*GenerateContentResponse{callChunk(&Part{FunctionCall: &FunctionCall{Name: "notify", Args: json.RawMessage(`{"to":"alex@example.com"}`)}})},
+			wantType:   schemas.ResponsesStreamResponseTypeOutputItemDone,
+			wantFormat: schemas.RawResponseFormatGeminiStreamChunk,
+		},
+		"text and a function call": {
+			chunks:   []*GenerateContentResponse{callChunk(&Part{Text: "Sending"}, &Part{FunctionCall: &FunctionCall{Name: "notify", Args: json.RawMessage(`{"to":"alex@example.com"}`)}})},
+			wantType: schemas.ResponsesStreamResponseTypeOutputItemDone,
+		},
+		"two function calls": {
+			chunks: []*GenerateContentResponse{callChunk(
+				&Part{FunctionCall: &FunctionCall{Name: "notify", Args: json.RawMessage(`{"to":"alex@example.com"}`)}},
+				&Part{FunctionCall: &FunctionCall{Name: "notify", Args: json.RawMessage(`{"to":"sam@example.com"}`)}},
+			)},
+			wantType: schemas.ResponsesStreamResponseTypeOutputItemDone,
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			state := &GeminiResponsesStreamState{}
+			state.flush()
+			var responses []*schemas.BifrostResponsesStreamResponse
+			for _, chunk := range tc.chunks {
+				converted, bifrostErr := chunk.ToBifrostResponsesStream(0, state)
+				require.Nil(t, bifrostErr)
+				responses = converted
+			}
+
+			rawIdx, format := geminiResponsesRawAttachment(responses)
+
+			require.GreaterOrEqual(t, rawIdx, 0)
+			assert.Equal(t, tc.wantType, responses[rawIdx].Type)
+			assert.Equal(t, tc.wantFormat, format)
+			if tc.notLast {
+				assert.Less(t, rawIdx, len(responses)-1, "raw must move off the closing events")
+			}
+		})
+	}
+}
+
+// The /anthropic ingress routed to gemini-4: Claude Code style thinking.budget_tokens
+// must reach Google as thinkingLevel, because gemini-4 rejects thinkingBudget.
+// Source: https://ai.google.dev/gemini-api/docs/thinking
+func TestAnthropicThinkingBudgetReachesGemini4AsLevel(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	req := &anthropic.AnthropicMessageRequest{
+		Model:     "gemini/gemini-4-argon",
+		MaxTokens: 16000,
+		Messages: []anthropic.AnthropicMessage{
+			{Role: anthropic.AnthropicMessageRoleUser, Content: anthropic.AnthropicContent{ContentStr: schemas.Ptr("hi")}},
+		},
+		Thinking: &anthropic.AnthropicThinking{Type: "enabled", BudgetTokens: schemas.Ptr(4096)},
+	}
+	normalized := req.ToBifrostResponsesRequest(ctx)
+	out, err := ToGeminiResponsesRequest(ctx, normalized)
+	require.NoError(t, err)
+	got := out.GenerationConfig.ThinkingConfig
+	require.NotNil(t, got)
+	assert.Nil(t, got.ThinkingBudget, "gemini-4 rejects thinkingBudget with a 400")
+	require.NotNil(t, got.ThinkingLevel)
+	assert.Equal(t, "medium", *got.ThinkingLevel)
 }

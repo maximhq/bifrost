@@ -785,12 +785,14 @@ bifrost:
   mcp:
     enabled: true
     toolSyncInterval: "10m"
+    maxProtocolVersion: "auto"
     clientConfigs:
       - name: "stdio-server"
         connectionType: "stdio"
         clientId: "client-1"
         isCodeModeClient: true
         toolSyncInterval: "5m"
+        maxProtocolVersion: "2025-06-18"
         isPingAvailable: false
         toolPricing:
           search: 0.05
@@ -815,6 +817,17 @@ bifrost:
           url: "https://mcp.example.com/headers"
         authType: "per_user_headers"
         perUserHeaderKeys: ["Authorization", "X-Api-Key"]
+      - name: "openapi-server"
+        connectionType: "openapi"
+        authType: "headers"
+        openapiConfig:
+          specUrl: "https://api.example.com/openapi.json"
+          baseUrl: "https://api.example.com/v2"
+          securityCredentials:
+            bearerAuth:
+              value: "env.API_TOKEN"
+          includeDeprecated: true
+          maxResponseBytes: 65536
     toolManagerConfig:
       toolExecutionTimeout: 60
       maxAgentDepth: 5
@@ -846,17 +859,28 @@ assert_field_value 'mcp client[3] auth_type' '.mcp.client_configs.[3].auth_type'
 assert_field_value 'mcp client[3] per_user_header_keys[0]' '.mcp.client_configs.[3].per_user_header_keys.[0]' '"Authorization"'
 assert_field_value 'mcp client[3] per_user_header_keys[1]' '.mcp.client_configs.[3].per_user_header_keys.[1]' '"X-Api-Key"'
 
+# openapi client (openapiConfig -> openapi_config)
+assert_field_value 'mcp client[4] connection_type' '.mcp.client_configs.[4].connection_type' '"openapi"'
+assert_field_value 'mcp client[4] auth_type' '.mcp.client_configs.[4].auth_type' '"headers"'
+assert_field_value 'mcp client[4] openapi_config.spec_url' '.mcp.client_configs.[4].openapi_config.spec_url' '"https://api.example.com/openapi.json"'
+assert_field_value 'mcp client[4] openapi_config.base_url' '.mcp.client_configs.[4].openapi_config.base_url' '"https://api.example.com/v2"'
+assert_field_value 'mcp client[4] openapi_config.security_credentials.bearerAuth.value' '.mcp.client_configs.[4].openapi_config.security_credentials.bearerAuth.value' '"env.API_TOKEN"'
+assert_field_value 'mcp client[4] openapi_config.include_deprecated' '.mcp.client_configs.[4].openapi_config.include_deprecated' 'true'
+assert_field_value 'mcp client[4] openapi_config.max_response_bytes' '.mcp.client_configs.[4].openapi_config.max_response_bytes' '65536'
+
 # Tool manager config
 assert_field_value 'mcp tool_manager_config.tool_execution_timeout' '.mcp.tool_manager_config.tool_execution_timeout' '60'
 assert_field_value 'mcp tool_manager_config.max_agent_depth' '.mcp.tool_manager_config.max_agent_depth' '5'
 
 # Gap 6a: Global tool sync interval
 assert_field_value 'mcp tool_sync_interval' '.mcp.tool_sync_interval' '"10m"'
+assert_field_value 'mcp max_protocol_version' '.mcp.max_protocol_version' '"auto"'
 
 # Gap 6b: Per-client new fields
 assert_field_value 'mcp client[0] client_id' '.mcp.client_configs.[0].client_id' '"client-1"'
 assert_field_value 'mcp client[0] is_code_mode_client' '.mcp.client_configs.[0].is_code_mode_client' 'true'
 assert_field_value 'mcp client[0] tool_sync_interval' '.mcp.client_configs.[0].tool_sync_interval' '"5m"'
+assert_field_value 'mcp client[0] max_protocol_version' '.mcp.client_configs.[0].max_protocol_version' '"2025-06-18"'
 assert_field_value 'mcp client[0] is_ping_available' '.mcp.client_configs.[0].is_ping_available' 'false'
 assert_field 'mcp client[0] tool_pricing' '.mcp.client_configs.[0].tool_pricing'
 assert_field_value 'mcp client[0] tool_pricing.search' '.mcp.client_configs.[0].tool_pricing.search' '0.05'
@@ -1763,6 +1787,7 @@ storage:
     statementTimeout: "60s"
     idleInTransactionSessionTimeout: "30s"
     objectStorageExcludeRequestTypes: ["list_models"]
+    captureClientIp: true
 postgresql:
   enabled: true
   auth:
@@ -1844,6 +1869,7 @@ assert_field_value 'config_store.config.idle_in_transaction_session_timeout ("0"
 assert_field_value 'logs_store.config.statement_timeout' '.logs_store.config.statement_timeout' '"60s"'
 assert_field_value 'logs_store.config.idle_in_transaction_session_timeout' '.logs_store.config.idle_in_transaction_session_timeout' '"30s"'
 assert_field_value 'logs_store.object_storage_exclude_request_types' '.logs_store.object_storage_exclude_request_types' '["list_models"]'
+assert_field_value 'logs_store.capture_client_ip' '.logs_store.capture_client_ip' 'true'
 assert_field_value 'providers.openai.ignore_provider_cost' '.providers.openai.ignore_provider_cost' 'true'
 assert_field_value 'client.compat.force_reasoning_only_models_to_responses' '.client.compat.force_reasoning_only_models_to_responses' 'false'
 assert_field_value 'client.delete_expired_virtual_keys' '.client.delete_expired_virtual_keys' 'true'
@@ -1944,6 +1970,129 @@ for uri in 'https://*.example.com/callback' 'https://app.example.com/*' '**'; do
 done
 
 ###############################################################################
+# mcp.client_configs[].oauth_config: resource and use_client_metadata_document render when set and
+# are absent when omitted; the values schema refuses wrong types and clientId together with
+# useClientMetadataDocument, which Bifrost would only refuse once an admin starts the OAuth flow.
+###############################################################################
+echo ""
+echo -e "${CYAN}📋 MCP client OAuth config${NC}"
+
+cat > "$TMPDIR/values-mcp-oauth.yaml" <<'VALS'
+bifrost:
+  encryptionKey: "test-encryption-key-1234567890ab"
+  mcp:
+    enabled: true
+    clientConfigs:
+      - name: "linear"
+        connectionType: "http"
+        httpConfig:
+          url: "https://mcp.linear.app/mcp"
+        authType: "oauth"
+        oauthConfig:
+          resource: "https://mcp.linear.app/mcp"
+          useClientMetadataDocument: true
+      - name: "notion"
+        connectionType: "http"
+        httpConfig:
+          url: "https://mcp.notion.com/mcp"
+        authType: "oauth"
+        oauthConfig:
+          scopes: ["read"]
+VALS
+
+render_config "$TMPDIR/values-mcp-oauth.yaml"
+assert_field_value 'mcp.client_configs[].oauth_config.resource' '.mcp.client_configs.[0].oauth_config.resource' '"https://mcp.linear.app/mcp"'
+assert_field_value 'mcp.client_configs[].oauth_config.use_client_metadata_document' '.mcp.client_configs.[0].oauth_config.use_client_metadata_document' 'true'
+absent=$(python3 -c "
+import json
+o = json.load(open('$TMPDIR/config.json'))['mcp']['client_configs'][1].get('oauth_config', {})
+print(','.join(k for k in ('resource', 'use_client_metadata_document') if k in o))
+" 2>/dev/null)
+report_result "mcp.client_configs[].oauth_config omits resource and use_client_metadata_document when unset" "$([ -z "$absent" ] && echo 0 || echo 1)"
+
+mcp_oauth_client='{"name":"linear","connectionType":"http","httpConfig":{"url":"https://mcp.linear.app/mcp"},"authType":"oauth","oauthConfig":'
+for case in 'useClientMetadataDocument "yes"|{"useClientMetadataDocument":"yes"}' 'resource 42|{"resource":42}' 'clientId with useClientMetadataDocument|{"clientId":"c1","useClientMetadataDocument":true}'; do
+  name=${case%%|*}
+  if helm template bifrost "$CHART_DIR" --set image.tag=v1.0.0 \
+       --set bifrost.encryptionKey=test-encryption-key-1234567890ab \
+       --set bifrost.mcp.enabled=true \
+       --set-json "bifrost.mcp.clientConfigs=[${mcp_oauth_client}${case#*|}}]" \
+       > "$TMPDIR/render-err.txt" 2>&1; then
+    report_result "mcp.client_configs[].oauth_config $name is rejected" 1
+    echo -e "${YELLOW}    render succeeded; expected the values schema to reject it${NC}"
+  elif grep -q "oauthConfig" "$TMPDIR/render-err.txt"; then
+    report_result "mcp.client_configs[].oauth_config $name is rejected" 0
+  else
+    report_result "mcp.client_configs[].oauth_config $name is rejected" 1
+    head -5 "$TMPDIR/render-err.txt" | sed 's/^/      /'
+  fi
+done
+
+###############################################################################
+# mcp.client_configs[].per_user_discovery renders when set and is absent when omitted. It is
+# refused without a per-user auth type and on openapi clients, and SSE/STDIO clients (and websocket,
+# which renders as sse) are refused
+# per-user auth types, which Bifrost would otherwise only skip at startup.
+###############################################################################
+echo ""
+echo -e "${CYAN}📋 MCP per-user discovery${NC}"
+
+cat > "$TMPDIR/values-mcp-pud.yaml" <<'VALS'
+bifrost:
+  encryptionKey: "test-encryption-key-1234567890ab"
+  mcp:
+    enabled: true
+    clientConfigs:
+      - name: "per-user"
+        connectionType: "http"
+        httpConfig:
+          url: "https://mcp.example.com/mcp"
+        authType: "per_user_oauth"
+        perUserDiscovery: true
+      - name: "shared"
+        connectionType: "http"
+        httpConfig:
+          url: "https://mcp.example.com/shared"
+        authType: "headers"
+VALS
+
+render_config "$TMPDIR/values-mcp-pud.yaml"
+assert_field_value 'mcp.client_configs[].per_user_discovery' '.mcp.client_configs.[0].per_user_discovery' 'true'
+absent=$(python3 -c "
+import json
+print('per_user_discovery' in json.load(open('$TMPDIR/config.json'))['mcp']['client_configs'][1])
+" 2>/dev/null)
+report_result "mcp.client_configs[].per_user_discovery omitted when unset" "$([ "$absent" = "False" ] && echo 0 || echo 1)"
+
+for case in \
+  'perUserDiscovery with headers auth|authType|{"name":"c","connectionType":"http","httpConfig":{"url":"https://mcp.example.com/mcp"},"authType":"headers","perUserDiscovery":true}' \
+  'perUserDiscovery on openapi|connectionType|{"name":"c","connectionType":"openapi","openapiConfig":{"specUrl":"https://api.example.com/openapi.json"},"authType":"per_user_headers","perUserHeaderKeys":["Authorization"],"perUserDiscovery":true}' \
+  'per_user_oauth on sse|authType|{"name":"c","connectionType":"sse","connectionString":"https://mcp.example.com/sse","authType":"per_user_oauth"}' \
+  'per_user_oauth on websocket (rendered as sse)|authType|{"name":"c","connectionType":"websocket","websocketConfig":{"url":"wss://mcp.example.com/ws"},"authType":"per_user_oauth"}' \
+  'per_user_headers on stdio|authType|{"name":"c","connectionType":"stdio","stdioConfig":{"command":"npx"},"authType":"per_user_headers","perUserHeaderKeys":["Authorization"]}'; do
+  # Each case is name|field the error must name|client JSON, so a fixture that fails for an
+  # unrelated reason (a missing URL, a typo) cannot pass as the rule under test.
+  name=${case%%|*}
+  rest=${case#*|}
+  expected=${rest%%|*}
+  client=${rest#*|}
+  if helm template bifrost "$CHART_DIR" --set image.tag=v1.0.0 \
+       --set bifrost.encryptionKey=test-encryption-key-1234567890ab \
+       --set bifrost.mcp.enabled=true \
+       --set-json "bifrost.mcp.clientConfigs=[${client}]" \
+       > "$TMPDIR/render-err.txt" 2>&1; then
+    report_result "mcp.client_configs[] $name is rejected" 1
+    echo -e "${YELLOW}    render succeeded; expected the chart to reject it${NC}"
+  elif grep -q -- "$expected" "$TMPDIR/render-err.txt"; then
+    report_result "mcp.client_configs[] $name is rejected" 0
+  else
+    report_result "mcp.client_configs[] $name is rejected" 1
+    echo -e "${YELLOW}    rejected for another reason; expected an error naming $expected:${NC}"
+    head -5 "$TMPDIR/render-err.txt" | sed 's/^/      /'
+  fi
+done
+
+###############################################################################
 # access_profiles[].auto_rotation_interval / next_rotation_at: string and integer forms render
 # unchanged, and next_rotation_at is refused unless the interval is enabled.
 ###############################################################################
@@ -1990,6 +2139,134 @@ for bad in '"next_rotation_at":"2026-11-01T00:00:00Z"' \
     report_result "access_profiles {$bad} is rejected" 0
   else
     report_result "access_profiles {$bad} is rejected" 1
+    head -5 "$TMPDIR/render-err.txt" | sed 's/^/      /'
+  fi
+done
+
+###############################################################################
+# 2.1.46 Warp (bifrost.warp -> warp)
+###############################################################################
+echo ""
+echo -e "${CYAN}📋 2.1.46 Warp${NC}"
+
+cat > "$TMPDIR/values-warp.yaml" << 'VALS'
+image:
+  tag: v1.0.0
+bifrost:
+  featureFlags:
+    warp:
+      enabled: true
+  warp:
+    enabled: true
+    provider: "openai"
+    model: "gpt-4o-mini"
+    apiKeyId: "openai-key-1"
+    additionalModels:
+      - provider: "anthropic"
+        model: "claude-3-5-haiku"
+        apiKeyId: "anthropic-key-1"
+      - provider: "openai"
+        model: "gpt-4.1-nano"
+    maxIterations: 12
+    requestTimeoutSeconds: 90
+    historyRetentionDays: 14
+    systemPromptSuffix: "Teams are named after rivers."
+    temperature: 0.3
+    reasoningEffort: "medium"
+    embeddingProvider: "openai"
+    embeddingModel: "text-embedding-3-small"
+    embeddingApiKeyId: "openai-embed-key"
+    embeddingDimension: 1536
+    logVectorStoreNamespace: "WarpLogsV2"
+    semanticSearchThreshold: 0.6
+    semanticSearchLimit: 20
+    topicDiscoveryMinRequests: 250
+VALS
+render_config "$TMPDIR/values-warp.yaml"
+assert_field_value 'feature_flags.flags.warp.enabled' '.feature_flags.flags.warp.enabled' 'true'
+assert_field_value 'warp.enabled' '.warp.enabled' 'true'
+assert_field_value 'warp.provider' '.warp.provider' '"openai"'
+assert_field_value 'warp.model' '.warp.model' '"gpt-4o-mini"'
+assert_field_value 'warp.api_key_id' '.warp.api_key_id' '"openai-key-1"'
+assert_field_value 'warp.additional_models[0] (with api_key_id)' '.warp.additional_models.[0]' '{"api_key_id": "anthropic-key-1", "model": "claude-3-5-haiku", "provider": "anthropic"}'
+assert_field_value 'warp.additional_models[1] (no api_key_id)' '.warp.additional_models.[1]' '{"model": "gpt-4.1-nano", "provider": "openai"}'
+assert_field_value 'warp.max_iterations' '.warp.max_iterations' '12'
+assert_field_value 'warp.request_timeout_seconds' '.warp.request_timeout_seconds' '90'
+assert_field_value 'warp.history_retention_days' '.warp.history_retention_days' '14'
+assert_field_value 'warp.system_prompt_suffix' '.warp.system_prompt_suffix' '"Teams are named after rivers."'
+assert_field_value 'warp.temperature' '.warp.temperature' '0.3'
+assert_field_value 'warp.reasoning_effort' '.warp.reasoning_effort' '"medium"'
+assert_field_value 'warp.embedding_provider' '.warp.embedding_provider' '"openai"'
+assert_field_value 'warp.embedding_model' '.warp.embedding_model' '"text-embedding-3-small"'
+assert_field_value 'warp.embedding_api_key_id' '.warp.embedding_api_key_id' '"openai-embed-key"'
+assert_field_value 'warp.embedding_dimension' '.warp.embedding_dimension' '1536'
+assert_field_value 'warp.log_vector_store_namespace' '.warp.log_vector_store_namespace' '"WarpLogsV2"'
+assert_field_value 'warp.semantic_search_threshold' '.warp.semantic_search_threshold' '0.6'
+assert_field_value 'warp.semantic_search_limit' '.warp.semantic_search_limit' '20'
+assert_field_value 'warp.topic_discovery_min_requests' '.warp.topic_discovery_min_requests' '250'
+
+# Explicit false, 0, [] and "" must reach config.json: Warp keeps the stored value for an
+# omitted embedding, search or topic field (and 0 means the default or a reset), so a value
+# the chart dropped would silently leave the old setting in force.
+cat > "$TMPDIR/values-warp-zero.yaml" << 'VALS'
+image:
+  tag: v1.0.0
+bifrost:
+  warp:
+    enabled: false
+    additionalModels: []
+    maxIterations: 0
+    requestTimeoutSeconds: 0
+    historyRetentionDays: 0
+    temperature: 0
+    embeddingProvider: ""
+    embeddingModel: ""
+    embeddingApiKeyId: ""
+    embeddingDimension: 0
+    logVectorStoreNamespace: ""
+    semanticSearchThreshold: 0
+    semanticSearchLimit: 0
+    topicDiscoveryMinRequests: 0
+VALS
+render_config "$TMPDIR/values-warp-zero.yaml"
+assert_field_value 'warp.enabled false kept' '.warp.enabled' 'false'
+assert_field_value 'warp.additional_models [] kept' '.warp.additional_models' '[]'
+assert_field_value 'warp.max_iterations 0 kept' '.warp.max_iterations' '0'
+assert_field_value 'warp.request_timeout_seconds 0 kept' '.warp.request_timeout_seconds' '0'
+assert_field_value 'warp.history_retention_days 0 kept' '.warp.history_retention_days' '0'
+assert_field_value 'warp.temperature 0 kept' '.warp.temperature' '0'
+assert_field_value 'warp.embedding_provider "" kept' '.warp.embedding_provider' '""'
+assert_field_value 'warp.embedding_model "" kept' '.warp.embedding_model' '""'
+assert_field_value 'warp.embedding_api_key_id "" kept' '.warp.embedding_api_key_id' '""'
+assert_field_value 'warp.embedding_dimension 0 kept' '.warp.embedding_dimension' '0'
+assert_field_value 'warp.log_vector_store_namespace "" kept' '.warp.log_vector_store_namespace' '""'
+assert_field_value 'warp.semantic_search_threshold 0 kept' '.warp.semantic_search_threshold' '0'
+assert_field_value 'warp.semantic_search_limit 0 kept' '.warp.semantic_search_limit' '0'
+assert_field_value 'warp.topic_discovery_min_requests 0 kept' '.warp.topic_discovery_min_requests' '0'
+
+# Unset, the chart renders no warp block, so Warp stays managed from the dashboard.
+cat > "$TMPDIR/values-warp-unset.yaml" << 'VALS'
+image:
+  tag: v1.0.0
+VALS
+render_config "$TMPDIR/values-warp-unset.yaml"
+if python3 -c "import json, sys; sys.exit(0 if 'warp' not in json.load(open('$TMPDIR/config.json')) else 1)"; then
+  report_result 'warp omitted when bifrost.warp is unset' 0
+else
+  report_result 'warp omitted when bifrost.warp is unset' 1
+  echo -e "${YELLOW}    config.json carries a warp block nobody configured${NC}"
+fi
+
+# The values schema refuses what config.schema.json refuses.
+for bad in 'enabled=true,bifrost.warp.provider=openai' 'maxIterations=1' 'reasoningEffort=extreme' 'baseUrl=http://warp'; do
+  if helm template bifrost "$CHART_DIR" --set image.tag=v1.0.0 --set "bifrost.warp.$bad" \
+       > "$TMPDIR/render-err.txt" 2>&1; then
+    report_result "warp {$bad} is rejected" 1
+    echo -e "${YELLOW}    render succeeded; expected the values schema to reject it${NC}"
+  elif grep -q "warp" "$TMPDIR/render-err.txt"; then
+    report_result "warp {$bad} is rejected" 0
+  else
+    report_result "warp {$bad} is rejected" 1
     head -5 "$TMPDIR/render-err.txt" | sed 's/^/      /'
   fi
 done

@@ -103,6 +103,9 @@ func (h *RealtimeClientSecretsHandler) handleRequest(ctx *fasthttp.RequestCtx) {
 	if userName, ok := ctx.UserValue(schemas.BifrostContextKeyUserName).(string); ok && userName != "" {
 		bifrostCtx.SetValue(schemas.BifrostContextKeyUserName, userName)
 	}
+	if userEmail, ok := ctx.UserValue(schemas.BifrostContextKeyUserEmail).(string); ok && userEmail != "" {
+		bifrostCtx.SetValue(schemas.BifrostContextKeyUserEmail, userEmail)
+	}
 	if bifrostErr := h.evaluateMintingGovernance(bifrostCtx, providerKey, model); bifrostErr != nil {
 		SendBifrostError(ctx, bifrostErr)
 		return
@@ -132,6 +135,9 @@ func (h *RealtimeClientSecretsHandler) handleRequest(ctx *fasthttp.RequestCtx) {
 
 	// Resolve model aliases now that the key is selected so the forwarded body
 	// carries the provider's canonical model, matching wsrealtime/webrtc flows.
+	if aliasConfig := key.Aliases.ResolveConfig(model); aliasConfig != nil {
+		bifrostCtx.SetValue(schemas.BifrostContextKeyResolvedAlias, &schemas.ResolvedAlias{Key: model, Config: aliasConfig})
+	}
 	if resolved := key.Aliases.Resolve(model); resolved != "" && resolved != model {
 		model = resolved
 		reparsed, parseErr := schemas.ParseRealtimeClientSecretBody(normalizedBody)

@@ -184,6 +184,66 @@ func TestTopicClusterIsExactWithoutItsMembers(t *testing.T) {
 	require.InDelta(t, cohesion, clusters[0].cohesion(), 1e-4)
 }
 
+// One prompt fanned out to several providers is several requests with one
+// vector. When it sits at the centre it must count as one example, not take
+// three of the four a topic is named from: a topic of coding sessions was
+// named after a single session summary sent to three providers that way.
+func TestTopicSamplesSkipRepeatsOfOneRequest(t *testing.T) {
+	const dimension, perSubject = 32, 40
+	rng := rand.New(rand.NewSource(11))
+	centre := topicTestDirection(dimension, 0, 0, 0)
+	points := topicTestPoints(rng, [][]float32{centre}, perSubject, 0.6)
+	vectors := topicTestVectorsFor(points, perSubject)
+	for fanout := range 3 {
+		vectors = append(vectors, topicVector{logID: fmt.Sprintf("fanout-%d", fanout), vector: centre})
+	}
+	clusters := topicTestClusters(vectors, make([]int, len(vectors)), 1)
+	require.Len(t, clusters, 1)
+	require.Len(t, clusters[0].sampleIDs, topicsLabelSamples)
+	repeats := 0
+	for _, id := range clusters[0].sampleIDs {
+		if strings.HasPrefix(id, "fanout-") {
+			repeats++
+		}
+	}
+	require.Equal(t, 1, repeats, "the fanned-out request is one example, got %v", clusters[0].sampleIDs)
+}
+
+// A topic is also named from members drawn at random, so its name is not
+// decided by the few requests at its centre. The draw has to be the same
+// whatever order the members came in, and a merged cluster's draw has to be
+// the one its members together would have made, or a run would name a
+// topic differently depending on how its batches happened to fall.
+func TestTopicMemberDrawIsOrderFreeAndMerges(t *testing.T) {
+	ids := make([]string, 200)
+	for index := range ids {
+		ids[index] = fmt.Sprintf("log-%03d", index)
+	}
+	all := drawMembers(nil, ids...)
+	require.Len(t, all, topicsLabelDrawn)
+
+	shuffled := append([]string(nil), ids...)
+	rand.New(rand.NewSource(5)).Shuffle(len(shuffled), func(i, j int) { shuffled[i], shuffled[j] = shuffled[j], shuffled[i] })
+	require.Equal(t, all, drawMembers(nil, shuffled...), "the order members arrive in does not matter")
+
+	left, right := drawMembers(nil, ids[:120]...), drawMembers(nil, ids[120:]...)
+	require.Equal(t, all, drawMembers(left, right...), "two draws merge into the draw of both")
+	require.Equal(t, all, drawMembers(all, ids[:10]...), "an id already drawn is not drawn twice")
+
+	// Merging must not write into the draw it was merged from.
+	before := append([]string(nil), left...)
+	_ = drawMembers(left, right...)
+	require.Equal(t, before, left)
+}
+
+// A topic keeps its samples and drawn members alternately, each once, so the
+// few examples linked and the share a later merge names from both reach past
+// the centre.
+func TestTopicExamplesAlternateCentreAndDrawn(t *testing.T) {
+	cluster := topicCluster{sampleIDs: []string{"c1", "c2", "both"}, drawn: []string{"d1", "both", "d2", "d3"}}
+	require.Equal(t, []string{"c1", "d1", "c2", "both", "d2", "d3"}, cluster.exampleIDs())
+}
+
 // Slices are read in an order whose every prefix covers the range evenly, so
 // a run that stops clustering partway has sampled the whole window.
 func TestSpreadOrderCoversTheRangeAtEveryPrefix(t *testing.T) {

@@ -114,7 +114,7 @@ Set `schema_url` to write a mirrored schema location into `$schema` for isolated
 
 ### Configurable Sections
 
-All 18 top-level properties from the [Bifrost config schema](../../../transports/config.schema.json) are exposed as Terraform variables:
+The following 18 top-level sections of the [Bifrost config schema](../../../transports/config.schema.json) are exposed as Terraform variables (the schema defines more; pass any other section through `config_json_file` or `config_json`):
 
 | Variable             | Schema Key           | Description                                    |
 |----------------------|----------------------|------------------------------------------------|
@@ -135,6 +135,7 @@ All 18 top-level properties from the [Bifrost config schema](../../../transports
 | `plugins`            | `plugins`            | Plugin configuration array                     |
 | `audit_logs`         | `audit_logs`         | Audit logging (disabled, hmac_key)             |
 | `websocket`          | `websocket`          | WebSocket gateway tuning                       |
+| `server`             | `server`             | HTTP server (read_buffer_size, base_path)      |
 
 For `scim_config` with `provider = "okta"`, set `config.issuerUrl`, `config.clientId`, `config.clientSecret`, and `config.apiToken`.
 

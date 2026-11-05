@@ -6,6 +6,7 @@ import (
 	"math/rand/v2"
 	"net/url"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -959,6 +960,10 @@ func deepCopyChatContentBlock(original ChatContentBlock) ChatContentBlock {
 			copyMode := *original.PromptCacheBreakpoint.Mode
 			copyPromptCacheBreakpoint.Mode = &copyMode
 		}
+		if original.PromptCacheBreakpoint.TTL != nil {
+			copyTTL := *original.PromptCacheBreakpoint.TTL
+			copyPromptCacheBreakpoint.TTL = &copyTTL
+		}
 		copy.PromptCacheBreakpoint = copyPromptCacheBreakpoint
 	}
 
@@ -1031,6 +1036,17 @@ func DeepCopyChatTool(original ChatTool) ChatTool {
 			copyAnnotations.OpenWorldHint = &v
 		}
 		copyTool.Annotations = copyAnnotations
+	}
+
+	if original.MCP != nil {
+		copyTool.MCP = &MCPToolMetadata{
+			Title:         original.MCP.Title,
+			Icons:         slices.Clone(original.MCP.Icons),
+			OutputSchema:  slices.Clone(original.MCP.OutputSchema),
+			Meta:          slices.Clone(original.MCP.Meta),
+			UIResourceURI: original.MCP.UIResourceURI,
+			Visibility:    slices.Clone(original.MCP.Visibility),
+		}
 	}
 
 	// Deep copy Custom if present
@@ -2003,6 +2019,10 @@ func deepCopyResponsesMessageContentBlock(original ResponsesMessageContentBlock)
 		if original.PromptCacheBreakpoint.Mode != nil {
 			copyMode := *original.PromptCacheBreakpoint.Mode
 			copyPromptCacheBreakpoint.Mode = &copyMode
+		}
+		if original.PromptCacheBreakpoint.TTL != nil {
+			copyTTL := *original.PromptCacheBreakpoint.TTL
+			copyPromptCacheBreakpoint.TTL = &copyTTL
 		}
 		copy.PromptCacheBreakpoint = copyPromptCacheBreakpoint
 	}

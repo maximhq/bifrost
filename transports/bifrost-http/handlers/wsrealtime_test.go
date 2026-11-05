@@ -7,8 +7,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/fasthttp/router"
 	"github.com/maximhq/bifrost/core/schemas"
 	bfws "github.com/maximhq/bifrost/transports/v2/bifrost-http/websocket"
+	"github.com/valyala/fasthttp"
 )
 
 // stubRealtimeUpstream is an in-memory provider connection.
@@ -31,7 +33,7 @@ func (p *connectorRealtimeProvider) ConnectRealtime(_ *schemas.BifrostContext, _
 	return p.upstream, nil
 }
 
-func (p *connectorRealtimeProvider) RealtimeWebSocketURL(schemas.Key, string, string) (string, *schemas.BifrostError) {
+func (p *connectorRealtimeProvider) RealtimeWebSocketURL(*schemas.BifrostContext, schemas.Key, string, string) (string, *schemas.BifrostError) {
 	panic("a RealtimeConnector provider must not be dialed as a websocket")
 }
 
@@ -160,5 +162,54 @@ func TestRelayRealtimeProviderToClientBlamesTheTurnOnTheRightSide(t *testing.T) 
 				t.Fatalf("turn ended as %d %s, want %d %s", *ended.StatusCode, *ended.Error.Code, tc.wantStatus, tc.wantCode)
 			}
 		})
+	}
+}
+
+// TestResolveRealtimeTargetAzurePaths pins that the Azure realtime paths read Voice Live's model and Azure
+// OpenAI's deployment selectors without choosing a provider: a bare model is left for routing, and a
+// provider prefix still picks its provider.
+func TestResolveRealtimeTargetAzurePaths(t *testing.T) {
+	for _, tc := range []struct {
+		path, model, deployment string
+		wantProvider            schemas.ModelProvider
+		wantModel               string
+	}{
+		{"/azure/voice-live/realtime", "gpt-realtime", "", "", "gpt-realtime"},
+		{"/voice-live/realtime", "gpt-realtime-vl", "", "", "gpt-realtime-vl"},
+		{"/azure/openai/realtime", "", "gpt-realtime", "", "gpt-realtime"},
+		{"/azure/openai/v1/realtime", "openai/gpt-realtime", "", schemas.OpenAI, "gpt-realtime"},
+		{"/v1/realtime", "gpt-realtime", "", "", "gpt-realtime"},
+	} {
+		provider, model, err := resolveRealtimeTarget(nil, nil, tc.path, tc.model, tc.deployment)
+		if err != nil || provider != tc.wantProvider || model != tc.wantModel {
+			t.Errorf("%s: %q %q %v, want %q %q", tc.path, provider, model, err, tc.wantProvider, tc.wantModel)
+		}
+	}
+}
+
+// TestRealtimeIntegrationTypeForPath pins the integration a realtime path reports to routing, which the
+// model catalog uses to prefer that integration's provider for a bare model.
+func TestRealtimeIntegrationTypeForPath(t *testing.T) {
+	for path, want := range map[string]string{
+		"/openai/v1/realtime":        "openai",
+		"/azure/voice-live/realtime": "azure",
+		"/voice-live/realtime":       "azure",
+		"/azure/openai/realtime":     "azure",
+		"/v1/realtime":               "",
+	} {
+		if got := realtimeIntegrationTypeForPath(path); got != want {
+			t.Errorf("realtimeIntegrationTypeForPath(%q) = %q, want %q", path, got, want)
+		}
+	}
+}
+
+// TestWSRealtimeRegistersAzurePaths pins the WebSocket paths Azure clients build from a resource endpoint.
+func TestWSRealtimeRegistersAzurePaths(t *testing.T) {
+	r := router.New()
+	(&WSRealtimeHandler{}).RegisterRoutes(r)
+	for _, path := range []string{"/azure/voice-live/realtime", "/voice-live/realtime", "/azure/openai/realtime", "/azure/openai/v1/realtime"} {
+		if handler, _ := r.Lookup(fasthttp.MethodGet, path, &fasthttp.RequestCtx{}); handler == nil {
+			t.Errorf("%s is not registered", path)
+		}
 	}
 }

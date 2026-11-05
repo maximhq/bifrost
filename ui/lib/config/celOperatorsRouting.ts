@@ -1,3 +1,6 @@
+import i18n from "@/lib/i18n";
+import type { ParseKeys } from "i18next";
+
 /**
  * CEL Operators Configuration for Routing Rules
  * Maps UI operators to CEL syntax
@@ -9,28 +12,37 @@ export interface CELOperatorDefinition {
 	celSyntax: string;
 }
 
+// Labels resolve through i18n when read (getters) so the shared list follows the active locale.
+const operator = (name: string, key: ParseKeys<"models">, celSyntax: string): CELOperatorDefinition => ({
+	name,
+	get label(): string {
+		return i18n.t(key, { ns: "models" });
+	},
+	celSyntax,
+});
+
 export const celOperatorsRouting: CELOperatorDefinition[] = [
 	// Comparison operators
-	{ name: "=", label: "equals", celSyntax: "==" },
-	{ name: "!=", label: "does not equal", celSyntax: "!=" },
-	{ name: ">", label: "greater than", celSyntax: ">" },
-	{ name: "<", label: "less than", celSyntax: "<" },
-	{ name: ">=", label: "greater than or equal", celSyntax: ">=" },
-	{ name: "<=", label: "less than or equal", celSyntax: "<=" },
+	operator("=", "routing.cel.operators.equals", "=="),
+	operator("!=", "routing.cel.operators.notEquals", "!="),
+	operator(">", "routing.cel.operators.greaterThan", ">"),
+	operator("<", "routing.cel.operators.lessThan", "<"),
+	operator(">=", "routing.cel.operators.greaterThanOrEqual", ">="),
+	operator("<=", "routing.cel.operators.lessThanOrEqual", "<="),
 
 	// List operators
-	{ name: "in", label: "is in list", celSyntax: "in" },
-	{ name: "notIn", label: "is not in list", celSyntax: "!in" },
+	operator("in", "routing.cel.operators.in", "in"),
+	operator("notIn", "routing.cel.operators.notIn", "!in"),
 
 	// String operators
-	{ name: "contains", label: "contains", celSyntax: "contains" },
-	{ name: "beginsWith", label: "begins with", celSyntax: "startsWith" },
-	{ name: "endsWith", label: "ends with", celSyntax: "endsWith" },
-	{ name: "matches", label: "matches (regex)", celSyntax: "matches" },
+	operator("contains", "routing.cel.operators.contains", "contains"),
+	operator("beginsWith", "routing.cel.operators.beginsWith", "startsWith"),
+	operator("endsWith", "routing.cel.operators.endsWith", "endsWith"),
+	operator("matches", "routing.cel.operators.matches", "matches"),
 
 	// Existence operators
-	{ name: "null", label: "does not exist", celSyntax: "!has" },
-	{ name: "notNull", label: "exists", celSyntax: "has" },
+	operator("null", "routing.cel.operators.null", "!has"),
+	operator("notNull", "routing.cel.operators.notNull", "has"),
 ];
 
 /**

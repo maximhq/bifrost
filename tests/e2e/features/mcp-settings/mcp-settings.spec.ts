@@ -33,8 +33,19 @@ test.describe('MCP Settings', () => {
       await coreConfigApi.updateClientConfig(request, { mcp_code_mode_limits: originalLimits ?? {} })
     })
 
+    test('should keep code mode settings collapsed until opened', async ({ mcpSettingsPage }) => {
+      await expect(mcpSettingsPage.codeModeTrigger).toBeVisible()
+      await expect(mcpSettingsPage.codeModeTrigger).toHaveAttribute('aria-expanded', 'false')
+      await expect(mcpSettingsPage.codeModeLimits).toBeHidden()
+      await expect(mcpSettingsPage.page.getByTestId('mcp-binding-level')).toBeHidden()
+
+      await mcpSettingsPage.openCodeModeSettings()
+      await expect(mcpSettingsPage.codeModeTrigger).toHaveAttribute('aria-expanded', 'true')
+      await expect(mcpSettingsPage.page.getByTestId('mcp-binding-level')).toBeVisible()
+    })
+
     test('should show every limit with its default as the placeholder', async ({ mcpSettingsPage }) => {
-      await expect(mcpSettingsPage.codeModeLimits).toBeVisible()
+      await mcpSettingsPage.openCodeModeSettings()
       const defaults: [string, string][] = [
         ['max_source_bytes', '65536'],
         ['max_steps', '1000000'],
@@ -52,6 +63,7 @@ test.describe('MCP Settings', () => {
     test('should save a limit and keep empty fields on their defaults', async ({ mcpSettingsPage, request }) => {
       await coreConfigApi.updateClientConfig(request, { mcp_code_mode_limits: {} })
       await mcpSettingsPage.goto()
+      await mcpSettingsPage.openCodeModeSettings()
 
       await mcpSettingsPage.codeModeLimitInput('max_tool_calls').fill('200')
       await expect(mcpSettingsPage.saveBtn).toBeEnabled()
@@ -63,6 +75,7 @@ test.describe('MCP Settings', () => {
       expect(saved.max_steps ?? 0).toBe(0)
 
       await mcpSettingsPage.goto()
+      await mcpSettingsPage.openCodeModeSettings()
       await expect(mcpSettingsPage.codeModeLimitInput('max_tool_calls')).toHaveValue('200')
       await expect(mcpSettingsPage.codeModeLimitInput('max_steps')).toHaveValue('')
       await expect(mcpSettingsPage.saveBtn).toBeDisabled()
@@ -71,6 +84,7 @@ test.describe('MCP Settings', () => {
     test('should reject a value size below the minimum without saving', async ({ mcpSettingsPage, request }) => {
       await coreConfigApi.updateClientConfig(request, { mcp_code_mode_limits: {} })
       await mcpSettingsPage.goto()
+      await mcpSettingsPage.openCodeModeSettings()
 
       await mcpSettingsPage.codeModeLimitInput('max_value_bytes').fill('10')
       await mcpSettingsPage.saveBtn.click()
@@ -278,6 +292,47 @@ test.describe('MCP Settings', () => {
 
       const saved = (await coreConfigApi.get(request)).client_config.oauth2_server_config as { allowed_redirect_uris?: string[] } | undefined
       expect(saved?.allowed_redirect_uris ?? []).toEqual([])
+    })
+  })
+
+  test.describe('Max protocol version', () => {
+    // Both tests rewrite the shared global cap, so they must not interleave.
+    test.describe.configure({ mode: 'serial' })
+    let original: string
+
+    test.beforeEach(async ({ request }) => {
+      original = ((await coreConfigApi.get(request)).client_config.mcp_max_protocol_version as string | undefined) || 'auto'
+    })
+
+    test.afterEach(async ({ request }) => {
+      await coreConfigApi.updateClientConfig(request, { mcp_max_protocol_version: original })
+    })
+
+    test('should save a global max protocol version and show it after reload', async ({ mcpSettingsPage, request }) => {
+      await coreConfigApi.updateClientConfig(request, { mcp_max_protocol_version: 'auto' })
+      await mcpSettingsPage.goto()
+      await expect(mcpSettingsPage.maxProtocolVersionSelect).toContainText('Auto (latest)')
+
+      await mcpSettingsPage.selectMaxProtocolVersion('2025-06-18')
+      await expect(mcpSettingsPage.saveBtn).toBeEnabled()
+      await mcpSettingsPage.saveBtn.click()
+      await mcpSettingsPage.waitForSuccessToast()
+      expect((await coreConfigApi.get(request)).client_config.mcp_max_protocol_version).toBe('2025-06-18')
+
+      await mcpSettingsPage.goto()
+      await expect(mcpSettingsPage.maxProtocolVersionSelect).toContainText('2025-06-18')
+      await expect(mcpSettingsPage.saveBtn).toBeDisabled()
+    })
+
+    test('should keep the global cap when another setting is saved', async ({ mcpSettingsPage, request }) => {
+      await coreConfigApi.updateClientConfig(request, { mcp_max_protocol_version: '2025-11-25' })
+      await mcpSettingsPage.goto()
+      const depth = await mcpSettingsPage.maxAgentDepthInput.inputValue()
+      await mcpSettingsPage.maxAgentDepthInput.fill(String(Number(depth) + 1))
+      await mcpSettingsPage.saveBtn.click()
+      await mcpSettingsPage.waitForSuccessToast()
+      expect((await coreConfigApi.get(request)).client_config.mcp_max_protocol_version).toBe('2025-11-25')
+      await coreConfigApi.updateClientConfig(request, { mcp_agent_depth: Number(depth) })
     })
   })
 })

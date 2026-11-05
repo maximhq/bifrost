@@ -270,10 +270,16 @@ func (s *flushCountingStore) FlushAgentLogs(context.Context, time.Time) error {
 	s.mu.Unlock()
 	return nil
 }
+func (s *flushCountingStore) FlushRelayLogs(context.Context, time.Time) error {
+	s.mu.Lock()
+	s.flushes++
+	s.mu.Unlock()
+	return nil
+}
 
 // TestCleanupTickSkipsFlushWhileMigrating pins that the periodic
 // processing-row deletes stay off the logs table while another node migrates,
-// and run as usual (all three tables) once the lock is released.
+// and run as usual (all four tables) once the lock is released.
 func TestCleanupTickSkipsFlushWhileMigrating(t *testing.T) {
 	store := &flushCountingStore{LogStore: newTestStore(t)}
 	plugin := &LoggerPlugin{ctx: context.Background(), store: store, logger: testLogger{}}
@@ -286,7 +292,7 @@ func TestCleanupTickSkipsFlushWhileMigrating(t *testing.T) {
 
 	store.setMigrating(false)
 	plugin.cleanupOldProcessingLogs()
-	if got := store.count(); got != 3 {
-		t.Fatalf("expected the LLM, MCP and A2A flushes once the lock cleared, got %d", got)
+	if got := store.count(); got != 4 {
+		t.Fatalf("expected the LLM, MCP, A2A and relay flushes once the lock cleared, got %d", got)
 	}
 }

@@ -13,6 +13,75 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestToOpenAIResponsesRequest_PreservesNamedOutputWithoutCallID(t *testing.T) {
+	const body = `{"model":"gpt-6.1-sol","input":[{"role":"user","content":"Hello"},{"type":"function_call_output","name":"aaaaaa","output":"hi"}]}`
+	var request OpenAIResponsesRequest
+	require.NoError(t, sonic.Unmarshal([]byte(body), &request))
+	bifrostRequest := request.ToBifrostResponsesRequest(nil)
+	bifrostRequest.Provider = schemas.OpenAI
+	require.Equal(t, "aaaaaa", *bifrostRequest.Input[1].Name)
+	converted := ToOpenAIResponsesRequest(nil, bifrostRequest)
+	wire, err := sonic.Marshal(converted)
+	require.NoError(t, err)
+	var payload struct {
+		Input []json.RawMessage `json:"input"`
+	}
+	require.NoError(t, sonic.Unmarshal(wire, &payload))
+	require.Len(t, payload.Input, 2)
+	require.JSONEq(t, `{"type":"function_call_output","name":"aaaaaa","output":"hi"}`, string(payload.Input[1]))
+	require.Equal(t, "aaaaaa", *bifrostRequest.Input[1].Name)
+}
+
+func TestToOpenAIResponsesRequest_NamedOutputCallIDVariants(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		item string
+		want string
+	}{
+		{"null call ID", `{"type":"function_call_output","name":"notify","call_id":null,"output":"hi"}`, `{"type":"function_call_output","name":"notify","output":"hi"}`},
+		{"empty call ID", `{"type":"function_call_output","name":"notify","call_id":"","output":"hi"}`, `{"type":"function_call_output","name":"notify","call_id":"","output":"hi"}`},
+		{"paired output", `{"type":"function_call_output","name":"notify","call_id":"call_123","output":"hi"}`, `{"type":"function_call_output","call_id":"call_123","output":"hi"}`},
+		{"no name", `{"type":"function_call_output","output":"hi"}`, `{"type":"function_call_output","output":"hi"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var request OpenAIResponsesRequest
+			require.NoError(t, sonic.Unmarshal([]byte(`{"model":"gpt-6.1-sol","input":[`+tc.item+`]}`), &request))
+			bifrostRequest := request.ToBifrostResponsesRequest(nil)
+			bifrostRequest.Provider = schemas.OpenAI
+			before, err := schemas.MarshalSorted(bifrostRequest)
+			require.NoError(t, err)
+			converted := ToOpenAIResponsesRequest(nil, bifrostRequest)
+			wire, err := schemas.MarshalSorted(converted.Input.OpenAIResponsesRequestInputArray[0])
+			require.NoError(t, err)
+			require.JSONEq(t, tc.want, string(wire))
+			after, err := schemas.MarshalSorted(bifrostRequest)
+			require.NoError(t, err)
+			require.Equal(t, string(before), string(after), "conversion must not mutate the caller's input")
+		})
+	}
+}
+
+func BenchmarkToOpenAIResponsesRequestNamedOutput(b *testing.B) {
+	for _, tc := range []struct{ name, item string }{
+		{"ordinary-message", `{"role":"user","content":"Hello"}`},
+		{"paired-output", `{"type":"function_call_output","name":"notify","call_id":"call_123","output":"hi"}`},
+		{"unpaired-output", `{"type":"function_call_output","name":"notify","output":"hi"}`},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			var request OpenAIResponsesRequest
+			if err := sonic.Unmarshal([]byte(`{"model":"gpt-6.1-sol","input":[`+tc.item+`]}`), &request); err != nil {
+				b.Fatal(err)
+			}
+			bifrostRequest := request.ToBifrostResponsesRequest(nil)
+			bifrostRequest.Provider = schemas.OpenAI
+			b.ReportAllocs()
+			for b.Loop() {
+				_ = ToOpenAIResponsesRequest(nil, bifrostRequest)
+			}
+		})
+	}
+}
+
 func TestToOpenAIResponsesRequest_ReasoningOnlyMessageSkip(t *testing.T) {
 	tests := []struct {
 		name                     string
@@ -428,6 +497,147 @@ func TestToOpenAIResponsesRequest_ReasoningContentBlocksDropped(t *testing.T) {
 			t.Fatalf("expected gpt-oss to keep both reasoning blocks, got %#v", c)
 		}
 	})
+}
+
+// TestToOpenAIResponsesRequest_VLLMKeepsReplayedReasoningContent pins that a replayed
+// Anthropic thinking block (summary [] + one reasoning_text block) reaches vLLM's
+// Responses endpoint with its content intact, whatever the model name. vLLM reads a
+// reasoning item's content back into the prompt; dropping it hid the model's own
+// earlier reasoning from it on the next turn.
+func TestToOpenAIResponsesRequest_VLLMKeepsReplayedReasoningContent(t *testing.T) {
+	thinking := "I privately choose the code word PAMPLEMOUSSE-47."
+	bifrostReq := &schemas.BifrostResponsesRequest{
+		Provider: schemas.VLLM,
+		Model:    "deepseek-v4.1-flash",
+		Input: []schemas.ResponsesMessage{{
+			Type:               schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
+			Role:               schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+			ResponsesReasoning: &schemas.ResponsesReasoning{Summary: []schemas.ResponsesReasoningSummary{}},
+			Content: &schemas.ResponsesMessageContent{
+				ContentBlocks: []schemas.ResponsesMessageContentBlock{{
+					Type:      schemas.ResponsesOutputMessageContentTypeReasoning,
+					Text:      schemas.Ptr(thinking),
+					Signature: schemas.Ptr("sig-123"),
+				}},
+			},
+		}},
+	}
+
+	result := ToOpenAIResponsesRequest(nil, bifrostReq)
+	require.NotNil(t, result)
+	require.Len(t, result.Input.OpenAIResponsesRequestInputArray, 1, "the reasoning item must be replayed to vLLM")
+	c := result.Input.OpenAIResponsesRequestInputArray[0].Content
+	require.NotNil(t, c)
+	require.Len(t, c.ContentBlocks, 1)
+	require.Equal(t, thinking, *c.ContentBlocks[0].Text)
+	require.Nil(t, c.ContentBlocks[0].Signature, "the Anthropic signature must not reach the Responses wire")
+
+	// The OpenAI-hosted path for the same name still drops the reasoning-only item.
+	bifrostReq.Provider = schemas.OpenAI
+	result = ToOpenAIResponsesRequest(nil, bifrostReq)
+	require.NotNil(t, result)
+	require.Empty(t, result.Input.OpenAIResponsesRequestInputArray)
+}
+
+// TestToOpenAIResponsesRequest_SummaryRewrittenAsContentKeepsSummaryArray pins that a
+// summary-only reasoning item (history from an OpenAI model) rewritten as content blocks
+// for vLLM or gpt-oss still carries summary: []. vLLM validates against OpenAI's
+// ResponseReasoningItem, where summary is required; without it the item matches no input
+// variant and the request fails with "203 validation errors".
+func TestToOpenAIResponsesRequest_SummaryRewrittenAsContentKeepsSummaryArray(t *testing.T) {
+	for _, tc := range []struct {
+		provider schemas.ModelProvider
+		model    string
+	}{{schemas.VLLM, "glm-4.7-flash"}, {schemas.VLLM, "gpt-oss-20b"}, {schemas.OpenAI, "gpt-oss-120b"}} {
+		t.Run(string(tc.provider)+"/"+tc.model, func(t *testing.T) {
+			result := ToOpenAIResponsesRequest(nil, &schemas.BifrostResponsesRequest{
+				Provider: tc.provider,
+				Model:    tc.model,
+				Input: []schemas.ResponsesMessage{{
+					ID:   schemas.Ptr("rs_x"),
+					Type: schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
+					ResponsesReasoning: &schemas.ResponsesReasoning{Summary: []schemas.ResponsesReasoningSummary{
+						{Type: schemas.ResponsesReasoningContentBlockTypeSummaryText, Text: "I choose the code word ZUCCHINI-9."},
+					}},
+				}},
+			})
+			require.NotNil(t, result)
+			wire, err := sonic.Marshal(result)
+			require.NoError(t, err)
+			var payload struct {
+				Input []struct {
+					Summary *[]json.RawMessage `json:"summary"`
+					Content []struct {
+						Text string `json:"text"`
+					} `json:"content"`
+				} `json:"input"`
+			}
+			require.NoError(t, sonic.Unmarshal(wire, &payload))
+			require.Len(t, payload.Input, 1, "wire: %s", wire)
+			item := payload.Input[0]
+			require.Len(t, item.Content, 1, "summary not rewritten as content: %s", wire)
+			require.Equal(t, "I choose the code word ZUCCHINI-9.", item.Content[0].Text)
+			require.NotNil(t, item.Summary, "summary missing from the rewritten item: %s", wire)
+			require.Empty(t, *item.Summary)
+		})
+	}
+}
+
+// TestToOpenAIResponsesRequest_VLLMJoinsReasoningBlocks pins that vLLM receives a reasoning
+// item's text as one content block. vLLM's general reader keeps only content[0] (or
+// summary[0]), so a second thinking block or summary part never reached the model. Every
+// part is kept, in order, joined with "\n" as vLLM's own harmony reader does. Other hosts
+// read every block and keep receiving them separately.
+func TestToOpenAIResponsesRequest_VLLMJoinsReasoningBlocks(t *testing.T) {
+	blocks := func() *schemas.ResponsesMessageContent {
+		return &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{
+			{Type: schemas.ResponsesOutputMessageContentTypeReasoning, Text: schemas.Ptr("The code word begins with PAMPLE."), Signature: schemas.Ptr("sig-1")},
+			{Type: schemas.ResponsesOutputMessageContentTypeReasoning, Text: schemas.Ptr("It ends with MOUSSE-47.")},
+		}}
+	}
+	summaries := []schemas.ResponsesReasoningSummary{
+		{Type: schemas.ResponsesReasoningContentBlockTypeSummaryText, Text: "The code word begins with PAMPLE."},
+		{Type: schemas.ResponsesReasoningContentBlockTypeSummaryText, Text: "It ends with MOUSSE-47."},
+	}
+	const joined = "The code word begins with PAMPLE.\nIt ends with MOUSSE-47."
+	for _, tc := range []struct {
+		name      string
+		provider  schemas.ModelProvider
+		model     string
+		input     schemas.ResponsesMessage
+		wantTexts []string
+	}{
+		{"vllm content blocks", schemas.VLLM, "qwen3.8-27b",
+			schemas.ResponsesMessage{ResponsesReasoning: &schemas.ResponsesReasoning{Summary: []schemas.ResponsesReasoningSummary{}}, Content: blocks()},
+			[]string{joined}},
+		{"vllm summaries rewritten as content", schemas.VLLM, "qwen3.8-27b",
+			schemas.ResponsesMessage{ResponsesReasoning: &schemas.ResponsesReasoning{Summary: summaries}},
+			[]string{joined}},
+		{"other gpt-oss host keeps separate blocks", schemas.BedrockMantle, "openai.gpt-oss-120b",
+			schemas.ResponsesMessage{ResponsesReasoning: &schemas.ResponsesReasoning{Summary: []schemas.ResponsesReasoningSummary{}}, Content: blocks()},
+			[]string{"The code word begins with PAMPLE.", "It ends with MOUSSE-47."}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.input.ID = schemas.Ptr("msg_rs_1")
+			tc.input.Type = schemas.Ptr(schemas.ResponsesMessageTypeReasoning)
+			original := tc.input.Content
+			result := ToOpenAIResponsesRequest(nil, &schemas.BifrostResponsesRequest{Provider: tc.provider, Model: tc.model, Input: []schemas.ResponsesMessage{tc.input}})
+			require.NotNil(t, result)
+			require.Len(t, result.Input.OpenAIResponsesRequestInputArray, 1)
+			c := result.Input.OpenAIResponsesRequestInputArray[0].Content
+			require.NotNil(t, c)
+			var texts []string
+			for _, b := range c.ContentBlocks {
+				require.Equal(t, schemas.ResponsesOutputMessageContentTypeReasoning, b.Type)
+				require.Nil(t, b.Signature, "signatures must not reach the Responses wire")
+				texts = append(texts, *b.Text)
+			}
+			require.Equal(t, tc.wantTexts, texts)
+			if original != nil {
+				require.Len(t, original.ContentBlocks, 2, "the caller's input was mutated")
+			}
+		})
+	}
 }
 
 func TestToOpenAIResponsesRequest_NormalizesReasoningEffort(t *testing.T) {
@@ -2919,6 +3129,80 @@ func TestToOpenAIResponsesRequest_StripsGeminiResidueFromResponsesInput(t *testi
 			origMutable: true,
 		},
 		{
+			// A web_search_call with a native OpenAI "ws_" id and a valid status is replayed
+			// as is: OpenAI rejects it without status ("Missing required parameter:
+			// input[N].status") and Codex-style backends without id (#8382).
+			name: "native web_search_call keeps id and status",
+			input: schemas.ResponsesMessage{
+				Type:   &webSearchCallType,
+				ID:     schemas.Ptr("ws_replay_probe"),
+				Status: schemas.Ptr("completed"),
+			},
+			wantWire: func(t *testing.T, item map[string]json.RawMessage) {
+				if string(item["id"]) != `"ws_replay_probe"` {
+					t.Errorf("id: got %s, want \"ws_replay_probe\"", item["id"])
+				}
+				if string(item["status"]) != `"completed"` {
+					t.Errorf("status: got %s, want \"completed\"", item["status"])
+				}
+			},
+			origMutable: true,
+		},
+		{
+			// OpenAI defines "incomplete" for an interrupted web search, and requires
+			// status on a replayed web_search_call just like the other values.
+			name: "native incomplete web_search_call keeps id and status",
+			input: schemas.ResponsesMessage{
+				Type:   &webSearchCallType,
+				ID:     schemas.Ptr("ws_replay_probe"),
+				Status: schemas.Ptr("incomplete"),
+			},
+			wantWire: func(t *testing.T, item map[string]json.RawMessage) {
+				if string(item["id"]) != `"ws_replay_probe"` {
+					t.Errorf("id: got %s, want \"ws_replay_probe\"", item["id"])
+				}
+				if string(item["status"]) != `"incomplete"` {
+					t.Errorf("status: got %s, want \"incomplete\"", item["status"])
+				}
+			},
+			origMutable: true,
+		},
+		{
+			// Gemini synthesizes "ws_<n>" for an ID-less search call and marks it completed.
+			// OpenAI does not know that id and answers 400 "Item with id ... not found".
+			name: "gemini synthetic ws_<n> web_search_call stripped",
+			input: schemas.ResponsesMessage{
+				Type:   &webSearchCallType,
+				ID:     schemas.Ptr("ws_0"),
+				Status: schemas.Ptr("completed"),
+			},
+			wantWire: func(t *testing.T, item map[string]json.RawMessage) {
+				for _, field := range []string{"id", "status"} {
+					if _, ok := item[field]; ok {
+						t.Errorf("%s present in wire request for web_search_call", field)
+					}
+				}
+			},
+			origMutable: true,
+		},
+		{
+			// A "ws_" id with a status OpenAI does not define is not a native item.
+			name: "web_search_call with ws_ id and foreign status stripped",
+			input: schemas.ResponsesMessage{
+				Type:   &webSearchCallType,
+				ID:     schemas.Ptr("ws_replay_probe"),
+				Status: schemas.Ptr("pending"),
+			},
+			wantWire: func(t *testing.T, item map[string]json.RawMessage) {
+				for _, field := range []string{"id", "status"} {
+					if _, ok := item[field]; ok {
+						t.Errorf("%s present in wire request for web_search_call", field)
+					}
+				}
+			},
+			origMutable: true,
+		},
+		{
 			name: "signature stripped from content blocks",
 			input: schemas.ResponsesMessage{
 				Type:   &messageType,
@@ -3118,13 +3402,18 @@ func TestToOpenAIResponsesRequest_StripsGeminiResidueFromResponsesInput(t *testi
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			// Store original pointers to verify immutability
-			origStatus := tc.input.Status
-			origID := tc.input.ID
-
 			req := &schemas.BifrostResponsesRequest{
 				Model: "gpt-4o",
 				Input: []schemas.ResponsesMessage{tc.input},
+			}
+			// Snapshot the request's own item, since tc.input is only copied into it
+			origStatus, origID := req.Input[0].Status, req.Input[0].ID
+			var origStatusVal, origIDVal string
+			if origStatus != nil {
+				origStatusVal = *origStatus
+			}
+			if origID != nil {
+				origIDVal = *origID
 			}
 
 			converted := ToOpenAIResponsesRequest(nil, req)
@@ -3157,10 +3446,10 @@ func TestToOpenAIResponsesRequest_StripsGeminiResidueFromResponsesInput(t *testi
 
 			// Verify caller's input is unmutated
 			if tc.origMutable {
-				if tc.input.Status != origStatus {
+				if req.Input[0].Status != origStatus || (origStatus != nil && *origStatus != origStatusVal) {
 					t.Error("original input status was mutated")
 				}
-				if tc.input.ID != origID {
+				if req.Input[0].ID != origID || (origID != nil && *origID != origIDVal) {
 					t.Error("original input ID was mutated")
 				}
 			} else {
@@ -3172,6 +3461,53 @@ func TestToOpenAIResponsesRequest_StripsGeminiResidueFromResponsesInput(t *testi
 						}
 					}
 				}
+			}
+		})
+	}
+}
+
+// Mantle requires an id on a replayed reasoning item and accepts any value, including the
+// msg_ ids it mints itself, so the non-rs_ strip must not reach it. OpenAI keeps the strip.
+func TestToOpenAIResponsesRequest_ReasoningIDOnMantle(t *testing.T) {
+	reasoningType := schemas.ResponsesMessageTypeReasoning
+	for _, tc := range []struct {
+		provider schemas.ModelProvider
+		wantID   bool
+	}{
+		{schemas.BedrockMantle, true},
+		{schemas.Bedrock, true},
+		{schemas.OpenAI, false},
+		{schemas.Azure, false},
+	} {
+		t.Run(string(tc.provider), func(t *testing.T) {
+			req := &schemas.BifrostResponsesRequest{
+				Provider: tc.provider,
+				Model:    "openai.gpt-oss-120b",
+				Input: []schemas.ResponsesMessage{{
+					Type: &reasoningType,
+					ID:   schemas.Ptr("msg_b742cb8249a3aff3"),
+					Content: &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{
+						{Type: schemas.ResponsesOutputMessageContentTypeReasoning, Text: schemas.Ptr("run ls")},
+					}},
+					ResponsesReasoning: &schemas.ResponsesReasoning{Summary: []schemas.ResponsesReasoningSummary{}},
+				}},
+			}
+			wire, err := sonic.Marshal(ToOpenAIResponsesRequest(nil, req))
+			if err != nil {
+				t.Fatalf("marshal wire request: %v", err)
+			}
+			var payload struct {
+				Input []map[string]json.RawMessage `json:"input"`
+			}
+			if err := sonic.Unmarshal(wire, &payload); err != nil || len(payload.Input) != 1 {
+				t.Fatalf("unmarshal wire request: %v (%s)", err, wire)
+			}
+			id, has := payload.Input[0]["id"]
+			if tc.wantID && string(id) != `"msg_b742cb8249a3aff3"` {
+				t.Errorf("id = %s, want the replayed msg_ id kept", id)
+			}
+			if !tc.wantID && has {
+				t.Errorf("id = %s, want it stripped", id)
 			}
 		})
 	}
@@ -3245,6 +3581,110 @@ func TestToOpenAIResponsesRequest_DefaultsImageDetail(t *testing.T) {
 	if original.Detail != nil {
 		t.Errorf("caller's input was mutated: detail = %q", *original.Detail)
 	}
+}
+
+// TestToOpenAIResponsesRequest_DefaultsToolOutputImageDetail verifies an input_image
+// returned by a tool (inside function_call_output.output) gets the same "auto"
+// default as one in a message's own content. vLLM rejects the whole request with
+// "detail: Field required" otherwise, and the image stays in history so every later
+// turn fails too.
+func TestToOpenAIResponsesRequest_DefaultsToolOutputImageDetail(t *testing.T) {
+	imageURL := "data:image/png;base64,iVBORw0KGgo="
+	toolOutput := func(callType schemas.ResponsesMessageType, detail *string) schemas.ResponsesMessage {
+		return schemas.ResponsesMessage{
+			Type: schemas.Ptr(callType),
+			ResponsesToolMessage: &schemas.ResponsesToolMessage{
+				CallID: schemas.Ptr("call_1"),
+				Output: &schemas.ResponsesToolMessageOutputStruct{
+					ResponsesFunctionToolCallOutputBlocks: []schemas.ResponsesMessageContentBlock{
+						{
+							Type: schemas.ResponsesInputMessageContentBlockTypeText,
+							Text: schemas.Ptr("here is the file"),
+						},
+						{
+							Type: schemas.ResponsesInputMessageContentBlockTypeImage,
+							ResponsesInputMessageContentBlockImage: &schemas.ResponsesInputMessageContentBlockImage{
+								ImageURL: &imageURL,
+								Detail:   detail,
+							},
+						},
+					},
+				},
+			},
+		}
+	}
+
+	tests := []struct {
+		name       string
+		message    schemas.ResponsesMessage
+		wantDetail string
+	}{
+		{"function_call_output missing detail", toolOutput(schemas.ResponsesMessageTypeFunctionCallOutput, nil), "auto"},
+		{"custom_tool_call_output missing detail", toolOutput(schemas.ResponsesMessageTypeCustomToolCallOutput, nil), "auto"},
+		{"explicit detail preserved", toolOutput(schemas.ResponsesMessageTypeFunctionCallOutput, schemas.Ptr("low")), "low"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			bifrostReq := &schemas.BifrostResponsesRequest{Model: "gpt-4o", Input: []schemas.ResponsesMessage{tt.message}}
+
+			req := ToOpenAIResponsesRequest(nil, bifrostReq)
+			require.NotNil(t, req)
+			blocks := req.Input.OpenAIResponsesRequestInputArray[0].ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks
+			require.Len(t, blocks, 2)
+			require.NotNil(t, blocks[1].ResponsesInputMessageContentBlockImage.Detail, "tool output image left without detail")
+			require.Equal(t, tt.wantDetail, *blocks[1].ResponsesInputMessageContentBlockImage.Detail)
+
+			data, err := sonic.Marshal(req)
+			require.NoError(t, err)
+			require.Contains(t, string(data), `"detail":"`+tt.wantDetail+`"`, "wire JSON: %s", data)
+
+			// Caller's input must remain untouched.
+			original := tt.message.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks[1].ResponsesInputMessageContentBlockImage
+			if tt.wantDetail == "auto" {
+				require.Nil(t, original.Detail, "caller's input was mutated")
+			}
+		})
+	}
+}
+
+// TestToOpenAIResponsesRequest_ChatIngressToolImageDetail drives a /v1/chat/completions
+// tool message carrying an image through the chat→Responses bridge: the image lands
+// in function_call_output.output and must leave with detail "auto".
+func TestToOpenAIResponsesRequest_ChatIngressToolImageDetail(t *testing.T) {
+	imageURL := "data:image/png;base64,iVBORw0KGgo="
+	chatReq := &schemas.BifrostChatRequest{
+		Model: "gpt-4o",
+		Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Read /tmp/img.png")}},
+			{
+				Role: schemas.ChatMessageRoleAssistant,
+				ChatAssistantMessage: &schemas.ChatAssistantMessage{
+					ToolCalls: []schemas.ChatAssistantMessageToolCall{{
+						ID:       schemas.Ptr("call_1"),
+						Type:     schemas.Ptr("function"),
+						Function: schemas.ChatAssistantMessageToolCallFunction{Name: schemas.Ptr("read_file"), Arguments: `{"path":"/tmp/img.png"}`},
+					}},
+				},
+			},
+			{
+				Role:            schemas.ChatMessageRoleTool,
+				ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: schemas.Ptr("call_1")},
+				Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{{
+					Type:           schemas.ChatContentBlockTypeImage,
+					ImageURLStruct: &schemas.ChatInputImage{URL: imageURL},
+				}}},
+			},
+		},
+	}
+
+	req := ToOpenAIResponsesRequest(nil, chatReq.ToResponsesRequest())
+	require.NotNil(t, req)
+	data, err := sonic.Marshal(req)
+	require.NoError(t, err)
+	wire := string(data)
+	require.Contains(t, wire, `"type":"function_call_output"`, "wire JSON: %s", wire)
+	require.Contains(t, wire, `"input_image"`, "wire JSON: %s", wire)
+	require.Equal(t, strings.Count(wire, `"input_image"`), strings.Count(wire, `"detail":"auto"`), "every input_image needs detail: %s", wire)
 }
 
 // TestToOpenAIResponsesRequest_DefaultsStrictOnFunctionTools verifies function tools
@@ -4840,6 +5280,80 @@ func TestToOpenAIResponsesRequest_StripsTextEditorMaxCharacters(t *testing.T) {
 	}
 }
 
+// The web_search_call branch and the image-detail default run for every input item, so the
+// benchmark covers a history without web searches or tool images (the common case), the same
+// history with one search per turn, and one with a tool returning an image per turn.
+func BenchmarkToOpenAIResponsesRequestInput(b *testing.B) {
+	messageType := schemas.ResponsesMessageTypeMessage
+	webSearchCallType := schemas.ResponsesMessageTypeWebSearchCall
+	functionCallOutputType := schemas.ResponsesMessageTypeFunctionCallOutput
+	imageURL := "data:image/png;base64,iVBORw0KGgo="
+	assistant := schemas.ResponsesInputMessageRoleAssistant
+	user := schemas.ResponsesInputMessageRoleUser
+	history := func(withSearch, withToolImage bool) []schemas.ResponsesMessage {
+		var input []schemas.ResponsesMessage
+		for i := 0; i < 8; i++ {
+			input = append(input, schemas.ResponsesMessage{
+				Type: &messageType,
+				Role: &user,
+				Content: &schemas.ResponsesMessageContent{
+					ContentStr: schemas.Ptr("what is new in the news today?"),
+				},
+			})
+			if withToolImage {
+				input = append(input, schemas.ResponsesMessage{
+					Type: &functionCallOutputType,
+					ResponsesToolMessage: &schemas.ResponsesToolMessage{
+						CallID: schemas.Ptr("call_bench"),
+						Output: &schemas.ResponsesToolMessageOutputStruct{
+							ResponsesFunctionToolCallOutputBlocks: []schemas.ResponsesMessageContentBlock{{
+								Type:                                   schemas.ResponsesInputMessageContentBlockTypeImage,
+								ResponsesInputMessageContentBlockImage: &schemas.ResponsesInputMessageContentBlockImage{ImageURL: &imageURL},
+							}},
+						},
+					},
+				})
+			}
+			if withSearch {
+				input = append(input, schemas.ResponsesMessage{
+					Type:   &webSearchCallType,
+					ID:     schemas.Ptr("ws_bench"),
+					Status: schemas.Ptr("completed"),
+				})
+			}
+			input = append(input, schemas.ResponsesMessage{
+				Type:   &messageType,
+				Role:   &assistant,
+				ID:     schemas.Ptr("msg_bench"),
+				Status: schemas.Ptr("completed"),
+				Content: &schemas.ResponsesMessageContent{
+					ContentBlocks: []schemas.ResponsesMessageContentBlock{
+						{Type: schemas.ResponsesOutputMessageContentTypeText, Text: schemas.Ptr("here is a summary")},
+					},
+				},
+			})
+		}
+		return input
+	}
+	for name, opts := range map[string]struct{ search, toolImage bool }{
+		"plain-history":      {},
+		"web-search-history": {search: true},
+		"tool-image-history": {toolImage: true},
+	} {
+		b.Run(name, func(b *testing.B) {
+			req := &schemas.BifrostResponsesRequest{
+				Provider: schemas.OpenAI,
+				Model:    "gpt-4o",
+				Input:    history(opts.search, opts.toolImage),
+			}
+			b.ReportAllocs()
+			for b.Loop() {
+				_ = ToOpenAIResponsesRequest(nil, req)
+			}
+		})
+	}
+}
+
 // TestToOpenAIResponsesRequest_MidConversationSystemFromDatasheet pins the Responses side of the
 // supports_mid_conversation_system_messages gate: system/developer items after the leading run
 // become <system-reminder> user items only when the datasheet row says false.
@@ -5079,4 +5593,91 @@ func TestToOpenAIResponsesRequest_DisableStoreContextKey(t *testing.T) {
 		require.True(t, *out.Store)
 		require.Equal(t, true, out.ExtraParams["store"])
 	})
+}
+
+// BenchmarkToOpenAIResponsesRequestReasoningReplay measures the replayed-reasoning id handling
+// on the OpenAI path (strips) and the Mantle path (keeps).
+func BenchmarkToOpenAIResponsesRequestReasoningReplay(b *testing.B) {
+	reasoningType := schemas.ResponsesMessageTypeReasoning
+	for _, provider := range []schemas.ModelProvider{schemas.OpenAI, schemas.BedrockMantle} {
+		b.Run(string(provider), func(b *testing.B) {
+			req := &schemas.BifrostResponsesRequest{
+				Provider: provider,
+				Model:    "openai.gpt-oss-120b",
+				Input: []schemas.ResponsesMessage{{
+					Type:               &reasoningType,
+					ID:                 schemas.Ptr("msg_b742cb8249a3aff3"),
+					ResponsesReasoning: &schemas.ResponsesReasoning{Summary: []schemas.ResponsesReasoningSummary{}},
+				}},
+			}
+			b.ReportAllocs()
+			for b.Loop() {
+				_ = ToOpenAIResponsesRequest(nil, req)
+			}
+		})
+	}
+}
+
+// Codex replays assistant message items carrying summary:null and encrypted_content.
+// Those fields decode into the embedded ResponsesReasoning, which used to route the
+// item through reasoning handling: content was stripped (OpenAI: "Missing required
+// parameter: 'input[N].content'") and summary was re-emitted (OpenAI rejects it on a
+// message), or, for non-reasoning models, the whole assistant turn was dropped.
+// OpenAI never mints encrypted_content on a message item and rejects any it receives
+// ("Encrypted content could not be decrypted or parsed"), even its own reasoning token;
+// forwarding it cost a failed call whose fail-soft retry also strips the genuine reasoning
+// items. So the message drops it for every model while separate reasoning items keep theirs.
+func TestToOpenAIResponsesRequest_MessageItemWithEncryptedContent(t *testing.T) {
+	const reasoning = `{"type":"reasoning","id":"rs_keep","summary":[],"encrypted_content":"gAAAA-reasoning"}`
+	const assistant = `{"type":"message","role":"assistant","status":"completed","phase":"final_answer","content":[{"type":"output_text","text":"ok","annotations":[]}],"summary":null,"encrypted_content":"gAAAA"}`
+	tests := []struct {
+		name          string
+		model         string
+		withReasoning bool
+	}{
+		{name: "reasoning model drops encrypted_content from the message only", model: "gpt-5-mini", withReasoning: true},
+		{name: "non-reasoning model drops encrypted_content", model: "gpt-4o"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			history := assistant
+			if tt.withReasoning {
+				history = reasoning + "," + assistant
+			}
+			body := `{"model":"` + tt.model + `","input":[{"role":"user","content":"hi"},` + history + `,{"role":"user","content":"hi again"}]}`
+			var request OpenAIResponsesRequest
+			require.NoError(t, sonic.Unmarshal([]byte(body), &request))
+			bifrostRequest := request.ToBifrostResponsesRequest(nil)
+			bifrostRequest.Provider = schemas.OpenAI
+
+			wire, err := sonic.Marshal(ToOpenAIResponsesRequest(nil, bifrostRequest))
+			require.NoError(t, err)
+			var payload struct {
+				Input []map[string]json.RawMessage `json:"input"`
+			}
+			require.NoError(t, sonic.Unmarshal(wire, &payload))
+
+			var item map[string]json.RawMessage
+			var reasoningItems []map[string]json.RawMessage
+			for _, in := range payload.Input {
+				switch string(in["type"]) {
+				case `"message"`:
+					if string(in["role"]) == `"assistant"` {
+						item = in
+					}
+				case `"reasoning"`:
+					reasoningItems = append(reasoningItems, in)
+				}
+			}
+			require.NotNil(t, item, "assistant turn must not be dropped: %s", wire)
+			require.JSONEq(t, `[{"type":"output_text","text":"ok","annotations":[]}]`, string(item["content"]), "content must survive: %s", wire)
+			require.NotContains(t, item, "summary", "OpenAI rejects summary on a message item: %s", wire)
+			require.JSONEq(t, `"final_answer"`, string(item["phase"]))
+			require.NotContains(t, item, "encrypted_content", "OpenAI rejects encrypted_content on a message item: %s", wire)
+			if tt.withReasoning {
+				require.Len(t, reasoningItems, 1, "the reasoning item must still be replayed: %s", wire)
+				require.JSONEq(t, `"gAAAA-reasoning"`, string(reasoningItems[0]["encrypted_content"]), "a separate reasoning item keeps its token: %s", wire)
+			}
+		})
+	}
 }

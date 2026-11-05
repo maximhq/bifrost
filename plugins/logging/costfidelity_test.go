@@ -337,6 +337,18 @@ func TestApplyServedTierToEntryRecordsResponseAndUsageSources(t *testing.T) {
 		}
 	})
 
+	t.Run("from passthrough usage", func(t *testing.T) {
+		entry := &logstore.Log{}
+		applyServedTierToEntry(entry, &schemas.BifrostResponse{
+			PassthroughResponse: &schemas.BifrostPassthroughResponse{
+				PassthroughUsage: &schemas.BifrostPassthroughUsage{ServiceTier: &flex},
+			},
+		}, nil)
+		if entry.ServiceTier == nil || *entry.ServiceTier != "flex" {
+			t.Fatalf("expected service_tier flex, got %v", entry.ServiceTier)
+		}
+	})
+
 	t.Run("a later usage-only chunk does not blank an established tier", func(t *testing.T) {
 		entry := &logstore.Log{}
 		applyServedTierToEntry(entry, &schemas.BifrostResponse{
@@ -1446,6 +1458,25 @@ func TestCalculateVideoAggregateCost_RepricesFromCapturedDimensions(t *testing.T
 	var roundTripped schemas.BifrostVideoDebug
 	require.NoError(t, sonic.UnmarshalString(videoDebugJSON, &roundTripped))
 	assert.Equal(t, "1792x1024", roundTripped.Accounting.Size)
+}
+
+// Seedance settles on the task's metered tokens, so repricing must read them back
+// from the accounting record rather than fall to a per-second rate it lacks.
+func TestCalculateVideoAggregateCost_RepricesFromOutputTokens(t *testing.T) {
+	plugin := newCostFidelityPlugin(t)
+	entry := videoSettlementRow("v-seedance", &schemas.VideoAccountingDebug{
+		Seconds:      new(5),
+		Size:         "720p",
+		OutputCount:  1,
+		OutputTokens: 108900,
+		RequestType:  schemas.VideoGenerationRequest,
+	}, schemas.VideoStatusCompleted)
+	entry.Provider = "byteplus"
+	entry.Model = "dreamina-seedance-2-0-260128"
+
+	cost, _, err := repriceAggregate(t, plugin, entry)
+	require.NoError(t, err)
+	assertCostsEqual(t, "per-video-token reprice", cost, 108900*0.000007)
 }
 
 // A provider that reported its own cost is right about its own bill. Without this

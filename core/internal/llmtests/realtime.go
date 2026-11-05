@@ -54,7 +54,7 @@ func RunRealtimeTest(t *testing.T, client *bifrost.Bifrost, ctx context.Context,
 			return
 		}
 
-		wsURL, urlErr := rtProvider.RealtimeWebSocketURL(key, testConfig.RealtimeModel, "")
+		wsURL, urlErr := rtProvider.RealtimeWebSocketURL(bfCtx, key, testConfig.RealtimeModel, "")
 		if urlErr != nil {
 			t.Fatalf("failed to build realtime URL for provider %s: %v", testConfig.Provider, urlErr)
 		}

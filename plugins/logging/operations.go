@@ -25,6 +25,8 @@ const (
 	logStatusSuccess    = "success"
 	logStatusError      = "error"
 	logStatusCancelled  = "cancelled"
+	// An MCP round whose server asked the caller for input; the retry is its own row.
+	logStatusInputRequired = "input_required"
 )
 
 func logStatusForError(err *schemas.BifrostError) string {
@@ -115,6 +117,7 @@ func (p *LoggerPlugin) insertInitialLogEntry(
 	if data.App != "" {
 		entry.App = new(clampString(data.App, maxPersistedAppLen))
 	}
+	entry.ClientIP = optionalString(data.ClientIP)
 	return p.store.CreateIfNotExists(ctx, entry)
 }
 
@@ -491,6 +494,7 @@ func (p *LoggerPlugin) applyStreamingOutputToEntry(entry *logstore.Log, streamRe
 			// Raw response
 			if streamResponse.Data.RawResponse != nil {
 				entry.RawResponse = *streamResponse.Data.RawResponse
+				entry.RawResponseFormat = streamResponse.Data.RawResponseFormat
 			}
 		}
 	}
@@ -534,6 +538,8 @@ func applyServedTierToEntry(entry *logstore.Log, result *schemas.BifrostResponse
 		case result.ResponsesStreamResponse != nil && result.ResponsesStreamResponse.Response != nil:
 			r := result.ResponsesStreamResponse.Response
 			serviceTier, speed, inferenceGeo = r.ServiceTier, r.Speed, r.InferenceGeo
+		case result.PassthroughResponse != nil && result.PassthroughResponse.PassthroughUsage != nil:
+			serviceTier = result.PassthroughResponse.PassthroughUsage.ServiceTier
 		}
 	}
 	if usage != nil {

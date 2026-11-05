@@ -86,7 +86,7 @@ const (
 // request header block (server.read_buffer_size) is the effective bound.
 type TableOAuth2AuthorizeRequest struct {
 	ID                  string                       `gorm:"type:varchar(255);primaryKey" json:"id"`
-	ClientID            string                       `gorm:"type:varchar(255);not null;index" json:"client_id"`
+	ClientID            string                       `gorm:"type:text;not null;index" json:"client_id"`
 	RedirectURI         string                       `gorm:"type:text;not null" json:"-"`
 	State               string                       `gorm:"type:text;not null" json:"-"` // CSRF; returned in redirect
 	Scope               string                       `gorm:"type:text" json:"scope"`
@@ -122,17 +122,18 @@ func (TableOAuth2AuthorizeRequest) TableName() string { return "oauth2_authorize
 // after the legitimate client already rotated — all tokens sharing the FamilyID
 // are revoked immediately, per the OAuth 2.0 Security BCP (RFC 9700 §2.2.2).
 type TableOAuth2RefreshToken struct {
-	ID         string     `gorm:"type:varchar(255);primaryKey" json:"id"`
-	TokenHash  string     `gorm:"type:varchar(255);uniqueIndex;not null" json:"-"`   // SHA256 hex
-	FamilyID   string     `gorm:"type:varchar(255);not null;index" json:"family_id"` // authorize request ID
-	ClientID   string     `gorm:"type:varchar(255);not null;index" json:"client_id"`
-	BfMode     string     `gorm:"type:varchar(20);not null" json:"bf_mode"` // user|vk|session
-	BfSub      string     `gorm:"type:varchar(255);not null" json:"bf_sub"` // resolved identity
-	Scope      string     `gorm:"type:text" json:"scope"`
-	Resource   string     `gorm:"type:text;not null" json:"-"` // RFC 8707 resource indicator; preserved across rotations for the JWT aud claim
-	RevokedAt  *time.Time `gorm:"index" json:"revoked_at,omitempty"`
-	LastUsedAt *time.Time `gorm:"index" json:"last_used_at,omitempty"`
-	CreatedAt  time.Time  `gorm:"not null" json:"created_at"`
+	ID                string     `gorm:"type:varchar(255);primaryKey" json:"id"`
+	TokenHash         string     `gorm:"type:varchar(255);uniqueIndex;not null" json:"-"`   // SHA256 hex
+	FamilyID          string     `gorm:"type:varchar(255);not null;index" json:"family_id"` // authorize request ID
+	ClientID          string     `gorm:"type:text;not null;index" json:"client_id"`
+	BfMode            string     `gorm:"type:varchar(20);not null" json:"bf_mode"` // user|vk|session
+	BfSub             string     `gorm:"type:varchar(255);not null" json:"bf_sub"` // resolved identity
+	Scope             string     `gorm:"type:text" json:"scope"`
+	Resource          string     `gorm:"type:text;not null" json:"-"` // RFC 8707 resource indicator; preserved across rotations for the JWT aud claim
+	ClientDisplayName string     `gorm:"type:text" json:"-"`          // client_name shown at consent; the name of a metadata-document client, which has no oauth2_clients row
+	RevokedAt         *time.Time `gorm:"index" json:"revoked_at,omitempty"`
+	LastUsedAt        *time.Time `gorm:"index" json:"last_used_at,omitempty"`
+	CreatedAt         time.Time  `gorm:"not null" json:"created_at"`
 }
 
 func (TableOAuth2RefreshToken) TableName() string { return "oauth2_refresh_tokens" }

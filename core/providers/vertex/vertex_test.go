@@ -59,6 +59,7 @@ func TestVertex(t *testing.T) {
 		MultimodalEmbeddingModel: "gemini-embedding-2-preview",
 		RerankModel:              rerankModel,
 		ReasoningModel:           "claude-4.5-haiku",
+		WebSearchChatModel:       "claude-sonnet-4-5", // Anthropic web_search is a Claude-on-Vertex tool; Gemini drops it
 		ImageGenerationModel:     "gemini-2.5-flash-image",
 		ImageEditModel:           "gemini-2.5-flash-image",
 		VideoGenerationModel:     "veo-3.1-generate-preview",

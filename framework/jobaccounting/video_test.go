@@ -154,6 +154,24 @@ func TestVideoSettle_ProviderReportedCostWins(t *testing.T) {
 		"a provider that reports its own figure is never overridden by an estimate")
 }
 
+// The settlement row's accounting record is what repricing reads back, so the
+// metered tokens a token-priced provider settled on must land on it.
+func TestVideoSettle_RecordsOutputTokensOnAccounting(t *testing.T) {
+	job := videoJob(t, "vid_tokens", generationDims("sora-2-pro", "1280x720", 5))
+	settlement := settleVideo(t, job, &schemas.BifrostVideoGenerationResponse{
+		Status: schemas.VideoStatusCompleted,
+		Videos: []schemas.VideoOutput{{Type: schemas.VideoOutputTypeURL}},
+		Usage:  &schemas.VideoUsage{OutputTokens: 108900},
+	})
+
+	require.NotNil(t, settlement.ApplyDebug)
+	entry := &logstore.Log{}
+	settlement.ApplyDebug(entry)
+	require.NotNil(t, entry.VideoDebugParsed)
+	require.NotNil(t, entry.VideoDebugParsed.Accounting)
+	assert.Equal(t, 108900, entry.VideoDebugParsed.Accounting.OutputTokens)
+}
+
 // A failed generation is a real price of zero, not an absence of one. Recording it
 // as unpriceable would leave free work parked in the sweeper forever.
 func TestVideoSettle_FailedJobIsPricedAtZero(t *testing.T) {

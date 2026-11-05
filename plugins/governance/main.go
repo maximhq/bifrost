@@ -11,10 +11,11 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/tidwall/gjson"
 	"sync"
 	"time"
 	"unsafe"
+
+	"github.com/tidwall/gjson"
 
 	"github.com/google/uuid"
 	bifrost "github.com/maximhq/bifrost/core"
@@ -1205,7 +1206,9 @@ func (p *GovernancePlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.
 	if isPassthrough || len(toolModels) > 0 {
 		var bodyModels []string
 		if isPassthrough {
-			bodyModels = passthroughBodyModels(req)
+			if p.bodyNamesModels(provider) {
+				bodyModels = passthroughBodyModels(req)
+			}
 			evaluationRequest.ModelUnseen = model == "" && len(bodyModels) == 0
 		}
 		for _, toolModel := range toolModels {
@@ -1483,6 +1486,12 @@ func passthroughBodyModels(req *schemas.BifrostRequest) []string {
 	return models
 }
 
+// bodyNamesModels reports whether a passthrough body's "model" is a Bifrost model. SageMaker's is the
+// container's own served name: the endpoint in the path is the model, and the router already set it.
+func (p *GovernancePlugin) bodyNamesModels(provider schemas.ModelProvider) bool {
+	return configuredBaseProvider(p.inMemoryStore, provider) != schemas.SageMaker
+}
+
 // namesModelsAsResources reports whether a provider name reaches Gemini or Vertex, whose bodies
 // name a model by its resource name rather than its bare id.
 func (p *GovernancePlugin) namesModelsAsResources(provider schemas.ModelProvider) bool {
@@ -1709,18 +1718,9 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 func (p *GovernancePlugin) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.BifrostMCPRequest) (*schemas.BifrostMCPRequest, *schemas.MCPPluginShortCircuit, error) {
 	toolName := req.GetToolName()
 
-	// Skip for non tool execution requests
-	if !req.RequestType.IsExecuteTool() {
-		return req, nil, nil
-	}
-
-	// Codemode meta-tools are not governed as tool executions, but their
-	// discovery side (listToolFiles, readToolFile, getToolDocs) enumerates tools
-	// through GetToolPerClient(ctx), which only sees what ctx carries. Stamp the
-	// access's tool allow-list first so that enumeration is scoped to the grant,
-	// exactly as the LLM path and /mcp do, then skip evaluation as before.
-	if bifrost.IsCodemodeTool(toolName) {
-		p.stampMCPToolAccessForCodemode(ctx)
+	// Skip everything but tool executions and prompt or resource reads
+	isRead := req.RequestType.IsPromptOrResourceRead()
+	if !req.RequestType.IsExecuteTool() && !isRead {
 		return req, nil, nil
 	}
 
@@ -1744,6 +1744,26 @@ func (p *GovernancePlugin) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.
 		}, nil
 	}
 
+	// A read has no tool to check: it may reach only the servers the access grants. Stamp the access's
+	// tool list, as /mcp does before core; core checks the server it picked against it after the hooks,
+	// so a direct Go caller is held to the grant too.
+	if isRead {
+		p.stampMCPToolAccessForCodemode(ctx)
+		return req, nil, nil
+	}
+
+	// Codemode meta-tools are evaluated like any tool call, so a caller who may not
+	// use tools at all is refused them too. They are in no grant's tool list, so
+	// the per-tool check below does not apply; instead their discovery side
+	// (listToolFiles, readToolFile, getToolDocs) enumerates tools through
+	// GetToolPerClient(ctx), which only sees what ctx carries, so the access's tool
+	// allow-list is stamped to scope that enumeration to the grant, exactly as the
+	// LLM path and /mcp do.
+	if bifrost.IsCodemodeTool(toolName) {
+		p.stampMCPToolAccessForCodemode(ctx)
+		return req, nil, nil
+	}
+
 	// The one question evaluation cannot answer: this specific tool. Evaluation checks the tools already
 	// injected into the request, which is not the tool being executed now, so the execution-time
 	// allow-list is enforced here.
@@ -1754,7 +1774,7 @@ func (p *GovernancePlugin) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.
 	// disagree. What is left is a question about the tool, which the access answers whatever granted it.
 	// A request carrying no access is unrestricted and may execute any tool, as it always could.
 	access := ctx.Grant().Access()
-	if access != nil && !access.IsMCPToolAllowed(toolName) && !hasMCPExecutionAuthorization(ctx, req) {
+	if access != nil && !mcpToolCallAllowed(ctx, req, access) {
 		ctx.SetValue(governanceRejectedContextKey, true)
 		return req, &schemas.MCPPluginShortCircuit{Error: &schemas.BifrostError{
 			Type:       bifrost.Ptr(string(DecisionMCPToolBlocked)),
@@ -1774,8 +1794,8 @@ func (p *GovernancePlugin) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.
 // itself is stamped. A request carrying no access is unrestricted and is left
 // untouched, as it is everywhere else. A credential that resolves to nothing,
 // or a context access cannot be resolved for at all (no grant installed), gets
-// an empty list: evaluation will refuse their tool calls, so discovery shows
-// them nothing either. An ungranted user the caller asked to have admitted is
+// an empty list; evaluation refuses both before this runs, so that list only
+// fails closed should it ever be reached. An ungranted user the caller asked to have admitted is
 // the exception on both sides, served and shown everything, as a key-less
 // request is.
 func (p *GovernancePlugin) stampMCPToolAccessForCodemode(ctx *schemas.BifrostContext) {
@@ -1824,7 +1844,7 @@ func (p *GovernancePlugin) PostMCPHook(ctx *schemas.BifrostContext, resp *schema
 	} else if bifrostErr != nil {
 		mcpReqType = bifrostErr.ExtraFields.MCPRequestType
 	}
-	if !mcpReqType.IsExecuteTool() {
+	if !mcpReqType.IsExecuteTool() && !mcpReqType.IsPromptOrResourceRead() {
 		return resp, bifrostErr, nil
 	}
 
@@ -2205,8 +2225,9 @@ func (p *GovernancePlugin) ReportUsage(ctx context.Context, usage jobaccounting.
 		// after it was created, so its window may well have rolled over in the
 		// meantime; without the reset the usage lands on the stale window and is
 		// then wiped by the reset worker. It adds tokensUsed and one request,
-		// which is exactly what a settled batch contributes.
-		if err := p.store.BumpRateLimitUsage(ctx, rateLimitID, usage.TokensUsed, true, true); err != nil {
+		// which is exactly what a settled batch contributes. A job whose create
+		// already counted as a request (an interaction run) adds tokens only.
+		if err := p.store.BumpRateLimitUsage(ctx, rateLimitID, usage.TokensUsed, true, !usage.SkipRequestCount); err != nil {
 			p.tracker.releaseBatchBilling(billingKey)
 			errs = append(errs, err)
 		}
@@ -2274,7 +2295,7 @@ func (p *GovernancePlugin) reportBatchModelUsage(ctx context.Context, usage joba
 			if usage.RequestID != "" && !p.tracker.tryClaimBatchBilling(billingKey) {
 				continue
 			}
-			if err := p.store.BumpRateLimitUsage(ctx, rateLimitID, modelUsage.TokensUsed, true, true); err != nil {
+			if err := p.store.BumpRateLimitUsage(ctx, rateLimitID, modelUsage.TokensUsed, true, !usage.SkipRequestCount); err != nil {
 				p.tracker.releaseBatchBilling(billingKey)
 				errs = append(errs, err)
 			}
