@@ -2884,6 +2884,25 @@ func converseRequiresSignedReasoning(model string) bool {
 	return schemas.ResolveModelCaps(schemas.Bedrock, model).BedrockRequiresSignedReasoning(schemas.IsAnthropicModel(model))
 }
 
+// converseAcceptsStopSequences reports whether Converse accepts inferenceConfig.stopSequences for model
+// most newer families 400 on it, so unknown models default to omitting it.
+func converseAcceptsStopSequences(model string) bool {
+	m := strings.ToLower(model)
+	switch {
+	case schemas.IsAnthropicModel(m), schemas.IsNovaModel(m), schemas.IsTitanModel(m),
+		schemas.IsLlamaModel(m), schemas.IsCohereModel(m):
+		return true
+	case strings.Contains(m, "deepseek.r1"), strings.Contains(m, "writer.palmyra-x"):
+		return true
+	}
+	for _, legacy := range []string{"mistral-7b", "mixtral-8x7b", "mistral-large-2402", "mistral-large-2407", "mistral-small-2402", "pixtral-large-2502"} {
+		if strings.Contains(m, legacy) {
+			return true
+		}
+	}
+	return false
+}
+
 // setConverseReasoningEffort writes the OpenAI-shaped reasoning field, mapping
 // the requested effort onto a rung the model publishes.
 func setConverseReasoningEffort(fields *schemas.OrderedMap, caps schemas.ModelCaps, levels *schemas.EffortControl, effort string) {
@@ -2932,8 +2951,7 @@ func convertInferenceConfig(params *schemas.ChatParameters, caps schemas.ModelCa
 		config.TopP = params.TopP
 	}
 
-	// GLM models on Bedrock reject the stopSequences field.
-	if params.Stop != nil && !caps.FieldUnsupported(schemas.FieldStop, schemas.IsGLMModel(caps.Model())) {
+	if params.Stop != nil && !caps.FieldUnsupported(schemas.FieldStop, !converseAcceptsStopSequences(caps.Model())) {
 		config.StopSequences = params.Stop
 	}
 

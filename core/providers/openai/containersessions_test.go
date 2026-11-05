@@ -44,8 +44,6 @@ func TestCountContainerSessions(t *testing.T) {
 		{"explicit container id was billed at create", `{"input":"go","tools":[{"type":"code_interpreter","container":"cntr_new"}]}`, codeCall, nil},
 		{"container replayed in input is a reuse", `{"input":[{"type":"code_interpreter_call","container_id":"cntr_new"}],"tools":[{"type":"code_interpreter","container":{"type":"auto"}}]}`, codeCall, nil},
 		{"replayed input with an expired container", `{"input":[{"type":"code_interpreter_call","container_id":"cntr_old"}],"tools":[{"type":"code_interpreter","container":{"type":"auto"}}]}`, codeCall, map[string]int{"default": 1}},
-		{"previous_response_id is treated as reuse", `{"previous_response_id":"resp_0","input":"go","tools":[{"type":"code_interpreter","container":{"type":"auto"}}]}`, codeCall, nil},
-		{"conversation is treated as reuse", `{"conversation":"conv_1","input":"go","tools":[{"type":"code_interpreter","container":{"type":"auto"}}]}`, codeCall, nil},
 		{"null conversation is not reuse", `{"conversation":null,"input":"go","tools":[{"type":"code_interpreter","container":{"type":"auto"}}]}`, codeCall, map[string]int{"default": 1}},
 		{"unused container is free", autoContainerRequest, `{"output":[{"type":"message","role":"assistant","content":[]}]}`, nil},
 		{"unreadable request", `not json`, codeCall, nil},
@@ -58,7 +56,68 @@ func TestCountContainerSessions(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			assert.Equal(t, tt.want, countContainerSessions([]byte(tt.request), parseOutput(t, tt.response)))
+			assert.Equal(t, tt.want, countContainerSessions([]byte(tt.request), parseOutput(t, tt.response), 1793777896))
+		})
+	}
+}
+
+// Live ids: cntr_6aeae0e8 started at 1793777896 inside its response; cntr_6aeae0ae at 1793777838 before it.
+func TestCountContainerSessions_StoredContext(t *testing.T) {
+	const createdAt = int64(1793777896)
+	autoTool := `"tools":[{"type":"code_interpreter","container":{"type":"auto","memory_limit":"4g"}}]`
+	shellTool := `"tools":[{"type":"shell","environment":{"type":"container_auto"}}]`
+	codeCall := func(id string) string {
+		return `{"output":[{"type":"code_interpreter_call","container_id":"` + id + `","status":"completed"}]}`
+	}
+	const started, reused = "cntr_6aeae0e8af3c819192ee54ef6dcdf633", "cntr_6aeae0ae9bcc8191b9a5f26f1bb35e14"
+
+	tests := []struct {
+		name, request, response string
+		createdAt               int64
+		want                    map[string]int
+	}{
+		{"previous_response_id, new container", `{"previous_response_id":"resp_0",` + autoTool + `}`, codeCall(started), createdAt, map[string]int{"4g": 1}},
+		{"conversation, new container", `{"conversation":"conv_1",` + autoTool + `}`, codeCall(started), createdAt, map[string]int{"4g": 1}},
+		{"conversation object, new container", `{"conversation":{"id":"conv_1"},` + autoTool + `}`, codeCall(started), createdAt, map[string]int{"4g": 1}},
+		{"previous_response_id, reused container", `{"previous_response_id":"resp_0",` + autoTool + `}`, codeCall(reused), createdAt, nil},
+		{"conversation, reused container", `{"conversation":"conv_1",` + autoTool + `}`, codeCall(reused), createdAt, nil},
+		{"started the second the response did", `{"previous_response_id":"resp_0",` + autoTool + `}`, codeCall("cntr_6aeae0e8"), createdAt, map[string]int{"4g": 1}},
+		{"started later in the response", `{"previous_response_id":"resp_0",` + autoTool + `}`, codeCall("cntr_6aeae1e8"), createdAt, map[string]int{"4g": 1}},
+		{"id time far past the response is not a timestamp", `{"previous_response_id":"resp_0",` + autoTool + `}`, codeCall("cntr_f1a2b3c4d5"), createdAt, nil},
+		{"non hex id", `{"previous_response_id":"resp_0",` + autoTool + `}`, codeCall("cntr_not-a-hex-id"), createdAt, nil},
+		{"unknown id prefix", `{"previous_response_id":"resp_0",` + autoTool + `}`, codeCall("container_6aeae0e8"), createdAt, nil},
+		{"short id", `{"previous_response_id":"resp_0",` + autoTool + `}`, codeCall("cntr_6ae"), createdAt, nil},
+		{"missing response time", `{"previous_response_id":"resp_0",` + autoTool + `}`, codeCall(started), 0, nil},
+		{"explicit container stays free", `{"previous_response_id":"resp_0","tools":[{"type":"code_interpreter","container":"` + started + `"}]}`, codeCall(started), createdAt, nil},
+		{"started container replayed in input stays free", `{"previous_response_id":"resp_0","input":[{"type":"code_interpreter_call","container_id":"` + started + `"}],` + autoTool + `}`, codeCall(started), createdAt, nil},
+		{"shell call without an id stays free", `{"previous_response_id":"resp_0",` + shellTool + `}`, `{"output":[{"type":"shell_call","call_id":"c1","status":"completed","action":{"commands":["ls"]}}]}`, createdAt, nil},
+		{"shell call with a new container", `{"conversation":"conv_1",` + shellTool + `}`, `{"output":[{"type":"shell_call","call_id":"c1","status":"completed","action":{"commands":["ls"]},"environment":{"type":"container_reference","container_id":"` + started + `"}}]}`, createdAt, map[string]int{"default": 1}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, countContainerSessions([]byte(tt.request), parseOutput(t, tt.response), tt.createdAt))
+		})
+	}
+}
+
+func TestExtractOpenAIPassthroughUsage_StoredContextContainer(t *testing.T) {
+	request := []byte(`{"previous_response_id":"resp_0","tools":[{"type":"code_interpreter","container":{"type":"auto"}}]}`)
+	response := func(id string) string {
+		return `{"id":"resp_1","created_at":1793777896,"output":[{"type":"code_interpreter_call","container_id":"` + id + `","status":"completed"}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}`
+	}
+	for name, wrap := range map[string]func(string) string{
+		"non streaming":   func(body string) string { return body },
+		"completed event": func(body string) string { return `{"type":"response.completed","response":` + body + `}` },
+	} {
+		t.Run(name, func(t *testing.T) {
+			u := ExtractOpenAIPassthroughUsage("POST", "/v1/responses", request, []byte(wrap(response("cntr_6aeae0e8af3c"))))
+			require.NotNil(t, u)
+			require.NotNil(t, u.LLMUsage.ToolUsage)
+			assert.Equal(t, map[string]int{"default": 1}, u.LLMUsage.ToolUsage.ContainerSessions)
+
+			u = ExtractOpenAIPassthroughUsage("POST", "/v1/responses", request, []byte(wrap(response("cntr_6aeae0ae9bcc"))))
+			require.NotNil(t, u)
+			assert.Nil(t, u.LLMUsage.ToolUsage)
 		})
 	}
 }
@@ -67,7 +126,7 @@ func TestRecordResponsesContainerSessions_ReportedPayload(t *testing.T) {
 	var resp schemas.BifrostResponsesResponse
 	require.NoError(t, sonic.Unmarshal([]byte(codeInterpreterResponse), &resp))
 
-	recordResponsesContainerSessions(&resp, []byte(autoContainerRequest))
+	recordResponsesServerToolUsage(&resp, []byte(autoContainerRequest))
 
 	require.NotNil(t, resp.Usage.ToolUsage)
 	assert.Equal(t, map[string]int{"1g": 1}, resp.Usage.ToolUsage.ContainerSessions)
@@ -106,7 +165,7 @@ func BenchmarkCountContainerSessions_NoContainerTool(b *testing.B) {
 	req := []byte(autoContainerRequest)
 	b.ReportAllocs()
 	for b.Loop() {
-		countContainerSessions(req, output)
+		countContainerSessions(req, output, 1)
 	}
 }
 
@@ -118,7 +177,7 @@ func BenchmarkCountContainerSessions_AutoContainer(b *testing.B) {
 	req := []byte(autoContainerRequest)
 	b.ReportAllocs()
 	for b.Loop() {
-		countContainerSessions(req, resp.Output)
+		countContainerSessions(req, resp.Output, 1)
 	}
 }
 
@@ -166,4 +225,118 @@ func TestResponsesStream_RecordsContainerSessions(t *testing.T) {
 	require.NotNil(t, last)
 	require.NotNil(t, last.Response.Usage.ToolUsage)
 	assert.Equal(t, map[string]int{"4g": 1}, last.Response.Usage.ToolUsage.ContainerSessions)
+}
+
+const imageToolResponse = `{"id":"resp_2","object":"response","created_at":1,"status":"completed","output":[],` +
+	`"tool_usage":{"image_gen":{"input_tokens":100,"input_tokens_details":{"image_tokens":0,"text_tokens":100},"output_tokens":5000,"output_tokens_details":{"image_tokens":5000,"text_tokens":0},"total_tokens":5100},"web_search":{"num_requests":0}},` +
+	`"usage":{"input_tokens":10,"output_tokens":2,"total_tokens":12}}`
+
+const imageToolRequest = `{"model":"gpt-6.1-sol","input":"draw","tools":[{"type":"image_generation","model":"gpt-image-1-mini"}]}`
+
+func TestRecordResponsesServerToolUsage_ImageGen(t *testing.T) {
+	var resp schemas.BifrostResponsesResponse
+	require.NoError(t, sonic.Unmarshal([]byte(imageToolResponse), &resp))
+	recordResponsesServerToolUsage(&resp, []byte(imageToolRequest))
+
+	require.NotNil(t, resp.Usage.ToolUsage)
+	require.NotNil(t, resp.Usage.ToolUsage.ImageGen)
+	assert.Equal(t, 5000, resp.Usage.ToolUsage.ImageGen.OutputTokensDetails.ImageTokens)
+	assert.Equal(t, "gpt-image-1-mini", resp.Usage.ToolUsage.ImageGenModel)
+
+	wire, err := sonic.Marshal(resp)
+	require.NoError(t, err)
+	assert.Contains(t, string(wire), `"image_gen":{"input_tokens":100`, "clients keep OpenAI's image_gen block")
+	assert.NotContains(t, string(wire), "image_gen_model", "derived model must not reach clients")
+}
+
+func TestRecordImageGenToolModel(t *testing.T) {
+	withTokens := func() *schemas.ToolUsage {
+		return &schemas.ToolUsage{ImageGen: &schemas.ImageGenToolUsage{TotalTokens: 5}}
+	}
+	t.Run("tool without a model uses the API default", func(t *testing.T) {
+		u := withTokens()
+		recordImageGenToolModel(u, []byte(`{"tools":[{"type":"image_generation"}]}`))
+		assert.Empty(t, u.ImageGenModel)
+	})
+	t.Run("ignores the other tools", func(t *testing.T) {
+		u := withTokens()
+		recordImageGenToolModel(u, []byte(`{"model":"gpt-6.1-sol","tools":[{"type":"function","name":"f"},{"type":"image_generation","model":"gpt-image-2.5-flare"}]}`))
+		assert.Equal(t, "gpt-image-2.5-flare", u.ImageGenModel)
+	})
+	t.Run("zero counts skip the parse", func(t *testing.T) {
+		u := &schemas.ToolUsage{ImageGen: &schemas.ImageGenToolUsage{}}
+		recordImageGenToolModel(u, []byte(imageToolRequest))
+		assert.Empty(t, u.ImageGenModel)
+	})
+}
+
+func TestExtractOpenAIPassthroughUsage_ImageGen(t *testing.T) {
+	for name, body := range map[string]string{
+		"non streaming":            imageToolResponse,
+		"response.completed event": `{"type":"response.completed","response":` + imageToolResponse + `}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			u := ExtractOpenAIPassthroughUsage("POST", "/v1/responses", []byte(imageToolRequest), []byte(body))
+			require.NotNil(t, u)
+			require.NotNil(t, u.LLMUsage.ToolUsage)
+			require.NotNil(t, u.LLMUsage.ToolUsage.ImageGen)
+			assert.Equal(t, 5100, u.LLMUsage.ToolUsage.ImageGen.TotalTokens)
+			assert.Equal(t, "gpt-image-1-mini", u.LLMUsage.ToolUsage.ImageGenModel)
+		})
+	}
+}
+
+func imageToolBifrostRequest() *schemas.BifrostResponsesRequest {
+	req := containerSessionsRequest4g()
+	req.Params.Tools = []schemas.ResponsesTool{{
+		Type:                         schemas.ResponsesToolTypeImageGeneration,
+		ResponsesToolImageGeneration: &schemas.ResponsesToolImageGeneration{Model: schemas.Ptr("gpt-image-1-mini")},
+	}}
+	return req
+}
+
+func TestResponses_RecordsImageGen(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(imageToolResponse))
+	}))
+	defer server.Close()
+
+	resp, bifrostErr := newStreamTestProvider(server.URL).Responses(newStreamTestContext(), testKey(), imageToolBifrostRequest())
+	require.Nil(t, bifrostErr)
+	require.NotNil(t, resp.Usage.ToolUsage)
+	assert.Equal(t, "gpt-image-1-mini", resp.Usage.ToolUsage.ImageGenModel)
+}
+
+func TestResponsesStream_RecordsImageGen(t *testing.T) {
+	server := completeSSEServer(t, "event: response.completed\ndata: {\"type\":\"response.completed\",\"sequence_number\":2,\"response\":"+imageToolResponse+"}\n\n")
+	defer server.Close()
+
+	stream, bifrostErr := newStreamTestProvider(server.URL).ResponsesStream(newStreamTestContext(), passthroughPostHook, nil, testKey(), imageToolBifrostRequest())
+	require.Nil(t, bifrostErr)
+	chunks := collectChunks(t, stream)
+	require.NotEmpty(t, chunks)
+	last := chunks[len(chunks)-1].BifrostResponsesStreamResponse
+	require.NotNil(t, last)
+	require.NotNil(t, last.Response.Usage.ToolUsage)
+	assert.Equal(t, 5000, last.Response.Usage.ToolUsage.ImageGen.OutputTokens)
+	assert.Equal(t, "gpt-image-1-mini", last.Response.Usage.ToolUsage.ImageGenModel)
+}
+
+func BenchmarkRecordImageGenToolModel_NoImages(b *testing.B) {
+	u := &schemas.ToolUsage{ImageGen: &schemas.ImageGenToolUsage{}}
+	req := []byte(imageToolRequest)
+	b.ReportAllocs()
+	for b.Loop() {
+		recordImageGenToolModel(u, req)
+	}
+}
+
+func BenchmarkRecordImageGenToolModel_WithImages(b *testing.B) {
+	u := &schemas.ToolUsage{ImageGen: &schemas.ImageGenToolUsage{TotalTokens: 5}}
+	req := []byte(imageToolRequest)
+	b.ReportAllocs()
+	for b.Loop() {
+		recordImageGenToolModel(u, req)
+	}
 }

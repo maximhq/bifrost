@@ -2169,7 +2169,7 @@ func HandleOpenAIResponsesRequest(
 	if names := customToolNamesToRestore(ctx, request); names != nil {
 		restoreCustomToolCalls(response.Output, names)
 	}
-	recordResponsesContainerSessions(response, jsonData)
+	recordResponsesServerToolUsage(response, jsonData)
 
 	response.ExtraFields.Latency = latency.Milliseconds()
 	response.ExtraFields.ProviderResponseHeaders = providerResponseHeaders
@@ -2517,7 +2517,7 @@ func HandleOpenAIResponsesStreaming(
 
 			response.ExtraFields.ChunkIndex = response.SequenceNumber
 			if response.Type == schemas.ResponsesStreamResponseTypeCompleted || response.Type == schemas.ResponsesStreamResponseTypeIncomplete {
-				recordResponsesContainerSessions(response.Response, jsonBody)
+				recordResponsesServerToolUsage(response.Response, jsonBody)
 				// Set raw request if enabled
 				if sendBackRawRequest {
 					providerUtils.ParseAndSetRawRequest(&response.ExtraFields, jsonBody)

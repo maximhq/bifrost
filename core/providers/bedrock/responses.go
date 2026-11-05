@@ -2860,8 +2860,7 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 			bedrockReq.ExtraParams = withoutTopLevelCacheControl(bifrostReq.Params.ExtraParams)
 			if stop, ok := schemas.SafeExtractStringSlice(bifrostReq.Params.ExtraParams["stop"]); ok {
 				delete(bedrockReq.ExtraParams, "stop")
-				// GLM models on Bedrock reject the stopSequences field.
-				if !caps.FieldUnsupported(schemas.FieldStop, schemas.IsGLMModel(capModel)) {
+				if !caps.FieldUnsupported(schemas.FieldStop, !converseAcceptsStopSequences(capModel)) {
 					inferenceConfig.StopSequences = stop
 				}
 			}

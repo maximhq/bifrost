@@ -32,13 +32,13 @@ import (
 var anthropicToolTypePrefixToFeature = map[string]func(ProviderFeatureSupport, schemas.ModelCaps) bool{
 	// OR in the Nova carve-outs to match ValidateResponsesToolsForProvider —
 	// WebSearch/CodeExecution are false for Bedrock, but WebSearchNova/CodeExecNova
-	// are true (nova_grounding / nova_code_interpreter system tools).
+	// are true for Nova 2 (nova_grounding / nova_code_interpreter system tools).
 	"web_search_": func(f ProviderFeatureSupport, c schemas.ModelCaps) bool {
-		return c.SupportsWebSearch(f.WebSearch || f.WebSearchNova)
+		return c.SupportsWebSearch(f.WebSearch || novaCarveOut(f.WebSearchNova, c))
 	},
 	"web_fetch_": func(f ProviderFeatureSupport, c schemas.ModelCaps) bool { return c.SupportsWebFetch(f.WebFetch) },
 	"code_execution_": func(f ProviderFeatureSupport, c schemas.ModelCaps) bool {
-		return c.SupportsCodeExecution(f.CodeExecution || f.CodeExecNova)
+		return c.SupportsCodeExecution(f.CodeExecution || novaCarveOut(f.CodeExecNova, c))
 	},
 	"computer_": func(f ProviderFeatureSupport, c schemas.ModelCaps) bool { return f.ComputerUse },
 	"bash_":     func(f ProviderFeatureSupport, c schemas.ModelCaps) bool { return c.SupportsBashTool(f.Bash) },
@@ -50,6 +50,13 @@ var anthropicToolTypePrefixToFeature = map[string]func(ProviderFeatureSupport, s
 		return c.SupportsToolSearch(f.ToolSearch)
 	},
 	"advisor_": func(f ProviderFeatureSupport, c schemas.ModelCaps) bool { return c.SupportsAdvisorTool(f.AdvisorTool) },
+}
+
+// novaCarveOut reports whether a Nova system-tool flag applies to the model. Only Nova 2
+// has nova_grounding / nova_code_interpreter; for Claude on Bedrock the same tools would
+// reach InvokeModel as web_search_* / code_execution_*, which Bedrock rejects with 400.
+func novaCarveOut(flag bool, caps schemas.ModelCaps) bool {
+	return flag && schemas.IsNova2Model(caps.Model())
 }
 
 // ErrReasoningMaxTokensTooLow marks a reasoning/thinking configuration error caused by
@@ -156,11 +163,11 @@ func ValidateResponsesToolsForProvider(tools []schemas.ResponsesTool, caps schem
 		supported := true
 		switch tool.Type {
 		case schemas.ResponsesToolTypeWebSearch, schemas.ResponsesToolTypeWebSearchPreview:
-			supported = caps.SupportsWebSearch(features.WebSearch || features.WebSearchNova)
+			supported = caps.SupportsWebSearch(features.WebSearch || novaCarveOut(features.WebSearchNova, caps))
 		case schemas.ResponsesToolTypeWebFetch:
 			supported = caps.SupportsWebFetch(features.WebFetch)
 		case schemas.ResponsesToolTypeCodeInterpreter:
-			supported = caps.SupportsCodeExecution(features.CodeExecution || features.CodeExecNova)
+			supported = caps.SupportsCodeExecution(features.CodeExecution || novaCarveOut(features.CodeExecNova, caps))
 		case schemas.ResponsesToolTypeComputerUsePreview:
 			supported = features.ComputerUse
 		case schemas.ResponsesToolTypeComputer:
@@ -4024,6 +4031,11 @@ func ConvertToAnthropicImageBlock(block schemas.ChatContentBlock) AnthropicConte
 	return imageBlock
 }
 
+// isPlainTextFileType reports whether a Bifrost file type names a plain-text document.
+func isPlainTextFileType(fileType *string) bool {
+	return fileType != nil && (*fileType == "text/plain" || *fileType == "txt")
+}
+
 // ConvertToAnthropicDocumentBlock converts a Bifrost file block to Anthropic document format
 func ConvertToAnthropicDocumentBlock(block schemas.ChatContentBlock) AnthropicContentBlock {
 	documentBlock := AnthropicContentBlock{
@@ -4058,6 +4070,14 @@ func ConvertToAnthropicDocumentBlock(block schemas.ChatContentBlock) AnthropicCo
 	if file.FileURL != nil && *file.FileURL != "" {
 		documentBlock.Source.SourceObj.Type = "url"
 		documentBlock.Source.SourceObj.URL = file.FileURL
+		return documentBlock
+	}
+
+	// An empty plain-text document is valid on Anthropic's wire; keep it as a text source.
+	if file.FileData != nil && *file.FileData == "" && isPlainTextFileType(file.FileType) {
+		documentBlock.Source.SourceObj.Type = "text"
+		documentBlock.Source.SourceObj.MediaType = schemas.Ptr("text/plain")
+		documentBlock.Source.SourceObj.Data = schemas.Ptr("")
 		return documentBlock
 	}
 
@@ -4197,6 +4217,14 @@ func ConvertResponsesFileBlockToAnthropic(fileBlock *schemas.ResponsesInputMessa
 	if fileBlock.FileURL != nil && *fileBlock.FileURL != "" {
 		documentBlock.Source.SourceObj.Type = "url"
 		documentBlock.Source.SourceObj.URL = fileBlock.FileURL
+		return documentBlock
+	}
+
+	// An empty plain-text document is valid on Anthropic's wire; keep it as a text source.
+	if fileBlock.FileData != nil && *fileBlock.FileData == "" && isPlainTextFileType(fileBlock.FileType) {
+		documentBlock.Source.SourceObj.Type = "text"
+		documentBlock.Source.SourceObj.MediaType = schemas.Ptr("text/plain")
+		documentBlock.Source.SourceObj.Data = schemas.Ptr("")
 		return documentBlock
 	}
 

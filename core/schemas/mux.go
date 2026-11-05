@@ -518,6 +518,11 @@ func (cm *ChatMessage) ToResponsesMessages() []ResponsesMessage {
 
 	// Check if this is an assistant message with multiple tool calls that need expansion
 	if cm.ChatAssistantMessage != nil && cm.ChatAssistantMessage.ToolCalls != nil && len(cm.ChatAssistantMessage.ToolCalls) > 0 {
+		// Text sent alongside the calls becomes its own message item ahead of them.
+		if cm.Content != nil && ((cm.Content.ContentStr != nil && *cm.Content.ContentStr != "") || len(cm.Content.ContentBlocks) > 0) {
+			textOnly := ChatMessage{Role: cm.Role, Content: cm.Content}
+			messages = append(messages, textOnly.ToResponsesMessages()...)
+		}
 		// Expand multiple tool calls into separate function_call items
 		for _, tc := range cm.ChatAssistantMessage.ToolCalls {
 			messageType := ResponsesMessageTypeFunctionCall
@@ -661,6 +666,12 @@ func (cm *ChatMessage) ToResponsesMessages() []ResponsesMessage {
 					GuardContent: block.GuardContent,
 				})
 				rb := &responseBlocks[len(responseBlocks)-1]
+				if blockType == ResponsesOutputMessageContentTypeText {
+					rb.ResponsesOutputMessageContentText = &ResponsesOutputMessageContentText{
+						LogProbs:    []ResponsesOutputMessageContentTextLogProb{},
+						Annotations: []ResponsesOutputMessageContentTextAnnotation{},
+					}
+				}
 
 				// Convert specific block types
 				if block.ImageURLStruct != nil {
@@ -691,6 +702,9 @@ func (cm *ChatMessage) ToResponsesMessages() []ResponsesMessage {
 			}
 			rm.Content = &ResponsesMessageContent{
 				ContentBlocks: responseBlocks,
+			}
+			if cm.Role == ChatMessageRoleAssistant {
+				rm.Status = new("completed")
 			}
 		}
 	}
@@ -823,6 +837,35 @@ func ToChatMessages(rms []ResponsesMessage) []ChatMessage {
 		pendingReasoningDetails = nil
 	}
 
+	// textTurn is the index of an assistant text turn that the calls right after it belong to, or -1.
+	textTurn := -1
+	flushToolCalls := func() {
+		if len(currentToolCalls) == 0 {
+			return
+		}
+		// Copy to avoid shared slice header issues
+		toolCallsCopy := append([]ChatAssistantMessageToolCall(nil), currentToolCalls...)
+		currentToolCalls = nil
+		if textTurn >= 0 && textTurn == len(chatMessages)-1 {
+			assistant := chatMessages[textTurn].ChatAssistantMessage
+			if assistant == nil {
+				assistant = &ChatAssistantMessage{}
+				chatMessages[textTurn].ChatAssistantMessage = assistant
+			}
+			assistant.ToolCalls = toolCallsCopy
+			attachPendingReasoning(assistant)
+			textTurn = -1
+			return
+		}
+		assistant := &ChatAssistantMessage{ToolCalls: toolCallsCopy}
+		attachPendingReasoning(assistant)
+		chatMessages = append(chatMessages, ChatMessage{
+			Role:                 ChatMessageRoleAssistant,
+			ChatAssistantMessage: assistant,
+		})
+		textTurn = -1
+	}
+
 	for _, rm := range rms {
 		// Chat Completions has no mid-conversation effort item; emitting it would produce a
 		// roleless, contentless chat message.
@@ -895,19 +938,7 @@ func ToChatMessages(rms []ResponsesMessage) []ChatMessage {
 		}
 
 		// If we have collected tool calls, create an assistant message with them
-		if len(currentToolCalls) > 0 {
-			// Create a copy of the slice to avoid shared slice header issues
-			toolCallsCopy := append([]ChatAssistantMessageToolCall(nil), currentToolCalls...)
-			assistant := &ChatAssistantMessage{
-				ToolCalls: toolCallsCopy,
-			}
-			attachPendingReasoning(assistant)
-			chatMessages = append(chatMessages, ChatMessage{
-				Role:                 ChatMessageRoleAssistant,
-				ChatAssistantMessage: assistant,
-			})
-			currentToolCalls = nil // Reset for next batch
-		}
+		flushToolCalls()
 
 		// Convert regular message
 		cm := ChatMessage{}
@@ -1099,21 +1130,14 @@ func ToChatMessages(rms []ResponsesMessage) []ChatMessage {
 		}
 
 		chatMessages = append(chatMessages, cm)
+		textTurn = -1
+		if cm.Role == ChatMessageRoleAssistant && (cm.ChatAssistantMessage == nil || cm.ChatAssistantMessage.Refusal == nil) {
+			textTurn = len(chatMessages) - 1
+		}
 	}
 
 	// Handle any remaining tool calls at the end
-	if len(currentToolCalls) > 0 {
-		// Create a copy of the slice to avoid shared slice header issues
-		toolCallsCopy := append([]ChatAssistantMessageToolCall(nil), currentToolCalls...)
-		assistant := &ChatAssistantMessage{
-			ToolCalls: toolCallsCopy,
-		}
-		attachPendingReasoning(assistant)
-		chatMessages = append(chatMessages, ChatMessage{
-			Role:                 ChatMessageRoleAssistant,
-			ChatAssistantMessage: assistant,
-		})
-	}
+	flushToolCalls()
 
 	return chatMessages
 }
@@ -1788,6 +1812,7 @@ func (responsesResp *BifrostResponsesResponse) ToBifrostChatResponse() *BifrostC
 	if responsesResp.Usage != nil {
 		// Map Responses usage to Chat usage
 		chatResp.Usage = responsesResp.Usage.ToBifrostLLMUsage()
+		chatResp.Usage.ToolUsage = chatResp.Usage.ToolUsage.withoutZeroImageGen()
 	}
 
 	// Copy other relevant fields
@@ -2870,6 +2895,7 @@ func (rsr *BifrostResponsesStreamResponse) ToBifrostChatResponse() *BifrostChatR
 			output = rsr.Response.Output
 			if rsr.Response.Usage != nil {
 				resp.Usage = rsr.Response.Usage.ToBifrostLLMUsage()
+				resp.Usage.ToolUsage = resp.Usage.ToolUsage.withoutZeroImageGen()
 			}
 		}
 

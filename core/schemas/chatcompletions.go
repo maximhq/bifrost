@@ -2125,8 +2125,10 @@ type ChatPromptTokensDetails struct {
 }
 
 type ChatCachedWriteTokenDetails struct {
-	CachedWriteTokens5m int `json:"cached_write_tokens_5m"`
-	CachedWriteTokens1h int `json:"cached_write_tokens_1h"`
+	CachedWriteTokens5m  int `json:"cached_write_tokens_5m"`
+	CachedWriteTokens1h  int `json:"cached_write_tokens_1h"`
+	CachedWriteTokens30m int `json:"cached_write_tokens_30m"` // OpenAI gpt-5.6+ ttl_30m_tokens
+	CachedWriteTokens12h int `json:"cached_write_tokens_12h"` // OpenAI gpt-5.6+ ttl_12h_tokens
 }
 
 // UnmarshalJSON maps OpenAI's cached_tokens into CachedReadTokens for compatibility.
@@ -2279,6 +2281,12 @@ func MergeBifrostLLMUsage(base, add *BifrostLLMUsage) *BifrostLLMUsage {
 				CachedWriteTokens5m: cachedWriteTokens5m(baseDetails) + cachedWriteTokens5m(addDetails),
 				CachedWriteTokens1h: cachedWriteTokens1h(baseDetails) + cachedWriteTokens1h(addDetails),
 			}
+			for _, d := range []*ChatCachedWriteTokenDetails{baseDetails.CachedWriteTokenDetails, addDetails.CachedWriteTokenDetails} {
+				if d != nil {
+					merged.PromptTokensDetails.CachedWriteTokenDetails.CachedWriteTokens30m += d.CachedWriteTokens30m
+					merged.PromptTokensDetails.CachedWriteTokenDetails.CachedWriteTokens12h += d.CachedWriteTokens12h
+				}
+			}
 		}
 	}
 
@@ -2317,8 +2325,49 @@ func MergeBifrostLLMUsage(base, add *BifrostLLMUsage) *BifrostLLMUsage {
 
 type ToolUsage struct {
 	WebSearch *WebSearchToolUsage `json:"web_search,omitempty"`
+	ImageGen  *ImageGenToolUsage  `json:"image_gen,omitempty"`
+	// ImageGenModel is the image model the request's tool asked for. Bifrost derives it; no provider reports it.
+	ImageGenModel string `json:"image_gen_model,omitempty"`
 	// ContainerSessions counts containers a request started, by memory tier. Bifrost derives it; no provider reports it.
 	ContainerSessions map[string]int `json:"container_sessions,omitempty"`
+}
+
+// UnmarshalJSON keeps a malformed image_gen block from failing the response it arrives on: it loses
+// only the image charge. Well-formed usage decodes once; the second pass runs only after a failure.
+func (t *ToolUsage) UnmarshalJSON(data []byte) error {
+	type alias ToolUsage
+	var parsed alias
+	if Unmarshal(data, &parsed) == nil {
+		*t = ToolUsage(parsed)
+		return nil
+	}
+	parsed = alias{}
+	aux := struct {
+		*alias
+		ImageGen json.RawMessage `json:"image_gen"`
+	}{alias: &parsed}
+	if err := Unmarshal(data, &aux); err != nil {
+		return err
+	}
+	*t = ToolUsage(parsed)
+	var imageGen *ImageGenToolUsage
+	if Unmarshal(aux.ImageGen, &imageGen) == nil {
+		t.ImageGen = imageGen
+	}
+	return nil
+}
+
+// withoutZeroImageGen drops OpenAI's all-zero image_gen block from t, which the caller must own. Chat usage
+// never carried it. Generated images stay, because pricing reads them from this usage.
+func (t *ToolUsage) withoutZeroImageGen() *ToolUsage {
+	if t == nil || t.ImageGen == nil || t.ImageGen.HasTokens() {
+		return t
+	}
+	t.ImageGen = nil
+	if t.WebSearch == nil && len(t.ContainerSessions) == 0 {
+		return nil
+	}
+	return t
 }
 
 // ContainerTierDefault is the ContainerSessions key for a container with no explicit memory tier.
@@ -2343,17 +2392,109 @@ func SetContainerSessions(t **ToolUsage, sessions map[string]int) {
 	(*t).ContainerSessions = sessions
 }
 
-// withoutDerivedFields returns t without the counts Bifrost derives, for the provider-shaped tool_usage clients see.
+// withoutDerivedFields returns t without the fields Bifrost derives, for the provider-shaped tool_usage clients see.
 func (t *ToolUsage) withoutDerivedFields() *ToolUsage {
-	if t == nil || t.ContainerSessions == nil {
+	if t == nil || (t.ContainerSessions == nil && t.ImageGenModel == "") {
 		return t
 	}
-	if t.WebSearch == nil {
+	if t.WebSearch == nil && t.ImageGen == nil {
 		return nil
 	}
 	c := *t
 	c.ContainerSessions = nil
+	c.ImageGenModel = ""
 	return &c
+}
+
+// ImageGenToolUsage is OpenAI's tool_usage.image_gen: token counts summed across image generation calls.
+type ImageGenToolUsage struct {
+	InputTokens         int                         `json:"input_tokens"`
+	InputTokensDetails  *ImageGenTokenDetails       `json:"input_tokens_details,omitempty"`
+	OutputTokens        int                         `json:"output_tokens"`
+	OutputTokensDetails *ImageGenTokenDetails       `json:"output_tokens_details,omitempty"`
+	TotalTokens         int                         `json:"total_tokens"`
+	CachedTokens        *int                        `json:"cached_tokens,omitempty"`
+	CachedTokensDetails *ImageGenCachedTokenDetails `json:"cached_tokens_details,omitempty"`
+}
+
+// ImageGenTokenDetails splits an image generation token count by modality.
+type ImageGenTokenDetails struct {
+	ImageTokens int `json:"image_tokens"`
+	TextTokens  int `json:"text_tokens"`
+}
+
+// ImageGenCachedTokenDetails splits cached input tokens by modality.
+type ImageGenCachedTokenDetails struct {
+	CachedImageTokens int `json:"cached_image_tokens"`
+	CachedTextTokens  int `json:"cached_text_tokens"`
+}
+
+// HasTokens reports whether any image was generated; OpenAI sends zero counts on every response.
+func (u *ImageGenToolUsage) HasTokens() bool {
+	return u != nil && (u.TotalTokens > 0 || u.InputTokens > 0 || u.OutputTokens > 0)
+}
+
+// deepCopy returns an owned copy of u.
+func (u *ImageGenToolUsage) deepCopy() *ImageGenToolUsage {
+	if u == nil {
+		return nil
+	}
+	c := *u
+	if u.InputTokensDetails != nil {
+		d := *u.InputTokensDetails
+		c.InputTokensDetails = &d
+	}
+	if u.OutputTokensDetails != nil {
+		d := *u.OutputTokensDetails
+		c.OutputTokensDetails = &d
+	}
+	if u.CachedTokens != nil {
+		n := *u.CachedTokens
+		c.CachedTokens = &n
+	}
+	if u.CachedTokensDetails != nil {
+		d := *u.CachedTokensDetails
+		c.CachedTokensDetails = &d
+	}
+	return &c
+}
+
+// add returns the sum of u and o; details missing on one side stay missing, since a partial split cannot be priced.
+func (u *ImageGenToolUsage) add(o *ImageGenToolUsage) *ImageGenToolUsage {
+	if u == nil {
+		return o.deepCopy()
+	}
+	if o == nil {
+		return u.deepCopy()
+	}
+	sum := &ImageGenToolUsage{
+		InputTokens:  u.InputTokens + o.InputTokens,
+		OutputTokens: u.OutputTokens + o.OutputTokens,
+		TotalTokens:  u.TotalTokens + o.TotalTokens,
+	}
+	if u.InputTokensDetails != nil && o.InputTokensDetails != nil {
+		sum.InputTokensDetails = &ImageGenTokenDetails{
+			ImageTokens: u.InputTokensDetails.ImageTokens + o.InputTokensDetails.ImageTokens,
+			TextTokens:  u.InputTokensDetails.TextTokens + o.InputTokensDetails.TextTokens,
+		}
+	}
+	if u.OutputTokensDetails != nil && o.OutputTokensDetails != nil {
+		sum.OutputTokensDetails = &ImageGenTokenDetails{
+			ImageTokens: u.OutputTokensDetails.ImageTokens + o.OutputTokensDetails.ImageTokens,
+			TextTokens:  u.OutputTokensDetails.TextTokens + o.OutputTokensDetails.TextTokens,
+		}
+	}
+	if u.CachedTokens != nil && o.CachedTokens != nil {
+		n := *u.CachedTokens + *o.CachedTokens
+		sum.CachedTokens = &n
+	}
+	if u.CachedTokensDetails != nil && o.CachedTokensDetails != nil {
+		sum.CachedTokensDetails = &ImageGenCachedTokenDetails{
+			CachedImageTokens: u.CachedTokensDetails.CachedImageTokens + o.CachedTokensDetails.CachedImageTokens,
+			CachedTextTokens:  u.CachedTokensDetails.CachedTextTokens + o.CachedTokensDetails.CachedTextTokens,
+		}
+	}
+	return sum
 }
 
 // WebSearchToolUsage counts billable web search calls.
@@ -2380,6 +2521,10 @@ func (t *ToolUsage) Add(o *ToolUsage) *ToolUsage {
 		if u == nil {
 			continue
 		}
+		sum.ImageGen = sum.ImageGen.add(u.ImageGen)
+		if sum.ImageGenModel == "" {
+			sum.ImageGenModel = u.ImageGenModel
+		}
 		for tier, n := range u.ContainerSessions {
 			if sum.ContainerSessions == nil {
 				sum.ContainerSessions = make(map[string]int, len(u.ContainerSessions))
@@ -2400,6 +2545,7 @@ func (t *ToolUsage) DeepCopy() *ToolUsage {
 		ws := *t.WebSearch
 		c.WebSearch = &ws
 	}
+	c.ImageGen = t.ImageGen.deepCopy()
 	c.ContainerSessions = maps.Clone(t.ContainerSessions)
 	return &c
 }
