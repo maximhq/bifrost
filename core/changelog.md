@@ -1,3 +1,4 @@
+- fix: bedrock - Claude 4.5+ models get structured output natively on Converse as output_config.format instead of the synthetic bf_so_* tool, so the schema is enforced on Opus 5.5 and the caller's tools are no longer forced aside (#9656) [@tompretty](https://github.com/tompretty)
 - fix: anthropic - Claude Haiku 5.x takes reasoning effort as adaptive thinking plus output_config.effort, chat and Responses requests drop its sampling params, and custom providers with an Anthropic base read their base provider's datasheet capabilities (#9490) [@macdod](https://github.com/macdod)
 - fix: anthropic - Responses requests drop empty text blocks instead of forwarding them for a 400 (#9318) [@david-choi-querypie](https://github.com/david-choi-querypie)
 - fix: anthropic - preserve explicit web search and web fetch versions, and keep a declared code execution tool beside versions that do not auto-inject it (#9258) [@ykakade](https://github.com/ykakade)
