@@ -640,6 +640,13 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("extra_fields_placement must be 'body' or 'headers', got %q", payload.ClientConfig.ExtraFieldsPlacement))
 		return
 	}
+	// The same for the access profile hierarchy: only an omitted field keeps the stored mode.
+	if _, present := clientConfigFields["access_profile_hierarchy_mode"]; present &&
+		payload.ClientConfig.AccessProfileHierarchyMode != configstoreTables.AccessProfileHierarchyModeAdditive &&
+		payload.ClientConfig.AccessProfileHierarchyMode != configstoreTables.AccessProfileHierarchyModeRestrictive {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("access_profile_hierarchy_mode must be 'additive' or 'restrictive', got %q", payload.ClientConfig.AccessProfileHierarchyMode))
+		return
+	}
 
 	if err := validateMCPInstructionCaps(payload.ClientConfig.MCPMaxInstructionsPerClient, payload.ClientConfig.MCPMaxInstructionsTotal); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
@@ -901,6 +908,10 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	}
 	if _, present := clientConfigFields["skip_access_profile_user_virtual_key_deletion"]; present {
 		updatedConfig.SkipAccessProfileUserVirtualKeyDeletion = payload.ClientConfig.SkipAccessProfileUserVirtualKeyDeletion
+	}
+	// Copied only when sent (validated up front), so a partial save keeps the stored hierarchy mode.
+	if _, present := clientConfigFields["access_profile_hierarchy_mode"]; present {
+		updatedConfig.AccessProfileHierarchyMode = payload.ClientConfig.AccessProfileHierarchyMode
 	}
 
 	// Rotation grace period; bounds validated up front. Copied unconditionally

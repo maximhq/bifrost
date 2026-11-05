@@ -366,6 +366,15 @@
           "description": "Enterprise only. When true, removing a user's last access profile never deletes their virtual keys; they are kept as ordinary keys with none of the profile's providers or access. Deleting the user still deletes their keys.",
           "default": false
         },
+        "access_profile_hierarchy_mode": {
+          "type": "string",
+          "enum": [
+            "additive",
+            "restrictive"
+          ],
+          "default": "additive",
+          "description": "Enterprise only. How the access profiles of the teams, business units and customers a caller belongs to combine with the caller's own access. 'additive' (default) lets each of them add to what the caller may reach. 'restrictive' makes each level that holds an active profile cap it instead: the caller keeps only what their own profiles (or virtual key) allow AND what at least one of their team or business unit profiles allows AND what at least one of their customer profiles allows. A level holding no active profile is skipped. The cap covers providers, models, provider keys, MCP tools and relays; agents are not capped, since team, business unit and customer profiles cannot grant them. Budgets and rate limits are charged as in additive mode."
+        },
         "vk_rotation_cooldown": {
           "type": [
             "string",
