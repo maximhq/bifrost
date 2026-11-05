@@ -522,8 +522,22 @@ export const MAX_SUGGESTION_INSTRUCTIONS_CHARACTERS = 8000;
 export const DEFAULT_SUGGESTION_EVERY = "1d";
 export const DEFAULT_SUGGESTION_AT = "03:00";
 
+// The router suggestions belong to until a gateway can define several.
+export const DEFAULT_COMPLEXITY_ROUTER_ID = "default";
+
+// Run windows offered for "Run now"; the ones longer than the lookback are
+// left out, since the vectors they would read are gone.
+export const SUGGESTION_RUN_WINDOWS = ["24h", "7d", "14d", "30d"] as const;
+export type SuggestionRunWindow = (typeof SUGGESTION_RUN_WINDOWS)[number];
+export const SUGGESTION_RUN_WINDOW_DAYS: Record<SuggestionRunWindow, number> = { "24h": 1, "7d": 7, "14d": 14, "30d": 30 };
+
 export interface Suggestion {
 	id: string;
+	router_id: string;
+	// The router version it was computed against; stale when that is not the
+	// version served now.
+	router_version: string;
+	stale: boolean;
 	status: SuggestionStatus;
 	tier: DecisionTier;
 	phrases: string[];
@@ -546,6 +560,9 @@ export interface Suggestion {
 
 export interface SuggestionRun {
 	id: string;
+	router_id: string;
+	router_version: string;
+	window_start: string;
 	triggered_by: "schedule" | "manual";
 	status: "running" | "succeeded" | "failed";
 	model?: string;
@@ -562,6 +579,8 @@ export interface SuggestionRun {
 }
 
 export interface SuggestionsList {
+	router_id: string;
+	router_version?: string;
 	suggestions: Suggestion[];
 	counts: Partial<Record<SuggestionStatus, number>>;
 	enabled: boolean;
@@ -599,4 +618,11 @@ export interface PhraseTestResult {
 	phrases: { tier: string; text: string; nearest_existing: PhraseRouting }[];
 	examples: { log_id: string; text: string; current: PhraseRouting; with_phrases: PhraseRouting; changed: boolean }[];
 	taken_over: number;
+}
+export interface SuggestionRunEstimate {
+	requests: number;
+	clustered: number;
+	assigned: number;
+	skipped: number;
+	max_model_calls: number;
 }

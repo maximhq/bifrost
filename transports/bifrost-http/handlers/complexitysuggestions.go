@@ -27,10 +27,19 @@ type ComplexitySuggestionManager interface {
 	ComplexitySuggestionStore() logstore.ComplexitySuggestionStore
 	// ComplexitySuggestionTexts reads example request text within the
 	// caller's access scope; a log the caller cannot see gives no text.
-	ComplexitySuggestionTexts(ctx context.Context, logIDs []string) (map[string]string, error)
-	StartComplexitySuggestionRun(ctx context.Context) (string, error)
-	TestComplexitySuggestionPhrases(ctx context.Context, phrases []complexity.SuggestionPhrase, examples []suggestrun.TestExample) (suggestrun.PhraseTest, error)
+	ComplexitySuggestionTexts(ctx context.Context, routerID string, logIDs []string) (map[string]string, error)
+	// ComplexitySuggestionRouter reports whether a router exists and the
+	// phrase bank version it serves.
+	ComplexitySuggestionRouter(routerID string) (version string, ok bool)
+	StartComplexitySuggestionRun(ctx context.Context, routerID string, window time.Duration) (string, error)
+	EstimateComplexitySuggestionRun(ctx context.Context, routerID string, window time.Duration) (suggestrun.Estimate, error)
+	TestComplexitySuggestionPhrases(ctx context.Context, routerID string, phrases []complexity.SuggestionPhrase, examples []suggestrun.TestExample) (suggestrun.PhraseTest, error)
 }
+
+// defaultComplexitySuggestionRouter is the router suggestions belong to when
+// a request names none: the only one a gateway has until it can define
+// several.
+const defaultComplexitySuggestionRouter = "default"
 
 const (
 	defaultComplexitySuggestionRunsLimit = 20
@@ -44,11 +53,15 @@ type complexitySuggestionView struct {
 	logstore.ComplexitySuggestion
 	Phrases       []string `json:"phrases"`
 	ExampleLogIDs []string `json:"example_log_ids"`
+	// Stale is true when the suggestion was computed against an earlier
+	// version of the router than the one it serves now.
+	Stale bool `json:"stale"`
 }
 
-func newComplexitySuggestionView(row logstore.ComplexitySuggestion) complexitySuggestionView {
+func newComplexitySuggestionView(row logstore.ComplexitySuggestion, currentVersion string) complexitySuggestionView {
 	row.Centroid = nil
-	view := complexitySuggestionView{ComplexitySuggestion: row, Phrases: row.Phrases(), ExampleLogIDs: row.ExampleLogIDs()}
+	view := complexitySuggestionView{ComplexitySuggestion: row, Phrases: row.Phrases(), ExampleLogIDs: row.ExampleLogIDs(),
+		Stale: currentVersion != "" && row.RouterVersion != "" && row.RouterVersion != currentVersion}
 	if view.Phrases == nil {
 		view.Phrases = []string{}
 	}
@@ -60,7 +73,11 @@ func newComplexitySuggestionView(row logstore.ComplexitySuggestion) complexitySu
 
 // complexitySuggestionsResponse is the list payload.
 type complexitySuggestionsResponse struct {
-	Suggestions []complexitySuggestionView `json:"suggestions"`
+	RouterID string `json:"router_id"`
+	// RouterVersion is the version the router serves now; a suggestion whose
+	// own router_version differs is stale.
+	RouterVersion string                     `json:"router_version,omitempty"`
+	Suggestions   []complexitySuggestionView `json:"suggestions"`
 	// Counts is the number of stored suggestions per status, whatever the
 	// status filter selected.
 	Counts    map[string]int                    `json:"counts"`
@@ -114,6 +131,7 @@ func (h *RoutingHandler) registerComplexitySuggestionRoutes(r *router.Router, mi
 	handle(fasthttp.MethodGet, "/api/routing/complexity-suggestions", h.listComplexitySuggestions)
 	handle(fasthttp.MethodPost, "/api/routing/complexity-suggestions/test", h.testComplexitySuggestionPhrases)
 	handle(fasthttp.MethodGet, "/api/routing/complexity-suggestions/runs", h.listComplexitySuggestionRuns)
+	handle(fasthttp.MethodGet, "/api/routing/complexity-suggestions/runs/estimate", h.estimateComplexitySuggestionRun)
 	handle(fasthttp.MethodPost, "/api/routing/complexity-suggestions/runs", h.startComplexitySuggestionRun)
 	handle(fasthttp.MethodGet, "/api/routing/complexity-suggestions/{suggestion_id}", h.getComplexitySuggestion)
 	handle(fasthttp.MethodPut, "/api/routing/complexity-suggestions/{suggestion_id}/status", h.updateComplexitySuggestionStatus)
@@ -135,6 +153,43 @@ func (h *RoutingHandler) suggestionManager(ctx *fasthttp.RequestCtx) (Complexity
 	return manager, store, true
 }
 
+// suggestionRouterID reads the router a request is about (?router_id=,
+// default the gateway's one router) and its current version, or answers 404
+// for a router that does not exist.
+func (h *RoutingHandler) suggestionRouterID(ctx *fasthttp.RequestCtx, manager ComplexitySuggestionManager) (string, string, bool) {
+	routerID := strings.TrimSpace(string(ctx.QueryArgs().Peek("router_id")))
+	if routerID == "" {
+		routerID = defaultComplexitySuggestionRouter
+	}
+	version, ok := manager.ComplexitySuggestionRouter(routerID)
+	if !ok {
+		SendError(ctx, fasthttp.StatusNotFound, fmt.Sprintf("model router %q not found", routerID))
+		return "", "", false
+	}
+	return routerID, version, true
+}
+
+// parseSuggestionWindow reads a run window: a Go duration ("36h") or a
+// number of days ("7d"). Empty is zero, the whole lookback.
+func parseSuggestionWindow(raw string) (time.Duration, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0, nil
+	}
+	if days, ok := strings.CutSuffix(raw, "d"); ok {
+		n, err := strconv.Atoi(days)
+		if err != nil || n <= 0 {
+			return 0, fmt.Errorf("window %q is not a positive number of days", raw)
+		}
+		return time.Duration(n) * 24 * time.Hour, nil
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil || d <= 0 {
+		return 0, fmt.Errorf("window %q must look like 24h or 7d", raw)
+	}
+	return d, nil
+}
+
 // suggestionSchedule reports whether suggestions are on and when the next
 // scheduled run is. A config that cannot be read reports them off.
 func (h *RoutingHandler) suggestionSchedule(ctx context.Context) (bool, *time.Time) {
@@ -153,7 +208,11 @@ func (h *RoutingHandler) suggestionSchedule(ctx context.Context) (bool, *time.Ti
 // listComplexitySuggestions lists stored suggestions, largest first, filtered
 // by ?status= (comma-separated; default open).
 func (h *RoutingHandler) listComplexitySuggestions(ctx *fasthttp.RequestCtx) {
-	_, store, ok := h.suggestionManager(ctx)
+	manager, store, ok := h.suggestionManager(ctx)
+	if !ok {
+		return
+	}
+	routerID, version, ok := h.suggestionRouterID(ctx, manager)
 	if !ok {
 		return
 	}
@@ -169,22 +228,22 @@ func (h *RoutingHandler) listComplexitySuggestions(ctx *fasthttp.RequestCtx) {
 			statuses = append(statuses, status)
 		}
 	}
-	rows, err := store.ListComplexitySuggestions(ctx, logstore.ComplexitySuggestionFilter{OmitCentroids: true})
+	rows, err := store.ListComplexitySuggestions(ctx, logstore.ComplexitySuggestionFilter{RouterID: routerID, OmitCentroids: true})
 	if err != nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to list suggestions: %v", err))
 		return
 	}
-	response := complexitySuggestionsResponse{Suggestions: []complexitySuggestionView{}, Counts: map[string]int{}}
+	response := complexitySuggestionsResponse{RouterID: routerID, RouterVersion: version, Suggestions: []complexitySuggestionView{}, Counts: map[string]int{}}
 	for _, row := range rows {
 		response.Counts[row.Status]++
 		for _, status := range statuses {
 			if row.Status == status {
-				response.Suggestions = append(response.Suggestions, newComplexitySuggestionView(row))
+				response.Suggestions = append(response.Suggestions, newComplexitySuggestionView(row, version))
 				break
 			}
 		}
 	}
-	if runs, err := store.ListComplexitySuggestionRuns(ctx, nil, 1); err == nil && len(runs) > 0 {
+	if runs, err := store.ListComplexitySuggestionRuns(ctx, logstore.ComplexitySuggestionRunFilter{RouterID: routerID}, 1); err == nil && len(runs) > 0 {
 		response.LastRun = &runs[0]
 	}
 	response.Enabled, response.NextRunAt = h.suggestionSchedule(ctx)
@@ -197,12 +256,16 @@ func (h *RoutingHandler) getComplexitySuggestion(ctx *fasthttp.RequestCtx) {
 	if !ok {
 		return
 	}
-	row, ok := h.loadComplexitySuggestion(ctx, store)
+	routerID, version, ok := h.suggestionRouterID(ctx, manager)
+	if !ok {
+		return
+	}
+	row, ok := h.loadComplexitySuggestion(ctx, store, routerID)
 	if !ok {
 		return
 	}
 	ids := row.ExampleLogIDs()
-	texts, err := manager.ComplexitySuggestionTexts(ctx, ids)
+	texts, err := manager.ComplexitySuggestionTexts(ctx, routerID, ids)
 	if err != nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to read suggestion examples: %v", err))
 		return
@@ -211,7 +274,7 @@ func (h *RoutingHandler) getComplexitySuggestion(ctx *fasthttp.RequestCtx) {
 	for _, id := range ids {
 		examples = append(examples, complexitySuggestionExample{LogID: id, Text: texts[id]})
 	}
-	SendJSON(ctx, complexitySuggestionDetailResponse{Suggestion: newComplexitySuggestionView(*row), Examples: examples})
+	SendJSON(ctx, complexitySuggestionDetailResponse{Suggestion: newComplexitySuggestionView(*row, version), Examples: examples})
 }
 
 // updateComplexitySuggestionStatus records the user's call on a suggestion:
@@ -219,7 +282,11 @@ func (h *RoutingHandler) getComplexitySuggestion(ctx *fasthttp.RequestCtx) {
 // open again, undoing either. A run leaves accepted and dismissed
 // suggestions alone, so the call sticks.
 func (h *RoutingHandler) updateComplexitySuggestionStatus(ctx *fasthttp.RequestCtx) {
-	_, store, ok := h.suggestionManager(ctx)
+	manager, store, ok := h.suggestionManager(ctx)
+	if !ok {
+		return
+	}
+	routerID, version, ok := h.suggestionRouterID(ctx, manager)
 	if !ok {
 		return
 	}
@@ -228,7 +295,7 @@ func (h *RoutingHandler) updateComplexitySuggestionStatus(ctx *fasthttp.RequestC
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("invalid request body: %v", err))
 		return
 	}
-	row, ok := h.loadComplexitySuggestion(ctx, store)
+	row, ok := h.loadComplexitySuggestion(ctx, store, routerID)
 	if !ok {
 		return
 	}
@@ -251,7 +318,7 @@ func (h *RoutingHandler) updateComplexitySuggestionStatus(ctx *fasthttp.RequestC
 	}
 	lib.RecordAuditChange(ctx, "complexity_suggestion."+req.Status, "complexity_suggestion", row.ID, strings.Join(row.Phrases(), ", "),
 		map[string]any{"status": before}, map[string]any{"status": req.Status})
-	SendJSON(ctx, newComplexitySuggestionView(*row))
+	SendJSON(ctx, newComplexitySuggestionView(*row, version))
 }
 
 // testComplexitySuggestionPhrases routes examples with and without phrases
@@ -260,6 +327,10 @@ func (h *RoutingHandler) updateComplexitySuggestionStatus(ctx *fasthttp.RequestC
 // caller's access scope.
 func (h *RoutingHandler) testComplexitySuggestionPhrases(ctx *fasthttp.RequestCtx) {
 	manager, store, ok := h.suggestionManager(ctx)
+	if !ok {
+		return
+	}
+	routerID, _, ok := h.suggestionRouterID(ctx, manager)
 	if !ok {
 		return
 	}
@@ -274,7 +345,7 @@ func (h *RoutingHandler) testComplexitySuggestionPhrases(ctx *fasthttp.RequestCt
 	}
 	ids := append([]string(nil), req.LogIDs...)
 	if req.SuggestionID != "" {
-		rows, err := store.ListComplexitySuggestions(ctx, logstore.ComplexitySuggestionFilter{IDs: []string{req.SuggestionID}, OmitCentroids: true})
+		rows, err := store.ListComplexitySuggestions(ctx, logstore.ComplexitySuggestionFilter{RouterID: routerID, IDs: []string{req.SuggestionID}, OmitCentroids: true})
 		if err != nil {
 			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to read suggestion: %v", err))
 			return
@@ -288,7 +359,7 @@ func (h *RoutingHandler) testComplexitySuggestionPhrases(ctx *fasthttp.RequestCt
 	if len(ids) > suggestrun.MaxTestExamples {
 		ids = ids[:suggestrun.MaxTestExamples]
 	}
-	texts, err := manager.ComplexitySuggestionTexts(ctx, ids)
+	texts, err := manager.ComplexitySuggestionTexts(ctx, routerID, ids)
 	if err != nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to read examples: %v", err))
 		return
@@ -303,7 +374,7 @@ func (h *RoutingHandler) testComplexitySuggestionPhrases(ctx *fasthttp.RequestCt
 	for i, p := range req.Phrases {
 		phrases[i] = complexity.SuggestionPhrase{Tier: strings.ToUpper(strings.TrimSpace(p.Tier)), Text: strings.TrimSpace(p.Text)}
 	}
-	result, err := manager.TestComplexitySuggestionPhrases(ctx, phrases, examples)
+	result, err := manager.TestComplexitySuggestionPhrases(ctx, routerID, phrases, examples)
 	switch {
 	case errors.Is(err, complexity.ErrNoServingGeneration):
 		SendError(ctx, fasthttp.StatusServiceUnavailable, err.Error())
@@ -322,7 +393,11 @@ func (h *RoutingHandler) testComplexitySuggestionPhrases(ctx *fasthttp.RequestCt
 
 // listComplexitySuggestionRuns lists runs newest first (?limit=, default 20).
 func (h *RoutingHandler) listComplexitySuggestionRuns(ctx *fasthttp.RequestCtx) {
-	_, store, ok := h.suggestionManager(ctx)
+	manager, store, ok := h.suggestionManager(ctx)
+	if !ok {
+		return
+	}
+	routerID, _, ok := h.suggestionRouterID(ctx, manager)
 	if !ok {
 		return
 	}
@@ -335,7 +410,7 @@ func (h *RoutingHandler) listComplexitySuggestionRuns(ctx *fasthttp.RequestCtx) 
 		}
 		limit = n
 	}
-	runs, err := store.ListComplexitySuggestionRuns(ctx, nil, limit)
+	runs, err := store.ListComplexitySuggestionRuns(ctx, logstore.ComplexitySuggestionRunFilter{RouterID: routerID}, limit)
 	if err != nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to list suggestion runs: %v", err))
 		return
@@ -354,8 +429,23 @@ func (h *RoutingHandler) startComplexitySuggestionRun(ctx *fasthttp.RequestCtx) 
 	if !ok {
 		return
 	}
-	runID, err := manager.StartComplexitySuggestionRun(ctx)
+	routerID, _, ok := h.suggestionRouterID(ctx, manager)
+	if !ok {
+		return
+	}
+	window, err := parseSuggestionWindow(string(ctx.QueryArgs().Peek("window")))
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
+	runID, err := manager.StartComplexitySuggestionRun(ctx, routerID, window)
 	switch {
+	case errors.Is(err, routing.ErrComplexitySuggestionWindow):
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	case errors.Is(err, routing.ErrUnknownComplexityRouter):
+		SendError(ctx, fasthttp.StatusNotFound, err.Error())
+		return
 	case errors.Is(err, routing.ErrComplexitySuggestionsOff), errors.Is(err, routing.ErrComplexitySuggestionRunInFlight):
 		SendError(ctx, fasthttp.StatusConflict, err.Error())
 		return
@@ -363,19 +453,55 @@ func (h *RoutingHandler) startComplexitySuggestionRun(ctx *fasthttp.RequestCtx) 
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to start suggestion run: %v", err))
 		return
 	}
-	lib.RecordAuditChange(ctx, "complexity_suggestion_run.started", "complexity_suggestion_run", runID, runID, nil, map[string]any{"run_id": runID})
+	lib.RecordAuditChange(ctx, "complexity_suggestion_run.started", "complexity_suggestion_run", runID, runID, nil,
+		map[string]any{"run_id": runID, "router_id": routerID, "window_seconds": int64(window / time.Second)})
 	SendJSONWithStatus(ctx, map[string]string{"run_id": runID}, fasthttp.StatusAccepted)
 }
 
+// estimateComplexitySuggestionRun sizes a run over ?window= without starting
+// it: the requests it would read, cluster and count in, and at most how many
+// suggestion-model calls it would make.
+func (h *RoutingHandler) estimateComplexitySuggestionRun(ctx *fasthttp.RequestCtx) {
+	manager, _, ok := h.suggestionManager(ctx)
+	if !ok {
+		return
+	}
+	routerID, _, ok := h.suggestionRouterID(ctx, manager)
+	if !ok {
+		return
+	}
+	window, err := parseSuggestionWindow(string(ctx.QueryArgs().Peek("window")))
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
+	estimate, err := manager.EstimateComplexitySuggestionRun(ctx, routerID, window)
+	switch {
+	case errors.Is(err, routing.ErrComplexitySuggestionWindow):
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+	case errors.Is(err, routing.ErrUnknownComplexityRouter):
+		SendError(ctx, fasthttp.StatusNotFound, err.Error())
+	case errors.Is(err, routing.ErrComplexitySuggestionsOff):
+		SendError(ctx, fasthttp.StatusConflict, err.Error())
+	case errors.Is(err, complexity.ErrNoServingGeneration):
+		SendError(ctx, fasthttp.StatusServiceUnavailable, err.Error())
+	case err != nil:
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to estimate suggestion run: %v", err))
+	default:
+		SendJSON(ctx, estimate)
+	}
+}
+
 // loadComplexitySuggestion reads the suggestion named in the path, with its
-// centroid, or answers and returns false.
-func (h *RoutingHandler) loadComplexitySuggestion(ctx *fasthttp.RequestCtx, store logstore.ComplexitySuggestionStore) (*logstore.ComplexitySuggestion, bool) {
+// centroid, or answers and returns false. A suggestion of another router is
+// not found: it is not this router's to read or change.
+func (h *RoutingHandler) loadComplexitySuggestion(ctx *fasthttp.RequestCtx, store logstore.ComplexitySuggestionStore, routerID string) (*logstore.ComplexitySuggestion, bool) {
 	id, _ := ctx.UserValue("suggestion_id").(string)
 	if strings.TrimSpace(id) == "" {
 		SendError(ctx, fasthttp.StatusBadRequest, "suggestion id is required")
 		return nil, false
 	}
-	rows, err := store.ListComplexitySuggestions(ctx, logstore.ComplexitySuggestionFilter{IDs: []string{id}})
+	rows, err := store.ListComplexitySuggestions(ctx, logstore.ComplexitySuggestionFilter{RouterID: routerID, IDs: []string{id}})
 	if err != nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to read suggestion: %v", err))
 		return nil, false

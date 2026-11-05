@@ -66,7 +66,7 @@ export default function PhraseTestDialog({ suggestion, onOpenChange, canStage, o
 	const run = () => {
 		if (!suggestion || cleaned.length === 0) return;
 		setError(null);
-		runTest({ phrases: cleaned.map((text) => ({ tier, text })), suggestion_id: suggestion.id })
+		runTest({ phrases: cleaned.map((text) => ({ tier, text })), suggestion_id: suggestion.id, routerId: suggestion.router_id })
 			.unwrap()
 			.then(setResult)
 			.catch((err) => {

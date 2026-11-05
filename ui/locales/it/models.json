@@ -2122,7 +2122,30 @@
 				"timezoneRequired": "Inserisci un fuso orario",
 				"timezoneUnknown": "Fuso orario sconosciuto",
 				"modelRequired": "Seleziona un modello per questo provider",
-				"providerRequired": "Seleziona il provider per questo modello"
+				"providerRequired": "Seleziona il provider per questo modello",
+				"runDialogTitle": "Esegui i suggerimenti ora",
+				"runDialogDescription": "Legge il traffico acquisito da questo router nell’intervallo scelto e propone delle frasi. Non cambia nulla finché non accetti e salvi.",
+				"runWindowLabel": "Intervallo",
+				"runWindow": {
+					"24h": "Ultime 24 ore",
+					"7d": "Ultimi 7 giorni",
+					"14d": "Ultimi 14 giorni",
+					"30d": "Ultimi 30 giorni"
+				},
+				"estimating": "Stima in corso…",
+				"estimateFailed": "Impossibile stimare l’esecuzione: {{error}}",
+				"estimateRequests_one": "{{formatted}} richiesta nell’intervallo",
+				"estimateRequests_other": "{{formatted}} richieste nell’intervallo",
+				"estimateClustered_one": "{{formatted}} viene raggruppata in cluster; le altre vengono conteggiate in essi.",
+				"estimateClustered_other": "{{formatted}} vengono raggruppate in cluster; le altre vengono conteggiate in essi.",
+				"estimateSkipped_one": "Altra {{formatted}} supera il limite dell’esecuzione e non viene conteggiata.",
+				"estimateSkipped_other": "Altre {{formatted}} superano il limite dell’esecuzione e non vengono conteggiate.",
+				"estimateModelCalls_one": "Al massimo {{formatted}} chiamata al modello dei suggerimenti",
+				"estimateModelCalls_other": "Al massimo {{formatted}} chiamate al modello dei suggerimenti",
+				"runInBackground": "Viene eseguito in background nel tuo gateway, fuori dal percorso delle richieste.",
+				"runStart": "Avvia esecuzione",
+				"stale": "Banca di frasi precedente",
+				"staleTip": "Calcolato prima dell’ultima modifica agli elenchi di frasi. Provalo con le frasi attuali prima di aggiungerlo."
 			}
 		},
 		"editDescription": "Aggiorna la configurazione della regola di routing",

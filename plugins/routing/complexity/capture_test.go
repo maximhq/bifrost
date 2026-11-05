@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -123,6 +124,30 @@ func TestRequestCaptureDropsWhenQueueIsFull(t *testing.T) {
 	st := c.Stats()
 	assert.EqualValues(t, captureQueueSize, st.Queued)
 	assert.EqualValues(t, 10, st.Dropped, "a full queue must drop, never block the request")
+}
+
+// A space another serving router still writes to is kept when this one moves
+// to a new space: only spaces no router uses are stale.
+func TestRequestCaptureKeepsSpacesOtherRoutersUse(t *testing.T) {
+	c := newCaptureTest(t)
+	store := newCaptureTestStore(t)
+	officeNS := CaptureNamespace("openai", "office-model", 2, 1)
+	oldNS, newNS := CaptureNamespace("openai", "old", 2, 1), CaptureNamespace("openai", "new", 2, 1)
+	c.Configure(&CaptureConfig{SampleRate: 1})
+	c.offer(requestCtx("o"), store, officeNS, 2, []float32{1, 0})
+	waitWritten(t, c, 1)
+	c.SetLiveNamespaces(func() []string { return []string{officeNS} })
+	c.offer(requestCtx("a"), store, oldNS, 2, []float32{1, 0})
+	waitWritten(t, c, 2)
+	c.offer(requestCtx("b"), store, newNS, 2, []float32{0, 1})
+	waitWritten(t, c, 3)
+
+	names, err := store.ListNamespaces(context.Background(), CaptureNamespacePrefix)
+	require.NoError(t, err)
+	sort.Strings(names)
+	want := []string{newNS, officeNS}
+	sort.Strings(want)
+	assert.Equal(t, want, names, "the old space goes; the one another router uses stays")
 }
 
 func TestRequestCaptureDeletesStaleEmbeddingSpaces(t *testing.T) {

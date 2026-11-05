@@ -28,6 +28,8 @@ func TestSuggestionSpaceReadsPhrasesAndCapturedRequests(t *testing.T) {
 	require.NoError(t, err)
 	defer space.Close()
 	assert.Equal(t, CaptureNamespace("openai", "test-embedding-model", testSemanticDimension, 1), space.CaptureNamespace)
+	assert.NotEmpty(t, space.Version)
+	assert.Equal(t, classifier.ServingVersion(), space.Version, "the space names the phrase bank it was taken from")
 	var texts []string
 	for _, p := range space.Phrases {
 		texts = append(texts, p.Tier+":"+p.Text)

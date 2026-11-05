@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/logstore"
@@ -106,31 +107,52 @@ func (s *BifrostHTTPServer) ComplexitySuggestionStore() logstore.ComplexitySugge
 
 // ComplexitySuggestionTexts reads the request text of example logs within the
 // caller's access scope, as the router embedded them.
-func (s *BifrostHTTPServer) ComplexitySuggestionTexts(ctx context.Context, logIDs []string) (map[string]string, error) {
+func (s *BifrostHTTPServer) ComplexitySuggestionTexts(ctx context.Context, routerID string, logIDs []string) (map[string]string, error) {
 	if s.Config == nil || s.Config.LogsStore == nil {
 		return map[string]string{}, nil
 	}
 	historyCount := 1
 	if routingPlugin, err := s.getRoutingPlugin(); err == nil {
-		historyCount = routingPlugin.ComplexitySuggestionMessageHistoryCount()
+		historyCount = routingPlugin.ComplexitySuggestionMessageHistoryCount(routerID)
 	}
 	return complexitySuggestionTexts(s.Config.LogsStore)(ctx, logIDs, historyCount)
 }
 
-// StartComplexitySuggestionRun starts a suggestion run outside the schedule.
-func (s *BifrostHTTPServer) StartComplexitySuggestionRun(ctx context.Context) (string, error) {
+// ComplexitySuggestionRouter reports whether a router exists, and the phrase
+// bank version it serves.
+func (s *BifrostHTTPServer) ComplexitySuggestionRouter(routerID string) (string, bool) {
+	routingPlugin, err := s.getRoutingPlugin()
+	if err != nil || !routingPlugin.ComplexitySuggestionRouterExists(routerID) {
+		return "", false
+	}
+	return routingPlugin.ComplexitySuggestionRouterVersion(routerID), true
+}
+
+// StartComplexitySuggestionRun starts one router's suggestion run outside the
+// schedule.
+func (s *BifrostHTTPServer) StartComplexitySuggestionRun(ctx context.Context, routerID string, window time.Duration) (string, error) {
 	routingPlugin, err := s.getRoutingPlugin()
 	if err != nil {
 		return "", routing.ErrComplexitySuggestionsOff
 	}
-	return routingPlugin.StartComplexitySuggestionRunNow(ctx)
+	return routingPlugin.StartComplexitySuggestionRunNow(ctx, routerID, window)
 }
 
-// TestComplexitySuggestionPhrases routes examples with and without phrases.
-func (s *BifrostHTTPServer) TestComplexitySuggestionPhrases(ctx context.Context, phrases []complexity.SuggestionPhrase, examples []suggestrun.TestExample) (suggestrun.PhraseTest, error) {
+// EstimateComplexitySuggestionRun sizes one router's run over window.
+func (s *BifrostHTTPServer) EstimateComplexitySuggestionRun(ctx context.Context, routerID string, window time.Duration) (suggestrun.Estimate, error) {
+	routingPlugin, err := s.getRoutingPlugin()
+	if err != nil {
+		return suggestrun.Estimate{}, routing.ErrComplexitySuggestionsOff
+	}
+	return routingPlugin.EstimateComplexitySuggestionRun(ctx, routerID, window)
+}
+
+// TestComplexitySuggestionPhrases routes examples with and without phrases
+// against one router's phrase bank.
+func (s *BifrostHTTPServer) TestComplexitySuggestionPhrases(ctx context.Context, routerID string, phrases []complexity.SuggestionPhrase, examples []suggestrun.TestExample) (suggestrun.PhraseTest, error) {
 	routingPlugin, err := s.getRoutingPlugin()
 	if err != nil {
 		return suggestrun.PhraseTest{}, complexity.ErrNoServingGeneration
 	}
-	return routingPlugin.TestComplexitySuggestionPhrases(ctx, phrases, examples)
+	return routingPlugin.TestComplexitySuggestionPhrases(ctx, routerID, phrases, examples)
 }

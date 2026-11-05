@@ -180,6 +180,9 @@ test.describe('Complexity Router', () => {
     const OPEN = [
       {
         id: 'sug-refund',
+        router_id: 'default',
+        router_version: 'bank-v2',
+        stale: false,
         status: 'open',
         tier: 'SIMPLE',
         phrases: ['where is my refund'],
@@ -199,6 +202,9 @@ test.describe('Complexity Router', () => {
       },
       {
         id: 'sug-migration',
+        router_id: 'default',
+        router_version: 'bank-v1',
+        stale: true,
         status: 'open',
         tier: 'COMPLEX',
         phrases: ['plan a database migration'],
@@ -237,11 +243,15 @@ test.describe('Complexity Router', () => {
     let saved: Record<string, unknown>[] = []
     let statusCalls: { id: string; status: string }[] = []
     let runStarts = 0
+    let runWindows: (string | null)[] = []
+    let listRouters: (string | null)[] = []
 
     test.beforeEach(async ({ page }) => {
       saved = []
       statusCalls = []
       runStarts = 0
+      runWindows = []
+      listRouters = []
       await page.route(
         (url) => url.pathname === '/api/routing/complexity-analyzer-config',
         async (route) => {
@@ -263,9 +273,13 @@ test.describe('Complexity Router', () => {
       await page.route(
         (url) => url.pathname === '/api/routing/complexity-suggestions',
         (route) => {
-          const status = new URL(route.request().url()).searchParams.get('status')
+          const params = new URL(route.request().url()).searchParams
+          const status = params.get('status')
+          listRouters.push(params.get('router_id'))
           return route.fulfill({
             json: {
+              router_id: 'default',
+              router_version: 'bank-v2',
               suggestions: status === 'dismissed' ? DISMISSED : OPEN,
               counts: { open: OPEN.length, dismissed: DISMISSED.length },
               enabled: true,
@@ -299,7 +313,16 @@ test.describe('Complexity Router', () => {
         (route) => {
           if (route.request().method() !== 'POST') return route.fulfill({ json: { runs: [LAST_RUN] } })
           runStarts++
-          return route.fulfill({ status: 202, json: { run_id: 'complexity_suggestions-manual-1' } })
+          runWindows.push(new URL(route.request().url()).searchParams.get('window'))
+          return route.fulfill({ status: 202, json: { run_id: '6f1d2c3a-8b4e-4f5a-9c7d-1e2f3a4b5c6d' } })
+        },
+      )
+      await page.route(
+        (url) => url.pathname === '/api/routing/complexity-suggestions/runs/estimate',
+        (route) => {
+          const window = new URL(route.request().url()).searchParams.get('window')
+          const requests = window === '24h' ? 1200 : 8400
+          return route.fulfill({ json: { requests, clustered: requests, assigned: 0, skipped: 0, max_model_calls: 400 } })
         },
       )
       await page.route(
@@ -342,6 +365,9 @@ test.describe('Complexity Router', () => {
       await expect(row).toContainText('Weak match')
       await expect(row).toContainText('214 requests')
       await expect(page.getByTestId('complexity-suggestions-next-run')).toBeVisible()
+      await expect(page.getByTestId('complexity-suggestion-stale-sug-migration')).toContainText('Earlier phrase bank')
+      await expect(page.getByTestId('complexity-suggestion-stale-sug-refund')).toHaveCount(0)
+      expect(listRouters.every((id) => id === 'default')).toBe(true)
 
       await page.getByTestId('complexity-suggestion-expand-sug-refund').click()
       const details = page.getByTestId('complexity-suggestion-details-sug-refund')
@@ -400,7 +426,19 @@ test.describe('Complexity Router', () => {
       await expect.poll(() => statusCalls).toEqual([{ id: 'sug-migration', status: 'dismissed' }])
 
       await page.getByTestId('complexity-suggestions-run-now-button').click()
+      const dialog = page.getByTestId('complexity-suggestions-run-dialog')
+      await expect(dialog).toBeVisible()
+      // The 7-day lookback offers 24 hours and 7 days, and starts on 7 days.
+      await expect(page.getByTestId('complexity-suggestions-run-estimate')).toContainText('8,400 requests in the window')
+      await page.getByTestId('complexity-suggestions-run-window-select').click()
+      await expect(page.getByTestId('complexity-suggestions-run-window-14d')).toHaveCount(0)
+      await page.getByTestId('complexity-suggestions-run-window-24h').click()
+      await expect(page.getByTestId('complexity-suggestions-run-estimate')).toContainText('1,200 requests in the window')
+      await expect(page.getByTestId('complexity-suggestions-run-estimate')).toContainText('At most 400 suggestion-model calls')
+      await page.getByTestId('complexity-suggestions-run-start-button').click()
       await expect.poll(() => runStarts).toBe(1)
+      expect(runWindows).toEqual(['24h'])
+      await expect(dialog).toBeHidden()
     })
 
     test('should test an edited phrase before staging it', async ({ page }) => {

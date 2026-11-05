@@ -139,6 +139,10 @@ type RequestCapture struct {
 	// while the writer still drains the queue, or refused.
 	closeMu sync.RWMutex
 	closed  bool
+	// liveNamespaces names every capture namespace a serving router still
+	// writes to; ensure keeps those and deletes the rest. Nil means only the
+	// namespace being ensured is live.
+	liveNamespaces func() []string
 	// deletes keeps the deletes Forget could not do, for RetryDeletes.
 	// Optional: without it a failed delete is logged and left to Sweep.
 	deletes CaptureDeleteRecorder
@@ -292,8 +296,17 @@ func (c *RequestCapture) ensure(ctx context.Context, store vectorstore.VectorSto
 		return fmt.Errorf("create capture namespace: %w", err)
 	}
 	if existing, err := store.ListNamespaces(ctx, CaptureNamespacePrefix); err == nil {
+		live := map[string]bool{namespace: true}
+		c.mu.Lock()
+		liveFn := c.liveNamespaces
+		c.mu.Unlock()
+		if liveFn != nil {
+			for _, ns := range liveFn() {
+				live[ns] = true
+			}
+		}
 		for _, ns := range existing {
-			if ns != namespace {
+			if !live[ns] {
 				if err := store.DeleteNamespace(ctx, ns); err != nil && c.logger != nil {
 					c.logger.Debug("[Routing] could not delete stale capture namespace %s: %v", ns, err)
 				}
@@ -304,6 +317,20 @@ func (c *RequestCapture) ensure(ctx context.Context, store vectorstore.VectorSto
 	c.store, c.namespace, c.ensured = store, namespace, true
 	c.mu.Unlock()
 	return nil
+}
+
+// SetLiveNamespaces tells capture which namespaces serving routers still use,
+// so switching one router's embedding space never deletes another's. With
+// one router the namespace being written is the only live one, which is the
+// default.
+func (c *RequestCapture) SetLiveNamespaces(live func() []string) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	c.liveNamespaces = live
+	c.ensured = false // re-check what to keep on the next write
+	c.mu.Unlock()
 }
 
 // CaptureDelete is a deleted log whose captured vector could not be removed.
@@ -563,4 +590,33 @@ func captureUnix(value any) int64 {
 		return n
 	}
 	return 0
+}
+
+// CountCaptured counts the requests captured from from through to, reading
+// only their timestamps, so a run can be sized before it reads any vector.
+func CountCaptured(ctx context.Context, store vectorstore.VectorStore, namespace string, from, to time.Time) (int, error) {
+	if store == nil || namespace == "" {
+		return 0, nil
+	}
+	queries := []vectorstore.Query{
+		{Field: captureMetadataKind, Operator: vectorstore.QueryOperatorEqual, Value: captureMetadataKindValue},
+		{Field: captureMetadataTimestamp, Operator: vectorstore.QueryOperatorGreaterThanOrEqual, Value: from.Unix()},
+		{Field: captureMetadataTimestamp, Operator: vectorstore.QueryOperatorLessThanOrEqual, Value: to.Unix()},
+	}
+	var count int
+	var cursor *string
+	for {
+		results, next, err := store.GetAll(ctx, namespace, queries, []string{captureMetadataTimestamp}, cursor, captureReadPage)
+		if errors.Is(err, vectorstore.ErrNotFound) {
+			return count, nil
+		}
+		if err != nil {
+			return count, fmt.Errorf("count captured requests: %w", err)
+		}
+		count += len(results)
+		if next == nil || *next == "" || len(results) == 0 {
+			return count, nil
+		}
+		cursor = next
+	}
 }

@@ -87462,6 +87462,16 @@
         ],
         "parameters": [
           {
+            "name": "router_id",
+            "in": "query",
+            "required": false,
+            "description": "The model router the suggestions belong to. Defaults to the gateway's one router, `default`; an unknown router is 404.",
+            "schema": {
+              "type": "string",
+              "default": "default"
+            }
+          },
+          {
             "name": "status",
             "in": "query",
             "required": false,
@@ -87473,6 +87483,16 @@
           }
         ],
         "responses": {
+          "404": {
+            "description": "The model router does not exist",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
           "200": {
             "description": "Suggestions retrieved",
             "content": {
@@ -87480,14 +87500,33 @@
                 "schema": {
                   "type": "object",
                   "properties": {
+                    "router_id": {
+                      "type": "string"
+                    },
+                    "router_version": {
+                      "type": "string",
+                      "description": "The version the router serves now."
+                    },
                     "suggestions": {
                       "type": "array",
                       "items": {
                         "type": "object",
-                        "description": "One suggested set of phrases for a cluster of routed traffic.",
+                        "description": "One suggested set of phrases for a cluster of one model router's traffic.",
                         "properties": {
                           "id": {
                             "type": "string"
+                          },
+                          "router_id": {
+                            "type": "string",
+                            "description": "The model router whose traffic the suggestion came from."
+                          },
+                          "router_version": {
+                            "type": "string",
+                            "description": "The router version (its phrase bank) the suggestion was computed against."
+                          },
+                          "stale": {
+                            "type": "boolean",
+                            "description": "True when the router now serves a different version than the one the suggestion was computed against."
                           },
                           "status": {
                             "type": "string",
@@ -87597,6 +87636,17 @@
                         "id": {
                           "type": "string"
                         },
+                        "router_id": {
+                          "type": "string"
+                        },
+                        "router_version": {
+                          "type": "string"
+                        },
+                        "window_start": {
+                          "type": "string",
+                          "format": "date-time",
+                          "description": "Start of the window the run read; it ends at started_at."
+                        },
                         "triggered_by": {
                           "type": "string",
                           "enum": [
@@ -87705,6 +87755,18 @@
           },
           {
             "BasicAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "router_id",
+            "in": "query",
+            "required": false,
+            "description": "The model router the suggestions belong to. Defaults to the gateway's one router, `default`; an unknown router is 404.",
+            "schema": {
+              "type": "string",
+              "default": "default"
+            }
           }
         ],
         "requestBody": {
@@ -87936,6 +87998,16 @@
         ],
         "parameters": [
           {
+            "name": "router_id",
+            "in": "query",
+            "required": false,
+            "description": "The model router the suggestions belong to. Defaults to the gateway's one router, `default`; an unknown router is 404.",
+            "schema": {
+              "type": "string",
+              "default": "default"
+            }
+          },
+          {
             "name": "limit",
             "in": "query",
             "required": false,
@@ -87948,6 +88020,16 @@
           }
         ],
         "responses": {
+          "404": {
+            "description": "The model router does not exist",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
           "200": {
             "description": "Runs retrieved",
             "content": {
@@ -87962,6 +88044,17 @@
                         "properties": {
                           "id": {
                             "type": "string"
+                          },
+                          "router_id": {
+                            "type": "string"
+                          },
+                          "router_version": {
+                            "type": "string"
+                          },
+                          "window_start": {
+                            "type": "string",
+                            "format": "date-time",
+                            "description": "Start of the window the run read; it ends at started_at."
                           },
                           "triggered_by": {
                             "type": "string",
@@ -88072,7 +88165,39 @@
             "BasicAuth": []
           }
         ],
+        "parameters": [
+          {
+            "name": "window",
+            "in": "query",
+            "required": false,
+            "description": "How much of the lookback the run reads, as hours or days (24h, 7d). Omitted reads the whole lookback; longer than the lookback is 400.",
+            "schema": {
+              "type": "string",
+              "example": "7d"
+            }
+          },
+          {
+            "name": "router_id",
+            "in": "query",
+            "required": false,
+            "description": "The model router the suggestions belong to. Defaults to the gateway's one router, `default`; an unknown router is 404.",
+            "schema": {
+              "type": "string",
+              "default": "default"
+            }
+          }
+        ],
         "responses": {
+          "404": {
+            "description": "The model router does not exist",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
           "202": {
             "description": "Run started",
             "content": {
@@ -88084,6 +88209,16 @@
                       "type": "string"
                     }
                   }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The window is not a duration, or is longer than the lookback",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
                 }
               }
             }
@@ -88100,6 +88235,123 @@
           },
           "503": {
             "description": "Phrase suggestions are not available (no log store, or the routing plugin is not loaded)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/routing/complexity-suggestions/runs/estimate": {
+      "get": {
+        "operationId": "estimateComplexitySuggestionRun",
+        "x-mint": {
+          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Governance:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+        },
+        "summary": "Estimate a phrase suggestion run",
+        "description": "Sizes a run of the router's current settings over a window without starting it: how many captured requests the window holds, how many would be clustered and how many counted into the clusters found, and at most how many suggestion-model calls the run would make. Only captured timestamps are read.\n",
+        "tags": [
+          "Routing"
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "router_id",
+            "in": "query",
+            "required": false,
+            "description": "The model router the suggestions belong to. Defaults to the gateway's one router, `default`; an unknown router is 404.",
+            "schema": {
+              "type": "string",
+              "default": "default"
+            }
+          },
+          {
+            "name": "window",
+            "in": "query",
+            "required": false,
+            "description": "Hours or days (24h, 7d); omitted is the whole lookback.",
+            "schema": {
+              "type": "string",
+              "example": "7d"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Run estimated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "requests": {
+                      "type": "integer",
+                      "description": "Captured requests in the window."
+                    },
+                    "clustered": {
+                      "type": "integer",
+                      "description": "Requests the run would group into clusters."
+                    },
+                    "assigned": {
+                      "type": "integer",
+                      "description": "Requests it would count into the clusters found."
+                    },
+                    "skipped": {
+                      "type": "integer",
+                      "description": "Requests past the run's assignment bound, not counted."
+                    },
+                    "max_model_calls": {
+                      "type": "integer",
+                      "description": "The most suggestion-model calls the run could make."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The window is not a duration, or is longer than the lookback",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The model router does not exist",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Suggestions are off for this router",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The router has no warmed phrase bank, or suggestions are not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -88132,6 +88384,16 @@
         ],
         "parameters": [
           {
+            "name": "router_id",
+            "in": "query",
+            "required": false,
+            "description": "The model router the suggestions belong to. Defaults to the gateway's one router, `default`; an unknown router is 404.",
+            "schema": {
+              "type": "string",
+              "default": "default"
+            }
+          },
+          {
             "name": "suggestion_id",
             "in": "path",
             "required": true,
@@ -88150,10 +88412,22 @@
                   "properties": {
                     "suggestion": {
                       "type": "object",
-                      "description": "One suggested set of phrases for a cluster of routed traffic.",
+                      "description": "One suggested set of phrases for a cluster of one model router's traffic.",
                       "properties": {
                         "id": {
                           "type": "string"
+                        },
+                        "router_id": {
+                          "type": "string",
+                          "description": "The model router whose traffic the suggestion came from."
+                        },
+                        "router_version": {
+                          "type": "string",
+                          "description": "The router version (its phrase bank) the suggestion was computed against."
+                        },
+                        "stale": {
+                          "type": "boolean",
+                          "description": "True when the router now serves a different version than the one the suggestion was computed against."
                         },
                         "status": {
                           "type": "string",
@@ -88310,6 +88584,16 @@
         ],
         "parameters": [
           {
+            "name": "router_id",
+            "in": "query",
+            "required": false,
+            "description": "The model router the suggestions belong to. Defaults to the gateway's one router, `default`; an unknown router is 404.",
+            "schema": {
+              "type": "string",
+              "default": "default"
+            }
+          },
+          {
             "name": "suggestion_id",
             "in": "path",
             "required": true,
@@ -88349,10 +88633,22 @@
               "application/json": {
                 "schema": {
                   "type": "object",
-                  "description": "One suggested set of phrases for a cluster of routed traffic.",
+                  "description": "One suggested set of phrases for a cluster of one model router's traffic.",
                   "properties": {
                     "id": {
                       "type": "string"
+                    },
+                    "router_id": {
+                      "type": "string",
+                      "description": "The model router whose traffic the suggestion came from."
+                    },
+                    "router_version": {
+                      "type": "string",
+                      "description": "The router version (its phrase bank) the suggestion was computed against."
+                    },
+                    "stale": {
+                      "type": "boolean",
+                      "description": "True when the router now serves a different version than the one the suggestion was computed against."
                     },
                     "status": {
                       "type": "string",

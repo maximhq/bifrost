@@ -2,6 +2,7 @@ import { describe, expect, test } from "vitest";
 import type { EditableKeywordConfig, Suggestion } from "@/lib/types/complexityRouter";
 import {
 	addPhrases,
+	availableWindows,
 	categoryCounts,
 	filterSuggestions,
 	newPhrases,
@@ -20,6 +21,9 @@ const bank: EditableKeywordConfig = {
 function suggestion(id: string, category: Suggestion["category"], phrases: string[], reason = ""): Suggestion {
 	return {
 		id,
+		router_id: "default",
+		router_version: "v1",
+		stale: false,
 		status: "open",
 		tier: "SIMPLE",
 		phrases,
@@ -73,5 +77,12 @@ describe("filtering suggestions", () => {
 		expect(filterSuggestions(list, { query: "REFUND", category: "all" }, new Set()).map((s) => s.id)).toEqual(["a"]);
 		expect(filterSuggestions(list, { query: "", category: "weak" }, new Set(["c"])).map((s) => s.id)).toEqual(["a"]);
 		expect(categoryCounts(list, new Set(["c"]))).toEqual({ all: 2, uncovered: 1, weak: 1, misrouted: 0, mixed: 0, template: 0 });
+	});
+});
+describe("run windows", () => {
+	test("offers only windows the lookback still holds", () => {
+		expect(availableWindows(7)).toEqual(["24h", "7d"]);
+		expect(availableWindows(30)).toEqual(["24h", "7d", "14d", "30d"]);
+		expect(availableWindows(1)).toEqual(["24h"]);
 	});
 });

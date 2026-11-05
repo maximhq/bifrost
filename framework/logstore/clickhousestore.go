@@ -1801,17 +1801,30 @@ func (s *ClickHouseLogStore) UpsertComplexitySuggestionRun(ctx context.Context, 
 	return s.db.WithContext(ctx).Create(run).Error
 }
 
-// PruneComplexitySuggestionRuns keeps the newest keep runs, with one
-// lightweight delete.
-func (s *ClickHouseLogStore) PruneComplexitySuggestionRuns(ctx context.Context, keep int) (int64, error) {
+// PruneComplexitySuggestionRuns keeps one router's newest keep runs, with
+// one lightweight delete.
+func (s *ClickHouseLogStore) PruneComplexitySuggestionRuns(ctx context.Context, routerID string, keep int) (int64, error) {
 	if keep <= 0 {
 		return 0, fmt.Errorf("keep must be positive")
 	}
-	where, args, err := complexitySuggestionRunPruneWhere(ctx, s.db, keep)
+	where, args, err := complexitySuggestionRunPruneWhere(ctx, s.db, routerID, keep)
 	if err != nil || where == "" {
 		return 0, err
 	}
 	return s.chDeleteWhere(ctx, "complexity_suggestion_runs", where, args...)
+}
+
+// DeleteComplexityRouterSuggestions removes a router's suggestions and runs,
+// with one lightweight delete each. There is no transaction to undo the first
+// with, so a failure on the second leaves the runs, which a retry removes.
+func (s *ClickHouseLogStore) DeleteComplexityRouterSuggestions(ctx context.Context, routerID string) error {
+	if routerID == "" {
+		return fmt.Errorf("router id is required")
+	}
+	if err := s.chLightweightDelete(ctx, "complexity_suggestions", "router_id = ?", routerID); err != nil {
+		return err
+	}
+	return s.chLightweightDelete(ctx, "complexity_suggestion_runs", "router_id = ?", routerID)
 }
 
 // AddComplexityVectorDeletes records deleted logs whose captured vector delete
