@@ -47,6 +47,7 @@ variable "guardrails_config" { default = null }
 variable "plugins" { default = null }
 variable "audit_logs" { default = null }
 variable "websocket" { default = null }
+variable "server" { default = null }
 
 variable "image_tag" { default = "latest" }
 variable "image_repository" { default = "maximhq/bifrost" }
@@ -97,3 +98,4 @@ variable "ingress_annotations" {
   type    = map(string)
   default = {}
 }
+variable "ingress_path" { default = "/" }

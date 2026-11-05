@@ -37,6 +37,7 @@
 		"dumpErrorsHelp": "Wenn aktiviert, werden vollständige Fehlerdetails in den Server-Konsoleprotokollen geschrieben. Nutzbar für Debugging, aber kann im Produktivumgebung lautlos sein.",
 		"asyncJobTtl": "Async-Aufgaben Ergebnis TTL (Sekunden)",
 		"asyncJobTtlHelp": "Standardzeit zum Automatischen Löschen von async-Aufgabenergebnissen in Sekunden. Ergebnisse werden nach Expire-Zeit automatisch gelöscht.",
+		"languageHelp": "Anzeigesprache des Dashboards. Wird in diesem Browser gespeichert und sofort angewendet.",
 		"headerForwarding": "Header-Übertragung",
 		"headerForwardingHelp": "Stelle fest, welche zusätzlichen Headers an LLM-Anbieter übertragen werden sollen.",
 		"aboutHeaderForwarding": "Über den Header-Übertragung",
@@ -224,7 +225,7 @@
 		"directKeysHelp": "Wenn aktiviert, können Aufrufer direkt in der <b0>Authorization</b0>, <b1>x-api-key</b1>, oder <b2>x-goog-api-key</b2>-Header ein Anbieter-API-Schlüssel (z.B. ⟦P0⟧) mit <b3>x-bf-direct-key: true</b3> übergeben. Bifrost verwendet diesen Schlüssel direkt, ohne sich an die registrierten Schlüsselpool zu binden.",
 		"originsHelp": "Kommagetrennte Liste erlaubter Origins für CORS- und WebSocket-Anfragen. Localhost-Origins sind immer erlaubt. Jeder Origin muss eine vollständige URL sein.",
 		"requiredHeadersHelp": "Komma-getrennte Liste der Headers, die auf jeder Anfrage vorhanden sein müssen. Wenn eine Anfrage diese Header nicht enthält, wird sie mit einem 400-Fehler abgelehnt. Headernamen sind grob geschrieben-case-insensitive.",
-		"routesHelp": "Komma-getrennte Liste von Routen, die den Authentifizierungsmiddleware umgehen. Aufrufe an diese Routen benötigen keine Authentifizierung. Systemrouten wie <b0>/health</b0>, <b1>/api/session/login</b1>, und <b2>/api/session/is-auth-enabled</b2> werden immer gewährt, unabhängig von diesem Einstellung.",
+		"routesHelp": "Komma-getrennte Liste von Routen, die den Authentifizierungsmiddleware umgehen. Aufrufe an diese Routen benötigen keine Authentifizierung. Systemrouten wie <b0>/health</b0>, <b1>/api/session/login</b1>, und <b2>/api/session/is-auth-enabled</b2> werden immer gewährt, unabhängig von diesem Einstellung. Routen werden nach dem Entfernen eines server.base_path-Präfixes abgeglichen, daher ohne Präfix angeben.",
 		"see": "Siehe",
 		"documentation": "Dokumentation",
 		"forDetails": "für Details.",
@@ -253,7 +254,7 @@
 		"title": "Protokolleinstellungen",
 		"description": "Konfiguriere die Protokolleinstellungen für Anfragen und Antworten.",
 		"enableLogs": "Protokolle aktivieren",
-		"enableLogsHelp": "Protokollierung von Anfragen und Antworten in einer SQL-Datenbank aktivieren. Dies kann den Arbeitsspeicher des Systems um 40–60 MB belasten.",
+		"enableLogsHelp": "Protokollierung von Anfragen und Antworten, einschließlich Relay-Aufrufen, in einer SQL-Datenbank aktivieren. Dies kann den Arbeitsspeicher des Systems um 40–60 MB belasten.",
 		"requiresStore": "Erfordert, dass der Protokollspeicher in config.json konfiguriert und aktiviert ist.",
 		"disableContentLogging": "Inhaltsprotokollierung deaktivieren",
 		"disableContentLoggingHelp": "Gilt für LLM-, MCP-, Agent- und Relay-Protokolle. Wenn aktiviert, werden nur Nutzungsmetadaten (Latenz, Kosten, Token-Anzahl, Status, Routing-IDs usw.) protokolliert. Anfrage-/Antwortinhalte (Nachrichten, Parameter, Tool-Aufrufe und alle rohen Anbieter-Bytes) werden aus den Protokolleinträgen entfernt, auch wenn <code0>store_raw_request_response</code0> aktiv ist. Das Zurücksenden roher Bytes an Aufrufer über <code1>send_back_raw_*</code1> bleibt unberührt. Agent-Protokoll-Bodys folgen dieser Einstellung; rohe Upstream-Erfassungen erfordern zusätzlich „Capture Raw Request and Response“ in den Agent-Gateway-Einstellungen.",
@@ -265,9 +266,9 @@
 		"allowRawOverride": "Per-Anfrage Raw-Uberschreitung",
 		"allowRawOverrideHelp": "Wenn aktiviert, können einzelne Anfragen rohe Anbieter-Request-/Response-Bytes über die Header x-bf-send-back-raw-request und x-bf-send-back-raw-response an den Aufrufer zurücksenden. Beeinflusst nicht die Protokollspeicherung; die Persistenz roher Bytes in Protokollen wird von {{setting}} gesteuert.",
 		"logRetentionDays": "Protokollretention Tage",
-		"logRetentionDaysHelp": "Anzahl Tage, für die Protokolle im Datenbanksystem gespeichert werden. Minimum ist 1 Tag. Ältere Protokolle werden automatisch gelöscht.",
+		"logRetentionDaysHelp": "Anzahl Tage, für die Protokolle, einschließlich Relay-Protokollen, im Datenbanksystem gespeichert werden. Minimum ist 1 Tag. Ältere Protokolle werden automatisch gelöscht.",
 		"hideDeletedVks": "Nicht anzeigen gelöschter Virtueller Schlüssel in Filtern",
-		"hideDeletedVksHelp": "Wenn aktiviert, werden gelöschte virtuelle Schlüssel aus den Filteroptionen für Virtuelle Schlüssel in Logs, Dashboard und MCP Logs ausgeschlossen.",
+		"hideDeletedVksHelp": "Wenn aktiviert, werden gelöschte virtuelle Schlüssel aus den Filteroptionen für Virtuelle Schlüssel in Logs, Dashboard, MCP Logs und Relay-Protokollen ausgeschlossen.",
 		"loggingHeaders": "Logging-Header",
 		"loggingHeadersHelp": "Kommagetrennte Liste von Anfrage-Headern, die in den Protokoll-Metadaten erfasst werden. Unterstützt exakte Namen und Wildcard-Muster (z. B. erfasst x-custom-* alle Header mit diesem Präfix, * protokolliert alle Header; beachte, dass * auch sensible Header wie Authorization erfasst). Die Werte werden aus eingehenden Anfragen extrahiert und im Metadatenfeld der Protokolleinträge gespeichert. Header mit dem Präfix x-bf-lh- werden immer automatisch erfasst. Relay-Protokolle enthalten dieselben Metadaten sowie die Header, nach denen die Routen eines Relays zuordnen; kein anderer Header und nie einer aus der Antwort wird gespeichert.",
 		"loggingHeadersPlaceholder": "X-Tenant-ID, X-Request-Source, x-custom-*",
@@ -349,6 +350,7 @@
 		"disableAutoToolInjection": "Automatische Tool-Injektion deaktivieren",
 		"allowTempToken": "Temporäre Token-Authentifizierungs-Links erlauben",
 		"codeModeBinding": "Code-Modus-Bindungsebene",
+		"codeModeSettings": "Code-Modus-Einstellungen",
 		"selectBindingLevel": "Bindungsebene auswählen",
 		"serverLevel": "Server-Ebene",
 		"toolLevel": "Tool-Ebene",
@@ -374,7 +376,7 @@
 		"disableAutoToolInjectionHelp": "Wenn aktiviert, werden MCP-Tools nicht automatisch in jede Anfrage eingebunden. Tools werden nur eingefügt, wenn sie explizit über Anfrage-Header (<code0>x-bf-mcp-include-tools</code0>) angegeben werden, und müssen weiterhin durch die MCP-Konfiguration des virtuellen Schlüssels erlaubt sein.",
 		"tempTokenHelp": "Wenn aktiviert, können benutzerbezogene MCP-OAuth-Links ein kurzlebiges, berechtigungsbeschränktes Token enthalten, sodass jemand ohne aktive Bifrost-Dashboard-Sitzung den Ablauf abschließen kann. Deaktiviert lassen, um die normale Dashboard-Authentifizierung zu verlangen.",
 		"bindingHelp": "Wie Tools im VFS bereitgestellt werden: Auf Serverebene (alle Tools pro Server) oder auf Tool-Ebene (einzelne Tools).",
-		"externalClientUrlHelp": "Überschreibe die öffentliche Basis-URL von Bifrost, wenn es hinter einem Reverse-Proxy läuft. <b0>Leer lassen, um die URL</b0> aus dem eingehenden <code1>Host</code1>-Header abzuleiten. Wird als <code2>redirect_uri</code2> verwendet, die Bifrost bei Upstream-OAuth-Anbietern registriert, wenn es als Client für einen MCP-Server agiert (z. B. leiten Notion oder Jira den Browser nach dem Login zu <code3>&lt;URL&gt;/api/oauth/callback</code3> weiter). Unterstützt Umgebungsvariablen-Syntax (z. B. <code4>env.BIFROST_EXTERNAL_URL</code4>).",
+		"externalClientUrlHelp": "Überschreibe die öffentliche Basis-URL von Bifrost, wenn es hinter einem Reverse-Proxy läuft. <b0>Leer lassen, um die URL</b0> aus dem eingehenden <code1>Host</code1>-Header abzuleiten. Wird als <code2>redirect_uri</code2> verwendet, die Bifrost bei Upstream-OAuth-Anbietern registriert, wenn es als Client für einen MCP-Server agiert (z. B. leiten Notion oder Jira den Browser nach dem Login zu <code3>&lt;URL&gt;/api/oauth/callback</code3> weiter). Unterstützt Umgebungsvariablen-Syntax (z. B. <code4>env.BIFROST_EXTERNAL_URL</code4>). Hinter einem URL-Präfix (server.base_path) muss das Präfix enthalten sein, z. B. https://host/bifrost.",
 		"externalClientUrlWarningHelp": "Upstream-OAuth-Anbieter binden den <code0>redirect_uri</code0> an das, was ursprünglich registriert wurde, sodass MCP-Clients, die OAuth bereits abgeschlossen haben, mit <em1>\"Invalid redirect URI\"</em1> fehlschlagen. Um dies zu beheben, lösche die gespeicherten OAuth-Client-Anmeldedaten für die betroffenen MCP-Server und autorisiere sie erneut, damit Bifrost die dynamische Client-Registrierung (DCR) mit der neuen URL erneut ausführt.",
 		"authModeHelp": "Steuert, wie sich eingehende MCP-Clients (z. B. Claude Code, Cursor) am <code0>/mcp</code0>-Endpunkt authentifizieren. <b1>headers</b1> (Standard) – nur VK- / api-key- / Sitzungs-Header, OAuth-Discovery deaktiviert. <b2>both</b2> – akzeptiert Header-Anmeldedaten und von Bifrost ausgestellte JWTs; bestehende Integrationen bleiben unberührt. <b3>oauth</b3> – nur JWTs; VK- und Header-Zugriff ist deaktiviert.",
 		"issuerUrlHelp": "Stabile öffentliche URL, die in Discovery-Dokumenten angegeben und als <code0>iss</code0>-Claim in jedes JWT eingebettet wird. Erforderlich in den Modi OAuth und Beide: Bifrost leitet den Issuer nie aus dem Anfrage-Header <code1>Host</code1> ab, da dieser Header vom Aufrufer kontrolliert wird. Unterstützt die Syntax für Umgebungsvariablen (z. B. <code2>env.BIFROST_ISSUER_URL</code2>).",
@@ -512,7 +514,7 @@
 		"scimHelp": "Proxy für SCIM-Verzeichnissynchronisierungsanfragen verwenden.",
 		"scimEnterpriseOnly": "SCIM-Proxy-Unterstützung ist in Bifrost Enterprise verfügbar.",
 		"inference": "Inferenz",
-		"inferenceHelp": "Proxy für LLM-Inferenzanfragen an Modellanbieter verwenden. Ein Anbieter mit eigenen Proxy-Einstellungen behält diese.",
+		"inferenceHelp": "Proxy für LLM-Inferenzanfragen an Modellanbieter und für Relay-Aufrufe verwenden. Ein Anbieter oder Relay mit eigenen Proxy-Einstellungen behält diese.",
 		"comingSoon": "Demnächst verfügbar",
 		"api": "API",
 		"apiHelp": "Proxy für ausgehende API-Aufrufe verwenden: MCP-Server, OAuth, Webhooks, Plugin-Downloads, Modellkatalog-Sync und OpenTelemetry-Export.",
@@ -1230,7 +1232,7 @@
 		"toastSaved": "Agent-Gateway-Einstellungen erfolgreich aktualisiert.",
 		"loadFailed": "Agent-Gateway-Einstellungen konnten nicht geladen werden.",
 		"externalClientUrl": "Externe Client-URL",
-		"externalClientUrlHelp": "Die öffentliche Basis-URL von Bifrost, die für ausgelieferte Agent Cards und Callback-URLs für Push-Benachrichtigungen verwendet wird. Bleibt sie leer, sind alle Agent-Protokoll-Endpunkte deaktiviert. Die Agent-Verwaltung bleibt verfügbar. Unterstützt die Syntax für Umgebungsvariablen (z. B. <code>env.BIFROST_EXTERNAL_URL</code>).",
+		"externalClientUrlHelp": "Die öffentliche Basis-URL von Bifrost, die für ausgelieferte Agent Cards und Callback-URLs für Push-Benachrichtigungen verwendet wird. Bleibt sie leer, sind alle Agent-Protokoll-Endpunkte deaktiviert. Die Agent-Verwaltung bleibt verfügbar. Unterstützt die Syntax für Umgebungsvariablen (z. B. <code>env.BIFROST_EXTERNAL_URL</code>). Hinter einem URL-Präfix (server.base_path) muss das Präfix enthalten sein, z. B. https://host/bifrost.",
 		"privateAllowlist": "Allowlist für private Netzwerke",
 		"privateAllowlistHelp": "Hosts, IP-Adressen oder CIDR-Bereiche ohne Schema oder Port, die Discovery-, OAuth- und Laufzeitanfragen des Agent Gateway erreichen dürfen, wenn sie auf eine private oder Loopback-Adresse aufgelöst werden. Link-Local- und Cloud-Metadaten-Adressen werden immer blockiert.",
 		"privateAllowlistPlaceholder": "Host, IP oder CIDR hinzufügen (Enter oder Komma)",
@@ -1258,7 +1260,15 @@
 			"editConfigAria": "Relay-Konfiguration bearbeiten",
 			"viewConfigAria": "Relay-Konfiguration anzeigen",
 			"testSheetTitle": "Preise testen",
-			"testSheetDescription": "Führt einen Beispielaufruf über die gespeicherten Routen und Preise von {{name}} aus. Es wird nichts an den Upstream gesendet."
+			"testSheetDescription": "Führt einen Beispielaufruf über die gespeicherten Routen und Preise von {{name}} aus. Es wird nichts an den Upstream gesendet.",
+			"gatewayPath": "Gateway-Pfad",
+			"upstream": "Upstream",
+			"auth": "Authentifizierung",
+			"pricing": "Standardpreise",
+			"anyPath": "Beliebiger Pfad",
+			"moreActionsAria": "Weitere Relay-Aktionen",
+			"deleteRelay": "Relay löschen",
+			"copyPathAria": "Gateway-Pfad kopieren"
 		},
 		"deleteDialog": {
 			"title": "Relay löschen",
@@ -1286,6 +1296,7 @@
 			"title": "Routen",
 			"importOpenapi": "OpenAPI importieren",
 			"addRoute": "Route hinzufügen",
+			"description": "Eine Anfrage nutzt die erste passende Route; spezifischere Routen stehen weiter oben.",
 			"columns": {
 				"method": "Methode",
 				"route": "Route",
@@ -1595,6 +1606,7 @@
 			"proxyCaCertInfo": "Ein PEM-kodiertes CA-Zertifikat, dem bei TLS-Verbindungen über einen SSL-abfangenden Proxy vertraut wird, oder eine env.-Referenz darauf.",
 			"proxyCaCertPlaceholder": "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE----- or env.PROXY_CA_CERT_PEM",
 			"removeConfig": "Konfiguration entfernen",
+			"discardProxy": "Änderungen verwerfen",
 			"saveProxy": "Proxy-Konfiguration speichern"
 		},
 		"pricing": {
@@ -1619,6 +1631,6 @@
 		"loadFailed": "Skills-Einstellungen konnten nicht geladen werden.",
 		"retry": "Erneut versuchen",
 		"externalClientUrl": "Externe Client-URL",
-		"externalClientUrlHelp": "Die öffentliche Basis-URL von Bifrost für die Marketplaces von Claude Code und Codex. Leer lassen, um die Bereitstellung und Registrierung des Marketplace zu deaktivieren. Skill-Verwaltung und Downloads bleiben verfügbar. Unterstützt Umgebungsvariablen und Vault-Referenzen."
+		"externalClientUrlHelp": "Die öffentliche Basis-URL von Bifrost für die Marketplaces von Claude Code und Codex. Leer lassen, um die Bereitstellung und Registrierung des Marketplace zu deaktivieren. Skill-Verwaltung und Downloads bleiben verfügbar. Unterstützt Umgebungsvariablen und Vault-Referenzen. Hinter einem URL-Präfix (server.base_path) muss das Präfix enthalten sein, z. B. https://host/bifrost."
 	}
 }

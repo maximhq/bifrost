@@ -317,13 +317,15 @@ func (p *CompatPlugin) markDecisionForEmulation(ctx *schemas.BifrostContext, pro
 // provider. The provider-qualified row (e.g. "openrouter/openai/gpt-6-luna") wins
 // over a bare row with the same model name, which can describe the model on
 // another provider or endpoint (e.g. a Decisions-only "openai/gpt-6-luna").
+// Without a qualified row it falls back to supportedParameters, which also
+// resolves key aliases.
 func (p *CompatPlugin) supportedParametersFor(provider schemas.ModelProvider, model string) []string {
 	if provider != "" {
 		if params := p.modelCatalog.GetSupportedParameters(string(provider) + "/" + model); params != nil {
 			return params
 		}
 	}
-	return p.modelCatalog.GetSupportedParameters(model)
+	return p.supportedParameters(provider, model)
 }
 
 // markReasoningWithToolsForResponses routes a chat request to Responses when the

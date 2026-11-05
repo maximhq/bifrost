@@ -45,7 +45,7 @@ export function LogDetailSheet({
 		data: fullLog,
 		isLoading,
 		isError,
-	} = useGetLogByIdQuery(log?.id ?? "", {
+	} = useGetLogByIdQuery(log ? { id: log.id, timestamp: log.timestamp } : "", {
 		skip: !open || !log?.id,
 		pollingInterval,
 	});

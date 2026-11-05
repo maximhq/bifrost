@@ -1,0 +1,137 @@
+---
+title: "Resources and Prompts"
+sidebarTitle: "Resources & Prompts"
+description: "Serve the prompts and resources of your MCP servers to MCP clients through Bifrost's gateway, and choose which ones each server exposes."
+icon: "book-open"
+---
+
+## Overview
+
+MCP servers can offer more than tools. **Prompts** are reusable message templates that a user picks in their MCP client, and **resources** are documents or data the client can read, such as files or records.
+
+Bifrost discovers both from every connected MCP server and serves them through its [MCP gateway](./gateway-auth), next to tools. An MCP client connected to Bifrost sees the prompts and resources of all the servers it can reach, without connecting to each one.
+
+**Key benefits:**
+
+- **One connection** - Clients get prompts and resources from every server through Bifrost.
+- **Same access rules as tools** - A caller reaches a server's prompts and resources when it can reach that server.
+- **Per-server control** - Choose which prompts and resources each server exposes.
+- **Logged and governed** - Reads appear in MCP logs and go through governance, like tool calls.
+
+<Note>
+Prompts and resources are for MCP clients. They are not offered to models in chat completions, the Responses API, or [Agent Mode](./agent-mode), which use tools only.
+</Note>
+
+---
+
+## How they appear to clients
+
+| | What a client sees | Example |
+|---|---|---|
+| **Prompts** | The server's name, then the prompt's own name, like tools | `docs-review` for the `review` prompt on the `docs` server |
+| **Resources** | The URI the server lists, unchanged | `file:///handbook.md` |
+| **Resource templates** | The URI template the server lists, unchanged | `notes://{id}` |
+
+Reads go back to the server that listed the item, and arguments for prompts and templates can be auto-completed when the server supports it.
+
+If two servers list the same resource URI, only one of them serves it, and you cannot choose which. Keep URIs distinct across servers, or hide the duplicate with an [allow-list](#choosing-what-a-server-exposes).
+
+---
+
+## Who can reach them
+
+A caller can use a server's prompts and resources when it can reach that server, by the same rules as tools:
+
+- A [virtual key](/features/governance/mcp-tools) reaches the servers assigned to it.
+- A [Virtual MCP](./virtual-mcps) endpoint reaches the servers it draws its tools from.
+- [Request filters](./filtering) narrow which servers a request reaches.
+
+Access is per server. Virtual keys and Virtual MCPs do not have their own prompt or resource lists, so a caller that reaches a server sees everything that server exposes. Restricting a caller to some of a server's tools does not restrict its prompts or resources.
+
+A server that offers only prompts or resources, with no tools, is served in the same way.
+
+---
+
+## Choosing what a server exposes
+
+Each server exposes all of its prompts and resources by default. Use its allow-lists to expose fewer, or none.
+
+<Tabs group="config-method">
+<Tab title="Web UI">
+
+1. Open **MCP Servers** and select the server.
+2. Open the **Prompts & Resources** tab, which lists what the server offers.
+3. Choose which prompts and resources to expose.
+4. Save the server.
+
+![Prompts and resources tab on an MCP server](/media/ui-mcp-prompts-resources.png)
+
+</Tab>
+<Tab title="config.json">
+
+Set `prompts_to_expose` and `resources_to_expose` on a `client_configs[]` entry:
+
+```json
+{
+  "mcp": {
+    "client_configs": [
+      {
+        "name": "docs",
+        "connection_type": "http",
+        "connection_string": "https://docs.example.com/mcp",
+        "prompts_to_expose": ["review"],
+        "resources_to_expose": ["file:///handbook.md", "notes://{id}"]
+      }
+    ]
+  }
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `prompts_to_expose` | string[] | No | Prompts served through the gateway, by the server's own name (`review`, not `docs-review`). |
+| `resources_to_expose` | string[] | No | Resource URIs and URI templates served through the gateway. |
+
+For both fields, `["*"]` exposes everything and `[]` exposes nothing. Omitted, a new server exposes everything and an existing server keeps its stored list.
+
+</Tab>
+</Tabs>
+
+---
+
+## Keeping lists up to date
+
+Bifrost refreshes prompts and resources along with tools, on each server's [tool sync interval](./overview#dynamic-tool-discovery). A server with a persistent connection can also announce a change, and Bifrost picks it up straight away. See [Dynamic Tool Discovery](./overview#dynamic-tool-discovery).
+
+To pick up a change immediately on any server, use **Refresh tools** on the server, which re-reads its prompts and resources too.
+
+<Note>
+Resource subscriptions are not supported through the gateway. A client that wants the latest content of a resource reads it again.
+</Note>
+
+---
+
+## Logs and governance
+
+Each prompt a client fetches and each resource it reads is recorded in **MCP Logs**, with the prompt name or resource URI in place of a tool name. Governance checks and accounts for reads as it does for tool calls, without the per-tool check.
+
+Enterprise [guardrails](/enterprise/guardrails) apply to tool calls only, not to prompts or resource reads.
+
+---
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Gateway Authentication" icon="lock" href="./gateway-auth">
+    Connect MCP clients to Bifrost
+  </Card>
+  <Card title="Virtual MCPs" icon="layer-group" href="./virtual-mcps">
+    Bundle servers behind one endpoint
+  </Card>
+  <Card title="Tool Filtering" icon="filter" href="./filtering">
+    Control which tools and servers callers reach
+  </Card>
+  <Card title="Connections" icon="plug" href="./connections">
+    How connection modes affect updates
+  </Card>
+</CardGroup>

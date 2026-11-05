@@ -37,6 +37,7 @@
 		"dumpErrorsHelp": "Se ativado, os detalhes completos dos erros são escritos nos registos da consola do servidor. Útil para depuração, mas pode ser ruidoso em produção.",
 		"asyncJobTtl": "TTL do resultado de tarefas assíncronas (segundos)",
 		"asyncJobTtlHelp": "Tempo de vida predefinido dos resultados de tarefas assíncronas, em segundos. Os resultados são limpos automaticamente após expirarem.",
+		"languageHelp": "Idioma de apresentação do painel. Guardado neste navegador e aplicado de imediato.",
 		"headerForwarding": "Reencaminhamento de cabeçalhos",
 		"headerForwardingHelp": "Controle quais cabeçalhos extra são reencaminhados para os fornecedores LLM.",
 		"aboutHeaderForwarding": "Sobre o reencaminhamento de cabeçalhos",
@@ -224,7 +225,7 @@
 		"directKeysHelp": "Quando ativado, os autores das chamadas podem passar uma chave API de fornecedor diretamente no cabeçalho <b0>Authorization</b0>, <b1>x-api-key</b1> ou  <b2>x-goog-api-key</b2> juntamente com <b3>x-bf-direct-key: true</b3>. O Bifrost usará essa chave diretamente, contornando o pool de chaves registadas.",
 		"originsHelp": "Lista separada por vírgulas de origens permitidas para CORS e ligações WebSocket. As origens localhost são sempre permitidas. Cada origem tem de ser um URL completo com protocolo (ex.: https://app.example.com, http://10.0.0.100:3000). São suportados wildcards para subdomínios (ex.: https://*.example.com) ou use \"*\" para permitir todas as origens.",
 		"requiredHeadersHelp": "Lista separada por vírgulas de cabeçalhos que têm de estar presentes em cada pedido. Pedidos sem algum destes cabeçalhos serão rejeitados com um erro 400. Os nomes dos cabeçalhos não distinguem maiúsculas/minúsculas.",
-		"routesHelp": "Lista separada por vírgulas de rotas que contornam o middleware de autenticação. Os pedidos a estas rotas não exigirào autenticação. Rotas de sistema como <b0>/health</b0>, <b1>/api/session/login</b1> e <b2>/api/session/is-auth-enabled</b2> estão sempre na lista branca, independentemente desta definição.",
+		"routesHelp": "Lista separada por vírgulas de rotas que contornam o middleware de autenticação. Os pedidos a estas rotas não exigirào autenticação. Rotas de sistema como <b0>/health</b0>, <b1>/api/session/login</b1> e <b2>/api/session/is-auth-enabled</b2> estão sempre na lista branca, independentemente desta definição. As rotas são comparadas depois de remover o prefixo server.base_path, por isso indique-as sem o prefixo.",
 		"see": "Ver",
 		"documentation": "documentação",
 		"forDetails": "para mais detalhes.",
@@ -253,7 +254,7 @@
 		"title": "Definições de registos",
 		"description": "Configure as definições de registo para pedidos e respostas.",
 		"enableLogs": "Ativar registos",
-		"enableLogsHelp": "Ativar o registo de pedidos e respostas numa base de dados SQL. Isto pode adicionar 40-60mb de sobrecarga à memória do sistema.",
+		"enableLogsHelp": "Ativar o registo de pedidos e respostas, incluindo chamadas de relay, numa base de dados SQL. Isto pode adicionar 40-60mb de sobrecarga à memória do sistema.",
 		"requiresStore": "Requer que o armazenamento de registos esteja configurado e ativado em config.json.",
 		"disableContentLogging": "Desativar o registo de conteúdo",
 		"disableContentLoggingHelp": "Aplica-se aos registos de LLM, MCP, agentes e relays. Quando ativado, apenas os metadados de utilização (latência, custo, contagem de tokens, estado, IDs de encaminhamento, etc.) são registados. O conteúdo de pedidos/respostas (mensagens, parâmetros, chamadas de ferramentas e quaisquer bytes brutos do fornecedor) é descartado dos registos, mesmo com <code0>store_raw_request_response</code0> ativo. O reenvio de bytes brutos a quem chama através de <code1>send_back_raw_*</code1> não é afetado. Os corpos do protocolo de agentes seguem esta definição; as capturas brutas a montante também exigem Capturar pedido e resposta brutos nas definições do Agent Gateway.",
@@ -265,9 +266,9 @@
 		"allowRawOverride": "Permitir sobreposição em bruto por pedido",
 		"allowRawOverrideHelp": "Quando ativado, pedidos individuais podem enviar bytes em bruto do pedido/resposta do fornecedor de volta ao autor da chamada usando os cabeçalhos x-bf-send-back-raw-request e x-bf-send-back-raw-response. Não afeta o armazenamento de registos; a persistência de bytes em bruto nos registos é controlada por {{setting}}.",
 		"logRetentionDays": "Dias de retenção de registos",
-		"logRetentionDaysHelp": "Número de dias para reter registos na base de dados. O mínimo é 1 dia. Registos mais antigos serão eliminados automaticamente.",
+		"logRetentionDaysHelp": "Número de dias para reter registos, incluindo os registos de relay, na base de dados. O mínimo é 1 dia. Registos mais antigos serão eliminados automaticamente.",
 		"hideDeletedVks": "Não mostrar chaves virtuais eliminadas nos filtros",
-		"hideDeletedVksHelp": "Quando ativado, as chaves virtuais eliminadas são excluídas das opções de filtro de chaves virtuais em Registos, Painel e Registos MCP.",
+		"hideDeletedVksHelp": "Quando ativado, as chaves virtuais eliminadas são excluídas das opções de filtro de chaves virtuais em Registos, Painel, Registos MCP e Registos de relay.",
 		"loggingHeaders": "Cabeçalhos de registo",
 		"loggingHeadersHelp": "Lista separada por vírgulas de cabeçalhos de pedido a capturar nos metadados do registo. Suporta nomes exatos e padrões com carateres universais (por exemplo, x-custom-* captura todos os cabeçalhos com esse prefixo, * regista todos os cabeçalhos; note que * captura cabeçalhos sensíveis como Authorization). Os valores são extraídos dos pedidos recebidos e guardados no campo de metadados das entradas de registo. Os cabeçalhos com o prefixo x-bf-lh- são sempre capturados automaticamente. Os Registos de relay têm os mesmos metadados e, ao lado deles, os cabeçalhos em que as rotas de um relay correspondem; nenhum outro cabeçalho, e nunca os da resposta, é guardado.",
 		"loggingHeadersPlaceholder": "X-Tenant-ID, X-Request-Source, x-custom-*",
@@ -349,6 +350,7 @@
 		"disableAutoToolInjection": "Desativar injeção automática de ferramentas",
 		"allowTempToken": "Permitir ligações de autenticação com token temporário",
 		"codeModeBinding": "Nível de associação do Code Mode",
+		"codeModeSettings": "Definições do Code Mode",
 		"selectBindingLevel": "Selecionar nível de associação",
 		"serverLevel": "Ao nível do servidor",
 		"toolLevel": "Ao nível da ferramenta",
@@ -374,7 +376,7 @@
 		"disableAutoToolInjectionHelp": "Quando ativado, as ferramentas MCP não são automaticamente incluídas em cada pedido. As ferramentas só são injetadas quando especificadas explicitamente via cabeçalhos de pedido (<code0>x-bf-mcp-include-tools</code0>) e ainda têm de ser permitidas pela configuração MCP da chave virtual.",
 		"tempTokenHelp": "Quando ativado, as ligações OAuth MCP por utilizador podem incluir um token com âmbito de curta duração para que alguém sem sessão ativa no painel Bifrost possa concluir o fluxo. Mantenha desativado para exigir autenticação normal do painel.",
 		"bindingHelp": "Como as ferramentas são expostas no VFS: ao nível do servidor (todas as ferramentas por servidor) ou ao nível da ferramenta (ferramentas individuais).",
-		"externalClientUrlHelp": "Sobrepor o URL base público do Bifrost quando corre atrás de um proxy inverso. <b0>Deixe em branco para derivar o URL</b0> a partir do cabeçalho <code1>Host</code1> recebido. Usado como o <code2>redirect_uri</code2> que o Bifrost regista junto de fornecedores OAuth a montante quando atua como cliente de um servidor MCP (ex.: Notion ou Jira redirecionam o browser para <code3>&lt;URL&gt;/api/oauth/callback</code3> após o início de sessão). Suporta sintaxe de variável de ambiente (ex.:  <code4>env.BIFROST_EXTERNAL_URL</code4>).",
+		"externalClientUrlHelp": "Sobrepor o URL base público do Bifrost quando corre atrás de um proxy inverso. <b0>Deixe em branco para derivar o URL</b0> a partir do cabeçalho <code1>Host</code1> recebido. Usado como o <code2>redirect_uri</code2> que o Bifrost regista junto de fornecedores OAuth a montante quando atua como cliente de um servidor MCP (ex.: Notion ou Jira redirecionam o browser para <code3>&lt;URL&gt;/api/oauth/callback</code3> após o início de sessão). Suporta sintaxe de variável de ambiente (ex.:  <code4>env.BIFROST_EXTERNAL_URL</code4>). Atrás de um prefixo de URL (server.base_path), inclua o prefixo, por exemplo https://host/bifrost.",
 		"externalClientUrlWarningHelp": "Os fornecedores OAuth a montante bloqueiam o <code0>redirect_uri</code0> ao que foi registado inicialmente, pelo que os clientes MCP que já concluíram OAuth falharão com <em1>\"Invalid redirect URI\"</em1>. Para recuperar, limpe as credenciais de cliente OAuth armazenadas dos servidores MCP afetados e volte a autorizar para o Bifrost voltar a executar o Dynamic Client Registration com o novo URL.",
 		"authModeHelp": "Controla como os clientes MCP de entrada (ex.: Claude Code, Cursor) se autenticam no endpoint <code0>/mcp</code0>. <b1>headers</b1> (predefinido) - apenas cabeçalhos VK / api-key / sessão, descoberta OAuth desativada. <b2>both</b2> - aceita credenciais de cabeçalho e JWTs emitidos pelo Bifrost; as integrações existentes não são afetadas. <b3>oauth</b3> - apenas JWTs; o acesso via VK e cabeçalho é desativado.",
 		"issuerUrlHelp": "URL público estável anunciado nos documentos de descoberta e incorporado como claim <code0>iss</code0> em todos os JWT. Obrigatório nos modos OAuth e Ambos: o Bifrost nunca deriva o emissor do cabeçalho <code1>Host</code1> do pedido, porque esse cabeçalho é controlado pelo chamador. Suporta a sintaxe de variáveis de ambiente (p. ex., <code2>env.BIFROST_ISSUER_URL</code2>).",
@@ -512,7 +514,7 @@
 		"scimHelp": "Usar proxy para pedidos de sincronização de diretório SCIM.",
 		"scimEnterpriseOnly": "O suporte a proxy SCIM está disponível no Bifrost Enterprise.",
 		"inference": "Inferência",
-		"inferenceHelp": "Utilizar o proxy para pedidos de inferência LLM aos fornecedores de modelos. Um fornecedor com definições de proxy próprias mantém-nas.",
+		"inferenceHelp": "Utilizar o proxy para pedidos de inferência LLM aos fornecedores de modelos e para chamadas de relay. Um fornecedor ou relay com definições de proxy próprias mantém-nas.",
 		"comingSoon": "Em breve",
 		"api": "API",
 		"apiHelp": "Utilizar o proxy para chamadas API de saída: servidores MCP, OAuth, webhooks, transferências de plugins, sincronização do catálogo de modelos e exportação OpenTelemetry.",
@@ -1201,7 +1203,7 @@
 		"toastSaved": "Definições do Agent Gateway atualizadas com sucesso.",
 		"loadFailed": "Falha ao carregar as definições do Agent Gateway.",
 		"externalClientUrl": "URL externo do cliente",
-		"externalClientUrlHelp": "URL base público do Bifrost, usado nos cartões de agente servidos e nos URLs de callback de notificações push. Se ficar em branco, todos os endpoints do protocolo de agentes ficam desativados. A gestão de agentes continua disponível. Suporta a sintaxe de variáveis de ambiente (p. ex., <code>env.BIFROST_EXTERNAL_URL</code>).",
+		"externalClientUrlHelp": "URL base público do Bifrost, usado nos cartões de agente servidos e nos URLs de callback de notificações push. Se ficar em branco, todos os endpoints do protocolo de agentes ficam desativados. A gestão de agentes continua disponível. Suporta a sintaxe de variáveis de ambiente (p. ex., <code>env.BIFROST_EXTERNAL_URL</code>). Atrás de um prefixo de URL (server.base_path), inclua o prefixo, por exemplo https://host/bifrost.",
 		"privateAllowlist": "Lista de permissões de rede privada",
 		"privateAllowlistHelp": "Anfitriões, endereços IP ou intervalos CIDR, sem esquema nem porta, que a deteção, o OAuth e os pedidos de execução do Agent Gateway podem alcançar quando resolvem para um endereço privado ou de loopback. Os endereços link-local e de metadados da cloud estão sempre bloqueados.",
 		"privateAllowlistPlaceholder": "Adicione um anfitrião, IP ou CIDR (Enter ou vírgula)",
@@ -1229,7 +1231,15 @@
 			"editConfigAria": "Editar a configuração do relay",
 			"viewConfigAria": "Ver a configuração do relay",
 			"testSheetTitle": "Testar preços",
-			"testSheetDescription": "Executa uma chamada de exemplo pelas rotas e preços guardados de {{name}}. Nada é enviado a montante."
+			"testSheetDescription": "Executa uma chamada de exemplo pelas rotas e preços guardados de {{name}}. Nada é enviado a montante.",
+			"gatewayPath": "Caminho do gateway",
+			"upstream": "Upstream",
+			"auth": "Autenticação",
+			"pricing": "Preço padrão",
+			"anyPath": "Qualquer caminho",
+			"moreActionsAria": "Mais ações do relay",
+			"deleteRelay": "Excluir relay",
+			"copyPathAria": "Copiar caminho do gateway"
 		},
 		"deleteDialog": {
 			"title": "Eliminar relay",
@@ -1257,6 +1267,7 @@
 			"title": "Rotas",
 			"importOpenapi": "Importar OpenAPI",
 			"addRoute": "Adicionar rota",
+			"description": "Uma requisição usa a primeira rota compatível; as rotas mais específicas aparecem primeiro.",
 			"columns": {
 				"method": "Método",
 				"route": "Rota",
@@ -1566,6 +1577,7 @@
 			"proxyCaCertInfo": "Um certificado CA codificado em PEM em que confiar nas ligações TLS através de um proxy que intercepta SSL, ou uma referência env. para ele.",
 			"proxyCaCertPlaceholder": "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE----- ou env.PROXY_CA_CERT_PEM",
 			"removeConfig": "Remover configuração",
+			"discardProxy": "Descartar alterações",
 			"saveProxy": "Guardar configuração do proxy"
 		},
 		"pricing": {
@@ -1590,6 +1602,6 @@
 		"loadFailed": "Falha ao carregar as definições de competências.",
 		"retry": "Tentar novamente",
 		"externalClientUrl": "URL externo do cliente",
-		"externalClientUrlHelp": "URL base público do Bifrost para os marketplaces do Claude Code e do Codex. Deixe em branco para desativar a disponibilização e o registo do marketplace. A gestão e as transferências de competências continuam disponíveis. Suporta variáveis de ambiente e referências a vault."
+		"externalClientUrlHelp": "URL base público do Bifrost para os marketplaces do Claude Code e do Codex. Deixe em branco para desativar a disponibilização e o registo do marketplace. A gestão e as transferências de competências continuam disponíveis. Suporta variáveis de ambiente e referências a vault. Atrás de um prefixo de URL (server.base_path), inclua o prefixo, por exemplo https://host/bifrost."
 	}
 }

@@ -2,6 +2,7 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { useGetCoreConfigQuery } from "@/lib/store";
 import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
+import { getExampleBaseUrl } from "@/lib/utils/port";
 import { Link } from "@tanstack/react-router";
 import { Copy, InfoIcon, KeyRound } from "lucide-react";
 import { useMemo } from "react";
@@ -17,7 +18,7 @@ export default function APIKeysView() {
 
 	const curlExample = `# Base64 encode your username:password
 # Example: echo -n "username:password" | base64
-curl --location 'http://localhost:8080/v1/chat/completions'
+curl --location '${getExampleBaseUrl()}/v1/chat/completions'
 --header 'Content-Type: application/json' 
 --header 'Accept: application/json' 
 --header 'Authorization: Basic <base64_encoded_username:password>' 

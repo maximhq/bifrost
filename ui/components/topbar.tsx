@@ -1,4 +1,4 @@
-import { LanguageSwitcher } from "@/components/language-switcher";
+import { LanguageMenuSub } from "@/components/language-switcher";
 import NotificationCenter from "@/components/notificationCenter";
 import { ThemeToggle } from "@/components/themeToggle";
 import WarpLauncher from "@/components/warp/warpLauncher";
@@ -202,7 +202,6 @@ export default function Topbar() {
 			    it's a display preference, not an account action. */}
 			<span ref={setMobileFilterSlot} className="flex shrink-0 items-center md:hidden" />
 			<NotificationCenter />
-			<LanguageSwitcher />
 			<ThemeToggle />
 			<WarpLauncher />
 
@@ -258,6 +257,11 @@ export default function Topbar() {
 							</DropdownMenuItem>
 						))}
 					</DropdownMenuGroup>
+
+					{/* Client Settings is gated by Settings View; this keeps language
+					    reachable for every signed-in user. */}
+					<DropdownMenuSeparator />
+					<LanguageMenuSub />
 
 					{canViewAs && (
 						<>

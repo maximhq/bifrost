@@ -12,7 +12,7 @@ Authentication on MCP servers comes in two flavors:
 - **Server-level auth** — a single shared credential the admin configures once. Every caller hits the upstream MCP server under the same identity.
 - **Per-user auth** — each end-user supplies their own credential. Bifrost stores the credential against the caller's identity (Virtual Key, signed-in user, or asserted session ID) and reuses it on every later call.
 
-Per-user auth applies to the **HTTP** and **SSE** connection types. STDIO connections inherit their environment from the spawned subprocess and don't have a per-call auth model.
+Per-user auth applies to the **HTTP** connection type, because each call opens its own connection with the caller's credential. SSE and STDIO clients keep one connection for every caller (an SSE stream, a spawned subprocess), so they have no per-call auth model, and a per-user auth type on them is refused: the API answers 400, and a `config.json` client is skipped at boot with an error naming it.
 
 ---
 
