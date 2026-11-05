@@ -1024,6 +1024,7 @@
 		"rounds": "Rondas",
 		"execution": "Ejecución",
 		"errorDetails": "Detalles del error",
+		"errorNoMessage": "La llamada a la herramienta falló sin un mensaje de error.",
 		"pluginLogs": "Registros de complementos",
 		"loading": "Cargando registros MCP...",
 		"native": "Nativo",

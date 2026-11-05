@@ -1,6 +1,7 @@
 import { formatLatency } from "@/app/workspace/dashboard/utils/chartUtils";
 import BlockHeader from "@/app/workspace/logs/views/blockHeader";
 import LogEntryDetailsView from "@/app/workspace/logs/views/logEntryDetailsView";
+import { LogErrorCard } from "@/app/workspace/logs/views/logErrorCard";
 import PluginLogsView from "@/app/workspace/logs/views/pluginLogsView";
 import { CorrelatedLogsContent } from "@/app/workspace/agent-logs/views/correlatedLogs";
 import { SheetNavigationButtons } from "@/components/sheetNavigationButtons";
@@ -37,11 +38,13 @@ import type { MCPToolLogEntry } from "@/lib/types/logs";
 import { cn } from "@/lib/utils";
 import { downloadAsJson } from "@/lib/utils/browser-download";
 import {
+	getMCPLogError,
 	getMCPLogPillTone,
 	getMCPLogPresentation,
 	getMCPLogTimeline,
 	getMCPReadKind,
 	type MCPLogPillTone,
+	splitMCPErrorMessage,
 } from "@/lib/utils/mcpLogPresentation";
 import { applyRedactionMappingToValue, hasRedactionMappingEntries, mergeRedactionMappings } from "@/lib/utils/redaction";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
@@ -255,6 +258,8 @@ export function MCPLogDetailSheet({
 	const displayedArguments = applyRedactionMappingToValue(displayLog.arguments, inputRevealMapping);
 	const displayedResult = applyRedactionMappingToValue(displayLog.result, outputRevealMapping);
 	const displayedErrorDetails = applyRedactionMappingToValue(displayLog.error_details, mixedRevealMapping);
+	const errorCard = displayedErrorDetails ? getMCPLogError(displayedErrorDetails) : undefined;
+	const errorText = errorCard?.message ? splitMCPErrorMessage(errorCard.message) : undefined;
 	const pluginLogCount = getPluginLogCount(displayLog.plugin_logs);
 	const presentation = getMCPLogPresentation(displayLog, t);
 	const { durationMs, startTimestamp, endTimestamp } = getMCPLogTimeline(displayLog, presentation);
@@ -844,23 +849,15 @@ export function MCPLogDetailSheet({
 								</div>
 							)}
 
-							{/* Error Details */}
-							{displayedErrorDetails && (
-								<div className="border-destructive/50 w-full rounded-sm border">
-									<div className="border-destructive/50 text-destructive border-b px-4 py-2 text-sm font-medium md:px-6">
-										{t("mcpLogs.errorDetails")}
-									</div>
-									<CodeEditor
-										className="z-0 w-full"
-										shouldAdjustInitialHeight={true}
-										maxHeight={250}
-										wrap={true}
-										code={JSON.stringify(displayedErrorDetails, null, 2)}
-										lang="json"
-										readonly={true}
-										options={{ scrollBeyondLastLine: false, collapsibleBlocks: true, lineNumbers: "off", alwaysConsumeMouseWheel: false }}
-									/>
-								</div>
+							{errorCard && (
+								<LogErrorCard
+									message={errorText ? errorText.text : t("mcpLogs.errorNoMessage")}
+									json={errorText?.json}
+									messageAfter={errorText?.textAfter}
+									copyText={errorCard.message}
+									details={errorCard.details}
+									testId="mcplogdetails-error"
+								/>
 							)}
 						</TabsContent>
 

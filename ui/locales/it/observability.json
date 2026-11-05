@@ -1024,6 +1024,7 @@
 		"rounds": "Round",
 		"execution": "Esecuzione",
 		"errorDetails": "Dettagli errore",
+		"errorNoMessage": "La chiamata al tool non è riuscita e non ha restituito alcun messaggio di errore.",
 		"pluginLogs": "Log dei plugin",
 		"loading": "Caricamento log MCP...",
 		"native": "Nativo",

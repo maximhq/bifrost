@@ -1024,6 +1024,7 @@
 		"rounds": "Runden",
 		"execution": "Ausführung",
 		"errorDetails": "Fehlerdetails",
+		"errorNoMessage": "Der Tool-Aufruf ist ohne Fehlermeldung fehlgeschlagen.",
 		"pluginLogs": "Plugin-Protokolle",
 		"loading": "MCP-Protokolle werden geladen...",
 		"native": "Nativ",

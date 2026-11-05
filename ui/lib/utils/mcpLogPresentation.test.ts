@@ -1,7 +1,14 @@
 import { describe, expect, test } from "vitest";
 
-import type { MCPToolLogEntry } from "@/lib/types/logs";
-import { getMCPLogPillTone, getMCPLogPresentation, getMCPLogTimeline, getMCPReadKind } from "./mcpLogPresentation";
+import type { BifrostError, MCPToolLogEntry } from "@/lib/types/logs";
+import {
+	getMCPLogError,
+	getMCPLogPillTone,
+	getMCPLogPresentation,
+	getMCPLogTimeline,
+	getMCPReadKind,
+	splitMCPErrorMessage,
+} from "./mcpLogPresentation";
 
 const TIMESTAMP = "2026-09-14T10:00:00.000Z";
 
@@ -76,6 +83,95 @@ describe("getMCPLogPillTone", () => {
 		expect(presentation.label).toBe("Retry later");
 		expect(presentation.description).toContain("without asking for input");
 		expect(getMCPLogPillTone(log, presentation)).toBe("input");
+	});
+});
+
+describe("getMCPLogError", () => {
+	const failure = (error: BifrostError["error"]): BifrostError => ({
+		is_bifrost_error: false,
+		error,
+		extra_fields: { raw_response: "ignored" },
+	});
+
+	test("an inner error that repeats the message adds no details", () => {
+		expect(getMCPLogError(failure({ message: "Authentication required", error: "Authentication required" }))).toEqual({
+			message: "Authentication required",
+		});
+	});
+
+	test("an inner error that says something else goes under details", () => {
+		expect(getMCPLogError(failure({ message: "Tool call failed", error: "connection reset by peer" }))).toEqual({
+			message: "Tool call failed",
+			details: "connection reset by peer",
+		});
+	});
+
+	test("a structured inner error is pretty-printed under details", () => {
+		expect(getMCPLogError(failure({ message: "MCP server returned 502", error: { code: -32603 } }))).toEqual({
+			message: "MCP server returned 502",
+			details: JSON.stringify({ code: -32603 }, null, 2),
+		});
+	});
+
+	test("a string inner error stands in for a missing message", () => {
+		expect(getMCPLogError(failure({ message: "", error: "timeout after 30s" }))).toEqual({ message: "timeout after 30s" });
+	});
+
+	test("an error with neither leaves the message to the caller's fallback", () => {
+		expect(getMCPLogError(failure({ message: "" }))).toEqual({});
+	});
+});
+
+describe("splitMCPErrorMessage", () => {
+	const zodIssues =
+		'[\n  {\n    "expected": "record",\n    "code": "invalid_type",\n    "path": [\n      "params",\n      "arguments"\n    ],\n    "message": "Invalid input: expected record, received null"\n  }\n]';
+
+	test("drops Bifrost's wrapper and pulls the upstream JSON out of the message", () => {
+		const message = `MCP tool call failed for Notion-notion-get-users: invalid params: Invalid tools/call request: ${zodIssues}: mcp tool call failed`;
+		expect(splitMCPErrorMessage(message)).toEqual({
+			text: "invalid params: Invalid tools/call request:",
+			json: JSON.stringify(JSON.parse(zodIssues), null, 2),
+		});
+	});
+
+	test("keeps the text that follows the JSON", () => {
+		expect(splitMCPErrorMessage('upstream said {"code": 7, "reason": "busy"} and gave up')).toEqual({
+			text: "upstream said",
+			json: JSON.stringify({ code: 7, reason: "busy" }, null, 2),
+			textAfter: "and gave up",
+		});
+	});
+
+	test("a timeout keeps its own words and loses only the trailing sentinel", () => {
+		expect(splitMCPErrorMessage("MCP tool call timed out after 30s: Notion-search: mcp tool call timed out")).toEqual({
+			text: "MCP tool call timed out after 30s: Notion-search",
+		});
+	});
+
+	test("brackets that are not JSON, and JSON with nothing in it, stay as text", () => {
+		for (const message of ["[WARN] server busy", "expected one of [1, 2]", "empty {} body", "unbalanced { here"]) {
+			expect(splitMCPErrorMessage(message)).toEqual({ text: message });
+		}
+	});
+
+	test("a message that is only JSON leaves no text", () => {
+		expect(splitMCPErrorMessage('{"error": "denied"}')).toEqual({ text: "", json: JSON.stringify({ error: "denied" }, null, 2) });
+	});
+
+	// The message comes from the upstream MCP server, so its brackets are untrusted: the scan has to stay
+	// linear in the message length. The budget is ~100x what the scan needs, so it only trips on a regression.
+	test("brackets that never close are scanned once, not once per bracket", () => {
+		const message = `${"[".repeat(99_000)} {"code": 1}`;
+		const started = performance.now();
+		const result = splitMCPErrorMessage(message);
+		expect(performance.now() - started).toBeLessThan(500);
+		expect(result.json).toBe(JSON.stringify({ code: 1 }, null, 2));
+	});
+
+	test("deeply nested brackets leave the message as text instead of overflowing the stack", () => {
+		const message = `${"[".repeat(30_000)}${"]".repeat(30_000)}`;
+		expect(() => splitMCPErrorMessage(message)).not.toThrow();
+		expect(splitMCPErrorMessage(message).json).toBeUndefined();
 	});
 });
 

@@ -1019,6 +1019,7 @@
 		"rounds": "輪次",
 		"execution": "執行",
 		"errorDetails": "錯誤詳情",
+		"errorNoMessage": "工具呼叫失敗，但沒有回傳錯誤訊息。",
 		"pluginLogs": "外掛日誌",
 		"loading": "正在載入 MCP 日誌…",
 		"native": "原生",

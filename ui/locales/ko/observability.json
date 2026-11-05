@@ -1019,6 +1019,7 @@
 		"rounds": "라운드",
 		"execution": "실행",
 		"errorDetails": "오류 세부정보",
+		"errorNoMessage": "도구 호출이 오류 메시지 없이 실패했습니다.",
 		"pluginLogs": "플러그인 로그",
 		"loading": "MCP 로그 로드 중...",
 		"native": "네이티브",

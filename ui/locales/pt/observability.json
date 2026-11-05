@@ -1024,6 +1024,7 @@
 		"rounds": "Rodadas",
 		"execution": "Execução",
 		"errorDetails": "Detalhes do Erro",
+		"errorNoMessage": "A chamada da ferramenta falhou sem uma mensagem de erro.",
 		"pluginLogs": "Registos de 'Plugin'",
 		"loading": "A carregar os logs...",
 		"native": "Nativo",
