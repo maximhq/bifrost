@@ -400,6 +400,7 @@ func stripJSONComments(data []byte) []byte {
 	escape := false
 	inLineComment := false
 	inBlockComment := false
+	blockStart := 0
 
 	for i := 0; i < len(data); i++ {
 		ch := data[i]
@@ -445,12 +446,17 @@ func stripJSONComments(data []byte) []byte {
 				continue
 			case '*':
 				inBlockComment = true
+				blockStart = i
 				i++
 				continue
 			}
 		}
 
 		out = append(out, ch)
+	}
+	if inBlockComment {
+		// Keep an unclosed comment so the JSON parser rejects the file.
+		out = append(out, data[blockStart:]...)
 	}
 
 	return out

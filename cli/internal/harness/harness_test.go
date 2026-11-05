@@ -755,11 +755,13 @@ func TestReadNativeJSONTreatsEmptyFilesAsEmptySettings(t *testing.T) {
 			t.Errorf("%s: got %v, %v", name, settings, err)
 		}
 	}
-	path := filepath.Join(t.TempDir(), "settings.json")
-	if err := os.WriteFile(path, []byte("{not json"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := readNativeJSON(path); err == nil {
-		t.Error("invalid JSON must still fail to parse")
+	for name, body := range map[string]string{"invalid": "{not json", "unterminated comment": "/* unfinished", "trailing unterminated comment": "{\"theme\": \"x\"}\n/* unfinished"} {
+		path := filepath.Join(t.TempDir(), "settings.json")
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := readNativeJSON(path); err == nil {
+			t.Errorf("%s: malformed JSONC must fail to parse", name)
+		}
 	}
 }
