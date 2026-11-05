@@ -16561,6 +16561,33 @@
               }
             },
             {
+              "name": "Anthropic: output_config format json_schema with optional property → openai/gpt-4o-mini - #8159",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"max_tokens\": 400,\n  \"output_config\": {\"format\": {\"type\":\"json_schema\",\"schema\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"},\"country\":{\"type\":\"string\"}},\"required\":[\"city\"],\"additionalProperties\":false}}},\n  \"messages\": [{\"role\":\"user\",\"content\":\"Pick a city\"}]\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/anthropic/v1/messages",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "anthropic",
+                    "v1",
+                    "messages"
+                  ]
+                }
+              }
+            },
+            {
               "name": "Anthropic: tool defer_loading + advanced beta",
               "request": {
                 "method": "POST",
