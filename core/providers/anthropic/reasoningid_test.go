@@ -729,7 +729,7 @@ func TestInterleavedThinkingOutputToChatMessagesAttachesRunsToFlushingMessage(t 
 		}
 		sigs = append(sigs, run)
 	}
-	want := [][]string{nil, {"sig-1"}, {"sig-2"}}
+	want := [][]string{{"sig-1"}, {"sig-2"}}
 	if !reflect.DeepEqual(sigs, want) {
 		t.Fatalf("signatures per assistant message = %v, want %v", sigs, want)
 	}
