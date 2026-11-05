@@ -8427,10 +8427,15 @@ func convertBifrostReasoningToAnthropicThinking(ctx *schemas.BifrostContext, msg
 		}
 	}
 	if taggedSignature {
-		if !emittedFromContentBlocks && carriedSignature != "" && len(msg.ResponsesReasoning.Summary) == 1 {
+		if !emittedFromContentBlocks && carriedSignature != "" && len(msg.ResponsesReasoning.Summary) <= 1 {
+			// Omitted thinking still needs its original empty text and signature on replay.
+			text := ""
+			if len(msg.ResponsesReasoning.Summary) == 1 {
+				text = msg.ResponsesReasoning.Summary[0].Text
+			}
 			thinkingBlocks = append(thinkingBlocks, AnthropicContentBlock{
 				Type:      AnthropicContentBlockTypeThinking,
-				Thinking:  &msg.ResponsesReasoning.Summary[0].Text,
+				Thinking:  &text,
 				Signature: &carriedSignature,
 			})
 		}

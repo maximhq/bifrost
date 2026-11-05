@@ -446,6 +446,38 @@ func TestToBifrostResponsesStream_VisibleThinkingWithoutSignature(t *testing.T) 
 	if block.Signature != nil {
 		t.Errorf("output_item.done reasoning signature = %q, want none", *block.Signature)
 	}
+	ctx := schemas.NewBifrostContext(nil, time.Time{})
+	for _, content := range []*schemas.ResponsesMessageContent{itemDone.Content, nil} {
+		item := *itemDone
+		item.Content = content
+		if blocks := convertBifrostReasoningToAnthropicThinking(ctx, &item, schemas.Anthropic, "claude-opus-5-5", false); len(blocks) != 0 {
+			t.Fatal("unsigned thinking must not be sent to Claude")
+		}
+	}
+}
+
+func TestToAnthropicResponsesRequest_ReplaysStreamedOmittedThinking(t *testing.T) {
+	t.Parallel()
+	const signature = "sig-omitted"
+	for _, e := range driveResponsesStream(t, visibleThinkingToolUseLifecycle([]string{""}, signature)) {
+		if e.Type != schemas.ResponsesStreamResponseTypeOutputItemDone || reasoningTextBlock(e.Item) == nil {
+			continue
+		}
+		if e.Item.ResponsesReasoning == nil || e.Item.Summary == nil || len(e.Item.Summary) != 0 {
+			t.Fatalf("omitted thinking requires an empty summary array, got %+v", e.Item.ResponsesReasoning)
+		}
+		item := *e.Item
+		item.Content = nil
+		ctx := schemas.NewBifrostContext(nil, time.Time{})
+		blocks := convertBifrostReasoningToAnthropicThinking(ctx, &item, schemas.Anthropic, "claude-opus-5-5", false)
+		if len(blocks) != 1 || blocks[0].Type != AnthropicContentBlockTypeThinking ||
+			blocks[0].Thinking == nil || *blocks[0].Thinking != "" ||
+			blocks[0].Signature == nil || *blocks[0].Signature != signature {
+			t.Fatalf("omitted thinking replay = %+v", blocks)
+		}
+		return
+	}
+	t.Fatal("missing omitted thinking completion")
 }
 
 func BenchmarkVisibleThinkingCompletion(b *testing.B) {
