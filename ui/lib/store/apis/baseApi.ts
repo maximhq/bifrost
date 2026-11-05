@@ -216,6 +216,7 @@ export const baseApi = createApi({
 		"Skills",
 		"OAuth2Grants",
 		"IDJAGClients",
+		"WorkloadIdentities",
 		"UserAgentMappings",
 		"Branding",
 		"Devices",

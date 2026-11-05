@@ -1625,9 +1625,30 @@ type MCPClientTool struct {
 // MCPToolMetadata is what an MCP tool declares besides its function definition and annotations.
 // Bifrost-internal: never sent to providers.
 type MCPToolMetadata struct {
-	Title        string          `json:"title,omitempty"`
-	Icons        []mcp.Icon      `json:"icons,omitempty"`
-	OutputSchema json.RawMessage `json:"output_schema,omitempty"`
+	Title         string          `json:"title,omitempty"`
+	Icons         []mcp.Icon      `json:"icons,omitempty"`
+	OutputSchema  json.RawMessage `json:"output_schema,omitempty"`
+	Meta          json.RawMessage `json:"meta,omitempty"`            // the tool's _meta, as sent
+	UIResourceURI string          `json:"ui_resource_uri,omitempty"` // MCP Apps: ui:// resource rendering the tool
+	Visibility    []string        `json:"visibility,omitempty"`      // MCP Apps: empty means model and app
+}
+
+// MCP Apps (SEP-1865) extension id, resource mime type and _meta.ui.visibility values.
+const (
+	MCPAppsExtension       = "io.modelcontextprotocol/ui"
+	MCPAppsMimeType        = "text/html;profile=mcp-app"
+	MCPToolVisibilityModel = "model"
+	MCPToolVisibilityApp   = "app"
+)
+
+// ModelVisible reports whether a model may see and call the tool; no visibility means yes.
+func (m *MCPToolMetadata) ModelVisible() bool {
+	return m == nil || len(m.Visibility) == 0 || slices.Contains(m.Visibility, MCPToolVisibilityModel)
+}
+
+// AppVisible reports whether an MCP App may call the tool.
+func (m *MCPToolMetadata) AppVisible() bool {
+	return m == nil || len(m.Visibility) == 0 || slices.Contains(m.Visibility, MCPToolVisibilityApp)
 }
 
 // MCPToolDetails is a discovered tool's annotations and metadata, persisted beside the tool because

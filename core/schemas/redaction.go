@@ -11,7 +11,34 @@ import (
 // Integrations implement this contract because only they know which native fields correspond to
 // guardrail-visible normalized text. Callers must pass owned rawBody bytes and use only the returned
 // slice because implementations may mutate the input in place; any rewrite error is unsafe to forward.
+// A literal found in no owned field is reported as a *RawRequestLiteralsNotFoundError.
 type RawRequestBodyTextRewriter func(rawBody []byte, replacements map[string]string) ([]byte, error)
+
+// RawRequestLiteralsNotFoundError reports the replacement literals a RawRequestBodyTextRewriter found in none of the
+// fields it owns, so a caller can tell which redactions the raw body could not carry. Its message never includes the
+// literals, which are the values being redacted.
+type RawRequestLiteralsNotFoundError struct {
+	Literals []string
+}
+
+// Error describes the failure without naming any literal.
+func (e *RawRequestLiteralsNotFoundError) Error() string {
+	return "one or more runtime redaction literals were not found in an integration-owned content path"
+}
+
+// DecodedJSONLiteral returns literal with its JSON string escapes decoded, and whether that differs from literal. A
+// literal cut from JSON text, such as a tool call's arguments, holds a value with escapes that a body carrying the same
+// value as a decoded JSON string holds without them.
+func DecodedJSONLiteral(literal string) (string, bool) {
+	if strings.IndexByte(literal, '\\') < 0 {
+		return "", false
+	}
+	var decoded string
+	if err := Unmarshal([]byte(`"`+literal+`"`), &decoded); err != nil || decoded == "" || decoded == literal {
+		return "", false
+	}
+	return decoded, true
+}
 
 // TextTargetID identifies one integration-owned text field that mirrors normalized guardrail content.
 // It is opaque outside the integration/guardrail boundary so callers cannot infer native JSON paths
@@ -42,22 +69,6 @@ type RawRequestBodyTextTransformer func(rawBody []byte, rewrites []TextRewrite) 
 // Integrations preserve the concrete raw response type and may rewrite only fields they own; errors must prevent
 // forwarding the original native response when its normalized counterpart has changed.
 type RawResponseTextTransformer func(rawResponse any, rewrites []TextRewrite) (any, error)
-
-// RawStreamTextEvent identifies guardrail-visible text carried by one provider-native stream event.
-type RawStreamTextEvent struct {
-	TargetID string
-	Text     string
-}
-
-// RawStreamTextCodec inspects and rewrites text in one provider-native raw stream event.
-// Integrations own this contract because only they know which raw event fields mirror
-// normalized assistant text; unrelated reasoning, tool, and lifecycle fields stay opaque.
-type RawStreamTextCodec interface {
-	// Inspect returns the event's text and opaque provider target identity when it is eligible.
-	Inspect(rawResponse string) (event RawStreamTextEvent, eligible bool, err error)
-	// Rewrite returns a copy of an eligible raw event with only its text field replaced.
-	Rewrite(rawResponse string, text string) (string, error)
-}
 
 // RedactionPhase identifies which request lifecycle phase produced a redaction finding.
 type RedactionPhase string
@@ -407,6 +418,16 @@ func ApplyLiteralReplacements(text string, replacements map[string]string) strin
 	if text == "" || len(replacements) == 0 {
 		return text
 	}
+	redacted := text
+	for _, raw := range literalReplacementOrder(replacements) {
+		redacted = strings.ReplaceAll(redacted, raw, replacements[raw])
+	}
+	return redacted
+}
+
+// literalReplacementOrder returns the non-empty keys of replacements in the order ApplyLiteralReplacements applies
+// them: longest first, so a value wins over a shorter one it contains, and alphabetically among equal lengths.
+func literalReplacementOrder(replacements map[string]string) []string {
 	keys := make([]string, 0, len(replacements))
 	for raw := range replacements {
 		if raw != "" {
@@ -419,11 +440,7 @@ func ApplyLiteralReplacements(text string, replacements map[string]string) strin
 		}
 		return len(keys[i]) > len(keys[j])
 	})
-	redacted := text
-	for _, raw := range keys {
-		redacted = strings.ReplaceAll(redacted, raw, replacements[raw])
-	}
-	return redacted
+	return keys
 }
 
 // RedactAttributeValue applies literal replacements to supported attribute value shapes.

@@ -495,6 +495,8 @@ func migrationClickHouseRelayLogsTable(ctx context.Context, db *gorm.DB, cluster
 			"INDEX idx_relay_logs_job_id job_id TYPE bloom_filter GRANULARITY 1",
 			"INDEX idx_relay_logs_status status TYPE bloom_filter GRANULARITY 1",
 			"INDEX idx_relay_logs_id id TYPE bloom_filter GRANULARITY 1",
+			// The correlation filter, as logs carries idx_logs_agent_correlation_id.
+			"INDEX idx_relay_logs_agent_correlation_id agent_correlation_id TYPE bloom_filter GRANULARITY 1",
 		},
 	}
 	if err := clickhouseCreateTable(ctx, db, &RelayLog{}, opts, cluster); err != nil {
@@ -524,6 +526,7 @@ func migrationClickHouseMCPToolLogsTable(ctx context.Context, db *gorm.DB, clust
 			"INDEX idx_mcp_logs_tool_name tool_name TYPE bloom_filter GRANULARITY 1",
 			"INDEX idx_mcp_logs_session_id session_id TYPE bloom_filter GRANULARITY 1",
 			"INDEX idx_mcp_logs_agent_correlation_id agent_correlation_id TYPE bloom_filter GRANULARITY 1",
+			"INDEX idx_mcp_logs_round_trip_id round_trip_id TYPE bloom_filter GRANULARITY 1",
 			"INDEX idx_mcp_logs_id id TYPE bloom_filter GRANULARITY 1",
 		},
 	}

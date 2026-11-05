@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scrollArea";
 import { useIsMobile } from "@/hooks/use-mobile";
-import { Statuses } from "@/lib/constants/logs";
+import { MCPStatuses } from "@/lib/constants/logs";
 import { useGetAgentsQuery, useGetMCPLogsFilterDataQuery } from "@/lib/store";
 import type { MCPToolLogFilters } from "@/lib/types/logs";
 import { PanelLeftClose, RotateCcw, Search } from "lucide-react";
@@ -121,6 +121,14 @@ export function MCPFilterSidebar({ filters, onFiltersChange }: MCPFilterSidebarP
 						placeholder={tObs("filters.exactAgentCorrelationID")}
 						testId="mcp-agent-correlation-id-filter"
 					/>
+					<ExactIDFilter
+						filters={filters}
+						onFiltersChange={onFiltersChange}
+						filterKey="round_trip_id"
+						title={tObs("filters.roundTripID")}
+						placeholder={tObs("filters.exactRoundTripID")}
+						testId="mcp-round-trip-id-filter"
+					/>
 					<AppFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<VirtualKeysFilter filters={filters} onFiltersChange={onFiltersChange} />
 					{(
@@ -197,7 +205,7 @@ function AgentsFilter({ filters, onFiltersChange }: FilterComponentProps) {
 }
 
 interface ExactIDFilterProps extends FilterComponentProps {
-	filterKey: "session_id" | "agent_correlation_id";
+	filterKey: "session_id" | "agent_correlation_id" | "round_trip_id";
 	title: string;
 	placeholder: string;
 	testId: string;
@@ -227,15 +235,17 @@ function ExactIDFilter({ filters, onFiltersChange, filterKey, title, placeholder
 
 function StatusFilter({ filters, onFiltersChange, defaultOpen }: FilterComponentProps) {
 	const { t } = useTranslation("governance");
+	const { t: tObs } = useTranslation("observability");
 	const hasActive = (filters.status || []).length > 0;
 
 	return (
 		<FilterSection title={t("filters.status")} defaultOpen={defaultOpen || hasActive}>
-			{[...Statuses, "unknown"].map((status) => (
+			{[...MCPStatuses, "unknown"].map((status) => (
 				<CheckboxFilterItem
 					key={status}
 					labelClassName="capitalize"
-					label={status}
+					label={tObs(`logs.statuses.${status}`, { defaultValue: status })}
+					testId={`mcp-status-filter-${status}`}
 					checked={(filters.status || []).includes(status)}
 					onCheckedChange={() => {
 						const current = filters.status || [];
