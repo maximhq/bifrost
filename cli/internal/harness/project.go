@@ -121,7 +121,7 @@ func WriteProjectConfig(agent string, paths []string, project config.Project) er
 		return err
 	}
 	target := settings
-	keys := []string{}
+	var keys []string
 	switch agent {
 	case "claude":
 		keys = []string{"env"}
