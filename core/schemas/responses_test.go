@@ -292,6 +292,89 @@ func TestBifrostResponsesStreamResponsePreservesOpenAIStreamMetadata(t *testing.
 	}
 }
 
+// TestBifrostResponsesStreamResponseSignatureOnlyReasoningDeltaHasDelta covers the
+// text-less reasoning_summary_text.delta Anthropic and Bedrock use to carry the thinking
+// signature: the Responses spec requires a string delta on that event, and strict clients
+// (openai-java: "`delta` is not set") abort the stream without it.
+func TestBifrostResponsesStreamResponseSignatureOnlyReasoningDeltaHasDelta(t *testing.T) {
+	signatureOnly := func() *BifrostResponsesStreamResponse {
+		return &BifrostResponsesStreamResponse{
+			Type:           ResponsesStreamResponseTypeReasoningSummaryTextDelta,
+			SequenceNumber: 4,
+			OutputIndex:    new(0),
+			SummaryIndex:   new(0),
+			ContentIndex:   new(0),
+			ItemID:         new("rs_1"),
+			Signature:      new("sig_abc"),
+		}
+	}
+	for _, tc := range []struct {
+		name   string
+		encode func(*BifrostResponsesStreamResponse) ([]byte, error)
+	}{
+		{"sonic", func(r *BifrostResponsesStreamResponse) ([]byte, error) { return Marshal(r) }},
+		{"sorted", func(r *BifrostResponsesStreamResponse) ([]byte, error) { return MarshalSorted(r) }},
+		{"encoding/json", func(r *BifrostResponsesStreamResponse) ([]byte, error) { return json.Marshal(r) }},
+		{"v1 responses chunk", func(r *BifrostResponsesStreamResponse) ([]byte, error) {
+			return MarshalSorted(BifrostStreamChunk{BifrostResponsesStreamResponse: r})
+		}},
+		{"openai WithDefaults", func(r *BifrostResponsesStreamResponse) ([]byte, error) { return Marshal(r.WithDefaults()) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ev := signatureOnly()
+			encoded, err := tc.encode(ev)
+			require.NoError(t, err)
+			delta := gjson.GetBytes(encoded, "delta")
+			assert.Equal(t, gjson.String, delta.Type, "delta must be a string: %s", encoded)
+			assert.Equal(t, "", delta.Str)
+			assert.Equal(t, "sig_abc", gjson.GetBytes(encoded, "signature").Str)
+			assert.Nil(t, ev.Delta, "marshaling must not mutate the caller's event")
+		})
+	}
+
+	t.Run("text delta unchanged", func(t *testing.T) {
+		// Gemini sends text and signature on one delta.
+		ev := signatureOnly()
+		ev.Delta = new("thinking")
+		encoded, err := MarshalSorted(ev)
+		require.NoError(t, err)
+		assert.Equal(t, "thinking", gjson.GetBytes(encoded, "delta").Str)
+		assert.Equal(t, "sig_abc", gjson.GetBytes(encoded, "signature").Str)
+	})
+
+	t.Run("other events gain no delta", func(t *testing.T) {
+		for _, typ := range []ResponsesStreamResponseType{
+			ResponsesStreamResponseTypeReasoningSummaryTextDone,
+			ResponsesStreamResponseTypeOutputItemAdded,
+			ResponsesStreamResponseTypeCompleted,
+		} {
+			encoded, err := MarshalSorted(&BifrostResponsesStreamResponse{Type: typ})
+			require.NoError(t, err)
+			assert.False(t, gjson.GetBytes(encoded, "delta").Exists(), "%s: %s", typ, encoded)
+		}
+	})
+}
+
+func BenchmarkBifrostResponsesStreamResponseMarshalReasoningDelta(b *testing.B) {
+	for _, bc := range []struct {
+		name string
+		ev   *BifrostResponsesStreamResponse
+	}{
+		{"text", &BifrostResponsesStreamResponse{Type: ResponsesStreamResponseTypeReasoningSummaryTextDelta, OutputIndex: new(0), SummaryIndex: new(0), ItemID: new("rs_1"), Delta: new("thinking")}},
+		{"signature_only", &BifrostResponsesStreamResponse{Type: ResponsesStreamResponseTypeReasoningSummaryTextDelta, OutputIndex: new(0), SummaryIndex: new(0), ItemID: new("rs_1"), Signature: new("sig_abc")}},
+	} {
+		b.Run(bc.name, func(b *testing.B) {
+			chunk := BifrostStreamChunk{BifrostResponsesStreamResponse: bc.ev}
+			b.ReportAllocs()
+			for b.Loop() {
+				if _, err := MarshalSorted(chunk); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
 func TestBifrostResponsesResponseWithDefaultsPreservesUltrafastServiceTier(t *testing.T) {
 	tier := BifrostServiceTierUltrafast
 	got := (&BifrostResponsesResponse{ServiceTier: &tier}).WithDefaults()
@@ -307,6 +390,28 @@ func TestBifrostResponsesResponseWithDefaultsPreservesFastServiceTier(t *testing
 	got := (&BifrostResponsesResponse{ServiceTier: &tier}).WithDefaults()
 	if got.ServiceTier == nil || *got.ServiceTier != BifrostServiceTierFast {
 		t.Fatalf("service tier = %v, want fast", got.ServiceTier)
+	}
+}
+
+// WithDefaults shapes the wire copy. Governance prices the same response in a goroutine, so the
+// advisor passes and the rest of the caller's usage must survive it.
+func TestBifrostResponsesResponseWithDefaultsLeavesUsageUntouched(t *testing.T) {
+	usage := &ResponsesResponseUsage{
+		Type:         Ptr("message"),
+		InputTokens:  10,
+		OutputTokens: 1,
+		Iterations:   []ResponsesResponseUsage{{Type: Ptr("advisor_message"), Model: Ptr("claude-opus-4-8"), InputTokens: 2000}},
+	}
+	got := (&BifrostResponsesResponse{Usage: usage}).WithDefaults()
+
+	if got.Usage.Iterations != nil || got.Usage.Type != nil || got.Usage.InputTokensDetails == nil || got.Usage.OutputTokensDetails == nil {
+		t.Fatalf("wire usage = %+v, want iterations and type cleared and token details defaulted", got.Usage)
+	}
+	if got.Usage.InputTokens != 10 || got.Usage.OutputTokens != 1 {
+		t.Fatalf("wire usage tokens = %d/%d, want 10/1", got.Usage.InputTokens, got.Usage.OutputTokens)
+	}
+	if len(usage.Iterations) != 1 || usage.Type == nil || usage.InputTokensDetails != nil || usage.OutputTokensDetails != nil {
+		t.Fatalf("WithDefaults changed the caller's usage: %+v", usage)
 	}
 }
 
@@ -1309,6 +1414,29 @@ func TestResponsesMessagePreservesAdditionalTools(t *testing.T) {
 	}
 	if strings.Contains(string(encoded), "additional_tools") {
 		t.Fatalf("expected reused receiver to drop preserved bytes, got %s", encoded)
+	}
+}
+
+// TestResponsesMessagePreservesConfigurationUpdate pins #8616: OpenAI's configuration_update
+// item carries its effort under `reasoning`, which the typed decode has no field for, so the
+// item must round-trip verbatim or OpenAI rejects it with "Missing required parameter:
+// 'input[0].reasoning'".
+func TestResponsesMessagePreservesConfigurationUpdate(t *testing.T) {
+	raw := `{"reasoning":{"effort":"high"},"type":"configuration_update"}`
+
+	var msg ResponsesMessage
+	if err := Unmarshal([]byte(raw), &msg); err != nil {
+		t.Fatalf("unmarshal configuration_update item: %v", err)
+	}
+	if msg.Type == nil || *msg.Type != ResponsesMessageType("configuration_update") {
+		t.Fatalf("expected configuration_update item, got %#v", msg.Type)
+	}
+	encoded, err := MarshalSorted(msg)
+	if err != nil {
+		t.Fatalf("marshal configuration_update item: %v", err)
+	}
+	if string(encoded) != raw {
+		t.Fatalf("expected item to round-trip verbatim\nwant: %s\ngot:  %s", raw, encoded)
 	}
 }
 
@@ -2519,4 +2647,151 @@ func TestResponsesMCPItemsKeepServerLabel(t *testing.T) {
 	out, err := Marshal(msg)
 	require.NoError(t, err)
 	assert.Equal(t, "deepwiki", gjson.GetBytes(out, "server_label").String(), string(out))
+}
+
+// TestResponsesStreamEventOmitsEmptyNestedExtraFields pins that a lifecycle event's wrapped
+// response, whose ExtraFields nothing fills, serializes no extra_fields, while a filled one
+// (a unary response) still does.
+func TestResponsesStreamEventOmitsEmptyNestedExtraFields(t *testing.T) {
+	event := BifrostResponsesStreamResponse{
+		Type:        ResponsesStreamResponseTypeCreated,
+		Response:    &BifrostResponsesResponse{ID: new("resp_1"), Model: "gpt-4o"},
+		ExtraFields: BifrostResponseExtraFields{RequestType: ResponsesStreamRequest, Provider: OpenAI},
+	}
+	encoded, err := MarshalSorted(event)
+	require.NoError(t, err)
+	assert.False(t, gjson.GetBytes(encoded, "response.extra_fields").Exists(), "nested extra_fields leaked: %s", encoded)
+	assert.Equal(t, "openai", gjson.GetBytes(encoded, "extra_fields.provider").String(), "top-level extra_fields must stay: %s", encoded)
+
+	unary, err := MarshalSorted(BifrostResponsesResponse{ID: new("resp_1"), ExtraFields: BifrostResponseExtraFields{RequestType: ResponsesRequest}})
+	require.NoError(t, err)
+	assert.Equal(t, "responses", gjson.GetBytes(unary, "extra_fields.request_type").String(), "a filled extra_fields must stay: %s", unary)
+}
+
+func TestToolUsageContainerSessions(t *testing.T) {
+	a := &ToolUsage{ContainerSessions: map[string]int{"1g": 1}}
+	sum := a.Add(&ToolUsage{ContainerSessions: map[string]int{"1g": 1, "4g": 2}})
+	assert.Equal(t, map[string]int{"1g": 2, "4g": 2}, sum.ContainerSessions)
+	assert.Equal(t, map[string]int{"1g": 1}, a.ContainerSessions, "Add must not change its receiver")
+
+	c := a.DeepCopy()
+	c.ContainerSessions["1g"] = 9
+	assert.Equal(t, 1, a.ContainerSessions["1g"], "DeepCopy must own its map")
+
+	assert.Equal(t, "container", ContainerPricingModel(ContainerTierDefault))
+	assert.Equal(t, "container-4g", ContainerPricingModel("4g"))
+}
+
+// Derived counts stay internal: a response that only has them sends no tool_usage at all.
+func TestResponsesMarshalOmitsDerivedToolUsage(t *testing.T) {
+	resp := BifrostResponsesResponse{Usage: &ResponsesResponseUsage{ToolUsage: &ToolUsage{ContainerSessions: map[string]int{"1g": 1}}}}
+	wire, err := Marshal(resp)
+	require.NoError(t, err)
+	assert.NotContains(t, string(wire), "tool_usage")
+	assert.Equal(t, 1, resp.Usage.ToolUsage.ContainerSessions["1g"], "marshal must not change the caller's usage")
+
+	resp.Usage.ToolUsage.WebSearch = &WebSearchToolUsage{NumRequests: 2}
+	wire, err = Marshal(resp)
+	require.NoError(t, err)
+	assert.Contains(t, string(wire), `"tool_usage":{"web_search":{"num_requests":2}}`)
+}
+
+func TestToolUsageImageGen(t *testing.T) {
+	one := func() *ToolUsage {
+		return &ToolUsage{
+			ImageGenModel: "gpt-image-2",
+			ImageGen: &ImageGenToolUsage{
+				InputTokens: 1, OutputTokens: 2, TotalTokens: 3,
+				InputTokensDetails:  &ImageGenTokenDetails{TextTokens: 1},
+				OutputTokensDetails: &ImageGenTokenDetails{ImageTokens: 2},
+			},
+		}
+	}
+	sum := one().Add(one())
+	assert.Equal(t, 6, sum.ImageGen.TotalTokens)
+	assert.Equal(t, 4, sum.ImageGen.OutputTokensDetails.ImageTokens)
+	assert.Equal(t, "gpt-image-2", sum.ImageGenModel)
+
+	a := one()
+	c := a.DeepCopy()
+	c.ImageGen.OutputTokensDetails.ImageTokens = 9
+	assert.Equal(t, 2, a.ImageGen.OutputTokensDetails.ImageTokens, "DeepCopy must own its details")
+
+	assert.False(t, (&ImageGenToolUsage{}).HasTokens())
+	var none *ImageGenToolUsage
+	assert.False(t, none.HasTokens())
+}
+
+// OpenAI's zero-count image_gen block survives, as it did not before, and the derived model stays internal.
+func TestResponsesToolUsageImageGenRoundTrip(t *testing.T) {
+	in := `{"id":"r","object":"response","created_at":1,"output":[],"tools":[],"tool_usage":{"image_gen":{"input_tokens":0,"input_tokens_details":{"image_tokens":0,"text_tokens":0},"output_tokens":0,"output_tokens_details":{"image_tokens":0,"text_tokens":0},"total_tokens":0},"web_search":{"num_requests":0}},"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}`
+	var resp BifrostResponsesResponse
+	require.NoError(t, Unmarshal([]byte(in), &resp))
+	resp.Usage.ToolUsage.ImageGenModel = "gpt-image-2"
+	wire, err := Marshal(resp)
+	require.NoError(t, err)
+	var out struct {
+		ToolUsage json.RawMessage `json:"tool_usage"`
+	}
+	require.NoError(t, Unmarshal(wire, &out))
+	assert.JSONEq(t, `{"image_gen":{"input_tokens":0,"input_tokens_details":{"image_tokens":0,"text_tokens":0},"output_tokens":0,"output_tokens_details":{"image_tokens":0,"text_tokens":0},"total_tokens":0},"web_search":{"num_requests":0}}`, string(out.ToolUsage))
+}
+
+// Chat usage never carried OpenAI's all-zero image_gen block, on the final response or the terminal stream event.
+func TestResponsesToChatDropsZeroImageGen(t *testing.T) {
+	zero := &ImageGenToolUsage{}
+	generated := &ImageGenToolUsage{InputTokens: 1, OutputTokens: 2, TotalTokens: 3}
+	cases := []struct {
+		name string
+		in   *ToolUsage
+		want *ToolUsage
+	}{
+		{"only a zero block sends no tool_usage", &ToolUsage{ImageGen: zero}, nil},
+		{"web search stays", &ToolUsage{ImageGen: zero, WebSearch: &WebSearchToolUsage{NumRequests: 2}}, &ToolUsage{WebSearch: &WebSearchToolUsage{NumRequests: 2}}},
+		{"container sessions stay", &ToolUsage{ImageGen: zero, ContainerSessions: map[string]int{"default": 1}}, &ToolUsage{ContainerSessions: map[string]int{"default": 1}}},
+		{"generated images stay, pricing reads them", &ToolUsage{ImageGen: generated}, &ToolUsage{ImageGen: generated}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := &BifrostResponsesResponse{Usage: &ResponsesResponseUsage{TotalTokens: 1, ToolUsage: tc.in}}
+			assert.Equal(t, tc.want, resp.ToBifrostChatResponse().Usage.ToolUsage)
+
+			event := &BifrostResponsesStreamResponse{Type: ResponsesStreamResponseTypeCompleted, Response: resp}
+			assert.Equal(t, tc.want, event.ToBifrostChatResponse().Usage.ToolUsage)
+
+			assert.NotNil(t, resp.Usage.ToolUsage.ImageGen, "conversion must not change the Responses usage")
+		})
+	}
+}
+
+// A provider's odd image_gen block only loses the image charge. It must not fail a response that is otherwise fine.
+func TestToolUsageToleratesMalformedImageGen(t *testing.T) {
+	for _, bad := range []string{`{"input_tokens":1.5}`, `{"input_tokens":"3"}`, `3`, `"x"`, `[]`, `null`} {
+		t.Run(bad, func(t *testing.T) {
+			body := `{"id":"r","created_at":1,"output":[],"usage":{"input_tokens":1},"tool_usage":{"image_gen":` + bad + `,"web_search":{"num_requests":2},"container_sessions":{"1g":1},"image_gen_model":"gpt-image-2"}}`
+			var resp BifrostResponsesResponse
+			require.NoError(t, Unmarshal([]byte(body), &resp))
+			assert.Nil(t, resp.ToolUsage.ImageGen)
+			assert.Equal(t, 2, resp.ToolUsage.WebSearch.NumRequests, "other tool_usage fields must survive")
+			assert.Equal(t, 1, resp.ToolUsage.ContainerSessions["1g"])
+			assert.Equal(t, "gpt-image-2", resp.ToolUsage.ImageGenModel)
+		})
+	}
+
+	var usage ToolUsage
+	require.NoError(t, Unmarshal([]byte(`{"image_gen":{"input_tokens":5,"output_tokens":6,"total_tokens":11}}`), &usage))
+	assert.Equal(t, 11, usage.ImageGen.TotalTokens, "a well-formed block still decodes")
+
+	require.Error(t, Unmarshal([]byte(`{"web_search":3}`), &usage), "only image_gen is tolerant")
+}
+
+func BenchmarkToolUsageUnmarshal(b *testing.B) {
+	body := []byte(`{"image_gen":{"input_tokens":0,"input_tokens_details":{"image_tokens":0,"text_tokens":0},"output_tokens":0,"output_tokens_details":{"image_tokens":0,"text_tokens":0},"total_tokens":0},"web_search":{"num_requests":0}}`)
+	b.ReportAllocs()
+	for b.Loop() {
+		var usage ToolUsage
+		if err := Unmarshal(body, &usage); err != nil {
+			b.Fatal(err)
+		}
+	}
 }

@@ -45,7 +45,7 @@ cat > "${APP_DIR}/config.json" <<JSON
 {
   "\$schema": "https://www.getbifrost.ai/schema",
   "server": { "a2a_allow_private_push_callbacks": true },
-  "client": { "a2a_external_client_url": "http://127.0.0.1:${PORT}", "enforce_auth_on_inference": false },
+  "client": { "a2a_external_client_url": "http://127.0.0.1:${PORT}", "a2a_private_allowlist": ["127.0.0.1"], "enforce_auth_on_inference": false },
   "governance": {
     "auth_config": {
       "admin_username": "e2e-admin",

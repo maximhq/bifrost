@@ -258,11 +258,29 @@ func TestIsMicrosoftDecisionModel(t *testing.T) {
 }
 
 func TestIsDatabricksDecisionModel(t *testing.T) {
-	for _, model := range []string{"ai_decide", "AI_DECIDE"} {
+	for _, model := range []string{"ai_decide", "AI_DECIDE", "system.ai.openjev-qwen35-4b", "system.ai.typesafeai-jev-1-14-0"} {
 		assert.True(t, IsDatabricksDecisionModel(model), model)
 	}
 	for _, model := range []string{"databricks/ai_decide", "ai-decide", "ai_decide_v2", "ai_classify", "databricks-claude-sonnet-4", ""} {
 		assert.False(t, IsDatabricksDecisionModel(model), model)
+	}
+}
+
+func TestIsDatabricksSystemOneModel(t *testing.T) {
+	for _, model := range []string{
+		"system.ai.openjev-qwen35-4b", "System.AI.OpenJev-Qwen35-4B",
+		"system.ai.typesafeai-jev-1-14-0", "system.ai.typesafeai-jev-1-15-0",
+	} {
+		assert.True(t, IsDatabricksSystemOneModel(model), model)
+	}
+	// Serving endpoint names and bare names are not Unity Catalog model services, the only
+	// names the systemone endpoint takes.
+	for _, model := range []string{
+		"databricks-openjev-qwen35-4b", "databricks-typesafeai-jev-1-14-0", "openjev-qwen35-4b",
+		"main.default.openjev-qwen35-4b", "system.ai.claude-sonnet-4-5",
+		"ai_decide", "databricks-claude-sonnet-4", "jev-1.13", "typesafe/jev-latest", "",
+	} {
+		assert.False(t, IsDatabricksSystemOneModel(model), model)
 	}
 }
 

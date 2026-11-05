@@ -76,7 +76,7 @@ Private runtime destinations also need their host, IP, or CIDR in [Agent Setting
 
 Check that the agent is enabled and the caller's credential is valid. For restricted agents, grant the virtual key access to that registration.
 
-In Enterprise, check the user's access profile and any project named on the request. Project membership alone does not guarantee an agent grant, and **Allow any virtual key** does not override project restrictions.
+In Enterprise, check the user's access profile and any project named on the request. Project membership alone does not guarantee an agent grant, and **Allow any virtual key** does not override project restrictions. A request that names a user is governed as that user even when it carries no virtual key, for example one from Bifrost Edge, a dashboard session, or an auth proxy. Grant the agent through one of the user's access profiles, or enable **Allow any virtual key** on the agent.
 
 If the agent is reached but its LLM or MCP call is denied, grant those resources separately. An agent grant does not grant model or tool access.
 

@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode"
 
@@ -199,6 +200,46 @@ func Validate(config *Config, requireStaticPassword bool) error {
 		return fmt.Errorf("postgres password is required")
 	}
 	return nil
+}
+
+// applicationNameBase is the process-wide application_name prefix set by
+// SetApplicationName; empty leaves DSNs without one.
+var applicationNameBase atomic.Value
+
+// maxApplicationNameLen is Postgres's NAMEDATALEN-1 limit; longer names are
+// truncated server-side, so they are cut here to keep the role suffix.
+const maxApplicationNameLen = 63
+
+// SetApplicationName sets the application_name prefix every store pool opened
+// after this call reports to Postgres, e.g. "bifrost-ip-10-0-1-13". Each store
+// appends its role ("-config", "-logs") so pg_stat_activity can attribute a
+// session to a node and a store. Empty disables it, which is the default.
+func SetApplicationName(base string) {
+	applicationNameBase.Store(base)
+}
+
+// WithApplicationName appends application_name=<base>-<role> to a libpq DSN
+// when SetApplicationName has set a base. The base is trimmed so the role
+// suffix survives the 63-byte limit. Postgres hex-escapes anything outside
+// printable ASCII, which would lengthen the name past that limit and cut the
+// role off server-side, so such characters become '_' before the byte cut;
+// that also means the cut can never split a multibyte rune.
+func WithApplicationName(dsn, role string) string {
+	base, _ := applicationNameBase.Load().(string)
+	if base == "" {
+		return dsn
+	}
+	base = strings.Map(func(r rune) rune {
+		if r < 0x20 || r > 0x7e {
+			return '_'
+		}
+		return r
+	}, base)
+	suffix := "-" + role
+	if len(base)+len(suffix) > maxApplicationNameLen {
+		base = base[:max(0, maxApplicationNameLen-len(suffix))]
+	}
+	return dsn + " application_name=" + quoteLibpqValue(base+suffix)
 }
 
 // BuildDSN assembles a libpq-style DSN from the validated config.

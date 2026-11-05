@@ -2,10 +2,136 @@ package schemas
 
 import (
 	"context"
+	"fmt"
 	"runtime"
+	"sync"
 	"testing"
 	"time"
 )
+
+// TestRealtimeTurnValues verifies opt-in snapshots, scoping, inheritance, and write guards.
+func TestRealtimeTurnValues(t *testing.T) {
+	type metadataKey uint8
+	const userKey metadataKey = 0
+	const requestKey metadataKey = 1
+	ctx := NewBifrostContext(context.Background(), NoDeadline)
+	if values := ctx.GetRealtimeTurnValues(); values != nil {
+		t.Fatalf("unused context allocated a snapshot: %v", values)
+	}
+	name := "test-plugin"
+	scoped := ctx.WithPluginScope(&name)
+	scoped.SetValueForRealtimeTurns(userKey, "alice")
+	scoped.SetValue(requestKey, "request-only")
+	if scoped.Value(userKey) != "alice" || ctx.Value(userKey) != "alice" {
+		t.Fatal("opt-in setter must also set the ordinary context value")
+	}
+	values := scoped.GetRealtimeTurnValues()
+	if len(values) != 1 || values[userKey] != "alice" {
+		t.Fatalf("snapshot = %v", values)
+	}
+	values[userKey] = "tampered"
+	ctx.SetValue(userKey, "updated")
+	if ctx.GetRealtimeTurnValues()[userKey] != "updated" {
+		t.Fatal("snapshot must use current values and own its map")
+	}
+	child := NewBifrostContext(ctx, NoDeadline)
+	if child.GetRealtimeTurnValues()[userKey] != "updated" {
+		t.Fatal("derived context lost opted-in parent metadata")
+	}
+	child.SetValue(userKey, "child")
+	child.ClearValue(userKey)
+	if child.GetRealtimeTurnValues()[userKey] != nil {
+		t.Fatal("child clear must shadow opted-in parent metadata")
+	}
+	ctx.BlockRestrictedWrites()
+	scoped.SetValueForRealtimeTurns(BifrostContextKeyVirtualKey, "forbidden")
+	if ctx.Value(BifrostContextKeyVirtualKey) != nil {
+		t.Fatal("opt-in setter bypassed restricted writes")
+	}
+	if _, exists := ctx.GetRealtimeTurnValues()[BifrostContextKeyVirtualKey]; exists {
+		t.Fatal("rejected key must not be marked")
+	}
+	scoped.ReleasePluginScope()
+	ctx.DrainPluginLogs()
+}
+
+// TestRealtimeTurnValuesWrappedParent preserves opt-in inheritance through standard context wrappers.
+func TestRealtimeTurnValuesWrappedParent(t *testing.T) {
+	type metadataKey uint8
+	const userKey metadataKey = 0
+	parent := NewBifrostContext(context.Background(), NoDeadline)
+	parent.SetValueForRealtimeTurns(userKey, "parent")
+	wrapped, cancel := context.WithCancel(parent)
+	defer cancel()
+	child, childCancel := NewBifrostContextWithCancel(wrapped)
+	defer childCancel()
+	if child.Value(userKey) != "parent" || child.GetRealtimeTurnValues()[userKey] != "parent" {
+		t.Fatal("wrapped parent must provide both ordinary and opted-in values")
+	}
+	child.SetValue(userKey, "child")
+	if child.GetRealtimeTurnValues()[userKey] != "child" {
+		t.Fatal("child write must override the wrapped parent snapshot")
+	}
+	child.ClearValue(userKey)
+	if value, ok := child.GetRealtimeTurnValues()[userKey]; !ok || value != nil {
+		t.Fatal("explicit clear must shadow the wrapped parent snapshot")
+	}
+	if parent.GetRealtimeTurnValues()[userKey] != "parent" {
+		t.Fatal("child must not mutate the parent snapshot")
+	}
+	fresh, freshCancel := NewBifrostContextWithCancel(parent)
+	defer freshCancel()
+	fresh.ClearValue(userKey)
+	if value, ok := fresh.GetRealtimeTurnValues()[userKey]; !ok || value != nil {
+		t.Fatal("a fresh child's clear must shadow the parent value")
+	}
+	withValue, valueCancel := NewBifrostContextWithCancel(context.WithValue(wrapped, userKey, "wrapper"))
+	defer valueCancel()
+	if withValue.GetRealtimeTurnValues()[userKey] != "wrapper" {
+		t.Fatal("wrapper value must override the inherited snapshot")
+	}
+}
+
+// TestRealtimeTurnValuesConcurrent exercises writes and snapshots through plugin scopes.
+func TestRealtimeTurnValuesConcurrent(t *testing.T) {
+	type metadataKey int
+	ctx := NewBifrostContext(context.Background(), NoDeadline)
+	var workers sync.WaitGroup
+	for i := range 16 {
+		workers.Go(func() {
+			name := "test-plugin"
+			scoped := ctx.WithPluginScope(&name)
+			defer scoped.ReleasePluginScope()
+			for j := range 100 {
+				scoped.SetValueForRealtimeTurns(metadataKey(i), j)
+				_ = scoped.GetRealtimeTurnValues()
+			}
+		})
+	}
+	workers.Wait()
+	if got := len(ctx.GetRealtimeTurnValues()); got != 16 {
+		t.Fatalf("marked keys = %d, want 16", got)
+	}
+	ctx.DrainPluginLogs()
+}
+
+// BenchmarkRealtimeTurnValues measures unused contexts and a one-value setup snapshot.
+func BenchmarkRealtimeTurnValues(b *testing.B) {
+	type metadataKey uint8
+	for _, marked := range []bool{false, true} {
+		b.Run(fmt.Sprint(marked), func(b *testing.B) {
+			ctx := NewBifrostContext(context.Background(), NoDeadline)
+			if marked {
+				ctx.SetValueForRealtimeTurns(metadataKey(0), "alice")
+			}
+			b.ReportAllocs()
+			b.ResetTimer()
+			for b.Loop() {
+				_ = ctx.GetRealtimeTurnValues()
+			}
+		})
+	}
+}
 
 type traceAttributeTestTracer struct {
 	NoOpTracer
@@ -529,6 +655,27 @@ func TestReservedKey_SkipProviderCheckIsProtected(t *testing.T) {
 	ctx.SetValue(BifrostContextKeySkipProviderCheck, false)
 	if v := ctx.Value(BifrostContextKeySkipProviderCheck); v != true {
 		t.Fatalf("reserved key overwritten under BlockRestrictedWrites: got %v, want true", v)
+	}
+}
+
+// TestReservedKey_AuthCredentialIsProtected pins BifrostContextKeyAuthCredential as reserved.
+// Delegated token exchange trusts it to say which credential authenticated the request, so a
+// restricted (plugin) write must not be able to replace it.
+func TestReservedKey_AuthCredentialIsProtected(t *testing.T) {
+	if !isReservedKey(BifrostContextKeyAuthCredential) {
+		t.Fatal("BifrostContextKeyAuthCredential must be a reserved key")
+	}
+
+	ctx := NewBifrostContext(context.Background(), NoDeadline)
+	defer ctx.Cancel()
+
+	recorded := Credential{Kind: "edge_session", Value: "user-1"}
+	ctx.SetValue(BifrostContextKeyAuthCredential, recorded)
+	ctx.BlockRestrictedWrites()
+
+	ctx.SetValue(BifrostContextKeyAuthCredential, Credential{Kind: "edge_session", Value: "user-2"})
+	if v := ctx.Value(BifrostContextKeyAuthCredential); v != recorded {
+		t.Fatalf("reserved key overwritten under BlockRestrictedWrites: got %v, want %v", v, recorded)
 	}
 }
 

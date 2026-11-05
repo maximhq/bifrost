@@ -90,22 +90,83 @@ func readMatViewRecord(t *testing.T, db *gorm.DB) map[string]matViewRecordRow {
 	return out
 }
 
+// matViewRecordStarts returns last_started_at per view, and the views due for a
+// pass with minGap by the same database-clock test refreshMatViews applies. It
+// makes no test assertions, so it is safe inside require.Eventually.
+func matViewRecordStarts(db *gorm.DB, minGap time.Duration) (starts map[string]time.Time, due []string, err error) {
+	sqlDB, err := db.DB()
+	if err != nil {
+		return nil, nil, err
+	}
+	rows, err := sqlDB.Query(`SELECT view_name, last_started_at,
+		NOT ($1 > 0 AND last_success_at IS NOT NULL AND last_success_at > now() - make_interval(secs => $1))
+		FROM matview_refresh_state`, minGap.Seconds())
+	if err != nil {
+		return nil, nil, err
+	}
+	defer rows.Close()
+	starts = map[string]time.Time{}
+	recorded := map[string]bool{}
+	for rows.Next() {
+		var view string
+		var started sql.NullTime
+		var isDue bool
+		if err := rows.Scan(&view, &started, &isDue); err != nil {
+			return nil, nil, err
+		}
+		recorded[view] = true
+		if started.Valid {
+			starts[view] = started.Time
+		}
+		if isDue {
+			due = append(due, view)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, nil, err
+	}
+	for _, view := range matViewRefreshOrder() {
+		if !recorded[view] {
+			due = append(due, view) // never refreshed, so always due
+		}
+	}
+	return starts, due, nil
+}
+
 // refreshAsReplica runs one real refresh pass on db as a separate replica would:
 // the in-process activity gate is per process, so it is reset first.
+//
+// Other test packages share this database and take the same database-scoped
+// refresh lock; while one holds it refreshMatViews returns nil without refreshing
+// anything. So an attempt only counts once every view that was due before it has
+// a newer last_started_at, which only this replica's pass can write on this
+// schema. A pass with nothing due is indistinguishable from a skipped one and
+// needs no retry.
 func refreshAsReplica(t *testing.T, db *gorm.DB, minGap time.Duration) {
 	t.Helper()
-	resetTestMatViewRefreshGate()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	// Another test package may hold the refresh lock briefly; refreshMatViews then
-	// skips silently, so retry until this replica's pass actually ran.
 	require.Eventually(t, func() bool {
+		before, due, err := matViewRecordStarts(db, minGap)
+		if err != nil {
+			return false
+		}
+		resetTestMatViewRefreshGate()
 		if refreshMatViews(ctx, db, minGap) != nil {
 			return false
 		}
+		after, _, err := matViewRecordStarts(db, minGap)
+		if err != nil {
+			return false
+		}
+		for _, view := range due {
+			if started, ok := after[view]; !ok || !started.After(before[view]) {
+				return false
+			}
+		}
 		var running int64
 		return db.Raw("SELECT count(*) FROM matview_refresh_state WHERE last_status = 'running'").Scan(&running).Error == nil && running == 0
-	}, time.Minute, 100*time.Millisecond)
+	}, time.Minute, 100*time.Millisecond, "this replica's refresh pass never ran")
 }
 
 // TestMatViewRefreshRecordSpacesPassesAcrossReplicas reproduces the back-to-back
@@ -178,10 +239,18 @@ func TestMatViewRefreshRecordFailedRefreshStaysDue(t *testing.T) {
 	_, err = blocker.ExecContext(context.Background(), "LOCK TABLE logs IN ACCESS EXCLUSIVE MODE")
 	require.NoError(t, err)
 
-	resetTestMatViewRefreshGate()
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	err = refreshMatViews(ctx, replicaB, time.Minute)
-	cancel()
+	// A pass that finds the shared refresh lock held by another test package
+	// returns nil without refreshing, so retry until one actually ran and failed.
+	for deadline := time.Now().Add(time.Minute); ; {
+		resetTestMatViewRefreshGate()
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		err = refreshMatViews(ctx, replicaB, time.Minute)
+		cancel()
+		if err != nil || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
 	_, _ = blocker.ExecContext(context.Background(), "ROLLBACK")
 	_ = blocker.Close()
 	require.Error(t, err, "the blocked refresh must fail at its deadline")

@@ -105,6 +105,7 @@ export interface VirtualKey {
 	provider_configs?: VirtualKeyProviderConfig[];
 	mcp_configs?: VirtualKeyMCPConfig[];
 	agent_grants?: VirtualKeyAgentGrant[];
+	relay_grants?: { relay_name: string }[];
 	// Virtual MCPs this key is assigned to. Populated by the single-VK GET, not the list.
 	virtual_mcp_ids?: number[];
 	team_id?: string;
@@ -249,6 +250,7 @@ export interface CreateVirtualKeyRequest {
 	provider_configs?: VirtualKeyProviderConfigRequest[];
 	mcp_configs?: VirtualKeyMCPConfigRequest[];
 	agent_grants?: { agent_name: string }[];
+	relay_grants?: { relay_name: string }[];
 	team_id?: string;
 	customer_id?: string;
 	// Third owner, mutually exclusive with team_id and customer_id (enterprise).
@@ -270,6 +272,7 @@ export interface UpdateVirtualKeyRequest {
 	provider_configs?: VirtualKeyProviderConfigUpdateRequest[];
 	mcp_configs?: VirtualKeyMCPConfigRequest[];
 	agent_grants?: { agent_name: string }[];
+	relay_grants?: { relay_name: string }[];
 	team_id?: string | null;
 	customer_id?: string | null;
 	// Third owner, mutually exclusive with team_id and customer_id (enterprise); null clears it.
@@ -659,6 +662,17 @@ export interface PricingOverridePatch {
 	output_cost_per_video_per_second_1024p?: number;
 	output_cost_per_video_per_second_1080p?: number;
 	output_cost_per_video_per_second_4k?: number;
+	output_cost_per_video_token?: number;
+	// Azure Voice Live
+	input_cost_per_token_voice_live?: number;
+	output_cost_per_token_voice_live?: number;
+	cache_read_input_token_cost_voice_live?: number;
+	input_cost_per_audio_token_voice_live?: number;
+	output_cost_per_audio_token_voice_live?: number;
+	input_cost_per_standard_speech_audio_token_voice_live?: number;
+	output_cost_per_standard_speech_audio_token_voice_live?: number;
+	input_cost_per_custom_speech_audio_token_voice_live?: number;
+	output_cost_per_custom_speech_audio_token_voice_live?: number;
 	// Other
 	web_search_cost_per_request?: number;
 	input_cost_per_query?: number;

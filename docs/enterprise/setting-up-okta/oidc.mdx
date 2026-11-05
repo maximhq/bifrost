@@ -7,7 +7,7 @@ description: "Configure Okta as your identity provider for Bifrost Enterprise us
 
 - An Okta account with admin access to create applications
 - Bifrost Enterprise deployed and accessible
-- Your Bifrost callback URL: `https://<your-bifrost-domain>/login`
+- Your Bifrost callback URL: `https://<your-bifrost-domain>/login` (under a `server.base_path` prefix: `https://<your-bifrost-domain>/<prefix>/login`; the SSO wizard shows the exact value)
 
 ---
 
@@ -54,11 +54,15 @@ In **Sign-in redirect URIs**, add:
 https://<your-bifrost-domain>/login
 ```
 
+Under a `server.base_path` prefix, insert it before the path: `https://<your-bifrost-domain>/<prefix>/login`.
+
 Optionally, to use claim discovery during setup, also add:
 
 ```
 https://<your-bifrost-domain>/workspace/scim/oauth-discover-callback
 ```
+
+Under a `server.base_path` prefix, insert it before the path: `https://<your-bifrost-domain>/<prefix>/workspace/scim/oauth-discover-callback`.
 <Frame caption="New Web App Integration settings.">
   <img src="/media/user-provisioning/okta/okta-oidc-app-settings.png" alt="New Web App Integration form showing app name, grant type, redirect URIs, and assignment settings" />
 </Frame>
@@ -262,6 +266,7 @@ Enter the credentials you copied in Step 4:
 - **Client Secret**: from the Okta app General tab
 - **Audience**: required only for Custom Authorization Server
 - **API Token**: optional - paste the token from Step 4 if you want background sync every **Directory sync interval** (default 24 hours)
+- **Sync all users**: with an API token, choose which Okta users that sync keeps. On (the default) keeps every user assigned to the app except **suspended** and **deactivated** ones; off keeps **active** users only. In `config.json` or Helm this is `syncAllUsers` under the SCIM provider `config`.
 
 Click **Verify & Next** to confirm the connection.
 

@@ -320,6 +320,47 @@ def test_virtual_key_request_contract_is_current():
     assert not problems, "Virtual Key request contract drift:\n    " + "\n    ".join(problems)
 
 
+def test_project_content_logging_descriptions_state_the_contract():
+    """Every project disable_content_logging description, in the modular source and in each copy
+    the bundle inlines, states the three rules a request body alone does not decide: the
+    per-request header still wins for the log store, a project never loosens a connector's own
+    flag, and object-storage retention keeps a content-disabled payload as hidden content."""
+    import json
+
+    required = {
+        "x-bf-disable-content-logging": "the per-request header rule",
+        "own disable_content_logging": "the connector's own flag",
+        "retain_content_in_object_storage": "the object-storage retention exception",
+    }
+    source = load(HERE / "schemas" / "management" / "projects.yaml")
+    described = [
+        (f"schemas/management/projects.yaml {name}", source[name]["properties"]["disable_content_logging"])
+        for name in ("Project", "CreateProjectRequest", "UpdateProjectRequest")
+    ]
+
+    def walk(node, where):
+        if isinstance(node, dict):
+            properties = node.get("properties")
+            if isinstance(properties, dict) and "disable_content_logging" in properties and "access_rule" in properties:
+                described.append((f"openapi.json {where}", properties["disable_content_logging"]))
+            for key, value in node.items():
+                walk(value, f"{where}/{key}")
+        elif isinstance(node, list):
+            for index, value in enumerate(node):
+                walk(value, f"{where}/{index}")
+
+    walk(json.loads((HERE / "openapi.json").read_text(encoding="utf-8")), "")
+    assert len(described) > 3, "the bundle carries no project schema with disable_content_logging"
+
+    problems = []
+    for where, schema in described:
+        description = " ".join(str(schema.get("description", "")).split())
+        for phrase, rule in required.items():
+            if phrase not in description:
+                problems.append(f"{where}: does not state {rule} ({phrase!r})")
+    assert not problems, "Project content-logging description drift:\n    " + "\n    ".join(problems)
+
+
 def test_virtual_key_metadata_contract():
     """Virtual key metadata: update accepts null (leave unchanged), create and update exclude
     the reserved keys (isAsyncRequest, bifrost_alb_*) the same way config.schema.json does,
@@ -365,9 +406,10 @@ def test_virtual_key_metadata_contract():
 def test_warp_credential_contract_is_current():
     """Warp's settings API carries `api_key_id`, a reference to a configured provider key.
     There is no write-only `api_key` and no `api_key_set` presence flag, so no redaction
-    step and no omitted-versus-empty rule. `base_url` overrides the provider's default
-    endpoint; it does not default to this Bifrost's own origin. Guard the modular source
-    and the published bundle against prose that still describes the abandoned design."""
+    step and no omitted-versus-empty rule. `base_url` is retired with them: Warp calls the
+    gateway in-process, so nothing may describe an endpoint it defaults to. Guard the
+    modular source and the published bundle against prose that still describes the
+    abandoned design."""
     import json
 
     schema_source = load(HERE / "schemas" / "management" / "warp.yaml")
@@ -670,36 +712,12 @@ def test_warp_config_input_models_the_enabled_contract():
             if not constraint.get("pattern"):
                 problems.append(f"{source}: an enabled `{field}` has no non-whitespace pattern")
 
-        # base_url is optional, but a non-empty one must be an absolute http(s)
-        # URL with no userinfo - the same rule ValidateConfigInput applies.
-        #
-        # Checked by behaviour, not just by presence: a pattern that exists but
-        # admits whitespace in the authority, or a dropped `format`, is exactly
-        # the drift a non-empty check cannot see.
-        base_url = (schema.get("properties") or {}).get("base_url") or {}
-        pattern = base_url.get("pattern")
-        if not pattern:
-            problems.append(f"{source}: base_url has no pattern constraining it to an absolute http(s) URL without userinfo")
-        else:
-            accepted = ("", "https://api.example.com", "http://localhost:8080", "https://a.com/v1")
-            rejected = (
-                "https://host name",  # whitespace in the authority
-                "https://tok@a.com",  # userinfo
-                "https://u:p@a.com",
-                "api.example.com",  # not absolute
-                "https://",  # scheme only
-                "ftp://a.com",  # wrong scheme
-            )
-            for value in accepted:
-                if not re.match(pattern, value):
-                    problems.append(f"{source}: base_url pattern rejects {value!r}, which the server accepts")
-            for value in rejected:
-                if re.match(pattern, value):
-                    problems.append(f"{source}: base_url pattern accepts {value!r}, which the server rejects")
-        # url.Parse also rejects a malformed percent escape such as "https://%",
-        # which a character-class pattern cannot express - format carries that.
-        if base_url.get("format") != "uri-reference":
-            problems.append(f"{source}: base_url has no `format: uri-reference`")
+        # base_url is retired. Warp calls the gateway in-process, so there is no
+        # endpoint to override and the server has no such field. A schema that
+        # still offers one documents a setting that does nothing, and a client
+        # generated from it sends a value that is silently dropped.
+        if "base_url" in (schema.get("properties") or {}):
+            problems.append(f"{source}: WarpConfigInput still documents the retired `base_url`")
 
     assert not problems, "Warp enabled-config contract:\n    " + "\n    ".join(problems)
 
@@ -1035,6 +1053,75 @@ def test_adaptive_routing_put_descriptions_state_the_empty_reroute_target():
     assert not problems, "reroute_target descriptions drift from the settings handler:\n    " + "\n    ".join(problems)
 
 
+HANDLERS_DIR = REPO_ROOT / "transports" / "bifrost-http" / "handlers"
+
+# Every list handler that calls ClampPaginationParams, mapped to the fragment that documents
+# its GET. The clamp turns limit <= 0 into 25 and anything above 100 into 100 without an error,
+# so a spec that leaves out the bound reads like `?limit=1000` returns 1000 rows.
+CLAMPED_LIST_HANDLERS = {
+    "getVirtualKeys": ("governance.yaml", "virtual-keys"),
+    "getTeams": ("governance.yaml", "teams"),
+    "getCustomers": ("governance.yaml", "customers"),
+    "getModelConfigs": ("governance.yaml", "model-configs"),
+    "getPricingOverrides": ("governance.yaml", "pricing-overrides"),
+    "getRoutingRules": ("routing.yaml", "rules"),
+    "getMCPClientsPaginated": ("mcp.yaml", "clients"),
+    "listVirtualMCPs": ("virtualmcps.yaml", "virtual-mcps"),
+    "listPushConfigs": ("agents.yaml", "agent-push-configs"),
+    "listWebhookEndpoints": ("webhooks.yaml", "webhooks"),
+    "listWebhookDeliveries": ("webhooks.yaml", "webhooks-deliveries"),
+    "searchWebhookDeliveries": ("webhooks.yaml", "webhooks-deliveries-search"),
+}
+
+# Clamped handlers whose route has no operation in the spec yet. Listed so the gap stays visible.
+UNDOCUMENTED_CLAMPED_HANDLERS = {
+    "getMCPLibrary",  # GET /api/mcp/library
+}
+
+GO_FUNC_RE = re.compile(r"^func (?:\([^)]*\) )?(\w+)\(")
+
+
+def clamped_handler_names() -> set[str]:
+    names = set()
+    for path in sorted(HANDLERS_DIR.glob("*.go")):
+        if path.name.endswith("_test.go"):
+            continue
+        current = None
+        for line in path.read_text(encoding="utf-8").splitlines():
+            match = GO_FUNC_RE.match(line)
+            if match:
+                current = match.group(1)
+            elif current and current != "ClampPaginationParams" and "ClampPaginationParams(" in line:
+                names.add(current)
+    return names
+
+
+def test_clamped_list_endpoints_document_the_page_bounds():
+    """Each handler that clamps limit must document maximum 100 and default 25 on that limit.
+    A new clamped handler fails here until it is added to CLAMPED_LIST_HANDLERS."""
+    found = clamped_handler_names()
+    known = set(CLAMPED_LIST_HANDLERS) | UNDOCUMENTED_CLAMPED_HANDLERS
+    problems = []
+    for name in sorted(found - known):
+        problems.append(f"{name}: calls ClampPaginationParams but is not in CLAMPED_LIST_HANDLERS")
+    for name in sorted(known - found):
+        problems.append(f"{name}: listed but no longer calls ClampPaginationParams")
+    for name, (filename, key) in sorted(CLAMPED_LIST_HANDLERS.items()):
+        operation = ((load(PATHS_DIR / filename) or {}).get(key) or {}).get("get") or {}
+        params = {p.get("name"): p for p in operation.get("parameters") or [] if isinstance(p, dict)}
+        schema = (params.get("limit") or {}).get("schema") or {}
+        if not schema:
+            problems.append(f"{name} ({filename}#/{key}): no limit parameter")
+            continue
+        if schema.get("maximum") != 100 or schema.get("default") != 25:
+            problems.append(
+                f"{name} ({filename}#/{key}): limit schema {schema} lacks maximum: 100 and default: 25"
+            )
+        if "offset" not in params:
+            problems.append(f"{name} ({filename}#/{key}): no offset parameter")
+    assert not problems, "clamped list endpoints drift from ClampPaginationParams:\n    " + "\n    ".join(problems)
+
+
 check("legacy aliases are mounted and their successors documented", test_legacy_aliases_mount_legacy_fragments)
 check("secret-capable values accept bare strings (EnvVar oneOf)", test_secret_capable_values_accept_bare_strings)
 check("vertex aws_workload_identity matches config.schema.json", test_vertex_aws_workload_identity_contract)
@@ -1042,6 +1129,7 @@ check("vk_rotation_cooldown bounds match config.schema.json", test_vk_rotation_c
 check("bulk rotate ids schema rejects empty arrays", test_bulk_rotate_ids_requires_min_items)
 check("virtual key request contract uses budgets and provider-scoped key_ids", test_virtual_key_request_contract_is_current)
 check("virtual key metadata contract: nullable update, reserved keys, no templated filter param", test_virtual_key_metadata_contract)
+check("project content-logging descriptions state the header, connector and retention rules", test_project_content_logging_descriptions_state_the_contract)
 check("warp credential contract uses api_key_id with no secret field", test_warp_credential_contract_is_current)
 check("warp config input models its embedding contract", test_warp_config_input_models_the_embedding_contract)
 check("warp chat response contract matches the agent", test_warp_chat_response_contract_is_current)
@@ -1054,5 +1142,6 @@ check("oauth token_url descriptions state the loopback and URL-part rules", test
 check("adaptive routing legacy alias declares Link and Warning on every response", test_adaptive_routing_legacy_alias_declares_deprecation_headers_on_every_response)
 check("adaptive routing PUT descriptions state that an empty reroute_target is stored as pool", test_adaptive_routing_put_descriptions_state_the_empty_reroute_target)
 
+check("clamped list endpoints document limit maximum 100 and default 25", test_clamped_list_endpoints_document_the_page_bounds)
 print(f"\n{passed} passed, {failed} failed")
 sys.exit(0 if failed == 0 else 1)

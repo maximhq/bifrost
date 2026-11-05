@@ -2,7 +2,9 @@ package warp
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -21,6 +23,13 @@ type semanticLogReader struct {
 	sawIDs     []string
 	// allIDs accumulates across calls; sawIDs is the last call only.
 	allIDs []string
+	// topics is the topic tables the reader offers, when a test gave it some.
+	topics logstore.WarpTopicStore
+}
+
+// TopicStore hands out the topic tables, or nil when the test gave none.
+func (r *semanticLogReader) TopicStore() logstore.WarpTopicStore {
+	return r.topics
 }
 
 func (r *semanticLogReader) GetLogsByIDs(ctx context.Context, ids []string) ([]logstore.Log, error) {
@@ -223,6 +232,139 @@ func TestWarpSemanticRefillsCandidatesPastFilteredRows(t *testing.T) {
 		require.False(t, seen[id], "log %s was hydrated twice", id)
 		seen[id] = true
 	}
+}
+
+// A session filter used to reach semantic search and do nothing: the post-
+// filter never looked, so "what was asked in this session" came back with
+// every session's rows. It is a vector prefilter, exactly - a session id is
+// opaque, and the log store matches it exactly. Applied only after hydration,
+// a session is so small a slice of the index that the capped candidate page
+// almost never held any of its rows, and the search came back empty. The
+// post-filter still checks it.
+func TestWarpSemanticFiltersNarrowToASession(t *testing.T) {
+	session, ok := semanticVectorFilterFields(semanticVectorFilters(&logstore.SearchFilters{SessionID: "Sess-1"}))["session_id"]
+	require.True(t, ok, "the session narrows the vector search")
+	require.Equal(t, vectorstore.Query{Field: "session_id", Operator: vectorstore.QueryOperatorEqual, Value: "Sess-1"}, session, "exact, not lowered")
+
+	mine, theirs := "Sess-1", "sess-1"
+	inSession := &logstore.Log{Provider: "openai", SessionID: &mine}
+	another := &logstore.Log{Provider: "openai", SessionID: &theirs}
+	none := &logstore.Log{Provider: "openai"}
+	filters := &logstore.SearchFilters{SessionID: "Sess-1"}
+	require.True(t, matchesSemanticFilters(inSession, filters))
+	require.False(t, matchesSemanticFilters(another, filters), "a session differing only in case is another session")
+	require.False(t, matchesSemanticFilters(none, filters), "a request in no session is not in this one")
+	require.True(t, matchesSemanticFilters(none, &logstore.SearchFilters{}))
+}
+
+// sessionSearchFixture is a search where 150 rows of other sessions outrank
+// the two of session "s-1", which the vector store returns first only when
+// asked for that session.
+func sessionSearchFixture(t *testing.T) (*SemanticSearcher, *fakeWarpVectorStore) {
+	t.Helper()
+	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+	reader := &semanticLogReader{logs: map[string]logstore.Log{}}
+	var crowd, mine []vectorstore.SearchResult
+	add := func(id, session string, score float64, into *[]vectorstore.SearchResult) {
+		reader.logs[id] = logstore.Log{
+			ID: id, Timestamp: now, Object: string(schemas.ChatCompletionRequest), Status: "success",
+			Provider: "openai", Model: "gpt-4o", SessionID: &session, ContentSummary: "card declined",
+		}
+		*into = append(*into, vectorstore.SearchResult{ID: id, Score: &score})
+	}
+	for index := range 150 {
+		add(fmt.Sprintf("other-%03d", index), "s-2", 0.99, &crowd)
+	}
+	add("mine-1", "s-1", 0.7, &mine)
+	add("mine-2", "s-1", 0.6, &mine)
+	vectors := newFakeWarpVectorStore()
+	vectors.respond = func(queries []vectorstore.Query) []vectorstore.SearchResult {
+		if session, ok := semanticVectorFilterFields(queries)["session_id"]; ok {
+			if session.Value == "s-1" {
+				return mine
+			}
+			return nil
+		}
+		return append(slices.Clone(crowd), mine...)
+	}
+	searcher := NewSemanticSearcher(&recordingStore{row: validWarpConfigRow()}, vectors, func(*schemas.BifrostContext, *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
+		return &schemas.BifrostEmbeddingResponse{Data: []schemas.EmbeddingData{{Embedding: schemas.EmbeddingStruct{EmbeddingArray: make([]float64, 1536)}}}}, nil
+	}, reader)
+	return searcher, vectors
+}
+
+// A session's rows are found however many other rows outrank them: the
+// session narrows the vector search, so the candidate cap is spent on it.
+func TestWarpSemanticFindsASessionPastTheCandidateCap(t *testing.T) {
+	searcher, _ := sessionSearchFixture(t)
+	result, err := searcher.Search(context.Background(), []string{"card declined"}, &logstore.SearchFilters{SessionID: "s-1"}, 5)
+	require.NoError(t, err)
+	require.Equal(t, 2, result.Returned)
+	require.Equal(t, "mine-1", result.Rows[0].ID)
+	require.Equal(t, "mine-2", result.Rows[1].ID)
+}
+
+// A namespace made before session_id was stored has no such property, and
+// Weaviate refuses a filter on one. The search falls back to the session as a
+// post-filter, as it was before, rather than failing.
+func TestWarpSemanticSessionSearchSurvivesANamespaceWithoutSessions(t *testing.T) {
+	searcher, vectors := sessionSearchFixture(t)
+	vectors.fail = func(queries []vectorstore.Query) error {
+		if _, ok := semanticVectorFilterFields(queries)["session_id"]; ok {
+			return errors.New("invalid 'where' filter: no such prop with name 'session_id' found in class")
+		}
+		return nil
+	}
+	result, err := searcher.Search(context.Background(), []string{"card declined"}, &logstore.SearchFilters{SessionID: "s-1", Providers: []string{"openai"}}, 5)
+	require.NoError(t, err)
+	require.Zero(t, result.Returned, "the post-filter still holds: nothing outside the session, and the session lies past the cap")
+	last := vectors.calls[len(vectors.calls)-1]
+	require.NotContains(t, semanticVectorFilterFields(last), "session_id")
+	require.Contains(t, semanticVectorFilterFields(last), "provider", "only the session is dropped from the prefilter")
+
+	_, err = searcher.Search(context.Background(), []string{"card declined"}, &logstore.SearchFilters{Providers: []string{"openai"}}, 5)
+	require.NoError(t, err)
+	vectors.fail = func([]vectorstore.Query) error { return errors.New("store down") }
+	_, err = searcher.Search(context.Background(), []string{"card declined"}, &logstore.SearchFilters{SessionID: "s-1"}, 5)
+	require.ErrorContains(t, err, "store down", "any other failure is still reported")
+
+	// RediSearch words a missing field its own way, and is recognised too.
+	vectors.calls = nil
+	vectors.fail = func(queries []vectorstore.Query) error {
+		if _, ok := semanticVectorFilterFields(queries)["session_id"]; ok {
+			return errors.New("Unknown field at offset 42 near session_id")
+		}
+		return nil
+	}
+	_, err = searcher.Search(context.Background(), []string{"card declined"}, &logstore.SearchFilters{SessionID: "s-1"}, 5)
+	require.NoError(t, err)
+	require.NotContains(t, semanticVectorFilterFields(vectors.calls[len(vectors.calls)-1]), "session_id")
+
+	// A failure that says nothing about the property is not retried without
+	// the session, even when a retry would have succeeded: that would answer
+	// with a weaker filter than the one asked for.
+	failed := false
+	vectors.calls = nil
+	vectors.fail = func([]vectorstore.Query) error {
+		if failed {
+			return nil
+		}
+		failed = true
+		return errors.New("connection reset by peer")
+	}
+	_, err = searcher.Search(context.Background(), []string{"card declined"}, &logstore.SearchFilters{SessionID: "s-1"}, 5)
+	require.ErrorContains(t, err, "connection reset by peer")
+	for _, call := range vectors.calls {
+		require.Contains(t, semanticVectorFilterFields(call), "session_id", "no search ran without the session")
+	}
+}
+
+func semanticVectorFilterFields(queries []vectorstore.Query) map[string]vectorstore.Query {
+	fields := map[string]vectorstore.Query{}
+	for _, query := range queries {
+		fields[query.Field] = query
+	}
+	return fields
 }
 
 // The store-side prefilter must match the way the post-filter matches.

@@ -24,6 +24,7 @@ type TableProvider struct {
 	OpenAIConfigJSON         string    `gorm:"type:text" json:"-"`                                // JSON serialized schemas.OpenAIConfig
 	PromptCacheJSON          string    `gorm:"type:text" json:"-"`                                // JSON serialized schemas.PromptCacheConfig
 	InjectedToolsJSON        string    `gorm:"type:text" json:"-"`                                // JSON serialized schemas.InjectedToolsConfig
+	PassthroughJSON          string    `gorm:"type:text" json:"-"`                                // JSON serialized schemas.PassthroughPolicy
 	SendBackRawRequest       bool      `json:"send_back_raw_request"`
 	SendBackRawResponse      bool      `json:"send_back_raw_response"`
 	StoreRawRequestResponse  bool      `json:"store_raw_request_response"`
@@ -44,6 +45,7 @@ type TableProvider struct {
 	OpenAIConfig         *schemas.OpenAIConfig         `gorm:"-" json:"openai_config,omitempty"`
 	PromptCache          *schemas.PromptCacheConfig    `gorm:"-" json:"prompt_cache,omitempty"`
 	InjectedTools        []schemas.InjectedTool        `gorm:"-" json:"injected_tools,omitempty"`
+	Passthrough          *schemas.PassthroughPolicy    `gorm:"-" json:"passthrough,omitempty"`
 
 	// Foreign keys
 	Models []TableModel `gorm:"foreignKey:ProviderID;constraint:OnDelete:CASCADE" json:"models"`
@@ -134,6 +136,15 @@ func (p *TableProvider) BeforeSave(tx *gorm.DB) error {
 	} else {
 		p.InjectedToolsJSON = ""
 	}
+	if p.Passthrough != nil {
+		data, err := json.Marshal(p.Passthrough)
+		if err != nil {
+			return err
+		}
+		p.PassthroughJSON = string(data)
+	} else {
+		p.PassthroughJSON = ""
+	}
 	// Validate governance fields
 	if p.BudgetID != nil && strings.TrimSpace(*p.BudgetID) == "" {
 		return fmt.Errorf("budget_id cannot be an empty string")
@@ -219,6 +230,14 @@ func (p *TableProvider) AfterFind(tx *gorm.DB) error {
 			return err
 		}
 		p.InjectedTools = injectedTools
+	}
+
+	if p.PassthroughJSON != "" {
+		var passthrough schemas.PassthroughPolicy
+		if err := json.Unmarshal([]byte(p.PassthroughJSON), &passthrough); err != nil {
+			return err
+		}
+		p.Passthrough = &passthrough
 	}
 
 	return nil

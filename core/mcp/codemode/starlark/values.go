@@ -17,6 +17,14 @@ var (
 	minResultInteger = starlark.MakeBigInt(new(big.Int).Neg(new(big.Int).Lsh(big.NewInt(1), 4096)))
 )
 
+// toolErrorValue is a nested call that answered with an error result. The script receives it
+// as a tool_error struct whose .error holds the message; no successful result is ever a struct,
+// so hasattr(r, "error") tells the two apart. Returned or passed on, it converts back like any
+// struct, to {"error": "<message>"}.
+type toolErrorValue struct {
+	message string
+}
+
 // Each conversion bounds the expanded value, not just its unique objects:
 // shared subtrees can otherwise expand exponentially when serialized as JSON.
 // Conservative size charges include JSON escaping and pretty-print indentation.
@@ -142,8 +150,9 @@ func (c *valueConversion) toGo(v starlark.Value, depth int) (interface{}, error)
 		}
 		return result, iter.Err()
 	case *starlarkstruct.Struct:
-		// Only gateway-created server structs are exposed; their fields are
-		// bounded by the binding setup budget. Values still require conversion.
+		// Only gateway-created structs are exposed (server objects and tool_error values);
+		// their fields are bounded by the binding setup budget or the tool result charge.
+		// Values still require conversion.
 		names := val.AttrNames()
 		if err := c.container(len(names)); err != nil {
 			return nil, err
@@ -220,6 +229,13 @@ func (c *valueConversion) fromGo(v interface{}, depth int) (starlark.Value, erro
 		return starlark.Float(val), nil
 	case string:
 		return starlark.String(val), c.rawStringSize(val)
+	case toolErrorValue:
+		if err := c.rawStringSize(val.message); err != nil {
+			return nil, err
+		}
+		return starlarkstruct.FromStringDict(starlark.String("tool_error"), starlark.StringDict{
+			"error": starlark.String(val.message),
+		}), nil
 	case []interface{}:
 		if err := c.container(len(val)); err != nil {
 			return nil, err

@@ -2,6 +2,7 @@ package tracing
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -80,6 +81,108 @@ func TestTracer_CompleteAndFlushTraceInjectsObservabilityPlugins(t *testing.T) {
 	if got := tracer.store.GetTrace(traceID); got != nil {
 		t.Fatalf("trace %q was not released after flush", traceID)
 	}
+}
+
+// TestTracer_HoldTraceFlush verifies a held trace exports only on its last
+// release, with the spans written while it was held, and that a hold never
+// strands or duplicates a flush.
+func TestTracer_HoldTraceFlush(t *testing.T) {
+	newHeldTracer := func(t *testing.T) (*Tracer, *testRealtimeObservabilityPlugin, string) {
+		t.Helper()
+		store := NewTraceStore(5*time.Minute, nil)
+		t.Cleanup(store.Stop)
+		tracer := NewTracer(store, nil, nil)
+		t.Cleanup(tracer.Stop)
+		plugin := &testRealtimeObservabilityPlugin{injected: make(chan *schemas.Trace, 2)}
+		tracer.SetObservabilityPlugins([]schemas.ObservabilityPlugin{plugin}, nil)
+		return tracer, plugin, tracer.CreateTrace("")
+	}
+	expectInject := func(t *testing.T, plugin *testRealtimeObservabilityPlugin) *schemas.Trace {
+		t.Helper()
+		select {
+		case trace := <-plugin.injected:
+			return trace
+		case <-time.After(time.Second):
+			t.Fatal("timed out waiting for observability inject")
+			return nil
+		}
+	}
+	expectNoInject := func(t *testing.T, plugin *testRealtimeObservabilityPlugin) {
+		t.Helper()
+		select {
+		case <-plugin.injected:
+			t.Fatal("trace exported while held")
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+
+	t.Run("exports on release with spans written while held", func(t *testing.T) {
+		tracer, plugin, traceID := newHeldTracer(t)
+		release := tracer.HoldTraceFlush(traceID)
+		tracer.CompleteAndFlushTrace(traceID)
+		expectNoInject(t, plugin)
+
+		ctx := context.WithValue(context.Background(), schemas.BifrostContextKeyTraceID, traceID)
+		_, handle := tracer.StartSpan(ctx, "late.span", schemas.SpanKindPlugin)
+		require.NotNil(t, handle, "held trace must still accept spans")
+		tracer.EndSpan(handle, schemas.SpanStatusOk, "")
+
+		release()
+		trace := expectInject(t, plugin)
+		require.Equal(t, traceID, trace.TraceID)
+		require.True(t, slices.ContainsFunc(trace.Spans, func(span *schemas.Span) bool { return span.Name == "late.span" }))
+		release()
+		expectNoInject(t, plugin)
+	})
+
+	t.Run("release before the flush leaves the flush untouched", func(t *testing.T) {
+		tracer, plugin, traceID := newHeldTracer(t)
+		tracer.HoldTraceFlush(traceID)()
+		expectNoInject(t, plugin)
+		tracer.CompleteAndFlushTrace(traceID)
+		expectInject(t, plugin)
+	})
+
+	t.Run("flushes after the last of several holds", func(t *testing.T) {
+		tracer, plugin, traceID := newHeldTracer(t)
+		first, second := tracer.HoldTraceFlush(traceID), tracer.HoldTraceFlush(traceID)
+		tracer.CompleteAndFlushTrace(traceID)
+		first()
+		expectNoInject(t, plugin)
+		second()
+		expectInject(t, plugin)
+	})
+
+	t.Run("hold on an ended trace is a no-op", func(t *testing.T) {
+		tracer, plugin, traceID := newHeldTracer(t)
+		tracer.CompleteAndFlushTrace(traceID)
+		expectInject(t, plugin)
+		tracer.HoldTraceFlush(traceID)()
+		_, held := tracer.flushHolds.Load(traceID)
+		require.False(t, held)
+	})
+
+	t.Run("expiry drops the hold", func(t *testing.T) {
+		tracer, plugin, traceID := newHeldTracer(t)
+		release := tracer.HoldTraceFlush(traceID)
+		// The store removes an expired trace before handing it over.
+		tracer.FlushExpiredTrace(tracer.store.CompleteTrace(traceID))
+		expectInject(t, plugin)
+		_, held := tracer.flushHolds.Load(traceID)
+		require.False(t, held)
+		release()
+		expectNoInject(t, plugin)
+	})
+
+	t.Run("stop flushes a held trace whose flush was requested", func(t *testing.T) {
+		tracer, plugin, traceID := newHeldTracer(t)
+		release := tracer.HoldTraceFlush(traceID)
+		tracer.CompleteAndFlushTrace(traceID)
+		tracer.Stop()
+		expectInject(t, plugin)
+		release()
+		expectNoInject(t, plugin)
+	})
 }
 
 // TestTracer_TransformPausedStreamBufferForwardsToAccumulator verifies the production tracer exposes the gate transformation capability.
@@ -447,6 +550,49 @@ func TestTracer_SetAttribute(t *testing.T) {
 
 	if span.Attributes["http.status_code"] != 200 {
 		t.Errorf("span attribute http.status_code = %v, want 200", span.Attributes["http.status_code"])
+	}
+}
+
+// A span opened once its work has finished is backdated to when the work began, so it
+// exports with the work's real duration; its end time is left as EndSpan sets it.
+func TestTracer_MergeTraceDimensions(t *testing.T) {
+	store := NewTraceStore(5*time.Minute, nil)
+	defer store.Stop()
+	tracer := NewTracer(store, nil, nil)
+	defer tracer.Stop()
+
+	traceID := tracer.CreateTrace("")
+	tracer.SetTraceAttribute(traceID, schemas.TraceAttrDimensions, map[string]string{"team": "header"})
+	tracer.MergeTraceDimensions(traceID, map[string]string{"team": "vk", "cost_center": "cc-42"})
+	tracer.MergeTraceDimensions("missing-trace", map[string]string{"team": "vk"})
+
+	got := schemas.TraceDimensions(store.GetTrace(traceID).Attributes)
+	if got["team"] != "vk" || got["cost_center"] != "cc-42" || len(got) != 2 {
+		t.Errorf("dimensions = %v, want team=vk cost_center=cc-42", got)
+	}
+}
+
+func TestTracer_SetSpanStartTime(t *testing.T) {
+	store := NewTraceStore(5*time.Minute, nil)
+	defer store.Stop()
+	tracer := NewTracer(store, nil, nil)
+	defer tracer.Stop()
+
+	traceID := tracer.CreateTrace("")
+	ctx := context.WithValue(context.Background(), schemas.BifrostContextKeyTraceID, traceID)
+	_, handle := tracer.StartSpan(ctx, "plugin.guard.output", schemas.SpanKindPlugin)
+
+	began := time.Now().Add(-2 * time.Second)
+	tracer.SetSpanStartTime(handle, began)
+	tracer.SetSpanStartTime(handle, time.Time{})
+	tracer.EndSpan(handle, schemas.SpanStatusOk, "")
+
+	span := store.GetTrace(traceID).RootSpan
+	if !span.StartTime.Equal(began) {
+		t.Errorf("StartTime = %v, want %v (a zero time must not overwrite it)", span.StartTime, began)
+	}
+	if d := span.EndTime.Sub(span.StartTime); d < 2*time.Second {
+		t.Errorf("span duration = %v, want >= 2s", d)
 	}
 }
 

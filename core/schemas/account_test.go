@@ -8,6 +8,51 @@ import (
 	"testing"
 )
 
+func TestVertexEndpointAliasRoundTrip(t *testing.T) {
+	for _, method := range []string{"raw_predict", "chat_completions"} {
+		t.Run(method, func(t *testing.T) {
+			input := `{"vllm":{"model_id":"custom-model-version","vertex_endpoint":{"endpoint_id":"2222222222","format":"openai_chat","method":"` + method + `"}}}`
+			var aliases KeyAliases
+			if err := json.Unmarshal([]byte(input), &aliases); err != nil {
+				t.Fatal(err)
+			}
+			if err := aliases.Validate(Vertex); err != nil {
+				t.Fatal(err)
+			}
+			encoded, err := json.Marshal(aliases)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(encoded), `"vertex_endpoint"`) || !strings.Contains(string(encoded), `"format":"openai_chat"`) {
+				t.Fatalf("custom endpoint configuration lost on round trip: %s", encoded)
+			}
+			if err := aliases.Validate(OpenAI); err == nil {
+				t.Fatal("Vertex endpoint must be rejected on an OpenAI key")
+			}
+		})
+	}
+}
+
+func TestVertexEndpointValidation(t *testing.T) {
+	for _, id := range []string{"", " a", "a ", "../a", "a/b", "a?key=x", "a#x", "a:predict", "a%2fb", "モデル"} {
+		endpoint := &VertexEndpoint{EndpointID: id, Format: VertexEndpointOpenAIChat}
+		if endpoint.Validate() == nil {
+			t.Errorf("accepted endpoint ID %q", id)
+		}
+	}
+	if err := (&VertexEndpoint{EndpointID: "2222", Format: VertexEndpointOpenAIChat}).Validate(); err != nil {
+		t.Fatalf("omitted method must default to raw_predict: %v", err)
+	}
+	if err := (&VertexEndpoint{EndpointID: "2222", Format: VertexEndpointOpenAIChat, Method: "predict"}).Validate(); err == nil {
+		t.Fatal("accepted unsupported method")
+	}
+	for _, format := range []VertexEndpointFormat{"", "openai", "gemini", "predict"} {
+		if (&VertexEndpoint{EndpointID: "2222", Format: format}).Validate() == nil {
+			t.Errorf("accepted format %q; the body shape must be explicit and implemented", format)
+		}
+	}
+}
+
 func TestAliasConfigRedactedPreservesShape(t *testing.T) {
 	for name, original := range map[string]AliasConfig{
 		"empty":  {},
@@ -15,7 +60,7 @@ func TestAliasConfigRedactedPreservesShape(t *testing.T) {
 		"metadata": {
 			ModelID: "model", ModelName: Ptr("canonical"), ModelFamily: Ptr(ModelFamilyAnthropic),
 			Description: "alias description", UseAnthropicEndpoints: Ptr(true), UseOpenAIEndpoints: Ptr(false),
-			AzureAliasCfg:     &AzureAliasCfg{APIVersion: Ptr("api-version"), AnthropicVersion: Ptr("anthropic-version")},
+			AzureAliasCfg:     &AzureAliasCfg{APIVersion: Ptr("api-version"), AnthropicVersion: Ptr("anthropic-version"), UseSpeechEndpoints: Ptr(true)},
 			VertexAliasCfg:    &VertexAliasCfg{ForceSingleRegion: Ptr(true)},
 			BedrockAliasCfg:   &BedrockAliasCfg{},
 			ReplicateAliasCfg: &ReplicateAliasCfg{UseDeploymentsEndpoint: Ptr(true)},
@@ -57,6 +102,42 @@ func TestBedrockEndpointsRedactedPreservesUnsetFields(t *testing.T) {
 	}
 }
 
+func TestAnthropicKeyConfigRedacted(t *testing.T) {
+	var unset *AnthropicKeyConfig
+	if unset.Redacted() != nil || unset.HasWorkloadIdentity() {
+		t.Fatal("a nil config must stay nil and carry no workload identity")
+	}
+	if (&AnthropicKeyConfig{}).HasWorkloadIdentity() {
+		t.Fatal("an empty config carries no workload identity")
+	}
+	original := &AnthropicKeyConfig{WorkloadIdentity: &AnthropicWorkloadIdentityConfig{
+		FederationRuleID: *NewSecretVar("fdrl_rule"),
+		OrganizationID:   *NewSecretVar("00000000-0000-0000-0000-000000000000"),
+		ServiceAccountID: *NewSecretVar("svac_account"),
+		WorkspaceID:      NewSecretVar("wrkspc_workspace"),
+		IdentitySource:   &IdentitySource{Type: IdentitySourceFile, Path: NewSecretVar("/var/run/secrets/anthropic.com/token")},
+	}}
+	redacted := original.Redacted().WorkloadIdentity
+	if redacted.FederationRuleID.GetValue() != "fdrl_rule" || redacted.ServiceAccountID.GetValue() != "svac_account" ||
+		redacted.WorkspaceID.GetValue() != "wrkspc_workspace" || redacted.IdentitySource.Path.GetValue() != "/var/run/secrets/anthropic.com/token" {
+		t.Fatalf("literal identifiers must stay readable: %+v", redacted)
+	}
+	inline := (&IdentitySource{Type: IdentitySourceInline, Token: NewSecretVar("eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ4In0.signature")}).Redacted()
+	if inline.Type != IdentitySourceInline || !inline.Token.IsRedacted() || strings.Contains(inline.Token.GetValue(), "eyJzdWIiOiJ4In0") {
+		t.Fatalf("the identity token is a credential and must be masked: %+v", inline)
+	}
+	redacted.WorkspaceID.Val = "changed"
+	if original.WorkloadIdentity.WorkspaceID.GetValue() != "wrkspc_workspace" {
+		t.Fatal("redacted config shares pointers with live config")
+	}
+
+	t.Setenv("ANTHROPIC_FEDERATION_RULE_ID_REDACT_TEST", "fdrl_from_env")
+	fromEnv := &AnthropicKeyConfig{WorkloadIdentity: &AnthropicWorkloadIdentityConfig{FederationRuleID: *NewSecretVar("env.ANTHROPIC_FEDERATION_RULE_ID_REDACT_TEST")}}
+	if got := fromEnv.Redacted().WorkloadIdentity.FederationRuleID.GetValue(); got == "fdrl_from_env" {
+		t.Fatal("an env-backed identifier must be masked")
+	}
+}
+
 func TestKeyAliasesUnmarshalLegacyStringShape(t *testing.T) {
 	in := []byte(`{"best-model": "gpt-4o-deployment"}`)
 	var ka KeyAliases
@@ -77,7 +158,8 @@ func TestKeyAliasesUnmarshalRichShape(t *testing.T) {
             "model_name": "claude-3-5-sonnet",
             "model_family": "anthropic",
             "description": "prod",
-            "api_version": "2024-08-01-preview"
+            "api_version": "2024-08-01-preview",
+            "use_speech_endpoints": true
         }
     }`)
 	var ka KeyAliases
@@ -99,6 +181,9 @@ func TestKeyAliasesUnmarshalRichShape(t *testing.T) {
 	}
 	if got.AzureAliasCfg == nil || got.APIVersion == nil || *got.APIVersion != "2024-08-01-preview" {
 		t.Fatalf("AzureAliasCfg.APIVersion mismatch: %+v", got.AzureAliasCfg)
+	}
+	if got.UseSpeechEndpoints == nil || !*got.UseSpeechEndpoints {
+		t.Fatalf("AzureAliasCfg.UseSpeechEndpoints mismatch: %+v", got.AzureAliasCfg)
 	}
 }
 
@@ -248,6 +333,7 @@ func TestKeyAliasesMarshalRichShapeWhenAnyExtraFieldSet(t *testing.T) {
 		"with_model_family": {AliasConfig{ModelID: "x", ModelFamily: Ptr(ModelFamilyAnthropic)}, "model_family", "anthropic"},
 		"with_description":  {AliasConfig{ModelID: "x", Description: "prod"}, "description", "prod"},
 		"with_azure_subcfg": {AliasConfig{ModelID: "x", AzureAliasCfg: &AzureAliasCfg{APIVersion: Ptr("2024-08-01-preview")}}, "api_version", "2024-08-01-preview"},
+		"with_azure_speech": {AliasConfig{ModelID: "x", AzureAliasCfg: &AzureAliasCfg{UseSpeechEndpoints: Ptr(true)}}, "use_speech_endpoints", true},
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {

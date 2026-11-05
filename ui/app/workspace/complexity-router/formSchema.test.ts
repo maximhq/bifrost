@@ -4,11 +4,6 @@ import {
 	countCanonicalSemanticPhrases,
 	DEFAULT_FORM_VALUES,
 	getDecisionProviderState,
-	clefModelFromProvider,
-	defaultDecisionModel,
-	isDecisionProvider,
-	isOpenAIDecisionProvider,
-	selfHostedModelGroups,
 	isRouterConfigured,
 	decisionGuidanceFormValues,
 	decisionTimeoutFieldValue,
@@ -88,6 +83,7 @@ describe("Decision complexity configuration", () => {
 			...DEFAULT_MODEL,
 			previous_message_count: 1,
 			timeout: "1500ms",
+			min_confidence: 0,
 			...EMPTY_DECISION_GUIDANCE,
 		});
 	});
@@ -118,6 +114,7 @@ describe("Decision complexity configuration", () => {
 				...DEFAULT_MODEL,
 				previous_message_count: 1,
 				timeout: "400ms",
+				min_confidence: 0,
 				...EMPTY_DECISION_GUIDANCE,
 			},
 		};
@@ -144,6 +141,7 @@ describe("Decision complexity configuration", () => {
 				model: "",
 				previous_message_count: Number.NaN,
 				timeout: "",
+				min_confidence: 0,
 				...EMPTY_DECISION_GUIDANCE,
 			},
 		};
@@ -165,13 +163,13 @@ describe("Decision complexity configuration", () => {
 				complex_keywords: ["complex"],
 			},
 			semantic: { ...DEFAULT_FORM_VALUES.semantic, fallback: "decision" as const },
-			decision: { ...DEFAULT_MODEL, previous_message_count: 9, timeout: "", ...EMPTY_DECISION_GUIDANCE },
+			decision: { ...DEFAULT_MODEL, previous_message_count: 9, timeout: "", min_confidence: 2, ...EMPTY_DECISION_GUIDANCE },
 		};
 		const parsed = analyzerConfigSchema.safeParse(values);
 		expect(parsed.success).toBe(false);
 		if (parsed.success) return;
 		expect(parsed.error.issues.map((issue) => issue.path.join("."))).toEqual(
-			expect.arrayContaining(["decision.previous_message_count", "decision.timeout"]),
+			expect.arrayContaining(["decision.previous_message_count", "decision.timeout", "decision.min_confidence"]),
 		);
 	});
 });
@@ -186,6 +184,7 @@ describe("Decision complexity form state", () => {
 			...DEFAULT_MODEL,
 			previous_message_count: 1,
 			timeout: "900ms",
+			min_confidence: 0,
 			...EMPTY_DECISION_GUIDANCE,
 		});
 		expect(
@@ -198,8 +197,23 @@ describe("Decision complexity form state", () => {
 			...DEFAULT_MODEL,
 			previous_message_count: 0,
 			timeout: "1500ms",
+			min_confidence: 0,
 			...EMPTY_DECISION_GUIDANCE,
 		});
+	});
+
+	test("keeps a saved min_confidence and writes it to the payload only when set", () => {
+		const saved: AnalyzerConfig = {
+			classifier: "decision",
+			keywords: { simple_keywords: ["simple"], medium_keywords: ["medium"], complex_keywords: ["complex"] },
+			decision: { ...DEFAULT_MODEL, previous_message_count: 1, timeout: "1500ms", min_confidence: 0.7 },
+		};
+		const values = toFormValues(saved);
+		expect(values.decision.min_confidence).toBe(0.7);
+		expect(toAnalyzerPayload(values, saved).decision?.min_confidence).toBe(0.7);
+
+		values.decision.min_confidence = 0;
+		expect(toAnalyzerPayload(values, saved).decision).not.toHaveProperty("min_confidence");
 	});
 
 	test("keeps a saved decision model and round-trips it to the payload", () => {
@@ -240,6 +254,7 @@ describe("Decision complexity form state", () => {
 				...DEFAULT_MODEL,
 				previous_message_count: 3,
 				timeout: "700ms",
+				min_confidence: 0,
 				...EMPTY_DECISION_GUIDANCE,
 			},
 		};
@@ -275,11 +290,14 @@ describe("Decision complexity form state", () => {
 			{ previous_message_count: Number.NaN, timeout: "1500ms" },
 			{ previous_message_count: 1, timeout: "0ms" },
 			{ previous_message_count: 1, timeout: "" },
+			{ previous_message_count: 1, timeout: "1500ms", min_confidence: 1.01 },
+			{ previous_message_count: 1, timeout: "1500ms", min_confidence: -0.1 },
+			{ previous_message_count: 1, timeout: "1500ms", min_confidence: Number.NaN },
 		]) {
 			expect(
 				analyzerConfigSchema.safeParse({
 					...base,
-					decision: { ...DEFAULT_MODEL, ...decision, ...EMPTY_DECISION_GUIDANCE },
+					decision: { ...DEFAULT_MODEL, min_confidence: 0, ...decision, ...EMPTY_DECISION_GUIDANCE },
 				}).success,
 			).toBe(false);
 		}
@@ -292,7 +310,7 @@ describe("Decision classification guidance", () => {
 		...DEFAULT_FORM_VALUES,
 		classifier: "decision" as const,
 		keywords,
-		decision: { ...DEFAULT_MODEL, previous_message_count: 1, timeout: "1500ms", ...guidance },
+		decision: { ...DEFAULT_MODEL, previous_message_count: 1, timeout: "1500ms", min_confidence: 0, ...guidance },
 	});
 
 	test("seeds unset guidance from the shipped defaults", () => {
@@ -520,81 +538,6 @@ describe("decision model provider state", () => {
 
 describe("decision model providers", () => {
 	const keywords = { simple_keywords: ["simple"], medium_keywords: ["medium"], complex_keywords: ["complex"] };
-	const provider = (overrides: Partial<ModelProvider>) => ({ provider_status: "active", ...overrides }) as ModelProvider;
-	const custom = (name: string, decisionsURL?: string) =>
-		provider({
-			name,
-			custom_provider_config: {
-				base_provider_type: "typesafe",
-				...(decisionsURL && { request_path_overrides: { decisions: decisionsURL } }),
-			},
-		} as Partial<ModelProvider>);
-	const typesafe = provider({ name: "typesafe" } as Partial<ModelProvider>);
-	const openrouter = provider({ name: "openrouter" } as Partial<ModelProvider>);
-	const openai = provider({ name: "openai" } as Partial<ModelProvider>);
-	const cloudflare = provider({ name: "cloudflare" } as Partial<ModelProvider>);
-	const perplexity = provider({ name: "perplexity" } as Partial<ModelProvider>);
-	const ollama = provider({ name: "ollama" } as Partial<ModelProvider>);
-	const azure = provider({ name: "azure" } as Partial<ModelProvider>);
-	const databricks = provider({ name: "databricks" } as Partial<ModelProvider>);
-	const laya = custom("Laya");
-	const clef = custom("cloudflare clev", "https://api.cloudflare.com/client/v4/accounts/acct/ai/run/@cf/cloudflare/clef");
-	const clefFlash = custom("clef-flash", "https://api.cloudflare.com/client/v4/accounts/acct/ai/run/@cf/cloudflare/clef-flash/");
-
-	test("offers only providers that answer decisions natively", () => {
-		for (const candidate of [typesafe, openrouter, openai, cloudflare, perplexity, ollama, azure, databricks, laya, clef])
-			expect(isDecisionProvider(candidate)).toBe(true);
-		expect(isDecisionProvider(provider({ name: "anthropic" } as Partial<ModelProvider>))).toBe(false);
-		expect(
-			isDecisionProvider(
-				provider({ name: "my-anthropic", custom_provider_config: { base_provider_type: "anthropic" } } as Partial<ModelProvider>),
-			),
-		).toBe(false);
-	});
-
-	test("treats a custom OpenAI-based provider like OpenAI", () => {
-		const customOpenAI = (name: string) =>
-			provider({ name, custom_provider_config: { base_provider_type: "openai" } } as Partial<ModelProvider>);
-		expect(isDecisionProvider(customOpenAI("my-openai"))).toBe(true);
-		expect(isOpenAIDecisionProvider(customOpenAI("my-openai"))).toBe(true);
-		expect(isOpenAIDecisionProvider(openai)).toBe(true);
-		expect(isOpenAIDecisionProvider(typesafe)).toBe(false);
-		// Only its listing says which decision models it serves, whatever it is named.
-		expect(defaultDecisionModel(customOpenAI("my-openai"))).toBe("");
-		expect(defaultDecisionModel(customOpenAI("laya-gateway"))).toBe("");
-	});
-
-	test("reads the Clef model from the provider's Cloudflare URL", () => {
-		expect(clefModelFromProvider(clef)).toBe("clef");
-		expect(clefModelFromProvider(clefFlash)).toBe("clef-flash");
-		expect(clefModelFromProvider(laya)).toBeUndefined();
-		expect(clefModelFromProvider(undefined)).toBeUndefined();
-	});
-
-	test("offers only the checkpoints of the model a provider is named after", () => {
-		expect(selfHostedModelGroups("Laya").map((group) => group.label)).toEqual(["Laya"]);
-		expect(selfHostedModelGroups("nimble-gpu").map((group) => group.label)).toEqual(["Nimble"]);
-		expect(selfHostedModelGroups("ollama-clef").map((group) => group.label)).toEqual(["Clef"]);
-		expect(selfHostedModelGroups("decisions-eu").map((group) => group.label)).toEqual(["Laya", "Nimble", "Clef"]);
-	});
-
-	test("starts each provider on its known model", () => {
-		expect(defaultDecisionModel(typesafe)).toBe("jev-latest");
-		expect(defaultDecisionModel(openrouter)).toBe("~typesafe/jev-latest");
-		expect(defaultDecisionModel(openai)).toBe("gpt-6-luna");
-		expect(defaultDecisionModel(cloudflare)).toBe("@cf/cloudflare/clef-flash");
-		expect(defaultDecisionModel(perplexity)).toBe("pplx-decider-v1.1-27b");
-		// Only Ollama's listing says which System One models are pulled locally.
-		expect(defaultDecisionModel(ollama)).toBe("");
-		// The model name a key alias maps to the user's deployment.
-		expect(defaultDecisionModel(azure)).toBe("Microsoft-Decision-1");
-		// ai_decide is the only decision model a Databricks workspace serves.
-		expect(defaultDecisionModel(databricks)).toBe("ai_decide");
-		expect(defaultDecisionModel(clefFlash)).toBe("clef-flash");
-		expect(defaultDecisionModel(laya)).toBe("english");
-		expect(defaultDecisionModel(custom("nimble-gpu"))).toBe("nimble-latest");
-		expect(defaultDecisionModel(custom("ollama-clef"))).toBe("clef-flash");
-	});
 
 	test("leaves OpenRouter's decision model to the decisions listing", () => {
 		// The picker offers only the models /api/models marks as serving decisions, so the
@@ -604,11 +547,6 @@ describe("decision model providers", () => {
 			analyzerConfigSchema.safeParse({ ...base, decision: { ...base.decision, provider: "openrouter", model } });
 		expect(parse("~typesafe/jev-latest").success).toBe(true);
 		expect(parse("cloudflare/clef").success).toBe(true);
-	});
-
-	test("starts a self-hosted provider whose name says nothing on none", () => {
-		expect(defaultDecisionModel(custom("decisions-eu"))).toBe("");
-		expect(defaultDecisionModel(undefined)).toBe("");
 	});
 });
 

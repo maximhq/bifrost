@@ -8,6 +8,7 @@ import {
 	MCPTopToolsResponse,
 	Pagination,
 } from "@/lib/types/logs";
+import { getPeriodTimezone } from "@/lib/utils/timeRange";
 import { baseApi } from "./baseApi";
 
 // Helper function to build MCP filter params
@@ -39,6 +40,7 @@ function buildMCPFilterParams(filters: MCPToolLogFilters): Record<string, string
 	}
 	if (filters.session_id) params.session_id = filters.session_id;
 	if (filters.agent_correlation_id) params.agent_correlation_id = filters.agent_correlation_id;
+	if (filters.round_trip_id) params.round_trip_id = filters.round_trip_id;
 	if (filters.apps && filters.apps.length > 0) {
 		params.apps = JSON.stringify(filters.apps);
 	}
@@ -47,6 +49,8 @@ function buildMCPFilterParams(filters: MCPToolLogFilters): Record<string, string
 	}
 	if (filters.period) {
 		params.period = filters.period;
+		const timezone = getPeriodTimezone(filters.period);
+		if (timezone) params.timezone = timezone;
 	} else {
 		if (filters.start_time) params.start_time = filters.start_time;
 		if (filters.end_time) params.end_time = filters.end_time;

@@ -1393,6 +1393,112 @@ func TestToOpenAIResponsesRequest_ClearsAnthropicToolSearchName(t *testing.T) {
 	}
 }
 
+// An Anthropic tool_result carrying an image becomes a function_call_output whose
+// output holds an input_image. It must leave with detail "auto" like a top-level
+// image does, or vLLM-backed Responses upstreams reject the request.
+func TestToOpenAIResponsesRequest_AnthropicIngressToolResultImageDetail(t *testing.T) {
+	var anthropicReq anthropic.AnthropicMessageRequest
+	if err := sonic.Unmarshal([]byte(`{
+		"model": "openai/gpt-4o",
+		"max_tokens": 64,
+		"tools": [{"name": "read_file", "input_schema": {"type": "object", "properties": {"path": {"type": "string"}}}}],
+		"messages": [
+			{"role": "user", "content": "Read /tmp/img.png and describe it."},
+			{"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_1", "name": "read_file", "input": {"path": "/tmp/img.png"}}]},
+			{"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_1", "content": [
+				{"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "iVBORw0KGgo="}}
+			]}]}
+		]
+	}`), &anthropicReq); err != nil {
+		t.Fatalf("decode anthropic request: %v", err)
+	}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bifrostReq := anthropicReq.ToBifrostResponsesRequest(ctx)
+	bifrostReq.Provider, bifrostReq.Model = schemas.OpenAI, "gpt-4o"
+
+	data, err := sonic.Marshal(ToOpenAIResponsesRequest(ctx, bifrostReq))
+	if err != nil {
+		t.Fatalf("marshal converted request: %v", err)
+	}
+	output := gjson.GetBytes(data, `input.#(type=="function_call_output").output`)
+	if !output.IsArray() || len(output.Array()) != 1 {
+		t.Fatalf("want a one-block function_call_output.output, got %s", data)
+	}
+	image := output.Array()[0]
+	if image.Get("type").String() != "input_image" || image.Get("detail").String() != "auto" {
+		t.Fatalf("tool_result image must leave as input_image with detail auto, got %s", image.Raw)
+	}
+}
+
+// The #8849 request through Anthropic ingress to an OpenAI-shaped fallback (OpenRouter): the
+// user turn stays one message, the empty text document leaves as a parseable data URL instead
+// of file_data "", and each untitled document gets a filename here, at the egress that needs it.
+func TestToOpenAIResponsesRequest_AnthropicIngressEmptyTextDocument(t *testing.T) {
+	var anthropicReq anthropic.AnthropicMessageRequest
+	if err := sonic.Unmarshal([]byte(`{"model":"claude-haiku-4-5","max_tokens":16,"messages":[{"role":"user","content":[
+		{"type":"document","source":{"type":"text","media_type":"text/plain","data":"Some text."},"citations":{"enabled":true}},
+		{"type":"document","source":{"type":"text","media_type":"text/plain","data":""},"citations":{"enabled":true}},
+		{"type":"text","text":"Say ok."}]}]}`), &anthropicReq); err != nil {
+		t.Fatalf("decode anthropic request: %v", err)
+	}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bifrostReq := anthropicReq.ToBifrostResponsesRequest(ctx)
+	bifrostReq.Provider, bifrostReq.Model = schemas.OpenRouter, "anthropic/claude-haiku-4.5"
+
+	data, err := sonic.Marshal(ToOpenAIResponsesRequest(ctx, bifrostReq))
+	if err != nil {
+		t.Fatalf("marshal converted request: %v", err)
+	}
+	input := gjson.GetBytes(data, "input").Array()
+	if len(input) != 1 {
+		t.Fatalf("want the user turn as one input item, got %d: %s", len(input), data)
+	}
+	content := input[0].Get("content").Array()
+	if len(content) != 3 {
+		t.Fatalf("want 3 content blocks, got %d: %s", len(content), input[0].Raw)
+	}
+	for i, want := range []string{"data:text/plain;base64,U29tZSB0ZXh0Lg==", "data:text/plain;base64,"} {
+		if content[i].Get("type").String() != "input_file" || content[i].Get("file_data").String() != want ||
+			content[i].Get("filename").String() != "document.txt" {
+			t.Fatalf("document %d: want input_file %q named document.txt, got %s", i, want, content[i].Raw)
+		}
+	}
+}
+
+// An untitled tool_result PDF (Claude Code's Read tool) still reaches OpenAI with a filename now
+// that Anthropic ingress no longer invents one.
+func TestToOpenAIResponsesRequest_AnthropicIngressUntitledDocumentGetsFilename(t *testing.T) {
+	var anthropicReq anthropic.AnthropicMessageRequest
+	if err := sonic.Unmarshal([]byte(`{"model":"gpt-4o","max_tokens":16,
+		"tools":[{"name":"read","input_schema":{"type":"object"}}],
+		"messages":[
+		{"role":"user","content":"Read it."},
+		{"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"read","input":{}}]},
+		{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":[
+			{"type":"document","source":{"type":"base64","media_type":"application/pdf","data":"JVBERi0xLjQK"}}]}]},
+		{"role":"user","content":[{"type":"document","source":{"type":"base64","media_type":"application/pdf","data":"JVBERi0xLjQK"}}]}]}`), &anthropicReq); err != nil {
+		t.Fatalf("decode anthropic request: %v", err)
+	}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bifrostReq := anthropicReq.ToBifrostResponsesRequest(ctx)
+	bifrostReq.Provider, bifrostReq.Model = schemas.OpenAI, "gpt-4o"
+
+	data, err := sonic.Marshal(ToOpenAIResponsesRequest(ctx, bifrostReq))
+	if err != nil {
+		t.Fatalf("marshal converted request: %v", err)
+	}
+	for _, path := range []string{
+		`input.#(type=="function_call_output").output.0`,
+		`input.#(role=="user")#.content.0|@reverse|0`,
+	} {
+		file := gjson.GetBytes(data, path)
+		if file.Get("type").String() != "input_file" || file.Get("filename").String() != "document.pdf" ||
+			file.Get("file_data").String() != "data:application/pdf;base64,JVBERi0xLjQK" {
+			t.Fatalf("%s: want input_file document.pdf, got %s in %s", path, file.Raw, data)
+		}
+	}
+}
+
 // The #8361 request through Anthropic ingress: a client tool_search function, a
 // deferred tool, and a search turn whose tool_result is a tool_reference. On
 // gpt-6-sol it previously went out with defer_loading and no tool_search (a 400).
@@ -3263,5 +3369,49 @@ func TestOpenAIResponsesRequest_MarshalJSON_HistoryOutputTextDoesNotGainNullLogP
 	}
 	if ann := block.Get("annotations"); !ann.IsArray() {
 		t.Fatalf("annotations must stay an array, got %q. block=%s", ann.Raw, block.Raw)
+	}
+}
+
+// A file a tool returned reaches OpenAI as a data URL: function_call_output has no file_type, and bare
+// base64 in file_data is rejected, exactly as for a file in an input message.
+func TestOpenAIResponsesRequestInput_MarshalJSON_FunctionCallOutputFileBecomesDataURL(t *testing.T) {
+	pdf := "JVBERi0xLjQK" // "%PDF-1.4\n"
+	for _, fileType := range []*string{schemas.Ptr("application/pdf"), nil} {
+		name := "without file_type"
+		if fileType != nil {
+			name = "with file_type"
+		}
+		t.Run(name, func(t *testing.T) { assertFunctionCallOutputFileIsDataURL(t, pdf, fileType) })
+	}
+}
+
+func assertFunctionCallOutputFileIsDataURL(t *testing.T, pdf string, fileType *string) {
+	t.Helper()
+	input := &OpenAIResponsesRequestInput{
+		OpenAIResponsesRequestInputArray: []schemas.ResponsesMessage{
+			{
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID: schemas.Ptr("call_report"),
+					Output: &schemas.ResponsesToolMessageOutputStruct{ResponsesFunctionToolCallOutputBlocks: []schemas.ResponsesMessageContentBlock{{
+						Type: schemas.ResponsesInputMessageContentBlockTypeFile,
+						ResponsesInputMessageContentBlockFile: &schemas.ResponsesInputMessageContentBlockFile{
+							FileData: schemas.Ptr(pdf), FileType: fileType, Filename: schemas.Ptr("report.pdf"),
+						},
+					}}},
+				},
+			},
+		},
+	}
+	jsonBytes, err := input.MarshalJSON()
+	if err != nil {
+		t.Fatalf("Failed to marshal: %v", err)
+	}
+	raw := string(jsonBytes)
+	if !strings.Contains(raw, `"file_data":"data:application/pdf;base64,`+pdf+`"`) {
+		t.Fatalf("file_data must be a data URL; raw=%s", raw)
+	}
+	if strings.Contains(raw, "file_type") {
+		t.Fatalf("file_type must not reach OpenAI; raw=%s", raw)
 	}
 }

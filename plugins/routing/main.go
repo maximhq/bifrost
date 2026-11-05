@@ -427,11 +427,17 @@ func (p *RoutingPlugin) PreRequestHook(ctx *schemas.BifrostContext, req *schemas
 		return nil
 	}
 
-	if _, err := p.applyRoutingRules(ctx, req, scope); err != nil {
+	decision, err := p.applyRoutingRules(ctx, req, scope)
+	if err != nil {
 		return err
 	}
 
-	_, routedModel, _ := req.GetRequestFields()
+	_, routedModel, routedFallbacks := req.GetRequestFields()
+	// Here and not in applyRoutingRules: the large-payload path routes a synthetic request and
+	// attaches none of its fallbacks, so only this path carries a chain governance can refuse.
+	if decision != nil && len(decision.Fallbacks) > 0 {
+		p.warnFallbacksOutsideAccess(ctx, decision.MatchedRuleName, routedFallbacks)
+	}
 
 	// Downstream routing layers (load balancing, model-catalog resolution) intersect their
 	// candidates with this allowlist, so a later layer does not select a provider the request may
@@ -497,7 +503,7 @@ func (p *RoutingPlugin) applyRoutingRules(ctx *schemas.BifrostContext, req *sche
 	headers, _ := ctx.Value(schemas.BifrostContextKeyRequestHeaders).(map[string]string)
 	queryParams, _ := ctx.Value(schemas.BifrostContextKeyRequestQuery).(map[string]string)
 
-	// Set up lazy complexity computation; only runs if a rule references complexity_tier.
+	// Set up lazy complexity computation; only runs if a rule's outcome depends on complexity_tier.
 	var computeComplexity func() *complexity.ComplexityResult
 	if p.complexityAnalyzer.Load() != nil {
 		computeComplexity = func() *complexity.ComplexityResult {

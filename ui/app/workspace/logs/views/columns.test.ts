@@ -1,10 +1,68 @@
 import { describe, expect, it } from "vitest";
+import { renderToStaticMarkup } from "react-dom/server";
+import { createTable, flexRender, getCoreRowModel } from "@tanstack/react-table";
 
 import type { LogEntry } from "@/lib/types/logs";
 
-import { getMessage } from "./columns";
+import i18n from "@/lib/i18n";
+
+import { createColumns, getMessage } from "./columns";
+
+describe("metadata cells", () => {
+	it.each([
+		[[{ id: "item_audio", index: 0 }], "item_audio"],
+		[{ nested: { id: "item_audio" } }, "nested"],
+		[false, "false"],
+		[0, "0"],
+		["custom value", "custom value"],
+		[null, "-"],
+		[undefined, "-"],
+	])("renders JSON metadata safely: %j", (value, expected) => {
+		const log = { id: "log", metadata: { realtime_input_items: value } } as unknown as LogEntry;
+		const table = createTable({
+			data: [log],
+			columns: createColumns(() => {}, false, ["realtime_input_items"]),
+			getCoreRowModel: getCoreRowModel(),
+			state: {},
+			onStateChange: () => {},
+			renderFallbackValue: null,
+		});
+		const cell = table
+			.getRowModel()
+			.rows[0].getAllCells()
+			.find((cell) => cell.column.id === "metadata_realtime_input_items")!;
+		expect(renderToStaticMarkup(flexRender(cell.column.columnDef.cell, cell.getContext()))).toContain(expected);
+	});
+});
 
 describe("getMessage", () => {
+	it("translates realtime labels after a language change while preserving message and tool content", async () => {
+		const log = {
+			object: "realtime.turn",
+			input_history: [
+				{ role: "tool", content: '{"result":"unchanged"}' },
+				{ role: "user", content: "hello <world>" },
+			],
+			output_message: {
+				role: "assistant",
+				content: "Hello!",
+				tool_calls: [{ function: { name: "get_weather", arguments: '{"city":"Paris"}' } }],
+			},
+		} as unknown as LogEntry;
+		try {
+			await i18n.changeLanguage("zh-CN");
+			expect(getMessage(log)).toBe(
+				'工具结果：{"result":"unchanged"}\n用户：hello <world>\n助手工具调用：get_weather({"city":"Paris"})\n助手：Hello!',
+			);
+			await i18n.changeLanguage("en");
+			expect(getMessage(log)).toBe(
+				'Tool Result: {"result":"unchanged"}\nUser: hello <world>\nAssistant Tool Call: get_weather({"city":"Paris"})\nAssistant: Hello!',
+			);
+		} finally {
+			await i18n.changeLanguage("en");
+		}
+	});
+
 	it("shows N/A for a successful model retrieve, which has no message body", () => {
 		const log = { object: "model_retrieve", status: "success" } as unknown as LogEntry;
 
@@ -112,5 +170,23 @@ describe("getMessage", () => {
 		} as unknown as LogEntry;
 
 		expect(getMessage(log)).toBe('User: show me a pastel palette\nAssistant Tool Call: display_color_palette({"theme":"pastel"})');
+	});
+});
+
+describe("createColumns translations", () => {
+	it("uses the current locale when no translator is supplied", async () => {
+		try {
+			for (const [locale, project] of [
+				["en", "Project"],
+				["zh-CN", "项目"],
+			]) {
+				await i18n.changeLanguage(locale);
+				const columns = createColumns(() => {});
+				expect(columns.find((column) => column.id === "project")?.header).toBe(project);
+				expect(columns.some((column) => typeof column.header === "string" && /^(logs|labels)\./.test(column.header))).toBe(false);
+			}
+		} finally {
+			await i18n.changeLanguage("en");
+		}
 	});
 });

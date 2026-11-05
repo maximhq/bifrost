@@ -74,13 +74,21 @@ func (h *WebRTCLiveHandler) handleCreate(ctx *fasthttp.RequestCtx) {
 		SendBifrostError(ctx, newRealtimeWireBifrostError(400, "invalid_request_error", "session.model is required"))
 		return
 	}
+	clientEvents, bifrostErr := liveWebRTCClientEvents(body)
+	if bifrostErr != nil {
+		SendBifrostError(ctx, bifrostErr)
+		return
+	}
 
-	auth := captureAuthHeaders(ctx)
-	preReqCtx, preReqCancel := createBifrostContextFromAuth(h.gateway.handlerStore, auth)
+	setupHeaders := captureSessionHeaders(ctx)
+	preReqCtx, preReqCancel := createBifrostContextFromHeaders(h.gateway.handlerStore, setupHeaders)
 	defer preReqCancel()
 	preReqCtx.SetValue(schemas.BifrostContextKeyHTTPRequestType, schemas.LiveRequest)
 	if strings.HasPrefix(path, "/openai") {
 		preReqCtx.SetValue(schemas.BifrostContextKeyIntegrationType, "openai")
+	}
+	if integrations.IsAzureSDKRequest(ctx) {
+		preReqCtx.SetValue(schemas.BifrostContextKeyIsAzureUserAgent, true)
 	}
 	if authErr := h.gateway.refuseAnonymous(preReqCtx); authErr != nil {
 		SendBifrostError(ctx, authErr)
@@ -95,7 +103,7 @@ func (h *WebRTCLiveHandler) handleCreate(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	sessionID := uuid.NewString()
-	admission, bifrostErr := h.gateway.admit(auth, preReqCtx, middlewareValues, path, target, sessionID)
+	admission, bifrostErr := h.gateway.admit(setupHeaders, preReqCtx, middlewareValues, path, target, sessionID)
 	if bifrostErr != nil {
 		SendBifrostError(ctx, bifrostErr)
 		return
@@ -110,7 +118,7 @@ func (h *WebRTCLiveHandler) handleCreate(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	messages := &liveWebRTCMessages{}
+	messages := &liveWebRTCMessages{clientEvents: clientEvents}
 	messages.liveSessionController = admission.controller(h.gateway, messages)
 	var created *schemas.LiveCreateResponse
 	browserAnswer, bifrostErr := establishWebRTCRelay(webrtcRelaySetup{
@@ -195,6 +203,7 @@ type liveWebRTCMessages struct {
 	*liveSessionController
 	relay        *webrtcRelay
 	serverEvents *liveWebRTCEventFilter
+	clientEvents *liveClientEventFilter
 }
 
 func (m *liveWebRTCMessages) sendUpstream(message []byte) error {
@@ -216,6 +225,10 @@ func (m *liveWebRTCMessages) abandonUpstream() {
 }
 
 func (m *liveWebRTCMessages) fromBrowser(r *webrtcRelay, msg webrtc.DataChannelMessage) {
+	if refusal := m.clientEvents.refusal(msg.Data); refusal != nil {
+		m.forwardToClient(refusal)
+		return
+	}
 	if forward, ok := m.fromClient(msg.Data); ok {
 		r.sendUpstream(forward, msg.IsString)
 	}

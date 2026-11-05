@@ -87,3 +87,36 @@ func TestUpdateConfig_PersistsVKRotationCooldown(t *testing.T) {
 		assert.Equal(t, time.Duration(0), cfg.ClientConfig.VKRotationCooldown.D())
 	})
 }
+
+// PUT /api/config sets the global MCP max protocol version; omitting it keeps the stored cap, so a
+// caller unaware of the field never lifts the upgrade pin, and an unsupported value is rejected.
+func TestUpdateConfig_MCPMaxProtocolVersion(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := newRealOAuth2Store(t)
+	cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false)
+	h := &ConfigHandler{store: cfg, configManager: stubConfigManager{}}
+	save := func(t *testing.T, body string) int {
+		t.Helper()
+		ctx := putConfigCtx(`{"client_config":{` + body + `"log_retention_days":7}}`)
+		h.updateConfig(ctx)
+		return ctx.Response.StatusCode()
+	}
+	stored := func(t *testing.T) string {
+		t.Helper()
+		persisted, err := store.GetClientConfig(bgCtx())
+		require.NoError(t, err)
+		return persisted.MCPMaxProtocolVersion
+	}
+
+	require.Equal(t, fasthttp.StatusOK, save(t, `"mcp_max_protocol_version":"2025-06-18",`))
+	assert.Equal(t, "2025-06-18", stored(t))
+
+	require.Equal(t, fasthttp.StatusOK, save(t, ``))
+	assert.Equal(t, "2025-06-18", stored(t), "omitted keeps the cap")
+
+	require.Equal(t, fasthttp.StatusBadRequest, save(t, `"mcp_max_protocol_version":"latest",`))
+	assert.Equal(t, "2025-06-18", stored(t))
+
+	require.Equal(t, fasthttp.StatusOK, save(t, `"mcp_max_protocol_version":"auto",`))
+	assert.Equal(t, "auto", stored(t))
+}

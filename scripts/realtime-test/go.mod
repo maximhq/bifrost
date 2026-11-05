@@ -1,6 +1,6 @@
 module github.com/maximhq/bifrost/scripts/realtime-test
 
-go 1.27.2
+go 1.27.3
 
 require github.com/fasthttp/websocket v1.5.12
 

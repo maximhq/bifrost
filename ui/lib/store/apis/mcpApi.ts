@@ -213,6 +213,8 @@ export const mcpApi = baseApi.injectEndpoints({
 									if (data.tools_to_execute !== undefined) draft.clients[index].config.tools_to_execute = data.tools_to_execute;
 									if (data.tools_to_auto_execute !== undefined)
 										draft.clients[index].config.tools_to_auto_execute = data.tools_to_auto_execute;
+									if (data.prompts_to_expose !== undefined) draft.clients[index].config.prompts_to_expose = data.prompts_to_expose;
+									if (data.resources_to_expose !== undefined) draft.clients[index].config.resources_to_expose = data.resources_to_expose;
 									if (data.is_ping_available !== undefined) draft.clients[index].config.is_ping_available = data.is_ping_available;
 									if (data.needs_session_stickiness !== undefined)
 										draft.clients[index].config.needs_session_stickiness = data.needs_session_stickiness;

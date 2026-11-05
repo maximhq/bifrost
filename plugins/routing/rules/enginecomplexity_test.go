@@ -347,6 +347,50 @@ func TestEvaluateRoutingRules_ComplexityNegativePredicateMatchesAvailableTier(t 
 	assert.Equal(t, "claude-3-5-sonnet", decision.Model)
 }
 
+// TestEvaluateRoutingRules_ComplexityNotComputedWhenOtherConditionFails guards the lazy
+// classifier: tier rules gated on a virtual model must not classify requests for other
+// models, and requests for that model are classified exactly once across all tier rules.
+func TestEvaluateRoutingRules_ComplexityNotComputedWhenOtherConditionFails(t *testing.T) {
+	ctx := context.Background()
+	store, err := newTestRuleStore()
+	require.NoError(t, err)
+
+	for i, tier := range []string{"SIMPLE", "MEDIUM", "COMPLEX"} {
+		rule := complexityRoutingRule("coding-auto-"+tier, `model == "coding-auto" && complexity_tier == "`+tier+`"`)
+		rule.Priority = i + 1
+		target := "target-" + tier
+		rule.Targets[0].Model = &target
+		require.NoError(t, store.UpsertRule(ctx, rule))
+	}
+
+	engine, err := NewEngine(store, NewMockGovernanceStore(), NewMockLogger(), schemas.Ptr(10))
+	require.NoError(t, err)
+
+	evaluate := func(model string) (*Decision, int) {
+		computeCalls := 0
+		decision, err := engine.EvaluateRoutingRules(schemas.NewBifrostContext(ctx, time.Now()), &EvaluationContext{
+			Provider:    schemas.OpenAI,
+			Model:       model,
+			RequestType: "chat_completion",
+			ComputeComplexity: func() *complexity.ComplexityResult {
+				computeCalls++
+				return &complexity.ComplexityResult{Tier: "MEDIUM"}
+			},
+		})
+		require.NoError(t, err)
+		return decision, computeCalls
+	}
+
+	decision, computeCalls := evaluate("gpt-4o")
+	assert.Nil(t, decision)
+	assert.Equal(t, 0, computeCalls, "other models must skip the classifier")
+
+	decision, computeCalls = evaluate("coding-auto")
+	require.NotNil(t, decision)
+	assert.Equal(t, 1, computeCalls, "classifier runs once across all tier rules")
+	assert.Equal(t, "target-MEDIUM", decision.Model)
+}
+
 func complexityRoutingVariables() map[string]interface{} {
 	return map[string]interface{}{
 		"model":            "gpt-4o",

@@ -2,6 +2,7 @@ package schemas
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -196,6 +197,10 @@ func (cm *ChatMessage) ToResponsesToolMessage() *ResponsesMessage {
 		ResponsesToolMessage: &ResponsesToolMessage{
 			CallID: cm.ChatToolMessage.ToolCallID,
 		},
+	}
+	// A failed tool result is marked the way ToResponsesMessages marks it.
+	if cm.ChatToolMessage.IsError != nil && *cm.ChatToolMessage.IsError {
+		respMsg.Status = Ptr("incomplete")
 	}
 
 	// Extract output from content
@@ -819,6 +824,11 @@ func ToChatMessages(rms []ResponsesMessage) []ChatMessage {
 	}
 
 	for _, rm := range rms {
+		// Chat Completions has no mid-conversation effort item; emitting it would produce a
+		// roleless, contentless chat message.
+		if rm.Type != nil && *rm.Type == ResponsesMessageTypeConfigurationUpdate {
+			continue
+		}
 		if rm.Type != nil && *rm.Type == ResponsesMessageTypeReasoning {
 			// Buffer reasoning so it attaches to the next assistant message.
 			if rm.Content != nil {
@@ -1119,6 +1129,9 @@ func (cu *BifrostLLMUsage) ToResponsesResponseUsage() *ResponsesResponseUsage {
 		TotalTokens:    cu.TotalTokens,
 		Cost:           cu.Cost,
 		CostInUsdTicks: cu.CostInUsdTicks,
+
+		InputTokensExplicitZero:  cu.PromptTokensExplicitZero,
+		OutputTokensExplicitZero: cu.CompletionTokensExplicitZero,
 	}
 
 	if cu.PromptTokensDetails != nil {
@@ -1129,6 +1142,9 @@ func (cu *BifrostLLMUsage) ToResponsesResponseUsage() *ResponsesResponseUsage {
 			CachedReadTokens:        cu.PromptTokensDetails.CachedReadTokens,
 			CachedWriteTokens:       cu.PromptTokensDetails.CachedWriteTokens,
 			CachedWriteTokenDetails: cu.PromptTokensDetails.CachedWriteTokenDetails,
+
+			StandardSpeechAudioTokens: cu.PromptTokensDetails.StandardSpeechAudioTokens,
+			CustomSpeechAudioTokens:   cu.PromptTokensDetails.CustomSpeechAudioTokens,
 		}
 	}
 	if cu.CompletionTokensDetails != nil {
@@ -1140,9 +1156,13 @@ func (cu *BifrostLLMUsage) ToResponsesResponseUsage() *ResponsesResponseUsage {
 			RejectedPredictionTokens: cu.CompletionTokensDetails.RejectedPredictionTokens,
 			CitationTokens:           cu.CompletionTokensDetails.CitationTokens,
 			NumSearchQueries:         cu.CompletionTokensDetails.NumSearchQueries,
+
+			StandardSpeechAudioTokens: cu.CompletionTokensDetails.StandardSpeechAudioTokens,
+			CustomSpeechAudioTokens:   cu.CompletionTokensDetails.CustomSpeechAudioTokens,
 		}
 	}
 	usage.ToolUsage = cu.ToolUsage.DeepCopy()
+	usage.Iterations = slices.Clone(cu.Iterations)
 
 	return usage
 }
@@ -1158,6 +1178,9 @@ func (ru *ResponsesResponseUsage) ToBifrostLLMUsage() *BifrostLLMUsage {
 		TotalTokens:      ru.TotalTokens,
 		Cost:             ru.Cost,
 		CostInUsdTicks:   ru.CostInUsdTicks,
+
+		PromptTokensExplicitZero:     ru.InputTokensExplicitZero,
+		CompletionTokensExplicitZero: ru.OutputTokensExplicitZero,
 	}
 
 	if ru.InputTokensDetails != nil {
@@ -1168,6 +1191,9 @@ func (ru *ResponsesResponseUsage) ToBifrostLLMUsage() *BifrostLLMUsage {
 			CachedReadTokens:        ru.InputTokensDetails.CachedReadTokens,
 			CachedWriteTokens:       ru.InputTokensDetails.CachedWriteTokens,
 			CachedWriteTokenDetails: ru.InputTokensDetails.CachedWriteTokenDetails,
+
+			StandardSpeechAudioTokens: ru.InputTokensDetails.StandardSpeechAudioTokens,
+			CustomSpeechAudioTokens:   ru.InputTokensDetails.CustomSpeechAudioTokens,
 		}
 	}
 	if ru.OutputTokensDetails != nil {
@@ -1180,9 +1206,13 @@ func (ru *ResponsesResponseUsage) ToBifrostLLMUsage() *BifrostLLMUsage {
 			RejectedPredictionTokens: ru.OutputTokensDetails.RejectedPredictionTokens,
 			CitationTokens:           ru.OutputTokensDetails.CitationTokens,
 			NumSearchQueries:         ru.OutputTokensDetails.NumSearchQueries,
+
+			StandardSpeechAudioTokens: ru.OutputTokensDetails.StandardSpeechAudioTokens,
+			CustomSpeechAudioTokens:   ru.OutputTokensDetails.CustomSpeechAudioTokens,
 		}
 	}
 	usage.ToolUsage = ru.ToolUsage.DeepCopy()
+	usage.Iterations = slices.Clone(ru.Iterations) // advisor passes are priced from these, so they survive the round trip
 
 	return usage
 }
@@ -1287,7 +1317,12 @@ func (cr *BifrostChatRequest) ToResponsesRequest() *BifrostResponsesRequest {
 	// Convert Input messages using existing ChatMessage.ToResponsesMessages()
 	var allResponsesMessages []ResponsesMessage
 	for _, chatMsg := range cr.Input {
-		responsesMessages := chatMsg.ToResponsesMessages()
+		msg := &chatMsg
+		if chatMsg.Role == ChatMessageRoleTool {
+			// A function_call_output carries only the media every Responses provider reads.
+			msg = ToolResultForResponses(msg)
+		}
+		responsesMessages := msg.ToResponsesMessages()
 		allResponsesMessages = append(allResponsesMessages, responsesMessages...)
 	}
 	brr.Input = allResponsesMessages
@@ -1753,6 +1788,7 @@ func (responsesResp *BifrostResponsesResponse) ToBifrostChatResponse() *BifrostC
 	if responsesResp.Usage != nil {
 		// Map Responses usage to Chat usage
 		chatResp.Usage = responsesResp.Usage.ToBifrostLLMUsage()
+		chatResp.Usage.ToolUsage = chatResp.Usage.ToolUsage.withoutZeroImageGen()
 	}
 
 	// Copy other relevant fields
@@ -2088,7 +2124,9 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 	}
 
 	// Text content delta. Reasoning (if any) is closed first so blocks never overlap.
-	if hasContent {
+	// Content that arrives after a tool call closed the text item is dropped: that item
+	// already sent output_item.done, so another delta on it is a malformed stream.
+	if hasContent && !state.TextItemClosed {
 		closeReasoningItem()
 
 		if !state.TextItemAdded {
@@ -2833,6 +2871,7 @@ func (rsr *BifrostResponsesStreamResponse) ToBifrostChatResponse() *BifrostChatR
 			output = rsr.Response.Output
 			if rsr.Response.Usage != nil {
 				resp.Usage = rsr.Response.Usage.ToBifrostLLMUsage()
+				resp.Usage.ToolUsage = resp.Usage.ToolUsage.withoutZeroImageGen()
 			}
 		}
 
@@ -2892,6 +2931,7 @@ func (cr *BifrostChatResponse) ToBifrostTextCompletionResponse() *BifrostTextCom
 				OriginalModelRequested:  cr.ExtraFields.OriginalModelRequested,
 				Latency:                 cr.ExtraFields.Latency,
 				RawResponse:             cr.ExtraFields.RawResponse,
+				RawResponseFormat:       cr.ExtraFields.RawResponseFormat,
 				CacheDebug:              cr.ExtraFields.CacheDebug,
 				GuardrailDebug:          cr.ExtraFields.GuardrailDebug,
 				ProviderResponseHeaders: cr.ExtraFields.ProviderResponseHeaders,
@@ -2927,6 +2967,7 @@ func (cr *BifrostChatResponse) ToBifrostTextCompletionResponse() *BifrostTextCom
 				OriginalModelRequested:  cr.ExtraFields.OriginalModelRequested,
 				Latency:                 cr.ExtraFields.Latency,
 				RawResponse:             cr.ExtraFields.RawResponse,
+				RawResponseFormat:       cr.ExtraFields.RawResponseFormat,
 				CacheDebug:              cr.ExtraFields.CacheDebug,
 				GuardrailDebug:          cr.ExtraFields.GuardrailDebug,
 				ProviderResponseHeaders: cr.ExtraFields.ProviderResponseHeaders,
@@ -2978,6 +3019,7 @@ func (cr *BifrostChatResponse) ToBifrostTextCompletionResponse() *BifrostTextCom
 				OriginalModelRequested:  cr.ExtraFields.OriginalModelRequested,
 				Latency:                 cr.ExtraFields.Latency,
 				RawResponse:             cr.ExtraFields.RawResponse,
+				RawResponseFormat:       cr.ExtraFields.RawResponseFormat,
 				CacheDebug:              cr.ExtraFields.CacheDebug,
 				GuardrailDebug:          cr.ExtraFields.GuardrailDebug,
 				ProviderResponseHeaders: cr.ExtraFields.ProviderResponseHeaders,
@@ -3000,6 +3042,7 @@ func (cr *BifrostChatResponse) ToBifrostTextCompletionResponse() *BifrostTextCom
 			OriginalModelRequested:  cr.ExtraFields.OriginalModelRequested,
 			Latency:                 cr.ExtraFields.Latency,
 			RawResponse:             cr.ExtraFields.RawResponse,
+			RawResponseFormat:       cr.ExtraFields.RawResponseFormat,
 			CacheDebug:              cr.ExtraFields.CacheDebug,
 			GuardrailDebug:          cr.ExtraFields.GuardrailDebug,
 			ProviderResponseHeaders: cr.ExtraFields.ProviderResponseHeaders,
