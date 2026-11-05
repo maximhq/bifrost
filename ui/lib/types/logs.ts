@@ -1565,12 +1565,23 @@ export interface MCPToolLogsResponse {
 }
 
 // MCP Tool Log Filter Data Response
+// An id and its display name, as an MCP log filter dimension offers it.
+export interface MCPToolLogFilterEntity {
+	id: string;
+	name: string;
+}
+
 export interface MCPToolLogFilterData {
 	tool_names: string[];
 	server_labels: string[];
 	apps: string[];
 	user_agents: string[];
 	virtual_keys: VirtualKey[];
+	users: MCPToolLogFilterEntity[];
+	teams: MCPToolLogFilterEntity[];
+	customers: MCPToolLogFilterEntity[];
+	business_units: MCPToolLogFilterEntity[];
+	projects: MCPToolLogFilterEntity[];
 }
 
 // WebSocket message types for MCP tool logs
