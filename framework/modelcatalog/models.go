@@ -32,6 +32,14 @@ var providersWithListModelsOnly = map[schemas.ModelProvider]bool{
 	schemas.Cloudflare: true,
 }
 
+// providersWithNoDeprecatedBackfill enumerates providers whose deprecated
+// datasheet rows are not callable on the API the provider targets, so the
+// backfill would list models the provider cannot serve. Sarvam's sarvam-m is
+// a legacy /v1 model; Token Factory v2 does not serve it.
+var providersWithNoDeprecatedBackfill = map[schemas.ModelProvider]bool{
+	schemas.Sarvam: true,
+}
+
 // GetModelCreatedTimes returns the creation time, in Unix seconds, that the
 // provider last reported for each of its listed models, taken from the cached
 // list-models responses in the given mode, so times line up with the listing
@@ -71,9 +79,11 @@ func (mc *ModelCatalog) computeModelsForProvider(provider schemas.ModelProvider)
 		datasheetModelsToAppend := mc.datasheet.DeprecatedDatasheetModelsForProvider(provider)
 		if providersWithPartialListModels[provider] {
 			datasheetModelsToAppend = mc.datasheet.DatasheetModelsForProvider(provider)
+		} else if providersWithNoDeprecatedBackfill[provider] {
+			datasheetModelsToAppend = nil
 		}
 		out = mc.appendAllowedDatasheetModels(out, datasheetModelsToAppend, allowed, blacklisted)
-	} else if datasheetModels := mc.datasheet.DatasheetModelsForProvider(provider); len(datasheetModels) > 0 && allowed != nil {
+	} else if datasheetModels := mc.datasheetModelsForProvider(provider); len(datasheetModels) > 0 && allowed != nil {
 		out = make([]string, 0, len(datasheetModels))
 		for _, m := range datasheetModels {
 			if blacklisted.IsBlocked(m) {
@@ -122,6 +132,35 @@ func (mc *ModelCatalog) computeModelsForProvider(provider schemas.ModelProvider)
 	return out
 }
 
+// datasheetModelsForProvider returns the datasheet rows for provider, minus the
+// deprecated ones for providers whose list-models is authoritative. Those
+// providers serve no deprecated model, so a stale datasheet row would surface a
+// model that fails upstream (see providersWithNoDeprecatedBackfill). Every other
+// provider keeps its deprecated rows, which stay callable after list-models
+// drops them.
+func (mc *ModelCatalog) datasheetModelsForProvider(provider schemas.ModelProvider) []string {
+	models := mc.datasheet.DatasheetModelsForProvider(provider)
+	if !providersWithNoDeprecatedBackfill[provider] || len(models) == 0 {
+		return models
+	}
+	deprecated := mc.datasheet.DeprecatedDatasheetModelsForProvider(provider)
+	if len(deprecated) == 0 {
+		return models
+	}
+	drop := make(map[string]struct{}, len(deprecated))
+	for _, m := range deprecated {
+		drop[m] = struct{}{}
+	}
+	out := make([]string, 0, len(models))
+	for _, m := range models {
+		if _, skip := drop[m]; skip {
+			continue
+		}
+		out = append(out, m)
+	}
+	return out
+}
+
 func (mc *ModelCatalog) appendAllowedDatasheetModels(out []string, models []string, allowed schemas.WhiteList, blacklisted schemas.BlackList) []string {
 	if len(models) == 0 {
 		return out
@@ -154,7 +193,7 @@ func (mc *ModelCatalog) GetUnfilteredModelsForProvider(provider schemas.ModelPro
 	if providersWithListModelsOnly[provider] {
 		return liveModels
 	}
-	datasheetModels := mc.datasheet.DatasheetModelsForProvider(provider)
+	datasheetModels := mc.datasheetModelsForProvider(provider)
 	if len(liveModels) == 0 {
 		return datasheetModels
 	}
