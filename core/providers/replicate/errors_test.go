@@ -1,6 +1,8 @@
 package replicate
 
 import (
+	"bytes"
+	"compress/gzip"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -33,5 +35,20 @@ func TestParseReplicateError(t *testing.T) {
 		assert.Equal(t, "upstream unavailable", bErr.Error.Message)
 		assert.Equal(t, int64(0), bErr.ExtraFields.RetryAfter)
 		assert.Equal(t, "upstream unavailable", bErr.ExtraFields.ProviderErrorExcerpt)
+	})
+
+	t.Run("the excerpt is taken from the decoded body", func(t *testing.T) {
+		var gzipped bytes.Buffer
+		gz := gzip.NewWriter(&gzipped)
+		_, err := gz.Write([]byte("upstream unavailable"))
+		require.NoError(t, err)
+		require.NoError(t, gz.Close())
+
+		var resp fasthttp.Response
+		resp.SetStatusCode(fasthttp.StatusBadGateway)
+		resp.Header.Set("Content-Encoding", "gzip")
+		resp.SetBodyRaw(gzipped.Bytes())
+
+		assert.Equal(t, "upstream unavailable", parseReplicateError(&resp).ExtraFields.ProviderErrorExcerpt)
 	})
 }

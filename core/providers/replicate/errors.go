@@ -20,9 +20,9 @@ func parseReplicateError(resp *fasthttp.Response) *schemas.BifrostError {
 			// Fallback to generic error, replaced below when the body carries a detail.
 			Message: string(body),
 		},
-		ExtraFields: schemas.BifrostErrorExtraFields{
-			ProviderErrorExcerpt: providerUtils.ProviderErrorExcerpt(body),
-		},
+	}
+	if decoded, err := providerUtils.CheckAndDecodeBody(resp); err == nil {
+		bifrostErr.ExtraFields.ProviderErrorExcerpt = providerUtils.ProviderErrorExcerpt(decoded)
 	}
 
 	var replicateErr ReplicateError
