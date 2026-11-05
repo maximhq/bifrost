@@ -808,6 +808,8 @@ func TestOpenAIRawPassthroughSkipsConvertedRequests(t *testing.T) {
 	require.Positive(t, checked, "no OpenAI chat/text/responses converters found")
 }
 
+// TestOpenAIChatMessageRoleValidation verifies OpenAI-compatible chat and Azure deployment routes
+// reject empty roles with indexed JSON errors before conversion, in both stream modes.
 func TestOpenAIChatMessageRoleValidation(t *testing.T) {
 	for _, prefix := range []string{"/openai", "/langchain", "/litellm", "/pydanticai", "/azure"} {
 		for _, path := range []string{"/v1/chat/completions", "/chat/completions", "/openai/deployments/{deploymentPath:*}"} {
@@ -852,6 +854,8 @@ func TestOpenAIChatMessageRoleValidation(t *testing.T) {
 	}
 }
 
+// TestOpenAIChatMessageRoleValidationPreservesOtherRequests verifies role validation leaves
+// nonempty roles, unparsed large payloads, and non-chat requests untouched.
 func TestOpenAIChatMessageRoleValidationPreservesOtherRequests(t *testing.T) {
 	route := findOpenAIRoute("/openai", "/openai/openai/deployments/{deploymentPath:*}")
 	for _, tc := range []struct {
@@ -880,6 +884,8 @@ func TestOpenAIChatMessageRoleValidationPreservesOtherRequests(t *testing.T) {
 	}
 }
 
+// BenchmarkOpenAIChatRequestPreparation measures decoding, pre-callback, role validation, and
+// conversion costs for increasing message counts, after warming the decoder and converter.
 func BenchmarkOpenAIChatRequestPreparation(b *testing.B) {
 	route := findOpenAIRoute("/openai", "/openai/v1/chat/completions")
 	for _, count := range []int{1, 16, 128} {
@@ -919,6 +925,8 @@ func BenchmarkOpenAIChatRequestPreparation(b *testing.B) {
 	}
 }
 
+// BenchmarkOpenAIChatMessageRoleValidation isolates the validation hook cost for already-decoded
+// valid requests as message counts grow, reporting time and allocations.
 func BenchmarkOpenAIChatMessageRoleValidation(b *testing.B) {
 	route := findOpenAIRoute("/openai", "/openai/v1/chat/completions")
 	for _, count := range []int{1, 16, 128} {

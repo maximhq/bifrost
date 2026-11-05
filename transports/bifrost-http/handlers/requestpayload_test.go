@@ -1016,6 +1016,8 @@ func keysOf(m map[string]any) []string {
 	return keys
 }
 
+// TestChatCompletionRequiresMessageRole verifies missing, null, and empty roles produce an indexed
+// JSON 400 error before provider dispatch, for both streaming and non-streaming requests.
 func TestChatCompletionRequiresMessageRole(t *testing.T) {
 	for _, stream := range []bool{false, true} {
 		for _, tc := range []struct {
@@ -1047,6 +1049,8 @@ func TestChatCompletionRequiresMessageRole(t *testing.T) {
 	}
 }
 
+// TestPrepareChatCompletionPreservesNonemptyRoles verifies standard and custom roles survive
+// request preparation, including assistant messages containing only tool calls.
 func TestPrepareChatCompletionPreservesNonemptyRoles(t *testing.T) {
 	var ctx fasthttp.RequestCtx
 	ctx.Request.SetBodyString(`{"model":"openai/gpt-4o-mini","messages":[{"role":"system","content":"be helpful"},{"role":"developer","content":"be brief"},{"role":"user","content":"hi"},{"role":"assistant","tool_calls":[{"id":"call_1","type":"function","function":{"name":"f","arguments":"{}"}}]},{"role":"tool","tool_call_id":"call_1","content":"ok"},{"role":"custom","content":"provider extension"}]}`)
@@ -1058,6 +1062,8 @@ func TestPrepareChatCompletionPreservesNonemptyRoles(t *testing.T) {
 	}
 }
 
+// BenchmarkPrepareChatCompletionRequest measures native chat decoding, validation, and conversion
+// time and allocations as message counts grow, after warming the decoder.
 func BenchmarkPrepareChatCompletionRequest(b *testing.B) {
 	for _, count := range []int{1, 16, 128} {
 		b.Run(fmt.Sprintf("messages=%d", count), func(b *testing.B) {
