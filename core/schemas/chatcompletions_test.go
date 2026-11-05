@@ -370,6 +370,13 @@ func TestChatMessageUnmarshalMessageLevelCacheControl(t *testing.T) {
 		}
 	})
 
+	t.Run("assistant tool call with empty block list takes the marker", func(t *testing.T) {
+		msg := decode(t, `{"role":"assistant","content":[],"tool_calls":[{"id":"call_1","type":"function","function":{"name":"read","arguments":"{}"}}],"cache_control":{"type":"ephemeral"}}`)
+		if msg.ChatAssistantMessage.ToolCalls[0].CacheControl == nil {
+			t.Fatalf("the tool call should carry the marker, got %+v", msg.ChatAssistantMessage.ToolCalls[0])
+		}
+	})
+
 	t.Run("empty string content is not promoted", func(t *testing.T) {
 		msg := decode(t, `{"role":"user","content":"","cache_control":{"type":"ephemeral"}}`)
 		if msg.Content == nil || msg.Content.ContentStr == nil || *msg.Content.ContentStr != "" || msg.Content.ContentBlocks != nil {
