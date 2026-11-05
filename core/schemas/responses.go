@@ -339,6 +339,7 @@ func (r BifrostResponsesResponse) MarshalJSON() ([]byte, error) {
 		usage.ToolUsage = nil
 		r.Usage = &usage
 	}
+	r.ToolUsage = r.ToolUsage.withoutDerivedFields()
 	return Marshal(alias(r))
 }
 
@@ -1354,6 +1355,21 @@ type ResponsesResponseUsage struct {
 	CostInUsdTicks             *int64                               `json:"cost_in_usd_ticks,omitempty"`
 	ServerSideToolUsageDetails *ResponsesServerSideToolUsageDetails `json:"server_side_tool_usage_details,omitempty"`
 	ContextDetails             *ResponsesContextDetails             `json:"context_details,omitempty"`
+
+	InputTokensExplicitZero  bool `json:"-"` // Preserve reported zeros when converting back to Chat.
+	OutputTokensExplicitZero bool `json:"-"`
+}
+
+// PreserveTokenCountZeros retains presence for Responses-to-Chat conversion without
+// changing the Responses wire format or keeping the provider response buffer.
+func (u *ResponsesResponseUsage) PreserveTokenCountZeros(data []byte, inputPath, outputPath string) {
+	if u == nil {
+		return
+	}
+	counts := BifrostLLMUsage{PromptTokens: u.InputTokens, CompletionTokens: u.OutputTokens}
+	counts.PreserveTokenCountZeros(data, inputPath, outputPath)
+	u.InputTokensExplicitZero = counts.PromptTokensExplicitZero
+	u.OutputTokensExplicitZero = counts.CompletionTokensExplicitZero
 }
 
 // NormalizeProviderCost mirrors BifrostLLMUsage.NormalizeProviderCost for the responses path.
@@ -2238,6 +2254,30 @@ func (m *ResponsesMessage) IsVerbatimItem() bool {
 // the caller executes itself (execution "client").
 func (m *ResponsesMessage) IsClientToolSearchItem() bool {
 	return m.ResponsesToolMessage != nil && m.Execution != nil && *m.Execution == ToolSearchExecutionClient
+}
+
+// IsClientToolSearch reports whether t is a tool_search the caller runs itself.
+func (t *ResponsesTool) IsClientToolSearch() bool {
+	return t.Type == ResponsesToolTypeToolSearch && t.ResponsesToolToolSearch != nil &&
+		t.ResponsesToolToolSearch.Execution != nil && *t.ResponsesToolToolSearch.Execution == ToolSearchExecutionClient
+}
+
+// ForEachInlineToolDefinition calls fn with every tool a tool_addition block in input
+// defines by value, stopping when fn returns false. Compaction tool_changes are not
+// visited: the provider writes them, and they go back unchanged.
+func ForEachInlineToolDefinition(input []ResponsesMessage, fn func(def *ResponsesTool) bool) {
+	for i := range input {
+		if input[i].Content == nil {
+			continue
+		}
+		for j := range input[i].Content.ContentBlocks {
+			block := &input[i].Content.ContentBlocks[j]
+			if block.Type == ResponsesInputMessageContentBlockTypeToolAddition && block.ToolChange != nil &&
+				block.ToolChange.Definition != nil && !fn(block.ToolChange.Definition) {
+				return
+			}
+		}
+	}
 }
 
 // ToolSearchOutputToolNames returns the names of the tools a tool_search_output

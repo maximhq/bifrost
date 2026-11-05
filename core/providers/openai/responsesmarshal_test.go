@@ -1430,6 +1430,75 @@ func TestToOpenAIResponsesRequest_AnthropicIngressToolResultImageDetail(t *testi
 	}
 }
 
+// The #8849 request through Anthropic ingress to an OpenAI-shaped fallback (OpenRouter): the
+// user turn stays one message, the empty text document leaves as a parseable data URL instead
+// of file_data "", and each untitled document gets a filename here, at the egress that needs it.
+func TestToOpenAIResponsesRequest_AnthropicIngressEmptyTextDocument(t *testing.T) {
+	var anthropicReq anthropic.AnthropicMessageRequest
+	if err := sonic.Unmarshal([]byte(`{"model":"claude-haiku-4-5","max_tokens":16,"messages":[{"role":"user","content":[
+		{"type":"document","source":{"type":"text","media_type":"text/plain","data":"Some text."},"citations":{"enabled":true}},
+		{"type":"document","source":{"type":"text","media_type":"text/plain","data":""},"citations":{"enabled":true}},
+		{"type":"text","text":"Say ok."}]}]}`), &anthropicReq); err != nil {
+		t.Fatalf("decode anthropic request: %v", err)
+	}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bifrostReq := anthropicReq.ToBifrostResponsesRequest(ctx)
+	bifrostReq.Provider, bifrostReq.Model = schemas.OpenRouter, "anthropic/claude-haiku-4.5"
+
+	data, err := sonic.Marshal(ToOpenAIResponsesRequest(ctx, bifrostReq))
+	if err != nil {
+		t.Fatalf("marshal converted request: %v", err)
+	}
+	input := gjson.GetBytes(data, "input").Array()
+	if len(input) != 1 {
+		t.Fatalf("want the user turn as one input item, got %d: %s", len(input), data)
+	}
+	content := input[0].Get("content").Array()
+	if len(content) != 3 {
+		t.Fatalf("want 3 content blocks, got %d: %s", len(content), input[0].Raw)
+	}
+	for i, want := range []string{"data:text/plain;base64,U29tZSB0ZXh0Lg==", "data:text/plain;base64,"} {
+		if content[i].Get("type").String() != "input_file" || content[i].Get("file_data").String() != want ||
+			content[i].Get("filename").String() != "document.txt" {
+			t.Fatalf("document %d: want input_file %q named document.txt, got %s", i, want, content[i].Raw)
+		}
+	}
+}
+
+// An untitled tool_result PDF (Claude Code's Read tool) still reaches OpenAI with a filename now
+// that Anthropic ingress no longer invents one.
+func TestToOpenAIResponsesRequest_AnthropicIngressUntitledDocumentGetsFilename(t *testing.T) {
+	var anthropicReq anthropic.AnthropicMessageRequest
+	if err := sonic.Unmarshal([]byte(`{"model":"gpt-4o","max_tokens":16,
+		"tools":[{"name":"read","input_schema":{"type":"object"}}],
+		"messages":[
+		{"role":"user","content":"Read it."},
+		{"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"read","input":{}}]},
+		{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":[
+			{"type":"document","source":{"type":"base64","media_type":"application/pdf","data":"JVBERi0xLjQK"}}]}]},
+		{"role":"user","content":[{"type":"document","source":{"type":"base64","media_type":"application/pdf","data":"JVBERi0xLjQK"}}]}]}`), &anthropicReq); err != nil {
+		t.Fatalf("decode anthropic request: %v", err)
+	}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bifrostReq := anthropicReq.ToBifrostResponsesRequest(ctx)
+	bifrostReq.Provider, bifrostReq.Model = schemas.OpenAI, "gpt-4o"
+
+	data, err := sonic.Marshal(ToOpenAIResponsesRequest(ctx, bifrostReq))
+	if err != nil {
+		t.Fatalf("marshal converted request: %v", err)
+	}
+	for _, path := range []string{
+		`input.#(type=="function_call_output").output.0`,
+		`input.#(role=="user")#.content.0|@reverse|0`,
+	} {
+		file := gjson.GetBytes(data, path)
+		if file.Get("type").String() != "input_file" || file.Get("filename").String() != "document.pdf" ||
+			file.Get("file_data").String() != "data:application/pdf;base64,JVBERi0xLjQK" {
+			t.Fatalf("%s: want input_file document.pdf, got %s in %s", path, file.Raw, data)
+		}
+	}
+}
+
 // The #8361 request through Anthropic ingress: a client tool_search function, a
 // deferred tool, and a search turn whose tool_result is a tool_reference. On
 // gpt-6-sol it previously went out with defer_loading and no tool_search (a 400).

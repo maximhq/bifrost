@@ -350,6 +350,7 @@
 		"disableAutoToolInjection": "Desactivar la inyección de herramientas automáticas",
 		"allowTempToken": "Permitir los enlaces de Auth Token Temp Token",
 		"codeModeBinding": "Nivel de unión del modo de código",
+		"codeModeSettings": "Ajustes del modo de código",
 		"selectBindingLevel": "Seleccionar nivel de unión",
 		"serverLevel": "Nivel de servidor",
 		"toolLevel": "Herramienta-Level",

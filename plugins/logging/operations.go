@@ -25,6 +25,8 @@ const (
 	logStatusSuccess    = "success"
 	logStatusError      = "error"
 	logStatusCancelled  = "cancelled"
+	// An MCP round whose server asked the caller for input; the retry is its own row.
+	logStatusInputRequired = "input_required"
 )
 
 func logStatusForError(err *schemas.BifrostError) string {

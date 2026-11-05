@@ -290,12 +290,61 @@ func TestFileDataAsDataURL(t *testing.T) {
 		{"text/plain word that is valid base64 is still raw text", "Hello", schemas.Ptr("text/plain"), "data:text/plain;base64," + base64.StdEncoding.EncodeToString([]byte("Hello"))},
 		{"non-base64 without a text type is left alone", "not base64 at all!", schemas.Ptr("application/pdf"), "not base64 at all!"},
 		{"empty stays empty", "", schemas.Ptr("application/pdf"), ""},
+		// An empty text document is valid on Anthropic's wire; "" is not a data URL on OpenAI's.
+		{"empty text/plain becomes the empty data URL", "", schemas.Ptr("text/plain"), "data:text/plain;base64,"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			assert.Equal(t, tc.want, fileDataAsDataURL(tc.fileData, tc.fileType))
 		})
 	}
+}
+
+// Ingress converters leave an untitled document untitled, so OpenAI egress names inline
+// file_data itself; the extension has to agree with the payload's media type.
+func TestDefaultInlineFilename(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		fileData string
+		fileType *string
+		want     string
+	}{
+		{"pdf data URL", "data:application/pdf;base64,JVBERi0=", nil, "document.pdf"},
+		{"empty text data URL", "data:text/plain;base64,", nil, "document.txt"},
+		{"markdown data URL", "data:text/markdown;base64,IyBh", nil, "document.md"},
+		{"structured suffix", "data:application/har+json;base64,e30=", nil, "document.json"},
+		{"unknown subtype", "data:image/png;base64,iVBORw0KGgo=", nil, "document.png"},
+		{"docx data URL", "data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64,UEsDBA==", nil, "document.docx"},
+		{"pptx data URL", "data:application/vnd.openxmlformats-officedocument.presentationml.presentation;base64,UEsDBA==", nil, "document.pptx"},
+		{"xlsx data URL", "data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,UEsDBA==", nil, "document.xlsx"},
+		{"legacy doc data URL", "data:application/msword;base64,0M8R4A==", nil, "document.doc"},
+		{"legacy xls file_type", "not base64 at all!", schemas.Ptr("application/vnd.ms-excel"), "document.xls"},
+		{"legacy ppt data URL", "data:application/vnd.ms-powerpoint;base64,0M8R4A==", nil, "document.ppt"},
+		{"non data URL uses file_type", "not base64 at all!", schemas.Ptr("text/csv"), "document.csv"},
+		{"nothing to go on", "not base64 at all!", nil, "document.pdf"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, defaultInlineFilename(tc.fileData, tc.fileType))
+		})
+	}
+}
+
+func TestChatMarshalDefaultsInlineFilename(t *testing.T) {
+	file := &schemas.ChatInputFile{FileData: schemas.Ptr(""), FileType: schemas.Ptr("text/plain")}
+	req := &OpenAIChatRequest{Model: "gpt-4o", Messages: []OpenAIMessage{{
+		Role: schemas.ChatMessageRoleUser,
+		Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{
+			{Type: schemas.ChatContentBlockTypeFile, File: file},
+		}},
+	}}}
+
+	body, err := req.MarshalJSON()
+	require.NoError(t, err)
+
+	wire := gjson.GetBytes(body, "messages.0.content.0.file")
+	assert.Equal(t, "data:text/plain;base64,", wire.Get("file_data").String())
+	assert.Equal(t, "document.txt", wire.Get("filename").String(), "OpenAI rejects inline file_data without a filename")
+	assert.Nil(t, file.Filename, "the caller's request is reused by fallbacks and must not change")
 }
 
 func TestChatMarshalFoldsFileTypeIntoFileData(t *testing.T) {

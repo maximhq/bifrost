@@ -82,6 +82,10 @@ export const EmbeddingSupportedProviders: readonly ProviderName[] = [
 
 export const Statuses = ["success", "error", "processing", "cancelled"] as const;
 
+// MCP logs also have input_required: the server asked the caller for input, and the retry is its own row.
+export const MCPStatuses = [...Statuses, "input_required"] as const;
+export type MCPStatus = (typeof MCPStatuses)[number];
+
 export const RequestTypes = [
 	"list_models",
 	"model_retrieve",
@@ -300,6 +304,7 @@ export const StatusBarColors = {
 	error: "bg-chart-error",
 	processing: "bg-blue-500",
 	cancelled: "bg-gray-400",
+	input_required: "bg-amber-500",
 } as const;
 
 export const RequestTypeLabels = {

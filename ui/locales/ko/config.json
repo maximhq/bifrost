@@ -350,6 +350,7 @@
 		"disableAutoToolInjection": "자동 도구 주입 비활성화",
 		"allowTempToken": "임시 토큰 인증 링크 허용",
 		"codeModeBinding": "코드 모드 바인딩 수준",
+		"codeModeSettings": "코드 모드 설정",
 		"selectBindingLevel": "바인딩 수준 선택",
 		"serverLevel": "서버 수준",
 		"toolLevel": "도구 수준",

@@ -223,3 +223,18 @@ func TestLoadModelCapabilities_CarriesServerSideModel(t *testing.T) {
 		t.Fatalf("ServerSideModel = %+v, want deepseek-flash", caps)
 	}
 }
+
+// The text_completion backfill checks pricingData for a completion-mode row,
+// which must match when the pricing row is spelled in another casing.
+func TestApplyModelParameters_TextCompletionBackfillMatchesAnyCase(t *testing.T) {
+	s := NewTestStore(nil)
+	s.SetPricingRowsForTest([]configstoreTables.TableModelPricing{
+		{Model: "GPT-3.5-Turbo-Instruct", Provider: "openai", Mode: "completion"},
+	})
+	s.applyModelParameters(map[string]json.RawMessage{
+		"gpt-3.5-turbo-instruct": json.RawMessage(`{"provider":"openai","mode":"chat"}`),
+	})
+	if !s.IsRequestTypeSupported("gpt-3.5-turbo-instruct", schemas.TextCompletionRequest) {
+		t.Fatal("expected text_completion to be backfilled from the GPT-3.5-Turbo-Instruct pricing row")
+	}
+}

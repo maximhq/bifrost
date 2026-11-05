@@ -224,7 +224,7 @@ func (s *Store) CalculateCostBreakdownForUsage(usage *schemas.BifrostLLMUsage, p
 	if requestType == schemas.ResponsesRequest && len(usage.Iterations) > 0 {
 		cost = cost.Add(s.calculateAdvisorIterationCost(usage.Iterations, routingInfo, input.tier, lookupScopes))
 	}
-	return cost
+	return cost.Add(s.calculateServerToolCost(usage, routingInfo, lookupScopes))
 }
 
 // CalculateGuardrailCost computes judge cost when no parent response is available.
@@ -586,9 +586,14 @@ func (s *Store) calculateBaseCost(result *schemas.BifrostResponse, scopes Lookup
 	// real cost of whatever underlying model Azure actually routed to. The
 	// response's own model field carries that real model, distinct from the
 	// "model-router" deployment name on RoutingInfo.Model.
-	if result.PassthroughResponse == nil && routingInfo.Provider == schemas.Azure && schemas.IsAzureModelRouter(routingInfo.Model) &&
+	if result.PassthroughResponse == nil && routingInfo.Provider == schemas.Azure && routesToAzureModelRouter(routingInfo) &&
 		(requestType == schemas.TextCompletionRequest || requestType == schemas.ChatCompletionRequest || requestType == schemas.ResponsesRequest) {
-		return s.calculateAzureModelRouterCost(result, input, routingInfo, requestType, scopes)
+		sessionRouting := routingInfo
+		if servedModel := result.ServedModel(); servedModel != "" {
+			sessionRouting.Model = servedModel
+			sessionRouting.ResolvedKeyAlias = nil
+		}
+		return s.calculateAzureModelRouterCost(result, input, routingInfo, requestType, scopes).Add(s.calculateServerToolCost(input.usage, sessionRouting, scopes))
 	}
 
 	cost := s.computeCostFromInput(input, routingInfo, requestType, scopes)
@@ -597,7 +602,130 @@ func (s *Store) calculateBaseCost(result *schemas.BifrostResponse, scopes Lookup
 			cost = cost.Add(s.calculateAdvisorIterationCost(iterations, routingInfo, input.tier, scopes))
 		}
 	}
+	return cost.Add(s.calculateServerToolCost(input.usage, routingInfo, scopes))
+}
+
+// calculateServerToolCost prices server tool usage billed outside the request model's own tokens.
+func (s *Store) calculateServerToolCost(usage *schemas.BifrostLLMUsage, routingInfo schemas.RoutingInfo, scopes LookupScopes) *schemas.BifrostCost {
+	if usage == nil || usage.ToolUsage == nil {
+		return nil
+	}
+	return s.calculateContainerSessionCost(usage, routingInfo, scopes).Add(s.calculateImageGenToolCost(usage.ToolUsage, routingInfo, scopes))
+}
+
+// defaultImageGenToolModel is the model OpenAI's image generation tool uses when the request names none.
+const defaultImageGenToolModel = "gpt-image-2"
+
+// calculateImageGenToolCost prices tool_usage.image_gen at the image model's rates. OpenAI only: Azure
+// picks the model with a deployment header. Batch results are out of scope, so standard rates always apply.
+func (s *Store) calculateImageGenToolCost(toolUsage *schemas.ToolUsage, routingInfo schemas.RoutingInfo, scopes LookupScopes) *schemas.BifrostCost {
+	if routingInfo.Provider != schemas.OpenAI || !toolUsage.ImageGen.HasTokens() {
+		return nil
+	}
+	model := toolUsage.ImageGenModel
+	if model == "" {
+		model = defaultImageGenToolModel
+	}
+	pricing := s.resolvePricing(schemas.RoutingInfo{Provider: routingInfo.Provider, Model: model}, schemas.ImageGenerationRequest, scopes)
+	if pricing == nil {
+		if s.logger != nil {
+			s.logger.Debug("no pricing for image generation tool model %q on %s", model, routingInfo.Provider)
+		}
+		return nil
+	}
+	return computeImageGenToolCost(pricing, toolUsage.ImageGen)
+}
+
+// computeImageGenToolCost prices uncached tokens through computeImageCost and cached input at its own rates.
+// Cached counts without a modality split cannot be attributed, so they bill at the full input rate.
+func computeImageGenToolCost(pricing *configstoreTables.TableModelPricing, u *schemas.ImageGenToolUsage) *schemas.BifrostCost {
+	imageUsage := &schemas.ImageUsage{InputTokens: u.InputTokens, OutputTokens: u.OutputTokens, TotalTokens: u.TotalTokens}
+	cachedCost := 0.0
+	if d := u.InputTokensDetails; d != nil && d.ImageTokens+d.TextTokens > 0 {
+		imageTokens, textTokens := d.ImageTokens, d.TextTokens
+		if c := u.CachedTokensDetails; c != nil {
+			cachedImage, cachedText := min(c.CachedImageTokens, imageTokens), min(c.CachedTextTokens, textTokens)
+			imageTokens -= cachedImage
+			textTokens -= cachedText
+			cachedCost = float64(cachedImage)*cachedImageTokenRate(pricing) + float64(cachedText)*cachedTextTokenRate(pricing)
+		}
+		imageUsage.InputTokensDetails = &schemas.ImageTokenDetails{ImageTokens: imageTokens, TextTokens: textTokens}
+	}
+	if d := u.OutputTokensDetails; d != nil && d.ImageTokens+d.TextTokens > 0 {
+		imageUsage.OutputTokensDetails = &schemas.ImageTokenDetails{ImageTokens: d.ImageTokens, TextTokens: d.TextTokens}
+	}
+	cost := computeImageCost(pricing, imageUsage, "", "", serviceTier{}).Add(newInputOutputCost(cachedCost, 0))
+	if cost == nil {
+		return nil
+	}
+	// Report the tool's whole charge as image cost so the details still sum to each side.
+	if cost.InputCost > 0 {
+		cost.InputCostDetails = &schemas.InputCostDetails{ImageCost: cost.InputCost}
+	}
+	if cost.OutputCost > 0 {
+		cost.OutputCostDetails = &schemas.OutputCostDetails{ImageCost: cost.OutputCost}
+	}
 	return cost
+}
+
+func cachedImageTokenRate(pricing *configstoreTables.TableModelPricing) float64 {
+	if pricing.CacheReadInputImageTokenCost != nil {
+		return *pricing.CacheReadInputImageTokenCost
+	}
+	return tieredImageInputRate(pricing, 0, serviceTier{})
+}
+
+func cachedTextTokenRate(pricing *configstoreTables.TableModelPricing) float64 {
+	if pricing.CacheReadInputTokenCost != nil {
+		return *pricing.CacheReadInputTokenCost
+	}
+	return tieredInputRate(pricing, 0, serviceTier{})
+}
+
+// calculateContainerSessionCost prices the containers a request started through a server tool. The
+// fee is flat, so service tier, data residency and batch discounts do not scale it.
+func (s *Store) calculateContainerSessionCost(usage *schemas.BifrostLLMUsage, routingInfo schemas.RoutingInfo, scopes LookupScopes) *schemas.BifrostCost {
+	if usage == nil || usage.ToolUsage == nil || len(usage.ToolUsage.ContainerSessions) == 0 {
+		return nil
+	}
+	provider := routingInfo.Provider
+	// Claude on Azure runs Anthropic's containers and bills at Anthropic's rates, not azure/container.
+	if provider == schemas.Azure && routesToClaude(routingInfo) {
+		provider = schemas.Anthropic
+	}
+	var total *schemas.BifrostCost
+	for tier, sessions := range usage.ToolUsage.ContainerSessions {
+		pricing := s.resolvePricing(schemas.RoutingInfo{Provider: provider, Model: schemas.ContainerPricingModel(tier)}, schemas.ContainerCreateRequest, scopes)
+		if pricing == nil || pricing.CodeInterpreterCostPerSession == nil {
+			pricing = s.resolvePricing(schemas.RoutingInfo{Provider: provider, Model: schemas.ContainerPricingModel(schemas.ContainerTierDefault)}, schemas.ContainerCreateRequest, scopes)
+		}
+		if pricing == nil || pricing.CodeInterpreterCostPerSession == nil {
+			continue
+		}
+		total = total.Add(totalOnlyCost(float64(sessions) * *pricing.CodeInterpreterCostPerSession))
+	}
+	return total
+}
+
+// resolvedModelIdentity follows resolvePricing's order: alias canonical name, alias wire model, then the requested model.
+func resolvedModelIdentity(routingInfo schemas.RoutingInfo) string {
+	if rka := routingInfo.ResolvedKeyAlias; rka != nil {
+		if rka.ModelName != nil && *rka.ModelName != "" {
+			return *rka.ModelName
+		}
+		if rka.ModelID != "" {
+			return rka.ModelID
+		}
+	}
+	return routingInfo.Model
+}
+
+func routesToAzureModelRouter(routingInfo schemas.RoutingInfo) bool {
+	return schemas.IsAzureModelRouter(resolvedModelIdentity(routingInfo))
+}
+
+func routesToClaude(routingInfo schemas.RoutingInfo) bool {
+	return schemas.IsAnthropicModel(resolvedModelIdentity(routingInfo))
 }
 
 // advisorIterationType marks the usage.iterations[] entry of an Anthropic advisor pass: a sub-inference
@@ -673,7 +801,7 @@ func (s *Store) calculateAzureModelRouterCost(result *schemas.BifrostResponse, i
 
 	cost := s.computeCostFromInput(input, routingInfo, pricingRequestType, scopes)
 
-	if servedModel := result.ServedModel(); servedModel != "" && servedModel != routingInfo.Model {
+	if servedModel := result.ServedModel(); servedModel != "" && servedModel != routingInfo.Model && !schemas.IsAzureModelRouter(servedModel) {
 		underlyingRoutingInfo := schemas.RoutingInfo{
 			Provider: routingInfo.Provider,
 			Model:    servedModel,
@@ -2534,6 +2662,7 @@ func (s *Store) resolvePricing(routingInfo schemas.RoutingInfo, requestType sche
 // getBasePricing looks up catalog pricing for the given model, provider, and request type.
 // It applies a provider-specific fallback chain when an exact match is not found:
 //
+//   - All lookups: makeKeyNormalized lowercases the key, so the model name matches in any casing.
 //   - Gemini: retries under the "vertex" provider, then falls back to the counterpart chat/responses mode.
 //   - Vertex: strips the "provider/model" prefix and retries, then falls back to the counterpart chat/responses mode.
 //   - Bedrock: prepends the vendor namespace ("anthropic.", "openai.", "google.", "xai.") inferred from the model family, then falls back to the counterpart chat/responses mode.
@@ -2570,31 +2699,20 @@ func (s *Store) getBasePricing(model, provider string, requestType schemas.Reque
 	// Realtime voice rates take precedence over responses/chat rates for the
 	// same model. Retain those existing lookups when no realtime row exists.
 	if requestType == schemas.RealtimeRequest {
-		for _, candidate := range []string{model, strings.ToLower(model)} {
-			if pricing, ok := s.pricingData[makeKey(candidate, provider, "realtime")]; ok {
-				return &pricing, true
-			}
-		}
-	}
-
-	pricing, ok := s.pricingData[makeKey(model, provider, mode)]
-	if ok {
-		return &pricing, true
-	}
-
-	// Deployment names are case-sensitive on the wire but the feed does not always
-	// carry every casing, so retry with the lowercase name in the same mode.
-	if lower := strings.ToLower(model); lower != model {
-		pricing, ok = s.pricingData[makeKey(lower, provider, mode)]
-		if ok {
+		if pricing, ok := s.pricingData[makeKeyNormalized(model, provider, "realtime")]; ok {
 			return &pricing, true
 		}
+	}
+
+	pricing, ok := s.pricingData[makeKeyNormalized(model, provider, mode)]
+	if ok {
+		return &pricing, true
 	}
 
 	// Lookup in vertex if gemini not found
 	if provider == string(schemas.Gemini) {
 		s.logger.Debug("primary lookup failed, trying vertex provider for the same model")
-		pricing, ok = s.pricingData[makeKey(model, "vertex", mode)]
+		pricing, ok = s.pricingData[makeKeyNormalized(model, "vertex", mode)]
 		if ok {
 			return &pricing, true
 		}
@@ -2602,7 +2720,7 @@ func (s *Store) getBasePricing(model, provider string, requestType schemas.Reque
 		// Lookup in the counterpart chat/responses mode if this model's row is filed under the other one
 		if hasFallbackMode {
 			s.logger.Debug("secondary lookup failed, trying vertex provider for the same model in %s mode", fallbackMode)
-			pricing, ok = s.pricingData[makeKey(model, "vertex", fallbackMode)]
+			pricing, ok = s.pricingData[makeKeyNormalized(model, "vertex", fallbackMode)]
 			if ok {
 				return &pricing, true
 			}
@@ -2614,7 +2732,7 @@ func (s *Store) getBasePricing(model, provider string, requestType schemas.Reque
 		if strings.Contains(model, "/") {
 			modelWithoutProvider := strings.SplitN(model, "/", 2)[1]
 			s.logger.Debug("primary lookup failed, trying vertex provider for the same model with provider/model format %s", modelWithoutProvider)
-			pricing, ok = s.pricingData[makeKey(modelWithoutProvider, "vertex", mode)]
+			pricing, ok = s.pricingData[makeKeyNormalized(modelWithoutProvider, "vertex", mode)]
 			if ok {
 				return &pricing, true
 			}
@@ -2622,7 +2740,7 @@ func (s *Store) getBasePricing(model, provider string, requestType schemas.Reque
 			// Lookup in the counterpart chat/responses mode if this model's row is filed under the other one
 			if hasFallbackMode {
 				s.logger.Debug("secondary lookup failed, trying vertex provider for the same model in %s mode", fallbackMode)
-				pricing, ok = s.pricingData[makeKey(modelWithoutProvider, "vertex", fallbackMode)]
+				pricing, ok = s.pricingData[makeKeyNormalized(modelWithoutProvider, "vertex", fallbackMode)]
 				if ok {
 					return &pricing, true
 				}
@@ -2634,21 +2752,23 @@ func (s *Store) getBasePricing(model, provider string, requestType schemas.Reque
 		// Bedrock model IDs carry a vendor namespace ("anthropic.claude-*",
 		// "openai.gpt-oss-*", "google.gemma-*", "xai.grok-*"). When the caller
 		// sends the bare model name, retry with the namespace inferred from
-		// the model family.
+		// the model family. The family predicates match lowercase substrings,
+		// so detect on the lowercased name.
+		family := strings.ToLower(model)
 		var vendorPrefix string
 		switch {
-		case !strings.Contains(model, "anthropic.") && schemas.IsAnthropicModel(model):
+		case !strings.Contains(family, "anthropic.") && schemas.IsAnthropicModel(family):
 			vendorPrefix = "anthropic."
-		case !strings.Contains(model, "openai.") && schemas.IsOpenAIModel(model):
+		case !strings.Contains(family, "openai.") && schemas.IsOpenAIModel(family):
 			vendorPrefix = "openai."
-		case !strings.Contains(model, "google.") && (schemas.IsGemmaModel(model) || schemas.IsGeminiModel(model)):
+		case !strings.Contains(family, "google.") && (schemas.IsGemmaModel(family) || schemas.IsGeminiModel(family)):
 			vendorPrefix = "google."
-		case !strings.Contains(model, "xai.") && schemas.IsGrokModel(model):
+		case !strings.Contains(family, "xai.") && schemas.IsGrokModel(family):
 			vendorPrefix = "xai."
 		}
 		if vendorPrefix != "" {
 			s.logger.Debug("primary lookup failed, trying with %s prefix for the same model", vendorPrefix)
-			pricing, ok = s.pricingData[makeKey(vendorPrefix+model, provider, mode)]
+			pricing, ok = s.pricingData[makeKeyNormalized(vendorPrefix+model, provider, mode)]
 			if ok {
 				return &pricing, true
 			}
@@ -2656,7 +2776,7 @@ func (s *Store) getBasePricing(model, provider string, requestType schemas.Reque
 			// Lookup in the counterpart chat/responses mode if this model's row is filed under the other one
 			if hasFallbackMode {
 				s.logger.Debug("secondary lookup failed, trying the same prefixed model in %s mode", fallbackMode)
-				pricing, ok = s.pricingData[makeKey(vendorPrefix+model, provider, fallbackMode)]
+				pricing, ok = s.pricingData[makeKeyNormalized(vendorPrefix+model, provider, fallbackMode)]
 				if ok {
 					return &pricing, true
 				}
@@ -2667,7 +2787,7 @@ func (s *Store) getBasePricing(model, provider string, requestType schemas.Reque
 	// Lookup in the counterpart chat/responses mode if this model's row is filed under the other one
 	if hasFallbackMode {
 		s.logger.Debug("primary lookup failed, trying the same model in %s mode", fallbackMode)
-		pricing, ok = s.pricingData[makeKey(model, provider, fallbackMode)]
+		pricing, ok = s.pricingData[makeKeyNormalized(model, provider, fallbackMode)]
 		if ok {
 			return &pricing, true
 		}
@@ -2676,7 +2796,7 @@ func (s *Store) getBasePricing(model, provider string, requestType schemas.Reque
 	// The feed files GPT Live models under the Realtime API's mode.
 	if requestType == schemas.LiveRequest {
 		s.logger.Debug("primary lookup failed, trying realtime mode for the same voice model")
-		pricing, ok = s.pricingData[makeKey(model, provider, "realtime")]
+		pricing, ok = s.pricingData[makeKeyNormalized(model, provider, "realtime")]
 		if ok {
 			return &pricing, true
 		}
@@ -2687,7 +2807,7 @@ func (s *Store) getBasePricing(model, provider string, requestType schemas.Reque
 		requestType == schemas.ImageEditStreamRequest ||
 		requestType == schemas.ImageVariationRequest {
 		s.logger.Debug("primary lookup failed, trying image generation provider for the same model")
-		pricing, ok = s.pricingData[makeKey(model, provider, normalizeRequestType(schemas.ImageGenerationRequest))]
+		pricing, ok = s.pricingData[makeKeyNormalized(model, provider, normalizeRequestType(schemas.ImageGenerationRequest))]
 		if ok {
 			return &pricing, true
 		}
@@ -2697,17 +2817,17 @@ func (s *Store) getBasePricing(model, provider string, requestType schemas.Reque
 	if hasFallbackMode && requestType != schemas.DecisionRequest {
 		imageMode := normalizeRequestType(schemas.ImageGenerationRequest)
 		s.logger.Debug("primary lookup failed, trying image generation mode for the same model")
-		if pricing, ok = s.pricingData[makeKey(model, provider, imageMode)]; ok {
+		if pricing, ok = s.pricingData[makeKeyNormalized(model, provider, imageMode)]; ok {
 			return &pricing, true
 		}
 		if provider == string(schemas.Gemini) {
-			if pricing, ok = s.pricingData[makeKey(model, "vertex", imageMode)]; ok {
+			if pricing, ok = s.pricingData[makeKeyNormalized(model, "vertex", imageMode)]; ok {
 				return &pricing, true
 			}
 		}
 		// Vertex "publisher/model" form, matching the prefix strip above
 		if provider == string(schemas.Vertex) && strings.Contains(model, "/") {
-			if pricing, ok = s.pricingData[makeKey(strings.SplitN(model, "/", 2)[1], provider, imageMode)]; ok {
+			if pricing, ok = s.pricingData[makeKeyNormalized(strings.SplitN(model, "/", 2)[1], provider, imageMode)]; ok {
 				return &pricing, true
 			}
 		}
@@ -2718,13 +2838,13 @@ func (s *Store) getBasePricing(model, provider string, requestType schemas.Reque
 	// 2. Try the base "container" model in chat mode (default rate when no memory-specific entry exists)
 	if requestType == schemas.ContainerCreateRequest {
 		s.logger.Debug("primary lookup failed, trying chat mode for container create pricing")
-		pricing, ok = s.pricingData[makeKey(model, provider, normalizeRequestType(schemas.ChatCompletionRequest))]
+		pricing, ok = s.pricingData[makeKeyNormalized(model, provider, normalizeRequestType(schemas.ChatCompletionRequest))]
 		if ok {
 			return &pricing, true
 		}
 		if model != "container" {
 			s.logger.Debug("memory-specific container pricing not found, falling back to base container entry")
-			pricing, ok = s.pricingData[makeKey("container", provider, normalizeRequestType(schemas.ChatCompletionRequest))]
+			pricing, ok = s.pricingData[makeKeyNormalized("container", provider, normalizeRequestType(schemas.ChatCompletionRequest))]
 			if ok {
 				return &pricing, true
 			}

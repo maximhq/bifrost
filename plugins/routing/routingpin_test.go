@@ -9,6 +9,7 @@ import (
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/grant"
 	"github.com/maximhq/bifrost/plugins/routing/rules"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -537,5 +538,132 @@ func TestApplyRoutingRules_SkippedFallbackIsLogged(t *testing.T) {
 				assert.Contains(t, routingWarnings[i], entry, "warning must name the skipped entry as configured")
 			}
 		})
+	}
+}
+
+// TestPreRequestHook_FallbackOutsideAccessIsLogged pins #3261. A rule fallback the request's own
+// access does not allow is refused by governance before it reaches its provider, and once the chain
+// runs out the caller is answered with the primary's error. The routing trail says so when the rule
+// matches, naming the rule, the fallback and why, so a misconfigured rule does not read as a
+// fallback that silently never ran. The chain itself is left as the rule wrote it, and a request
+// carrying no access has nothing to report.
+func TestPreRequestHook_FallbackOutsideAccessIsLogged(t *testing.T) {
+	vkAccess := grant.NewAccess([]schemas.Permit{grant.NewPermit(grant.PermitVirtualKey, "vk-1", "vk", true, false, []schemas.ProviderPermit{
+		{Provider: "openai", AllowedModels: schemas.WhiteList{"gpt-4o"}, KeyIDs: schemas.WhiteList{"*"}},
+		{Provider: "anthropic", AllowedModels: schemas.WhiteList{"claude-sonnet-4"}, KeyIDs: schemas.WhiteList{"*"}},
+	}, nil)}, nil, grant.Union, nil)
+	const stored = `["anthropic/claude-sonnet-4","anthropic/claude-opus-4","groq/llama-3.1-8b-instant"]`
+	cases := []struct {
+		name         string
+		access       schemas.Access
+		wantWarnings []string
+	}{
+		{
+			name:   "fallbacks the access refuses are reported",
+			access: vkAccess,
+			wantWarnings: []string{
+				"fallback anthropic/claude-opus-4 will be refused by governance: model claude-opus-4 is not allowed on anthropic",
+				"fallback groq/llama-3.1-8b-instant will be refused by governance: provider groq is not allowed",
+			},
+		},
+		{name: "a request with no access reports nothing"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rule := &configstoreTables.TableRoutingRule{
+				ID:            "fb-access-log",
+				Name:          "Access Log Rule",
+				CelExpression: "model == 'm'",
+				Targets:       []configstoreTables.TableRoutingTarget{{Provider: bifrost.Ptr("openai"), Model: bifrost.Ptr("gpt-5.4-mini"), Weight: 1.0}},
+				Fallbacks:     bifrost.Ptr(stored),
+				Enabled:       bifrost.Ptr(true),
+				Scope:         "global",
+			}
+			require.NoError(t, rule.AfterFind(nil))
+			store, err := rules.NewLocalStore(context.Background(), rules.NewMockLogger(), nil)
+			require.NoError(t, err)
+			require.NoError(t, store.UpsertRule(context.Background(), rule))
+			governance := NewMockGovernance()
+			governance.Access = tc.access
+			plugin, err := InitFromStore(context.Background(), nil, rules.NewMockLogger(), nil, store, governance)
+			require.NoError(t, err)
+
+			req := &schemas.BifrostRequest{
+				RequestType: schemas.ChatCompletionRequest,
+				ChatRequest: &schemas.BifrostChatRequest{Model: "m"},
+			}
+			ctx := schemas.NewBifrostContext(context.Background(), time.Now())
+			require.NoError(t, plugin.PreRequestHook(ctx, req))
+			assert.Len(t, req.ChatRequest.Fallbacks, 3, "the chain stays as the rule wrote it")
+
+			var routingWarnings []string
+			for _, entry := range ctx.GetRoutingEngineLogs() {
+				if entry.Level == schemas.LogLevelWarn && strings.Contains(entry.Message, "fallback") {
+					routingWarnings = append(routingWarnings, entry.Message)
+				}
+			}
+			require.Len(t, routingWarnings, len(tc.wantWarnings), "routing log warnings: %v", routingWarnings)
+			for i, want := range tc.wantWarnings {
+				assert.Contains(t, routingWarnings[i], "Rule 'Access Log Rule'", "warning must name the rule")
+				assert.Contains(t, routingWarnings[i], want)
+			}
+		})
+	}
+}
+
+// TestPreRequestHook_LargePayloadDoesNotWarnAboutDroppedFallbacks pins that the large-payload
+// path, which routes a synthetic request and copies back only its provider and model, does not
+// warn about a rule fallback the request will never carry: no chain is attached, so nothing will
+// be refused.
+func TestPreRequestHook_LargePayloadDoesNotWarnAboutDroppedFallbacks(t *testing.T) {
+	rule := &configstoreTables.TableRoutingRule{
+		ID:            "fb-lp-access",
+		Name:          "Large Payload Rule",
+		CelExpression: "model == 'gpt-4o'",
+		Targets:       []configstoreTables.TableRoutingTarget{{Provider: bifrost.Ptr("openai"), Model: bifrost.Ptr("gpt-4o"), Weight: 1.0}},
+		Fallbacks:     bifrost.Ptr(`["groq/llama-3.1-8b-instant"]`),
+		Enabled:       bifrost.Ptr(true),
+		Scope:         "global",
+	}
+	require.NoError(t, rule.AfterFind(nil))
+	store, err := rules.NewLocalStore(context.Background(), rules.NewMockLogger(), nil)
+	require.NoError(t, err)
+	require.NoError(t, store.UpsertRule(context.Background(), rule))
+	governance := NewMockGovernance()
+	governance.Access = grant.NewAccess([]schemas.Permit{grant.NewPermit(grant.PermitVirtualKey, "vk-1", "vk", true, false, []schemas.ProviderPermit{
+		{Provider: "openai", AllowedModels: schemas.WhiteList{"gpt-4o"}, KeyIDs: schemas.WhiteList{"*"}},
+	}, nil)}, nil, grant.Union, nil)
+	plugin, err := InitFromStore(context.Background(), nil, rules.NewMockLogger(), nil, store, governance)
+	require.NoError(t, err)
+
+	metadata := &schemas.LargePayloadMetadata{Model: "gpt-4o"}
+	ctx := schemas.NewBifrostContext(context.Background(), time.Now())
+	ctx.SetValue(schemas.BifrostContextKeyLargePayloadMetadata, metadata)
+	req := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{},
+	}
+	require.NoError(t, plugin.PreRequestHook(ctx, req))
+	require.Empty(t, req.ChatRequest.Fallbacks, "the large-payload path attaches no chain")
+
+	for _, entry := range ctx.GetRoutingEngineLogs() {
+		assert.NotContains(t, entry.Message, "will be refused by governance", "a fallback the request does not carry cannot be refused")
+	}
+}
+
+// BenchmarkWarnFallbacksOutsideAccess measures the access check a matched rule with fallbacks now
+// runs, on a chain the access allows in full: the common case, which logs nothing.
+func BenchmarkWarnFallbacksOutsideAccess(b *testing.B) {
+	governance := NewMockGovernance()
+	governance.Access = grant.NewAccess([]schemas.Permit{grant.NewPermit(grant.PermitVirtualKey, "vk-1", "vk", true, false, []schemas.ProviderPermit{
+		{Provider: "anthropic", AllowedModels: schemas.WhiteList{"claude-sonnet-4"}, KeyIDs: schemas.WhiteList{"*"}},
+		{Provider: "groq", AllowedModels: schemas.WhiteList{"llama-3.1-8b-instant"}, KeyIDs: schemas.WhiteList{"*"}},
+	}, nil)}, nil, grant.Union, nil)
+	plugin := &RoutingPlugin{governance: governance}
+	fallbacks := []schemas.Fallback{{Provider: schemas.Anthropic, Model: "claude-sonnet-4"}, {Provider: schemas.Groq, Model: "llama-3.1-8b-instant"}}
+	ctx := schemas.NewBifrostContext(context.Background(), time.Now())
+	b.ReportAllocs()
+	for b.Loop() {
+		plugin.warnFallbacksOutsideAccess(ctx, "rule", fallbacks)
 	}
 }
