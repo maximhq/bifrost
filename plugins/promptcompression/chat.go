@@ -76,7 +76,7 @@ func compressChat(msgs []schemas.ChatMessage, s settings) ([]schemas.ChatMessage
 	// Pass 2: apply edits to eligible outputs only.
 	var out []schemas.ChatMessage
 	st.EligibleAfter = 0
-	f := textTransform(s, true)
+	f := textTransform(s)
 	assistants = 0
 	for i := len(msgs) - 1; i >= n; i-- {
 		m := msgs[i]
@@ -149,8 +149,8 @@ func chatMayEdit(m *schemas.ChatMessage, s settings) bool {
 // prefix; such a copy is only ever trimmed.
 func planChatDedupe(msgs []schemas.ChatMessage, start, minAge int) []string {
 	var stubs []string
-	type copy struct{ idx, age int }
-	next := map[string]copy{} // text -> next newer copy
+	type seenCopy struct{ idx, age int }
+	next := map[string]seenCopy{} // text -> next newer copy
 	assistants := 0
 	for i := len(msgs) - 1; i >= start; i-- {
 		m := &msgs[i]
@@ -166,7 +166,7 @@ func planChatDedupe(msgs []schemas.ChatMessage, start, minAge int) []string {
 			continue
 		}
 		j, seen := next[text]
-		next[text] = copy{i, assistants}
+		next[text] = seenCopy{i, assistants}
 		if !seen || assistants < minAge || assistants-j.age > minAge {
 			continue
 		}

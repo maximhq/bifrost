@@ -104,9 +104,9 @@ func normalizeWhitespace(text string) string {
 // must never answer false when the slow path would change something. Triggers:
 // a space or tab before a newline or at the very end, and a run of three
 // blank lines. Splitting on "\n" counts the empty piece before the first or
-// after the last newline as a blank line, so inside the text that run is
-// "\n\n\n\n" but at the start or end of the text "\n\n\n" already is one; a text that is exactly "\n\n" is both
-// edges at once and also qualifies.
+// after the last newline as a blank line, so such a run is "\n\n\n\n" inside
+// the text but only "\n\n\n" at its start or end. A text that is exactly
+// "\n\n" touches both edges at once and also qualifies.
 func needsWhitespaceNormalization(text string) bool {
 	if text == "" {
 		return false

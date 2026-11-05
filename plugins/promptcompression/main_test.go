@@ -400,15 +400,30 @@ func TestPreLLMHookSkipsResponsesAutoCache(t *testing.T) {
 
 func TestPreLLMHookEnabledNoopZeroAllocs(t *testing.T) {
 	p, _ := newHookPlugin(t)
-	ctx := hookCtx()
-	req := &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{
-		Model: "m", Input: rounds("small")[:3]}}
-	allocs := testing.AllocsPerRun(100, func() {
-		if out, _, _ := p.PreLLMHook(ctx, req); out != req {
-			t.Fatal("expected original request")
-		}
-	})
-	require.Zero(t, allocs)
+	// Tool rounds exist but every output is younger than the minimum age, so
+	// nothing is eligible and the hook returns the original request.
+	young := bigOutput(200)
+	cases := map[string]*schemas.BifrostRequest{
+		"chat_no_tools": {RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{
+			Model: "m", Input: rounds("small")[:3]}},
+		"chat_young_tool_outputs": {RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{
+			Model: "m", Input: rounds(young, young)}},
+		"responses_no_tools": {RequestType: schemas.ResponsesRequest, ResponsesRequest: &schemas.BifrostResponsesRequest{
+			Model: "m", Input: respRounds("small")[:3]}},
+		"responses_young_tool_outputs": {RequestType: schemas.ResponsesRequest, ResponsesRequest: &schemas.BifrostResponsesRequest{
+			Model: "m", Input: respRounds(young, young)}},
+	}
+	for name, req := range cases {
+		t.Run(name, func(t *testing.T) {
+			ctx := hookCtx()
+			allocs := testing.AllocsPerRun(100, func() {
+				if out, _, _ := p.PreLLMHook(ctx, req); out != req {
+					t.Fatal("expected original request")
+				}
+			})
+			require.Zero(t, allocs)
+		})
+	}
 }
 
 func TestPreLLMHookBelowEligibleThresholdReturnsOriginal(t *testing.T) {
@@ -1193,6 +1208,13 @@ func BenchmarkPreLLMHookLargeHistoryResponses(b *testing.B) {
 func BenchmarkPreLLMHookNoopEnabledChat(b *testing.B) {
 	req := &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest,
 		ChatRequest: &schemas.BifrostChatRequest{Model: "m", Input: rounds(bigOutput(200), bigOutput(200))}}
+	benchHook(b, benchPlugin(b), req)
+}
+
+// BenchmarkPreLLMHookNoopEnabledResponses is the Responses-shape counterpart.
+func BenchmarkPreLLMHookNoopEnabledResponses(b *testing.B) {
+	req := &schemas.BifrostRequest{RequestType: schemas.ResponsesRequest,
+		ResponsesRequest: &schemas.BifrostResponsesRequest{Model: "m", Input: respRounds(bigOutput(200), bigOutput(200))}}
 	benchHook(b, benchPlugin(b), req)
 }
 

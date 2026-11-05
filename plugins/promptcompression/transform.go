@@ -11,18 +11,14 @@ type stats struct {
 }
 
 // textTransform returns the per-text rewrite shared by the Chat and Responses
-// compressors, so both APIs trim and normalise identically. trim marks text
-// of a trim-eligible old tool output; any other text is returned unchanged,
-// because only old tool output is ever rewritten. For eligible text of at
-// least MinTokens, trimMiddle cuts it, kept only if strictly shorter in bytes
-// (the marker can outweigh a tiny cut). Whitespace normalisation then runs if
-// enabled; if that leaves nothing of a non-empty text, the original is kept.
-// It holds no API types on purpose.
-func textTransform(s settings, trim bool) func(string) string {
+// compressors, so both APIs trim and normalise identically. Callers pass only
+// the text of an old tool output. Text of at least MinTokens is cut by
+// trimMiddle, kept only if strictly shorter in bytes (the marker can outweigh
+// a tiny cut). Whitespace normalisation then runs if enabled; if that leaves
+// nothing of a non-empty text, the original is kept. It holds no API types on
+// purpose.
+func textTransform(s settings) func(string) string {
 	return func(text string) string {
-		if !trim {
-			return text
-		}
 		orig := text
 		if estimateTokens(text) >= s.MinTokens {
 			if r, ok := trimMiddle(text, s.HeadLines, s.TailLines); ok && len(r) < len(text) {

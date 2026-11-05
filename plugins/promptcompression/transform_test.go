@@ -6,13 +6,12 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestTextTransformTrimOnOff(t *testing.T) {
+func TestTextTransformTrimAndMinTokens(t *testing.T) {
 	s := defaults(t)
 	big := bigOutput(200)
-	require.Contains(t, textTransform(s, true)(big), "tokens trimmed by promptcompression")
-	require.Equal(t, big, textTransform(s, false)(big), "trim off")
+	require.Contains(t, textTransform(s)(big), "tokens trimmed by promptcompression")
 	s.MinTokens = estimateTokens(big) + 1
-	require.Equal(t, big, textTransform(s, true)(big), "below MinTokens")
+	require.Equal(t, big, textTransform(s)(big), "below MinTokens")
 }
 
 func TestTextTransformStrictlyShorterGuard(t *testing.T) {
@@ -24,16 +23,15 @@ func TestTextTransformStrictlyShorterGuard(t *testing.T) {
 		text += "0000000000"
 	}
 	text += "\ny\nend" // cut removes 1 byte, adds a longer marker
-	require.Equal(t, text, textTransform(s, true)(text))
+	require.Equal(t, text, textTransform(s)(text))
 }
 
-func TestTextTransformWhitespaceOnlyWhenTrimEligible(t *testing.T) {
+func TestTextTransformWhitespace(t *testing.T) {
 	s := defaults(t)
 	in := "a  \n\n\n\n\nb"
-	require.Equal(t, "a\n\nb", textTransform(s, true)(in), "trim-eligible text is normalised")
-	require.Equal(t, in, textTransform(s, false)(in), "not trim-eligible: untouched")
+	require.Equal(t, "a\n\nb", textTransform(s)(in), "text is normalised")
 	s.Whitespace = false
-	require.Equal(t, in, textTransform(s, true)(in), "normalisation disabled")
+	require.Equal(t, in, textTransform(s)(in), "normalisation disabled")
 }
 
 func TestDedupeStub(t *testing.T) {
@@ -55,6 +53,6 @@ func TestTextTransformKeepsOriginalWhenEmpty(t *testing.T) {
 	s := defaults(t)
 	s.Whitespace = true
 	in := "   \n\n\n\n  "
-	require.Equal(t, in, textTransform(s, true)(in))
-	require.Equal(t, "", textTransform(s, true)(""), "empty input stays empty")
+	require.Equal(t, in, textTransform(s)(in))
+	require.Equal(t, "", textTransform(s)(""), "empty input stays empty")
 }

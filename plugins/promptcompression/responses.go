@@ -77,7 +77,7 @@ func compressResponses(msgs []schemas.ResponsesMessage, s settings) ([]schemas.R
 	// Pass 2: apply edits to eligible outputs only.
 	var out []schemas.ResponsesMessage
 	st.EligibleAfter = 0
-	f := textTransform(s, true)
+	f := textTransform(s)
 	tc = turnCounter{}
 	for i := len(msgs) - 1; i >= n; i-- {
 		m := msgs[i]
@@ -350,55 +350,33 @@ func mapBlocks(src []schemas.ResponsesMessageContentBlock, f func(string) string
 	return dst, changed
 }
 
-// mapResponsesText applies f to every text value of m: the Output of a
-// function_call_output, or the Content of any other item. When anything
-// changes it returns a copy with fresh Output/Content (new block slice, new
-// string pointers); otherwise m and false. Other fields (arguments, reasoning,
-// computer/shell outputs) are never touched.
+// mapResponsesText applies f to every text value of a function_call_output
+// item's Output (string and text blocks). When anything changes it returns a
+// copy with a fresh Output (new block slice, new string pointers); otherwise m
+// and false. Any other item, and every other field (arguments, reasoning,
+// computer/shell outputs), is never touched.
 func mapResponsesText(m schemas.ResponsesMessage, f func(string) string) (schemas.ResponsesMessage, bool) {
-	if respIsToolOutput(&m) {
-		if m.ResponsesToolMessage == nil || m.ResponsesToolMessage.Output == nil {
-			return m, false
-		}
-		o := *m.ResponsesToolMessage.Output
-		changed := false
-		if o.ResponsesToolCallOutputStr != nil {
-			r := f(*o.ResponsesToolCallOutputStr)
-			changed = r != *o.ResponsesToolCallOutputStr
-			o.ResponsesToolCallOutputStr = &r
-		}
-		if o.ResponsesFunctionToolCallOutputBlocks != nil {
-			var c bool
-			o.ResponsesFunctionToolCallOutputBlocks, c = mapBlocks(o.ResponsesFunctionToolCallOutputBlocks, f)
-			changed = changed || c
-		}
-		if !changed {
-			return m, false
-		}
-		tm := *m.ResponsesToolMessage
-		tm.Output = &o
-		m.ResponsesToolMessage = &tm
-		return m, true
-	}
-	if m.Content == nil {
+	if !respIsToolOutput(&m) || m.ResponsesToolMessage == nil || m.ResponsesToolMessage.Output == nil {
 		return m, false
 	}
-	c := &schemas.ResponsesMessageContent{}
+	o := *m.ResponsesToolMessage.Output
 	changed := false
-	if m.Content.ContentStr != nil {
-		r := f(*m.Content.ContentStr)
-		changed = r != *m.Content.ContentStr
-		c.ContentStr = &r
+	if o.ResponsesToolCallOutputStr != nil {
+		r := f(*o.ResponsesToolCallOutputStr)
+		changed = r != *o.ResponsesToolCallOutputStr
+		o.ResponsesToolCallOutputStr = &r
 	}
-	if m.Content.ContentBlocks != nil {
-		var bc bool
-		c.ContentBlocks, bc = mapBlocks(m.Content.ContentBlocks, f)
-		changed = changed || bc
+	if o.ResponsesFunctionToolCallOutputBlocks != nil {
+		var c bool
+		o.ResponsesFunctionToolCallOutputBlocks, c = mapBlocks(o.ResponsesFunctionToolCallOutputBlocks, f)
+		changed = changed || c
 	}
 	if !changed {
 		return m, false
 	}
-	m.Content = c
+	tm := *m.ResponsesToolMessage
+	tm.Output = &o
+	m.ResponsesToolMessage = &tm
 	return m, true
 }
 
