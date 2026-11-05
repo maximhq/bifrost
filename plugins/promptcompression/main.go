@@ -150,9 +150,9 @@ func (p *Plugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostReq
 }
 
 // afterIfWorthwhile returns the estimated token count of the compressed
-// request, or -1 when the original should be sent: nothing changed, nothing
-// was eligible, or the compression saved fewer than MinSavingsTokens eligible
-// tokens.
+// request, or -1 when the original should be sent: nothing changed, or a
+// non-zero MinSavingsTokens is set and the compression saved fewer eligible
+// tokens than that.
 //
 // There is deliberately no "estimate got smaller" check. Every edit makes its
 // output strictly shorter in bytes, so a changed request is always smaller on
@@ -170,11 +170,14 @@ func (p *Plugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostReq
 // threshold is 0 so that this can never turn the hook off; a larger value can
 // switch compression on late and off again when a marker moves.
 func (p *Plugin) afterIfWorthwhile(before int, st stats) int {
-	if !st.Changed || st.EligibleBefore == 0 {
+	if !st.Changed {
 		return -1
 	}
+	// saved can be zero or negative: a dedupe stub replacing many tiny text
+	// blocks estimates larger than the blocks. The threshold applies only when
+	// set, so the default never holds back an edit.
 	saved := st.EligibleBefore - st.EligibleAfter
-	if saved < p.s.MinSavingsTokens {
+	if p.s.MinSavingsTokens > 0 && saved < p.s.MinSavingsTokens {
 		return -1
 	}
 	return before - saved

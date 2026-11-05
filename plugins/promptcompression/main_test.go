@@ -1368,6 +1368,42 @@ func TestHookMovingCacheMarkerZeroTokenEdit(t *testing.T) {
 	require.Equal(t, mustJSON(t, outN[5]), mustJSON(t, outN1[5]), "B outside the prefix stays byte-identical")
 }
 
+// TestHookNegativeSavingStaysStable pins the default-0 threshold against a
+// degenerate dedupe: an output made of many empty text blocks estimates to 0
+// tokens while its stub estimates to ~10, so the eligible saving is negative.
+// The stub must still be sent at N, so that it does not appear late at N+1.
+func TestHookNegativeSavingStaysStable(t *testing.T) {
+	big := bigOutput(300)
+	empty := ""
+	emptyBlocks := func() *schemas.ChatMessageContent {
+		blocks := make([]schemas.ChatContentBlock, 60)
+		for i := range blocks {
+			blocks[i] = schemas.ChatContentBlock{Type: schemas.ChatContentBlockTypeText, Text: &empty}
+		}
+		return &schemas.ChatMessageContent{ContentBlocks: blocks}
+	}
+	build := func(tail ...string) []schemas.ChatMessage {
+		msgs := rounds(append([]string{"e1", "e2", big}, tail...)...)
+		msgs[3].Content = emptyBlocks()
+		msgs[5].Content = emptyBlocks()
+		return msgs
+	}
+	p, _ := newHookPlugin(t)
+	send := func(in []schemas.ChatMessage) ([]schemas.ChatMessage, bool) {
+		req := &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{Model: "m", Input: in}}
+		res, _, err := p.PreLLMHook(hookCtx(), req)
+		require.NoError(t, err)
+		return res.ChatRequest.Input, res != req
+	}
+	outN, compN := send(build("d"))
+	outN1, compN1 := send(build("d", "e"))
+	require.True(t, compN, "N: the stub is sent even though its estimate is larger")
+	require.True(t, compN1, "N+1: compressed")
+	require.Contains(t, strOf(outN[3]), "identical to the output of call", "N: older empty-block copy stubbed")
+	require.NotEqual(t, big, strOf(outN1[7]), "N+1: big trimmed")
+	require.Equal(t, mustJSON(t, outN[3]), mustJSON(t, outN1[3]), "stub byte-identical between N and N+1")
+}
+
 // savedTokens runs the hook and returns the tokens it saved (0 when the
 // original request was sent).
 func savedTokens(t *testing.T, p *Plugin, req *schemas.BifrostRequest) int {
