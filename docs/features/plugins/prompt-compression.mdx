@@ -91,7 +91,7 @@ The plugin is designed so that, in the worst case, your request goes out exactly
 </Note>
 
 - **Structure is preserved.** No message is removed or reordered. Roles, tool call IDs and call/output pairing stay intact.
-- **Stable edits.** While the client's cache-protected prefix does not move, every edit already made stays as it was (and untouched messages stay untouched) on later requests. The only new edits are at tool outputs that just became old enough. If a client moves a cache marker forward, outputs inside the new protected prefix go back to the text the client sent (they must match it), and edits outside the prefix can change between requests.
+- **Stable edits.** While the client's cache-protected prefix does not move, every edit already made stays as it was (and untouched messages stay untouched) on later requests. The only new edits are at tool outputs that just became old enough. If a client moves a cache marker forward, outputs inside the new protected prefix go back to the text the client sent (they must match it), and edits outside the prefix stay as they were. Only a non-zero `min_savings_tokens`, or a Responses request that ends on an assistant prefill, can change an edit that was already made.
 - **The cache-protected prefix is byte-identical.** Provider prompt caches match on an exact prefix, so everything up to and including the last client-supplied cache marker is never modified. Recognised markers:
   - Anthropic `cache_control` on content blocks, and on assistant tool calls (Chat)
   - OpenAI `prompt_cache_breakpoint` on content blocks
@@ -99,7 +99,7 @@ The plugin is designed so that, in the worst case, your request goes out exactly
   - Responses API: `cache_control` on a message, and `cache_control` or `prompt_cache_breakpoint` on content blocks (including blocks inside a function-call output)
 - **Leading messages are protected.** The first `protected_leading_messages` messages (default 1, typically the system prompt) are never modified, even without a cache marker.
 - **Automatic caching means no compression.** A request with a request-level `cache_control` is passed through untouched, because the breakpoint sits at the end of the prompt. This covers Chat (`cache_control` parameter) and Responses (`cache_control` in the extra params, for example an Anthropic SDK request on `/anthropic/v1/messages`).
-- **Edits must pay off.** A trim or a dedupe stub is kept only if the result is strictly shorter, and the whole request must get strictly smaller. If the eligible outputs save fewer than `min_savings_tokens`, the original is sent.
+- **Edits must pay off.** A trim or a dedupe stub is kept only if the result is strictly shorter, and every edit makes the request strictly smaller in bytes. If the eligible outputs save fewer than `min_savings_tokens`, the original is sent.
 - **Fail-open.** Any panic inside the plugin is recovered, a warning is logged, and the original request is sent.
 - **The incoming request is never mutated.** Compression builds a copy, which matters because Bifrost retries and fallbacks reuse the same request.
 
@@ -108,7 +108,7 @@ The plugin is designed so that, in the worst case, your request goes out exactly
 Compression and provider prompt caching pull in opposite directions, so it is worth understanding how they interact.
 
 - **Clients that mark the latest message every turn** (for example Claude Code style clients) already protect the entire conversation. For client-supplied markers the plugin does nothing, since changing anything would turn a cache hit into a full-price miss.
-- **Clients that move a marker forward** each turn keep hitting the provider's cached prefix: outputs that fall inside the new protected prefix revert to the text the client sent, so the prefix still matches. The stability guarantee above does not cover them, because it assumes the prefix does not move.
+- **Clients that move a marker forward** each turn keep hitting the provider's cached prefix: outputs that fall inside the new protected prefix revert to the text the client sent, so the prefix still matches. Outputs inside the newly protected prefix go back to the client's text, and edits outside it stay byte-identical.
 - **Automatic prefix caching without markers** (for example OpenAI) is where the plugin acts. When an output just aged past the threshold and gets edited, the cached part of the prompt after it no longer matches and is re-billed.
 - **Steady state.** Each new edit sits at the newest output that became old enough, so every request re-bills the cached content after that edit, roughly the last `tool_output_min_age_turns` turns. Raise `tool_output_min_age_turns` to trade a smaller saving for fewer new edits per request.
 - **A non-zero `min_savings_tokens`** can switch compression on later than the first possible edit, and off again when a client moves a cache marker and the savings drop below the threshold. That is a cache-miss risk, so the default is 0.
@@ -116,7 +116,7 @@ Compression and provider prompt caching pull in opposite directions, so it is wo
 
 ## Limitations
 
-- **Passthrough reach.** Requests sent with the raw request body skip the plugin because they bypass the structured input. That normally includes Claude Code requests to Claude models (OAuth or API key); structured-output providers and Vertex beta headers turn raw passthrough off for a request. It also includes `/genai` requests with an explicit Gemini model. Large-payload mode is also skipped.
+- **Passthrough reach.** Requests sent with the raw request body skip the plugin because they bypass the structured input. That normally includes Claude Code requests to Claude models (OAuth or API key); raw passthrough is turned off only for providers that need synthetic structured output and only when the request carries `output_config.format`, and on Vertex only with the prompt-caching-scope or fast-mode beta headers. It also includes `/genai` requests with an explicit Gemini model. Large-payload mode is also skipped.
 - **Only `function_call_output` and `tool` outputs are compressed.** Other output types (shell, computer, custom tool and so on) and non-text content are left as they are.
 - **Line-based trimming.** A single huge line (minified JSON, a one-line log) cannot be shortened. A JSON output with many lines can be cut in the middle of a structure, so the model sees invalid JSON around the marker.
 - **The logging plugin stores the uncompressed messages.** It runs before this plugin (order 3 versus 10). The logs show the original messages, not the compressed ones; token usage and cost reflect what was actually sent.
@@ -182,10 +182,11 @@ Measured with the Go benchmarks in `plugins/promptcompression/main_test.go` on a
 |---|---|
 | Request type the plugin skips | ~11 ns/op, 0 allocations |
 | Enabled, short chat, nothing to compress | ~0.11 µs/op, 0 allocations |
-| Enabled, nothing old enough to edit | ~0.12 µs/op, 0 allocations |
-| 12-turn agent fixture (Chat) | ~28 µs/op, 42 allocations |
+| Enabled, nothing old enough to edit (Chat) | ~0.13 µs/op, 0 allocations |
+| Enabled, nothing old enough to edit (Responses) | ~0.18 µs/op, 0 allocations |
+| 12-turn agent fixture (Chat) | ~27 µs/op, 42 allocations |
 | 12-turn agent fixture (Responses) | ~33 µs/op, 46 allocations |
-| 100-round, ~800 KB mixed history (Chat) | ~0.38 ms/op, 457 allocations |
-| 100-round, ~800 KB mixed history (Responses) | ~0.92 ms/op, 541 allocations |
+| 100-round, ~800 KB mixed history (Chat) | ~0.39 ms/op, 457 allocations |
+| 100-round, ~800 KB mixed history (Responses) | ~0.45 ms/op, 541 allocations |
 
-Cost grows with the size of the conversation text. The plugin keeps nothing between requests.
+Cost grows with the size of the conversation text. Zero allocations applies when nothing is eligible; when outputs are eligible but already clean, the dedupe plan may allocate a small map (about 7 allocations measured). The plugin keeps nothing between requests.
