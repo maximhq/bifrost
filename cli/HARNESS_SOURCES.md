@@ -56,3 +56,19 @@ credentials without reaching a paid inference endpoint.
 The native headless test also found that agy 1.4.8 does not reliably apply the
 saved `model` without `--model`. Bifrost launch and the managed shell function
 therefore pass the saved model explicitly; user-supplied arguments still follow.
+
+## Project attribution contracts
+
+Checked November 6, 2026:
+
+- Claude Code custom headers: https://code.claude.com/docs/en/llm-gateway-connect#send-additional-headers
+- Claude Desktop `inferenceCustomHeaders` and helper arguments: https://claude.com/docs/third-party/claude-desktop/configuration
+- Desktop helper JSON and refresh lifecycle: https://claude.com/docs/third-party/claude-desktop/credential-helper
+- Codex provider `http_headers`: https://developers.openai.com/codex/config-reference
+- OpenCode provider `options.headers`: https://opencode.ai/docs/providers#custom-provider
+- Pi provider headers: https://github.com/earendil-works/pi/tree/main/packages/coding-agent/docs
+- Gemini custom-header parser: https://github.com/google-gemini/gemini-cli/blob/main/packages/core/src/utils/customHeaderUtils.ts
+
+These are client configuration contracts, not proof of live Desktop acceptance.
+Desktop helper output is cached and supplies no documented Claude Project identifier;
+a static project selection must not be advertised as per-conversation switching.

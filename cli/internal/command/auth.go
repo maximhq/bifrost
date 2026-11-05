@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/maximhq/bifrost/cli/internal/client"
+	"github.com/maximhq/bifrost/cli/internal/config"
 	"github.com/maximhq/bifrost/cli/internal/output"
 	"github.com/maximhq/bifrost/cli/internal/secrets"
 	"github.com/maximhq/bifrost/cli/internal/sessionauth"
@@ -56,16 +57,28 @@ Use --username for the OSS dashboard password flow.
 }
 
 // authPrintToken emits a currently valid Enterprise agent credential for
-// coding-agent token helpers. Nothing except the token is written to stdout.
+// coding-agent token helpers, optionally with Desktop project headers as JSON.
 func (r *Runner) authPrintToken(ctx context.Context, env *environment, args []string) error {
 	fs := flag.NewFlagSet("bifrost auth print-token", flag.ContinueOnError)
 	fs.SetOutput(r.ErrOut)
 	browserLogin := fs.Bool("browser-login", false, "sign in using your browser if no agent token is available")
+	format := fs.String("format", "text", "helper output: text or claude-desktop")
+	var project config.Project
+	project.BindFlags(fs)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if fs.NArg() != 0 {
-		return fmt.Errorf("usage: bifrost auth print-token [--browser-login]")
+		return fmt.Errorf("usage: bifrost auth print-token [--browser-login] [--format text|claude-desktop] [--project-id ID|--project-name NAME]")
+	}
+	if err := project.ValidateFlags(fs); err != nil {
+		return err
+	}
+	if *format != "text" && *format != "claude-desktop" {
+		return fmt.Errorf("unknown helper format %q", *format)
+	}
+	if *format == "text" && project != (config.Project{}) {
+		return fmt.Errorf("project headers require --format claude-desktop")
 	}
 	if strings.TrimSpace(env.Client.CredentialsSnapshot().AgentToken) == "" {
 		if !*browserLogin {
@@ -77,12 +90,22 @@ func (r *Runner) authPrintToken(ctx context.Context, env *environment, args []st
 			return err
 		}
 	}
-	if _, err := env.Client.Do(ctx, client.Request{Path: "/v1/models", Auth: client.AuthInference}); err != nil {
+	if _, err := env.Client.Do(ctx, client.Request{Path: "/v1/models", Headers: project.Apply(nil), Auth: client.AuthInference}); err != nil {
 		return fmt.Errorf("validate Enterprise SSO session: %w", err)
 	}
 	token := strings.TrimSpace(env.Client.CredentialsSnapshot().AgentToken)
 	if token == "" {
 		return fmt.Errorf("enterprise SSO session returned an empty agent token")
+	}
+	if *format == "claude-desktop" {
+		headers := map[string]string{}
+		if name, value := project.Header(); name != "" {
+			headers[name] = value
+		}
+		if selection := env.Client.CredentialsSnapshot().AgentVirtualKeyID; selection != "" {
+			headers["x-bf-agent-vk-id"] = selection
+		}
+		return json.NewEncoder(r.Out).Encode(map[string]any{"token": token, "headers": headers})
 	}
 	_, err := fmt.Fprintln(r.Out, token)
 	return err

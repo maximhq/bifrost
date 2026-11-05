@@ -122,6 +122,30 @@ class CLIProcessTests(unittest.TestCase):
         if os.name != "nt":
             self.assertEqual(receipts[0].stat().st_mode & 0o777, 0o600)
 
+    def test_project_configuration_independent_parsers(self):
+        for agent in ("claude", "codex", "opencode", "pi"):
+            with self.subTest(agent=agent), tempfile.TemporaryDirectory() as tmp:
+                home = Path(tmp)
+                env = isolated_env(home)
+                for flag, value in (("--project-id", "project-old"), ("--project-name", 'customer-"quoted"')):
+                    self.cli(env, "configure", agent, "--model", "test/model", flag, value)
+                path = config_paths(home, agent)[0]
+                body = path.read_text()
+                self.assertNotIn("project-old", body)
+                if agent == "codex":
+                    headers = tomllib.loads(body)["model_providers"]["bifrost"]["http_headers"]
+                else:
+                    data = json.loads(body)
+                    if agent == "claude":
+                        headers = dict(line.split(": ", 1) for line in data["env"]["ANTHROPIC_CUSTOM_HEADERS"].splitlines())
+                    elif agent == "opencode":
+                        headers = data["provider"]["bifrost"]["options"]["headers"]
+                    else:
+                        headers = data["providers"]["bifrost"]["headers"]
+                self.assertEqual(headers, {"x-bf-project-name": 'customer-"quoted"'})
+                self.cli(env, "unconfigure", agent)
+                self.assertFalse(path.exists())
+
     def test_configure_reconfigure_refuse_edits_and_restore(self):
         for agent in AGENTS:
             for existing in (False, True):

@@ -46,7 +46,7 @@ var lookupConfigHarness = harness.Get
 // configureHarness explicitly writes reversible native configuration for an agent.
 func (r *Runner) configureHarness(env *environment, args []string) error {
 	if len(args) == 0 || args[0] == "--help" || args[0] == "-h" {
-		_, err := fmt.Fprint(r.Out, "Usage: bifrost configure <claude|codex|gemini|opencode|pi|antigravity> [--model MODEL] [--force]\n")
+		_, err := fmt.Fprint(r.Out, "Usage: bifrost configure <claude|codex|gemini|opencode|pi|antigravity> [--model MODEL] [--project-id ID|--project-name NAME] [--force]\n")
 		return err
 	}
 	agent, ok := lookupConfigHarness(args[0])
@@ -57,6 +57,8 @@ func (r *Runner) configureHarness(env *environment, args []string) error {
 	fs.SetOutput(r.ErrOut)
 	var model string
 	var force bool
+	var project config.Project
+	project.BindFlags(fs)
 	fs.StringVar(&model, "model", defaultModel(env), "default model")
 	fs.BoolVar(&force, "force", false, "replace files changed since the last Bifrost configuration")
 	if err := fs.Parse(args[1:]); err != nil {
@@ -64,6 +66,12 @@ func (r *Runner) configureHarness(env *environment, args []string) error {
 	}
 	if fs.NArg() != 0 {
 		return fmt.Errorf("unexpected configure arguments: %s", strings.Join(fs.Args(), " "))
+	}
+	if err := project.ValidateFlags(fs); err != nil {
+		return err
+	}
+	if err := harness.ValidateProject(agent.ID, project, true); err != nil {
+		return err
 	}
 	if strings.TrimSpace(env.VirtualKey) == "" {
 		return fmt.Errorf("a virtual key is required; run 'bifrost auth set-virtual-key'")
@@ -115,7 +123,11 @@ func (r *Runner) configureHarness(env *environment, args []string) error {
 			return err
 		}
 	}
-	if err := agent.WriteNativeConfig(endpoint, env.VirtualKey, strings.TrimSpace(model)); err != nil {
+	writeErr := agent.WriteNativeConfig(endpoint, env.VirtualKey, strings.TrimSpace(model))
+	if writeErr == nil {
+		writeErr = harness.WriteProjectConfig(agent.ID, paths, project)
+	}
+	if err := writeErr; err != nil {
 		if reconfiguring {
 			return rollbackReconfigureFailure(attemptSnapshot, err)
 		}

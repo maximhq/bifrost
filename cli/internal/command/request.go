@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/maximhq/bifrost/cli/internal/client"
+	"github.com/maximhq/bifrost/cli/internal/config"
 	"github.com/maximhq/bifrost/cli/internal/output"
 )
 
@@ -45,6 +46,8 @@ func (r *Runner) runRequest(ctx context.Context, env *environment, args []string
 	path := args[1]
 	fs := flag.NewFlagSet("bifrost request", flag.ContinueOnError)
 	fs.SetOutput(r.ErrOut)
+	var project config.Project
+	project.BindFlags(fs)
 	var queryFlags repeatedValue
 	var headerFlags repeatedValue
 	var bodyValue string
@@ -79,7 +82,13 @@ func (r *Runner) runRequest(ctx context.Context, env *environment, args []string
 	if err != nil {
 		return err
 	}
-	request := client.Request{Method: method, Path: path, Query: query, Headers: headers, Body: body, Auth: authMode}
+	if err := project.ValidateFlags(fs); err != nil {
+		return err
+	}
+	if project != (config.Project{}) && client.ResolveAuthMode(authMode, path) != client.AuthInference {
+		return fmt.Errorf("project selection requires inference authentication")
+	}
+	request := client.Request{Method: method, Path: path, Query: query, Headers: project.Apply(headers), Body: body, Auth: authMode}
 	if stream {
 		writer := r.Out
 		if env.Quiet {

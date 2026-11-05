@@ -363,7 +363,7 @@ func normalizeHarnessAliasArgs(args []string) []string {
 		switch name {
 		case "--skip-verify":
 			prefix = append(prefix, argument)
-		case "--model", "--worktree":
+		case "--model", "--worktree", "--project-id", "--project-name":
 			prefix = append(prefix, argument)
 			if !hasInlineValue {
 				if index+1 >= len(args) {
@@ -427,7 +427,7 @@ func (r *Runner) runCommandHelp(ctx context.Context, name string, args []string,
 		return spec.handler(r, ctx, env, args)
 	}
 	if _, ok := harness.Get(name); ok {
-		_, err := fmt.Fprintf(r.Out, "Usage: bifrost %s [--model MODEL] [--worktree NAME] [--skip-verify] [-- agent arguments]\n", name)
+		_, err := fmt.Fprintf(r.Out, "Usage: bifrost %s [--model MODEL] [--project-id ID|--project-name NAME] [--worktree NAME] [--skip-verify] [-- agent arguments]\n", name)
 		return err
 	}
 	return fmt.Errorf("unknown command %q; run 'bifrost help'", name)
