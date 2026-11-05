@@ -2667,3 +2667,31 @@ func TestResponsesStreamEventOmitsEmptyNestedExtraFields(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "responses", gjson.GetBytes(unary, "extra_fields.request_type").String(), "a filled extra_fields must stay: %s", unary)
 }
+
+func TestToolUsageContainerSessions(t *testing.T) {
+	a := &ToolUsage{ContainerSessions: map[string]int{"1g": 1}}
+	sum := a.Add(&ToolUsage{ContainerSessions: map[string]int{"1g": 1, "4g": 2}})
+	assert.Equal(t, map[string]int{"1g": 2, "4g": 2}, sum.ContainerSessions)
+	assert.Equal(t, map[string]int{"1g": 1}, a.ContainerSessions, "Add must not change its receiver")
+
+	c := a.DeepCopy()
+	c.ContainerSessions["1g"] = 9
+	assert.Equal(t, 1, a.ContainerSessions["1g"], "DeepCopy must own its map")
+
+	assert.Equal(t, "container", ContainerPricingModel(ContainerTierDefault))
+	assert.Equal(t, "container-4g", ContainerPricingModel("4g"))
+}
+
+// Derived counts stay internal: a response that only has them sends no tool_usage at all.
+func TestResponsesMarshalOmitsDerivedToolUsage(t *testing.T) {
+	resp := BifrostResponsesResponse{Usage: &ResponsesResponseUsage{ToolUsage: &ToolUsage{ContainerSessions: map[string]int{"1g": 1}}}}
+	wire, err := Marshal(resp)
+	require.NoError(t, err)
+	assert.NotContains(t, string(wire), "tool_usage")
+	assert.Equal(t, 1, resp.Usage.ToolUsage.ContainerSessions["1g"], "marshal must not change the caller's usage")
+
+	resp.Usage.ToolUsage.WebSearch = &WebSearchToolUsage{NumRequests: 2}
+	wire, err = Marshal(resp)
+	require.NoError(t, err)
+	assert.Contains(t, string(wire), `"tool_usage":{"web_search":{"num_requests":2}}`)
+}
