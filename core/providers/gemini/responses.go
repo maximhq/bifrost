@@ -3000,10 +3000,51 @@ func stripFunctionResponseMediaRefs(response json.RawMessage) string {
 	return string(cleaned)
 }
 
+// collectGeminiSuppliedCallIDs returns every non-empty functionCall/functionResponse ID in contents.
+func collectGeminiSuppliedCallIDs(contents []Content) map[string]struct{} {
+	ids := make(map[string]struct{})
+	for _, content := range contents {
+		for _, part := range content.Parts {
+			if part == nil {
+				continue
+			}
+			if part.FunctionCall != nil && part.FunctionCall.ID != "" {
+				ids[part.FunctionCall.ID] = struct{}{}
+			}
+			if part.FunctionResponse != nil && part.FunctionResponse.ID != "" {
+				ids[part.FunctionResponse.ID] = struct{}{}
+			}
+		}
+	}
+	return ids
+}
+
+// geminiContentsMissCallIDs reports whether any functionCall or functionResponse omits its ID.
+func geminiContentsMissCallIDs(contents []Content) bool {
+	for _, content := range contents {
+		for _, part := range content.Parts {
+			if part == nil {
+				continue
+			}
+			if (part.FunctionCall != nil && part.FunctionCall.ID == "") ||
+				(part.FunctionResponse != nil && part.FunctionResponse.ID == "") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func convertGeminiContentsToResponsesMessages(contents []Content) []schemas.ResponsesMessage {
 	var messages []schemas.ResponsesMessage
-	// Track function call IDs by name to match with responses
-	functionCallIDs := make(map[string]string)
+
+	mintedCallIDs := 0
+	// Unanswered calls (supplied or minted) per function name, oldest first; tracked only
+	// when some call or response omits its ID, so fully-identified histories skip it.
+	trackPending := geminiContentsMissCallIDs(contents)
+	var pendingCallIDs map[string][]string
+	// Client-supplied call/response IDs a minted ID must not reuse; built on first mint.
+	var suppliedCallIDs map[string]struct{}
 
 	for _, content := range contents {
 		// Determine the role for all messages from this Content
@@ -3028,13 +3069,27 @@ func convertGeminiContentsToResponsesMessages(contents []Content) []schemas.Resp
 					argsJSON = string(part.FunctionCall.Args)
 				}
 
+				// GenAI clients may omit the id; mint a unique, deterministic one (no tool name, so
+				// it can never contain the thought-signature separator).
 				callID := part.FunctionCall.ID
 				if callID == "" {
-					callID = part.FunctionCall.Name
+					if suppliedCallIDs == nil {
+						suppliedCallIDs = collectGeminiSuppliedCallIDs(contents)
+					}
+					for {
+						mintedCallIDs++
+						callID = "bf_call_" + strconv.Itoa(mintedCallIDs)
+						if _, taken := suppliedCallIDs[callID]; !taken {
+							break
+						}
+					}
 				}
-
-				// Track this function call ID by name for later matching with responses
-				functionCallIDs[part.FunctionCall.Name] = callID
+				if trackPending {
+					if pendingCallIDs == nil {
+						pendingCallIDs = make(map[string][]string)
+					}
+					pendingCallIDs[part.FunctionCall.Name] = append(pendingCallIDs[part.FunctionCall.Name], callID)
+				}
 
 				msg := schemas.ResponsesMessage{
 					Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
@@ -3063,13 +3118,19 @@ func convertGeminiContentsToResponsesMessages(contents []Content) []schemas.Resp
 			case part.FunctionResponse != nil:
 				// Function response message
 				responseID := part.FunctionResponse.ID
-				if responseID == "" {
-					// Try to find the matching function call ID by name
-					if callID, ok := functionCallIDs[part.FunctionResponse.Name]; ok {
-						responseID = callID
-					} else {
-						// Fallback to function name if no matching call found
-						responseID = part.FunctionResponse.Name
+				if trackPending {
+					queue := pendingCallIDs[part.FunctionResponse.Name]
+					if responseID == "" {
+						// Pair with the oldest unanswered call of the same name, else fall back to the name.
+						if len(queue) > 0 {
+							responseID = queue[0]
+							pendingCallIDs[part.FunctionResponse.Name] = queue[1:]
+						} else {
+							responseID = part.FunctionResponse.Name
+						}
+					} else if i := slices.Index(queue, responseID); i >= 0 {
+						// An explicitly answered call leaves the queue; the others keep their order.
+						pendingCallIDs[part.FunctionResponse.Name] = slices.Delete(queue, i, i+1)
 					}
 				}
 
