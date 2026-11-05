@@ -484,7 +484,24 @@ func NativeConfigPaths(agent string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
+	agent = CanonicalID(agent)
 	switch agent {
+	case "pi":
+		dir := strings.TrimSpace(os.Getenv("PI_CODING_AGENT_DIR"))
+		if dir == "" {
+			dir = filepath.Join(home, ".pi", "agent")
+		}
+		dir, err = filepath.Abs(dir)
+		if err != nil {
+			return nil, err
+		}
+		return []string{filepath.Join(dir, "models.json"), filepath.Join(dir, "settings.json"), filepath.Join(dir, "auth.json")}, nil
+	case "antigravity":
+		profile, err := antigravityShellProfile(home)
+		if err != nil {
+			return nil, err
+		}
+		return []string{filepath.Join(home, ".gemini", "antigravity-cli", "settings.json"), profile}, nil
 	case "claude":
 		return []string{filepath.Join(home, ".claude", "settings.json")}, nil
 	case "codex":

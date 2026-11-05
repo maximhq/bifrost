@@ -180,14 +180,41 @@ bifrost configure opencode --model openai/gpt-5
 bifrost unconfigure opencode
 bifrost configure gemini --model gemini/gemini-2.5-pro
 bifrost unconfigure gemini
+bifrost configure pi --model openai/gpt-5
+bifrost unconfigure pi
+bifrost configure anti-gravity --model gemini/gemini-2.5-pro
+bifrost unconfigure anti-gravity
 ```
 
-All four agents support persistent configuration with a virtual key. Codex embeds
+All six agents support persistent configuration with a virtual key. Codex embeds
 the key in its custom provider in `config.toml` and preserves `auth.json`; it honors
 `CODEX_HOME`. OpenCode honors `XDG_CONFIG_HOME` and `OPENCODE_CONFIG`, and needs
 a model on first configuration. Gemini uses `settings.json` and `.gemini/.env`;
 a project `.env` can override the user configuration. Short-lived Enterprise SSO
 tokens are never persisted by `configure`.
+
+Pi writes `models.json`, `settings.json`, and `auth.json` in `~/.pi/agent`
+(or `PI_CODING_AGENT_DIR`). It requires a model on first configuration and preserves
+other providers. Launch with `bifrost pi`; subsequent launches can use the saved
+model without `--model`. Temporary launch configuration is removed on exit while
+sessions and existing resources remain available.
+
+Antigravity CLI uses the `agy` executable. Install it using Google's official
+instructions before launching. `bifrost antigravity`, `bifrost anti-gravity`,
+`bifrost agy`, and `bifrost AGUI` are equivalent, including for configure/unconfigure.
+Its native `~/.gemini/antigravity-cli/settings.json` selects the Gemini API provider
+and custom model. Persistent configuration also adds a managed `agy` function to
+Bash's `.bashrc` or Zsh's `.zshrc` (honoring `ZDOTDIR`) because the native CLI reads
+the key and endpoint from `GEMINI_API_KEY` and `GOOGLE_GEMINI_BASE_URL`. Start a new
+shell to use that function. These variables are scoped to `agy`. Other shells can
+launch through Bifrost, which injects them directly. Temporary launches lock and
+restore the native startup settings, retaining unrelated changes saved by agy.
+A forced kill can leave a `.bifrost-lock` file; inspect the settings and remove the
+lock before retrying. Antigravity may make background helper requests using its
+own default model, so the virtual key must permit those models as needed.
+
+Upstream configuration contracts and tested versions are recorded in
+[HARNESS_SOURCES.md](HARNESS_SOURCES.md).
 
 Restoration receipts are owner-readable only. `unconfigure` refuses to overwrite
 an agent file edited after Bifrost configured it unless `--force` is supplied.
@@ -401,6 +428,8 @@ Harness authentication and refresh behavior is intentionally explicit:
 | Codex CLI | Yes | Yes | Token is fixed for the process; restart after expiry |
 | OpenCode | Yes | Yes | Token is fixed for the process; restart after expiry |
 | Gemini CLI | No | Yes | Requires a virtual key when inference auth is enabled |
+| Pi | Yes | Yes | Token is fixed for the process; restart after expiry |
+| Antigravity CLI | No | Yes | Gemini API-key mode requires a virtual key |
 
 Gemini API-key mode sends credentials as `x-goog-api-key`, while Enterprise
 agent sessions authenticate through `Authorization: Bearer`. Do not place an
@@ -521,3 +550,18 @@ python3 scripts/auditmanagement.py --oss-root .. --enterprise-root ../../bifrost
 ```
 
 See [AUDIT.md](AUDIT.md) for coverage, exclusions, and configuration behavior.
+
+The subprocess configuration suite exercises all six agents and their aliases in
+isolated homes. To additionally run the installed Pi and Antigravity binaries
+against a local streaming HTTP fixture (no paid provider calls):
+
+```bash
+BIFROST_TEST_NATIVE_AGENTS=1 \
+BIFROST_TEST_PI_BINARY=/absolute/path/to/pi \
+make test-cli-integration
+```
+
+`agy` must be on `PATH`; `pi` can also be resolved from `PATH` when the override is
+omitted. The native test asserts the selected model, request route, authentication
+header, streamed response, and cleanup. Native binaries are opt-in; stub-based
+launch, configure, restoration, and alias checks run in the default suite.

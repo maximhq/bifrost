@@ -43,7 +43,7 @@ type configSnapshot struct {
 // configureHarness explicitly writes reversible native configuration for an agent.
 func (r *Runner) configureHarness(env *environment, args []string) error {
 	if len(args) == 0 || args[0] == "--help" || args[0] == "-h" {
-		_, err := fmt.Fprint(r.Out, "Usage: bifrost configure <claude|codex|gemini|opencode> [--model MODEL] [--force]\n")
+		_, err := fmt.Fprint(r.Out, "Usage: bifrost configure <claude|codex|gemini|opencode|pi|antigravity> [--model MODEL] [--force]\n")
 		return err
 	}
 	agent, ok := harness.Get(args[0])
@@ -174,10 +174,13 @@ func rollbackReconfigureFailure(attemptSnapshot *configReceipt, writeErr error) 
 // unconfigureHarness restores the exact files captured before explicit configuration.
 func (r *Runner) unconfigureHarness(env *environment, args []string) error {
 	if len(args) == 0 || args[0] == "--help" || args[0] == "-h" {
-		_, err := fmt.Fprint(r.Out, "Usage: bifrost unconfigure <claude|codex|gemini|opencode> [--force]\n")
+		_, err := fmt.Fprint(r.Out, "Usage: bifrost unconfigure <claude|codex|gemini|opencode|pi|antigravity> [--force]\n")
 		return err
 	}
 	agentID := args[0]
+	if agent, ok := harness.Get(agentID); ok {
+		agentID = agent.ID
+	}
 	if agent, ok := harness.Get(agentID); !ok || agent.WriteNativeConfig == nil {
 		return fmt.Errorf("agent %q does not support persistent Bifrost configuration", agentID)
 	}
