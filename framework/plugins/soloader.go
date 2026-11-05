@@ -2,8 +2,12 @@ package plugins
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"io"
 	"net/http"
+	"os"
 	"plugin"
 	"strings"
 
@@ -42,6 +46,28 @@ func WithHTTPClientFactory(factory *network.HTTPClientFactory) LoaderOption {
 	return func(o *loaderOptions) { o.httpClients = factory }
 }
 
+// VerifyPluginIntegrity checks the SHA-256 hash of a plugin file before loading.
+// Uses streaming hash to avoid loading the entire binary into memory.
+func VerifyPluginIntegrity(path string, expectedHash string) error {
+	if expectedHash == "" {
+		return nil
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("failed to open plugin for integrity check: %w", err)
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return fmt.Errorf("failed to hash plugin: %w", err)
+	}
+	actualHex := hex.EncodeToString(h.Sum(nil))
+	if actualHex != expectedHash {
+		return fmt.Errorf("plugin integrity check failed for %s: expected %s, got %s", path, expectedHash, actualHex)
+	}
+	return nil
+}
+
 func (l *SharedObjectPluginLoader) openPlugin(dp *DynamicPlugin) (*plugin.Plugin, error) {
 	// Checking if path is URL or file path
 	if strings.HasPrefix(dp.Path, "http") {
@@ -55,6 +81,9 @@ func (l *SharedObjectPluginLoader) openPlugin(dp *DynamicPlugin) (*plugin.Plugin
 			return nil, err
 		}
 		dp.Path = tempPath
+	}
+	if err := VerifyPluginIntegrity(dp.Path, dp.ExpectedSHA256); err != nil {
+		return nil, err
 	}
 	pluginObj, err := plugin.Open(dp.Path)
 	if err != nil {
