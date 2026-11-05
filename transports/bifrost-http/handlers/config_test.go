@@ -645,6 +645,53 @@ func TestUpdateConfig_ExtraFieldsPlacement(t *testing.T) {
 	assert.Equal(t, configtables.ExtraFieldsPlacementBody, stored())
 }
 
+// access_profile_hierarchy_mode is copied only when sent, so a partial save keeps the stored mode,
+// and anything other than additive/restrictive is refused before any live mutation.
+func TestUpdateConfig_AccessProfileHierarchyMode(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := newRealOAuth2Store(t)
+	cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false)
+	require.NoError(t, store.UpdateClientConfig(bgCtx(), cfg.ClientConfig))
+	h := &ConfigHandler{store: cfg, configManager: stubConfigManager{}}
+	stored := func() configtables.AccessProfileHierarchyMode {
+		t.Helper()
+		persisted, err := store.GetClientConfig(bgCtx())
+		require.NoError(t, err)
+		return persisted.AccessProfileHierarchyMode
+	}
+	assert.False(t, cfg.ShouldRestrictAccessProfileHierarchy(), "additive until set")
+
+	restrictive := putConfigCtx(`{"client_config":{"log_retention_days":8,"access_profile_hierarchy_mode":"restrictive"}}`)
+	h.updateConfig(restrictive)
+	require.Equal(t, fasthttp.StatusOK, restrictive.Response.StatusCode(), string(restrictive.Response.Body()))
+	assert.True(t, cfg.ShouldRestrictAccessProfileHierarchy())
+	assert.Equal(t, configtables.AccessProfileHierarchyModeRestrictive, stored())
+
+	omitted := putConfigCtx(`{"client_config":{"log_retention_days":8}}`)
+	h.updateConfig(omitted)
+	require.Equal(t, fasthttp.StatusOK, omitted.Response.StatusCode(), string(omitted.Response.Body()))
+	assert.True(t, cfg.ShouldRestrictAccessProfileHierarchy(), "an omitted field keeps the live value")
+	assert.Equal(t, configtables.AccessProfileHierarchyModeRestrictive, stored(), "an omitted field keeps the stored value")
+
+	for _, body := range []string{
+		`{"client_config":{"log_retention_days":8,"access_profile_hierarchy_mode":"intersect"}}`,
+		`{"client_config":{"log_retention_days":8,"access_profile_hierarchy_mode":""}}`,
+		`{"client_config":{"log_retention_days":8,"access_profile_hierarchy_mode":null}}`,
+	} {
+		refused := putConfigCtx(body)
+		h.updateConfig(refused)
+		assert.Equal(t, fasthttp.StatusBadRequest, refused.Response.StatusCode(), "%s: %s", body, refused.Response.Body())
+		assert.True(t, cfg.ShouldRestrictAccessProfileHierarchy(), "%s left the live value unchanged", body)
+		assert.Equal(t, configtables.AccessProfileHierarchyModeRestrictive, stored(), "%s left the stored value unchanged", body)
+	}
+
+	additive := putConfigCtx(`{"client_config":{"log_retention_days":8,"access_profile_hierarchy_mode":"additive"}}`)
+	h.updateConfig(additive)
+	require.Equal(t, fasthttp.StatusOK, additive.Response.StatusCode(), string(additive.Response.Body()))
+	assert.False(t, cfg.ShouldRestrictAccessProfileHierarchy())
+	assert.Equal(t, configtables.AccessProfileHierarchyModeAdditive, stored())
+}
+
 // TestUpdateConfig_MCPOAuthPrivateAllowlist pins how PUT /api/config handles
 // mcp_oauth_private_allowlist: an authenticated admin sets it and it is
 // persisted; an omitted field keeps it; a caller admitted with auth bypassed

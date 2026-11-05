@@ -8249,6 +8249,15 @@ func (c *Config) ShouldEnforceVKObjectOwnership() bool {
 	return c.ClientConfig == nil || c.ClientConfig.EnforceVKObjectOwnership
 }
 
+// ShouldRestrictAccessProfileHierarchy reports client.access_profile_hierarchy_mode == "restrictive".
+// It reads under Mu, the lock config saves and reloads hold while they copy the client config in;
+// unset, or any other value, means additive.
+func (c *Config) ShouldRestrictAccessProfileHierarchy() bool {
+	c.Mu.RLock()
+	defer c.Mu.RUnlock()
+	return c.ClientConfig != nil && c.ClientConfig.AccessProfileHierarchyMode == configstoreTables.AccessProfileHierarchyModeRestrictive
+}
+
 // ShouldSendExtraFieldsInHeaders reports client.extra_fields_placement == "headers". It reads under
 // Mu, the lock config saves and reloads hold while they copy the client config in; unset means body.
 func (c *Config) ShouldSendExtraFieldsInHeaders() bool {

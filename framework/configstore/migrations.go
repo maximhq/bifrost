@@ -588,6 +588,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_anthropic_workload_identity_column"}, run: migrationAddAnthropicWorkloadIdentityColumn},
 	{IDs: []string{"add_mcp_per_user_discoveries"}, run: migrationAddMCPPerUserDiscoveries},
 	{IDs: []string{"add_mcp_client_pending_verification_column"}, run: migrationAddMCPClientPendingVerificationColumn},
+	{IDs: []string{"add_client_config_access_profile_hierarchy_mode_column"}, run: migrationAddClientConfigAccessProfileHierarchyModeColumn},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -17053,6 +17054,30 @@ func migrationAddMCPClientPendingVerificationColumn(ctx context.Context, db *gor
 				return fmt.Errorf("drop pending_verification column from config_mcp_clients: %w", err)
 			}
 			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// migrationAddClientConfigAccessProfileHierarchyModeColumn adds access_profile_hierarchy_mode to
+// config_client. It defaults to "additive", so an upgrade keeps team, business unit and customer
+// access profiles adding to a caller's access, as they did before the setting existed.
+func migrationAddClientConfigAccessProfileHierarchyModeColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_client_config_access_profile_hierarchy_mode_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return addColumnIfNotExists(tx, logger, &tables.TableClientConfig{}, "access_profile_hierarchy_mode")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return dropColumnIfExists(tx, logger, &tables.TableClientConfig{}, "access_profile_hierarchy_mode")
 		},
 	}})
 	if err := m.Migrate(); err != nil {

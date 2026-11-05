@@ -31,6 +31,19 @@ const (
 	ExtraFieldsPlacementHeaders ExtraFieldsPlacement = "headers"
 )
 
+// AccessProfileHierarchyMode controls how the access profiles of the teams, business units and
+// customers a caller belongs to combine with the caller's own access.
+type AccessProfileHierarchyMode string
+
+const (
+	// AccessProfileHierarchyModeAdditive lets those profiles add to what the caller may reach
+	// (default when unset).
+	AccessProfileHierarchyModeAdditive AccessProfileHierarchyMode = "additive"
+	// AccessProfileHierarchyModeRestrictive makes each level holding a profile cap what the caller
+	// may reach: the caller keeps only what every such level also allows.
+	AccessProfileHierarchyModeRestrictive AccessProfileHierarchyMode = "restrictive"
+)
+
 // TableClientConfig represents global client configuration in the database
 type TableClientConfig struct {
 	ID                                      uint                           `gorm:"primaryKey;autoIncrement" json:"id"`
@@ -52,6 +65,7 @@ type TableClientConfig struct {
 	EnforceSCIMAuth                         bool                           `gorm:"default:false" json:"enforce_scim_auth"`
 	DualCredentialConflictBehavior          DualCredentialConflictBehavior `gorm:"column:dual_credential_conflict_behavior;type:varchar(20);not null;default:'prefer_idp'" json:"dual_credential_conflict_behavior"`
 	ExtraFieldsPlacement                    ExtraFieldsPlacement           `gorm:"column:extra_fields_placement;type:varchar(20);not null;default:'body'" json:"extra_fields_placement"`
+	AccessProfileHierarchyMode              AccessProfileHierarchyMode     `gorm:"column:access_profile_hierarchy_mode;type:varchar(20);not null;default:'additive'" json:"access_profile_hierarchy_mode"`
 	MaxRequestBodySizeMB                    int                            `gorm:"default:100" json:"max_request_body_size_mb"`
 	MCPAgentDepth                           int                            `gorm:"default:10" json:"mcp_agent_depth"`
 	MCPToolExecutionTimeout                 int                            `gorm:"default:30" json:"mcp_tool_execution_timeout"`                       // Timeout for individual tool execution in seconds (default: 30)

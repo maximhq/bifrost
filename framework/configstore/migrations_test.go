@@ -4919,6 +4919,29 @@ func TestMigrationAddClientConfigSkipAccessProfileUserVirtualKeyLifecycleColumns
 	require.NoError(t, migrationAddClientConfigSkipAccessProfileUserVirtualKeyLifecycleColumns(ctx, db, testMigrationLogger))
 }
 
+// TestMigrationAddClientConfigAccessProfileHierarchyModeColumn pins that the migration adds the
+// hierarchy mode column, that existing rows read back as additive so an upgrade keeps entity access
+// profiles adding to a caller's access, and that a re-run is harmless.
+func TestMigrationAddClientConfigAccessProfileHierarchyModeColumn(t *testing.T) {
+	db := setupVKTestDBWithoutRotationColumns(t)
+	ctx := context.Background()
+	require.NoError(t, db.AutoMigrate(&tables.TableClientConfig{}))
+	require.NoError(t, db.Create(&tables.TableClientConfig{}).Error)
+	mg := db.Migrator()
+	require.NoError(t, mg.DropColumn(&tables.TableClientConfig{}, "access_profile_hierarchy_mode"))
+	require.False(t, mg.HasColumn(&tables.TableClientConfig{}, "access_profile_hierarchy_mode"))
+
+	require.NoError(t, migrationAddClientConfigAccessProfileHierarchyModeColumn(ctx, db, testMigrationLogger))
+	assert.True(t, mg.HasColumn(&tables.TableClientConfig{}, "access_profile_hierarchy_mode"))
+
+	var cfg tables.TableClientConfig
+	require.NoError(t, db.First(&cfg).Error)
+	assert.Equal(t, tables.AccessProfileHierarchyModeAdditive, cfg.AccessProfileHierarchyMode)
+
+	require.NoError(t, db.Exec("DELETE FROM migrations WHERE id = ?", "add_client_config_access_profile_hierarchy_mode_column").Error)
+	require.NoError(t, migrationAddClientConfigAccessProfileHierarchyModeColumn(ctx, db, testMigrationLogger))
+}
+
 func TestMigrationAddClientConfigEnforceVKObjectOwnershipColumn(t *testing.T) {
 	db := setupVKTestDBWithoutRotationColumns(t)
 	ctx := context.Background()
