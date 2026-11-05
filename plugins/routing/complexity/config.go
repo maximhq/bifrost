@@ -221,3 +221,8 @@ func cloneStringSlice(values []string) []string {
 	}
 	return append([]string(nil), values...)
 }
+
+// DefaultRouterID names the one router a gateway has until it can define
+// several: every suggestion and run belongs to a router, and today they all
+// belong to this one.
+const DefaultRouterID = "default"

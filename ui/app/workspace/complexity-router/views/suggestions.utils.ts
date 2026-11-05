@@ -1,4 +1,13 @@
-import type { DecisionTier, EditableKeywordConfig, KeywordListKey, Suggestion, SuggestionCategory } from "@/lib/types/complexityRouter";
+import {
+	SUGGESTION_RUN_WINDOW_DAYS,
+	SUGGESTION_RUN_WINDOWS,
+	type DecisionTier,
+	type EditableKeywordConfig,
+	type KeywordListKey,
+	type Suggestion,
+	type SuggestionCategory,
+	type SuggestionRunWindow,
+} from "@/lib/types/complexityRouter";
 
 // Staging is how a suggestion reaches the phrase bank: its phrases are added to
 // the draft lists, where they can be edited or taken back, and the page's Save
@@ -108,4 +117,9 @@ export function categoryCounts(suggestions: Suggestion[], hidden: Set<string>): 
 		if (suggestion.category in counts) counts[suggestion.category] += 1;
 	}
 	return counts;
+}
+// availableWindows lists the run windows that fit in the lookback: a longer
+// one would read vectors that have already been swept.
+export function availableWindows(lookbackDays: number): SuggestionRunWindow[] {
+	return SUGGESTION_RUN_WINDOWS.filter((value) => SUGGESTION_RUN_WINDOW_DAYS[value] <= lookbackDays);
 }

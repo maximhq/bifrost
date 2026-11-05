@@ -1332,6 +1332,7 @@ func TestComplexitySuggestionsConfigDecoding(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte(`{"enabled":true}`), &cfg))
 	assert.Equal(t, ComplexitySuggestionsConfig{Enabled: true}, cfg)
 	analyzer := testSemanticAnalyzerConfig()
+	analyzer.LLM = testLLMConfig() // the suggestion model when the block names none
 	analyzer.Suggestions = &cfg
 	normalized := analyzer.Normalized()
 	require.NoError(t, normalized.Validate())

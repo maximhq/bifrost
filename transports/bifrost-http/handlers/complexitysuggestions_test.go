@@ -34,6 +34,21 @@ type suggestionManagerFake struct {
 	// pluginMissing is a deployment whose routing plugin is not loaded.
 	pluginMissing bool
 	testCalls     int
+	// windows records the window of each run started; version is what the
+	// default router serves.
+	windows []time.Duration
+	version string
+}
+
+func (m *suggestionManagerFake) ComplexitySuggestionRouter(routerID string) (string, bool) {
+	return m.version, routerID == defaultComplexitySuggestionRouter
+}
+
+func (m *suggestionManagerFake) EstimateComplexitySuggestionRun(_ context.Context, _ string, window time.Duration) (suggestrun.Estimate, error) {
+	if window > 7*24*time.Hour {
+		return suggestrun.Estimate{}, routing.ErrComplexitySuggestionWindow
+	}
+	return suggestrun.Estimate{Requests: 900, Clustered: 900, MaxModelCalls: 300}, nil
 }
 
 func (m *suggestionManagerFake) RoutingPluginLoaded() bool { return !m.pluginMissing }
@@ -45,7 +60,7 @@ func (m *suggestionManagerFake) ComplexitySuggestionStore() logstore.ComplexityS
 	return m.store
 }
 
-func (m *suggestionManagerFake) ComplexitySuggestionTexts(_ context.Context, ids []string) (map[string]string, error) {
+func (m *suggestionManagerFake) ComplexitySuggestionTexts(_ context.Context, _ string, ids []string) (map[string]string, error) {
 	out := map[string]string{}
 	for _, id := range ids {
 		if text, ok := m.texts[id]; ok {
@@ -55,12 +70,13 @@ func (m *suggestionManagerFake) ComplexitySuggestionTexts(_ context.Context, ids
 	return out, nil
 }
 
-func (m *suggestionManagerFake) StartComplexitySuggestionRun(context.Context) (string, error) {
+func (m *suggestionManagerFake) StartComplexitySuggestionRun(_ context.Context, _ string, window time.Duration) (string, error) {
 	m.runCalls++
+	m.windows = append(m.windows, window)
 	return "run-now", m.runErr
 }
 
-func (m *suggestionManagerFake) TestComplexitySuggestionPhrases(_ context.Context, phrases []complexity.SuggestionPhrase, examples []suggestrun.TestExample) (suggestrun.PhraseTest, error) {
+func (m *suggestionManagerFake) TestComplexitySuggestionPhrases(_ context.Context, _ string, phrases []complexity.SuggestionPhrase, examples []suggestrun.TestExample) (suggestrun.PhraseTest, error) {
 	m.tested = examples
 	m.testCalls++
 	if m.testErr != nil {
@@ -94,20 +110,23 @@ func suggestionHandler(t *testing.T) (*router.Router, *suggestionManagerFake) {
 	}, testLogger{})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = ls.Close(ctx) })
-	manager := &suggestionManagerFake{store: ls, texts: map[string]string{"log-1": "where is my refund for order 12"}}
+	manager := &suggestionManagerFake{store: ls, texts: map[string]string{"log-1": "where is my refund for order 12"}, version: "bank-v2"}
 	config := &configstore.ComplexityAnalyzerConfig{Suggestions: &configstore.ComplexitySuggestionsConfig{Enabled: true}}
 	h, err := NewRoutingHandler(manager, suggestionsConfigStore{config: config})
 	require.NoError(t, err)
 	r := router.New()
 	h.RegisterRoutes(r)
 
-	open := logstore.ComplexitySuggestion{ID: "s-open", Tier: "SIMPLE", Category: "uncovered", RequestCount: 40, Centroid: logstore.EncodeWarpVector([]float32{1, 0}), EmbeddingSignature: "ns"}
+	open := logstore.ComplexitySuggestion{ID: "s-open", RouterID: "default", RouterVersion: "bank-v2", Tier: "SIMPLE", Category: "uncovered", RequestCount: 40, Centroid: logstore.EncodeWarpVector([]float32{1, 0}), EmbeddingSignature: "ns"}
 	require.NoError(t, open.SetPhrases([]string{"where is my refund"}))
 	require.NoError(t, open.SetExampleLogIDs([]string{"log-1", "log-gone"}))
-	dismissed := logstore.ComplexitySuggestion{ID: "s-dismissed", Status: logstore.ComplexitySuggestionStatusDismissed, Tier: "COMPLEX", Category: "misrouted", RequestCount: 9, EmbeddingSignature: "ns"}
-	superseded := logstore.ComplexitySuggestion{ID: "s-old", Status: logstore.ComplexitySuggestionStatusSuperseded, Tier: "MEDIUM", Category: "weak", RequestCount: 3, EmbeddingSignature: "ns"}
-	require.NoError(t, ls.UpsertComplexitySuggestions(ctx, []logstore.ComplexitySuggestion{open, dismissed, superseded}))
-	require.NoError(t, ls.UpsertComplexitySuggestionRun(ctx, &logstore.ComplexitySuggestionRun{ID: "run-1", Status: logstore.ComplexitySuggestionRunSucceeded, EmbeddingSignature: "ns", StartedAt: time.Now().Add(-time.Hour)}))
+	dismissed := logstore.ComplexitySuggestion{ID: "s-dismissed", RouterID: "default", RouterVersion: "bank-v1", Status: logstore.ComplexitySuggestionStatusDismissed, Tier: "COMPLEX", Category: "misrouted", RequestCount: 9, EmbeddingSignature: "ns"}
+	superseded := logstore.ComplexitySuggestion{ID: "s-old", RouterID: "default", Status: logstore.ComplexitySuggestionStatusSuperseded, Tier: "MEDIUM", Category: "weak", RequestCount: 3, EmbeddingSignature: "ns"}
+	// Another router's suggestion, for checking that nothing here reaches it.
+	elsewhere := logstore.ComplexitySuggestion{ID: "s-office", RouterID: "office", Tier: "SIMPLE", Category: "weak", RequestCount: 99, EmbeddingSignature: "ns"}
+	require.NoError(t, ls.UpsertComplexitySuggestions(ctx, []logstore.ComplexitySuggestion{open, dismissed, superseded, elsewhere}))
+	require.NoError(t, ls.UpsertComplexitySuggestionRun(ctx, &logstore.ComplexitySuggestionRun{ID: "run-office", RouterID: "office", Status: logstore.ComplexitySuggestionRunSucceeded, EmbeddingSignature: "ns", StartedAt: time.Now()}))
+	require.NoError(t, ls.UpsertComplexitySuggestionRun(ctx, &logstore.ComplexitySuggestionRun{ID: "run-1", RouterID: "default", Status: logstore.ComplexitySuggestionRunSucceeded, EmbeddingSignature: "ns", StartedAt: time.Now().Add(-time.Hour)}))
 	return r, manager
 }
 
@@ -259,6 +278,7 @@ func TestComplexitySuggestionsWithoutTheRoutingPlugin(t *testing.T) {
 		{fasthttp.MethodPut, "/api/routing/complexity-suggestions/s-open/status", `{"status":"accepted"}`},
 		{fasthttp.MethodGet, "/api/routing/complexity-suggestions/runs", ""},
 		{fasthttp.MethodPost, "/api/routing/complexity-suggestions/runs", ""},
+		{fasthttp.MethodGet, "/api/routing/complexity-suggestions/runs/estimate?window=7d", ""},
 	} {
 		code, _ := serve(t, r, c.method, c.uri, c.body)
 		assert.Equal(t, fasthttp.StatusServiceUnavailable, code, "%s %s", c.method, c.uri)
@@ -386,4 +406,55 @@ func TestComplexitySuggestionsTestPhrasesExamplesAndLimits(t *testing.T) {
 	atLimit := strings.Repeat("a", configstore.MaxComplexitySemanticPhraseCharacters)
 	code, _ = serve(t, r, fasthttp.MethodPost, "/api/routing/complexity-suggestions/test", `{"phrases":[{"tier":"SIMPLE","text":"  `+atLimit+`  "}]}`)
 	assert.Equal(t, fasthttp.StatusOK, code, "the limit applies after trimming")
+}
+
+// Every endpoint speaks for one router: the default when none is named, 404
+// for one that does not exist, and another router's suggestions are neither
+// listed nor reachable by ID.
+func TestComplexitySuggestionsAreScopedToARouter(t *testing.T) {
+	r, _ := suggestionHandler(t)
+	code, body := serve(t, r, fasthttp.MethodGet, "/api/routing/complexity-suggestions?status=open,dismissed,superseded", "")
+	require.Equal(t, fasthttp.StatusOK, code, body)
+	assert.Equal(t, "default", body["router_id"])
+	assert.Equal(t, "bank-v2", body["router_version"])
+	ids := map[string]bool{}
+	stale := map[string]bool{}
+	for _, item := range body["suggestions"].([]any) {
+		row := item.(map[string]any)
+		ids[row["id"].(string)] = true
+		stale[row["id"].(string)] = row["stale"].(bool)
+	}
+	assert.False(t, ids["s-office"], "another router's suggestion is not listed")
+	assert.Equal(t, map[string]bool{"s-open": false, "s-dismissed": true, "s-old": false}, stale,
+		"computed against an earlier bank is stale; no recorded version is not")
+	assert.Equal(t, "run-1", body["last_run"].(map[string]any)["id"], "the last run is this router's")
+
+	code, _ = serve(t, r, fasthttp.MethodGet, "/api/routing/complexity-suggestions/s-office", "")
+	assert.Equal(t, fasthttp.StatusNotFound, code)
+	code, _ = serve(t, r, fasthttp.MethodPut, "/api/routing/complexity-suggestions/s-office/status", `{"status":"dismissed"}`)
+	assert.Equal(t, fasthttp.StatusNotFound, code)
+	code, _ = serve(t, r, fasthttp.MethodGet, "/api/routing/complexity-suggestions?router_id=office", "")
+	assert.Equal(t, fasthttp.StatusNotFound, code, "a router that does not exist")
+	code, _ = serve(t, r, fasthttp.MethodPost, "/api/routing/complexity-suggestions/runs?router_id=office", "")
+	assert.Equal(t, fasthttp.StatusNotFound, code)
+}
+
+func TestComplexitySuggestionsRunWindowAndEstimate(t *testing.T) {
+	r, manager := suggestionHandler(t)
+	code, body := serve(t, r, fasthttp.MethodPost, "/api/routing/complexity-suggestions/runs?window=24h", "")
+	require.Equal(t, fasthttp.StatusAccepted, code, body)
+	code, _ = serve(t, r, fasthttp.MethodPost, "/api/routing/complexity-suggestions/runs?window=7d", "")
+	require.Equal(t, fasthttp.StatusAccepted, code)
+	assert.Equal(t, []time.Duration{24 * time.Hour, 7 * 24 * time.Hour}, manager.windows)
+	for _, bad := range []string{"0d", "-1h", "soon"} {
+		code, _ = serve(t, r, fasthttp.MethodPost, "/api/routing/complexity-suggestions/runs?window="+bad, "")
+		assert.Equal(t, fasthttp.StatusBadRequest, code, bad)
+	}
+
+	code, body = serve(t, r, fasthttp.MethodGet, "/api/routing/complexity-suggestions/runs/estimate?window=7d", "")
+	require.Equal(t, fasthttp.StatusOK, code, body)
+	assert.Equal(t, 900.0, body["requests"])
+	assert.Equal(t, 300.0, body["max_model_calls"])
+	code, _ = serve(t, r, fasthttp.MethodGet, "/api/routing/complexity-suggestions/runs/estimate?window=30d", "")
+	assert.Equal(t, fasthttp.StatusBadRequest, code, "a window past the lookback")
 }
