@@ -739,10 +739,20 @@ var stabilityLevels = []stabilityLevel{
 			return jsonItems(t, out), st.Changed
 		},
 	},
-	{
-		name: "hook",
+	hookLevel("hook", nil),
+}
+
+// hookLevel runs the real PreLLMHook with cfg (nil for defaults).
+func hookLevel(name string, cfg *Config) stabilityLevel {
+	newPlugin := func(t *testing.T) *Plugin {
+		p, err := Init(cfg, &capLogger{})
+		require.NoError(t, err)
+		return p.(*Plugin)
+	}
+	return stabilityLevel{
+		name: name,
 		chat: func(t *testing.T, prefix []schemas.ChatMessage) ([]string, bool) {
-			p, _ := newHookPlugin(t)
+			p := newPlugin(t)
 			req := &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest,
 				ChatRequest: &schemas.BifrostChatRequest{Model: "m", Input: prefix}}
 			res, _, err := p.PreLLMHook(hookCtx(), req)
@@ -751,7 +761,7 @@ var stabilityLevels = []stabilityLevel{
 			return jsonItems(t, res.ChatRequest.Input), res != req
 		},
 		respn: func(t *testing.T, prefix []schemas.ResponsesMessage) ([]string, bool) {
-			p, _ := newHookPlugin(t)
+			p := newPlugin(t)
 			req := &schemas.BifrostRequest{RequestType: schemas.ResponsesRequest,
 				ResponsesRequest: &schemas.BifrostResponsesRequest{Model: "m", Input: prefix}}
 			res, _, err := p.PreLLMHook(hookCtx(), req)
@@ -759,33 +769,37 @@ var stabilityLevels = []stabilityLevel{
 			require.Len(t, res.ResponsesRequest.Input, len(prefix))
 			return jsonItems(t, res.ResponsesRequest.Input), res != req
 		},
-	},
+	}
 }
 
-// chatAgeIn is the number of assistant messages after index i, computed here
-// independently of the compressor.
-func chatAgeIn(msgs []schemas.ChatMessage, i int) int {
+// chatAges returns, for every message, the number of assistant messages after
+// it, computed here independently of the compressor.
+func chatAges(msgs []schemas.ChatMessage) []int {
+	ages := make([]int, len(msgs))
 	n := 0
-	for _, m := range msgs[i+1:] {
-		if m.Role == schemas.ChatMessageRoleAssistant {
+	for i := len(msgs) - 1; i >= 0; i-- {
+		ages[i] = n
+		if msgs[i].Role == schemas.ChatMessageRoleAssistant {
 			n++
 		}
 	}
-	return n
+	return ages
 }
 
-// respAgeIn is the number of assistant turns (maximal runs of assistant items,
-// classified by respIsAssistantItem) after index i.
-func respAgeIn(msgs []schemas.ResponsesMessage, i int) int {
+// respAges returns, for every item, the number of assistant turns (maximal
+// runs of assistant items, classified by respIsAssistantItem) after it.
+func respAges(msgs []schemas.ResponsesMessage) []int {
+	ages := make([]int, len(msgs))
 	turns, prev := 0, false
-	for j := i + 1; j < len(msgs); j++ {
-		a := respIsAssistantItem(&msgs[j])
+	for i := len(msgs) - 1; i >= 0; i-- {
+		ages[i] = turns
+		a := respIsAssistantItem(&msgs[i])
 		if a && !prev {
 			turns++
 		}
 		prev = a
 	}
-	return turns
+	return ages
 }
 
 // allowedChat returns the indices that may differ between the results for
@@ -794,8 +808,9 @@ func respAgeIn(msgs []schemas.ResponsesMessage, i int) int {
 func allowedChat(a, b []schemas.ChatMessage, s settings) map[int]bool {
 	set := map[int]bool{}
 	lo := max(chatProtectedPrefix(a, s.ProtectedLeading), chatProtectedPrefix(b, s.ProtectedLeading))
+	ageA, ageB := chatAges(a), chatAges(b)
 	for i := lo; i < len(a); i++ {
-		if a[i].Role == schemas.ChatMessageRoleTool && chatAgeIn(a, i) < s.MinAgeTurns && chatAgeIn(b, i) >= s.MinAgeTurns {
+		if a[i].Role == schemas.ChatMessageRoleTool && ageA[i] < s.MinAgeTurns && ageB[i] >= s.MinAgeTurns {
 			set[i] = true
 		}
 	}
@@ -805,8 +820,9 @@ func allowedChat(a, b []schemas.ChatMessage, s settings) map[int]bool {
 func allowedResp(a, b []schemas.ResponsesMessage, s settings) map[int]bool {
 	set := map[int]bool{}
 	lo := max(responsesProtectedPrefix(a, s.ProtectedLeading), responsesProtectedPrefix(b, s.ProtectedLeading))
+	ageA, ageB := respAges(a), respAges(b)
 	for i := lo; i < len(a); i++ {
-		if respIsToolOutput(&a[i]) && respAgeIn(a, i) < s.MinAgeTurns && respAgeIn(b, i) >= s.MinAgeTurns {
+		if respIsToolOutput(&a[i]) && ageA[i] < s.MinAgeTurns && ageB[i] >= s.MinAgeTurns {
 			set[i] = true
 		}
 	}
@@ -821,10 +837,21 @@ func clip(s string) string {
 }
 
 // checkStability walks consecutive pairs of per-turn results and reports every
-// index that changed without being in that pair's allowed set. It returns how
-// many allowed indices did change, so a caller can assert the test is not vacuous.
-func checkStability(t *testing.T, outs [][]string, flags []bool, allowed []map[int]bool) (edits int) {
+// index that changed without being in that pair's allowed set. It also checks
+// every index that is not an eligible output in its own request is byte-identical
+// to the input (ins[k] is the input JSON, eligible[k] the eligible indices of
+// turn k). It returns how many allowed indices did change, so a caller can
+// assert the test is not vacuous.
+func checkStability(t *testing.T, ins, outs [][]string, flags []bool, allowed, eligible []map[int]bool) (edits int) {
 	t.Helper()
+	for k := range outs {
+		for i := range outs[k] {
+			if !eligible[k][i] && outs[k][i] != ins[k][i] {
+				t.Errorf("turn %d (compressed %v): index %d is not an eligible output but was edited\n  input: %s\n  sent:  %s",
+					k+1, flags[k], i, clip(ins[k][i]), clip(outs[k][i]))
+			}
+		}
+	}
 	for k := 0; k+1 < len(outs); k++ {
 		for i := range outs[k] {
 			if outs[k][i] == outs[k+1][i] {
@@ -841,23 +868,55 @@ func checkStability(t *testing.T, outs [][]string, flags []bool, allowed []map[i
 	return edits
 }
 
-func runChatStability(t *testing.T, msgs []schemas.ChatMessage, wantEdits bool) {
+// eligibleChat returns the tool outputs of msgs that are old enough and
+// outside the protected prefix, computed independently of the compressor.
+func eligibleChat(msgs []schemas.ChatMessage, s settings) map[int]bool {
+	set := map[int]bool{}
+	ages := chatAges(msgs)
+	for i := chatProtectedPrefix(msgs, s.ProtectedLeading); i < len(msgs); i++ {
+		if msgs[i].Role == schemas.ChatMessageRoleTool && ages[i] >= s.MinAgeTurns {
+			set[i] = true
+		}
+	}
+	return set
+}
+
+func eligibleResp(msgs []schemas.ResponsesMessage, s settings) map[int]bool {
+	set := map[int]bool{}
+	ages := respAges(msgs)
+	for i := responsesProtectedPrefix(msgs, s.ProtectedLeading); i < len(msgs); i++ {
+		if respIsToolOutput(&msgs[i]) && ages[i] >= s.MinAgeTurns {
+			set[i] = true
+		}
+	}
+	return set
+}
+
+func runChatStability(t *testing.T, msgs []schemas.ChatMessage, wantEdits bool, levels ...stabilityLevel) {
 	t.Helper()
+	if len(levels) == 0 {
+		levels = stabilityLevels
+	}
 	s := defaults(t)
 	bounds := chatTurnBounds(msgs)
 	require.Greater(t, len(bounds), 2)
-	for _, lvl := range stabilityLevels {
+	for _, lvl := range levels {
 		t.Run(lvl.name, func(t *testing.T) {
+			ins := make([][]string, len(bounds))
 			outs := make([][]string, len(bounds))
 			flags := make([]bool, len(bounds))
+			elig := make([]map[int]bool, len(bounds))
+			full := jsonItems(t, msgs)
 			for k, end := range bounds {
+				ins[k] = full[:end]
+				elig[k] = eligibleChat(msgs[:end], s)
 				outs[k], flags[k] = lvl.chat(t, msgs[:end])
 			}
 			allowed := make([]map[int]bool, len(bounds)-1)
 			for k := range allowed {
 				allowed[k] = allowedChat(msgs[:bounds[k]], msgs[:bounds[k+1]], s)
 			}
-			edits := checkStability(t, outs, flags, allowed)
+			edits := checkStability(t, ins, outs, flags, allowed, elig)
 			t.Logf("%d turns, %d eligibility-time edits, compressed per turn: %v", len(bounds), edits, flags)
 			if wantEdits {
 				require.Positive(t, edits, "vacuous: nothing was ever edited")
@@ -866,23 +925,31 @@ func runChatStability(t *testing.T, msgs []schemas.ChatMessage, wantEdits bool) 
 	}
 }
 
-func runRespStability(t *testing.T, msgs []schemas.ResponsesMessage, wantEdits bool) {
+func runRespStability(t *testing.T, msgs []schemas.ResponsesMessage, wantEdits bool, levels ...stabilityLevel) {
 	t.Helper()
+	if len(levels) == 0 {
+		levels = stabilityLevels
+	}
 	s := defaults(t)
 	bounds := responsesTurnBounds(msgs)
 	require.Greater(t, len(bounds), 2)
-	for _, lvl := range stabilityLevels {
+	for _, lvl := range levels {
 		t.Run(lvl.name, func(t *testing.T) {
+			ins := make([][]string, len(bounds))
 			outs := make([][]string, len(bounds))
 			flags := make([]bool, len(bounds))
+			elig := make([]map[int]bool, len(bounds))
+			full := jsonItems(t, msgs)
 			for k, end := range bounds {
+				ins[k] = full[:end]
+				elig[k] = eligibleResp(msgs[:end], s)
 				outs[k], flags[k] = lvl.respn(t, msgs[:end])
 			}
 			allowed := make([]map[int]bool, len(bounds)-1)
 			for k := range allowed {
 				allowed[k] = allowedResp(msgs[:bounds[k]], msgs[:bounds[k+1]], s)
 			}
-			edits := checkStability(t, outs, flags, allowed)
+			edits := checkStability(t, ins, outs, flags, allowed, elig)
 			t.Logf("%d turns, %d eligibility-time edits, compressed per turn: %v", len(bounds), edits, flags)
 			if wantEdits {
 				require.Positive(t, edits, "vacuous: nothing was ever edited")
@@ -943,10 +1010,34 @@ func respDupVariant(t *testing.T) []schemas.ResponsesMessage {
 	msgs := respBase(t)
 	dup := rmOutStr(msgs[5])
 	id := 100
-	for k, text := range []string{"filler 1", "filler 2", dup, "filler 3", "filler 4", "filler 5", dup, "filler 6", "filler 7"} {
-		_ = k
+	for _, text := range []string{"filler 1", "filler 2", dup, "filler 3", "filler 4", "filler 5", dup, "filler 6", "filler 7"} {
 		id++
 		cid := fmt.Sprintf("call_%d", id)
+		msgs = append(msgs, rmCall(cid), rmOut(cid, text))
+	}
+	return respFinal(msgs)
+}
+
+// stubSeq is a sequence of tool outputs where the big text "dup" repeats
+// within MinAgeTurns turns (so the older copy is stubbed the moment it becomes
+// eligible) and again later.
+func stubSeq(dup string) []string {
+	return []string{"f1", dup, dup, "f2", dup, "f3", "f4", dup, "f5", "f6", dup, "f7", "f8", "f9"}
+}
+
+func chatStubVariant(t *testing.T) []schemas.ChatMessage {
+	msgs := chatBase(t)
+	for i, text := range stubSeq(bigOutput(120)) {
+		cid := fmt.Sprintf("call_%d", 300+i)
+		msgs = append(msgs, assistantCall(cid), toolMsg(cid, text))
+	}
+	return chatFinal(msgs)
+}
+
+func respStubVariant(t *testing.T) []schemas.ResponsesMessage {
+	msgs := respBase(t)
+	for i, text := range stubSeq(bigOutput(120)) {
+		cid := fmt.Sprintf("call_%d", 300+i)
 		msgs = append(msgs, rmCall(cid), rmOut(cid, text))
 	}
 	return respFinal(msgs)
@@ -997,43 +1088,87 @@ func respPressureVariant(t *testing.T) []schemas.ResponsesMessage {
 func TestCrossTurnPrefixStabilityChat(t *testing.T) {
 	t.Run("base", func(t *testing.T) { runChatStability(t, chatFinal(chatBase(t)), true) })
 	t.Run("duplicates", func(t *testing.T) { runChatStability(t, chatDupVariant(t), true) })
+	t.Run("stubs", func(t *testing.T) {
+		msgs := chatStubVariant(t)
+		out, _ := compressChat(msgs, defaults(t))
+		stubs := 0
+		for _, m := range out {
+			if m.Content != nil && m.Content.ContentStr != nil && strings.HasPrefix(*m.Content.ContentStr, "[identical to the output of call") {
+				stubs++
+			}
+		}
+		require.Positive(t, stubs, "variant must create stubs")
+		runChatStability(t, msgs, true)
+	})
 	t.Run("huge_fresh_output", func(t *testing.T) { runChatStability(t, chatHugeVariant(t), true) })
-	t.Run("threshold_pressure", func(t *testing.T) { runChatStability(t, chatPressureVariant(t), false) })
+	t.Run("threshold_pressure", func(t *testing.T) { runChatStability(t, chatPressureVariant(t), true) })
 }
 
 func TestCrossTurnPrefixStabilityResponses(t *testing.T) {
 	t.Run("base", func(t *testing.T) { runRespStability(t, respFinal(respBase(t)), true) })
 	t.Run("duplicates", func(t *testing.T) { runRespStability(t, respDupVariant(t), true) })
+	t.Run("stubs", func(t *testing.T) {
+		msgs := respStubVariant(t)
+		out, _ := compressResponses(msgs, defaults(t))
+		stubs := 0
+		for i := range out {
+			if respIsToolOutput(&out[i]) {
+				if s, ok := respOutputAllText(&out[i]); ok && strings.HasPrefix(s, "[identical to the output of call") {
+					stubs++
+				}
+			}
+		}
+		require.Positive(t, stubs, "variant must create stubs")
+		runRespStability(t, msgs, true)
+	})
 	t.Run("huge_fresh_output", func(t *testing.T) { runRespStability(t, respHugeVariant(t), true) })
-	t.Run("threshold_pressure", func(t *testing.T) { runRespStability(t, respPressureVariant(t), false) })
+	t.Run("threshold_pressure", func(t *testing.T) { runRespStability(t, respPressureVariant(t), true) })
 }
 
 // ---- long-history benchmarks --------------------------------------------
 
-// largeHistoryChat builds a ~800 KB agent session of 100 rounds. Each output is
-// distinct multi-line text so old ones get trimmed.
+// largeHistoryOutputs returns 100 tool outputs of ~8 KB (~800 KB total), a
+// mix of what real sessions hold: trimmable multi-line text, untrimmable
+// single-line text, whitespace-padded text and exact repeats of the previous
+// output (a duplicate within MinAgeTurns, which gets stubbed).
+func largeHistoryOutputs() []string {
+	outs := make([]string, 100)
+	for r := range outs {
+		var sb strings.Builder
+		switch {
+		case r%7 == 0:
+			sb.WriteString(singleLine(r, 8000))
+		case r%4 == 2:
+			outs[r] = outs[r-1]
+			continue
+		case r%5 == 1:
+			for l := 0; sb.Len() < 8000; l++ {
+				fmt.Fprintf(&sb, "round %03d line %04d: padded   \n\n\n\n", r, l)
+			}
+		default:
+			for l := 0; sb.Len() < 8000; l++ {
+				fmt.Fprintf(&sb, "round %03d line %04d: some tool output content here\n", r, l)
+			}
+		}
+		outs[r] = sb.String()
+	}
+	return outs
+}
+
 func largeHistoryChat() []schemas.ChatMessage {
 	msgs := []schemas.ChatMessage{textMsg(schemas.ChatMessageRoleSystem, "sys"), textMsg(schemas.ChatMessageRoleUser, "go")}
-	for r := 0; r < 100; r++ {
+	for r, o := range largeHistoryOutputs() {
 		cid := fmt.Sprintf("call_%d", r)
-		var sb strings.Builder
-		for l := 0; sb.Len() < 8000; l++ {
-			fmt.Fprintf(&sb, "round %03d line %04d: some tool output content here\n", r, l)
-		}
-		msgs = append(msgs, assistantCall(cid), toolMsg(cid, sb.String()))
+		msgs = append(msgs, assistantCall(cid), toolMsg(cid, o))
 	}
 	return msgs
 }
 
 func largeHistoryResponses() []schemas.ResponsesMessage {
 	msgs := []schemas.ResponsesMessage{rmText(schemas.ResponsesInputMessageRoleSystem, "sys"), rmText(schemas.ResponsesInputMessageRoleUser, "go")}
-	for r := 0; r < 100; r++ {
+	for r, o := range largeHistoryOutputs() {
 		cid := fmt.Sprintf("call_%d", r)
-		var sb strings.Builder
-		for l := 0; sb.Len() < 8000; l++ {
-			fmt.Fprintf(&sb, "round %03d line %04d: some tool output content here\n", r, l)
-		}
-		msgs = append(msgs, rmCall(cid), rmOut(cid, sb.String()))
+		msgs = append(msgs, rmCall(cid), rmOut(cid, o))
 	}
 	return msgs
 }
@@ -1064,13 +1199,13 @@ func BenchmarkPreLLMHookNoopEnabledChat(b *testing.B) {
 // longPressureRounds is enough untrimmable single-line rounds that a
 // percentage threshold on the eligible region would eventually fall below 5%
 // and flip the hook back to the original request (it did at about 74 rounds).
-const longPressureRounds = 90
+const longPressureRounds = 80
 
 func chatLongPressureVariant(t *testing.T) []schemas.ChatMessage {
 	msgs := chatBase(t)
 	for i := 0; i < longPressureRounds; i++ {
 		cid := fmt.Sprintf("call_%d", 200+i)
-		msgs = append(msgs, assistantCall(cid), toolMsg(cid, singleLine(i, 8000)))
+		msgs = append(msgs, assistantCall(cid), toolMsg(cid, singleLine(i, 2400)))
 	}
 	return chatFinal(msgs)
 }
@@ -1079,45 +1214,54 @@ func respLongPressureVariant(t *testing.T) []schemas.ResponsesMessage {
 	msgs := respBase(t)
 	for i := 0; i < longPressureRounds; i++ {
 		cid := fmt.Sprintf("call_%d", 200+i)
-		msgs = append(msgs, rmCall(cid), rmOut(cid, singleLine(i, 8000)))
+		msgs = append(msgs, rmCall(cid), rmOut(cid, singleLine(i, 2400)))
 	}
 	return respFinal(msgs)
 }
 
 // Hook level only: compression must never switch off once it is on, however
-// much untrimmable output accumulates.
+// much untrimmable output accumulates, with the default threshold and with an
+// explicit one (the saved tokens only grow, so both stay on).
+func longPressureLevels() []stabilityLevel {
+	return []stabilityLevel{hookLevel("hook_default", nil), hookLevel("hook_200", &Config{MinSavingsTokens: intp(200)})}
+}
+
 func TestHookStabilityLongThresholdPressureChat(t *testing.T) {
-	msgs := chatLongPressureVariant(t)
-	s := defaults(t)
-	bounds := chatTurnBounds(msgs)
-	outs := make([][]string, len(bounds))
-	flags := make([]bool, len(bounds))
-	for k, end := range bounds {
-		outs[k], flags[k] = stabilityLevels[1].chat(t, msgs[:end])
-	}
-	allowed := make([]map[int]bool, len(bounds)-1)
-	for k := range allowed {
-		allowed[k] = allowedChat(msgs[:bounds[k]], msgs[:bounds[k+1]], s)
-	}
-	checkStability(t, outs, flags, allowed)
-	require.True(t, flags[len(flags)-1], "hook must still compress after %d rounds", longPressureRounds)
+	runChatStability(t, chatLongPressureVariant(t), true, longPressureLevels()...)
 }
 
 func TestHookStabilityLongThresholdPressureResponses(t *testing.T) {
-	msgs := respLongPressureVariant(t)
-	s := defaults(t)
-	bounds := responsesTurnBounds(msgs)
-	outs := make([][]string, len(bounds))
-	flags := make([]bool, len(bounds))
-	for k, end := range bounds {
-		outs[k], flags[k] = stabilityLevels[1].respn(t, msgs[:end])
+	runRespStability(t, respLongPressureVariant(t), true, longPressureLevels()...)
+}
+
+// TestHookMovingCacheMarker: when a client adds a cache marker to a later
+// message, outputs inside the new protected prefix revert to what the client
+// sent, and edits outside the prefix stay byte-identical.
+func TestHookMovingCacheMarker(t *testing.T) {
+	// A: large (trimmed); B: small, edited by whitespace normalisation only.
+	a := bigOutput(300)
+	b := strings.Repeat("ok line   \n", 30)
+	build := func() []schemas.ChatMessage {
+		return rounds(a, b, "c", "d")
 	}
-	allowed := make([]map[int]bool, len(bounds)-1)
-	for k := range allowed {
-		allowed[k] = allowedResp(msgs[:bounds[k]], msgs[:bounds[k+1]], s)
+	// Round i has its assistant at 2+2i and its output at 3+2i: A=3, B=5.
+	n := build()
+	n1 := append(build(), assistantCall("call_5"), toolMsg("call_5", "e"))
+	n1[4].ChatAssistantMessage.ToolCalls[0].CacheControl = &schemas.CacheControl{Type: "ephemeral"}
+	require.Equal(t, 5, chatProtectedPrefix(n1, 1), "marker protects A but not B")
+
+	p, _ := newHookPlugin(t)
+	send := func(in []schemas.ChatMessage) []schemas.ChatMessage {
+		req := &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{Model: "m", Input: in}}
+		res, _, err := p.PreLLMHook(hookCtx(), req)
+		require.NoError(t, err)
+		return res.ChatRequest.Input
 	}
-	checkStability(t, outs, flags, allowed)
-	require.True(t, flags[len(flags)-1], "hook must still compress after %d rounds", longPressureRounds)
+	outN, outN1 := send(n), send(n1)
+	require.NotEqual(t, a, strOf(outN[3]), "precondition: A trimmed at N")
+	require.NotEqual(t, b, strOf(outN[5]), "precondition: B edited at N")
+	require.Equal(t, a, strOf(outN1[3]), "A inside the new prefix equals the client's original")
+	require.Equal(t, mustJSON(t, outN[5]), mustJSON(t, outN1[5]), "B outside the prefix stays byte-identical")
 }
 
 // savedTokens runs the hook and returns the tokens it saved (0 when the

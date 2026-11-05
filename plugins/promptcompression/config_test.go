@@ -18,7 +18,7 @@ func TestResolveDefaults(t *testing.T) {
 	}
 	want := settings{
 		MinAgeTurns: 2, MinTokens: 500, HeadLines: 20, TailLines: 20,
-		ProtectedLeading: 1, MinSavingsTokens: 200, Dedupe: true, Whitespace: true,
+		ProtectedLeading: 1, MinSavingsTokens: 0, Dedupe: true, Whitespace: true,
 	}
 	if s != want {
 		t.Fatalf("got %+v, want %+v", s, want)
@@ -88,7 +88,7 @@ func TestGetName(t *testing.T) {
 
 func TestResolveMinSavingsTokens(t *testing.T) {
 	s, err := (&Config{}).resolve()
-	if err != nil || s.MinSavingsTokens != 200 {
+	if err != nil || s.MinSavingsTokens != 0 {
 		t.Fatalf("default: got %+v, %v", s, err)
 	}
 	_, err = (&Config{MinSavingsTokens: intp(-1)}).resolve()
@@ -104,7 +104,7 @@ func TestOldMinSavingsPercentIgnored(t *testing.T) {
 		t.Fatal(err)
 	}
 	s, err := c.resolve()
-	if err != nil || s.MinSavingsTokens != 200 {
+	if err != nil || s.MinSavingsTokens != 0 {
 		t.Fatalf("got %+v, %v", s, err)
 	}
 }

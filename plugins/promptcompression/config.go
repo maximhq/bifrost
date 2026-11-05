@@ -53,7 +53,7 @@ func (c *Config) resolve() (settings, error) {
 		HeadLines:        orInt(c.KeepHeadLines, 20),
 		TailLines:        orInt(c.KeepTailLines, 20),
 		ProtectedLeading: orInt(c.ProtectedLeadingMessages, 1),
-		MinSavingsTokens: orInt(c.MinSavingsTokens, 200),
+		MinSavingsTokens: orInt(c.MinSavingsTokens, 0),
 		Dedupe:           orBool(c.DedupeToolOutputs, true),
 		Whitespace:       orBool(c.NormalizeWhitespace, true),
 	}

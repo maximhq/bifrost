@@ -151,10 +151,17 @@ func (p *Plugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostReq
 
 // afterIfWorthwhile returns the estimated token count of the compressed
 // request, or -1 when the original should be sent: nothing changed, nothing
-// was eligible, the compression saved fewer than MinSavingsTokens eligible tokens, or
-// the whole request did not get strictly smaller. The threshold is absolute
-// because edits are stable and the eligible set only grows: saved never
-// decreases between requests, so once compression is on it stays on.
+// was eligible, the compression saved fewer than MinSavingsTokens eligible
+// tokens, or the whole request did not get strictly smaller.
+//
+// Stability: edits are fixed once made and the eligible set only grows, so
+// while the client's protected (cache-marked) prefix does not move, saved never
+// decreases between requests and a threshold never switches compression off.
+// When a client moves a cache marker forward, outputs inside the new prefix
+// leave the eligible set and revert to the text the client sent (they must stay
+// byte-identical to the input); edits outside the prefix stay. The default
+// threshold is 0 so that this can never turn the hook off; a larger value can
+// switch compression on late and off again when a marker moves.
 func (p *Plugin) afterIfWorthwhile(before int, st stats) int {
 	if !st.Changed || st.EligibleBefore == 0 {
 		return -1
