@@ -1,4 +1,9 @@
 - fix: Gemini chat requests replay the thought signature of a function call from `extra_content.google.thought_signature` instead of writing skip_thought_signature_validator over it (#8149) [@pcbeingused333](https://github.com/pcbeingused333)
+- fix: anthropic - Claude Haiku 5.x takes reasoning effort as adaptive thinking plus output_config.effort, chat and Responses requests drop its sampling params, and custom providers with an Anthropic base read their base provider's datasheet capabilities (#9490) [@macdod](https://github.com/macdod)
 - fix: anthropic - Responses requests drop empty text blocks instead of forwarding them for a 400 (#9318) [@david-choi-querypie](https://github.com/david-choi-querypie)
 - fix: anthropic - preserve explicit web search and web fetch versions, and keep a declared code execution tool beside versions that do not auto-inject it (#9258) [@ykakade](https://github.com/ykakade)
 - fix: multi-key providers - follow-up calls on a stored response, container or video now find the key that created it instead of returning 404 from another key; video list pages across every key
+- feat: count the containers a request starts through OpenAI and Azure code interpreter and hosted shell on `usage.tool_usage.container_sessions`, so they can be billed
+- fix: openai - count a container started under `previous_response_id` or `conversation`, by the creation time in its id, instead of always treating it as reused
+- feat: anthropic - count the code execution containers a request starts on `usage.tool_usage.container_sessions`, so they can be billed
+- fix: openai - keep `tool_usage.image_gen` on Responses API output instead of dropping it, and record the image tool's model so its tokens can be billed

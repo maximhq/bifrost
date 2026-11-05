@@ -1,3 +1,4 @@
+import type { Page } from '@playwright/test'
 import { expect, test } from '../../core/fixtures/base.fixture'
 
 const listLog = {
@@ -219,5 +220,167 @@ test.describe('MCP Log Prompt and Resource Reads', () => {
       await expect(mcpLogsPage.logDetailSheet.getByTestId('mcplogdetails-tool-label')).toHaveText(label)
       await mcpLogsPage.closeLogDetails()
     }
+  })
+})
+
+const ROUND_TRIP = '0123456789abcdef'
+const roundTripLogs = [
+  {
+    ...listLog,
+    id: 'mcp-rt-ask',
+    request_id: 'req-mcp-rt-ask',
+    tool_name: 'ask_environment',
+    server_label: 'deploy',
+    status: 'input_required',
+    round_trip_id: ROUND_TRIP,
+    result: { input_requests: { environment: { method: 'elicitation/create', params: { message: 'Which environment?' } } } },
+    metadata: {},
+  },
+  {
+    ...listLog,
+    id: 'mcp-rt-answer',
+    request_id: 'req-mcp-rt-answer',
+    tool_name: 'ask_environment',
+    server_label: 'deploy',
+    round_trip_id: ROUND_TRIP,
+    result: 'deployed to staging',
+    metadata: { input_responses: { environment: { action: 'accept', content: { environment: 'staging' } } } },
+  },
+  {
+    ...listLog,
+    id: 'mcp-rt-busy',
+    request_id: 'req-mcp-rt-busy',
+    tool_name: 'busy',
+    server_label: 'deploy',
+    status: 'input_required',
+    round_trip_id: 'fedcba9876543210',
+    metadata: { retry_later: true },
+  },
+  {
+    ...listLog,
+    id: 'mcp-apps-call',
+    request_id: 'req-mcp-apps-call',
+    tool_name: 'refresh',
+    server_label: 'dash',
+    result: 'refreshed',
+    metadata: { mcp_apps: true, app_only: true, ui_resource_uri: 'ui://dash/view', requested_name: 'refresh' },
+  },
+]
+
+// stubRoundTripLogs serves roundTripLogs, narrowed by round_trip_id like the API, and records each list request's round_trip_id.
+async function stubRoundTripLogs(page: Page, listedRoundTrips: string[]) {
+  await page.route('**/api/mcp-logs**', async (route) => {
+    const url = new URL(route.request().url())
+    const detail = roundTripLogs.find((log) => url.pathname === `/api/mcp-logs/${log.id}`)
+    if (detail) {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(detail) })
+      return
+    }
+    const roundTrip = url.searchParams.get('round_trip_id') || ''
+    const logs = roundTrip ? roundTripLogs.filter((log) => 'round_trip_id' in log && log.round_trip_id === roundTrip) : roundTripLogs
+    const stats = { total_executions: logs.length, success_rate: 100, average_latency: 42, total_cost: 0 }
+    if (url.pathname === '/api/mcp-logs/stats') {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(stats) })
+      return
+    }
+    if (url.pathname === '/api/mcp-logs/filterdata') {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ tool_names: ['ask_environment', 'busy', 'refresh'], server_labels: ['deploy', 'dash'], virtual_keys: [] }),
+      })
+      return
+    }
+    if (url.pathname === '/api/mcp-logs') {
+      listedRoundTrips.push(roundTrip)
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          logs,
+          pagination: { limit: 50, offset: 0, sort_by: 'timestamp', order: 'desc', total_count: logs.length },
+          stats,
+          has_logs: true,
+        }),
+      })
+      return
+    }
+    await route.continue()
+  })
+}
+
+test.describe('MCP Log Round Trips and MCP Apps', () => {
+  test('a paused round shows the question and a Rounds tab that opens the answering retry', async ({ mcpLogsPage, page }) => {
+    await stubRoundTripLogs(page, [])
+    await mcpLogsPage.goto()
+    await expect(mcpLogsPage.logsTable).toBeVisible()
+
+    await mcpLogsPage.viewLogDetails(0)
+    const sheet = mcpLogsPage.logDetailSheet
+    await expect(sheet.getByText('Needs input').first()).toBeVisible()
+    await expect(sheet.getByTestId('mcplogdetails-input-requested')).toContainText('Which environment?')
+
+    const roundsTab = sheet.getByTestId('mcplogdetails-rounds-tab')
+    await expect(roundsTab).toContainText('Rounds')
+    await expect(roundsTab).toContainText('2')
+    await roundsTab.click()
+    const rounds = sheet.getByRole('tabpanel').locator('tbody tr')
+    await expect(rounds).toHaveCount(2)
+
+    await rounds.nth(1).click()
+    await expect(page).toHaveURL(/selected_log=mcp-rt-answer/)
+    await expect(page).toHaveURL(new RegExp(`round_trip_id=${ROUND_TRIP}`))
+    await expect(mcpLogsPage.logDetailSheet.getByTestId('mcplogdetails-input-answered')).toContainText('staging')
+  })
+
+  test('a retry-later round says it asked for no input and has no Rounds tab of its own', async ({ mcpLogsPage, page }) => {
+    await stubRoundTripLogs(page, [])
+    await mcpLogsPage.goto()
+    await expect(mcpLogsPage.logsTable).toBeVisible()
+
+    await mcpLogsPage.viewLogDetails(2)
+    const sheet = mcpLogsPage.logDetailSheet
+    await expect(sheet.getByTestId('mcplogdetails-retry-later')).toContainText('Retry later')
+    await expect(sheet.getByTestId('mcplogdetails-retry-later')).toContainText('without asking for input')
+    await expect(sheet.getByTestId('mcplogdetails-input-requested')).toHaveCount(0)
+    await expect(sheet.getByTestId('mcplogdetails-rounds-tab')).toHaveCount(0)
+  })
+
+  test('a call through MCP Apps shows what Bifrost recorded about it', async ({ mcpLogsPage, page }) => {
+    await stubRoundTripLogs(page, [])
+    await mcpLogsPage.goto()
+    await expect(mcpLogsPage.logsTable).toBeVisible()
+
+    await mcpLogsPage.viewLogDetails(3)
+    const sheet = mcpLogsPage.logDetailSheet
+    await sheet.getByText('More details').click()
+    const apps = sheet.getByTestId('mcplogdetails-mcp-apps')
+    for (const marker of ['Caller hosts MCP Apps', 'App-only tool', 'Opens ui://dash/view', 'Called as refresh']) {
+      await expect(apps).toContainText(marker)
+    }
+  })
+
+  test('the sidebar filters by round trip ID and labels every status', async ({ mcpLogsPage, page }) => {
+    const listedRoundTrips: string[] = []
+    await stubRoundTripLogs(page, listedRoundTrips)
+    await mcpLogsPage.goto()
+    await expect(mcpLogsPage.logsTable).toBeVisible()
+
+    for (const [status, label] of [['success', 'Success'], ['error', 'Error'], ['processing', 'Processing'], ['cancelled', 'Cancelled'], ['input_required', 'Needs input']] as const) {
+      await expect(page.getByTestId(`mcp-status-filter-${status}`)).toHaveText(label)
+    }
+
+    await page.getByRole('button', { name: 'Round trip ID' }).click()
+    const input = page.getByTestId('mcp-round-trip-id-filter')
+    await input.fill(ROUND_TRIP)
+    await expect.poll(() => listedRoundTrips.at(-1), { timeout: 5000 }).toBe(ROUND_TRIP)
+    await expect(mcpLogsPage.tableRows).toHaveCount(2)
+
+    await expect(page).toHaveURL(new RegExp(`round_trip_id=${ROUND_TRIP}`))
+
+    // Clearing it drops the filter; the unfiltered list may come from cache, so the page is checked, not a request.
+    await input.fill('')
+    await expect(page).not.toHaveURL(/round_trip_id=/)
+    await expect(mcpLogsPage.tableRows).toHaveCount(roundTripLogs.length)
   })
 })

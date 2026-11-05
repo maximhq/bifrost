@@ -1,6 +1,9 @@
 package schemas
 
 import (
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -255,4 +258,30 @@ func TestPromptAndResourceForLog(t *testing.T) {
 	assert.Equal(t, data, nested.Content[1].(mcp.AudioContent).Data, "the served result is untouched")
 	assert.Nil(t, PromptForLog(nil))
 	assert.Nil(t, ResourceContentsForLog(nil))
+
+	// An MCP App's HTML is logged as its size and a short hash, not the hundreds of KB it serves.
+	html := "<html>" + strings.Repeat("x", 3*1024) + "</html>"
+	app := &mcp.ReadResourceResult{Contents: []mcp.ResourceContents{
+		mcp.TextResourceContents{URI: "ui://dash/view", MIMEType: MCPAppsMimeType, Text: html},
+		&mcp.TextResourceContents{URI: "ui://dash/item", MIMEType: MCPAppsMimeType, Text: html},
+		mcp.TextResourceContents{URI: "file:///page.html", MIMEType: "text/html", Text: html},
+	}}
+	loggedApp := ResourceContentsForLog(app)
+	sum := sha256.Sum256([]byte(html))
+	placeholder := "[MCP App HTML, 3 KB, sha256 " + hex.EncodeToString(sum[:8]) + ", not shown]"
+	assert.Equal(t, placeholder, loggedApp[0].(mcp.TextResourceContents).Text)
+	assert.Equal(t, loggedApp[0].(mcp.TextResourceContents).Text, loggedApp[1].(mcp.TextResourceContents).Text, "pointer contents get the same placeholder")
+	assert.Equal(t, "ui://dash/view", loggedApp[0].(mcp.TextResourceContents).URI)
+	assert.Equal(t, html, loggedApp[2].(mcp.TextResourceContents).Text, "other HTML is logged as is")
+	assert.Equal(t, html, app.Contents[0].(mcp.TextResourceContents).Text, "the served result is untouched")
+
+	// An MCP App served as base64 gets the same placeholder; a blob that is not valid base64 is still not shown.
+	blobs := ResourceContentsForLog(&mcp.ReadResourceResult{Contents: []mcp.ResourceContents{
+		mcp.BlobResourceContents{URI: "ui://dash/view", MIMEType: MCPAppsMimeType, Blob: base64.StdEncoding.EncodeToString([]byte(html))},
+		&mcp.BlobResourceContents{URI: "ui://dash/item", MIMEType: MCPAppsMimeType, Blob: base64.StdEncoding.EncodeToString([]byte(html))},
+		mcp.BlobResourceContents{URI: "ui://dash/bad", MIMEType: MCPAppsMimeType, Blob: "not base64!"},
+	}})
+	assert.Equal(t, placeholder, blobs[0].(mcp.BlobResourceContents).Blob)
+	assert.Equal(t, placeholder, blobs[1].(mcp.BlobResourceContents).Blob)
+	assert.Equal(t, MediaPlaceholder(MCPAppsMimeType, len("not base64!")), blobs[2].(mcp.BlobResourceContents).Blob)
 }

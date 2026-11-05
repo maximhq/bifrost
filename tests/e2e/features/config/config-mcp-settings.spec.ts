@@ -10,6 +10,8 @@ test.describe('MCP Settings', () => {
     await expect(configSettingsPage.page.getByTestId('mcp-settings-view')).toBeVisible()
     await expect(configSettingsPage.page.getByTestId('mcp-agent-depth-input')).toBeVisible()
     await expect(configSettingsPage.page.getByTestId('mcp-tool-timeout-input')).toBeVisible()
+    // Binding level sits inside the collapsed Code Mode Settings section.
+    await configSettingsPage.page.getByTestId('mcp-settings-code-mode-trigger').click()
     await expect(configSettingsPage.page.getByTestId('mcp-binding-level')).toBeVisible()
   })
 
