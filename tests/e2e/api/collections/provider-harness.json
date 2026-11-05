@@ -304968,6 +304968,275 @@
           ]
         }
       ]
+    },
+    {
+      "name": "310. Anthropic deferred web search continuation (#9591) (deferred web search)",
+      "description": "When Claude calls a client tool and web_search in the same turn, Anthropic defers the search: the turn ends with stop_reason tool_use and a server_tool_use that has no web_search_tool_result. The client sends that turn back unchanged with the client tool_result blocks, and Anthropic then runs the search.\n\nBifrost rebuilt that turn with a web_search_tool_result after every web_search server_tool_use, so the pending search reached Anthropic as a finished one placed after the client tool_use, and the request was rejected with 400 '`tool_use` ids were found without `tool_result` blocks immediately after' (#9591). The non-streaming response carried the same made-up empty result back to the client.\n\nEach pair is a chain: turn 1 asks for both calls in one reply and saves the output; turn 2 sends it back with the client tool result and asserts a 200 plus the exact upstream blocks via raw_request. The /anthropic/v1/messages pair pins the native route (raw response echo is off so the reply goes through Bifrost's rebuild). The /v1/responses pair pins the neutral route, where the pending search is a web_search_call with status in_progress.",
+      "item": [
+        {
+          "name": "anthropic/claude-sonnet-4-6 /anthropic/v1/messages deferred web search turn 1: search called beside a client tool comes back with no result - #9591",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.unset('deferredSearchMessagesContent');",
+                  "pm.collectionVariables.unset('deferredSearchMessagesSearchId');",
+                  "pm.collectionVariables.unset('deferredSearchMessagesToolUseId');",
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "pm.test('deferred web search messages turn 1: 200', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "var content = body.content || [];",
+                  "var kinds = JSON.stringify(content.map(function (b) { return b.type + (b.name ? ':' + b.name : ''); }));",
+                  "var call = content.filter(function (b) { return b.type === 'tool_use' && b.name === 'get_pod_status'; })[0];",
+                  "var use = content.filter(function (b) { return b.type === 'server_tool_use' && b.name === 'web_search'; })[0];",
+                  "pm.test('deferred web search messages turn 1: get_pod_status and web_search were called in one turn', function () {",
+                  "  pm.expect(call, 'no tool_use named get_pod_status: ' + kinds).to.be.an('object');",
+                  "  pm.expect(use, 'no web_search server_tool_use: ' + kinds).to.be.an('object');",
+                  "  pm.expect(body.stop_reason, kinds).to.eql('tool_use');",
+                  "});",
+                  "pm.test('deferred web search messages turn 1: the deferred search has no web_search_tool_result', function () {",
+                  "  var results = content.filter(function (b) { return b.type === 'web_search_tool_result' && use && b.tool_use_id === use.id; });",
+                  "  pm.expect(results, 'Anthropic has not run this search yet; a result block here (empty content) is one the gateway made up: ' + JSON.stringify(results)).to.have.lengthOf(0);",
+                  "});",
+                  "if (pm.response.code === 200 && call && use) {",
+                  "  pm.collectionVariables.set('deferredSearchMessagesContent', JSON.stringify(content));",
+                  "  pm.collectionVariables.set('deferredSearchMessagesSearchId', use.id);",
+                  "  pm.collectionVariables.set('deferredSearchMessagesToolUseId', call.id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-response",
+                "value": "false"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"anthropic/claude-sonnet-4-6\",\"max_tokens\":512,\"messages\":[{\"role\":\"user\",\"content\":\"Do two things in this single reply, as two tool calls issued together: call get_pod_status for pod api-7f9, and search the web for 'kubernetes CrashLoopBackOff causes'. Issue both calls now, before reading either result.\"}],\"tools\":[{\"type\":\"web_search_20250305\",\"name\":\"web_search\",\"max_uses\":1},{\"name\":\"get_pod_status\",\"description\":\"Get the current status of a Kubernetes pod\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"pod\":{\"type\":\"string\"}},\"required\":[\"pod\"]}}]}"
+            }
+          }
+        },
+        {
+          "name": "anthropic/claude-sonnet-4-6 /anthropic/v1/messages deferred web search turn 2: bare server_tool_use reaches Anthropic and the turn is accepted - #9591",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "pm.test('deferred web search messages turn 2: 200 (Anthropic resumed the deferred search)', function () {",
+                  "  pm.expect(txt, 'the gateway turned the pending search into a finished one: ' + txt.slice(0, 600)).to.not.include('were found without');",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "var searchId = pm.collectionVariables.get('deferredSearchMessagesSearchId');",
+                  "pm.test('deferred web search messages turn 2: raw_request captured', function () {",
+                  "  pm.expect(rr, 'extra_fields.raw_request missing - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "});",
+                  "var blocks = [];",
+                  "((rr && rr.messages) || []).forEach(function (m) { if (m.role === 'assistant' && Array.isArray(m.content)) { blocks = blocks.concat(m.content); } });",
+                  "pm.test('deferred web search messages turn 2: the pending server_tool_use is sent back with its id and query', function () {",
+                  "  var use = blocks.filter(function (b) { return b.type === 'server_tool_use' && b.id === searchId; })[0];",
+                  "  pm.expect(use, 'server_tool_use ' + searchId + ' was dropped from the replayed assistant turn: ' + wire.slice(0, 1500)).to.be.an('object');",
+                  "  pm.expect(use.name, JSON.stringify(use)).to.eql('web_search');",
+                  "  pm.expect(use.input && use.input.query, 'search query must be echoed: ' + JSON.stringify(use)).to.be.a('string').and.not.empty;",
+                  "});",
+                  "pm.test('deferred web search messages turn 2: no web_search_tool_result is added for the pending search', function () {",
+                  "  var results = blocks.filter(function (b) { return b.type === 'web_search_tool_result' && b.tool_use_id === searchId; });",
+                  "  pm.expect(results, 'Anthropic has not run this search, so any result block was made up by the gateway: ' + wire.slice(0, 1500)).to.have.lengthOf(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"anthropic/claude-sonnet-4-6\",\"max_tokens\":512,\"messages\":[{\"role\":\"user\",\"content\":\"Do two things in this single reply, as two tool calls issued together: call get_pod_status for pod api-7f9, and search the web for 'kubernetes CrashLoopBackOff causes'. Issue both calls now, before reading either result.\"},{\"role\":\"assistant\",\"content\":{{deferredSearchMessagesContent}}},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"{{deferredSearchMessagesToolUseId}}\",\"content\":\"CrashLoopBackOff, 14 restarts\"}]}],\"tools\":[{\"type\":\"web_search_20250305\",\"name\":\"web_search\",\"max_uses\":1},{\"name\":\"get_pod_status\",\"description\":\"Get the current status of a Kubernetes pod\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"pod\":{\"type\":\"string\"}},\"required\":[\"pod\"]}}]}"
+            }
+          }
+        },
+        {
+          "name": "anthropic/claude-sonnet-4-6 /v1/responses deferred web search turn 1: search called beside a function call is in_progress - #9591",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.unset('deferredSearchResponsesItems');",
+                  "pm.collectionVariables.unset('deferredSearchResponsesSearchId');",
+                  "pm.collectionVariables.unset('deferredSearchResponsesCallId');",
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "pm.test('deferred web search responses turn 1: 200', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "var output = body.output || [];",
+                  "var kinds = JSON.stringify(output.map(function (o) { return o.type + (o.name ? ':' + o.name : ''); }));",
+                  "var call = output.filter(function (o) { return o.type === 'function_call' && o.name === 'get_pod_status'; })[0];",
+                  "var search = output.filter(function (o) { return o.type === 'web_search_call'; })[0];",
+                  "pm.test('deferred web search responses turn 1: get_pod_status and web_search were called in one turn', function () {",
+                  "  pm.expect(call, 'no function_call named get_pod_status: ' + kinds).to.be.an('object');",
+                  "  pm.expect(search, 'no web_search_call in output: ' + kinds).to.be.an('object');",
+                  "  pm.expect(String(search.id || ''), 'server search id: ' + JSON.stringify(search)).to.match(/^srvtoolu_/);",
+                  "});",
+                  "pm.test('deferred web search responses turn 1: the deferred search is in_progress, not completed', function () {",
+                  "  pm.expect(search && search.status, 'Anthropic has not run this search yet; completed reports a search that never ran as finished: ' + JSON.stringify(search)).to.eql('in_progress');",
+                  "});",
+                  "if (pm.response.code === 200 && call && search) {",
+                  "  pm.collectionVariables.set('deferredSearchResponsesItems', output.map(function (o) { return JSON.stringify(o); }).join(','));",
+                  "  pm.collectionVariables.set('deferredSearchResponsesSearchId', search.id);",
+                  "  pm.collectionVariables.set('deferredSearchResponsesCallId', call.call_id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"anthropic/claude-sonnet-4-6\",\"max_output_tokens\":512,\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":\"Do two things in this single reply, as two tool calls issued together: call get_pod_status for pod api-7f9, and search the web for 'kubernetes CrashLoopBackOff causes'. Issue both calls now, before reading either result.\"}],\"tools\":[{\"type\":\"web_search\",\"web_search_version\":\"web_search_20250305\"},{\"type\":\"function\",\"name\":\"get_pod_status\",\"description\":\"Get the current status of a Kubernetes pod\",\"parameters\":{\"type\":\"object\",\"properties\":{\"pod\":{\"type\":\"string\"}},\"required\":[\"pod\"]}}]}"
+            }
+          }
+        },
+        {
+          "name": "anthropic/claude-sonnet-4-6 /v1/responses deferred web search turn 2: in_progress web_search_call reaches Anthropic as a bare server_tool_use - #9591",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "pm.test('deferred web search responses turn 2: 200 (Anthropic resumed the deferred search)', function () {",
+                  "  pm.expect(txt, 'the gateway turned the pending search into a finished one: ' + txt.slice(0, 600)).to.not.include('were found without');",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "var searchId = pm.collectionVariables.get('deferredSearchResponsesSearchId');",
+                  "pm.test('deferred web search responses turn 2: raw_request captured', function () {",
+                  "  pm.expect(rr, 'extra_fields.raw_request missing - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "});",
+                  "var blocks = [];",
+                  "((rr && rr.messages) || []).forEach(function (m) { if (m.role === 'assistant' && Array.isArray(m.content)) { blocks = blocks.concat(m.content); } });",
+                  "pm.test('deferred web search responses turn 2: the pending server_tool_use is sent back with its id and query', function () {",
+                  "  var use = blocks.filter(function (b) { return b.type === 'server_tool_use' && b.id === searchId; })[0];",
+                  "  pm.expect(use, 'server_tool_use ' + searchId + ' was dropped from the replayed assistant turn: ' + wire.slice(0, 1500)).to.be.an('object');",
+                  "  pm.expect(use.name, JSON.stringify(use)).to.eql('web_search');",
+                  "  pm.expect(use.input && use.input.query, 'search query must be echoed: ' + JSON.stringify(use)).to.be.a('string').and.not.empty;",
+                  "});",
+                  "pm.test('deferred web search responses turn 2: no web_search_tool_result is added for the pending search', function () {",
+                  "  var results = blocks.filter(function (b) { return b.type === 'web_search_tool_result' && b.tool_use_id === searchId; });",
+                  "  pm.expect(results, 'Anthropic has not run this search, so any result block was made up by the gateway: ' + wire.slice(0, 1500)).to.have.lengthOf(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"anthropic/claude-sonnet-4-6\",\"max_output_tokens\":512,\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":\"Do two things in this single reply, as two tool calls issued together: call get_pod_status for pod api-7f9, and search the web for 'kubernetes CrashLoopBackOff causes'. Issue both calls now, before reading either result.\"},{{deferredSearchResponsesItems}},{\"type\":\"function_call_output\",\"call_id\":\"{{deferredSearchResponsesCallId}}\",\"output\":\"CrashLoopBackOff, 14 restarts\"}],\"tools\":[{\"type\":\"web_search\",\"web_search_version\":\"web_search_20250305\"},{\"type\":\"function\",\"name\":\"get_pod_status\",\"description\":\"Get the current status of a Kubernetes pod\",\"parameters\":{\"type\":\"object\",\"properties\":{\"pod\":{\"type\":\"string\"}},\"required\":[\"pod\"]}}]}"
+            }
+          }
+        }
+      ]
     }
   ]
 }

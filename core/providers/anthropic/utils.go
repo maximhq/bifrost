@@ -5144,6 +5144,12 @@ func attachWebSearchSourcesToCall(bifrostMessages []schemas.ResponsesMessage, to
 				msg.ResponsesToolMessage = &schemas.ResponsesToolMessage{}
 			}
 
+			// The result is here, so the search is no longer pending. Written in place:
+			// the status was allocated for this item when its server_tool_use was converted.
+			if msg.Status != nil && *msg.Status == "in_progress" {
+				*msg.Status = "completed"
+			}
+
 			// Found the matching web_search_call, add sources
 			if resultBlock.Content != nil && len(resultBlock.Content.ContentBlocks) > 0 {
 				sources := extractWebSearchSources(resultBlock.Content.ContentBlocks, includeExtendedFields)
