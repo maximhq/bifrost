@@ -177,6 +177,8 @@ type LogStore interface {
 	DeleteLog(ctx context.Context, id string) error
 	DeleteLogs(ctx context.Context, ids []string) error
 	DeleteLogsBatch(ctx context.Context, cutoff time.Time, batchSize int) (deletedCount int64, err error)
+	// RetentionInterval is how often the retention cleaner runs; it lives here so wrappers that embed LogStore forward it.
+	RetentionInterval() time.Duration
 
 	CreateUserAgentMapping(ctx context.Context, mapping *UserAgentMapping) error
 	UpdateUserAgentMapping(ctx context.Context, id string, mapping *UserAgentMapping) error
@@ -255,11 +257,13 @@ type LogStore interface {
 	SearchRelayLogs(ctx context.Context, filters RelayLogFilters, pagination PaginationOptions) (*RelayLogSearchResult, error)
 	GetRelayLogStats(ctx context.Context, filters RelayLogFilters) (*RelayLogStats, error)
 	GetRelayHistogram(ctx context.Context, filters RelayLogFilters, bucketSizeSeconds int64) (*RelayHistogramResult, error)
+	GetRelayLatencyHistogram(ctx context.Context, filters RelayLogFilters, bucketSizeSeconds int64) (*LatencyHistogramResult, error)
 	GetRelayTopEndpoints(ctx context.Context, filters RelayLogFilters, limit int) (*RelayTopResults, error)
 	GetRelayFilterData(ctx context.Context, dimensions []string, limit int, search string) (*RelayFilterData, error)
 	HasRelayLogs(ctx context.Context) (bool, error)
 	DeleteRelayLogs(ctx context.Context, ids []string) error
 	DeleteRelayLogsBatch(ctx context.Context, cutoff time.Time, batchSize int) (int64, error)
+	FlushRelayLogs(ctx context.Context, since time.Time) error
 
 	// Async Job methods
 	CreateAsyncJob(ctx context.Context, job *AsyncJob) error

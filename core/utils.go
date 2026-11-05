@@ -282,6 +282,34 @@ func routingErrorSummary(e *schemas.BifrostError) string {
 	return strings.Join(parts, " ")
 }
 
+// fallbackAttemptOf records what became of one fallback for the primary's error, which is what the
+// caller gets once the whole chain has failed (see schemas.FallbackAttempt). A nil err is a fallback
+// that was skipped before any attempt.
+func fallbackAttemptOf(fallback schemas.Fallback, err *schemas.BifrostError) schemas.FallbackAttempt {
+	attempt := schemas.FallbackAttempt{Provider: fallback.Provider, Model: fallback.Model}
+	if err == nil {
+		attempt.Skipped = true
+		return attempt
+	}
+	if err.StatusCode != nil {
+		attempt.StatusCode = new(*err.StatusCode)
+	}
+	// The nested type first, as in routingErrorSummary: a Responses stream failure's top-level type
+	// is the event name ("response.failed", "error"), not the provider's error type.
+	if err.Error != nil && err.Error.Type != nil && *err.Error.Type != "" {
+		attempt.Type = *err.Error.Type
+	} else if err.Type != nil {
+		attempt.Type = *err.Type
+	}
+	if err.Error != nil {
+		attempt.Message = err.Error.Message
+		if attempt.Message == "" && err.Error.Error != nil {
+			attempt.Message = err.Error.Error.Error()
+		}
+	}
+	return attempt
+}
+
 // newBifrostError wraps a standard error into a BifrostError with IsBifrostError set to false.
 // This helper function reduces code duplication when handling non-Bifrost errors.
 func newBifrostError(err error) *schemas.BifrostError {
@@ -534,7 +562,6 @@ func ClearContextForInternalRequest(ctx *schemas.BifrostContext) {
 	// Body transport.
 	ctx.ClearValue(schemas.BifrostContextKeyUseRawRequestBody)
 	ctx.ClearValue(schemas.BifrostContextKeyRawRequestBodyTextRewriter)
-	ctx.ClearValue(schemas.BifrostContextKeyRawStreamTextCodec)
 	ctx.ClearValue(schemas.BifrostContextKeySendBackRawRequest)
 	ctx.ClearValue(schemas.BifrostContextKeySendBackRawResponse)
 	ctx.ClearValue(schemas.BifrostContextKeyPassthroughOverridesPresent)
@@ -620,6 +647,19 @@ func isBatchRequestType(reqType schemas.RequestType) bool {
 // isFileRequestType returns true if the given request type is a file API operation.
 func isFileRequestType(reqType schemas.RequestType) bool {
 	return reqType == schemas.FileUploadRequest || reqType == schemas.FileListRequest || reqType == schemas.FileRetrieveRequest || reqType == schemas.FileDeleteRequest || reqType == schemas.FileContentRequest
+}
+
+// isKeyScopedLookupRequest reports whether the request addresses one stored object by id through a single-key provider call;
+// core tries each key in turn because the object lives on whichever key created it.
+func isKeyScopedLookupRequest(br *schemas.BifrostRequest) bool {
+	switch br.RequestType {
+	case schemas.ContainerFileCreateRequest,
+		schemas.VideoRetrieveRequest, schemas.VideoDownloadRequest, schemas.VideoDeleteRequest, schemas.VideoRemixRequest:
+		return true
+	case schemas.VideoEditRequest:
+		return br.VideoEditRequest != nil && br.VideoEditRequest.Input != nil && br.VideoEditRequest.Input.Video.ID != ""
+	}
+	return isResponsesLifecycleRequestType(br.RequestType)
 }
 
 // isCachedContentRequestType returns true if the given request type is a cached content lifecycle operation.

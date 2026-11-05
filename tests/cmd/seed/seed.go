@@ -83,8 +83,10 @@ func DefaultOptions() Options {
 		ConfigDialect:   "postgres",
 		LogsDialect:     "postgres",
 		LogRowsPerShape: 30,
-		BatchSize:       1000,
-		OutputEnvPath:   "tmp/e2e-seed.env",
+		// Postgres allows 65535 bind parameters per statement, and every log row binds
+		// one per column, so this has to leave room for the log tables to grow.
+		BatchSize:     200,
+		OutputEnvPath: "tmp/e2e-seed.env",
 	}
 }
 

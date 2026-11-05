@@ -254,10 +254,13 @@ func newOAuthState() *oauthState {
 	}
 }
 
-// addClient registers c, replacing a client with the same id.
+// addClient registers c, a client declared up front, replacing a client with the
+// same id. A declared client is never a dynamic one, whatever its dynamic field
+// says, so forget keeps it.
 func (o *oauthState) addClient(c OAuthClient) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
+	c.Dynamic = false
 	o.putClient(c)
 }
 
@@ -398,6 +401,34 @@ func (o *oauthState) revoke(identity, token string) int {
 		if matches {
 			g.revoked = true
 			n++
+		}
+	}
+	return n
+}
+
+// forget drops every dynamically registered client and ends its grants, the
+// way an authorization server that does not keep its registrations (one that
+// loses them on restart, or once their tokens expire) stops recognising them:
+// authorize answers an unknown client_id, refresh gets invalid_client, and
+// their access tokens fail at the protected resource. A client registered up
+// front is kept. Returns how many clients it dropped.
+func (o *oauthState) forget() int {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	n := 0
+	kept := make([]string, 0, len(o.order))
+	for _, id := range o.order {
+		if c := o.clients[id]; c != nil && c.Dynamic {
+			delete(o.clients, id)
+			n++
+			continue
+		}
+		kept = append(kept, id)
+	}
+	o.order = kept
+	for _, g := range o.grants {
+		if _, known := o.clients[g.clientID]; !known {
+			g.revoked = true
 		}
 	}
 	return n

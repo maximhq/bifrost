@@ -252,7 +252,7 @@ Routing rules dynamically select the provider and model for each request based o
 
 | Field | Required | Description |
 |-------|----------|-------------|
-| `id` | Yes | Unique rule ID |
+| `id` | No | Unique rule ID. Omit it to match the rule by `name`, `scope` and `scope_id` instead. See [Matching rules across restarts](#matching-rules-across-restarts) |
 | `name` | Yes | Human-readable name |
 | `cel_expression` | No | CEL expression. `"true"` matches every request |
 | `targets` | Yes | Weighted target list (weights must sum to `1.0`) |
@@ -291,6 +291,30 @@ Each entry is either the string `"provider/model"` (use `"provider/"` to keep th
 ```
 
 A fallback whose pinned key is missing from that provider's pool is skipped, and the chain moves to the next entry.
+
+### Matching rules across restarts
+
+On every startup each rule in `config.json` is matched to a stored rule, and only rules that changed are written:
+
+- **With an `id`**, the rule is matched by `id`. Changing the `id` creates a new rule. With the default `source_of_truth` (`split`), the rule under the old `id` stays in the database, still holding its priority.
+- **Without an `id`**, the rule is matched by `name`, `scope` and `scope_id`, so editing its targets, expression or priority updates it in place. The first time it is stored it gets a generated ID, which it keeps on later restarts. Renaming the rule, or moving it to another scope, creates a new rule just like changing an `id` does.
+
+```json
+"routing_rules": [
+  {
+    "name": "Route GPT-4o to Azure",
+    "cel_expression": "model == 'gpt-4o'",
+    "targets": [{ "provider": "azure", "model": "gpt-4o", "weight": 1.0 }],
+    "priority": 1
+  }
+]
+```
+
+A rule without an `id` is matched to a rule created in the UI or API when the name, scope and scope ID match. It is skipped with a warning when its name is ambiguous: another rule in the file has the same name in the same scope, or more than one stored global rule has that name.
+
+Removing the `id` from a rule that already has one rewrites that rule once on the next startup, with no change to its content, and then matches it by name.
+
+If a rule's priority is already held in its scope by a stored rule that `config.json` does not declare (usually the rule left behind by a changed `id` or name), the rule from the file is skipped and startup continues. The warning names the stored rule; delete it, or restore the old `id` or name, and restart to apply the file's rule.
 
 ---
 

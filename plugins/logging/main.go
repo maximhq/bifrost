@@ -352,6 +352,60 @@ func applyMCPCorrelationFieldsToEntry(ctx *schemas.BifrostContext, entry *logsto
 	}
 }
 
+// applyMCPRoundTrip records an MCP multi round-trip on entry: an input_required round's status and what it
+// asked, the answers a retry carried (content-gated, like arguments), and round_trip_id, which every round
+// of one gateway tool call shares (see mcp.CallRoundTripID).
+func applyMCPRoundTrip(ctx *schemas.BifrostContext, entry *logstore.MCPToolLog, resp *schemas.BifrostMCPResponse, contentVisible bool) {
+	if carried, _ := ctx.Value(schemas.BifrostContextKeyMCPRoundTripID).(string); carried != "" {
+		entry.RoundTripID = &carried
+	}
+	if answers := mcp.InputResumptionForLog(ctx); answers != nil && contentVisible {
+		setMCPLogMetadata(entry, "input_responses", answers)
+	}
+	if resp == nil {
+		return
+	}
+	asked, ok := mcp.InputRequiredForLog(resp.ChatMessage)
+	if !ok {
+		return
+	}
+	entry.Status = logStatusInputRequired
+	entry.ResultParsed = nil
+	if asked == nil {
+		setMCPLogMetadata(entry, "retry_later", true)
+	} else if contentVisible {
+		entry.ResultParsed = asked
+	}
+	if entry.RoundTripID == nil {
+		id := mcp.CallRoundTripID(ctx)
+		entry.RoundTripID = &id
+	}
+}
+
+// applyMCPAppsMetadata marks an MCP call that involved MCP Apps: the caller hosts apps, the tool opens a
+// ui:// resource or is app-only, or the caller used the server's own tool name (as an app's code does).
+func applyMCPAppsMetadata(ctx *schemas.BifrostContext, entry *logstore.MCPToolLog) {
+	if mcp.CallerDeclaresApps(ctx) {
+		setMCPLogMetadata(entry, "mcp_apps", true)
+	}
+	if uri, _ := ctx.Value(schemas.BifrostContextKeyMCPToolUIResourceURI).(string); uri != "" {
+		setMCPLogMetadata(entry, "ui_resource_uri", resourceURIForLog(uri))
+	}
+	if appOnly, _ := ctx.Value(schemas.BifrostContextKeyMCPToolAppOnly).(bool); appOnly {
+		setMCPLogMetadata(entry, "app_only", true)
+	}
+	if name, _ := ctx.Value(schemas.BifrostContextKeyMCPRequestedToolName).(string); name != "" {
+		setMCPLogMetadata(entry, "requested_name", name)
+	}
+}
+
+func setMCPLogMetadata(entry *logstore.MCPToolLog, key string, value any) {
+	if entry.MetadataParsed == nil {
+		entry.MetadataParsed = map[string]interface{}{}
+	}
+	entry.MetadataParsed[key] = value
+}
+
 // scheduleDeferredUsageUpdate schedules a deferred usage update for the request.
 // applyErrorBillingFromBilledUsage backfills a failed/cancelled request's log
 // entry from the usage the provider already processed before the failure
@@ -1328,7 +1382,8 @@ type LoggerPlugin struct {
 	pendingMCPLogsToInject       sync.Map                       // Maps mcpLogID -> *logstore.MCPToolLog (PreMCPHook input data awaiting PostMCPHook)
 	provisionalMCPArguments      sync.Map                       // Maps mcpLogID -> tool arguments captured before governance stamped the presented key or named project; attached in PostMCPHook only if content ends up visible
 	pendingAgentLogs             sync.Map                       // Maps request/operation key -> *logstore.AgentLog awaiting PostA2AHook
-	pendingEndpointLogs          sync.Map                       // Maps request id -> *logstore.RelayLog awaiting PostRelayHook
+	pendingEndpointLogs          sync.Map                       // Maps request id -> *pendingRelayLog awaiting PostRelayHook
+	evictedRelayPartials         sync.Map                       // Maps request id -> evictedRelayPartial: relay partial rows persisted at eviction, awaiting reconcile in PostRelayHook
 	pendingAgentLogsToInject     sync.Map                       // Maps traceID -> *pendingAgentInjectEntries (A2A request rows awaiting Inject latency backfill)
 	pendingRelayLogsToInject     sync.Map                       // Maps traceID -> *pendingRelayInjectEntries (Relay rows awaiting Inject latency backfill)
 	writerConfig                 logstore.WriterConfig          // Resolved async writer queue and batch settings
@@ -1524,7 +1579,7 @@ func (p *LoggerPlugin) cleanupOldProcessingLogs() {
 	p.cleanupStalePendingLogs()
 }
 
-// flushStaleProcessingLogs deletes LLM, MCP and A2A rows still marked
+// flushStaleProcessingLogs deletes LLM, MCP, A2A and relay rows still marked
 // processing after 30 minutes.
 func (p *LoggerPlugin) flushStaleProcessingLogs() {
 	// Calculate timestamp for 30 minutes ago in UTC to match log entry timestamps
@@ -1543,6 +1598,11 @@ func (p *LoggerPlugin) flushStaleProcessingLogs() {
 	// Delete A2A processing logs older than 30 minutes.
 	if err := p.store.FlushAgentLogs(p.ctx, thirtyMinutesAgo); err != nil {
 		p.logger.Warn("failed to cleanup old processing A2A logs: %v", err)
+	}
+
+	// Delete relay processing logs older than 30 minutes.
+	if err := p.store.FlushRelayLogs(p.ctx, thirtyMinutesAgo); err != nil {
+		p.logger.Warn("failed to cleanup old processing relay logs: %v", err)
 	}
 }
 
@@ -2561,6 +2621,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 				if entry.RawResponse == "" {
 					if streamResponse != nil && streamResponse.Data != nil && streamResponse.Data.RawResponse != nil {
 						entry.RawResponse = *streamResponse.Data.RawResponse
+						entry.RawResponseFormat = streamResponse.Data.RawResponseFormat
 					} else if bifrostErr.ExtraFields.RawResponse != nil {
 						if rawRespBytes, err := sonic.Marshal(bifrostErr.ExtraFields.RawResponse); err == nil {
 							entry.RawResponse = string(rawRespBytes)
@@ -3879,6 +3940,8 @@ func (p *LoggerPlugin) PostMCPHook(ctx *schemas.BifrostContext, resp *schemas.Bi
 			},
 		}
 	}
+	applyMCPRoundTrip(ctx, entry, resp, contentVisible)
+	applyMCPAppsMetadata(ctx, entry)
 
 	p.mu.Lock()
 	callback := p.mcpToolLogCallback

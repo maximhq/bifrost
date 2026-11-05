@@ -19,6 +19,14 @@ set -euo pipefail
 # global and provider cells, so traffic that fell back to the environment shows up on
 # the wrong port and fails the cell instead of passing it.
 #
+# Relays ride the same proxies: the profile's harness-relay-* relays get the cell's proxy the
+# same way the providers do (proxy_config per relay, type environment, or the inherited global
+# proxy), and the relay pillar in the manifest must show up in the cell proxy's log. The relay
+# fixture is addressed by this host's own IPv4 (RELAY_UPSTREAM_IP), not 127.0.0.1: Go never
+# sends a loopback target through an environment proxy, and the global proxy's no_proxy lists
+# 127.0.0.1, so a loopback relay would bypass the proxy in those cells. The pillar's host
+# pattern RELAY_UPSTREAM stands for that address.
+#
 # Strict egress (PROXY_E2E_STRICT_EGRESS=1, Linux + sudo): the gateway runs in its own
 # group and iptables rejects anything it sends off loopback, so a connection that skips
 # the proxy fails the request outright. CI turns this on.
@@ -33,6 +41,8 @@ set -euo pipefail
 #                             gateway enforces auth
 #   BIFROST_SETUP_TOKEN       setup token for /api calls (default: the python profile's)
 #   RERUN_ATTEMPTS            re-runs of only the failed items per cell (default 1)
+#   RELAY_UPSTREAM_IP         address the relays reach the relay fixture on (default: the
+#                             first non-internal IPv4 of this host)
 #
 # Provider secrets come from the environment, as for `make run-provider-harness-test`;
 # `make run-e2e-api PROXY=1` loads them from Infisical or .env first.
@@ -73,10 +83,14 @@ source "$SCRIPT_DIR/proxy-lib.sh"
 # insert (set -e) still leaves the first one for cleanup to remove.
 STRICT_RULE_V4_ADDED=0
 STRICT_RULE_V6_ADDED=0
+RELAY_FIXTURE_PID=""
 cleanup() {
   local exit_code=$?
   harness_stop_gateway
   proxy_stop
+  if [ -n "$RELAY_FIXTURE_PID" ]; then
+    kill "$RELAY_FIXTURE_PID" 2>/dev/null || true
+  fi
   if [ "$STRICT_RULE_V4_ADDED" = "1" ]; then
     sudo iptables -D OUTPUT -m owner --gid-owner "$EGRESS_GROUP" ! -o lo -j REJECT 2>/dev/null || true
   fi
@@ -94,6 +108,33 @@ harness_build_gateway
 
 proxy_setup "$WORK_DIR/proxies"
 proxy_start
+
+# relay_upstream_ip prints this host's first non-internal IPv4: the address the relays reach the
+# relay fixture on, so their traffic is never exempt from a proxy as loopback.
+relay_upstream_ip() {
+  node -e 'for (const a of Object.values(require("os").networkInterfaces()).flat()) if (a && a.family === "IPv4" && !a.internal) { console.log(a.address); process.exit(0) }'
+}
+
+RELAY_UPSTREAM_IP="${RELAY_UPSTREAM_IP:-$(relay_upstream_ip)}"
+if [ -z "$RELAY_UPSTREAM_IP" ]; then
+  echo "❌ no non-loopback IPv4 for the relay fixture; set RELAY_UPSTREAM_IP" >&2
+  exit 1
+fi
+if (echo >/dev/tcp/127.0.0.1/8783) >/dev/null 2>&1; then
+  echo "❌ Port 8783 is already in use. The proxy matrix starts the relay fixture on every interface; stop the one on 8783 first." >&2
+  exit 1
+fi
+RELAY_UPSTREAM_FIXTURE_HOST=0.0.0.0 RELAY_UPSTREAM_FIXTURE_PORT=8783 node "$REPO_ROOT/tests/e2e/api/runners/relay-upstream-fixture.mjs" > "$WORK_DIR/relay-fixture.log" 2>&1 &
+RELAY_FIXTURE_PID=$!
+for _ in $(seq 1 40); do
+  curl -fsS --noproxy '*' --max-time 2 "http://$RELAY_UPSTREAM_IP:8783/__relay/health" >/dev/null 2>&1 && break
+  sleep 0.25
+done
+if ! curl -fsS --noproxy '*' --max-time 2 "http://$RELAY_UPSTREAM_IP:8783/__relay/health" >/dev/null 2>&1; then
+  echo "❌ the relay fixture did not answer on $RELAY_UPSTREAM_IP:8783 (log: $WORK_DIR/relay-fixture.log)" >&2
+  exit 1
+fi
+echo "✅ Relay fixture on $RELAY_UPSTREAM_IP:8783"
 
 if [ "${PROXY_E2E_STRICT_EGRESS:-0}" = "1" ]; then
   if [ "$(uname -s)" != "Linux" ]; then
@@ -165,6 +206,22 @@ seed_cell() {
       gateway_env="$gateway_env HTTPS_PROXY=$url HTTP_PROXY=$url"
       ;;
   esac
+  mv "$config.tmp" "$config"
+  # The relays take the cell's proxy the way the providers do, and reach the fixture by
+  # RELAY_UPSTREAM_IP so no proxy exempts them as loopback.
+  local relay_proxy='del(.proxy_config)'
+  case "$mode" in
+    provider)
+      relay_proxy='.proxy_config = ({type: $type, url: $url, username: $user, password: $pass} + (if $ca != "" then {ca_cert_pem: $ca} else {} end))'
+      ;;
+    env)
+      relay_proxy='.proxy_config = ({type: "environment"} + (if $ca != "" then {ca_cert_pem: $ca} else {} end))'
+      ;;
+  esac
+  jq --arg host "${RELAY_UPSTREAM_IP:-127.0.0.1}" --arg type "$([ "$kind" = socks5 ] && echo socks5 || echo http)" \
+    --arg url "$(cell_proxy_url "$kind")" --arg user "$PROXY_USER" --arg pass "$PROXY_PASS" --arg ca "$ca" \
+    "if .relays then .relays |= map((.base_url |= sub(\"^http://127\\\\.0\\\\.0\\\\.1:\"; \"http://\\(\$host):\")) | $relay_proxy) else . end" \
+    "$config" > "$config.tmp"
   mv "$config.tmp" "$config"
   export HARNESS_GATEWAY_ENV="$gateway_env"
 }
@@ -266,6 +323,12 @@ assert_cell_routes() {
   # closes: only tunnels opened after the reset are smoke traffic.
   [ "$mode" != "env" ] && infra="$(proxy_hosts_on_port_since "$PROXY_INFRA_PORT" "${CELL_SMOKE_START:-0}")"
   while IFS=$'\t' read -r key field host; do
+    # RELAY_UPSTREAM stands for the address the relays reach their fixture on. It is anchored at
+    # the start of the logged target: unlike a provider's host suffix, 10.1.2.3 must not also
+    # match 110.1.2.3.
+    if [ -n "${RELAY_UPSTREAM_IP:-}" ]; then
+      host="${host//RELAY_UPSTREAM/^${RELAY_UPSTREAM_IP//./\\.}}"
+    fi
     # A token exchange may happen only at startup and be cached for the inference
     # requests, so token_hosts also count from the startup traffic. microsocks logs a
     # connection when it opens, so a smoke request reusing a pooled startup connection
