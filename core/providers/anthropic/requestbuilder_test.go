@@ -1120,6 +1120,49 @@ func TestBuildAnthropicResponsesRequestBody_BedrockInvokeKeepsToolSearch(t *test
 	}
 }
 
+// TestBuildAnthropicResponsesRequestBody_BedrockInvokeDropsWebSearch pins the Codex
+// shape on Bedrock Claude: a tool_search moves the request onto InvokeModel, where the
+// web_search Codex always sends used to go out as web_search_20250305 and Bedrock
+// answered 400 "tool type 'web_search_20250305' is not supported for this model".
+// Converse already drops it for non-Nova models; InvokeModel must too.
+func TestBuildAnthropicResponsesRequestBody_BedrockInvokeDropsWebSearch(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	request := &schemas.BifrostResponsesRequest{
+		Provider: schemas.Bedrock,
+		Model:    "global.anthropic.claude-sonnet-5-5",
+		Input:    makeSimpleInput("What changed in the repo?"),
+		Params: &schemas.ResponsesParameters{
+			Tools: []schemas.ResponsesTool{
+				responsesToolFromJSON(t, `{"type":"tool_search","execution":"client"}`),
+				responsesToolFromJSON(t, `{"type":"web_search","external_web_access":false}`),
+				responsesToolFromJSON(t, `{"type":"code_interpreter","container":{"type":"auto"}}`),
+				responsesToolFromJSON(t, `{"type":"function","name":"shell","parameters":{"type":"object","properties":{}}}`),
+			},
+		},
+	}
+	body, err := BuildAnthropicResponsesRequestBody(ctx, request, AnthropicRequestBuildConfig{
+		Provider:      schemas.Bedrock,
+		Model:         "global.anthropic.claude-sonnet-5-5",
+		ValidateTools: true,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var sawShell bool
+	for _, tool := range providerUtils.GetJSONField(body, "tools").Array() {
+		typ := tool.Get("type").String()
+		if strings.HasPrefix(typ, "web_search_") || strings.HasPrefix(typ, "code_execution_") {
+			t.Errorf("Bedrock Claude does not accept %s, but it was sent: %s", typ, string(body))
+		}
+		if tool.Get("name").String() == "shell" {
+			sawShell = true
+		}
+	}
+	if !sawShell {
+		t.Errorf("function tool was lost: %s", string(body))
+	}
+}
+
 // TestRawBodyBuilderKeepsToolsAndSetsBetaHeaders checks the thing that actually goes
 // upstream, rather than any one step of building it.
 //
