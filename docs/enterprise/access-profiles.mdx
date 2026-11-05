@@ -106,7 +106,7 @@ An entity uses **either** an access profile **or** its own legacy budgets and ra
 
 ### What members can access
 
-A profile on a group only ever **adds** access. Members can use anything the group's profile allows, in addition to what their own profiles allow. A member who holds no profile of their own is still allowed what their team, business unit, or customer allows.
+By default a profile on a group **adds** access. Members can use anything the group's profile allows, in addition to what their own profiles allow. A member who holds no profile of their own is still allowed what their team, business unit, or customer allows. Set the [access profile hierarchy](#restrictive-hierarchy) to **Restrictive** to make group profiles cap their members instead.
 
 Profiles reach users through the organization hierarchy:
 
@@ -124,6 +124,8 @@ A user often answers to several profiles at once: some of their own, plus the pr
 ### Rule 1: access adds up
 
 The user can use any provider and model that **any** of the profiles they answer to allows. Adding a profile can only widen access. To narrow access, remove a profile or tighten it. A user who is allowed nothing by any profile is refused.
+
+This is the default, **Additive** hierarchy. The [Restrictive hierarchy](#restrictive-hierarchy) replaces this rule; Rule 2 applies in both.
 
 ### Rule 2: one personal profile pays, and every group profile is charged
 
@@ -158,6 +160,38 @@ Assume Priya is on the **Platform** team, which belongs to the customer **Acme**
 	the model: once it runs out, the group profile pays for the user's requests until the group's own limit is reached.
 </Note>
 
+### Restrictive hierarchy
+
+Under **Config → Security → Access Profile Hierarchy** (`client.access_profile_hierarchy_mode` in `config.json`), choose **Restrictive** to make group profiles limit access instead of adding to it. Bifrost then reads the hierarchy as three levels:
+
+1. **The caller's own access**: their personal profiles, or the virtual key they used.
+2. **Their teams and business units**: the profiles of every team and business unit they belong to, together.
+3. **Their customers**: the profiles of every customer those teams and business units belong to, together.
+
+A request is allowed only when **every level that holds an active profile** allows it:
+
+```text
+allowed = (any personal profile) AND (any team or business unit profile) AND (any customer profile)
+```
+
+- Within a level, one profile is enough. A member of two teams can use what either team's profile allows.
+- A level with no active profile is skipped. A team without a profile, or with an inactive or expired one, takes nothing away.
+- A group profile never grants something the caller's own access doesn't. The first level that holds a profile grants access, and the levels above it cap that access. A member with no profile of their own is granted what their teams and business units allow, capped by their customers.
+- The cap covers providers, models, provider keys, MCP tools, and relays. Agents aren't capped, because team, business unit, and customer profiles can't grant them.
+- Virtual keys are capped too, including legacy keys with their own provider settings. If Priya's key allows `gpt-4o` and `claude-sonnet-4`, and Platform's profile allows `claude-sonnet-4` and `gemini-2.5-pro`, the key can only use `claude-sonnet-4`. A key owned by a team that holds a profile is granted by that profile and capped by the customer profiles above it.
+- Budgets and rate limits work exactly as in Rule 2. Every group profile is still charged on every request.
+- A [project](/enterprise/projects) composes with the capped result under its own access rule. An intersect project narrows it further, and a union project can still add its own access.
+
+| Situation (Restrictive) | What Priya can use |
+| --- | --- |
+| Engineering allows `gpt-4o`; Team Pool allows only `claude-sonnet-4` | Nothing. Team Pool doesn't allow `gpt-4o`, and it grants nothing she doesn't hold. |
+| Engineering allows `gpt-4o` and `claude-sonnet-4`; Team Pool allows `claude-sonnet-4` | `claude-sonnet-4` |
+| As above, and Data's profile allows `gpt-4o` | `gpt-4o` and `claude-sonnet-4`. Either team is enough. |
+| As above, and Acme Contract allows only `claude-sonnet-4` | `claude-sonnet-4` |
+| Priya holds no profile; Team Pool allows `claude-sonnet-4` and `gpt-4o`; Acme Contract allows `gpt-4o` | `gpt-4o` |
+
+A refusal names the group profile that blocked the model.
+
 ### When a request is refused
 
 A refused request names the profile that ran out, not just the team. For example:
@@ -177,6 +211,8 @@ A virtual key belongs to at most one owner: a user, a team, a business unit, or 
 - If the profile is detached and the keys are preserved, a key only reaches what a customer profile above its owner allows. With no customer profile above, it can't reach any model.
 
 A key whose owner holds no profile (for example, a team key on a team that has no profile, or a key owned by a user who holds none) is governed by its own settings **plus** every group profile above it. All of them must have room for the request to go through.
+
+Under the [Restrictive hierarchy](#restrictive-hierarchy), the profiles above a key cap it instead of adding to it. A preserved key with no provider settings of its own can then reach nothing until you configure it or attach a profile again.
 
 ---
 
