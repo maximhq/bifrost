@@ -58,6 +58,7 @@ const (
 func (h *OAuthHandler) handleClientMetadataDocument(ctx *fasthttp.RequestCtx) {
 	base := lib.BuildBaseURL(ctx, h.store.GetMCPExternalClientURL())
 	redirectURI := base + oauthCallbackPath
+	ctx.Response.Header.Add("Vary", "X-Forwarded-Host")
 	ctx.Response.Header.Set("Cache-Control", "public, max-age=3600")
 	SendJSON(ctx, map[string]any{
 		"client_id":                  base + oauthClientMetadataPath,

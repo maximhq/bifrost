@@ -7,11 +7,14 @@
 package lib
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -934,12 +937,42 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 	return bifrostCtx, cancel
 }
 
+// trustedForwardedHost retains one configured authority for the server lifetime.
+var trustedForwardedHost atomic.Pointer[string]
+
+// configureTrustedForwardedHost publishes a validated authority for URL inference.
+func configureTrustedForwardedHost(authority string) error {
+	if err := validateTrustedForwardedHost(authority); err != nil {
+		return err
+	}
+	trustedForwardedHost.Store(&authority)
+	return nil
+}
+
+// validateTrustedForwardedHost rejects URLs and authorities that cannot identify
+// an HTTP endpoint. It runs before opening stores and again before publication.
+func validateTrustedForwardedHost(authority string) error {
+	if authority != "" {
+		u, err := url.Parse("https://" + authority)
+		if err != nil || u.Host != authority || strings.ContainsAny(authority, "*,") || configstore.ValidatePublicBaseURL("https://"+authority) != nil {
+			return fmt.Errorf("invalid server.trusted_forwarded_host: expected a hostname with optional port")
+		}
+		if port := u.Port(); port != "" {
+			if _, err := strconv.ParseUint(port, 10, 16); err != nil {
+				return fmt.Errorf("invalid server.trusted_forwarded_host: port must be in the range 0-65535")
+			}
+		}
+	}
+	return nil
+}
+
 // BuildBaseURL returns the effective base URL for OAuth callbacks and metadata discovery.
 // When externalBaseURL is non-empty (set via config/UI/API), it takes priority so that
 // deployments behind a reverse proxy advertise the proxy's public URL rather than the
 // internal Host header seen by Bifrost.
-// Otherwise it is derived from the request's scheme and Host, plus server.base_path,
-// since the browser reached Bifrost under that prefix even when the proxy strips it.
+// Otherwise it uses the request's scheme and Host, preferring the first
+// X-Forwarded-Host value only if it matches server.trusted_forwarded_host.
+// The inferred URL includes server.base_path even when the proxy strips it.
 func BuildBaseURL(ctx *fasthttp.RequestCtx, externalBaseURL string) string {
 	if override := strings.TrimRight(strings.TrimSpace(externalBaseURL), "/"); override != "" {
 		if configstore.ValidatePublicBaseURL(override) == nil {
@@ -950,7 +983,16 @@ func BuildBaseURL(ctx *fasthttp.RequestCtx, externalBaseURL string) string {
 	if RequestIsHTTPS(ctx) {
 		scheme = "https"
 	}
-	host := string(ctx.Host())
+	var host string
+	if trusted := trustedForwardedHost.Load(); trusted != nil && *trusted != "" {
+		forwarded, _, _ := bytes.Cut(ctx.Request.Header.Peek("X-Forwarded-Host"), []byte(","))
+		if bytes.EqualFold(bytes.TrimSpace(forwarded), []byte(*trusted)) {
+			host = *trusted
+		}
+	}
+	if host == "" {
+		host = string(ctx.Host())
+	}
 	if host == "" {
 		return ""
 	}
