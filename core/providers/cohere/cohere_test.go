@@ -205,3 +205,70 @@ func TestToCohereResponsesRequest_ToolOutputNamesMedia(t *testing.T) {
 	}
 	require.NotContains(t, string(wire), "image_url", "no image part may reach a Cohere tool message")
 }
+
+// TestCohereResponsesStreamAttachesEachRawEventOnce verifies a Cohere event that expands into several Responses events
+// rides on exactly one of them, the one streaming its text, declared as Cohere's format, so its raw text never
+// reaches the client ahead of (or apart from) the normalized text it backs.
+func TestCohereResponsesStreamAttachesEachRawEventOnce(t *testing.T) {
+	events := []string{
+		`{"type":"message-start","id":"msg_1","delta":{"message":{"role":"assistant"}}}`,
+		`{"type":"content-start","index":0,"delta":{"message":{"content":{"type":"text","text":""}}}}`,
+		`{"type":"content-delta","index":0,"delta":{"message":{"content":{"text":"mail alex@example.com"}}}}`,
+		`{"type":"content-end","index":0}`,
+		`{"type":"message-end","delta":{"finish_reason":"COMPLETE","usage":{"billed_units":{"input_tokens":3,"output_tokens":4},"tokens":{"input_tokens":3,"output_tokens":4}}}}`,
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		for _, event := range events {
+			_, _ = w.Write([]byte("data: " + event + "\n\n"))
+		}
+	}))
+	defer server.Close()
+
+	provider, err := cohere.NewCohereProvider(&schemas.ProviderConfig{
+		NetworkConfig:       schemas.NetworkConfig{BaseURL: server.URL, DefaultRequestTimeoutInSeconds: 30},
+		SendBackRawResponse: true,
+	}, bifrost.NewNoOpLogger())
+	require.NoError(t, err)
+	request := &schemas.BifrostResponsesRequest{
+		Provider: schemas.Cohere,
+		Model:    "command-a-03-2025",
+		Input: []schemas.ResponsesMessage{{
+			Type:    schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+			Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+			Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")},
+		}},
+	}
+	passthrough := func(_ *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+		return result, err
+	}
+	stream, bifrostErr := provider.ResponsesStream(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), passthrough, nil, schemas.Key{Value: *schemas.NewSecretVar("co-test")}, request)
+	require.Nil(t, bifrostErr)
+
+	carried := map[string]int{}
+	var textCarrier *schemas.BifrostResponsesStreamResponse
+	for chunk := range stream {
+		event := chunk.BifrostResponsesStreamResponse
+		if event == nil {
+			continue
+		}
+		if raw, ok := event.ExtraFields.RawResponse.(string); ok {
+			carried[raw]++
+			if raw == events[2] {
+				textCarrier = event
+			}
+		}
+	}
+	for _, event := range events {
+		require.LessOrEqual(t, carried[event], 1, "raw event attached more than once: %s", event)
+	}
+	require.NotNil(t, textCarrier, "the text event's raw payload was not attached")
+	require.Equal(t, schemas.ResponsesStreamResponseTypeOutputTextDelta, textCarrier.Type)
+	require.Equal(t, schemas.RawResponseFormatCohereChatStreamEvent, textCarrier.ExtraFields.RawResponseFormat)
+
+	redacted := *textCarrier
+	redacted.Delta = schemas.Ptr("mail [EMAIL]")
+	synced, err := schemas.SyncRawResponseText(textCarrier.ExtraFields.RawResponse, textCarrier.ExtraFields.RawResponseFormat, textCarrier, &redacted)
+	require.NoError(t, err)
+	require.JSONEq(t, `{"type":"content-delta","index":0,"delta":{"message":{"content":{"text":"mail [EMAIL]"}}}}`, synced.(string))
+}

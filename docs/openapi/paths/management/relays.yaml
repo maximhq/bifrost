@@ -15,8 +15,8 @@ _relay-log-filters:
     description: HTTP methods to filter by. Accepts repeated parameters or comma-separated values.
     schema:
       type: string
-  statuses:
-    name: statuses
+  status:
+    name: status
     in: query
     description: Statuses to filter by (`success`, `error`, `cancelled`). Accepts repeated parameters or comma-separated values.
     schema:
@@ -111,6 +111,36 @@ _relay-log-filters:
     name: job_id
     in: query
     description: Exact upstream job ID.
+    schema:
+      type: string
+  session_id:
+    name: session_id
+    in: query
+    description: Exact session ID resolved at ingress (x-bf-session-id), as on /api/logs.
+    schema:
+      type: string
+  min_latency:
+    name: min_latency
+    in: query
+    description: Minimum latency in milliseconds.
+    schema:
+      type: number
+  max_latency:
+    name: max_latency
+    in: query
+    description: Maximum latency in milliseconds.
+    schema:
+      type: number
+  period:
+    name: period
+    in: query
+    description: Window resolved on the server, one of 1h, 6h, 24h, 7d, 30d, today, this_week, this_month; any other value is refused with 400. Wins over start_time and end_time, as on /api/logs.
+    schema:
+      type: string
+  timezone:
+    name: timezone
+    in: query
+    description: IANA timezone the calendar periods (today, this_week, this_month) are resolved in.
     schema:
       type: string
   search:
@@ -624,7 +654,7 @@ relay-logs:
     parameters:
       - $ref: '#/_relay-log-filters/relay_names'
       - $ref: '#/_relay-log-filters/methods'
-      - $ref: '#/_relay-log-filters/statuses'
+      - $ref: '#/_relay-log-filters/status'
       - $ref: '#/_relay-log-filters/kinds'
       - $ref: '#/_relay-log-filters/virtual_key_ids'
       - $ref: '#/_relay-log-filters/user_ids'
@@ -640,6 +670,11 @@ relay-logs:
       - $ref: '#/_relay-log-filters/max_cost'
       - $ref: '#/_relay-log-filters/request_id'
       - $ref: '#/_relay-log-filters/job_id'
+      - $ref: '#/_relay-log-filters/session_id'
+      - $ref: '#/_relay-log-filters/min_latency'
+      - $ref: '#/_relay-log-filters/max_latency'
+      - $ref: '#/_relay-log-filters/period'
+      - $ref: '#/_relay-log-filters/timezone'
       - $ref: '#/_relay-log-filters/search'
       - name: limit
         in: query
@@ -808,7 +843,7 @@ relay-logs-stats:
     parameters:
       - $ref: '#/_relay-log-filters/relay_names'
       - $ref: '#/_relay-log-filters/methods'
-      - $ref: '#/_relay-log-filters/statuses'
+      - $ref: '#/_relay-log-filters/status'
       - $ref: '#/_relay-log-filters/kinds'
       - $ref: '#/_relay-log-filters/virtual_key_ids'
       - $ref: '#/_relay-log-filters/user_ids'
@@ -824,6 +859,11 @@ relay-logs-stats:
       - $ref: '#/_relay-log-filters/max_cost'
       - $ref: '#/_relay-log-filters/request_id'
       - $ref: '#/_relay-log-filters/job_id'
+      - $ref: '#/_relay-log-filters/session_id'
+      - $ref: '#/_relay-log-filters/min_latency'
+      - $ref: '#/_relay-log-filters/max_latency'
+      - $ref: '#/_relay-log-filters/period'
+      - $ref: '#/_relay-log-filters/timezone'
       - $ref: '#/_relay-log-filters/search'
       - name: compare_to_previous
         in: query
@@ -926,7 +966,7 @@ relay-logs-histogram:
     parameters:
       - $ref: '#/_relay-log-filters/relay_names'
       - $ref: '#/_relay-log-filters/methods'
-      - $ref: '#/_relay-log-filters/statuses'
+      - $ref: '#/_relay-log-filters/status'
       - $ref: '#/_relay-log-filters/kinds'
       - $ref: '#/_relay-log-filters/virtual_key_ids'
       - $ref: '#/_relay-log-filters/user_ids'
@@ -942,14 +982,26 @@ relay-logs-histogram:
       - $ref: '#/_relay-log-filters/max_cost'
       - $ref: '#/_relay-log-filters/request_id'
       - $ref: '#/_relay-log-filters/job_id'
+      - $ref: '#/_relay-log-filters/session_id'
+      - $ref: '#/_relay-log-filters/min_latency'
+      - $ref: '#/_relay-log-filters/max_latency'
+      - $ref: '#/_relay-log-filters/period'
+      - $ref: '#/_relay-log-filters/timezone'
       - $ref: '#/_relay-log-filters/search'
-      - name: bucket_size_seconds
+      - name: bucket_size
         in: query
-        description: Width of each bucket in seconds.
+        description: Width of each bucket in seconds. Omitted, the width follows the window as on /api/logs/histogram. Between 60 and 2678400; below an hour it must divide 3600, otherwise it must be a whole number of hours, and the window may not need more than 5000 buckets.
         schema:
           type: integer
-          minimum: 1
-          default: 3600
+          minimum: 60
+          maximum: 2678400
+      - name: bucket_size_seconds
+        in: query
+        description: Alias of bucket_size, kept for earlier clients.
+        schema:
+          type: integer
+          minimum: 60
+          maximum: 2678400
     security:
       - ManagementBearerAuth: []
       - BasicAuth: []
@@ -994,7 +1046,7 @@ relay-logs-top-endpoints:
     parameters:
       - $ref: '#/_relay-log-filters/relay_names'
       - $ref: '#/_relay-log-filters/methods'
-      - $ref: '#/_relay-log-filters/statuses'
+      - $ref: '#/_relay-log-filters/status'
       - $ref: '#/_relay-log-filters/kinds'
       - $ref: '#/_relay-log-filters/virtual_key_ids'
       - $ref: '#/_relay-log-filters/user_ids'

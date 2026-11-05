@@ -171,6 +171,28 @@ func TestHandleRegister_DCR(t *testing.T) {
 		assert.Equal(t, longScope, stored.Scope)
 	})
 
+	// Registration bodies real DCR clients send, as built by their source on 2026-11-03.
+	for _, tc := range []struct{ name, body string }{
+		// gemini-cli packages/core/src/mcp/oauth-provider.ts registerClient (scope is "" with no configured scopes)
+		{"Gemini CLI", `{"client_name":"Gemini CLI MCP Client","redirect_uris":["http://localhost:7777/oauth/callback"],"grant_types":["authorization_code","refresh_token"],"response_types":["code"],"token_endpoint_auth_method":"none","scope":""}`},
+		// zed crates/context_server/src/oauth.rs dcr_registration_body (scope omitted with no advertised scopes)
+		{"Zed", `{"client_name":"Zed","redirect_uris":["http://127.0.0.1:12345/callback"],"grant_types":["authorization_code","refresh_token"],"response_types":["code"],"token_endpoint_auth_method":"none"}`},
+	} {
+		t.Run("real client "+tc.name+" registers", func(t *testing.T) {
+			h, _, _ := newIssuanceHandler(t)
+			ctx := formPostCtx("")
+			ctx.Request.SetBodyString(tc.body)
+			ctx.Request.Header.SetContentType("application/json")
+
+			h.handleRegister(ctx)
+			require.Equal(t, fasthttp.StatusCreated, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+			var resp map[string]any
+			require.NoError(t, json.Unmarshal(ctx.Response.Body(), &resp))
+			assert.Equal(t, []any{"authorization_code", "refresh_token"}, resp["grant_types"])
+			assert.Equal(t, "mcp", resp["scope"])
+		})
+	}
+
 	t.Run("missing redirect_uris is rejected", func(t *testing.T) {
 		h, _, _ := newIssuanceHandler(t)
 		ctx := formPostCtx("")
@@ -791,9 +813,12 @@ func TestHandleToken_RefreshAfterIssuerChange(t *testing.T) {
 	assert.Equal(t, fasthttp.StatusOK, current.Response.StatusCode(), "control: a grant for the current resource refreshes: %s", current.Response.Body())
 }
 
-// TestHandleToken_RefreshNeedsTheRefreshGrant pins that only a client registered for the refresh_token
-// grant can refresh. Registration recorded grant_types but the token endpoint never consulted them.
-func TestHandleToken_RefreshNeedsTheRefreshGrant(t *testing.T) {
+// TestHandleToken_RefreshByAClientRegisteredWithoutTheRefreshGrant pins that a client registered for
+// authorization_code only, which is what RFC 7591 records when a registration omits grant_types, still
+// refreshes the refresh token its code exchange was issued. Neither the MCP authorization spec nor RFC
+// 7591 asks the token endpoint to enforce the registered grant types, and refusing here stopped every
+// existing grant of such a client from refreshing on upgrade.
+func TestHandleToken_RefreshByAClientRegisteredWithoutTheRefreshGrant(t *testing.T) {
 	store := newRealOAuth2Store(t)
 	h := NewOAuth2IssuanceHandler(newTestOAuth2Config(store, configtables.MCPServerAuthModeOAuth, false), nil, nil)
 	require.NoError(t, store.CreateOAuth2Client(context.Background(), &configtables.TableOAuth2Client{
@@ -813,10 +838,11 @@ func TestHandleToken_RefreshNeedsTheRefreshGrant(t *testing.T) {
 		"grant_type": {"refresh_token"}, "refresh_token": {"refresh-vk-1"}, "client_id": {"client-1"},
 	}.Encode())
 	h.handleToken(ctx)
-	assert.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode())
-	body := string(ctx.Response.Body())
-	assert.Contains(t, body, "unauthorized_client")
-	assert.Contains(t, body, "client is not registered for the refresh_token grant")
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	var tokens map[string]any
+	require.NoError(t, json.Unmarshal(ctx.Response.Body(), &tokens))
+	assert.NotEmpty(t, tokens["access_token"], "the refresh issues a new access token")
+	assert.NotEmpty(t, tokens["refresh_token"], "the refresh rotates the refresh token")
 }
 
 // TestHandleToken_CodeReplayRevokesItsTokens pins RFC 6749 section 4.1.2: an authorization code used a

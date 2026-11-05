@@ -4,8 +4,11 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"slices"
+	"strings"
 	"time"
+	"unsafe"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/tidwall/gjson"
@@ -55,6 +58,21 @@ type BifrostChatResponse struct {
 	SearchResults []SearchResult `json:"search_results,omitempty"`
 	Videos        []VideoResult  `json:"videos,omitempty"`
 	Citations     []string       `json:"citations,omitempty"`
+}
+
+// WithPreservedUsage retains explicitly reported zero counts on the completion
+// wire without filling in missing counts or mutating the shared usage.
+func (cr *BifrostChatResponse) WithPreservedUsage() any {
+	if cr == nil || !cr.Usage.hasExplicitZeroTokens() {
+		return cr
+	}
+	return &struct {
+		*BifrostChatResponse
+		Usage completionUsage `json:"usage"`
+	}{
+		BifrostChatResponse: cr,
+		Usage:               cr.Usage.completionWireUsage(),
+	}
 }
 
 // BackfillParams populates response fields from the request that are needed
@@ -1996,6 +2014,84 @@ type BifrostLLMUsage struct {
 	// turn is priced at the requested model's rates.
 	ServerSideFallbackModel *string                  `json:"-"`
 	Iterations              []ResponsesResponseUsage `json:"-"` // Anthropic per-pass usage, so an interrupted stream still bills its advisor passes
+
+	PromptTokensExplicitZero     bool `json:"-"` // Completion wire: zero was reported, not missing/null.
+	CompletionTokensExplicitZero bool `json:"-"` // Completion wire: zero was reported, not missing/null.
+}
+
+// PreserveTokenCountZeros records numeric zeros at the given JSON field paths.
+// Used when decoding completion responses from providers or cached snapshots.
+// Nil/nonzero usage needs no JSON lookup; no response buffer is retained.
+func (u *BifrostLLMUsage) PreserveTokenCountZeros(data []byte, promptPath, completionPath string) {
+	if u == nil {
+		return
+	}
+	u.PromptTokensExplicitZero = false
+	u.CompletionTokensExplicitZero = false
+	if u.PromptTokens != 0 && u.CompletionTokens != 0 {
+		return
+	}
+	// Sibling paths (every caller's "usage.*") scan the body once for the parent
+	// object, then read both keys from that small sub-document. The string view
+	// avoids copying data; no result outlives this call.
+	promptParent, promptKey := splitJSONFieldPath(promptPath)
+	completionParent, completionKey := splitJSONFieldPath(completionPath)
+	if promptParent != "" && promptParent == completionParent {
+		parent := gjson.Get(unsafe.String(unsafe.SliceData(data), len(data)), promptParent)
+		if !parent.IsObject() {
+			return
+		}
+		if u.PromptTokens == 0 {
+			u.PromptTokensExplicitZero = isJSONNumberZero(gjson.Get(parent.Raw, promptKey))
+		}
+		if u.CompletionTokens == 0 {
+			u.CompletionTokensExplicitZero = isJSONNumberZero(gjson.Get(parent.Raw, completionKey))
+		}
+		return
+	}
+	if u.PromptTokens == 0 {
+		u.PromptTokensExplicitZero = isJSONNumberZero(gjson.GetBytes(data, promptPath))
+	}
+	if u.CompletionTokens == 0 {
+		u.CompletionTokensExplicitZero = isJSONNumberZero(gjson.GetBytes(data, completionPath))
+	}
+}
+
+// splitJSONFieldPath splits a plain dotted gjson path into parent and last key.
+// Paths with escapes or no parent return an empty parent so callers look up the full path.
+func splitJSONFieldPath(path string) (parent, key string) {
+	idx := strings.LastIndexByte(path, '.')
+	if idx <= 0 || strings.IndexByte(path, '\\') >= 0 {
+		return "", path
+	}
+	return path[:idx], path[idx+1:]
+}
+
+func isJSONNumberZero(value gjson.Result) bool {
+	return value.Type == gjson.Number && value.Num == 0
+}
+
+// completionUsage preserves prompt/completion presence; total_tokens serialization is unchanged.
+type completionUsage struct {
+	*BifrostLLMUsage
+	PromptTokens     *int `json:"prompt_tokens,omitempty"`
+	CompletionTokens *int `json:"completion_tokens,omitempty"`
+}
+
+func (u *BifrostLLMUsage) hasExplicitZeroTokens() bool {
+	return u != nil && ((u.PromptTokensExplicitZero && u.PromptTokens == 0) ||
+		(u.CompletionTokensExplicitZero && u.CompletionTokens == 0))
+}
+
+func (u *BifrostLLMUsage) completionWireUsage() completionUsage {
+	wire := completionUsage{BifrostLLMUsage: u}
+	if u.PromptTokens != 0 || u.PromptTokensExplicitZero {
+		wire.PromptTokens = &u.PromptTokens
+	}
+	if u.CompletionTokens != 0 || u.CompletionTokensExplicitZero {
+		wire.CompletionTokens = &u.CompletionTokens
+	}
+	return wire
 }
 
 // NormalizeReasoningTokens folds a top-level reasoning_tokens into CompletionTokensDetails, keeping a nested value if set.
@@ -2153,6 +2249,10 @@ func MergeBifrostLLMUsage(base, add *BifrostLLMUsage) *BifrostLLMUsage {
 		PromptTokens:     base.PromptTokens + add.PromptTokens,
 		CompletionTokens: base.CompletionTokens + add.CompletionTokens,
 		TotalTokens:      base.TotalTokens + add.TotalTokens,
+		// A sum is known to be zero only if both contributing turns reported
+		// zero. An unreported count in either turn must not become a known zero.
+		PromptTokensExplicitZero:     base.PromptTokensExplicitZero && add.PromptTokensExplicitZero,
+		CompletionTokensExplicitZero: base.CompletionTokensExplicitZero && add.CompletionTokensExplicitZero,
 	}
 
 	if base.PromptTokensDetails != nil || add.PromptTokensDetails != nil {
@@ -2217,6 +2317,43 @@ func MergeBifrostLLMUsage(base, add *BifrostLLMUsage) *BifrostLLMUsage {
 
 type ToolUsage struct {
 	WebSearch *WebSearchToolUsage `json:"web_search,omitempty"`
+	// ContainerSessions counts containers a request started, by memory tier. Bifrost derives it; no provider reports it.
+	ContainerSessions map[string]int `json:"container_sessions,omitempty"`
+}
+
+// ContainerTierDefault is the ContainerSessions key for a container with no explicit memory tier.
+const ContainerTierDefault = "default"
+
+// ContainerPricingModel returns the datasheet model that prices a session of the given tier.
+func ContainerPricingModel(tier string) string {
+	if tier == "" || tier == ContainerTierDefault {
+		return "container"
+	}
+	return "container-" + tier
+}
+
+// SetContainerSessions records sessions on *t, allocating it when needed; a no-op when sessions is empty.
+func SetContainerSessions(t **ToolUsage, sessions map[string]int) {
+	if len(sessions) == 0 {
+		return
+	}
+	if *t == nil {
+		*t = &ToolUsage{}
+	}
+	(*t).ContainerSessions = sessions
+}
+
+// withoutDerivedFields returns t without the counts Bifrost derives, for the provider-shaped tool_usage clients see.
+func (t *ToolUsage) withoutDerivedFields() *ToolUsage {
+	if t == nil || t.ContainerSessions == nil {
+		return t
+	}
+	if t.WebSearch == nil {
+		return nil
+	}
+	c := *t
+	c.ContainerSessions = nil
+	return &c
 }
 
 // WebSearchToolUsage counts billable web search calls.
@@ -2239,6 +2376,17 @@ func (t *ToolUsage) Add(o *ToolUsage) *ToolUsage {
 		}
 		sum.WebSearch.NumRequests += o.WebSearch.NumRequests
 	}
+	for _, u := range []*ToolUsage{t, o} {
+		if u == nil {
+			continue
+		}
+		for tier, n := range u.ContainerSessions {
+			if sum.ContainerSessions == nil {
+				sum.ContainerSessions = make(map[string]int, len(u.ContainerSessions))
+			}
+			sum.ContainerSessions[tier] += n
+		}
+	}
 	return sum
 }
 
@@ -2252,6 +2400,7 @@ func (t *ToolUsage) DeepCopy() *ToolUsage {
 		ws := *t.WebSearch
 		c.WebSearch = &ws
 	}
+	c.ContainerSessions = maps.Clone(t.ContainerSessions)
 	return &c
 }
 

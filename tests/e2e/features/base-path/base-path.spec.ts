@@ -205,6 +205,25 @@ test.describe('Base path: self URLs', () => {
     }
   })
 
+  test('the relay header shows and copies the prefixed gateway path', async ({ page, request, context }, testInfo) => {
+    const basePath = basePathOf(testInfo)
+    const name = `bp-relay-${Date.now()}`
+    const created = await request.post(`${basePath}/api/relays`, {
+      data: { name, base_url: 'https://api.example.com', auth: { type: 'bearer' }, credential: { value: { value: 'sk-e2e' } } },
+    })
+    expect(created.status(), await created.text()).toBe(201)
+    try {
+      await context.grantPermissions(['clipboard-read', 'clipboard-write'])
+      await page.goto(`${basePath}/workspace/relays`)
+      await page.getByTestId('relay-list-item').filter({ hasText: name }).first().click()
+      await expect(page.getByTestId('relay-detail-gateway')).toContainText(`${basePath}/relay/${name}`)
+      await page.getByTestId('relay-copy-path').click()
+      await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(`${basePath}/relay/${name}`)
+    } finally {
+      await request.delete(`${basePath}/api/relays/${name}`)
+    }
+  })
+
   test('the MCP usage guide generates commands against the prefixed /mcp', async ({ page, request }, testInfo) => {
     const basePath = basePathOf(testInfo)
     const origin = originOf(testInfo)

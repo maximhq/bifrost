@@ -4,9 +4,19 @@
 
 Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost) - a high-performance AI gateway with unified interface for multiple providers.
 
-**Latest Version:** 2.1.47
+**Latest Version:** 2.1.48
 
 ## Changelog
+
+### 2.1.48
+
+- Added `bifrost.mcp.clientConfigs[].oauthConfig.useClientMetadataDocument` (`use_client_metadata_document`): register with Bifrost's Client ID Metadata Document even when the authorization server does not advertise it.
+- Added `bifrost.mcp.clientConfigs[].oauthConfig.resource` (`resource`): the OAuth resource indicator, discovered when omitted.
+- Added `workloadIdentity.additionalTrustedIssuers` to every `bifrost.scim.config` provider (enterprise): issuers whose workload tokens can be mapped to service accounts.
+- Added `storage.logsStore.captureClientIp` (`logs_store.capture_client_ip`): record the caller's IP on logs. Off by default.
+- Added `bifrost.mcp.clientConfigs[].perUserDiscovery` (`per_user_discovery`): discover each caller's tools with their own credential. Needs a per-user `authType`.
+- `sse`, `stdio` and `websocket` MCP clients now refuse per-user auth types at render time.
+- `bifrost.governance.routingRules[].id` (`governance.routing_rules[].id`) is now optional: a rule without one is matched by `name`, `scope` and `scope_id`.
 
 ### 2.1.47
 

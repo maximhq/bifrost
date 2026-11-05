@@ -672,3 +672,35 @@ func TestLogPassthroughObjectType(t *testing.T) {
 	require.Equal(t, "passthrough_stream", (&Log{Object: "chat_completion_stream", IsPassthrough: true, Stream: true}).PassthroughObjectType())
 	require.Equal(t, "passthrough", (&Log{Object: "passthrough", IsPassthrough: true}).PassthroughObjectType())
 }
+
+// TestSearchFiltersDecodesScalarMetadataFilter pins that metadata_filters still decodes in the
+// one-value-per-key form written before several values per key existed: a queued cost-recalc job
+// or an older API client sends {"env":"prod"}, which must read as one accepted value.
+func TestSearchFiltersDecodesScalarMetadataFilter(t *testing.T) {
+	var f SearchFilters
+	require.NoError(t, json.Unmarshal([]byte(`{"metadata_filters":{"env":"prod","region":["us","eu"],"empty":""}}`), &f))
+	require.Equal(t, map[string][]string{"env": {"prod"}, "region": {"us", "eu"}}, map[string][]string(f.MetadataFilters))
+
+	var bad SearchFilters
+	require.Error(t, json.Unmarshal([]byte(`{"metadata_filters":{"env":7}}`), &bad))
+}
+
+// Container sessions have no legacy column, so repricing a stored log relies on them surviving the round trip.
+func TestContainerSessionsSurviveLogRoundTrip(t *testing.T) {
+	log := &Log{TokenUsageParsed: &schemas.BifrostLLMUsage{
+		TotalTokens:             1,
+		CompletionTokensDetails: &schemas.ChatCompletionTokensDetails{},
+		ToolUsage: &schemas.ToolUsage{
+			WebSearch:         &schemas.WebSearchToolUsage{NumRequests: 2},
+			ContainerSessions: map[string]int{"4g": 1},
+		},
+	}}
+	require.NoError(t, log.SerializeFields())
+	assert.Contains(t, log.TokenUsage, `"container_sessions":{"4g":1}`)
+
+	read := &Log{TokenUsage: log.TokenUsage}
+	require.NoError(t, read.DeserializeFields())
+	require.NotNil(t, read.TokenUsageParsed.ToolUsage)
+	assert.Equal(t, map[string]int{"4g": 1}, read.TokenUsageParsed.ToolUsage.ContainerSessions)
+	assert.Equal(t, 2, read.TokenUsageParsed.ToolUsage.WebSearch.NumRequests)
+}

@@ -365,7 +365,9 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 
 	// capModel is the canonical model string used only for capability/version
 	capModel := schemas.ResolveCanonicalModel(ctx, bifrostReq.Model)
-	caps := schemas.ResolveModelCaps(bifrostReq.Provider, capModel)
+	// A custom provider resolves to the built-in provider it wraps, so its datasheet row
+	// applies here as it already does in the request builder's re-strip.
+	caps := schemas.ResolveModelCaps(schemas.ResolveBaseProvider(ctx, bifrostReq.Provider), capModel)
 	// Fable 5.1+ rejects tool_choice "any"/"tool" outright, so every forced
 	// choice below — the caller's and the synthetic structured-output pin — is
 	// dropped and the model answers under the default "auto".

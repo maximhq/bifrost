@@ -6734,9 +6734,21 @@ func TestMCPClientPendingVerification_ReadFromTheOldSignalsWithoutTheFlag(t *tes
 		require.NoError(t, store.DB().Model(&tables.TableMCPClient{}).Where("client_id = ?", id).Updates(columns).Error)
 	}
 
+	// Completing the sign-in stores the tools it discovered and clears the stash.
 	create("oauth_done_elsewhere", schemas.MCPAuthTypePerUserOauth, false)
+	require.NoError(t, store.UpdateMCPClientDiscovery(ctx, "oauth_done_elsewhere", &schemas.MCPDiscovery{Tools: map[string]schemas.ChatTool{}}))
 	setColumns("oauth_done_elsewhere", map[string]any{"pending_oauth_config_json": nil})
-	assert.False(t, pending("oauth_done_elsewhere"), "the stash cleared without the record: verified")
+	assert.False(t, pending("oauth_done_elsewhere"), "the stash cleared and tools stored without the record: verified")
+
+	// Registered but holding no admin discovery, as turning per_user_discovery off leaves it.
+	create("oauth_turned_off", schemas.MCPAuthTypePerUserOauth, false)
+	setColumns("oauth_turned_off", map[string]any{"pending_oauth_config_json": nil, "pending_verification": true})
+	assert.True(t, pending("oauth_turned_off"), "no stash and no tools, recorded: pending")
+
+	// The same without the record, as a row from before it can be: read as it always was.
+	create("oauth_without_tools", schemas.MCPAuthTypePerUserOauth, false)
+	setColumns("oauth_without_tools", map[string]any{"pending_oauth_config_json": nil, "pending_verification": false})
+	assert.False(t, pending("oauth_without_tools"), "no stash and no tools, not recorded: verified")
 
 	create("oauth_created_elsewhere", schemas.MCPAuthTypePerUserOauth, false)
 	setColumns("oauth_created_elsewhere", map[string]any{"pending_verification": false})
@@ -6789,12 +6801,21 @@ func TestUpdateMCPClientConfig_TurningPerUserDiscoveryOnOrOff(t *testing.T) {
 			wantCredentials: []string{"tok-alice", "cred-alice"}, wantDiscoveries: []string{"user/alice/notes", "user/alice/wiki"}, wantPending: true,
 		},
 		{
+			// One from before the record, with no tool list: verified, as it always read.
+			name: "on, a per_user_oauth client with no tools and no record", authType: schemas.MCPAuthTypePerUserOauth, from: false, to: true,
+			wantCredentials: []string{"tok-alice", "cred-alice"}, wantDiscoveries: []string{"user/alice/notes", "user/alice/wiki"},
+		},
+		{
+			name: "on, a per_user_oauth client turned off and not verified since", authType: schemas.MCPAuthTypePerUserOauth, from: false, to: true, record: true,
+			wantCredentials: []string{"tok-alice", "cred-alice"}, wantDiscoveries: []string{"user/alice/notes", "user/alice/wiki"}, wantPending: true,
+		},
+		{
 			name: "off, a per_user_headers client goes back to its admin step", authType: schemas.MCPAuthTypePerUserHeaders, from: true, to: false,
 			wantCredentials: []string{"tok-admin", "tok-alice", "cred-admin", "cred-alice"}, wantDiscoveries: []string{"user/alice/wiki"}, wantPending: true,
 		},
 		{
-			name: "off, a per_user_oauth client stays verified", authType: schemas.MCPAuthTypePerUserOauth, from: true, to: false,
-			wantCredentials: []string{"tok-admin", "tok-alice", "cred-admin", "cred-alice"}, wantDiscoveries: []string{"user/alice/wiki"},
+			name: "off, a per_user_oauth client goes back to its admin step", authType: schemas.MCPAuthTypePerUserOauth, from: true, to: false,
+			wantCredentials: []string{"tok-admin", "tok-alice", "cred-admin", "cred-alice"}, wantDiscoveries: []string{"user/alice/wiki"}, wantPending: true,
 		},
 		{
 			name: "kept, an ordinary edit", authType: schemas.MCPAuthTypePerUserHeaders, from: false, to: false, tools: true,

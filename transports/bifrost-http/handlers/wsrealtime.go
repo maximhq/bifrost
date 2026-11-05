@@ -1357,6 +1357,7 @@ var realtimeMiddlewareKeys = []any{
 	schemas.BifrostContextKeyDropRawResponseFromClient,
 	schemas.BifrostContextKeyUserID,
 	schemas.BifrostContextKeyUserName,
+	schemas.BifrostContextKeyUserEmail,
 	schemas.BifrostContextKeyAPIKeyID,
 	schemas.BifrostContextKeyAPIKeyName,
 	schemas.BifrostContextKeySelectedKeyID,

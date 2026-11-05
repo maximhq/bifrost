@@ -66,7 +66,9 @@ func ExtractOpenAIPassthroughUsage(method, path string, reqBody, body []byte) *s
 	case schemas.ChatCompletionRequest, schemas.TextCompletionRequest:
 		return ExtractOAIChatUsage(body)
 	case schemas.ResponsesRequest:
-		return extractOAIResponsesUsage(body)
+		u := extractOAIResponsesUsage(body)
+		recordPassthroughContainerSessions(u, reqBody, body)
+		return u
 	case schemas.EmbeddingRequest:
 		return extractOAIEmbeddingUsage(body)
 	case schemas.SpeechRequest:

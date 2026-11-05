@@ -79,13 +79,33 @@ func (m *Manager) SetPluginPipeline(acquire func() PluginPipeline, release func(
 	m.acquirePipeline, m.releasePipeline = acquire, release
 }
 
-// SetGlobalProxy sets the source of the proxy inherited by endpoints with no proxy_config. It takes
-// effect on the next Upsert of each endpoint. An error from it refuses those endpoints rather than
-// letting them go direct around a proxy that is on but cannot be read.
+// SetGlobalProxy sets the source of the proxy inherited by endpoints with no proxy of their own (see
+// effectiveProxy). It takes effect on the next Upsert of each endpoint. An error from it refuses
+// those endpoints rather than letting them go direct around a proxy that is on but cannot be read.
 func (m *Manager) SetGlobalProxy(fn func() (*schemas.ProxyConfig, error)) {
 	m.writeMu.Lock()
 	defer m.writeMu.Unlock()
 	m.globalProxy = fn
+}
+
+// effectiveProxy is the proxy an endpoint dials through, by the rule providers follow: a
+// proxy_config that is absent, of type "none" or of no type names no proxy of its own (the UI saves
+// "none" for an untouched proxy form), so the endpoint inherits the global proxy when one is on for
+// inference, and otherwise connects directly. A global proxy that is on but cannot be read is an
+// error, never a silent direct connection. Callers hold writeMu.
+func (m *Manager) effectiveProxy(own *schemas.ProxyConfig) (*schemas.ProxyConfig, error) {
+	if hasOwnProxy(own) {
+		return own, nil
+	}
+	if m.globalProxy != nil {
+		return m.globalProxy()
+	}
+	return nil, nil
+}
+
+// hasOwnProxy reports whether a proxy_config names a proxy of its own, as for providers.
+func hasOwnProxy(proxy *schemas.ProxyConfig) bool {
+	return proxy != nil && proxy.Type != "" && proxy.Type != schemas.NoProxy
 }
 
 // Upsert validates and compiles cfg and makes it live, replacing an endpoint of the same name.
@@ -95,12 +115,9 @@ func (m *Manager) Upsert(cfg *schemas.RelayConfig) error {
 	if cfg == nil {
 		return fmt.Errorf("relay config is required")
 	}
-	proxy := cfg.ProxyConfig
-	if proxy == nil && m.globalProxy != nil {
-		var err error
-		if proxy, err = m.globalProxy(); err != nil {
-			return fmt.Errorf("%w: global proxy: %w", ErrInvalidConfig, err)
-		}
+	proxy, err := m.effectiveProxy(cfg.ProxyConfig)
+	if err != nil {
+		return fmt.Errorf("%w: global proxy: %w", ErrInvalidConfig, err)
 	}
 	e, err := newEndpoint(cfg, proxy)
 	if err != nil {
@@ -145,13 +162,10 @@ func (m *Manager) Replace(cfgs []*schemas.RelayConfig) error {
 		if cfg == nil {
 			continue
 		}
-		proxy := cfg.ProxyConfig
-		if proxy == nil && m.globalProxy != nil {
-			var err error
-			if proxy, err = m.globalProxy(); err != nil {
-				errs = append(errs, fmt.Sprintf("%s: global proxy: %v", cfg.Name, err))
-				continue
-			}
+		proxy, err := m.effectiveProxy(cfg.ProxyConfig)
+		if err != nil {
+			errs = append(errs, fmt.Sprintf("%s: global proxy: %v", cfg.Name, err))
+			continue
 		}
 		e, err := newEndpoint(cfg, proxy)
 		if err != nil {
@@ -377,13 +391,11 @@ func (m *Manager) Serve(ctx *schemas.BifrostContext, in Request) (*Result, *sche
 	if name, dup := ambiguousHeader(in.Headers); dup {
 		return nil, statusError(http.StatusBadRequest, fmt.Sprintf("header %s is set under two spellings; send it once", name))
 	}
-	// The model is read under the content type the upstream receives: an operator's Content-Type
-	// replaces the caller's on the wire.
-	contentType := in.Headers["content-type"]
-	if ct, ok := e.operatorHeaders["content-type"]; ok {
-		contentType = ct
-	}
-	p := e.plan(in.Method, in.Path, in.Headers)
+	// Routes match, and the model is read, on the headers the upstream receives: the caller's, its
+	// x-bf-eh-* headers beneath them, then the operator's (see buildRequest).
+	headers := e.routeHeaders(in.Headers, callerExtraHeaders(ctx))
+	contentType, _ := headerValue("content-type", headers, e.operatorHeaders)
+	p := e.plan(in.Method, in.Path, headers)
 	if !p.allowed {
 		if p.route != nil {
 			return nil, statusError(http.StatusNotFound, fmt.Sprintf("route %s %s on relay %q is disabled", in.Method, in.Path, in.Endpoint))
@@ -413,7 +425,7 @@ func (m *Manager) Serve(ctx *schemas.BifrostContext, in Request) (*Result, *sche
 	}
 	if p.route != nil {
 		req.RoutePath = e.cfg.Routes[p.index].Path
-		req.RouteHeaders = p.route.matchedHeaders(in.Headers, e.operatorLogHeaders)
+		req.RouteHeaders = p.route.matchedHeaders(headers, e.operatorLogHeaders)
 	}
 	if requestID, _ := ctx.Value(schemas.BifrostContextKeyRequestID).(string); requestID == "" {
 		ctx.SetValue(schemas.BifrostContextKeyRequestID, uuid.New().String())
@@ -460,13 +472,27 @@ func (m *Manager) run(ctx *schemas.BifrostContext, e *endpoint, p plan, req *sch
 				resp.UpstreamLatency = upstream.Milliseconds()
 			}
 		}
+		if bErr != nil {
+			// An error carries the whole call's time, as a reply does, not only the upstream
+			// attempt the transport timed; and it names its request type for the error headers,
+			// the span and the error classification.
+			bErr.ExtraFields.Latency = time.Since(start).Milliseconds()
+			if bErr.ExtraFields.RequestType == "" {
+				bErr.ExtraFields.RequestType = schemas.RelayRequest
+			}
+		}
 		// The call is timed and its span ended whether or not hooks run: a manager with no plugin
 		// pipeline still traces. The operation span ends before the post-hooks, as for MCP tools,
 		// so its duration is the call and the hooks nest after it under the same parent.
 		span.end(ctx, resp, bErr)
+		if entrySpanID != nil {
+			// The post-hooks' spans are siblings of the ended relay span, not its children.
+			ctx.SetValue(schemas.BifrostContextKeySpanID, entrySpanID)
+		}
 		// The root span takes the upstream figure so the tracer can stamp Bifrost's overhead and
 		// the logging plugin can backfill the row from the trace, as it does for LLM rows.
 		ctx.StampUpstreamLatency()
+		ctx.StampStreamOverhead()
 		if pipeline == nil {
 			return resp, bErr
 		}
@@ -506,7 +532,7 @@ func (m *Manager) run(ctx *schemas.BifrostContext, e *endpoint, p plan, req *sch
 			// A refused call still gets its operation span, so the relay metrics derived from it
 			// count denied grants, exhausted budgets and rate limits in the request and error
 			// totals, as the MCP post-hook counts a refused tool call.
-			span = startRelaySpan(ctx, entrySpanID, req)
+			span = startRelaySpan(ctx, entrySpanID, req, start)
 			resp, bErr := runPost(shortCircuit.Response, shortCircuit.Error)
 			if bErr != nil {
 				return nil, bErr
@@ -521,32 +547,73 @@ func (m *Manager) run(ctx *schemas.BifrostContext, e *endpoint, p plan, req *sch
 		}
 	}
 
-	span = startRelaySpan(ctx, entrySpanID, req)
+	span = startRelaySpan(ctx, entrySpanID, req, start)
 	upstream := upstreamRequest{method: req.Method, path: req.Path, rawQuery: req.RawQuery, headers: req.Headers, body: req.Body}
 	requestUnits := p.usage.requestUnits(req.Body)
 
 	var reply *bufferedResult
 	var bErr *schemas.BifrostError
-	if p.stream == streamOff {
+	// With large-payload optimization on, a reply the relay would buffer is opened on the streaming
+	// client so one past the response threshold can be forwarded as a stream instead of held, as an
+	// LLM reply is, unless the route reads its usage or job from the body (readsReplyBody).
+	threshold := largeResponseThreshold(ctx)
+	if p.readsReplyBody() {
+		threshold = 0
+	}
+	if p.stream == streamOff && threshold <= 0 {
 		reply, bErr = e.doBuffered(ctx, upstream)
 	} else {
 		resp, start, releaseOpen, openErr := e.openStream(ctx, upstream)
 		if openErr != nil {
 			return recovered(runPost(nil, openErr))
 		}
-		if p.stream == streamOn || isEventStream(resp.Header.Get("Content-Type")) {
-			streaming = true
-			stream := newStream(ctx, e, resp, start, p.usage, p.billing, requestUnits, func(final *schemas.BifrostRelayResponse, bErr *schemas.BifrostError) {
-				final.RelayName = req.RelayName
-				runPost(final, bErr)
+		// Until a stream owns the reply, it is released here, whatever happens below (a panic
+		// included): the header bound and the upstream connection are never left open.
+		handedOff := false
+		defer func() {
+			if !handedOff {
 				releaseOpen()
-				releaseOnce()
-			})
+				_ = resp.Body.Close()
+			}
+		}()
+		finish := func(final *schemas.BifrostRelayResponse, bErr *schemas.BifrostError) {
+			// Released whatever the post-hooks do, a panic included, so the pooled pipeline and
+			// the open reply are never lost.
+			defer releaseOnce()
+			defer releaseOpen()
+			final.RelayName = req.RelayName
+			runPost(final, bErr)
+		}
+		// Any status is streamed as the upstream sent it, an error reply included, as a passthrough
+		// stream is; the stream reports the status and its post-hooks log it as an error.
+		if p.stream != streamOff && (p.stream == streamOn || isEventStream(resp.Header.Get("Content-Type"))) {
+			streaming = true
+			// A streamed reply is accounted the way an LLM stream is: event parsing and the time spent
+			// blocked writing to the caller are measured, so the overhead is Bifrost's own work rather
+			// than the whole wall clock minus the upstream. Only a stream pays for the accumulator, as
+			// only handleStreamRequest resets it on the LLM path.
+			ctx.ResetStreamOverhead()
+			stream := newStream(ctx, e, resp, start, p.usage, p.billing, requestUnits, finish)
+			handedOff = true
 			return &Result{Stream: stream}, nil
 		}
-		// Not an event stream: read and price it as a buffered reply, whatever the caller asked for.
-		reply, bErr = e.readBuffered(resp, start, true)
-		releaseOpen()
+		// Not an event stream: read and price it as a buffered reply, whatever the caller asked for,
+		// unless it is past the large-payload response threshold.
+		if threshold > 0 {
+			var ahead []byte
+			var large bool
+			reply, ahead, large, bErr = e.readOrHandOff(resp, start, threshold)
+			if large {
+				streaming = true
+				ctx.ResetStreamOverhead()
+				stream := newStream(ctx, e, resp, start, p.usage, p.billing, requestUnits, finish)
+				stream.handOffLarge(ahead)
+				handedOff = true
+				return &Result{Stream: stream}, nil
+			}
+		} else {
+			reply, bErr = e.readBuffered(resp, start, true)
+		}
 	}
 	if bErr != nil {
 		return recovered(runPost(nil, bErr))

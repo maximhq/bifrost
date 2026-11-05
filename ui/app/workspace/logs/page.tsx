@@ -27,6 +27,7 @@ import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { useLocation } from "@tanstack/react-router";
 import { AlertCircle } from "lucide-react";
 import { parseAsSafeArrayOf, parseAsSafeString } from "@/lib/queryParamsParser";
+import { parseMetadataFiltersParam } from "@/lib/utils/metadataFilters";
 import { getLiveToggleState } from "@/lib/utils/timeRange";
 import { parseAsBoolean, parseAsFloat, parseAsInteger, parseAsString, useQueryStates } from "nuqs";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -181,15 +182,7 @@ export default function LogsPage() {
 			max_tokens: urlState.max_tokens ?? undefined,
 			missing_cost_only: urlState.missing_cost_only,
 			cache_hit_types: urlState.cache_hit_types,
-			metadata_filters: urlState.metadata_filters
-				? (() => {
-						try {
-							return JSON.parse(urlState.metadata_filters);
-						} catch {
-							return undefined;
-						}
-					})()
-				: undefined,
+			metadata_filters: parseMetadataFiltersParam(urlState.metadata_filters),
 			// Use a period if present
 			...(urlState.period
 				? { period: urlState.period }
@@ -729,6 +722,7 @@ export default function LogsPage() {
 			provider: t("labels.provider"),
 			model: t("labels.model"),
 			app: t("labels.app"),
+			client_ip: t("labels.clientIp"),
 			latency: t("labels.latency"),
 			tokens: t("labels.tokens"),
 			cost: t("labels.cost"),
@@ -745,7 +739,7 @@ export default function LogsPage() {
 	);
 
 	const DEFAULT_HIDDEN_COLUMNS = useMemo(
-		() => ["session", "service_tier", "virtual_key", "routing_rule", "team", "customer", "user", "business_unit", "project"],
+		() => ["session", "service_tier", "virtual_key", "routing_rule", "team", "customer", "user", "business_unit", "project", "client_ip"],
 		[],
 	);
 
