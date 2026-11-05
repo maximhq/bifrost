@@ -194,6 +194,7 @@ type ProviderFeatureSupport struct {
 	Memory                 bool // memory client tool — on Bedrock bundled under context-management-2025-06-27 (cite: A, B-header)
 	TextEditor             bool // text_editor client tool (cite: A)
 	ToolSearch             bool // tool_search server tool + tool.defer_loading — tool-search-tool-2025-10-19 (cite: A). On classic Amazon Bedrock AWS restricts this to InvokeModel/InvokeModelWithResponseStream, never Converse (cite: TS-bedrock); the Bedrock provider routes any request carrying a tool_search tool or defer_loading to InvokeModel (bedrock.go, InvokeModel section), so the flag is on.
+	ToolSearchHeaderless   bool // tool search served without (and rejecting) the tool-search-tool-* beta header
 	MCP                    bool // MCP connector — explicit "not supported on Bedrock/Vertex" (cite: MCP-excl)
 	AdvancedToolUse        bool // advanced-tool-use-2025-11-20 bundle: allowed_callers only as of current docs — defer_loading now has its own beta, see ToolSearch (cite: A)
 	InputExamples          bool // tool.input_examples standalone — tool-examples-2025-10-29. Bedrock supports this independently of the AdvancedToolUse bundle (cite: B-header). On Anthropic / Azure the bundle implicitly covers it.
@@ -447,9 +448,11 @@ var ProviderFeatures = map[schemas.ModelProvider]ProviderFeatureSupport{
 	schemas.VLLM: {},
 	schemas.SGL:  {},
 	// GitHub documents no feature list, so the cells are what the first-party
-	// VS Code Copilot Chat client sends.
+	// VS Code Copilot Chat client sends. Tool search works with no beta header or
+	// advanced-tool-use-2025-11-20, but tool-search-tool-2025-10-19 is a 400.
 	schemas.GithubCopilot: {
 		ToolSearch:             true,
+		ToolSearchHeaderless:   true,
 		AdvancedToolUse:        true,
 		ContextEditing:         true,
 		ContextManagementField: true,

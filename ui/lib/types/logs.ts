@@ -1498,6 +1498,7 @@ export interface MCPToolLogEntry {
 	id: string;
 	llm_request_id?: string; // Links to the LLM request that triggered this tool call
 	session_id?: string;
+	round_trip_id?: string; // Shared by every round of one gateway tool call that asked its caller for input
 	timestamp: string; // ISO string format
 	tool_name: string;
 	server_label?: string; // MCP server that provided the tool
@@ -1509,8 +1510,8 @@ export interface MCPToolLogEntry {
 	error_details?: BifrostError;
 	latency?: number; // Execution time in milliseconds
 	cost?: number; // Cost in dollars (per execution cost)
-	status: string; // "processing", "success", or "error"
-	metadata?: Record<string, string>;
+	status: string; // "processing", "success", "error", or "input_required" (the server asked the caller for input)
+	metadata?: Record<string, unknown>;
 	plugin_logs?: string; // JSON string of plugin execution logs grouped by plugin name
 	redaction_mapping?: RedactionMapping; // Present on detail responses only when the caller has Logs:Reveal
 	created_at: string; // ISO string format
@@ -1537,6 +1538,7 @@ export interface MCPToolLogFilters {
 	agent_names?: string[];
 	session_id?: string;
 	agent_correlation_id?: string;
+	round_trip_id?: string;
 	start_time?: string; // RFC3339 format
 	end_time?: string; // RFC3339 format
 	period?: string; // "1h","6h","24h","7d","30d","today","this_week","this_month"; resolved server-side, takes precedence over start_time/end_time
