@@ -8,6 +8,8 @@ import (
 )
 
 // hoistResponsesAdditionalTools promotes embedded client declarations before wire conversion without mutating the request shared by fallback attempts.
+// Declarations are merged, not appended: Codex re-declares a tool in a later item when its
+// definition changes mid-thread, and a flat wire would otherwise carry that tool twice.
 func hoistResponsesAdditionalTools(request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesRequest, *schemas.BifrostError) {
 	if request == nil {
 		return nil, nil
@@ -34,9 +36,7 @@ func hoistResponsesAdditionalTools(request *schemas.BifrostResponsesRequest) (*s
 	if request.Params != nil {
 		params = *request.Params
 	}
-	merged := make([]schemas.ResponsesTool, 0, len(params.Tools)+len(tools))
-	merged = append(merged, params.Tools...)
-	params.Tools = append(merged, tools...)
+	params.Tools = mergeResponsesToolDeclarations(params.Tools, tools)
 	prepared.Params = &params
 	prepared.Input = make([]schemas.ResponsesMessage, 0, len(request.Input))
 	for _, message := range request.Input {
@@ -45,6 +45,89 @@ func hoistResponsesAdditionalTools(request *schemas.BifrostResponsesRequest) (*s
 		}
 	}
 	return &prepared, nil
+}
+
+// toolDeclarationKey identifies a declared tool: its namespace and name. The default
+// "functions" namespace and the top level share the empty namespace, since Codex and
+// UnwrapDefaultNamespaceTools treat functions.exec and a bare exec as the same tool.
+type toolDeclarationKey struct{ namespace, name string }
+
+// toolDeclarationSlot is where a declared tool sits in the merged list: index into the
+// list, and member index inside that entry's namespace, or -1 for a top-level tool.
+type toolDeclarationSlot struct{ index, member int }
+
+// mergeResponsesToolDeclarations combines the request's top-level tools with the tools
+// declared by its additional_tools items, in order, so a later declaration of the same
+// tool replaces the earlier one. The replacement keeps the earlier one's position (and
+// container form, namespaced or top-level) so the unchanged tools before it keep their
+// byte-stable prompt-cache prefix. A namespace declared again merges its members into
+// the first declaration instead of replacing it, so an item that re-declares only exec
+// keeps the namespace's other members. Tools without a name, and non-function tools
+// other than namespaces, are kept as declared.
+//
+// Namespace entries get fresh member slices, so neither input is mutated.
+func mergeResponsesToolDeclarations(top, declared []schemas.ResponsesTool) []schemas.ResponsesTool {
+	merged := make([]schemas.ResponsesTool, 0, len(top)+len(declared))
+	slots := make(map[toolDeclarationKey]toolDeclarationSlot, len(top)+len(declared))
+	namespaces := make(map[string]int)
+	place := func(key toolDeclarationKey, tool schemas.ResponsesTool, appendSlot func() toolDeclarationSlot) {
+		slot, seen := slots[key]
+		if !seen {
+			slots[key] = appendSlot()
+			return
+		}
+		if slot.member < 0 {
+			merged[slot.index] = tool
+		} else {
+			merged[slot.index].ResponsesToolNamespace.Tools[slot.member] = tool
+		}
+	}
+	add := func(tool schemas.ResponsesTool) {
+		switch {
+		case tool.Type == schemas.ResponsesToolTypeNamespace && tool.Name != nil && tool.ResponsesToolNamespace != nil:
+			namespace := *tool.Name
+			keyNamespace := namespace
+			if namespace == providerUtils.DefaultToolNamespace {
+				keyNamespace = ""
+			}
+			index, seen := namespaces[namespace]
+			if !seen {
+				index = len(merged)
+				namespaces[namespace] = index
+				entry := tool
+				entry.ResponsesToolNamespace = &schemas.ResponsesToolNamespace{
+					Tools: make([]schemas.ResponsesTool, 0, len(tool.ResponsesToolNamespace.Tools)),
+				}
+				merged = append(merged, entry)
+			}
+			for _, member := range tool.ResponsesToolNamespace.Tools {
+				appendMember := func() toolDeclarationSlot {
+					container := merged[index].ResponsesToolNamespace
+					container.Tools = append(container.Tools, member)
+					return toolDeclarationSlot{index: index, member: len(container.Tools) - 1}
+				}
+				if member.Name == nil || *member.Name == "" {
+					appendMember()
+					continue
+				}
+				place(toolDeclarationKey{keyNamespace, *member.Name}, member, appendMember)
+			}
+		case (tool.Type == schemas.ResponsesToolTypeFunction || tool.Type == schemas.ResponsesToolTypeCustom) && tool.Name != nil && *tool.Name != "":
+			place(toolDeclarationKey{"", *tool.Name}, tool, func() toolDeclarationSlot {
+				merged = append(merged, tool)
+				return toolDeclarationSlot{index: len(merged) - 1, member: -1}
+			})
+		default:
+			merged = append(merged, tool)
+		}
+	}
+	for _, tool := range top {
+		add(tool)
+	}
+	for _, tool := range declared {
+		add(tool)
+	}
+	return merged
 }
 
 // hoistClientToolSearchOutputTools declares the tools a caller's client-run tool search
