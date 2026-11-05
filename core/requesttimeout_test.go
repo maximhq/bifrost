@@ -1138,3 +1138,29 @@ func TestFinishAgentCall(t *testing.T) {
 		}
 	})
 }
+
+// TestArmRequestTimeout_NoCancelAfterLastStop covers the deadline expiring
+// just as the last stop runs. Timer.Stop cannot stop a callback that has
+// already begun, so the callback itself must check the arm under the lock:
+// once stop has returned with ctx still live, ctx must never be cancelled
+// afterwards, or a caller reusing it would start its next request cancelled.
+func TestArmRequestTimeout_NoCancelAfterLastStop(t *testing.T) {
+	const iterations = 2000
+	late := 0
+	for i := 0; i < iterations; i++ {
+		ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+		ctx.SetValue(schemas.BifrostContextKeyRequestTimeout, 50*time.Microsecond)
+		stop, _ := armRequestTimeout(ctx)
+		time.Sleep(time.Duration(i%100) * time.Microsecond)
+		stop()
+		liveAtStop := ctx.Err() == nil
+		time.Sleep(200 * time.Microsecond)
+		if liveAtStop && ctx.Err() != nil {
+			late++
+		}
+		cancel()
+	}
+	if late > 0 {
+		t.Fatalf("ctx was cancelled after its last stop returned in %d of %d iterations", late, iterations)
+	}
+}

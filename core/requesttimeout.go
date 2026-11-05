@@ -163,10 +163,21 @@ func armRequestTimeout(ctx *schemas.BifrostContext) (stop func(), armed bool) {
 	requestTimeoutArmMu.Lock()
 	arm, _ := ctx.Value(requestTimeoutArmedKey{}).(*requestTimeoutArm)
 	if arm == nil || arm.owner != ctx {
-		arm = &requestTimeoutArm{owner: ctx, timer: time.AfterFunc(d, func() {
+		fresh := &requestTimeoutArm{owner: ctx}
+		// The callback takes requestTimeoutArmMu and acts only while the arm has
+		// live refs. Timer.Stop cannot stop a callback that has already begun,
+		// so without this a deadline expiring as the last stop runs would
+		// cancel the caller's ctx after its request finished.
+		fresh.timer = time.AfterFunc(d, func() {
+			requestTimeoutArmMu.Lock()
+			defer requestTimeoutArmMu.Unlock()
+			if fresh.refs == 0 {
+				return
+			}
 			ctx.SetValue(schemas.BifrostContextKeyRequestTimeoutFired, true)
 			ctx.Cancel()
-		})}
+		})
+		arm = fresh
 		ctx.SetValue(requestTimeoutArmedKey{}, arm)
 	}
 	arm.refs++
