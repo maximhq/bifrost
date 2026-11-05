@@ -864,6 +864,7 @@ func TestConvertToBifrostContext_DirectKey_EnvPrefixNotResolved(t *testing.T) {
 	}
 }
 
+// TestBuildBaseURL checks override priority and exact trusted-host selection.
 func TestBuildBaseURL(t *testing.T) {
 	const host = "bifrost.example.com"
 	tests := []struct {
@@ -934,12 +935,30 @@ func TestBuildBaseURL(t *testing.T) {
 	}
 }
 
+// TestConfigureTrustedForwardedHost rejects unusable authorities before publishing them.
 func TestConfigureTrustedForwardedHost(t *testing.T) {
 	t.Cleanup(func() { _ = configureTrustedForwardedHost("") })
-	for _, value := range []string{"https://example.com", "example.com/path", "example.com?query", "example.com#fragment", "user@example.com", "*.example.com", "example.com,other.example.com", " example.com", "example.com:invalid"} {
+	for _, value := range []string{"https://example.com", "example.com/path", "example.com?query", "example.com#fragment", "user@example.com", "*.example.com", "example.com,other.example.com", " example.com", "example.com:invalid", "example.com:65536", "example.com:84433", "[2001:db8::1]:65536"} {
 		t.Run(value, func(t *testing.T) {
 			if err := configureTrustedForwardedHost(value); err == nil {
 				t.Fatalf("accepted invalid authority %q", value)
+			}
+		})
+	}
+	for _, value := range []string{"", "example.com", "example.com:1", "example.com:65535", "[2001:db8::1]", "[2001:db8::1]:65535"} {
+		t.Run("valid/"+value, func(t *testing.T) {
+			if err := configureTrustedForwardedHost(value); err != nil {
+				t.Fatal(err)
+			}
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.SetHost("internal.example.com")
+			ctx.Request.Header.Set("X-Forwarded-Host", value)
+			want := "http://" + value
+			if value == "" {
+				want = "http://internal.example.com"
+			}
+			if got := BuildBaseURL(ctx, ""); got != want {
+				t.Fatalf("BuildBaseURL() = %q, want %q", got, want)
 			}
 		})
 	}
