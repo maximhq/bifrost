@@ -427,6 +427,28 @@ func thoughtTextParts(reasoning *schemas.ResponsesReasoning) []*Part {
 	return parts
 }
 
+// replayThoughtTextParts is thoughtTextParts for the request converter, which renders a
+// reasoning item on its own and never reaches the generic content conversion. The text
+// lives in the summary on items Bifrost streamed and in reasoning_text content blocks on
+// items it built from a non-streamed Gemini response, so the content blocks are read when
+// the summary carries no text. ToGeminiResponsesResponse must not use it: it already
+// converts every message's content blocks, and would send the thought text twice.
+func replayThoughtTextParts(msg *schemas.ResponsesMessage) []*Part {
+	if msg == nil || msg.ResponsesReasoning == nil {
+		return nil
+	}
+	parts := thoughtTextParts(msg.ResponsesReasoning)
+	if len(parts) > 0 || msg.Content == nil {
+		return parts
+	}
+	for _, block := range msg.Content.ContentBlocks {
+		if block.Type == schemas.ResponsesOutputMessageContentTypeReasoning && block.Text != nil && *block.Text != "" {
+			parts = append(parts, &Part{Text: *block.Text, Thought: true})
+		}
+	}
+	return parts
+}
+
 func ToGeminiResponsesResponse(bifrostResp *schemas.BifrostResponsesResponse) *GenerateContentResponse {
 	if bifrostResp == nil {
 		return nil
@@ -681,17 +703,7 @@ func ToGeminiResponsesResponse(bifrostResp *schemas.BifrostResponsesResponse) *G
 					continue
 				}
 
-				// Reasoning content is in the Summary array
-				if len(msg.ResponsesReasoning.Summary) > 0 {
-					for _, summaryBlock := range msg.ResponsesReasoning.Summary {
-						if summaryBlock.Text != "" {
-							currentParts = append(currentParts, &Part{
-								Text:    summaryBlock.Text,
-								Thought: true,
-							})
-						}
-					}
-				}
+				currentParts = append(currentParts, thoughtTextParts(msg.ResponsesReasoning)...)
 				if msg.ResponsesReasoning.EncryptedContent != nil {
 					decodedSig := thoughtSignatureFromEncryptedContent(msg.ResponsesReasoning.EncryptedContent)
 					if decodedSig != nil && !preservedToolSignatures[base64.StdEncoding.EncodeToString(decodedSig)] {
@@ -3957,6 +3969,12 @@ func convertGeminiCandidatesToResponsesOutput(candidates []*Candidate, messageID
 							},
 						},
 						Type: schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
+						// A reasoning item always carries a summary array on the wire (the
+						// streaming path already emits one); a text-only thought left it nil
+						// and the item went out with no summary at all.
+						ResponsesReasoning: &schemas.ResponsesReasoning{
+							Summary: []schemas.ResponsesReasoningSummary{},
+						},
 					}
 					if len(part.ThoughtSignature) > 0 {
 						// Stored base64-encoded, which is the form
@@ -3964,10 +3982,7 @@ func convertGeminiCandidatesToResponsesOutput(candidates []*Candidate, messageID
 						// thoughtSignatureFromEncryptedContent decodes on the way
 						// back out -- so the round trip is symmetric by construction.
 						encoded := base64.StdEncoding.EncodeToString(part.ThoughtSignature)
-						msg.ResponsesReasoning = &schemas.ResponsesReasoning{
-							Summary:          []schemas.ResponsesReasoningSummary{},
-							EncryptedContent: &encoded,
-						}
+						msg.ResponsesReasoning.EncryptedContent = &encoded
 						msg.Content.ContentBlocks[0].Signature = &encoded
 					}
 					messages = append(messages, msg)
@@ -5060,7 +5075,7 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 		// A reasoning message with no text still has nothing to add here, so it
 		// keeps being skipped.
 		if msg.Type != nil && *msg.Type == schemas.ResponsesMessageTypeReasoning && msg.ResponsesReasoning != nil {
-			parts := thoughtTextParts(msg.ResponsesReasoning)
+			parts := replayThoughtTextParts(&msg)
 
 			// The signature is carried by the PRECEDING function call's
 			// look-ahead - but only when there is one. A standalone signed
