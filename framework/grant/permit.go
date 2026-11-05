@@ -34,7 +34,7 @@ const (
 	// PermitTeamAccessProfile, PermitBusinessUnitAccessProfile and PermitCustomerAccessProfile mark
 	// permits whose access comes from a profile attached to a team, business unit or customer. Such a
 	// profile applies to everything under the entity - its members' requests and the keys it owns -
-	// and joins the caller's other permits under union, so it widens what may be reached. One kind
+	// and widens what may be reached, or caps it when levels intersect (see NewAccess). One kind
 	// each rather than one shared kind, because a refusal has to say whose profile it named: "your
 	// team's access profile" and "your business unit's" are different answers.
 	PermitTeamAccessProfile         PermitType = "team_access_profile"

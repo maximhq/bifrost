@@ -138,12 +138,19 @@ type Permit interface {
 // any of them allows may serve it, and every one of them that permits it pays for it (see
 // PermitsForModel). There is one scoping permit at most, composed under one mode.
 //
+// With intersecting levels (see LevelMode), the lowest level present grants and each level above it
+// caps. The scoping permit composes with the capped result.
+//
 // Either side may be empty. No caller permits means the caller holds no access of their own, which
 // is not the same as holding a permit that permits nothing. No scoping permit means the mode is
 // irrelevant and the answer is what the caller's permits permit.
 type Access interface {
-	// Bases returns the permits the caller holds, in attribution order. Empty when they hold none.
+	// Bases returns the permits that grant, in attribution order: all of them, or the lowest level
+	// when levels intersect. Empty when the caller holds none.
 	Bases() []Permit
+	// LevelMode returns how the caller's levels combine: "intersect" caps by every level, anything
+	// else reads the permits as one. Separate from Mode, which is the scoping permit's.
+	LevelMode() string
 	// Scoping returns the permit scoping this request, or nil when nothing scopes it.
 	Scoping() Permit
 	// Mode returns the composition mode governing this request, as the resolver that built it names
@@ -177,9 +184,9 @@ type Access interface {
 	IsRelayAllowed(endpointName string) bool
 
 	// PermitsForModel returns the permits the request answers to for model on provider: every one
-	// of the caller's permits that permits the pair, then the scoping permit whenever the request
-	// is scoped. Nil when the request may not use the pair at all. An empty model asks about the
-	// provider alone.
+	// of the caller's permits that permits the pair, then every capping level permit that permits
+	// it, then the scoping permit whenever the request is scoped. Nil when the request may not use
+	// the pair at all. An empty model asks about the provider alone.
 	//
 	// This is the attribution rule, and what the pair costs is gathered against every permit named
 	// here. The caller's permits are read as one, so each of them that permits the pair covers the
@@ -190,9 +197,9 @@ type Access interface {
 
 	// KeysForModel returns the provider keys the request may use for model on provider, and whether
 	// that list is restrictive at all: any key any of the caller's permitting permits allows,
-	// composed with the scoping permit's under the mode. restricted is false when every key of the
-	// provider is allowed, in which case keyIDs is nil; when restricted is true, only keyIDs may be
-	// used and an empty list allows none.
+	// narrowed by each capping level, then composed with the scoping permit's under the mode.
+	// restricted is false when every key of the provider is allowed, in which case keyIDs is nil;
+	// when restricted is true, only keyIDs may be used and an empty list allows none.
 	KeysForModel(provider string, model string) (keyIDs []string, restricted bool)
 	// ProvidersForModel returns every provider permit the request may serve model from, in
 	// evaluation order: the caller's permits first, each in full and in their order, then providers
