@@ -7689,6 +7689,52 @@
               ]
             }
           }
+        },
+        {
+          "name": "Get MCP Logs Filter Data (Scope Dimensions)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('MCP filter data lists users, teams, customers, business units and projects as id/name pairs', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(Object.keys(body).sort(), pm.response.text()).to.eql(['business_units', 'customers', 'projects', 'teams', 'users']);",
+                  "  ['users', 'teams', 'customers', 'business_units', 'projects'].forEach(function (dimension) {",
+                  "    pm.expect(body[dimension], dimension).to.be.an('array');",
+                  "    body[dimension].forEach(function (option) {",
+                  "      pm.expect(option.id, dimension + ' id').to.be.a('string').and.not.empty;",
+                  "      pm.expect(option.name, dimension + ' name').to.be.a('string');",
+                  "    });",
+                  "  });",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/mcp-logs/filterdata?dimensions=users,teams,customers,business_units,projects",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "mcp-logs",
+                "filterdata"
+              ],
+              "query": [
+                {
+                  "key": "dimensions",
+                  "value": "users,teams,customers,business_units,projects"
+                }
+              ]
+            }
+          }
         }
       ]
     },

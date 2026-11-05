@@ -98012,9 +98012,27 @@
           "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `MCPLogs:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "Get available MCP log filter data",
-        "description": "Returns all unique filter data from MCP tool logs (tool names, server labels).\n",
+        "description": "Returns the values each MCP log filter can take, read from the MCP tool logs of the last 30 days.\n",
         "tags": [
           "Logging"
+        ],
+        "parameters": [
+          {
+            "name": "dimensions",
+            "in": "query",
+            "description": "Comma-separated dimensions to return. One or more of `tool_names`, `server_labels`, `apps`, `user_agents`, `virtual_keys`, `users`, `teams`, `customers`, `business_units`, `projects`. Unrecognised values are ignored, and asking for none returns every dimension.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "description": "Free-text search within the requested dimensions. Passing it bypasses the response cache.",
+            "schema": {
+              "type": "string"
+            }
+          }
         ],
         "security": [
           {
@@ -98067,6 +98085,100 @@
                         }
                       },
                       "description": "All unique virtual keys"
+                    },
+                    "apps": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "Client apps detected from the callers' User-Agent, for the `apps` dimension."
+                    },
+                    "user_agents": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "Raw caller User-Agent strings, for the `user_agents` dimension."
+                    },
+                    "users": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "description": "An id and its display name, as offered by a filter dimension.",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "name": {
+                            "type": "string"
+                          }
+                        }
+                      },
+                      "description": "Users that appear in the MCP logs, for the `users` dimension. A user with no recorded name is listed with an empty name."
+                    },
+                    "teams": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "description": "An id and its display name, as offered by a filter dimension.",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "name": {
+                            "type": "string"
+                          }
+                        }
+                      },
+                      "description": "Teams that appear in the MCP logs, for the `teams` dimension, including every team of a call recorded under several."
+                    },
+                    "customers": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "description": "An id and its display name, as offered by a filter dimension.",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "name": {
+                            "type": "string"
+                          }
+                        }
+                      },
+                      "description": "Customers that appear in the MCP logs, for the `customers` dimension, including every customer of a call recorded under several."
+                    },
+                    "business_units": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "description": "An id and its display name, as offered by a filter dimension.",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "name": {
+                            "type": "string"
+                          }
+                        }
+                      },
+                      "description": "Business units that appear in the MCP logs, for the `business_units` dimension, including every business unit of a call recorded under several."
+                    },
+                    "projects": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "description": "An id and its display name, as offered by a filter dimension.",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "name": {
+                            "type": "string"
+                          }
+                        }
+                      },
+                      "description": "Projects that appear in the MCP logs, for the `projects` dimension."
                     }
                   }
                 }

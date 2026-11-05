@@ -43,6 +43,72 @@ func TestShouldUseFilterDataCacheAllowsUnscopedEmptyQuery(t *testing.T) {
 
 // TestParseComplexityFilters verifies complexity-specific query filters are
 // parsed independently from generic log filters.
+// mcpScopeOptionsLogManager serves one fixed option per MCP scope dimension and none for the others.
+type mcpScopeOptionsLogManager struct {
+	loggingplugin.LogManager
+}
+
+func (mcpScopeOptionsLogManager) GetAvailableToolNames(context.Context, int, string) ([]string, error) {
+	return nil, nil
+}
+func (mcpScopeOptionsLogManager) GetAvailableServerLabels(context.Context, int, string) ([]string, error) {
+	return nil, nil
+}
+func (mcpScopeOptionsLogManager) GetAvailableMCPApps(context.Context, int, string) ([]string, error) {
+	return nil, nil
+}
+func (mcpScopeOptionsLogManager) GetAvailableMCPUserAgents(context.Context, int, string) ([]string, error) {
+	return nil, nil
+}
+func (mcpScopeOptionsLogManager) GetAvailableMCPVirtualKeys(context.Context, int, string) ([]loggingplugin.KeyPair, error) {
+	return nil, nil
+}
+func (mcpScopeOptionsLogManager) GetAvailableMCPUsers(context.Context, int, string) ([]loggingplugin.KeyPair, error) {
+	return []loggingplugin.KeyPair{{ID: "user-1", Name: "Ada"}}, nil
+}
+func (mcpScopeOptionsLogManager) GetAvailableMCPTeams(context.Context, int, string) ([]loggingplugin.KeyPair, error) {
+	return []loggingplugin.KeyPair{{ID: "team-1", Name: "Platform"}}, nil
+}
+func (mcpScopeOptionsLogManager) GetAvailableMCPCustomers(context.Context, int, string) ([]loggingplugin.KeyPair, error) {
+	return []loggingplugin.KeyPair{{ID: "customer-1", Name: "Acme"}}, nil
+}
+func (mcpScopeOptionsLogManager) GetAvailableMCPBusinessUnits(context.Context, int, string) ([]loggingplugin.KeyPair, error) {
+	return []loggingplugin.KeyPair{{ID: "bu-1", Name: "Advisory"}}, nil
+}
+func (mcpScopeOptionsLogManager) GetAvailableMCPProjects(context.Context, int, string) ([]loggingplugin.KeyPair, error) {
+	return []loggingplugin.KeyPair{{ID: "project-1", Name: "Apollo"}}, nil
+}
+
+// TestGetMCPLogsFilterDataServesScopeDimensions pins the user, team, customer, business unit and project
+// options on /api/mcp-logs/filterdata, each as {id, name} pairs like /api/logs/filterdata, and that
+// a narrowed request carries only the dimensions it named.
+func TestGetMCPLogsFilterDataServesScopeDimensions(t *testing.T) {
+	SetLogger(&mockLogger{})
+	fetch := func(t *testing.T, dimensions string) map[string][]loggingplugin.KeyPair {
+		t.Helper()
+		h := &LoggingHandler{logManager: mcpScopeOptionsLogManager{}}
+		var req fasthttp.Request
+		// A search query bypasses the filter-data cache, which a bare handler lacks.
+		req.SetRequestURI("/api/mcp-logs/filterdata?dimensions=" + dimensions + "&q=a")
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Init(&req, &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 12345}, nil)
+		h.getMCPLogsFilterData(ctx)
+		require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+		var body map[string][]loggingplugin.KeyPair
+		require.NoError(t, json.Unmarshal(ctx.Response.Body(), &body), string(ctx.Response.Body()))
+		return body
+	}
+
+	require.Equal(t, map[string][]loggingplugin.KeyPair{
+		"users":          {{ID: "user-1", Name: "Ada"}},
+		"teams":          {{ID: "team-1", Name: "Platform"}},
+		"customers":      {{ID: "customer-1", Name: "Acme"}},
+		"business_units": {{ID: "bu-1", Name: "Advisory"}},
+		"projects":       {{ID: "project-1", Name: "Apollo"}},
+	}, fetch(t, "users,teams,customers,business_units,projects"))
+	require.Equal(t, map[string][]loggingplugin.KeyPair{"teams": {{ID: "team-1", Name: "Platform"}}}, fetch(t, "teams"))
+}
+
 func TestParseComplexityFilters(t *testing.T) {
 	t.Run("parses tier and mechanism", func(t *testing.T) {
 		ctx := &fasthttp.RequestCtx{}
@@ -1408,6 +1474,31 @@ func (m *dashboardLogManager) GetAvailableServerLabels(ctx context.Context, limi
 
 // GetAvailableMCPVirtualKeys implements the test double used by logging handler tests.
 func (m *dashboardLogManager) GetAvailableMCPVirtualKeys(ctx context.Context, limit int, query string) ([]loggingplugin.KeyPair, error) {
+	return nil, nil
+}
+
+// GetAvailableMCPUsers implements the test double used by logging handler tests.
+func (m *dashboardLogManager) GetAvailableMCPUsers(ctx context.Context, limit int, query string) ([]loggingplugin.KeyPair, error) {
+	return nil, nil
+}
+
+// GetAvailableMCPTeams implements the test double used by logging handler tests.
+func (m *dashboardLogManager) GetAvailableMCPTeams(ctx context.Context, limit int, query string) ([]loggingplugin.KeyPair, error) {
+	return nil, nil
+}
+
+// GetAvailableMCPCustomers implements the test double used by logging handler tests.
+func (m *dashboardLogManager) GetAvailableMCPCustomers(ctx context.Context, limit int, query string) ([]loggingplugin.KeyPair, error) {
+	return nil, nil
+}
+
+// GetAvailableMCPBusinessUnits implements the test double used by logging handler tests.
+func (m *dashboardLogManager) GetAvailableMCPBusinessUnits(ctx context.Context, limit int, query string) ([]loggingplugin.KeyPair, error) {
+	return nil, nil
+}
+
+// GetAvailableMCPProjects implements the test double used by logging handler tests.
+func (m *dashboardLogManager) GetAvailableMCPProjects(ctx context.Context, limit int, query string) ([]loggingplugin.KeyPair, error) {
 	return nil, nil
 }
 

@@ -6601,6 +6601,52 @@ func (s *RDBLogStore) GetAvailableMCPVirtualKeys(ctx context.Context, limit int,
 	return logs, nil
 }
 
+// GetDistinctMCPKeyPairs lists one MCP tool log dimension's id/name pairs for the filter sidebar,
+// built like the Relay Logs options (GetRelayFilterData): teams, customers and business units fan out
+// over their JSON-array columns, each id is listed once under one of its names, an id with no name is
+// still listed, and the dimension ceiling bounds the list. Rows older than the filter-data window,
+// which every other MCP filter dimension reads, are left out.
+func (s *RDBLogStore) GetDistinctMCPKeyPairs(ctx context.Context, idCol, nameCol string, limit int, query string) ([]KeyPairResult, error) {
+	if _, ok := allowedKeyPairColumns[idCol]; !ok {
+		return nil, fmt.Errorf("invalid id column: %s", idCol)
+	}
+	if _, ok := allowedKeyPairColumns[nameCol]; !ok {
+		return nil, fmt.Errorf("invalid name column: %s", nameCol)
+	}
+	cutoff := time.Now().UTC().AddDate(0, 0, -defaultFilterDataCutoffDays)
+	queryID, queryName := idCol, nameCol
+	q := s.ScopedDB(ctx).Model(&MCPToolLog{})
+	var src dimensionReadSource
+	if from, ok := mcpDimensionFanoutFrom(s.db.Dialector.Name(), idCol); ok {
+		q = s.ScopedDB(ctx).Table("?", gorm.Expr(from))
+		q.Statement.Table = "logs"
+		queryID, queryName = "dim_id", "dim_name"
+		src.FannedOut = true
+	}
+	q = q.Select(queryID+" AS id, MAX("+queryName+") AS name").
+		Where(queryID+" IS NOT NULL AND "+queryID+" <> '' AND timestamp >= ?", cutoff)
+	q = applyDimensionCeiling(ctx, q, src, idCol)
+	if query != "" {
+		// Backslash is the default LIKE escape on Postgres, MySQL and ClickHouse, and ClickHouse rejects an
+		// ESCAPE clause; only SQLite needs it declared, as in applyRelayLogFilters' search.
+		switch s.db.Dialector.Name() {
+		case "postgres":
+			q = q.Where(queryName+" ILIKE ?", "%"+escapeLike(query)+"%")
+		case "clickhouse":
+			q = q.Where("lowerUTF8("+queryName+") LIKE ?", "%"+strings.ToLower(escapeLike(query))+"%")
+		case "sqlite":
+			q = q.Where("LOWER("+queryName+") LIKE ? ESCAPE '\\'", "%"+strings.ToLower(escapeLike(query))+"%")
+		default:
+			q = q.Where("LOWER("+queryName+") LIKE ?", "%"+strings.ToLower(escapeLike(query))+"%")
+		}
+	}
+	results := []KeyPairResult{}
+	if err := q.Group(queryID).Order("name").Limit(limit).Scan(&results).Error; err != nil {
+		return nil, fmt.Errorf("failed to get distinct MCP key pairs (%s, %s): %w", idCol, nameCol, err)
+	}
+	return results, nil
+}
+
 // GetMCPHistogram returns time-bucketed MCP tool call volume for the given filters.
 func (s *RDBLogStore) GetMCPHistogram(ctx context.Context, filters MCPToolLogSearchFilters, bucketSizeSeconds int64) (*MCPHistogramResult, error) {
 	if bucketSizeSeconds <= 0 {
