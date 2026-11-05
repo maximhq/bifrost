@@ -150,6 +150,9 @@ type semanticGeneration struct {
 	// Published once with the generation and never mutated, so Classify may read
 	// it after releasing the mutex.
 	exemplars map[string]string
+	// captureNamespace is where request capture writes for this generation's
+	// embedding space; see CaptureNamespace.
+	captureNamespace string
 }
 
 // SemanticClassifier embeds the shared tier phrase lists and classifies a
@@ -199,6 +202,8 @@ type SemanticClassifier struct {
 	// claimer announces the namespace a warm is building, so a peer reclaiming
 	// unused generations does not collect one still under construction.
 	claimer GenerationClaimer
+	// capture samples classified requests for phrase suggestions. Optional.
+	capture *RequestCapture
 	// deletionDone wakes a warm that finished into a namespace still being
 	// deleted. Retrying before the store has finished would rebuild records the
 	// delete is about to remove, and could repeat for as long as the delete
@@ -263,6 +268,46 @@ func (c *SemanticClassifier) SetWarmCoordinator(coordinator WarmCoordinator) {
 	c.mu.Lock()
 	c.coordinator = coordinator
 	c.mu.Unlock()
+}
+
+// SetRequestCapture supplies the optional sampler that keeps classified
+// requests' vectors for phrase suggestions. Nil, or a capture that is not
+// enabled, leaves Classify exactly as it was.
+func (c *SemanticClassifier) SetRequestCapture(capture *RequestCapture) {
+	c.mu.Lock()
+	c.capture = capture
+	c.mu.Unlock()
+}
+
+// captureTarget returns where request capture writes for the serving
+// generation, or a nil store when nothing is serving.
+func (c *SemanticClassifier) captureTarget() (*RequestCapture, vectorstore.VectorStore, string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.active == nil {
+		return c.capture, nil, ""
+	}
+	return c.capture, c.active.store, c.active.captureNamespace
+}
+
+// ForgetCapturedRequests deletes the captured vectors of deleted logs from
+// the serving embedding space's capture namespace; deletes it cannot do are
+// recorded for RetryCapturedDeletes.
+func (c *SemanticClassifier) ForgetCapturedRequests(ctx context.Context, ids []string) {
+	capture, store, namespace := c.captureTarget()
+	capture.Forget(ctx, store, namespace, ids)
+}
+
+// RetryCapturedDeletes retries captured-vector deletes that failed earlier.
+func (c *SemanticClassifier) RetryCapturedDeletes(ctx context.Context) (int, error) {
+	capture, store, namespace := c.captureTarget()
+	return capture.RetryDeletes(ctx, store, namespace)
+}
+
+// SweepCapturedRequests deletes captured vectors older than cutoff.
+func (c *SemanticClassifier) SweepCapturedRequests(ctx context.Context, cutoff time.Time) (int, error) {
+	capture, store, namespace := c.captureTarget()
+	return capture.Sweep(ctx, store, namespace, cutoff)
 }
 
 // SetGenerationClaimer supplies the optional registry that records which
@@ -460,6 +505,8 @@ func (c *SemanticClassifier) Classify(ctx context.Context, input ComplexityInput
 	namespace := generation.namespace
 	embed := generation.embed
 	exemplars := generation.exemplars
+	capture := c.capture
+	captureNamespace := generation.captureNamespace
 	localGeneration := isLocalChromemStore(store)
 	if localGeneration {
 		if c.localInFlight == nil {
@@ -508,11 +555,15 @@ func (c *SemanticClassifier) Classify(ctx context.Context, input ComplexityInput
 		return nil, fmt.Errorf("nearest complexity exemplar has invalid tier metadata")
 	}
 	score := *results[0].Score
+	accepted := semantic.MinSimilarity <= 0 || score >= semantic.MinSimilarity
+	// The embedding is this request's own allocation and is not read again
+	// below, so capture takes it without a copy.
+	capture.offer(ctx, store, captureNamespace, dimension, embedding)
 	return &SemanticResult{
 		Tier:            tier,
 		Score:           score,
 		MinSimilarity:   semantic.MinSimilarity,
-		Accepted:        semantic.MinSimilarity <= 0 || score >= semantic.MinSimilarity,
+		Accepted:        accepted,
 		MatchedExemplar: exemplars[results[0].ID],
 	}, nil
 }
@@ -697,6 +748,8 @@ func (c *SemanticClassifier) runWarmupWorker() {
 				dimension: dimension,
 				embed:     embed,
 				exemplars: semanticExemplarIndex(config, dimension),
+
+				captureNamespace: CaptureNamespace(config.Semantic.Provider, config.Semantic.EmbeddingModel, dimension, config.Semantic.MessageHistoryCount),
 			}
 			c.status = SemanticStatusInfo{State: SemanticStatusReady, Loaded: loaded, Total: len(semanticExemplars(config))}
 			if previous != nil {

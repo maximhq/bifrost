@@ -1169,3 +1169,89 @@ func TestSemanticClassifierStatusReportsCacheCoverage(t *testing.T) {
 	assert.Equal(t, len(semanticExemplars(&config)), classifier.Status().CachedPhrases,
 		"a warmed classifier holds one vector per active phrase")
 }
+
+func readySemanticClassifier(tb testing.TB) *SemanticClassifier {
+	tb.Helper()
+	classifier := NewSemanticClassifier(context.Background(), bifrost.NewDefaultLogger(schemas.LogLevelError))
+	tb.Cleanup(func() { _ = classifier.Close() })
+	classifier.SetEmbeddingFunc(testSemanticEmbedding)
+	config := testSemanticClassifierConfig(configstore.ComplexitySemanticVectorStoreEmbedded)
+	classifier.Configure(&config)
+	deadline := time.Now().Add(2 * time.Second)
+	for classifier.Status().State != SemanticStatusReady {
+		if time.Now().After(deadline) {
+			tb.Fatalf("semantic classifier did not finish warmup")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	return classifier
+}
+
+// TestSemanticClassifierCapturesClassifiedRequests checks the capture hook
+// end to end: a classified request's own vector lands under its request ID,
+// in the embedding space's capture namespace, with the routing it got.
+func TestSemanticClassifierCapturesClassifiedRequests(t *testing.T) {
+	classifier := readySemanticClassifier(t)
+	capture := newCaptureTest(t)
+	capture.Configure(&CaptureConfig{SampleRate: 1})
+	classifier.SetRequestCapture(capture)
+
+	result, err := classifier.Classify(requestCtx("req-42"), ComplexityInput{LastUserText: "medium request"})
+	require.NoError(t, err)
+	require.Equal(t, TierMedium, result.Tier)
+	waitWritten(t, capture, 1)
+
+	_, store, namespace := classifier.captureTarget()
+	assert.Equal(t, CaptureNamespace("openai", "test-embedding-model", testSemanticDimension, 1), namespace)
+	got, err := store.GetChunk(context.Background(), namespace, "req-42")
+	require.NoError(t, err)
+	assert.Equal(t, captureMetadataKindValue, got.Properties[captureMetadataKind])
+
+	classifier.ForgetCapturedRequests(context.Background(), []string{"req-42"})
+	_, err = store.GetChunk(context.Background(), namespace, "req-42")
+	assert.Error(t, err)
+}
+
+// TestSemanticClassifierWithoutCaptureWritesNothing pins the default: no
+// capture namespace appears unless capture is configured on.
+func TestSemanticClassifierWithoutCaptureWritesNothing(t *testing.T) {
+	classifier := readySemanticClassifier(t)
+	capture := newCaptureTest(t)
+	classifier.SetRequestCapture(capture) // wired but never configured on
+	_, err := classifier.Classify(requestCtx("req-1"), ComplexityInput{LastUserText: "simple request"})
+	require.NoError(t, err)
+	_, store, _ := classifier.captureTarget()
+	names, err := store.ListNamespaces(context.Background(), CaptureNamespacePrefix)
+	require.NoError(t, err)
+	assert.Empty(t, names)
+	assert.Zero(t, capture.Stats().Queued)
+}
+
+// BenchmarkSemanticClassifierClassify measures the request-path cost of the
+// capture hook: no capture wired, wired but off (the default), and on at
+// every request.
+func BenchmarkSemanticClassifierClassify(b *testing.B) {
+	input := ComplexityInput{LastUserText: "simple request"}
+	ctx := requestCtx("bench")
+	for _, tc := range []struct {
+		name string
+		cfg  *CaptureConfig
+		wire bool
+	}{{"no_capture", nil, false}, {"capture_off", nil, true}, {"capture_on", &CaptureConfig{SampleRate: 1}, true}} {
+		b.Run(tc.name, func(b *testing.B) {
+			classifier := readySemanticClassifier(b)
+			if tc.wire {
+				capture := newCaptureTest(b)
+				capture.Configure(tc.cfg)
+				classifier.SetRequestCapture(capture)
+			}
+			b.ReportAllocs()
+			b.ResetTimer()
+			for range b.N {
+				if _, err := classifier.Classify(ctx, input); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
