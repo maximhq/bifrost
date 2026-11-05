@@ -4891,6 +4891,7 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 		tools, input = lowerClientToolSearch(requestTools, input, searchName)
 		input = rewriteClientToolSearchHistory(input, searchName, bifrostReq.NamespaceToolAliases)
 	}
+	input = providerUtils.ResponsesBreakpointsAsCacheControl(input, bifrostReq.Params, AnthropicMaxCacheBreakpoints)
 	// Fable 5.1+ rejects tool_choice "any"/"tool" outright, so every forced
 	// choice below — the caller's and the synthetic structured-output pin — is
 	// dropped and the model answers under the default "auto".

@@ -2585,7 +2585,7 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 
 	// map bifrost messages to bedrock messages using the new conversion method
 	if bifrostReq.Input != nil {
-		input := bifrostReq.Input
+		input := providerUtils.ResponsesBreakpointsAsCacheControl(bifrostReq.Input, bifrostReq.Params, BedrockMaxCachePoints)
 		if schemas.IsAnthropicModelFamily(ctx, bifrostReq.Model) &&
 			!caps.SupportsAssistantPrefill(ctx.Value(schemas.BifrostContextKeySupportsAssistantPrefill) != false) {
 			trimmed := len(input)
@@ -3085,6 +3085,9 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 	} else {
 		if !caps.SupportsExtendedCacheTTL(schemas.BedrockModelSupportsExtendedCacheTTL(capModel)) {
 			downgradeExtendedCacheTTLInBedrockRequest(bedrockReq)
+		}
+		if schemas.IsNovaModelFamily(ctx, bifrostReq.Model) {
+			stripNonTextCachePoints(bedrockReq)
 		}
 		// Bedrock rejects a request carrying more than BedrockMaxCachePoints markers outright,
 		// so trim the earliest rather than let the whole call fail. Runs last, after every
