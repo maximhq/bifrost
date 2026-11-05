@@ -311873,6 +311873,154 @@
           }
         }
       ]
+    },
+    {
+      "name": "319. Codex re-declared additional_tools merge on flattening wires (additional tools redeclaration)",
+      "description": "Codex declares its tools in additional_tools input items. When a tool's definition changes mid-thread (a Codex upgrade or a plugin update on a resumed session), a later item re-declares it, e.g. functions[exec] alone after an earlier functions[exec, wait]. Wires without a namespace container (Bedrock Converse, the Anthropic Messages API, Gemini/Vertex, Claude on Azure or Mantle) hoist those items into the top-level tools; the hoist used to append every item, so after UnwrapDefaultNamespaceTools the request carried exec twice and Bifrost rejected it with 400 \"tool name \\\"exec\\\" is not unique after flattening namespace tools\", on every turn of that thread. hoistResponsesAdditionalTools now merges declarations by namespace and name, later wins, keeping the first position and the namespace's other members.\n\n319.1 and 319.2 echo the provider request and pin that exec is sent once, with the later definition, and that wait survives. 319.3 pins the streaming path Codex actually uses. Red before the fix: 400 with the not-unique message. Green after: 200.",
+      "item": [
+        {
+          "name": "319.1 bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0 /v1/responses re-declared exec sent once (additional tools redeclaration)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('bedrock converse: re-declared exec is not rejected as a duplicate', function () { pm.expect(txt, 'duplicate-tool 400 - additional_tools re-declarations were appended instead of merged: ' + txt.slice(0, 600)).to.not.include('is not unique after flattening namespace tools'); });",
+                  "pm.test('bedrock converse: status is 200', function () { pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 600)).to.eql(200); });",
+                  "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var sent = (body.extra_fields || {}).raw_request;",
+                  "var sentText = typeof sent === 'string' ? sent : JSON.stringify(sent || {});",
+                  "pm.test('bedrock converse: raw_request is echoed', function () { pm.expect(sentText.length, 'no extra_fields.raw_request: ' + txt.slice(0, 600)).to.be.above(2); });",
+                  "var execCount = (sentText.match(/\\\\?\"name\\\\?\"\\s*:\\s*\\\\?\"exec\\\\?\"/g) || []).length;",
+                  "pm.test('bedrock converse: exec is declared to the provider exactly once', function () { pm.expect(execCount, 'exec declarations on the wire: ' + sentText.slice(0, 1500)).to.eql(1); });",
+                  "pm.test('bedrock converse: the later exec definition wins', function () { pm.expect(sentText, 'want definition v2: ' + sentText.slice(0, 1500)).to.include('definition v2'); pm.expect(sentText, 'stale definition v1 still sent: ' + sentText.slice(0, 1500)).to.not.include('definition v1'); });",
+                  "pm.test('bedrock converse: sibling wait survives the partial re-declaration', function () { pm.expect(sentText, 'wait was dropped: ' + sentText.slice(0, 1500)).to.include('Wait for a background job.'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0\",\n  \"input\": [\n    {\n      \"type\": \"additional_tools\",\n      \"role\": \"developer\",\n      \"tools\": [\n        {\n          \"type\": \"namespace\",\n          \"name\": \"functions\",\n          \"tools\": [\n            {\n              \"type\": \"function\",\n              \"name\": \"exec\",\n              \"description\": \"Run a shell command (definition v1).\",\n              \"strict\": false,\n              \"parameters\": {\n                \"type\": \"object\",\n                \"properties\": {\n                  \"cmd\": {\n                    \"type\": \"string\"\n                  }\n                },\n                \"required\": [\n                  \"cmd\"\n                ],\n                \"additionalProperties\": false\n              }\n            },\n            {\n              \"type\": \"function\",\n              \"name\": \"wait\",\n              \"description\": \"Wait for a background job.\",\n              \"strict\": false,\n              \"parameters\": {\n                \"type\": \"object\",\n                \"properties\": {},\n                \"additionalProperties\": false\n              }\n            }\n          ]\n        }\n      ]\n    },\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Say hi.\"\n        }\n      ]\n    },\n    {\n      \"type\": \"message\",\n      \"role\": \"assistant\",\n      \"content\": [\n        {\n          \"type\": \"output_text\",\n          \"text\": \"Hi.\"\n        }\n      ]\n    },\n    {\n      \"type\": \"additional_tools\",\n      \"role\": \"developer\",\n      \"tools\": [\n        {\n          \"type\": \"namespace\",\n          \"name\": \"functions\",\n          \"tools\": [\n            {\n              \"type\": \"function\",\n              \"name\": \"exec\",\n              \"description\": \"Run a shell command (definition v2).\",\n              \"strict\": false,\n              \"parameters\": {\n                \"type\": \"object\",\n                \"properties\": {\n                  \"cmd\": {\n                    \"type\": \"string\"\n                  }\n                },\n                \"required\": [\n                  \"cmd\"\n                ],\n                \"additionalProperties\": false\n              }\n            }\n          ]\n        }\n      ]\n    },\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Reply with exactly: OK\"\n        }\n      ]\n    }\n  ],\n  \"max_output_tokens\": 64\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "319.2 anthropic/claude-haiku-4-5 /v1/responses re-declared exec sent once (additional tools redeclaration)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('anthropic: re-declared exec is not rejected as a duplicate', function () { pm.expect(txt, 'duplicate-tool 400 - additional_tools re-declarations were appended instead of merged: ' + txt.slice(0, 600)).to.not.include('is not unique after flattening namespace tools'); });",
+                  "pm.test('anthropic: status is 200', function () { pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 600)).to.eql(200); });",
+                  "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var sent = (body.extra_fields || {}).raw_request;",
+                  "var sentText = typeof sent === 'string' ? sent : JSON.stringify(sent || {});",
+                  "pm.test('anthropic: raw_request is echoed', function () { pm.expect(sentText.length, 'no extra_fields.raw_request: ' + txt.slice(0, 600)).to.be.above(2); });",
+                  "var execCount = (sentText.match(/\\\\?\"name\\\\?\"\\s*:\\s*\\\\?\"exec\\\\?\"/g) || []).length;",
+                  "pm.test('anthropic: exec is declared to the provider exactly once', function () { pm.expect(execCount, 'exec declarations on the wire: ' + sentText.slice(0, 1500)).to.eql(1); });",
+                  "pm.test('anthropic: the later exec definition wins', function () { pm.expect(sentText, 'want definition v2: ' + sentText.slice(0, 1500)).to.include('definition v2'); pm.expect(sentText, 'stale definition v1 still sent: ' + sentText.slice(0, 1500)).to.not.include('definition v1'); });",
+                  "pm.test('anthropic: sibling wait survives the partial re-declaration', function () { pm.expect(sentText, 'wait was dropped: ' + sentText.slice(0, 1500)).to.include('Wait for a background job.'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-haiku-4-5\",\n  \"input\": [\n    {\n      \"type\": \"additional_tools\",\n      \"role\": \"developer\",\n      \"tools\": [\n        {\n          \"type\": \"namespace\",\n          \"name\": \"functions\",\n          \"tools\": [\n            {\n              \"type\": \"function\",\n              \"name\": \"exec\",\n              \"description\": \"Run a shell command (definition v1).\",\n              \"strict\": false,\n              \"parameters\": {\n                \"type\": \"object\",\n                \"properties\": {\n                  \"cmd\": {\n                    \"type\": \"string\"\n                  }\n                },\n                \"required\": [\n                  \"cmd\"\n                ],\n                \"additionalProperties\": false\n              }\n            },\n            {\n              \"type\": \"function\",\n              \"name\": \"wait\",\n              \"description\": \"Wait for a background job.\",\n              \"strict\": false,\n              \"parameters\": {\n                \"type\": \"object\",\n                \"properties\": {},\n                \"additionalProperties\": false\n              }\n            }\n          ]\n        }\n      ]\n    },\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Say hi.\"\n        }\n      ]\n    },\n    {\n      \"type\": \"message\",\n      \"role\": \"assistant\",\n      \"content\": [\n        {\n          \"type\": \"output_text\",\n          \"text\": \"Hi.\"\n        }\n      ]\n    },\n    {\n      \"type\": \"additional_tools\",\n      \"role\": \"developer\",\n      \"tools\": [\n        {\n          \"type\": \"namespace\",\n          \"name\": \"functions\",\n          \"tools\": [\n            {\n              \"type\": \"function\",\n              \"name\": \"exec\",\n              \"description\": \"Run a shell command (definition v2).\",\n              \"strict\": false,\n              \"parameters\": {\n                \"type\": \"object\",\n                \"properties\": {\n                  \"cmd\": {\n                    \"type\": \"string\"\n                  }\n                },\n                \"required\": [\n                  \"cmd\"\n                ],\n                \"additionalProperties\": false\n              }\n            }\n          ]\n        }\n      ]\n    },\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Reply with exactly: OK\"\n        }\n      ]\n    }\n  ],\n  \"max_output_tokens\": 64\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "319.3 bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0 /v1/responses streaming re-declared exec (additional tools redeclaration)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('bedrock converse streaming: re-declared exec is not rejected as a duplicate', function () { pm.expect(txt, 'duplicate-tool 400 - additional_tools re-declarations were appended instead of merged: ' + txt.slice(0, 600)).to.not.include('is not unique after flattening namespace tools'); });",
+                  "pm.test('bedrock converse streaming: status is 200', function () { pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 600)).to.eql(200); });",
+                  "pm.test('bedrock converse streaming: SSE stream completed', function () { pm.expect(txt, 'no response.completed event: ' + txt.slice(0, 600)).to.include('response.completed'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0\",\n  \"stream\": true,\n  \"input\": [\n    {\n      \"type\": \"additional_tools\",\n      \"role\": \"developer\",\n      \"tools\": [\n        {\n          \"type\": \"namespace\",\n          \"name\": \"functions\",\n          \"tools\": [\n            {\n              \"type\": \"function\",\n              \"name\": \"exec\",\n              \"description\": \"Run a shell command (definition v1).\",\n              \"strict\": false,\n              \"parameters\": {\n                \"type\": \"object\",\n                \"properties\": {\n                  \"cmd\": {\n                    \"type\": \"string\"\n                  }\n                },\n                \"required\": [\n                  \"cmd\"\n                ],\n                \"additionalProperties\": false\n              }\n            },\n            {\n              \"type\": \"function\",\n              \"name\": \"wait\",\n              \"description\": \"Wait for a background job.\",\n              \"strict\": false,\n              \"parameters\": {\n                \"type\": \"object\",\n                \"properties\": {},\n                \"additionalProperties\": false\n              }\n            }\n          ]\n        }\n      ]\n    },\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Say hi.\"\n        }\n      ]\n    },\n    {\n      \"type\": \"message\",\n      \"role\": \"assistant\",\n      \"content\": [\n        {\n          \"type\": \"output_text\",\n          \"text\": \"Hi.\"\n        }\n      ]\n    },\n    {\n      \"type\": \"additional_tools\",\n      \"role\": \"developer\",\n      \"tools\": [\n        {\n          \"type\": \"namespace\",\n          \"name\": \"functions\",\n          \"tools\": [\n            {\n              \"type\": \"function\",\n              \"name\": \"exec\",\n              \"description\": \"Run a shell command (definition v2).\",\n              \"strict\": false,\n              \"parameters\": {\n                \"type\": \"object\",\n                \"properties\": {\n                  \"cmd\": {\n                    \"type\": \"string\"\n                  }\n                },\n                \"required\": [\n                  \"cmd\"\n                ],\n                \"additionalProperties\": false\n              }\n            }\n          ]\n        }\n      ]\n    },\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Reply with exactly: OK\"\n        }\n      ]\n    }\n  ],\n  \"max_output_tokens\": 64\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
