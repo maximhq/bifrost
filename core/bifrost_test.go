@@ -8387,6 +8387,164 @@ func TestScenarioInferredFallbacksStopOnCallerFault(t *testing.T) {
 	}
 }
 
+// scenarioPolicyRefuser refuses every attempt on one provider the way the governance plugin refuses
+// a provider a virtual key does not allow: a 403 short-circuit that leaves fallbacks allowed.
+type scenarioPolicyRefuser struct{ refuses schemas.ModelProvider }
+
+func (p *scenarioPolicyRefuser) GetName() string { return "scenario-policy-refuser" }
+func (p *scenarioPolicyRefuser) Cleanup() error  { return nil }
+func (p *scenarioPolicyRefuser) PreRequestHook(*schemas.BifrostContext, *schemas.BifrostRequest) error {
+	return nil
+}
+func (p *scenarioPolicyRefuser) PreLLMHook(_ *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	if provider, _, _ := req.GetRequestFields(); provider != p.refuses {
+		return req, nil, nil
+	}
+	return req, &schemas.LLMPluginShortCircuit{Error: &schemas.BifrostError{
+		Type:       schemas.Ptr("provider_blocked"),
+		StatusCode: schemas.Ptr(http.StatusForbidden),
+		Error:      &schemas.ErrorField{Message: fmt.Sprintf("Provider '%s' is not allowed for virtual key 'vk'", p.refuses)},
+	}}, nil
+}
+func (p *scenarioPolicyRefuser) PostLLMHook(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	return resp, bifrostErr, nil
+}
+
+// TestScenarioExhaustedFallbacksReportEachAttempt pins #3261. When the primary and every fallback
+// fail, the caller gets the primary's error, and that error has to say what became of each
+// fallback: a fallback a virtual key refuses never reaches its provider, and without this the
+// caller reads the primary's fast 429 as a routing rule whose fallback never ran. A fallback that
+// could not even be prepared is reported as skipped. Both orchestrator loops are covered.
+func TestScenarioExhaustedFallbacksReportEachAttempt(t *testing.T) {
+	for _, stream := range []bool{false, true} {
+		t.Run(fmt.Sprintf("stream=%v", stream), func(t *testing.T) {
+			u := newScenarioUpstream(t)
+			account := scenarioAccount(u, map[schemas.ModelProvider][]schemas.Key{
+				provA: {scenarioKey("a1", 1)},
+				provB: {scenarioKey("b1", 1)},
+			})
+			// provC has no provider config, so its fallback is skipped before any attempt.
+			router := &scenarioRouter{route: fixedRoute(schemas.Fallback{Provider: provA, Model: "m"}, schemas.Fallback{Provider: provB, Model: "m-b"}, schemas.Fallback{Provider: provC, Model: "m-c"})}
+			client, err := Init(context.Background(), schemas.BifrostConfig{
+				Account:    account,
+				Logger:     NewDefaultLogger(schemas.LogLevelError),
+				LLMPlugins: []schemas.LLMPlugin{router, &scenarioPolicyRefuser{refuses: provB}},
+			})
+			if err != nil {
+				t.Fatalf("Init: %v", err)
+			}
+			t.Cleanup(client.Shutdown)
+			u.reply("sk-a1", scenarioReply{status: http.StatusTooManyRequests, body: `{"error":{"message":"Rate limit reached for requests","type":"requests","code":"rate_limit_exceeded"}}`})
+
+			ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(30*time.Second))
+			var bifrostErr *schemas.BifrostError
+			if stream {
+				_, bifrostErr = client.ChatCompletionStreamRequest(ctx, scenarioRequest("", "m", nil))
+			} else {
+				_, bifrostErr = client.ChatCompletionRequest(ctx, scenarioRequest("", "m", nil))
+			}
+
+			if bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusTooManyRequests {
+				t.Fatalf("want the primary's 429 back, got %v", bifrostErr)
+			}
+			if got := u.count("sk-b1"); got != 0 {
+				t.Fatalf("the refused fallback reached its upstream %d times, want 0", got)
+			}
+			attempts := bifrostErr.ExtraFields.FallbackAttempts
+			if len(attempts) != 2 {
+				t.Fatalf("fallback_attempts = %+v, want one entry per fallback (refused, skipped)", attempts)
+			}
+			refused := attempts[0]
+			if refused.Provider != provB || refused.Model != "m-b" || refused.StatusCode == nil || *refused.StatusCode != http.StatusForbidden || refused.Type != "provider_blocked" || !strings.Contains(refused.Message, "not allowed") || refused.Skipped {
+				t.Fatalf("the refused fallback must carry its provider, model, status, type and message: %+v", refused)
+			}
+			skipped := attempts[1]
+			if skipped.Provider != provC || skipped.Model != "m-c" || !skipped.Skipped || skipped.StatusCode != nil {
+				t.Fatalf("the unprepared fallback must be reported as skipped: %+v", skipped)
+			}
+			body, err := json.Marshal(bifrostErr)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			if !strings.Contains(string(body), `"fallback_attempts":[{"provider":"prov-b","model":"m-b","status_code":403,"type":"provider_blocked"`) {
+				t.Fatalf("the wire error must carry fallback_attempts: %s", body)
+			}
+		})
+	}
+}
+
+// scenarioErrorRetainer keeps the first error its PostLLMHook sees, as the logging plugin does
+// with raw logging on, where the error is serialized later on another goroutine.
+type scenarioErrorRetainer struct {
+	mu       sync.Mutex
+	retained *schemas.BifrostError
+}
+
+func (p *scenarioErrorRetainer) GetName() string { return "scenario-error-retainer" }
+func (p *scenarioErrorRetainer) Cleanup() error  { return nil }
+func (p *scenarioErrorRetainer) PreRequestHook(*schemas.BifrostContext, *schemas.BifrostRequest) error {
+	return nil
+}
+func (p *scenarioErrorRetainer) PreLLMHook(_ *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	return req, nil, nil
+}
+func (p *scenarioErrorRetainer) PostLLMHook(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	p.mu.Lock()
+	if p.retained == nil && bifrostErr != nil {
+		p.retained = bifrostErr
+	}
+	p.mu.Unlock()
+	return resp, bifrostErr, nil
+}
+
+// TestScenarioExhaustedFallbacksLeaveRetainedPrimaryErrorUnchanged pins that reporting the
+// fallbacks' outcomes does not write to the primary's error after its post-hooks ran: a plugin may
+// still hold that pointer, and a write there races its asynchronous serialization.
+func TestScenarioExhaustedFallbacksLeaveRetainedPrimaryErrorUnchanged(t *testing.T) {
+	for _, stream := range []bool{false, true} {
+		t.Run(fmt.Sprintf("stream=%v", stream), func(t *testing.T) {
+			u := newScenarioUpstream(t)
+			account := scenarioAccount(u, map[schemas.ModelProvider][]schemas.Key{
+				provA: {scenarioKey("a1", 1)},
+				provB: {scenarioKey("b1", 1)},
+			})
+			retainer := &scenarioErrorRetainer{}
+			router := &scenarioRouter{route: fixedRoute(schemas.Fallback{Provider: provA, Model: "m"}, schemas.Fallback{Provider: provB, Model: "m-b"})}
+			client, err := Init(context.Background(), schemas.BifrostConfig{
+				Account:    account,
+				Logger:     NewDefaultLogger(schemas.LogLevelError),
+				LLMPlugins: []schemas.LLMPlugin{router, retainer, &scenarioPolicyRefuser{refuses: provB}},
+			})
+			if err != nil {
+				t.Fatalf("Init: %v", err)
+			}
+			t.Cleanup(client.Shutdown)
+			u.reply("sk-a1", scenarioReply{status: http.StatusTooManyRequests, body: `{"error":{"message":"Rate limit reached for requests","type":"requests","code":"rate_limit_exceeded"}}`})
+
+			ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(30*time.Second))
+			var bifrostErr *schemas.BifrostError
+			if stream {
+				_, bifrostErr = client.ChatCompletionStreamRequest(ctx, scenarioRequest("", "m", nil))
+			} else {
+				_, bifrostErr = client.ChatCompletionRequest(ctx, scenarioRequest("", "m", nil))
+			}
+
+			if bifrostErr == nil || len(bifrostErr.ExtraFields.FallbackAttempts) != 1 {
+				t.Fatalf("want the primary's error with one fallback attempt, got %v", bifrostErr)
+			}
+			retainer.mu.Lock()
+			retained := retainer.retained
+			retainer.mu.Unlock()
+			if retained == nil || retained.StatusCode == nil || *retained.StatusCode != http.StatusTooManyRequests {
+				t.Fatalf("the retainer must have kept the primary's 429, got %v", retained)
+			}
+			if retained.ExtraFields.FallbackAttempts != nil {
+				t.Fatalf("the primary's error a plugin retained was written after its post-hooks ran: %+v", retained.ExtraFields.FallbackAttempts)
+			}
+		})
+	}
+}
+
 // TestScenarioInferredFallbacksPassNoKeySupportsModel pins that a primary whose key pool has no
 // key for the model (400 no_key_supports_model, built before any upstream call) does not stop an
 // inferred chain: that 400 says this provider cannot serve the model, not that the request is
@@ -8472,6 +8630,17 @@ func BenchmarkShouldTryFallbacks(b *testing.B) {
 				_ = bifrost.shouldTryFallbacks(nil, req, primaryErr)
 			}
 		})
+	}
+}
+
+// BenchmarkFallbackAttemptOf measures summarizing one failed fallback for the primary's error. It
+// runs only on a fallback that already failed, never on a request its primary served.
+func BenchmarkFallbackAttemptOf(b *testing.B) {
+	fallback := schemas.Fallback{Provider: provB, Model: "m"}
+	fallbackErr := &schemas.BifrostError{Type: schemas.Ptr("provider_blocked"), StatusCode: schemas.Ptr(http.StatusForbidden), Error: &schemas.ErrorField{Message: "Provider 'prov-b' is not allowed"}}
+	b.ReportAllocs()
+	for b.Loop() {
+		_ = fallbackAttemptOf(fallback, fallbackErr)
 	}
 }
 
@@ -8871,5 +9040,272 @@ func TestRelaysHooksRunInPipelineOrder(t *testing.T) {
 	}
 	if n := len(*bifrost.relayPlugins.Load()); n != 1 {
 		t.Fatalf("plugins after remove = %d, want 1", n)
+	}
+}
+
+// keyScopedUpstream serves stored responses only to the key that owns them, as OpenAI does across projects,
+// and records which bearer each call carried.
+type keyScopedUpstream struct {
+	mu    sync.Mutex
+	owner string
+	seen  []string
+}
+
+func (u *keyScopedUpstream) handler(w http.ResponseWriter, r *http.Request) {
+	auth := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	u.mu.Lock()
+	u.seen = append(u.seen, auth)
+	owner := u.owner
+	u.mu.Unlock()
+	w.Header().Set("Content-Type", "application/json")
+	if auth != owner {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":{"message":"Response with id 'resp_1' not found.","type":"invalid_request_error","param":null,"code":null}}`))
+		return
+	}
+	status := "completed"
+	if strings.HasSuffix(r.URL.Path, "/cancel") {
+		status = "cancelled"
+	}
+	_, _ = w.Write([]byte(`{"id":"resp_1","object":"response","created_at":1,"status":"` + status + `","model":"gpt-4o","output":[]}`))
+}
+
+func (u *keyScopedUpstream) calls() []string {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return append([]string(nil), u.seen...)
+}
+
+func newKeyScopedClient(t *testing.T, owner string) (*Bifrost, *keyScopedUpstream) {
+	t.Helper()
+	upstream := &keyScopedUpstream{owner: owner}
+	server := httptest.NewServer(http.HandlerFunc(upstream.handler))
+	t.Cleanup(server.Close)
+
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL(schemas.OpenAI, 1, 10, server.URL)
+	account.configs[schemas.OpenAI].NetworkConfig.AllowPrivateNetwork = true
+	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
+		{ID: "k1", Name: "one", Value: *schemas.NewSecretVar("sk-one"), Models: schemas.WhiteList{"gpt-4o"}, Weight: 1},
+		{ID: "k2", Name: "two", Value: *schemas.NewSecretVar("sk-two"), Models: schemas.WhiteList{"gpt-4o-mini"}, Weight: 1},
+		{ID: "k3", Name: "three", Value: *schemas.NewSecretVar("sk-three"), Models: schemas.WhiteList{"*"}, Weight: 1},
+	})
+	return newStreamTestClient(t, account), upstream
+}
+
+// A stored response is found on whichever key created it: the follow-up asks each key in turn and the
+// one that owns it serves, whatever the key weights would have picked.
+func TestResponsesLifecycle_FindsTheOwningKey(t *testing.T) {
+	client, upstream := newKeyScopedClient(t, "sk-three")
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	resp, err := client.ResponsesRetrieveRequest(ctx, &schemas.BifrostResponsesRetrieveRequest{Provider: schemas.OpenAI, ResponseID: "resp_1"})
+	if err != nil {
+		t.Fatalf("retrieve failed: %+v", err.Error)
+	}
+	if resp.ID == nil || *resp.ID != "resp_1" {
+		t.Fatalf("retrieve returned %+v", resp)
+	}
+	if got, _ := ctx.Value(schemas.BifrostContextKeySelectedKeyID).(string); got != "k3" {
+		t.Fatalf("selected key = %q, want k3", got)
+	}
+	if got := upstream.calls(); strings.Join(got, ",") != "sk-one,sk-two,sk-three" {
+		t.Fatalf("upstream calls = %v, want each key once in id order", got)
+	}
+
+	ctx = schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	cancelled, err := client.ResponsesCancelRequest(ctx, &schemas.BifrostResponsesCancelRequest{Provider: schemas.OpenAI, ResponseID: "resp_1"})
+	if err != nil {
+		t.Fatalf("cancel failed: %+v", err.Error)
+	}
+	if cancelled.Status == nil || *cancelled.Status != "cancelled" {
+		t.Fatalf("cancel returned %+v", cancelled)
+	}
+}
+
+// A response no key owns comes back as the provider's 404 after one call per key, not one per retry.
+func TestResponsesLifecycle_NotFoundOnEveryKey(t *testing.T) {
+	client, upstream := newKeyScopedClient(t, "sk-nobody")
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	_, err := client.ResponsesRetrieveRequest(ctx, &schemas.BifrostResponsesRetrieveRequest{Provider: schemas.OpenAI, ResponseID: "resp_1"})
+	if err == nil || err.StatusCode == nil || *err.StatusCode != http.StatusNotFound {
+		t.Fatalf("error = %+v, want 404", err)
+	}
+	if got := upstream.calls(); len(got) != 3 {
+		t.Fatalf("upstream calls = %v, want one per key", got)
+	}
+}
+
+// A caller that pins a key is answered by that key alone, as single-key selection does.
+func TestResponsesLifecycle_PinnedKeyIsTheOnlyOneAsked(t *testing.T) {
+	client, upstream := newKeyScopedClient(t, "sk-three")
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyAPIKeyName, "one")
+	_, err := client.ResponsesRetrieveRequest(ctx, &schemas.BifrostResponsesRetrieveRequest{Provider: schemas.OpenAI, ResponseID: "resp_1"})
+	if err == nil || err.StatusCode == nil || *err.StatusCode != http.StatusNotFound {
+		t.Fatalf("error = %+v, want 404 from the pinned key", err)
+	}
+	if got := upstream.calls(); strings.Join(got, ",") != "sk-one" {
+		t.Fatalf("upstream calls = %v, want only the pinned key", got)
+	}
+}
+
+// videoUpstream owns each video on one key and pages each key's listing one video at a time.
+type videoUpstream struct {
+	mu     sync.Mutex
+	owners map[string][]string // bearer -> video ids it owns, in listing order
+	seen   []string
+}
+
+func (u *videoUpstream) handler(w http.ResponseWriter, r *http.Request) {
+	auth := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	u.mu.Lock()
+	u.seen = append(u.seen, auth+" "+r.Method+" "+r.URL.Path+"?"+r.URL.RawQuery)
+	owned := u.owners[auth]
+	u.mu.Unlock()
+	w.Header().Set("Content-Type", "application/json")
+	notFound := func() {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":{"message":"Video not found","type":"invalid_request_error"}}`))
+	}
+	if r.URL.Path == "/v1/videos" {
+		start := 0
+		if after := r.URL.Query().Get("after"); after != "" {
+			start = -1
+			for i, id := range owned {
+				if id == after {
+					start = i + 1
+				}
+			}
+			if start < 0 {
+				notFound()
+				return
+			}
+		}
+		data, last, more := "", "", false
+		if start < len(owned) {
+			data = `{"id":"` + owned[start] + `","object":"video","status":"completed","model":"sora-2","created_at":1}`
+			last = owned[start]
+			more = start+1 < len(owned)
+		}
+		body := `{"object":"list","data":[` + data + `],"has_more":` + map[bool]string{true: "true", false: "false"}[more]
+		if last != "" {
+			body += `,"last_id":"` + last + `"`
+		}
+		_, _ = w.Write([]byte(body + `}`))
+		return
+	}
+	id := strings.TrimPrefix(r.URL.Path, "/v1/videos/")
+	for _, owned := range owned {
+		if owned == id {
+			if r.Method == http.MethodDelete {
+				_, _ = w.Write([]byte(`{"id":"` + id + `","object":"video.deleted","deleted":true}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"id":"` + id + `","object":"video","status":"completed","model":"sora-2","created_at":1}`))
+			return
+		}
+	}
+	notFound()
+}
+
+func (u *videoUpstream) calls() []string {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return append([]string(nil), u.seen...)
+}
+
+func newVideoClient(t *testing.T, owners map[string][]string) (*Bifrost, *videoUpstream) {
+	t.Helper()
+	upstream := &videoUpstream{owners: owners}
+	server := httptest.NewServer(http.HandlerFunc(upstream.handler))
+	t.Cleanup(server.Close)
+
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL(schemas.OpenAI, 1, 10, server.URL)
+	account.configs[schemas.OpenAI].NetworkConfig.AllowPrivateNetwork = true
+	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
+		{ID: "k1", Name: "one", Value: *schemas.NewSecretVar("sk-one"), Models: schemas.WhiteList{"*"}, Weight: 1},
+		{ID: "k2", Name: "two", Value: *schemas.NewSecretVar("sk-two"), Models: schemas.WhiteList{"*"}, Weight: 1},
+		{ID: "k3", Name: "three", Value: *schemas.NewSecretVar("sk-three"), Models: schemas.WhiteList{"*"}, Weight: 1},
+	})
+	return newStreamTestClient(t, account), upstream
+}
+
+// A video is polled and deleted through whichever key created it.
+func TestVideo_RetrieveAndDeleteFindTheOwningKey(t *testing.T) {
+	client, _ := newVideoClient(t, map[string][]string{"sk-two": {"video_b"}})
+
+	for i := 0; i < 3; i++ {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		resp, err := client.VideoRetrieveRequest(ctx, &schemas.BifrostVideoRetrieveRequest{Provider: schemas.OpenAI, ID: "video_b"})
+		if err != nil {
+			t.Fatalf("retrieve %d failed: %+v", i, err.Error)
+		}
+		if !strings.HasPrefix(resp.ID, "video_b") {
+			t.Fatalf("retrieve returned %q", resp.ID)
+		}
+		if got, _ := ctx.Value(schemas.BifrostContextKeySelectedKeyID).(string); got != "k2" {
+			t.Fatalf("selected key = %q, want k2", got)
+		}
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	if _, err := client.VideoDeleteRequest(ctx, &schemas.BifrostVideoDeleteRequest{Provider: schemas.OpenAI, ID: "video_b"}); err != nil {
+		t.Fatalf("delete failed: %+v", err.Error)
+	}
+}
+
+// Video listing walks every key's videos once, page by page, ending with has_more false.
+func TestVideo_ListPagesAcrossKeys(t *testing.T) {
+	client, _ := newVideoClient(t, map[string][]string{"sk-one": {"v1", "v2"}, "sk-three": {"v3"}})
+
+	var ids []string
+	var after *string
+	for page := 0; page < 10; page++ {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		resp, err := client.VideoListRequest(ctx, &schemas.BifrostVideoListRequest{Provider: schemas.OpenAI, After: after})
+		if err != nil {
+			t.Fatalf("page %d failed: %+v", page, err.Error)
+		}
+		for _, v := range resp.Data {
+			ids = append(ids, strings.SplitN(v.ID, ":", 2)[0])
+		}
+		if resp.HasMore == nil || !*resp.HasMore {
+			if resp.After != nil {
+				t.Fatalf("last page carried a cursor %q", *resp.After)
+			}
+			break
+		}
+		if resp.After == nil {
+			t.Fatalf("page %d has more but no cursor", page)
+		}
+		after = resp.After
+	}
+	if strings.Join(ids, ",") != "v1,v2,v3" {
+		t.Fatalf("listed %v, want v1,v2,v3", ids)
+	}
+}
+
+// A provider-native cursor (the last video id, as SDKs send it) resumes on the key that knows that video.
+func TestVideo_ListResumesFromNativeCursor(t *testing.T) {
+	client, _ := newVideoClient(t, map[string][]string{"sk-one": {"v1"}, "sk-two": {"v2", "v3"}})
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	resp, err := client.VideoListRequest(ctx, &schemas.BifrostVideoListRequest{Provider: schemas.OpenAI, After: schemas.Ptr("v2")})
+	if err != nil {
+		t.Fatalf("list failed: %+v", err.Error)
+	}
+	if len(resp.Data) != 1 || !strings.HasPrefix(resp.Data[0].ID, "v3") {
+		t.Fatalf("list returned %+v, want v3", resp.Data)
+	}
+	if resp.HasMore == nil || !*resp.HasMore || resp.After == nil {
+		t.Fatalf("expected the listing to continue to the next key, got has_more=%v after=%v", resp.HasMore, resp.After)
+	}
+	decoded, decodeErr := schemas.DecodeSerialCursor(*resp.After)
+	if decodeErr != nil || decoded.KeyIndex != 2 {
+		t.Fatalf("cursor = %+v (%v), want the third key", decoded, decodeErr)
 	}
 }

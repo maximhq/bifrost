@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -3009,24 +3010,54 @@ func parseStringArrayParam(s string) []string {
 	return parseCommaSeparated(s)
 }
 
-// parseMetadataFilters extracts metadata_* query params and sets them on the filters.
+// parseMetadataFilters extracts metadata_<key> query params and sets them on the filters.
+// A key may carry several values, either repeated (metadata_env=a&metadata_env=b) or as a JSON
+// array (metadata_env=["a","b"]); a row matches when it holds any of them. A plain value is taken
+// literally, commas included, as it always has been. Values past MaxMetadataFilterValuesPerKey are dropped.
 func parseMetadataFilters(ctx *fasthttp.RequestCtx, filters *logstore.SearchFilters) {
-	var metadataFilters map[string]string
+	var metadataFilters map[string][]string
 	ctx.QueryArgs().VisitAll(func(key, value []byte) { //nolint:staticcheck
 		keyStr := string(key)
-		if strings.HasPrefix(keyStr, "metadata_") {
-			metadataKey := strings.TrimPrefix(keyStr, "metadata_")
-			if metadataKey != "" {
-				if metadataFilters == nil {
-					metadataFilters = make(map[string]string)
-				}
-				metadataFilters[metadataKey] = string(value)
+		if !strings.HasPrefix(keyStr, "metadata_") {
+			return
+		}
+		metadataKey := strings.TrimPrefix(keyStr, "metadata_")
+		if metadataKey == "" {
+			return
+		}
+		for _, v := range parseMetadataFilterValues(string(value)) {
+			if metadataFilters == nil {
+				metadataFilters = make(map[string][]string)
+			}
+			if len(metadataFilters[metadataKey]) < logstore.MaxMetadataFilterValuesPerKey && !slices.Contains(metadataFilters[metadataKey], v) {
+				metadataFilters[metadataKey] = append(metadataFilters[metadataKey], v)
 			}
 		}
 	})
 	if len(metadataFilters) > 0 {
 		filters.MetadataFilters = metadataFilters
 	}
+}
+
+// parseMetadataFilterValues reads one metadata_<key> param: a JSON array of strings when it parses
+// as one, otherwise the raw value as a single literal.
+func parseMetadataFilterValues(raw string) []string {
+	if trimmed := strings.TrimSpace(raw); strings.HasPrefix(trimmed, "[") {
+		var values []string
+		if err := sonic.UnmarshalString(trimmed, &values); err == nil {
+			out := values[:0]
+			for _, v := range values {
+				if v != "" {
+					out = append(out, v)
+				}
+			}
+			return out
+		}
+	}
+	if raw == "" {
+		return nil
+	}
+	return []string{raw}
 }
 
 type recalculateCostRequest struct {
@@ -3044,6 +3075,7 @@ func parseMCPCorrelationFilters(ctx *fasthttp.RequestCtx, filters *logstore.MCPT
 	filters.AgentNames = parseCommaSeparated(string(ctx.QueryArgs().Peek("agent_names")))
 	filters.SessionID = strings.TrimSpace(string(ctx.QueryArgs().Peek("session_id")))
 	filters.AgentCorrelationID = strings.TrimSpace(string(ctx.QueryArgs().Peek("agent_correlation_id")))
+	filters.RoundTripID = strings.TrimSpace(string(ctx.QueryArgs().Peek("round_trip_id")))
 }
 
 // parseMCPFiltersAndPagination parses MCP tool log filters and pagination from query parameters.

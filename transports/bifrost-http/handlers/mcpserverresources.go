@@ -26,12 +26,13 @@ type MCPResourcesAndPromptsServer interface {
 // resourcesAndPromptsOptions declares prompts, resources and completions, narrowing their lists per request.
 func (h *MCPServerHandler) resourcesAndPromptsOptions(hooks *server.Hooks) []server.ServerOption {
 	hooks.AddAfterListResources(func(ctx context.Context, _ any, _ *mcp.ListResourcesRequest, result *mcp.ListResourcesResult) {
-		if result != nil && h.narrowsLists(ctx) {
+		// Both forms of a ui:// URI are installed, so the request's own list decides which it sees.
+		if result != nil && (h.narrowsLists(ctx) || h.uiResources.Load()) {
 			result.Resources = keepCallersEntries(result.Resources, h.served.GetAvailableMCPResources(ctx), resourceURI)
 		}
 	})
 	hooks.AddAfterListResourceTemplates(func(ctx context.Context, _ any, _ *mcp.ListResourceTemplatesRequest, result *mcp.ListResourceTemplatesResult) {
-		if result != nil && h.narrowsLists(ctx) {
+		if result != nil && (h.narrowsLists(ctx) || h.uiResources.Load()) {
 			result.ResourceTemplates = keepCallersEntries(result.ResourceTemplates, h.served.GetAvailableMCPResourceTemplates(ctx), coremcp.ResourceTemplateURI)
 		}
 	})
@@ -64,12 +65,15 @@ func (h *MCPServerHandler) syncResourcesAndPrompts(ctx context.Context, perCalle
 	for _, prompt := range prompts {
 		serverPrompts = append(serverPrompts, server.ServerPrompt{Prompt: prompt, Handler: h.getPrompt})
 	}
-	resources := h.served.GetAvailableMCPResources(ctx)
+	// Aggregate /mcp sees ui:// URIs as ui://<client>/...; install those forms too.
+	aggregateCtx := context.WithValue(ctx, schemas.BifrostContextKeyIsMCPGateway, true)
+	resources, uiResources := withNamespacedForms(h.served.GetAvailableMCPResources(ctx), h.served.GetAvailableMCPResources(aggregateCtx), resourceURI)
+	templates, uiTemplates := withNamespacedForms(h.served.GetAvailableMCPResourceTemplates(ctx), h.served.GetAvailableMCPResourceTemplates(aggregateCtx), coremcp.ResourceTemplateURI)
+	h.uiResources.Store(uiResources || uiTemplates)
 	serverResources := make([]server.ServerResource, 0, len(resources))
 	for _, resource := range resources {
 		serverResources = append(serverResources, server.ServerResource{Resource: resource, Handler: h.readResource})
 	}
-	templates := h.served.GetAvailableMCPResourceTemplates(ctx)
 	serverTemplates := make([]server.ServerResourceTemplate, 0, len(templates))
 	for _, template := range templates {
 		serverTemplates = append(serverTemplates, server.ServerResourceTemplate{Template: template, Handler: server.ResourceTemplateHandlerFunc(h.readResource)})
@@ -83,8 +87,54 @@ func (h *MCPServerHandler) syncResourcesAndPrompts(ctx context.Context, perCalle
 	logger.Debug("Synced MCP server with %d prompts, %d resources, %d resource templates", len(prompts), len(resources), len(templates))
 }
 
+// withNamespacedForms appends the aggregate entries plain lacks, reporting whether there were any.
+func withNamespacedForms[T any](plain, aggregate []T, key func(T) string) ([]T, bool) {
+	installed := make(map[string]struct{}, len(plain))
+	for _, item := range plain {
+		installed[key(item)] = struct{}{}
+	}
+	added := false
+	for _, item := range aggregate {
+		if _, ok := installed[key(item)]; !ok {
+			plain = append(plain, item)
+			added = true
+		}
+	}
+	return plain, added
+}
+
+// withCallerCapabilities records on ctx what the downstream client declared on this request, so core
+// declares upstream only what that caller can answer. Only 2026-07-28 requests declare capabilities.
+func withCallerCapabilities(ctx context.Context) context.Context {
+	info := server.RequestProtocolInfoFromContext(ctx)
+	if info == nil || info.ClientCapabilities == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, schemas.BifrostContextKeyMCPCallerCapabilities, info.ClientCapabilities)
+}
+
+// withInputResumption records the answers and requestState a 2026-07-28 caller sent when retrying a
+// tools/call that needed input, so core forwards them to the upstream that asked. A requestState Bifrost
+// wrapped is split: the upstream gets its own state back and the round-trip id goes on ctx.
+func withInputResumption(ctx context.Context, params mcp.MultiRoundTripParams) context.Context {
+	if len(params.InputResponses) == 0 && params.RequestState == "" {
+		return ctx
+	}
+	if info := server.RequestProtocolInfoFromContext(ctx); info == nil || info.ClientCapabilities == nil {
+		return ctx
+	}
+	resume := params
+	id, upstream := coremcp.UnwrapRoundTripState(params.RequestState)
+	resume.RequestState = upstream
+	ctx = context.WithValue(ctx, schemas.BifrostContextKeyMCPInputResumption, &resume)
+	if id != "" {
+		ctx = context.WithValue(ctx, schemas.BifrostContextKeyMCPRoundTripID, id)
+	}
+	return ctx
+}
+
 func (h *MCPServerHandler) getPrompt(ctx context.Context, request mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {
-	result, bErr := h.served.GetMCPPrompt(ctx, request.Params.Name, request.Params.Arguments)
+	result, bErr := h.served.GetMCPPrompt(withCallerCapabilities(ctx), request.Params.Name, request.Params.Arguments)
 	if bErr != nil {
 		return nil, upstreamError(bErr, mcp.INVALID_PARAMS)
 	}
@@ -92,7 +142,7 @@ func (h *MCPServerHandler) getPrompt(ctx context.Context, request mcp.GetPromptR
 }
 
 func (h *MCPServerHandler) readResource(ctx context.Context, request mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
-	result, bErr := h.served.ReadMCPResource(ctx, request.Params.URI)
+	result, bErr := h.served.ReadMCPResource(withCallerCapabilities(ctx), request.Params.URI)
 	if bErr != nil {
 		code := mcp.RESOURCE_NOT_FOUND
 		if mcp.IsModernProtocol(server.RequestProtocolVersion(ctx)) {
@@ -114,7 +164,7 @@ func (h *MCPServerHandler) CompleteResourceArgument(ctx context.Context, uri str
 }
 
 func (h *MCPServerHandler) complete(ctx context.Context, params mcp.CompleteParams) (*mcp.Completion, error) {
-	result, bErr := h.served.CompleteMCPArgument(ctx, params)
+	result, bErr := h.served.CompleteMCPArgument(withCallerCapabilities(ctx), params)
 	if bErr != nil {
 		return nil, upstreamError(bErr, mcp.INVALID_PARAMS)
 	}

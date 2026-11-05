@@ -112,6 +112,56 @@ func TestParseToolCallNamesFilter(t *testing.T) {
 	})
 }
 
+// TestParseMetadataFilters verifies metadata_<key> params carry one or several values per key.
+func TestParseMetadataFilters(t *testing.T) {
+	cases := []struct {
+		name  string
+		query string
+		want  map[string][]string
+	}{
+		{"plain value is one literal", `metadata_env=prod&metadata_note=a,b`, map[string][]string{"env": {"prod"}, "note": {"a,b"}}},
+		{"json array is several values", `metadata_env=%5B%22prod%22%2C%22staging%22%5D`, map[string][]string{"env": {"prod", "staging"}}},
+		{"repeated params accumulate without duplicates", `metadata_env=prod&metadata_env=staging&metadata_env=prod`, map[string][]string{"env": {"prod", "staging"}}},
+		{"bracketed text that is not a json array stays literal", `metadata_env=%5Bbeta`, map[string][]string{"env": {"[beta"}}},
+		{"empty values are dropped", `metadata_env=&metadata_tier=%5B%5D`, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.SetRequestURI("/api/logs?" + tc.query)
+			filters := &logstore.SearchFilters{}
+			parseMetadataFilters(ctx, filters)
+			if !reflect.DeepEqual(map[string][]string(filters.MetadataFilters), tc.want) {
+				t.Fatalf("metadata filters = %#v, want %#v", filters.MetadataFilters, tc.want)
+			}
+		})
+	}
+	t.Run("values beyond the per-key cap are dropped", func(t *testing.T) {
+		values := make([]string, 0, logstore.MaxMetadataFilterValuesPerKey+50)
+		for i := 0; i < logstore.MaxMetadataFilterValuesPerKey+50; i++ {
+			values = append(values, fmt.Sprintf("v%d", i))
+		}
+		raw, _ := json.Marshal(values)
+		encoded := string(raw)
+		ctx := &fasthttp.RequestCtx{}
+		ctx.QueryArgs().Set("metadata_env", encoded)
+		ctx.QueryArgs().Add("metadata_env", "extra")
+		filters := &logstore.SearchFilters{}
+		parseMetadataFilters(ctx, filters)
+		if got := filters.MetadataFilters["env"]; !reflect.DeepEqual(got, values[:logstore.MaxMetadataFilterValuesPerKey]) {
+			t.Fatalf("env values = %d (first %v), want the first %d", len(got), got[:1], logstore.MaxMetadataFilterValuesPerKey)
+		}
+	})
+	t.Run("histogram filters honour it", func(t *testing.T) {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.SetRequestURI(`/api/logs/histogram?metadata_env=%5B%22prod%22%2C%22staging%22%5D`)
+		filters := parseHistogramFilters(ctx)
+		if got, want := map[string][]string(filters.MetadataFilters), map[string][]string{"env": {"prod", "staging"}}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("histogram metadata filters = %#v, want %#v", got, want)
+		}
+	})
+}
+
 // TestParseGuardrailOutcomesFilter verifies guardrail_outcomes reaches the list and histogram filters.
 func TestParseGuardrailOutcomesFilter(t *testing.T) {
 	t.Run("parses comma-separated outcomes", func(t *testing.T) {

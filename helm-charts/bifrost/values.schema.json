@@ -2803,7 +2803,7 @@
                     ]
                   }
                 },
-                "required": ["id", "name", "targets"]
+                "required": ["name", "targets"]
               }
             },
             "authConfig": {
@@ -3671,6 +3671,7 @@
                       "accessProfileResolutionStrategy": { "$ref": "#/$defs/scim_access_profile_resolution_strategy" },
                       "tokenExchangeHosts": { "$ref": "#/$defs/scim_token_exchange_hosts" },
                       "crossAppAccess": { "$ref": "#/$defs/scim_cross_app_access" },
+                      "workloadIdentity": { "$ref": "#/$defs/scim_workload_identity" },
                       "attributeTeamMappings": { "$ref": "#/$defs/scim_attribute_team_mappings" },
                       "attributeBusinessUnitMappings": {
                         "$ref": "#/$defs/scim_attribute_business_unit_mappings"
@@ -3763,6 +3764,7 @@
                       "accessProfileResolutionStrategy": { "$ref": "#/$defs/scim_access_profile_resolution_strategy" },
                       "tokenExchangeHosts": { "$ref": "#/$defs/scim_token_exchange_hosts" },
                       "crossAppAccess": { "$ref": "#/$defs/scim_cross_app_access" },
+                      "workloadIdentity": { "$ref": "#/$defs/scim_workload_identity" },
                       "attributeTeamMappings": { "$ref": "#/$defs/scim_attribute_team_mappings" },
                       "attributeBusinessUnitMappings": {
                         "$ref": "#/$defs/scim_attribute_business_unit_mappings"
@@ -3844,6 +3846,7 @@
                       "accessProfileResolutionStrategy": { "$ref": "#/$defs/scim_access_profile_resolution_strategy" },
                       "tokenExchangeHosts": { "$ref": "#/$defs/scim_token_exchange_hosts" },
                       "crossAppAccess": { "$ref": "#/$defs/scim_cross_app_access" },
+                      "workloadIdentity": { "$ref": "#/$defs/scim_workload_identity" },
                       "attributeTeamMappings": { "$ref": "#/$defs/scim_attribute_team_mappings" },
                       "attributeBusinessUnitMappings": {
                         "$ref": "#/$defs/scim_attribute_business_unit_mappings"
@@ -3923,6 +3926,7 @@
                       "accessProfileResolutionStrategy": { "$ref": "#/$defs/scim_access_profile_resolution_strategy" },
                       "tokenExchangeHosts": { "$ref": "#/$defs/scim_token_exchange_hosts" },
                       "crossAppAccess": { "$ref": "#/$defs/scim_cross_app_access" },
+                      "workloadIdentity": { "$ref": "#/$defs/scim_workload_identity" },
                       "attributeTeamMappings": { "$ref": "#/$defs/scim_attribute_team_mappings" },
                       "attributeBusinessUnitMappings": {
                         "$ref": "#/$defs/scim_attribute_business_unit_mappings"
@@ -4017,6 +4021,7 @@
                       "accessProfileResolutionStrategy": { "$ref": "#/$defs/scim_access_profile_resolution_strategy" },
                       "tokenExchangeHosts": { "$ref": "#/$defs/scim_token_exchange_hosts" },
                       "crossAppAccess": { "$ref": "#/$defs/scim_cross_app_access" },
+                      "workloadIdentity": { "$ref": "#/$defs/scim_workload_identity" },
                       "attributeTeamMappings": { "$ref": "#/$defs/scim_attribute_team_mappings" },
                       "attributeBusinessUnitMappings": {
                         "$ref": "#/$defs/scim_attribute_business_unit_mappings"
@@ -4128,6 +4133,7 @@
                       "accessProfileResolutionStrategy": { "$ref": "#/$defs/scim_access_profile_resolution_strategy" },
                       "tokenExchangeHosts": { "$ref": "#/$defs/scim_token_exchange_hosts" },
                       "crossAppAccess": { "$ref": "#/$defs/scim_cross_app_access" },
+                      "workloadIdentity": { "$ref": "#/$defs/scim_workload_identity" },
                       "attributeTeamMappings": { "$ref": "#/$defs/scim_attribute_team_mappings" },
                       "attributeBusinessUnitMappings": {
                         "$ref": "#/$defs/scim_attribute_business_unit_mappings"
@@ -4218,6 +4224,7 @@
                       "accessProfileResolutionStrategy": { "$ref": "#/$defs/scim_access_profile_resolution_strategy" },
                       "tokenExchangeHosts": { "$ref": "#/$defs/scim_token_exchange_hosts" },
                       "crossAppAccess": { "$ref": "#/$defs/scim_cross_app_access" },
+                      "workloadIdentity": { "$ref": "#/$defs/scim_workload_identity" },
                       "attributeTeamMappings": { "$ref": "#/$defs/scim_attribute_team_mappings" },
                       "attributeBusinessUnitMappings": {
                         "$ref": "#/$defs/scim_attribute_business_unit_mappings"
@@ -6200,10 +6207,15 @@
             },
             "objectStorageExcludeRequestTypes": {
               "type": "array",
-              "description": "Request types (log object type, e.g. list_models, embedding) whose logs are not offloaded to object storage and are written to the logs database in full instead. Hidden logs are still offloaded. Maps to logs_store.object_storage_exclude_request_types.",
+              "description": "Request types (log object type, e.g. list_models, embedding; relay for Relay Logs rows) whose logs are not offloaded to object storage and are written to the logs database in full instead. Hidden logs are still offloaded. Maps to logs_store.object_storage_exclude_request_types.",
               "items": {
                 "type": "string"
               }
+            },
+            "captureClientIp": {
+              "type": "boolean",
+              "default": false,
+              "description": "Record the caller's IP as client_ip on LLM, MCP and relay logs: leftmost X-Forwarded-For, else X-Real-IP, else the TCP peer. The headers are caller-supplied and not verified, so run behind a proxy that overwrites them. Off by default; turning it off does not clear values already recorded. Takes effect on restart. Maps to logs_store.capture_client_ip."
             },
             "objectStorage": {
               "type": "object",
@@ -9144,9 +9156,25 @@
                 "type": "string"
               },
               "description": "OAuth scopes to request."
+            },
+            "resource": {
+              "type": "string",
+              "description": "OAuth resource indicator, RFC 8707 (optional — discovered from the MCP server's protected resource metadata when omitted). Renders into resource."
+            },
+            "useClientMetadataDocument": {
+              "type": "boolean",
+              "default": false,
+              "description": "Register with Bifrost's Client ID Metadata Document even if the authorization server does not advertise support. Requires Bifrost on a public HTTPS address; cannot be combined with clientId. When off, the document is still used automatically wherever the server advertises support. Renders into use_client_metadata_document."
             }
           },
-          "additionalProperties": false
+          "additionalProperties": false,
+          "if": {
+            "properties": { "useClientMetadataDocument": { "const": true } },
+            "required": ["useClientMetadataDocument"]
+          },
+          "then": {
+            "not": { "required": ["clientId"] }
+          }
         },
         "tokenExchange": {
           "type": "object",
@@ -9396,6 +9424,11 @@
           "type": "boolean",
           "description": "Only meaningful for connectionType 'http': true keeps one persistent connection reused across every caller; false (the default for new clients) connects fresh per call. SSE and STDIO always behave as sticky regardless. Renders into needs_session_stickiness."
         },
+        "perUserDiscovery": {
+          "type": "boolean",
+          "default": false,
+          "description": "Only valid for per-user auth types (per_user_oauth, per_user_headers, token_exchange), and not for openapi clients: when true, each caller's tools, prompts, resources and server instructions are discovered with that caller's own credential, and the client stores no admin credential. When false, every caller is served the discovery made with the admin credential. Renders into per_user_discovery."
+        },
         "toolPricing": {
           "type": "object",
           "description": "Tool pricing map (tool name to cost per execution)",
@@ -9538,6 +9571,48 @@
             "properties": {
               "perUserHeaderKeys": {
                 "minItems": 1
+              }
+            }
+          }
+        },
+        {
+          "$comment": "Per-user auth types open a connection per call, which SSE and STDIO cannot serve. websocket renders as sse.",
+          "if": {
+            "properties": {
+              "connectionType": {
+                "enum": ["sse", "stdio", "websocket"]
+              }
+            },
+            "required": ["connectionType"]
+          },
+          "then": {
+            "properties": {
+              "authType": {
+                "enum": ["none", "headers", "oauth"]
+              }
+            }
+          }
+        },
+        {
+          "$comment": "perUserDiscovery needs a per-user auth type, and openapi clients take their tools from the document.",
+          "if": {
+            "properties": {
+              "perUserDiscovery": {
+                "const": true
+              }
+            },
+            "required": ["perUserDiscovery"]
+          },
+          "then": {
+            "required": ["authType"],
+            "properties": {
+              "authType": {
+                "enum": ["per_user_oauth", "per_user_headers", "token_exchange"]
+              },
+              "connectionType": {
+                "not": {
+                  "const": "openapi"
+                }
               }
             }
           }
@@ -10181,6 +10256,171 @@
         "type": "string",
         "pattern": "^\\s*[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)*(:[1-9][0-9]{0,4})?\\s*$"
       }
+    },
+    "scim_workload_identity": {
+      "type": "object",
+      "description": "Workload identity on this SSO provider: token issuers, besides the provider itself, whose workload tokens can be mapped to service accounts.",
+      "properties": {
+        "additionalTrustedIssuers": {
+          "type": "array",
+          "maxItems": 20,
+          "items": {
+            "$ref": "#/$defs/scim_trusted_issuer"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "scim_trusted_issuer": {
+      "type": "object",
+      "description": "A token issuer whose workload tokens, addressed to one of its audiences, can authenticate the service accounts they are mapped to. Workloads are mapped to service accounts in the dashboard or through the API, not in this file.",
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255,
+          "pattern": "\\S",
+          "description": "Name of the issuer, unique among the provider's issuers ignoring case, e.g. 'AWS prod'. Mappings refer to the issuer by this name: renaming or removing it leaves them without an issuer until one with the name is back."
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "aws",
+            "generic"
+          ],
+          "description": "'aws' trusts AWS STS outbound identity federation tokens, named by IAM role ARN. 'generic' trusts any OIDC issuer and takes identityClaim and machineCheck from this entry; with machineCheck 'any' it takes only tokens whose identity claim is mapped; a rule is required to map the SSO app's own client ID, which people's tokens also carry."
+        },
+        "issuerUrl": {
+          "type": "string",
+          "maxLength": 1024,
+          "pattern": "^(https://[^/?#@\\s]+|http://(localhost|127\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}|\\[::1\\])(:\\d+)?)(/[^?#\\s]*)?$",
+          "description": "The issuer exactly as tokens carry it in iss: https, or http only on localhost for local testing, with no user info, query or fragment. Signing keys are found through its OIDC discovery document. A mapping made on this issuer stops working if the URL changes."
+        },
+        "audiences": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 10,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512,
+            "pattern": "\\S"
+          },
+          "description": "Audiences a workload token must be addressed to, typically this Bifrost's URL."
+        },
+        "identityClaim": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512,
+          "pattern": "\\S",
+          "description": "For 'generic', required: the claim whose value names the workload, e.g. client_id or sub. Values are matched exactly. A mapping made on this issuer stops working if the claim changes."
+        },
+        "machineCheck": {
+          "type": "object",
+          "description": "For 'generic', required: how a workload's token is told from a person's. 'any' when the issuer only issues to workloads, or when only mapped workload IDs should be taken; otherwise a rule only workload tokens pass, e.g. Okta sub_equals_claim cid, Auth0 claim_equals gty client-credentials, Keycloak claim_prefix preferred_username service-account-.",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "any",
+                "sub_equals_claim",
+                "claim_equals",
+                "claim_prefix"
+              ]
+            },
+            "claim": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "\\S",
+              "description": "The claim the rule reads. Required for every kind but 'any'."
+            },
+            "value": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "\\S",
+              "description": "The value, or prefix, the claim must have. Required for claim_equals and claim_prefix; an empty one would match every token."
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "kind": {
+                    "const": "sub_equals_claim"
+                  }
+                },
+                "required": [
+                  "kind"
+                ]
+              },
+              "then": {
+                "required": [
+                  "claim"
+                ]
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "kind": {
+                    "enum": [
+                      "claim_equals",
+                      "claim_prefix"
+                    ]
+                  }
+                },
+                "required": [
+                  "kind"
+                ]
+              },
+              "then": {
+                "required": [
+                  "claim",
+                  "value"
+                ]
+              }
+            }
+          ],
+          "additionalProperties": false
+        },
+        "maxLifetimeSeconds": {
+          "type": "integer",
+          "minimum": 300,
+          "maximum": 172800,
+          "description": "Longest total token lifetime accepted. Defaults to 24 hours."
+        },
+        "disabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Set to true to keep the issuer and its mappings but refuse its tokens."
+        }
+      },
+      "required": [
+        "name",
+        "kind",
+        "issuerUrl",
+        "audiences"
+      ],
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "generic"
+          }
+        },
+        "required": [
+          "kind"
+        ]
+      },
+      "then": {
+        "required": [
+          "identityClaim",
+          "machineCheck"
+        ]
+      },
+      "additionalProperties": false
     },
     "scim_cross_app_access": {
       "type": "object",

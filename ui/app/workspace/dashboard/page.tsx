@@ -7,6 +7,7 @@ import { parseAsSafeArrayOf, parseAsSafeString } from "@/lib/queryParamsParser";
 import { useGetMCPAvailableFilterDataQuery } from "@/lib/store";
 import type { LogFilters, MCPToolLogFilters } from "@/lib/types/logs";
 import { dateUtils } from "@/lib/types/logs";
+import { parseMetadataFiltersParam } from "@/lib/utils/metadataFilters";
 import { getRangeForPeriod, TIME_PERIODS } from "@/lib/utils/timeRange";
 import { useLocation } from "@tanstack/react-router";
 import { parseAsBoolean, parseAsInteger, parseAsString, useQueryStates } from "nuqs";
@@ -109,14 +110,7 @@ export default function DashboardPage() {
 		[urlState.mcp_server_labels],
 	);
 
-	const metadataFilters = useMemo(() => {
-		if (!urlState.metadata_filters) return undefined;
-		try {
-			return JSON.parse(urlState.metadata_filters) as Record<string, string>;
-		} catch {
-			return undefined;
-		}
-	}, [urlState.metadata_filters]);
+	const metadataFilters = useMemo(() => parseMetadataFiltersParam(urlState.metadata_filters), [urlState.metadata_filters]);
 
 	const filters: LogFilters = useMemo(
 		() => ({

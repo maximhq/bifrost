@@ -363,8 +363,7 @@ export default function EmbeddingConfigSheet({
 										<span className="space-y-1.5">
 											{SEMANTIC_FALLBACK_OPTIONS.map((option) => (
 												<span key={option.value} className="block">
-													<b>{option.value === "llm" ? tcpx("fallbackLlm") : tcpx("fallbackNone")}</b>:{" "}
-													{option.value === "llm" ? tcpx("fallbackLlmDesc") : tcpx("fallbackNoneDesc")}
+													<b>{option.label}</b>: {option.description}
 												</span>
 											))}
 										</span>
@@ -383,7 +382,7 @@ export default function EmbeddingConfigSheet({
 											<SelectContent>
 												{SEMANTIC_FALLBACK_OPTIONS.map((option) => (
 													<SelectItem key={option.value} value={option.value}>
-														{option.value === "llm" ? tcpx("fallbackLlm") : tcpx("fallbackNone")}
+														{option.label}
 													</SelectItem>
 												))}
 											</SelectContent>
