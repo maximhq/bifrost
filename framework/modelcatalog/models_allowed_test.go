@@ -1,6 +1,7 @@
 package modelcatalog
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -51,4 +52,64 @@ func TestIsModelAllowedForProvider_ExplicitList(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestVLLMModelNameRoutesWithoutLiveModels pins that a vLLM key with no cached
+// list-models result routes as if list-models returned its ModelName, without
+// surfacing ModelName in the list-models views.
+func TestVLLMModelNameRoutesWithoutLiveModels(t *testing.T) {
+	vllmKey := func(id, modelName string, aliases schemas.KeyAliases) schemas.Key {
+		return schemas.Key{
+			ID: id, Enabled: ptrBool(true), Models: schemas.WhiteList{"*"}, Aliases: aliases,
+			VLLMKeyConfig: &schemas.VLLMKeyConfig{ModelName: modelName},
+		}
+	}
+	newCatalog := func(keys ...schemas.Key) *ModelCatalog {
+		kc := keyconfig.New(nil)
+		kc.Replace(map[schemas.ModelProvider][]schemas.Key{schemas.VLLM: keys})
+		mc := &ModelCatalog{datasheet: datasheet.NewTestStore(map[string]string{}), live: live.New(nil), keyconf: kc, done: make(chan struct{})}
+		mc.initCaches()
+		return mc
+	}
+	assertAllowed := func(t *testing.T, mc *ModelCatalog, want map[string]bool) {
+		t.Helper()
+		for model, w := range want {
+			if got := mc.IsModelAllowedForProvider(schemas.VLLM, model, nil, schemas.WhiteList{"*"}); got != w {
+				t.Errorf("IsModelAllowedForProvider(vllm, %q) = %v, want %v", model, got, w)
+			}
+		}
+	}
+
+	t.Run("no cached results", func(t *testing.T) {
+		mc := newCatalog(
+			vllmKey("k20b", "gpt-oss-20b", schemas.KeyAliases{"gpt-oss-20b-1": {ModelID: "gpt-oss-20b"}}),
+			vllmKey("k120b", "gpt-oss-120b", nil),
+		)
+		assertAllowed(t, mc, map[string]bool{"gpt-oss-20b": true, "gpt-oss-20b-1": true, "gpt-oss-120b": true, "gpt-4o": false})
+		for _, models := range [][]string{mc.GetModelsForProvider(schemas.VLLM), mc.GetUnfilteredModelsForProvider(schemas.VLLM)} {
+			if slices.Contains(models, "gpt-oss-20b") || slices.Contains(models, "gpt-oss-120b") {
+				t.Errorf("ModelName leaked into list-models view: %v", models)
+			}
+		}
+	})
+
+	t.Run("cached result wins for that key", func(t *testing.T) {
+		mc := newCatalog(vllmKey("k20b", "gpt-oss-20b", nil), vllmKey("k120b", "gpt-oss-120b", nil))
+		mc.UpsertLive(schemas.VLLM, "k20b", false, []string{"served-20b"})
+		mc.UpsertLive(schemas.VLLM, "k20b", true, []string{"served-20b"})
+		assertAllowed(t, mc, map[string]bool{"served-20b": true, "gpt-oss-120b": true, "gpt-oss-20b": false, "gpt-4o": false})
+	})
+
+	t.Run("key without ModelName keeps unrestricted fallback", func(t *testing.T) {
+		assertAllowed(t, newCatalog(vllmKey("kany", "", nil)), map[string]bool{"gpt-4o": true})
+	})
+
+	t.Run("mixed configured and unconfigured keys", func(t *testing.T) {
+		unconfigured := vllmKey("kany", "", nil)
+		unconfigured.BlacklistedModels = schemas.BlackList{"blocked-model"}
+		disabled := vllmKey("kdisabled", "", nil)
+		disabled.Enabled = ptrBool(false)
+		mc := newCatalog(vllmKey("k20b", "gpt-oss-20b", nil), unconfigured, disabled)
+		assertAllowed(t, mc, map[string]bool{"gpt-oss-20b": true, "gpt-4o": true, "blocked-model": false})
+	})
 }
