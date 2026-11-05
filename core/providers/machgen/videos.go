@@ -50,7 +50,7 @@ func ToMachGenVideoGenerationRequest(bifrostReq *schemas.BifrostVideoGenerationR
 
 		// A src_video_urls in extra params replaces video_uri rather than appending to it,
 		// so drop the one taken from input before lifting.
-		if _, ok := params.ExtraParams["src_video_urls"]; ok {
+		if params.ExtraParams["src_video_urls"] != nil {
 			request.SrcVideoURLs = nil
 		}
 		if err := applyMachGenExtraParams(request, params.ExtraParams); err != nil {

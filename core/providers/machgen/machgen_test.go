@@ -171,6 +171,13 @@ func TestMachGenConverters_RejectInlineDataURLSources(t *testing.T) {
 				Params: &schemas.VideoGenerationParameters{ExtraParams: map[string]interface{}{"src_video_urls": []interface{}{"DATA:video/mp4;base64,AAAA"}}},
 			})
 		},
+		"https url without a host": func() (*MachGenGenerateRequest, error) {
+			return ToMachGenImageGenerationRequest(&schemas.BifrostImageGenerationRequest{
+				Model:  "FLUX.2-dev",
+				Input:  &schemas.ImageGenerationInput{Prompt: "p"},
+				Params: &schemas.ImageGenerationParameters{InputImages: []string{"https://?x"}},
+			})
+		},
 	}
 	for name, fn := range convert {
 		t.Run(name, func(t *testing.T) {
@@ -201,6 +208,32 @@ func TestMachGenConverters_LeaveCallerExtraParamsUntouched(t *testing.T) {
 		assert.Equal(t, map[string]interface{}{"style": "watercolor"}, req.ExtraParams, "attempt %d", attempt)
 	}
 	assert.Len(t, extra, 3)
+}
+
+func TestMachGenConverters_DropNullLiftedExtraParams(t *testing.T) {
+	// A null src_image_urls left in ExtraParams would overwrite the input image when
+	// passthrough merges extra params into the body.
+	req, err := ToMachGenImageGenerationRequest(&schemas.BifrostImageGenerationRequest{
+		Model: "FLUX.2-dev",
+		Input: &schemas.ImageGenerationInput{Prompt: "p"},
+		Params: &schemas.ImageGenerationParameters{
+			InputImages: []string{"https://x/a.png"},
+			ExtraParams: map[string]interface{}{"src_image_urls": nil, "task_type": nil},
+		},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, taskTypeI2I, req.TaskType)
+	assert.Equal(t, []string{"https://x/a.png"}, req.SrcImageURLs)
+	assert.Empty(t, req.ExtraParams)
+
+	video, err := ToMachGenVideoGenerationRequest(&schemas.BifrostVideoGenerationRequest{
+		Model:  "MiniMax-H3",
+		Input:  &schemas.VideoGenerationInput{Prompt: "p", VideoURI: schemas.Ptr("https://x/a.mp4")},
+		Params: &schemas.VideoGenerationParameters{ExtraParams: map[string]interface{}{"src_video_urls": nil}},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"https://x/a.mp4"}, video.SrcVideoURLs)
+	assert.Empty(t, video.ExtraParams)
 }
 
 func TestToBifrostVideoGenerationResponse_MapsTaskLifecycle(t *testing.T) {

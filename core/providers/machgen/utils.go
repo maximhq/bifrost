@@ -2,6 +2,7 @@ package machgen
 
 import (
 	"maps"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -66,7 +67,12 @@ func parseSize(size string) (*int, *string, error) {
 // reach task types and reference media that have no counterpart in the Bifrost schema.
 func takeExtraParam[T any](extra map[string]interface{}, key string, dst *T) error {
 	val, ok := extra[key]
-	if !ok || val == nil {
+	if !ok {
+		return nil
+	}
+	if val == nil {
+		// Left in place, a null would overwrite the lifted field when passthrough merges extra params.
+		delete(extra, key)
 		return nil
 	}
 	converted, err := schemas.ConvertViaJSON[T](val)
@@ -118,7 +124,7 @@ func applyMachGenExtraParams(request *MachGenGenerateRequest, extra map[string]i
 func requireSourceURLs(request *MachGenGenerateRequest) error {
 	for _, urls := range [][]string{request.SrcImageURLs, request.SrcVideoURLs, request.SrcAudioURLs} {
 		for _, u := range urls {
-			if !hasHTTPScheme(u) {
+			if !isHTTPURL(u) {
 				return providerUtils.InvalidRequestErrorf("MachGen needs each source as a public http(s) URL; inline data URLs and base64 are not supported")
 			}
 		}
@@ -126,6 +132,7 @@ func requireSourceURLs(request *MachGenGenerateRequest) error {
 	return nil
 }
 
-func hasHTTPScheme(u string) bool {
-	return (len(u) > 7 && strings.EqualFold(u[:7], "http://")) || (len(u) > 8 && strings.EqualFold(u[:8], "https://"))
+func isHTTPURL(raw string) bool {
+	u, err := url.Parse(raw)
+	return err == nil && (u.Scheme == "http" || u.Scheme == "https") && u.Hostname() != ""
 }
