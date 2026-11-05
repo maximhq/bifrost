@@ -26,6 +26,11 @@
             "/bifrost"
           ]
         },
+        "trusted_forwarded_host": {
+          "type": "string",
+          "default": "",
+          "description": "Exact public hostname and optional port trusted in X-Forwarded-Host when inferring self URLs, e.g. gateway.example.com:8443. The first comma-separated header value is trimmed and compared case-insensitively, including the port. Non-matches fall back to Host. Empty disables forwarded-host inference. Explicit external public URL overrides still take priority. Supply an authority, not a URL, path, or wildcard. Deploy-time only."
+        },
         "body_buffer_pool_limit_bytes": {
           "type": "integer",
           "minimum": 0,
