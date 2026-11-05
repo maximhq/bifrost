@@ -2125,8 +2125,10 @@ type ChatPromptTokensDetails struct {
 }
 
 type ChatCachedWriteTokenDetails struct {
-	CachedWriteTokens5m int `json:"cached_write_tokens_5m"`
-	CachedWriteTokens1h int `json:"cached_write_tokens_1h"`
+	CachedWriteTokens5m  int `json:"cached_write_tokens_5m"`
+	CachedWriteTokens1h  int `json:"cached_write_tokens_1h"`
+	CachedWriteTokens30m int `json:"cached_write_tokens_30m"` // OpenAI gpt-5.6+ ttl_30m_tokens
+	CachedWriteTokens12h int `json:"cached_write_tokens_12h"` // OpenAI gpt-5.6+ ttl_12h_tokens
 }
 
 // UnmarshalJSON maps OpenAI's cached_tokens into CachedReadTokens for compatibility.
@@ -2278,6 +2280,12 @@ func MergeBifrostLLMUsage(base, add *BifrostLLMUsage) *BifrostLLMUsage {
 			merged.PromptTokensDetails.CachedWriteTokenDetails = &ChatCachedWriteTokenDetails{
 				CachedWriteTokens5m: cachedWriteTokens5m(baseDetails) + cachedWriteTokens5m(addDetails),
 				CachedWriteTokens1h: cachedWriteTokens1h(baseDetails) + cachedWriteTokens1h(addDetails),
+			}
+			for _, d := range []*ChatCachedWriteTokenDetails{baseDetails.CachedWriteTokenDetails, addDetails.CachedWriteTokenDetails} {
+				if d != nil {
+					merged.PromptTokensDetails.CachedWriteTokenDetails.CachedWriteTokens30m += d.CachedWriteTokens30m
+					merged.PromptTokensDetails.CachedWriteTokenDetails.CachedWriteTokens12h += d.CachedWriteTokens12h
+				}
 			}
 		}
 	}

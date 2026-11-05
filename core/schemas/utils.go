@@ -960,6 +960,10 @@ func deepCopyChatContentBlock(original ChatContentBlock) ChatContentBlock {
 			copyMode := *original.PromptCacheBreakpoint.Mode
 			copyPromptCacheBreakpoint.Mode = &copyMode
 		}
+		if original.PromptCacheBreakpoint.TTL != nil {
+			copyTTL := *original.PromptCacheBreakpoint.TTL
+			copyPromptCacheBreakpoint.TTL = &copyTTL
+		}
 		copy.PromptCacheBreakpoint = copyPromptCacheBreakpoint
 	}
 
@@ -2015,6 +2019,10 @@ func deepCopyResponsesMessageContentBlock(original ResponsesMessageContentBlock)
 		if original.PromptCacheBreakpoint.Mode != nil {
 			copyMode := *original.PromptCacheBreakpoint.Mode
 			copyPromptCacheBreakpoint.Mode = &copyMode
+		}
+		if original.PromptCacheBreakpoint.TTL != nil {
+			copyTTL := *original.PromptCacheBreakpoint.TTL
+			copyPromptCacheBreakpoint.TTL = &copyTTL
 		}
 		copy.PromptCacheBreakpoint = copyPromptCacheBreakpoint
 	}

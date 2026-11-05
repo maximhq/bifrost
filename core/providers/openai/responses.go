@@ -408,15 +408,12 @@ func responsesIsOpenAIFamilyBreakpointTarget(caps schemas.ModelCaps, provider sc
 //     isFunctionCallOutputBlocksFlattenable then declines to collapse it back
 //     into a string.
 //
-// A marker's TTL is not carried across, and there is nowhere to carry it to. The
-// only request-level field on this path is prompt_cache_options.ttl, whose "only
-// supported value, 30m, is also the default"
-// (https://developers.openai.com/api/docs/guides/prompt-caching) - so writing it
-// changes nothing, while the values cache_control actually carries (absent for 5m,
-// or "1h": https://platform.claude.com/docs/en/build-with-claude/prompt-caching) are
-// rejected there outright. OpenRouter, the one target where a "1h" marker would mean
-// something, exposes no equivalent field at all, so its Claude requests fall back to
-// the default breakpoint lifetime. Another limit forced by the wire format.
+// A cache_control marker's TTL is not carried across. prompt_cache_breakpoint.ttl
+// accepts only "30m" or "12h", and neither matches cache_control's 5m / "1h"
+// (https://platform.claude.com/docs/en/build-with-claude/prompt-caching): turning "1h"
+// into "12h" would double the write price behind the caller's back. A client wanting
+// 12h sends prompt_cache_breakpoint.ttl itself; it passes through on OpenAI, Azure
+// and OpenRouter, and is dropped for Bedrock Mantle, which rejects it.
 //
 // messages is this function's own slice, but each element's Content pointer and
 // the block array beneath it still alias bifrostReq.Input, which plugins and the
@@ -545,6 +542,46 @@ func applyResponsesCacheBreakpoints(messages []schemas.ResponsesMessage, openAIF
 			copiedContent[ref.msg] = true
 		}
 		messages[ref.msg].Content.ContentBlocks[ref.block].PromptCacheBreakpoint = breakpoint()
+	}
+}
+
+// stripResponsesCacheBreakpointTTL drops breakpoint ttl in place on messages, copying
+// any content or tool output it touches, since those still alias bifrostReq.Input.
+func stripResponsesCacheBreakpointTTL(messages []schemas.ResponsesMessage) {
+	hasTTL := func(b schemas.ResponsesMessageContentBlock) bool {
+		return b.PromptCacheBreakpoint != nil && b.PromptCacheBreakpoint.TTL != nil
+	}
+	strip := func(blocks []schemas.ResponsesMessageContentBlock) []schemas.ResponsesMessageContentBlock {
+		if !slices.ContainsFunc(blocks, hasTTL) {
+			return nil
+		}
+		out := append([]schemas.ResponsesMessageContentBlock(nil), blocks...)
+		for j := range out {
+			if hasTTL(out[j]) {
+				bp := *out[j].PromptCacheBreakpoint
+				bp.TTL = nil
+				out[j].PromptCacheBreakpoint = &bp
+			}
+		}
+		return out
+	}
+	for i := range messages {
+		if c := messages[i].Content; c != nil {
+			if blocks := strip(c.ContentBlocks); blocks != nil {
+				contentCopy := *c
+				contentCopy.ContentBlocks = blocks
+				messages[i].Content = &contentCopy
+			}
+		}
+		if tm := messages[i].ResponsesToolMessage; tm != nil && tm.Output != nil {
+			if blocks := strip(tm.Output.ResponsesFunctionToolCallOutputBlocks); blocks != nil {
+				outputCopy := *tm.Output
+				outputCopy.ResponsesFunctionToolCallOutputBlocks = blocks
+				toolMsgCopy := *tm
+				toolMsgCopy.Output = &outputCopy
+				messages[i].ResponsesToolMessage = &toolMsgCopy
+			}
+		}
 	}
 }
 
@@ -983,6 +1020,10 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 		}
 		applyResponsesCacheBreakpoints(messages, openAIFamily, promptCacheBreakpointCeiling(ctx, openAIFamily, callerCacheOptions, extraParams))
 	}
+	// Bedrock Mantle rejects prompt_cache_breakpoint.ttl on every model (no 12h there).
+	if cachePromptProvider == schemas.BedrockMantle || cachePromptProvider == schemas.Bedrock {
+		stripResponsesCacheBreakpointTTL(messages)
+	}
 
 	// Updating params
 	params := bifrostReq.Params
@@ -1002,6 +1043,13 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 
 	if params != nil {
 		req.ResponsesParameters = *params
+		// Bedrock Mantle accepts only "30m" for prompt_cache_options.ttl
+		if opts := req.PromptCacheOptions; opts != nil && opts.TTL != nil && *opts.TTL != "30m" &&
+			(cachePromptProvider == schemas.BedrockMantle || cachePromptProvider == schemas.Bedrock) {
+			optsCopy := *opts
+			optsCopy.TTL = nil
+			req.PromptCacheOptions = &optsCopy
+		}
 		req.ServiceTier = serviceTierForModel(caps, req.ServiceTier)
 		if req.ResponsesParameters.MaxOutputTokens != nil && *req.ResponsesParameters.MaxOutputTokens < MinMaxCompletionTokens {
 			req.ResponsesParameters.MaxOutputTokens = schemas.Ptr(MinMaxCompletionTokens)
