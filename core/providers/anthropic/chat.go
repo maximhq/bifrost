@@ -1027,7 +1027,9 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 								// block -- mirrors the same hoist-to-outer-level pattern already used
 								// for Bedrock's nested cachePoint (core/providers/bedrock/responses.go).
 								// The hoisted marker ends where the last nested block ends, so the
-								// last marker found is the one kept.
+								// last marker found is the one kept, with its ttl; an earlier
+								// nested marker (and its ttl) is dropped, since a tool_result
+								// takes only one breakpoint.
 								if block.CacheControl != nil {
 									toolResult.CacheControl = block.CacheControl
 								}
