@@ -2,6 +2,8 @@ package gemini
 
 import (
 	"encoding/base64"
+	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -89,13 +91,177 @@ func TestThoughtPartIngressPreservesSignature(t *testing.T) {
 	})
 }
 
+// Non-streamed reasoning items carry an id, like the streaming path and OpenAI. Clients key
+// output items by id (opentelemetry-instrumentation-openai drops the span on a null one).
+// The id must not look like OpenAI's rs_, which the OpenAI converter keeps on replay and
+// OpenAI rejects when it did not issue it.
+func TestNonStreamReasoningItemHasID(t *testing.T) {
+	for name, part := range map[string]*Part{
+		"thought text only":               {Thought: true, Text: "thinking"},
+		"thought text and signature":      {Thought: true, Text: "thinking", ThoughtSignature: []byte{0x01, 0x02}},
+		"signature on a non-thought part": {ThoughtSignature: []byte{0x03, 0x04}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			reasoning := responsesMessagesForThoughtPart(t, part)
+			require.Len(t, reasoning, 1)
+			require.NotNil(t, reasoning[0].ID, "reasoning item id is null")
+			require.NotEmpty(t, *reasoning[0].ID)
+			require.False(t, strings.HasPrefix(*reasoning[0].ID, "rs_"), "id %q mimics an OpenAI id", *reasoning[0].ID)
+			require.Regexp(t, `^msg_\w+_reasoning_\d+$`, *reasoning[0].ID, "not the streaming path's generateItemID form")
+		})
+	}
+
+	t.Run("items of one response share the message id and differ by index", func(t *testing.T) {
+		out := convertGeminiCandidatesToResponsesOutput([]*Candidate{{Content: &Content{Parts: []*Part{
+			{Thought: true, Text: "first"}, {Text: "OK"}, {Thought: true, Text: "second"},
+		}}}}, "msg_test")
+		var ids []string
+		for _, msg := range out {
+			ids = append(ids, *msg.ID)
+		}
+		require.Len(t, ids, 3)
+		prefix := strings.TrimSuffix(ids[0], "_reasoning_0")
+		require.Regexp(t, `^msg_\w+$`, prefix)
+		require.Equal(t, []string{prefix + "_reasoning_0", prefix + "_item_1", prefix + "_reasoning_2"}, ids)
+	})
+
+	// A text-only thought replays to Gemini through the content-block path; giving it an
+	// empty ResponsesReasoning would route it to the summary path and drop the text.
+	t.Run("text-only thought still replays to Gemini", func(t *testing.T) {
+		contents, _, err := convertResponsesMessagesToGeminiContents(responsesMessagesForThoughtPart(t, &Part{Thought: true, Text: "thinking"}), "gemini-2.5-flash", schemas.Gemini)
+		require.NoError(t, err)
+		wire, err := json.Marshal(contents)
+		require.NoError(t, err)
+		require.Contains(t, string(wire), `"thought":true,"text":"thinking"`)
+	})
+}
+
+// Item ids are scoped by the response's unique id, so two responses converted in the same
+// second (CreatedAt has whole-second precision) never share reasoning or text item ids.
+func TestNonStreamItemIDsUniqueAcrossResponsesInSameSecond(t *testing.T) {
+	convert := func() *schemas.BifrostResponsesResponse {
+		return (&GenerateContentResponse{Candidates: []*Candidate{{Content: &Content{Role: "model", Parts: []*Part{
+			{Thought: true, Text: "thinking"}, {Text: "OK"},
+		}}}}}).ToResponsesBifrostResponsesResponse()
+	}
+	first, second := convert(), convert()
+	for first.CreatedAt != second.CreatedAt { // crossed a second boundary; retry so the case is exercised
+		first, second = convert(), convert()
+	}
+	seen := map[string]bool{}
+	for _, resp := range []*schemas.BifrostResponsesResponse{first, second} {
+		require.Len(t, resp.Output, 2)
+		for _, item := range resp.Output {
+			require.NotNil(t, item.ID, "item without an id: %+v", item)
+			require.False(t, seen[*item.ID], "item id %q reused across two responses created in the same second", *item.ID)
+			seen[*item.ID] = true
+		}
+	}
+}
+
+// Two streams started in the same second get distinct response ids and item ids. The stream
+// state's MessageID is both the response id and the scope of every streamed item id.
+func TestStreamIDsUniqueAcrossStreamsInSameSecond(t *testing.T) {
+	run := func() (int, []string) {
+		state := acquireGeminiResponsesStreamState()
+		defer releaseGeminiResponsesStreamState(state)
+		chunk := &GenerateContentResponse{Candidates: []*Candidate{{Content: &Content{Role: "model", Parts: []*Part{
+			{Thought: true, Text: "thinking"}, {Text: "OK"},
+		}}}}}
+		events, bifrostErr := chunk.ToBifrostResponsesStream(0, state)
+		require.Nil(t, bifrostErr)
+		var ids []string
+		for _, ev := range events {
+			if ev.Type == schemas.ResponsesStreamResponseTypeCreated && ev.Response != nil && ev.Response.ID != nil {
+				ids = append(ids, "response:"+*ev.Response.ID)
+			}
+			if ev.Type == schemas.ResponsesStreamResponseTypeOutputItemAdded && ev.Item != nil && ev.Item.ID != nil {
+				ids = append(ids, "item:"+*ev.Item.ID)
+			}
+		}
+		require.GreaterOrEqual(t, len(ids), 3, "expected a response id and two item ids: %v", ids)
+		return state.CreatedAt, ids
+	}
+	createdA, idsA := run()
+	createdB, idsB := run()
+	for createdA != createdB { // crossed a second boundary; retry so the case is exercised
+		createdA, idsA = run()
+		createdB, idsB = run()
+	}
+	seen := map[string]bool{}
+	for _, id := range append(idsA, idsB...) {
+		require.False(t, seen[id], "%s reused across two streams started in the same second", id)
+		seen[id] = true
+	}
+}
+
+// Server-side ToolCall and ToolResponse parts can carry a thoughtSignature; the reasoning
+// item emitted for it needs an id like every other reasoning item.
+func TestNonStreamSignatureOnToolPartsHasID(t *testing.T) {
+	sig := []byte{0x05, 0x06}
+	for name, part := range map[string]*Part{
+		"tool call":     {ToolCall: &ToolCall{ToolType: "GOOGLE_SEARCH_WEB", ID: "tc1", Args: map[string]any{"queries": []any{"x"}}}, ThoughtSignature: sig},
+		"tool response": {ToolResponse: &ToolResponse{ToolType: "GOOGLE_SEARCH_WEB", ID: "tc1", Response: map[string]any{}}, ThoughtSignature: sig},
+	} {
+		t.Run(name, func(t *testing.T) {
+			resp := (&GenerateContentResponse{Candidates: []*Candidate{{Content: &Content{Role: "model", Parts: []*Part{part}}}}}).ToResponsesBifrostResponsesResponse()
+			var found bool
+			for _, item := range resp.Output {
+				if item.Type != nil && *item.Type == schemas.ResponsesMessageTypeReasoning {
+					found = true
+					require.NotNil(t, item.ID, "reasoning item for the signature has no id")
+					require.Regexp(t, `^msg_\w+_reasoning_\d+$`, *item.ID)
+				}
+			}
+			require.True(t, found, "no reasoning item emitted for the signature: %+v", resp.Output)
+		})
+	}
+}
+
+// Non-streamed item ids are replayed as-is to OpenAI and Azure, which reject any item id
+// longer than 64 characters ("Invalid 'input[1].id': string too long"). Scoping them by the
+// 55-character response id produced 66-71 character ids; they must fit like streamed ids do.
+func TestNonStreamItemIDsFitOpenAIIDLimit(t *testing.T) {
+	parts := []*Part{{Thought: true, Text: "thinking"}, {Text: "OK"}}
+	for i := 0; i < 10; i++ { // two-digit output indexes
+		parts = append(parts, &Part{Thought: true, Text: "more"}, &Part{Text: "more"})
+	}
+	resp := (&GenerateContentResponse{Candidates: []*Candidate{{
+		Content:           &Content{Role: "model", Parts: parts},
+		GroundingMetadata: &GroundingMetadata{WebSearchQueries: []string{"bifrost"}},
+	}}}).ToResponsesBifrostResponsesResponse()
+	require.Greater(t, len(resp.Output), 20)
+	for _, item := range resp.Output {
+		require.NotNil(t, item.ID, "item without an id: %+v", item)
+		require.LessOrEqual(t, len(*item.ID), 64, "item id %q is %d characters", *item.ID, len(*item.ID))
+	}
+}
+
+// A web_search_call built from groundingMetadata (no server-side toolCall part to take an id
+// from) carries an id in the streaming path's generateItemID("ws", index) form, not null.
+func TestNonStreamGroundingWebSearchCallHasID(t *testing.T) {
+	resp := (&GenerateContentResponse{Candidates: []*Candidate{{
+		Content:           &Content{Role: "model", Parts: []*Part{{Text: "OK"}}},
+		GroundingMetadata: &GroundingMetadata{WebSearchQueries: []string{"bifrost"}},
+	}}}).ToResponsesBifrostResponsesResponse()
+	var found bool
+	for _, item := range resp.Output {
+		if item.Type != nil && *item.Type == schemas.ResponsesMessageTypeWebSearchCall {
+			found = true
+			require.NotNil(t, item.ID, "web_search_call id is null")
+			require.Regexp(t, `^msg_\w+_ws_\d+$`, *item.ID)
+		}
+	}
+	require.True(t, found, "no web_search_call emitted: %+v", resp.Output)
+}
+
 // responsesMessagesForThoughtPart runs the real ingress converter over a single
 // candidate holding one part, and returns the reasoning messages it produced.
 func responsesMessagesForThoughtPart(t *testing.T, part *Part) []schemas.ResponsesMessage {
 	t.Helper()
 	out := convertGeminiCandidatesToResponsesOutput([]*Candidate{
 		{Content: &Content{Parts: []*Part{part}}},
-	})
+	}, "msg_test")
 	var reasoning []schemas.ResponsesMessage
 	for _, msg := range out {
 		if msg.Type != nil && *msg.Type == schemas.ResponsesMessageTypeReasoning {
@@ -220,4 +386,13 @@ func TestIngressSendsThoughtTextForStandaloneReasoning(t *testing.T) {
 	// signature - dropping it here loses the value Gemini needs back.
 	require.Equal(t, 1, signatures,
 		"the standalone reasoning item's signature was lost: no preceding function call consumed it")
+}
+
+// BenchmarkNonStreamReasoningOutput measures converting a thought part to a reasoning item.
+func BenchmarkNonStreamReasoningOutput(b *testing.B) {
+	candidates := []*Candidate{{Content: &Content{Parts: []*Part{{Thought: true, Text: "thinking"}, {Text: "OK"}}}}}
+	b.ReportAllocs()
+	for b.Loop() {
+		_ = convertGeminiCandidatesToResponsesOutput(candidates, "msg_test")
+	}
 }
