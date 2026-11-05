@@ -1,7 +1,107 @@
 import { Function as ToolFunction } from "./logs";
 import { SecretVar } from "./schemas";
 
-export type MCPConnectionType = "http" | "stdio" | "sse";
+export type MCPConnectionType = "http" | "stdio" | "sse" | "openapi";
+
+// ---------------------------------------------------------------------------
+// OpenAPI-backed servers (connection_type === "openapi"): Bifrost synthesizes
+// the MCP server from an OpenAPI/Swagger document; every supported operation
+// becomes a tool whose call is proxied to the described API.
+// ---------------------------------------------------------------------------
+
+// Secret material for one securitySchemes entry. apiKey and http-bearer
+// schemes use value; http-basic uses username and password.
+export interface MCPOpenAPICredential {
+	value?: SecretVar;
+	username?: SecretVar;
+	password?: SecretVar;
+}
+
+export interface MCPOpenAPIConfig {
+	// Inline document text (JSON or YAML). Write-only: client reads omit it;
+	// GET /mcp/client/{id}/openapi-spec serves it on demand.
+	spec?: string;
+	// Fetched on create when spec is empty; kept as provenance afterwards.
+	spec_url?: string;
+	// Upstream base URL. Defaults to the document's first server.
+	base_url?: string;
+	// Keyed by the document's securitySchemes name. Redacted on GET; sending a
+	// redacted value back keeps the stored secret.
+	security_credentials?: Record<string, MCPOpenAPICredential>;
+	include_deprecated?: boolean;
+	// Cap on the upstream response body returned to the model (0 = default).
+	max_response_bytes?: number;
+	// Server-computed, read-only metadata describing the stored document.
+	spec_size?: number;
+	spec_hash?: string;
+	spec_title?: string;
+	openapi_version?: string;
+	operation_count?: number;
+}
+
+export type MCPOpenAPISecuritySchemeType = "apiKey" | "http" | "oauth2" | "openIdConnect" | "mutualTLS";
+
+export interface MCPOpenAPISecurityScheme {
+	name: string;
+	type: MCPOpenAPISecuritySchemeType;
+	in?: "header" | "query" | "cookie"; // apiKey only
+	param_name?: string; // apiKey only
+	scheme?: string; // http only: bearer | basic
+	description?: string;
+	supported: boolean;
+	reason?: string; // why unsupported
+}
+
+export interface MCPOpenAPIPreviewTool {
+	name: string;
+	operation_id?: string;
+	method: string;
+	path: string;
+	summary?: string;
+	description?: string;
+	deprecated?: boolean;
+	input_schema?: Record<string, unknown>;
+	annotations?: Record<string, unknown>;
+	warnings?: string[];
+}
+
+export interface MCPOpenAPIUnsupportedOperation {
+	operation_id?: string;
+	method: string;
+	path: string;
+	reason: string;
+}
+
+export interface MCPOpenAPIPreviewRequest {
+	spec?: string;
+	spec_url?: string;
+	base_url?: string;
+	include_deprecated?: boolean;
+	// The name the client will have, so tool names are shortened as create shortens them.
+	client_name?: string;
+}
+
+export interface MCPOpenAPIPreviewResponse {
+	title: string;
+	version: string;
+	openapi_version: string;
+	description?: string;
+	servers: string[];
+	base_url?: string;
+	// No base URL needed: every operation declares its own server.
+	operation_servers?: boolean;
+	security_schemes: MCPOpenAPISecurityScheme[];
+	tools: MCPOpenAPIPreviewTool[];
+	unsupported: MCPOpenAPIUnsupportedOperation[];
+	warnings: string[];
+	tool_count: number;
+	spec_size: number;
+	spec_hash: string;
+	// The fetched document text, present only when the request named a spec_url.
+	spec?: string;
+	// The URL that text was finally read from after redirects; relative servers resolve against it.
+	spec_url?: string;
+}
 
 export type MCPConnectionState =
 	| "healthy"
@@ -92,7 +192,27 @@ export interface MCPTokenExchangeConfig {
 	// issuer, which is correct for providers with one tenant-wide token
 	// endpoint (Entra, Auth0).
 	authorization_server_url?: string;
+	// "id_jag" selects Cross App Access: the identity provider issues an ID-JAG
+	// for `audience` (the upstream authorization server's issuer), which the
+	// upstream authorization server exchanges for its own token.
+	profile?: MCPTokenExchangeProfile;
+	resource?: string; // id_jag: resource indicator sent to the identity provider; omitted when empty
+	resource_token_endpoint?: string; // id_jag: upstream token endpoint; discovered when empty
+	resource_client_id?: SecretVar; // id_jag: Bifrost's client at the upstream authorization server. Redacted on GET.
+	resource_client_secret?: SecretVar; // id_jag: omit for a public client. Redacted on GET.
+	resource_client_auth_method?: MCPResourceClientAuthMethod; // id_jag: how the secret is sent; "" follows discovery
+	resource_private_key?: SecretVar; // id_jag: PEM key for private_key_jwt at the upstream, instead of a secret. Redacted on GET.
+	resource_key_id?: string; // id_jag: kid header of the client assertion
+	resource_signing_algorithm?: string; // id_jag: default RS256
+	resource_assertion_audience?: string; // id_jag: client assertion aud; defaults to the upstream token endpoint
+	resource_auth_mode?: MCPResourceAuthMode; // form only, never sent: the upstream authentication the admin chose
 }
+
+export type MCPTokenExchangeProfile = "" | "id_jag";
+
+export type MCPResourceClientAuthMethod = "" | "client_secret_basic" | "client_secret_post";
+
+export type MCPResourceAuthMode = "secret" | "private_key";
 
 export interface OAuthConfig {
 	client_id: SecretVar;
@@ -103,6 +223,7 @@ export interface OAuthConfig {
 	scopes?: string[]; // Optional, can be discovered
 	server_url?: string; // MCP server URL for OAuth discovery (automatically set from connection_string)
 	resource?: string; // Optional OAuth resource indicator; omitted when empty
+	use_client_metadata_document?: boolean; // Register with Bifrost's Client ID Metadata Document; excludes client_id
 }
 
 /** OAuth fields allowed on MCP client update. Any field left unset keeps its stored value. */
@@ -125,6 +246,8 @@ export interface MCPClientConfig {
 	connection_string?: SecretVar;
 	stdio_config?: MCPStdioConfig;
 	tls_config?: MCPTLSConfig;
+	// Present for openapi clients; spec omitted and credentials redacted on GET.
+	openapi_config?: MCPOpenAPIConfig;
 	auth_type?: MCPAuthType;
 	oauth_config_id?: string;
 	oauth_client_id?: SecretVar; // Redacted existing client ID (populated on GET for oauth clients)
@@ -138,6 +261,8 @@ export interface MCPClientConfig {
 	oauth_resource?: string;
 	tools_to_execute?: string[];
 	tools_to_auto_execute?: string[];
+	prompts_to_expose?: string[] | null; // Prompts served through the gateway; null/absent = all, [] = none
+	resources_to_expose?: string[] | null; // Resource URIs and URI templates served; null/absent = all, [] = none
 	headers?: Record<string, SecretVar>;
 	// per_user_header_keys: admin-declared header *names* that each caller
 	// must supply when auth_type === "per_user_headers". Values live per-user
@@ -158,7 +283,12 @@ export interface MCPClientConfig {
 	// admin credential check, so every connection to it must resolve to a
 	// public address. Never cleared once set.
 	require_public_target?: boolean;
+	// Per-user auth types only (not openapi): each caller's tools are
+	// discovered with their own credential, and the server keeps no admin
+	// credential or tool list of its own.
+	per_user_discovery?: boolean;
 	tool_pricing?: Record<string, number>;
+	max_protocol_version?: string; // Per-client cap on the MCP protocol version ("" = use global, "auto" = newest)
 	// Per-client override (0 = use global). API returns NANOSECONDS
 	// (Go time.Duration), while updates send minutes — convert with
 	// toolSyncIntervalToMinutes before showing or resending this value.
@@ -208,9 +338,57 @@ export interface MCPClientCredential {
 	updated_at: string;
 }
 
+export interface MCPToolIcon {
+	src: string;
+	mimeType?: string;
+	sizes?: string[];
+	theme?: string;
+}
+
+// A tool as an MCP client lists it, with what its MCP server declares about it.
+export interface MCPClientTool extends ToolFunction {
+	title?: string;
+	icons?: MCPToolIcon[];
+	output_schema?: Record<string, unknown>;
+	annotations?: {
+		title?: string;
+		readOnlyHint?: boolean;
+		destructiveHint?: boolean;
+		idempotentHint?: boolean;
+		openWorldHint?: boolean;
+	};
+}
+
+// A prompt, resource or resource template an MCP server lists. Prompt names carry the client prefix.
+export interface MCPPrompt {
+	name: string;
+	title?: string;
+	description?: string;
+	arguments?: { name: string; description?: string; required?: boolean }[];
+}
+
+export interface MCPResource {
+	uri: string;
+	name: string;
+	title?: string;
+	description?: string;
+	mimeType?: string;
+}
+
+export interface MCPResourceTemplate {
+	uriTemplate: string;
+	name: string;
+	title?: string;
+	description?: string;
+	mimeType?: string;
+}
+
 export interface MCPClient {
 	config: MCPClientConfig;
-	tools: ToolFunction[];
+	tools: MCPClientTool[];
+	prompts?: MCPPrompt[];
+	resources?: MCPResource[];
+	resource_templates?: MCPResourceTemplate[];
 	state: MCPConnectionState;
 	vk_configs: MCPVKConfigResponse[];
 	// The failure behind a `state` other than healthy, as recorded by the
@@ -226,6 +404,10 @@ export interface MCPClient {
 	// types without one (none, headers) and for servers that have not
 	// completed their one-time authorization yet.
 	credential?: MCPClientCredential;
+	// Set for a server with per_user_discovery on, whose `tools` are the names
+	// seen in its callers' discoveries: how many of those discoveries include
+	// each. Absent until a caller holds one.
+	callers_by_tool?: Record<string, number>;
 }
 
 export interface CreateMCPClientRequest {
@@ -236,6 +418,8 @@ export interface CreateMCPClientRequest {
 	connection_string?: SecretVar;
 	stdio_config?: MCPStdioConfig;
 	tls_config?: MCPTLSConfig;
+	// openapi-only: the document (spec or spec_url), upstream and credentials.
+	openapi_config?: MCPOpenAPIConfig;
 	auth_type?: MCPAuthType;
 	oauth_config?: OAuthConfig;
 	tools_to_execute?: string[];
@@ -258,8 +442,11 @@ export interface CreateMCPClientRequest {
 	// Only meaningful when connection_type === "http". See MCPClientConfig's
 	// field doc for the full contract.
 	needs_session_stickiness?: boolean;
+	max_protocol_version?: string; // omitted or "" = follow the global setting, "auto" = newest supported
 	// Allowlist of x-bf-eh-* headers forwarded to this MCP server. ["*"] = allow all.
 	allowed_extra_headers?: string[];
+	// Per-user auth types only (not openapi). See MCPClientConfig's field doc.
+	per_user_discovery?: boolean;
 }
 
 export interface OAuthFlowResponse {
@@ -302,14 +489,21 @@ export interface UpdateMCPClientRequest {
 	per_user_header_keys?: string[];
 	tools_to_execute?: string[];
 	tools_to_auto_execute?: string[];
+	prompts_to_expose?: string[]; // ["*"] = all, [] = none; omitted = keep
+	resources_to_expose?: string[]; // ["*"] = all, [] = none; omitted = keep
 	is_ping_available?: boolean;
 	// Only meaningful when connection_type === "http". Toggling this on an
 	// existing client takes effect immediately: switching to true dials the
 	// persistent connection now, switching to false closes it. See
 	// MCPClientConfig's field doc for the full contract.
 	needs_session_stickiness?: boolean;
+	// Per-user auth types only (not openapi). Turning it on deletes the admin
+	// credential and tool list the server keeps; turning it off deletes every
+	// caller's discovery, and the server needs an admin credential again.
+	per_user_discovery?: boolean;
 	tool_pricing?: Record<string, number>;
 	tool_sync_interval?: number; // Per-client override in minutes (0 = use global)
+	max_protocol_version?: string; // "" = use global, "auto" = newest
 	tool_execution_timeout?: number; // Per-client tool execution timeout in seconds (0 = use global)
 	max_instructions_length?: number; // Per-client cap on forwarded instructions in bytes (0 = use global)
 	allowed_extra_headers?: string[]; // Allowlist of x-bf-eh-* headers forwarded to this MCP server. ["*"] = allow all.
@@ -318,6 +512,10 @@ export interface UpdateMCPClientRequest {
 	tls_config?: MCPTLSConfig; // TLS configuration for HTTP/SSE connections
 	oauth_config?: OAuthConfigUpdate; // Only supported for existing oauth/per_user_oauth clients (credential rotation)
 	token_exchange?: MCPTokenExchangeConfig; // Only supported for existing token_exchange clients; omitted = preserve
+	// openapi clients only: replaces the document and/or credentials (merged
+	// onto the stored block; a redacted credential keeps the stored secret) and
+	// rebuilds the server. Omitted = preserve.
+	openapi_config?: MCPOpenAPIConfig;
 	vk_configs?: MCPVKConfig[]; // When provided, replaces all VK assignments for this MCP client
 }
 
@@ -382,6 +580,8 @@ export interface MCPLibraryEntry {
 	metadata?: Record<string, unknown>;
 	/** "remote" for synced rows, "custom" for org-published entries. */
 	source?: "remote" | "custom";
+	/** True when an existing MCP client was installed from this entry (computed server-side). */
+	installed?: boolean;
 	created_at: string;
 	updated_at: string;
 }

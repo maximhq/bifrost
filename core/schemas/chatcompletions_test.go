@@ -148,6 +148,75 @@ func TestChatResponsePreservesAzureContentFilterAnnotations(t *testing.T) {
 	})
 }
 
+// OpenRouter returns generated images on message.images / delta.images beside a
+// string content. Decoding dropped the array: image tokens billed, no image returned.
+func TestChatResponsePreservesGeneratedImages(t *testing.T) {
+	const imageURL = "data:image/png;base64,iVBORw0KGgo="
+	const images = `"images":[{"type":"image_url","image_url":{"url":"` + imageURL + `"}}]`
+
+	type wireMessage struct {
+		Content *string `json:"content"`
+		Images  []struct {
+			Type     string `json:"type"`
+			ImageURL struct {
+				URL string `json:"url"`
+			} `json:"image_url"`
+		} `json:"images"`
+	}
+	roundTrip := func(t *testing.T, upstream string) wireMessage {
+		t.Helper()
+		var resp BifrostChatResponse
+		if err := Unmarshal([]byte(upstream), &resp); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		out, err := json.Marshal(&resp)
+		if err != nil {
+			t.Fatalf("encode: %v", err)
+		}
+		var got struct {
+			Choices []struct {
+				Message wireMessage `json:"message"`
+				Delta   wireMessage `json:"delta"`
+			} `json:"choices"`
+		}
+		if err := json.Unmarshal(out, &got); err != nil {
+			t.Fatalf("re-decode %s: %v", out, err)
+		}
+		if len(got.Choices) != 1 {
+			t.Fatalf("expected one choice: %s", out)
+		}
+		if strings.Contains(upstream, `"delta"`) {
+			return got.Choices[0].Delta
+		}
+		return got.Choices[0].Message
+	}
+	assertImage := func(t *testing.T, msg wireMessage) {
+		t.Helper()
+		if len(msg.Images) != 1 || msg.Images[0].Type != "image_url" || msg.Images[0].ImageURL.URL != imageURL {
+			t.Fatalf("generated image was dropped, got images %+v", msg.Images)
+		}
+	}
+
+	t.Run("message with text keeps images and string content", func(t *testing.T) {
+		msg := roundTrip(t, `{"id":"gen-1","object":"chat.completion","created":1,"model":"google/gemini-2.5-flash-image",
+			"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"Here you go",`+images+`}}]}`)
+		assertImage(t, msg)
+		if msg.Content == nil || *msg.Content != "Here you go" {
+			t.Fatalf("content must stay a string, got %v", msg.Content)
+		}
+	})
+
+	t.Run("image-only message keeps images", func(t *testing.T) {
+		assertImage(t, roundTrip(t, `{"id":"gen-1","object":"chat.completion","created":1,"model":"google/gemini-2.5-flash-image",
+			"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":null,`+images+`}}]}`))
+	})
+
+	t.Run("stream delta keeps images", func(t *testing.T) {
+		assertImage(t, roundTrip(t, `{"id":"gen-1","object":"chat.completion.chunk","created":1,"model":"google/gemini-2.5-flash-image",
+			"choices":[{"index":0,"finish_reason":null,"delta":{"role":"assistant","content":"",`+images+`}}]}`))
+	})
+}
+
 // reasoning.mode ("standard" | "pro") is an OpenAI Responses-only knob that chat
 // callers send inside the reasoning object, next to effort.
 func TestChatParametersReasoningMode(t *testing.T) {
@@ -160,5 +229,61 @@ func TestChatParametersReasoningMode(t *testing.T) {
 	}
 	if cp.Reasoning.Effort == nil || *cp.Reasoning.Effort != "high" {
 		t.Fatalf("reasoning.effort should decode alongside mode, got %+v", cp.Reasoning)
+	}
+}
+
+func TestBifrostLLMUsageNormalizeReasoningTokens(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want *int
+	}{
+		{"sgl top-level", `{"completion_tokens":300,"reasoning_tokens":180}`, Ptr(180)},
+		{"openai nested", `{"completion_tokens":300,"completion_tokens_details":{"reasoning_tokens":180}}`, Ptr(180)},
+		{"nested wins over top-level", `{"completion_tokens_details":{"reasoning_tokens":180},"reasoning_tokens":7}`, Ptr(180)},
+		{"zero top-level leaves details nil", `{"completion_tokens":300,"reasoning_tokens":0}`, nil},
+		{"absent", `{"completion_tokens":300}`, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var u BifrostLLMUsage
+			if err := Unmarshal([]byte(tc.in), &u); err != nil {
+				t.Fatal(err)
+			}
+			u.NormalizeReasoningTokens()
+			if u.ReasoningTokens != 0 {
+				t.Fatalf("expected top-level reasoning_tokens cleared, got %d", u.ReasoningTokens)
+			}
+			if tc.want == nil {
+				if u.CompletionTokensDetails != nil {
+					t.Fatalf("expected nil completion_tokens_details, got %+v", u.CompletionTokensDetails)
+				}
+				return
+			}
+			if u.CompletionTokensDetails == nil || u.CompletionTokensDetails.ReasoningTokens != *tc.want {
+				t.Fatalf("expected reasoning_tokens=%d, got %+v", *tc.want, u.CompletionTokensDetails)
+			}
+		})
+	}
+	var nilUsage *BifrostLLMUsage
+	nilUsage.NormalizeReasoningTokens()
+}
+
+func BenchmarkBifrostLLMUsageUnmarshal(b *testing.B) {
+	cases := map[string][]byte{
+		"openai": []byte(`{"prompt_tokens":1200,"completion_tokens":300,"total_tokens":1500,"prompt_tokens_details":{"cached_tokens":1024,"audio_tokens":0},"completion_tokens_details":{"reasoning_tokens":180,"audio_tokens":0,"accepted_prediction_tokens":0,"rejected_prediction_tokens":0}}`),
+		"sgl":    []byte(`{"prompt_tokens":1200,"completion_tokens":300,"total_tokens":1500,"prompt_tokens_details":{"cached_tokens":1024},"reasoning_tokens":180}`),
+	}
+	for name, data := range cases {
+		b.Run(name, func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				var u BifrostLLMUsage
+				if err := Unmarshal(data, &u); err != nil {
+					b.Fatal(err)
+				}
+				u.NormalizeReasoningTokens()
+			}
+		})
 	}
 }

@@ -139,7 +139,7 @@ func (c *terminalHookCounter) PostLLMHook(_ *schemas.BifrostContext, resp *schem
 // both a ready send (cap-1 channel, drained on acquire) and a ready ctx.Done(); Go
 // picks uniformly among ready cases, so n iterations expose that with probability
 // 1 - 2^-n.
-func runAbandonedRequests(t *testing.T, n int, fail bool) *terminalHookCounter {
+func runAbandonedRequests(t *testing.T, n int, fail bool, tracerOverride ...schemas.Tracer) *terminalHookCounter {
 	t.Helper()
 
 	counter := &terminalHookCounter{}
@@ -181,7 +181,13 @@ func runAbandonedRequests(t *testing.T, n int, fail bool) *terminalHookCounter {
 	for i := 0; i < n; i++ {
 		ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
 		// tryRequest stamps the tracer before enqueue; the retry loop refuses a context without one.
-		ctx.SetValue(schemas.BifrostContextKeyTracer, client.getTracer())
+		tracer := client.getTracer()
+		if len(tracerOverride) > 0 && tracerOverride[0] != nil {
+			tracer = tracerOverride[0]
+		}
+		ctx.SetValue(schemas.BifrostContextKeyTracer, tracer)
+		// A real request always carries one, and trace completion needs it.
+		ctx.SetValue(schemas.BifrostContextKeyTraceID, tracer.CreateTrace(""))
 		msg := client.getChannelMessage(schemas.BifrostRequest{
 			RequestType: schemas.ChatCompletionRequest,
 			ChatRequest: &schemas.BifrostChatRequest{
@@ -381,7 +387,7 @@ func runClaimedDeliveriesWithDeadCaller(t *testing.T, n int, fail bool) {
 		case <-time.After(5 * time.Second):
 			t.Fatalf("iteration %d: worker never reached the provider", i)
 		}
-		cancel()                      // the caller's context ends...
+		cancel()                       // the caller's context ends...
 		upstream.release <- struct{}{} // ...and the upstream completes at that same instant
 
 		// The caller has NOT abandoned: this models tryRequest losing the CAS race.
@@ -536,5 +542,24 @@ func TestRequestWorkerBillsAbandonedKeySelectionError(t *testing.T) {
 		if !strings.Contains(msg, "no keys found that support model: gpt-4o-mini") {
 			t.Fatalf("billed error %d is %q, want the key-selection error", i, msg)
 		}
+	}
+}
+
+// A caller that disconnects leaves its worker still writing the response attributes and
+// plugin logs, so the transport defers completion and the worker must complete the trace
+// itself. Without this every abandoned request exports a trace missing its cost and model.
+func TestRequestWorkerCompletesEveryAbandonedTrace(t *testing.T) {
+	const n = 64
+	tracer := newRecordingTracer()
+	runAbandonedRequests(t, n, false, tracer)
+
+	if got := tracer.deferred.Load(); got != n {
+		t.Errorf("completion deferred for %d of %d abandoned requests; the transport would flush an incomplete trace for the rest", got, n)
+	}
+	if got := tracer.completed.Load(); got != n {
+		t.Errorf("worker completed %d of %d abandoned traces; the rest are never exported", got, n)
+	}
+	if got := tracer.cleared.Load(); got != n {
+		t.Errorf("deferral marker cleared %d of %d times; leftovers would strand later traces", got, n)
 	}
 }

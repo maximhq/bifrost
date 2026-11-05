@@ -2,8 +2,6 @@ package sessionauth
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,8 +10,6 @@ import (
 	"github.com/maximhq/bifrost/cli/internal/browserauth"
 	"github.com/maximhq/bifrost/cli/internal/secrets"
 )
-
-const agentDeviceProfileID = "installation"
 
 // SessionStore extends the refresh-only store with deletion for login, logout,
 // and origin invalidation.
@@ -52,12 +48,7 @@ func (a Authenticator) SignIn(ctx context.Context, noBrowser bool) (browserauth.
 	if a.Store == nil || a.Client == nil {
 		return response, errors.New("enterprise SSO sign-in is unavailable")
 	}
-	deviceID, err := EnsureDeviceID(a.Store)
-	if err != nil {
-		return response, err
-	}
-	a.Client.HardwareID = deviceID
-	response, err = a.Client.SignIn(ctx, noBrowser)
+	response, err := a.Client.SignIn(ctx, noBrowser)
 	if err != nil {
 		return response, err
 	}
@@ -130,30 +121,6 @@ func (a Authenticator) Clear() error {
 		}
 	}
 	return nil
-}
-
-// EnsureDeviceID returns a stable opaque installation ID without reading a
-// hardware or operating-system machine identifier.
-func EnsureDeviceID(store Store) (string, error) {
-	if store == nil {
-		return "", errors.New("enterprise SSO session store is unavailable")
-	}
-	value, err := store.Get(agentDeviceProfileID, secrets.AgentDeviceID)
-	if err != nil {
-		return "", err
-	}
-	if value = strings.TrimSpace(value); value != "" {
-		return value, nil
-	}
-	random := make([]byte, 32)
-	if _, err := rand.Read(random); err != nil {
-		return "", fmt.Errorf("create opaque CLI device ID: %w", err)
-	}
-	value = "cli-" + base64.RawURLEncoding.EncodeToString(random)
-	if err := store.Set(agentDeviceProfileID, secrets.AgentDeviceID, value); err != nil {
-		return "", err
-	}
-	return value, nil
 }
 
 // UserLabel returns the most useful non-secret display label for an SSO user.

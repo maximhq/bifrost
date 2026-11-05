@@ -1,10 +1,10 @@
 ---
 title: "Configure Edge"
-description: "Create the Edge interception certificate and review the fleet settings before installing the agent."
+description: "Create the Edge certificate and review the fleet settings before installing the agent."
 icon: "sliders"
 ---
 
-Configure the fleet before installing the first device. In the Bifrost dashboard, go to **Edge Control → Edge Settings**.
+Configure the fleet before installing the first device. Complete [Prepare identity and access](/edge/setup-bifrost) first, then in the Bifrost dashboard go to **Edge Control → Edge Settings**.
 
 <Frame>
   <img src="/media/edge/edge-settings1.png" alt="Bifrost Edge Settings page" />
@@ -12,13 +12,13 @@ Configure the fleet before installing the first device. In the Bifrost dashboard
 
 ## 1. Set up the certificate authority
 
-Edge uses the configured certificate authority (CA) to inspect TLS traffic for configured AI domains. The CA certificate must be trusted by each device. Its private key remains on the Bifrost server for current agents, which request short-lived leaf certificates from the server.
+Edge needs an organization certificate authority (CA) that each device trusts so it can route AI traffic from supported applications through Bifrost.
 
 <Tabs>
   <Tab title="Generate a CA">
     1. In **Certificate Authority**, select **Generate CA**.
     2. Generate the certificate.
-    3. Store the displayed private key securely. It is shown in the generation result and is not available from the active-certificate view afterward.
+    3. Store the displayed private key securely. It is shown only in the generation result.
   </Tab>
   <Tab title="Upload a CA">
     1. In **Certificate Authority**, select **Upload CA**.
@@ -27,10 +27,10 @@ Edge uses the configured certificate authority (CA) to inspect TLS traffic for c
   </Tab>
 </Tabs>
 
-After either path, confirm that the CA shows **Active** and record its SHA-256 fingerprint. The fingerprint is the value administrators use to confirm that a device or MDM profile contains the active certificate.
+Confirm that the CA shows **Active** and record its SHA-256 fingerprint. Use the fingerprint to confirm that a device or MDM profile contains the active certificate.
 
 <Warning>
-  Replacing the CA changes the certificate that devices must trust. A macOS MDM deployment must receive an updated trusted-root profile for the replacement certificate. After the new CA is trusted, restart every affected computer before testing or resuming governed traffic. The restart is required for the CA certificate change to take effect.
+  Replacing the CA changes the certificate every device must trust. macOS MDM deployments need an updated trusted-root profile, and every affected computer must be restarted after it trusts the replacement.
 </Warning>
 
 ## 2. Review first-rollout settings
@@ -39,7 +39,6 @@ After either path, confirm that the CA shows **Active** and record its SHA-256 f
 | --- | --- |
 | **Agent sync poll interval** | How frequently agents check for configuration changes. The default is 60 seconds and the minimum is 5 seconds. |
 | **Allow pending apps and MCP servers** | When enabled, newly discovered pending items continue to work. When disabled, they are blocked until approved. |
-| **Allow virtual key sign-in** | Whether a user can enter a Bifrost virtual key when no IdP sign-in is available. |
 | **App routing modes** | Whether supported apps use managed gateway routing or, where offered, subscription passthrough. |
 | **Edge traffic interception** | Confirm that the global state is **Interception Active** before testing. Scoped user or team decisions can still override the global state. |
 
@@ -49,7 +48,7 @@ Save any changes before continuing.
 
 If you are deploying to macOS with MDM, select **Download .crt** from the active certificate view. You will use that exact certificate in the device-scoped trusted-root profile.
 
-Direct installations do not require you to download the CA separately. The agent receives it from Bifrost after sign-in and establishes trust as described in the direct-installation guide.
+Direct installations do not require a separate download. The agent receives the certificate from Bifrost after sign-in.
 
 ## Choose the installation path
 

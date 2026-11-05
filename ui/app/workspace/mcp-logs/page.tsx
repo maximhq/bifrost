@@ -12,7 +12,8 @@ import {
 	useGetMCPLogsStatsQuery,
 	useGetUserAgentMappingsQuery,
 } from "@/lib/store";
-import { useLazyGetMCPLogsQuery } from "@/lib/store/apis/mcpLogsApi";
+import { useTranslation } from "react-i18next";
+import { useLazyGetMCPLogByIdQuery, useLazyGetMCPLogsQuery } from "@/lib/store/apis/mcpLogsApi";
 import type { MCPToolLogEntry, MCPToolLogFilters, Pagination } from "@/lib/types/logs";
 import { dateUtils } from "@/lib/types/logs";
 import { COMPACT_NUMBER_FORMAT } from "@/lib/utils/numbers";
@@ -31,6 +32,7 @@ import { MCPLogDetailSheet } from "./views/mcpLogDetailsSheet";
 import { MCPLogsDataTable } from "./views/mcpLogsTable";
 
 export default function MCPLogsPage() {
+	const { t } = useTranslation("observability");
 	const [error, setError] = useState<string | null>(null);
 	const [showEmptyState, setShowEmptyState] = useState(false);
 	const hasCheckedEmptyState = useRef(false);
@@ -40,6 +42,9 @@ export default function MCPLogsPage() {
 	const [deleteLogs] = useDeleteMCPLogsMutation();
 	// Lazy query kept only for handleLogNavigate (fetches adjacent pages on demand)
 	const [triggerGetLogs] = useLazyGetMCPLogsQuery();
+	const [triggerGetLogById] = useLazyGetMCPLogByIdQuery();
+	const [fetchedLog, setFetchedLog] = useState<MCPToolLogEntry | null>(null);
+	const activeLogFetchId = useRef<string | null>(null);
 
 	// Track if user has manually modified the time range
 	const userModifiedTimeRange = useRef<boolean>(false);
@@ -64,6 +69,10 @@ export default function MCPLogsPage() {
 			server_labels: parseAsArrayOf(parseAsString).withDefault([]),
 			status: parseAsArrayOf(parseAsString).withDefault([]),
 			virtual_key_ids: parseAsArrayOf(parseAsString).withDefault([]),
+			agent_names: parseAsArrayOf(parseAsString).withDefault([]),
+			session_id: parseAsSafeString.withDefault(""),
+			agent_correlation_id: parseAsSafeString.withDefault(""),
+			round_trip_id: parseAsSafeString.withDefault(""),
 			content_search: parseAsSafeString.withDefault(""),
 			start_time: parseAsInteger.withDefault(defaultTimeRange.startTime),
 			end_time: parseAsInteger.withDefault(defaultTimeRange.endTime),
@@ -102,6 +111,10 @@ export default function MCPLogsPage() {
 			server_labels: urlState.server_labels,
 			status: urlState.status,
 			virtual_key_ids: urlState.virtual_key_ids,
+			agent_names: urlState.agent_names,
+			session_id: urlState.session_id,
+			agent_correlation_id: urlState.agent_correlation_id,
+			round_trip_id: urlState.round_trip_id,
 			content_search: urlState.content_search,
 			...(urlState.period
 				? { period: urlState.period }
@@ -122,6 +135,10 @@ export default function MCPLogsPage() {
 			urlState.server_labels,
 			urlState.status,
 			urlState.virtual_key_ids,
+			urlState.agent_names,
+			urlState.session_id,
+			urlState.agent_correlation_id,
+			urlState.round_trip_id,
 			urlState.content_search,
 			urlState.period,
 			urlState.start_time,
@@ -220,7 +237,34 @@ export default function MCPLogsPage() {
 	const logs = logsData?.logs ?? [];
 	const totalItems = logsData?.pagination?.total_count ?? 0;
 
-	const selectedLog = useMemo(() => (selectedLogId ? (logs.find((l) => l.id === selectedLogId) ?? null) : null), [selectedLogId, logs]);
+	const selectedLogFromPage = useMemo(
+		() => (selectedLogId ? (logs.find((l) => l.id === selectedLogId) ?? null) : null),
+		[selectedLogId, logs],
+	);
+
+	// A shared link can name a log outside the current page (older than the
+	// default 1h window, or pushed off the page by newer logs). Fetch it by id
+	// so the sheet still opens.
+	useEffect(() => {
+		if (!selectedLogId || selectedLogFromPage) {
+			setFetchedLog(null);
+			activeLogFetchId.current = null;
+			return;
+		}
+		const fetchId = selectedLogId;
+		activeLogFetchId.current = fetchId;
+		triggerGetLogById(selectedLogId).then((result) => {
+			if (activeLogFetchId.current === fetchId) {
+				if (result.data) {
+					setFetchedLog(result.data);
+				} else if (result.error) {
+					setError(getErrorMessage(result.error));
+				}
+			}
+		});
+	}, [selectedLogId, selectedLogFromPage, triggerGetLogById]);
+
+	const selectedLog = selectedLogFromPage ?? fetchedLog;
 
 	// Set showEmptyState on first response; clear it as soon as logs appear.
 	useEffect(() => {
@@ -253,6 +297,10 @@ export default function MCPLogsPage() {
 				server_labels: newFilters.server_labels || [],
 				status: newFilters.status || [],
 				virtual_key_ids: newFilters.virtual_key_ids || [],
+				agent_names: newFilters.agent_names || [],
+				session_id: newFilters.session_id || "",
+				agent_correlation_id: newFilters.agent_correlation_id || "",
+				round_trip_id: newFilters.round_trip_id || "",
 				content_search: newFilters.content_search || "",
 				start_time: newFilters.start_time ? dateUtils.toUnixTimestamp(new Date(newFilters.start_time)) : undefined,
 				end_time: newFilters.end_time ? dateUtils.toUnixTimestamp(new Date(newFilters.end_time)) : undefined,
@@ -327,26 +375,26 @@ export default function MCPLogsPage() {
 	const statCards = useMemo(
 		() => [
 			{
-				title: "Total Records",
+				title: t("mcpLogs.stats.totalExecutions"),
 				value: <NumberFlow value={statsData?.total_executions ?? 0} format={COMPACT_NUMBER_FORMAT} />,
 				icon: <Hash className="size-4" />,
 			},
 			{
-				title: "Success Rate",
+				title: t("mcpLogs.stats.successRate"),
 				value: (
 					<NumberFlow value={statsData?.success_rate ?? 0} format={{ minimumFractionDigits: 2, maximumFractionDigits: 2 }} suffix="%" />
 				),
 				icon: <CheckCircle className="size-4" />,
 			},
 			{
-				title: "Avg Latency",
+				title: t("mcpLogs.stats.avgLatency"),
 				value: (
 					<NumberFlow value={statsData?.average_latency ?? 0} format={{ minimumFractionDigits: 2, maximumFractionDigits: 2 }} suffix="ms" />
 				),
 				icon: <Clock className="size-4" />,
 			},
 			{
-				title: "Total Cost",
+				title: t("mcpLogs.stats.totalCost"),
 				value: (
 					<NumberFlow
 						value={statsData?.total_cost ?? 0}
@@ -360,7 +408,7 @@ export default function MCPLogsPage() {
 				icon: <DollarSign className="size-4" />,
 			},
 		],
-		[statsData],
+		[statsData, t],
 	);
 
 	const { data: userAgentMappingsData } = useGetUserAgentMappingsQuery();
@@ -375,8 +423,8 @@ export default function MCPLogsPage() {
 	}, [userAgentMappingsData?.mappings]);
 
 	const columns = useMemo(
-		() => createMCPColumns(handleDelete, hasDeleteAccess, customAppIcons),
-		[customAppIcons, handleDelete, hasDeleteAccess],
+		() => createMCPColumns(handleDelete, hasDeleteAccess, customAppIcons, t),
+		[customAppIcons, handleDelete, hasDeleteAccess, t],
 	);
 
 	const columnIds = useMemo(
@@ -403,21 +451,21 @@ export default function MCPLogsPage() {
 
 	const MCP_COLUMN_LABELS: Record<string, string> = useMemo(
 		() => ({
-			timestamp: "Time",
-			tool_name: "Tool Name",
-			server_label: "Server",
-			source: "Source",
-			user: "User",
-			team: "Team",
-			customer: "Customer",
-			business_unit: "Business Unit",
-			project: "Project",
-			device: "Device",
-			latency: "Latency",
-			cost: "Cost",
-			virtual_key: "Virtual Key",
+			timestamp: t("labels.time"),
+			tool_name: t("labels.toolName"),
+			server_label: t("labels.server"),
+			source: t("labels.source"),
+			user: t("labels.user"),
+			team: t("labels.team"),
+			customer: t("labels.customer"),
+			business_unit: t("labels.businessUnit"),
+			project: t("labels.project"),
+			device: t("labels.device"),
+			latency: t("labels.latency"),
+			cost: t("labels.cost"),
+			virtual_key: t("labels.virtualKey"),
 		}),
-		[],
+		[t],
 	);
 
 	const selectedLogIndex = useMemo(() => (selectedLogId ? logs.findIndex((l) => l.id === selectedLogId) : -1), [selectedLogId, logs]);

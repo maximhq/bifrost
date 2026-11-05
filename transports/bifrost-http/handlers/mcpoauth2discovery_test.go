@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/maximhq/bifrost/core/schemas"
 	configtables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -66,6 +67,37 @@ func TestDiscovery_AuthorizationServerMetadata(t *testing.T) {
 	assert.Equal(t, []any{"S256"}, doc["code_challenge_methods_supported"])
 	assert.Equal(t, []any{"none"}, doc["token_endpoint_auth_methods_supported"])
 	assert.Equal(t, true, doc["authorization_response_iss_parameter_supported"])
+	// MCP 2025-11-25+: clients may use a Client ID Metadata Document URL as client_id.
+	assert.Equal(t, true, doc["client_id_metadata_document_supported"])
+}
+
+// TestDiscovery_IssuerWithTrailingSlash pins that an issuer_url ending in "/" is
+// served without it, so no URL built from the issuer carries "//".
+func TestDiscovery_IssuerWithTrailingSlash(t *testing.T) {
+	cfg := newTestOAuth2Config(&mockOAuth2Store{}, configtables.MCPServerAuthModeOAuth, false)
+	cfg.ClientConfig.OAuth2ServerConfig.IssuerURL = schemas.NewSecretVar(testIssuer + "/")
+	h := NewOAuth2DiscoveryHandler(cfg)
+
+	ctx := &fasthttp.RequestCtx{}
+	h.handleASMetadata(ctx)
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode())
+	var doc map[string]any
+	require.NoError(t, json.Unmarshal(ctx.Response.Body(), &doc))
+	assert.Equal(t, testIssuer, doc["issuer"])
+	assert.Equal(t, testIssuer+"/oauth2/authorize", doc["authorization_endpoint"])
+	assert.Equal(t, testIssuer+"/oauth2/token", doc["token_endpoint"])
+	assert.Equal(t, testIssuer+"/oauth2/register", doc["registration_endpoint"])
+	assert.Equal(t, testIssuer+"/.well-known/jwks.json", doc["jwks_uri"])
+
+	prm := &fasthttp.RequestCtx{}
+	h.handlePRM(prm)
+	require.Equal(t, fasthttp.StatusOK, prm.Response.StatusCode())
+	var prmDoc map[string]any
+	require.NoError(t, json.Unmarshal(prm.Response.Body(), &prmDoc))
+	assert.Equal(t, testMCPResource, prmDoc["resource"])
+	assert.Equal(t, []any{testIssuer}, prmDoc["authorization_servers"])
+
+	assert.Equal(t, `Bearer resource_metadata="`+testIssuer+`/.well-known/oauth-protected-resource/mcp"`, wwwAuthenticateValue(&fasthttp.RequestCtx{}, cfg))
 }
 
 func TestDiscovery_JWKS(t *testing.T) {
@@ -101,5 +133,110 @@ func TestDiscovery_ResponsesAreNotCacheable(t *testing.T) {
 		fn(ctx)
 		require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode())
 		assert.Equal(t, "no-store", string(ctx.Response.Header.Peek("Cache-Control")), "document %d", i)
+	}
+}
+
+// TestDiscovery_ASMetadataExtensions checks an extension can add to the
+// authorization server metadata, and that nothing changes without one.
+func TestDiscovery_ASMetadataExtensions(t *testing.T) {
+	store := &mockOAuth2Store{}
+	h := NewOAuth2DiscoveryHandler(newTestOAuth2Config(store, configtables.MCPServerAuthModeOAuth, false))
+	h.SetExtensions(fakeGrantExtension{grantType: "urn:test:grant"})
+	ctx := &fasthttp.RequestCtx{}
+	h.handleASMetadata(ctx)
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode())
+	var doc map[string]any
+	require.NoError(t, json.Unmarshal(ctx.Response.Body(), &doc))
+	assert.Equal(t, []any{"authorization_code", "refresh_token", "urn:test:grant"}, doc["grant_types_supported"])
+}
+
+// TestDiscovery_ExtensionOnlyServer checks that with MCP OAuth off, an active
+// extension keeps the authorization server metadata and keys up, advertising
+// only its own grants and no MCP login endpoints, while /mcp's protected
+// resource metadata stays off; with the extension off, or no pinned issuer,
+// nothing is served.
+func TestDiscovery_ExtensionOnlyServer(t *testing.T) {
+	key, _ := newTestSigningKey(t)
+	store := &mockOAuth2Store{signingKey: key}
+	cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false)
+	h := NewOAuth2DiscoveryHandler(cfg)
+	h.SetExtensions(fakeGrantExtension{grantType: "urn:test:grant"})
+
+	as := &fasthttp.RequestCtx{}
+	h.handleASMetadata(as)
+	require.Equal(t, fasthttp.StatusOK, as.Response.StatusCode())
+	var doc map[string]any
+	require.NoError(t, json.Unmarshal(as.Response.Body(), &doc))
+	assert.Equal(t, []any{"urn:test:grant"}, doc["grant_types_supported"])
+	assert.Equal(t, testIssuer+"/oauth2/token", doc["token_endpoint"])
+	assert.NotContains(t, doc, "authorization_endpoint")
+	assert.NotContains(t, doc, "registration_endpoint")
+	jwks := &fasthttp.RequestCtx{}
+	h.handleJWKS(jwks)
+	assert.Equal(t, fasthttp.StatusOK, jwks.Response.StatusCode())
+	prm := &fasthttp.RequestCtx{}
+	h.handlePRM(prm)
+	assert.Equal(t, fasthttp.StatusNotFound, prm.Response.StatusCode(), "/mcp does not take Bifrost tokens with MCP OAuth off")
+
+	issuer := cfg.ClientConfig.OAuth2ServerConfig.IssuerURL
+	cfg.ClientConfig.OAuth2ServerConfig.IssuerURL = nil
+	unpinned := &fasthttp.RequestCtx{}
+	h.handleASMetadata(unpinned)
+	assert.Equal(t, fasthttp.StatusNotFound, unpinned.Response.StatusCode(), "never served on a Host-derived issuer")
+	cfg.ClientConfig.OAuth2ServerConfig.IssuerURL = issuer
+
+	h.SetExtensions(fakeGrantExtension{grantType: "urn:test:grant", off: true})
+	for name, serve := range map[string]func(*fasthttp.RequestCtx){"metadata": h.handleASMetadata, "jwks": h.handleJWKS} {
+		ctx := &fasthttp.RequestCtx{}
+		serve(ctx)
+		assert.Equal(t, fasthttp.StatusNotFound, ctx.Response.StatusCode(), name)
+	}
+}
+
+// TestDiscovery_ResourceMetadataUnderIssuerPath pins RFC 9728 §3.1 and RFC 8414 §3.1
+// for an issuer that carries a path (Bifrost behind server.base_path): the
+// well-known documents live at the origin root with the issuer path inserted after
+// the well-known segment, so WWW-Authenticate must point there, and both handlers
+// must answer at those paths. The resource itself stays under the issuer.
+func TestDiscovery_ResourceMetadataUnderIssuerPath(t *testing.T) {
+	const issuer = "https://bifrost.test/bifrost"
+	cfg := newTestOAuth2Config(&mockOAuth2Store{}, configtables.MCPServerAuthModeOAuth, false)
+	cfg.ClientConfig.OAuth2ServerConfig.IssuerURL = schemas.NewSecretVar(issuer)
+	h := NewOAuth2DiscoveryHandler(cfg)
+
+	assert.Equal(t, `Bearer resource_metadata="https://bifrost.test/.well-known/oauth-protected-resource/bifrost/mcp"`, wwwAuthenticateValue(&fasthttp.RequestCtx{}, cfg))
+
+	prm := &fasthttp.RequestCtx{}
+	prm.Request.SetRequestURI("/.well-known/oauth-protected-resource/bifrost/mcp")
+	h.handlePRM(prm)
+	require.Equal(t, fasthttp.StatusOK, prm.Response.StatusCode())
+	var prmDoc map[string]any
+	require.NoError(t, json.Unmarshal(prm.Response.Body(), &prmDoc))
+	assert.Equal(t, issuer+"/mcp", prmDoc["resource"])
+	assert.Equal(t, []any{issuer}, prmDoc["authorization_servers"])
+
+	as := &fasthttp.RequestCtx{}
+	as.Request.SetRequestURI("/.well-known/oauth-authorization-server/bifrost")
+	h.handleASMetadata(as)
+	require.Equal(t, fasthttp.StatusOK, as.Response.StatusCode())
+	var asDoc map[string]any
+	require.NoError(t, json.Unmarshal(as.Response.Body(), &asDoc))
+	assert.Equal(t, issuer, asDoc["issuer"])
+	assert.Equal(t, issuer+"/.well-known/jwks.json", asDoc["jwks_uri"])
+}
+
+// TestOAuth2ResourceMetadataURL pins the path-insertion rule on its own.
+func TestOAuth2ResourceMetadataURL(t *testing.T) {
+	for issuer, want := range map[string]string{
+		"https://bifrost.test":         "https://bifrost.test/.well-known/oauth-protected-resource/mcp",
+		"https://bifrost.test/bifrost": "https://bifrost.test/.well-known/oauth-protected-resource/bifrost/mcp",
+		"https://bifrost.test/a/b":     "https://bifrost.test/.well-known/oauth-protected-resource/a/b/mcp",
+		"http://localhost:8080":        "http://localhost:8080/.well-known/oauth-protected-resource/mcp",
+		"http://localhost:8080/gw":     "http://localhost:8080/.well-known/oauth-protected-resource/gw/mcp",
+		// Escaped delimiters in the issuer path stay escaped; a decoded "?" would
+		// turn the rest of the advertised URL into a query string.
+		"https://bifrost.test/tenant%3Fprod": "https://bifrost.test/.well-known/oauth-protected-resource/tenant%3Fprod/mcp",
+	} {
+		assert.Equal(t, want, oauth2ResourceMetadataURL(issuer), issuer)
 	}
 }

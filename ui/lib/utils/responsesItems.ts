@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n";
 import type { ResponsesMessage } from "@/lib/types/logs";
 import { applyRedactionMapping } from "@/lib/utils/redaction";
 
@@ -42,7 +43,9 @@ function summarizeQueries(value: unknown, mapping?: Record<string, string>): str
 	const queries = value.filter((query): query is string => typeof query === "string" && query.trim().length > 0);
 	if (queries.length === 0) return undefined;
 	const first = truncateSummary(queries[0], mapping);
-	return queries.length > 1 ? `${first} +${queries.length - 1} more` : first;
+	return queries.length > 1
+		? i18n.t("responsesItems.queriesMore", { ns: "common", first, count: queries.length - 1, defaultValue: "{{first}} +{{count}} more" })
+		: first;
 }
 
 // firstDetail returns the first usable string among candidate fields, truncated for display.
@@ -75,11 +78,24 @@ export function summarizeResponsesToolCall(msg: ResponsesMessage, mapping?: Reco
 		const detail =
 			summarizeQueries(action.queries, mapping) ??
 			firstDetail(
-				[action.query, action.url, action.pattern, Array.isArray(action.command) ? action.command.join(" ") : undefined, action.name],
+				[
+					action.query,
+					action.url,
+					action.pattern,
+					Array.isArray(action.command) ? action.command.join(" ") : undefined,
+					Array.isArray(action.commands) ? action.commands.join(" && ") : undefined,
+					action.name,
+				],
 				mapping,
 			);
 		const actionType = typeof action.type === "string" ? action.type : undefined;
 		return [actionType, detail].filter(Boolean).join(" · ") || undefined;
+	}
+	// apply_patch_call carries an `operation` instead of an `action`.
+	const operation = item.operation as Record<string, unknown> | undefined;
+	if (operation && typeof operation === "object" && !Array.isArray(operation)) {
+		const operationType = typeof operation.type === "string" ? operation.type : undefined;
+		return [operationType, firstDetail([operation.path], mapping)].filter(Boolean).join(" · ") || undefined;
 	}
 	return summarizeQueries(item.queries, mapping) ?? firstDetail([item.server_label, item.container_id], mapping);
 }

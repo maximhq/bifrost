@@ -66,7 +66,7 @@ func RunToolCallsTest(t *testing.T, client *bifrost.Bifrost, ctx context.Context
 				Model:    testConfig.ChatModel,
 				Input:    chatMessages,
 				Params: &schemas.ChatParameters{
-					MaxCompletionTokens: bifrost.Ptr(150),
+					MaxCompletionTokens: bifrost.Ptr(1024),
 					Tools:               []schemas.ChatTool{*chatTool},
 				},
 				Fallbacks: testConfig.Fallbacks,

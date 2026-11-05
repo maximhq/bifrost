@@ -32,34 +32,35 @@ import { ArrowLeft, ArrowRight, ExternalLink, LoaderCircle, RotateCcw, Save, Set
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useForm, useWatch } from "react-hook-form";
 import { toast } from "sonner";
+import { useTranslation, Trans } from "react-i18next";
 import {
 	AnalyzerFormValues,
 	analyzerConfigSchema,
 	countCanonicalSemanticPhrases,
 	DEFAULT_FORM_VALUES,
-	getTypesafeState,
-	isJevGuidanceDefault,
-	isJevGuidanceEmpty,
-	jevCriteriaFromDefaults,
+	getDecisionProviderState,
+	isDecisionGuidanceDefault,
+	isDecisionGuidanceEmpty,
+	decisionCriteriaFromDefaults,
 	isRouterConfigured,
-	jevGuidanceFormValues,
+	decisionGuidanceFormValues,
 	toAnalyzerPayload,
 	toFormValues,
 	shouldSeedLLMPrompt,
 } from "./formSchema";
 import { ClassifierStatusBadge } from "./views/classifierStatusBadge";
 import EmbeddingConfigSheet from "./views/embeddingConfigSheet";
-import JevSettingsSheet from "./views/jevSettingsSheet";
+import DecisionSettingsSheet from "./views/decisionSettingsSheet";
 import { SectionHeading } from "./views/formPrimitives";
 import {
 	ClassifierChoice,
-	JevFields,
-	JevGuidanceSection,
+	DecisionFields,
+	DecisionGuidanceSection,
 	LLMPromptSection,
 	PhraseTierGrid,
 	SessionRoutingCard,
 	StepRail,
-	TypesafeAlert,
+	DecisionProviderAlert,
 } from "./views/sections";
 
 // Embedding-capable providers gate this page, matching the local cache screen's
@@ -97,6 +98,9 @@ const supportsChat = (provider: ModelProvider): boolean => {
 };
 
 export default function ComplexityRouterPage() {
+	const { t } = useTranslation("models");
+	const { t: tc } = useTranslation("common");
+	const { t: tcpx } = useTranslation("models", { keyPrefix: "routing.complexityUi" });
 	const canUpdate = useRbac(RbacResource.RoutingRules, RbacOperation.Update);
 	const { data, isLoading, isFetching, error, refetch } = useGetComplexityAnalyzerConfigQuery(undefined, {
 		refetchOnMountOrArgChange: true,
@@ -108,7 +112,7 @@ export default function ComplexityRouterPage() {
 	const [submitError, setSubmitError] = useState<string | null>(null);
 	const [restoreDialogOpen, setRestoreDialogOpen] = useState(false);
 	const [embeddingSheetOpen, setEmbeddingSheetOpen] = useState(false);
-	const [jevSheetOpen, setJevSheetOpen] = useState(false);
+	const [decisionSheetOpen, setDecisionSheetOpen] = useState(false);
 	// The open step. Null follows the saved config: a router with nothing set
 	// up opens on the classifier choice, an existing one straight on its setup.
 	const [openStep, setOpenStep] = useState<"classifier" | "setup" | null>(null);
@@ -131,10 +135,6 @@ export default function ComplexityRouterPage() {
 		() => (providersData || []).filter((provider) => supportsChat(provider) && hasEnabledKey(provider, allKeys || [])),
 		[providersData, allKeys],
 	);
-	// Jev authenticates through the Typesafe provider, so its state is what Jev
-	// can be expected to do.
-	const typesafe = useMemo(() => getTypesafeState(providersData, allKeys), [providersData, allKeys]);
-	const typesafeReady = typesafe === "configured";
 
 	const { data: coreConfig } = useGetCoreConfigQuery({ fromDB: true });
 	const isVectorStoreConnected = coreConfig?.is_cache_connected ?? false;
@@ -162,6 +162,7 @@ export default function ComplexityRouterPage() {
 	const liveClassifier = watch("classifier");
 	const liveSemantic = watch("semantic");
 	const liveLLM = watch("llm");
+	const liveDecisionProvider = watch("decision.provider");
 	const liveSession = watch("session");
 	const liveKeywords = watch("keywords");
 
@@ -178,16 +179,33 @@ export default function ComplexityRouterPage() {
 		() => (allKeys || []).filter((key) => key.provider === liveLLM?.provider && key.enabled !== false).map((key) => key.key_id),
 		[allKeys, liveLLM?.provider],
 	);
+	const enabledKeyIdsForDecisionProvider = useMemo(
+		() => (allKeys || []).filter((key) => key.provider === liveDecisionProvider && key.enabled !== false).map((key) => key.key_id),
+		[allKeys, liveDecisionProvider],
+	);
+	// The decision model authenticates through its provider, so that provider's
+	// state is what the decision model can be expected to do.
+	const decisionProviderState = useMemo(
+		() => getDecisionProviderState(providersData, allKeys, liveDecisionProvider),
+		[providersData, allKeys, liveDecisionProvider],
+	);
+	const decisionProviderReady = decisionProviderState === "configured";
 
 	const isClassifierConfigured = Boolean(liveSemantic?.provider && liveSemantic?.embedding_model);
 	const isLLMFallbackEnabled = liveClassifier === "semantic" && liveSemantic?.fallback === "llm";
-	const isJevFallbackEnabled = liveClassifier === "semantic" && liveSemantic?.fallback === "jev";
-	const isJevInUse = liveClassifier === "jev" || isJevFallbackEnabled;
+	const isDecisionFallbackEnabled = liveClassifier === "semantic" && liveSemantic?.fallback === "decision";
+	const isDecisionInUse = liveClassifier === "decision" || isDecisionFallbackEnabled;
 	// The embedding and llm fallback fields both live behind the same sheet, so a
 	// pending edit to either would otherwise be invisible from the page.
 	// react-hook-form keeps reverted fields in dirtyFields with a false value, so
 	// the flags are what matter, not the key count.
-	const hasUnsavedJevSettingsChanges = Boolean(dirtyFields.jev?.previous_message_count || dirtyFields.jev?.timeout);
+	const hasUnsavedDecisionSettingsChanges = Boolean(
+		dirtyFields.decision?.provider ||
+		dirtyFields.decision?.model ||
+		dirtyFields.decision?.previous_message_count ||
+		dirtyFields.decision?.timeout ||
+		dirtyFields.decision?.min_confidence,
+	);
 	const hasUnsavedEmbeddingConfigChanges =
 		Object.values(dirtyFields.semantic ?? {}).some(Boolean) || Object.values(dirtyFields.llm ?? {}).some(Boolean);
 	const hasClassifier = isRouterConfigured(data) || picked;
@@ -204,8 +222,8 @@ export default function ComplexityRouterPage() {
 	// that had already recovered. It polls slowly because it is waiting on a
 	// human, where warming is polled fast to keep the progress bar moving.
 	const [statusPollInterval, setStatusPollInterval] = useState(0);
-	// Also fetched as soon as the llm fallback or Jev is enabled in the form,
-	// before any save: the endpoint carries llm_default_prompt and jev_defaults,
+	// Also fetched as soon as the llm fallback or the decision model is enabled in the form,
+	// before any save: the endpoint carries llm_default_prompt and decision_defaults,
 	// which seed those editors and power "Reset to default" — gating on the
 	// saved config alone left a newly enabled classifier with no defaults until
 	// after the first save.
@@ -216,7 +234,7 @@ export default function ComplexityRouterPage() {
 		isError: statusIsError,
 		refetch: refetchStatus,
 	} = useGetComplexitySemanticStatusQuery(undefined, {
-		skip: !data?.semantic && !data?.llm && !isLLMFallbackEnabled && !isJevInUse,
+		skip: !data?.semantic && !data?.llm && !isLLMFallbackEnabled && !isDecisionInUse,
 		pollingInterval: statusPollInterval,
 	});
 	useEffect(() => {
@@ -244,14 +262,14 @@ export default function ComplexityRouterPage() {
 	// Shipped guidance initializes untouched drafts; an empty edited prompt is
 	// valid and means "use default guidance" when saved.
 	const defaultLLMPrompt = semanticStatus?.llm_default_prompt ?? "";
-	const jevDefaults = semanticStatus?.jev_defaults;
-	const liveJevCriteria = useWatch({ control, name: "jev.criteria" });
-	// Jev's Restore defaults only refills the form: it saves like any other edit
+	const decisionDefaults = semanticStatus?.decision_defaults;
+	const liveDecisionCriteria = useWatch({ control, name: "decision.criteria" });
+	// The decision model's Restore defaults only refills the form: it saves like any other edit
 	// and Discard undoes it, so unlike the semantic restore it needs no dialog.
-	const isJevGuidanceAtDefaults = !jevDefaults || isJevGuidanceDefault(liveJevCriteria, jevDefaults);
-	const restoreJevDefaults = () => {
-		if (!jevDefaults) return;
-		setValue("jev.criteria", jevCriteriaFromDefaults(jevDefaults), { shouldDirty: true, shouldValidate: true });
+	const isDecisionGuidanceAtDefaults = !decisionDefaults || isDecisionGuidanceDefault(liveDecisionCriteria, decisionDefaults);
+	const restoreDecisionDefaults = () => {
+		if (!decisionDefaults) return;
+		setValue("decision.criteria", decisionCriteriaFromDefaults(decisionDefaults), { shouldDirty: true, shouldValidate: true });
 	};
 	const livePrompt = liveLLM?.prompt ?? "";
 
@@ -321,18 +339,18 @@ export default function ComplexityRouterPage() {
 
 	useEffect(() => {
 		if (!data || isDirty || promptEdited.current) return;
-		reset(toFormValues(data, jevDefaults));
+		reset(toFormValues(data, decisionDefaults));
 		setSubmitError(null);
-	}, [data, isDirty, reset, jevDefaults]);
+	}, [data, isDirty, reset, decisionDefaults]);
 
 	// Status usually lands after the config, so guidance the form hydrated
 	// without defaults is filled in once they arrive. Only still-empty guidance
 	// is touched, so an operator's edits are never overwritten.
 	useEffect(() => {
-		if (!data || !jevDefaults || !isJevGuidanceEmpty(getValues("jev"))) return;
-		const seeded = jevGuidanceFormValues(data.jev, jevDefaults);
-		setValue("jev.criteria", seeded.criteria, { shouldDirty: false });
-	}, [data, jevDefaults, getValues, setValue]);
+		if (!data || !decisionDefaults || !isDecisionGuidanceEmpty(getValues("decision"))) return;
+		const seeded = decisionGuidanceFormValues(data.decision, decisionDefaults);
+		setValue("decision.criteria", seeded.criteria, { shouldDirty: false });
+	}, [data, decisionDefaults, getValues, setValue]);
 
 	// Run after saved-data hydration and read the current form value, not the
 	// previous render's value, when config and status arrive together.
@@ -343,7 +361,7 @@ export default function ComplexityRouterPage() {
 
 	const handleDiscard = () => {
 		promptEdited.current = false;
-		if (data) reset(toFormValues(data, jevDefaults));
+		if (data) reset(toFormValues(data, decisionDefaults));
 		setSubmitError(null);
 	};
 
@@ -354,11 +372,11 @@ export default function ComplexityRouterPage() {
 			.unwrap()
 			.then((defaults) => {
 				promptEdited.current = false;
-				reset(toFormValues(defaults, jevDefaults));
-				toast.success("Reset to defaults", { position: "top-right" });
+				reset(toFormValues(defaults, decisionDefaults));
+				toast.success(t("routing.resetToDefaults"), { position: "top-right" });
 			})
 			.catch((err) => {
-				setSubmitError(`Couldn’t restore the default phrases. ${getErrorMessage(err)}`);
+				setSubmitError(tcpx("restoreFailed", { error: getErrorMessage(err) }));
 			});
 	};
 
@@ -367,11 +385,11 @@ export default function ComplexityRouterPage() {
 		retrySemanticWarmup()
 			.unwrap()
 			.then(() => {
-				toast.success("Semantic warmup restarted", { position: "top-right" });
+				toast.success(tcpx("warmupRestarted"), { position: "top-right" });
 				void refetchStatus();
 			})
 			.catch((err) => {
-				toast.error(`Couldn’t retry semantic warmup. ${getErrorMessage(err)}`, { position: "top-right" });
+				toast.error(tcpx("warmupRetryFailed", { error: getErrorMessage(err) }), { position: "top-right" });
 			});
 	};
 
@@ -397,26 +415,32 @@ export default function ComplexityRouterPage() {
 			.unwrap()
 			.then((res) => {
 				promptEdited.current = false;
-				reset(toFormValues(res, jevDefaults));
+				reset(toFormValues(res, decisionDefaults));
 				setEmbeddingSheetOpen(false);
-				setJevSheetOpen(false);
-				toast.success("Configuration saved", { position: "top-right" });
+				setDecisionSheetOpen(false);
+				toast.success(t("routing.configSaved"), { position: "top-right" });
 			})
 			.catch((err) => {
-				setSubmitError(`Couldn’t save the Complexity Router configuration. ${getErrorMessage(err)}`);
+				setSubmitError(tcpx("saveFailed", { error: getErrorMessage(err) }));
 			});
 	};
 
 	// Saving from inside the sheet still submits the whole configuration, so a
 	// phrase error would report behind it. Close the sheet in that case,
-	// otherwise the message is hidden under the overlay. An llm or Jev-fallback
+	// otherwise the message is hidden under the overlay. An llm or decision-model fallback
 	// error opens the sheet instead: those fields live in it, and the operator
 	// may never have opened it.
 	const submit = handleSubmit(onValid, (formErrors) => {
-		// Jev guidance errors sit on the page, so only the sheet's Jev fields open it.
-		const jevSheetError = Boolean(formErrors.jev?.previous_message_count || formErrors.jev?.timeout);
-		setEmbeddingSheetOpen(Boolean(formErrors.semantic || formErrors.llm || (jevSheetError && liveClassifier === "semantic")));
-		setJevSheetOpen(jevSheetError && liveClassifier === "jev");
+		// Decision-model guidance errors sit on the page, so only the sheet's decision-model fields open it.
+		const decisionSheetError = Boolean(
+			formErrors.decision?.provider ||
+			formErrors.decision?.model ||
+			formErrors.decision?.previous_message_count ||
+			formErrors.decision?.timeout ||
+			formErrors.decision?.min_confidence,
+		);
+		setEmbeddingSheetOpen(Boolean(formErrors.semantic || formErrors.llm || (decisionSheetError && liveClassifier === "semantic")));
+		setDecisionSheetOpen(decisionSheetError && liveClassifier === "decision");
 	});
 
 	if (isLoading && !data) {
@@ -426,10 +450,10 @@ export default function ComplexityRouterPage() {
 	if (error && !data) {
 		return (
 			<div className="mx-auto w-full max-w-7xl space-y-4 px-4 pt-6 sm:px-6 sm:pt-8 lg:px-14">
-				<p className="text-sm font-medium">Couldn’t load the Complexity Router configuration.</p>
+				<p className="text-sm font-medium">{t("routing.complexityLoadFailed")}</p>
 				<p className="text-muted-foreground text-sm">{getErrorMessage(error)}</p>
 				<Button data-testid="complexity-router-fetch-retry-button" type="button" variant="outline" size="sm" onClick={() => refetch()}>
-					Retry
+					{tc("retry")}
 				</Button>
 			</div>
 		);
@@ -438,21 +462,21 @@ export default function ComplexityRouterPage() {
 	if (!data) {
 		return (
 			<div className="mx-auto w-full max-w-7xl space-y-4 px-4 pt-6 sm:px-6 sm:pt-8 lg:px-14">
-				<p className="text-muted-foreground font-mono text-sm">No complexity router configuration is available.</p>
+				<p className="text-muted-foreground font-mono text-sm">{t("routing.complexityUnavailable")}</p>
 				<Button data-testid="complexity-router-fetch-retry-button" type="button" variant="outline" size="sm" onClick={() => refetch()}>
-					Retry
+					{tc("retry")}
 				</Button>
 			</div>
 		);
 	}
 
-	const hasErrors = Boolean(errors.keywords || errors.semantic || errors.jev || errors.llm || errors.session || errors.classifier);
+	const hasErrors = Boolean(errors.keywords || errors.semantic || errors.decision || errors.llm || errors.session || errors.classifier);
 	const isSemantic = liveClassifier === "semantic";
-	// Saving Jev as the classifier or the fallback while Typesafe cannot serve it
+	// Saving the decision model as the classifier or the fallback while its provider cannot serve it
 	// would route every classified request into a failing call, so it waits
-	// until Typesafe is fixed.
-	const blockedOnTypesafe = isJevInUse && !isProviderListLoading && !typesafeReady;
-	const canSave = canUpdate && isDirty && !isResetting && !(isSubmitted && hasErrors) && !blockedOnTypesafe;
+	// until that provider is fixed.
+	const blockedOnDecisionProvider = isDecisionInUse && !isProviderListLoading && !decisionProviderReady;
+	const canSave = canUpdate && isDirty && !isResetting && !(isSubmitted && hasErrors) && !blockedOnDecisionProvider;
 
 	// Rendered on the page and again inside the sheet: the re-embed cost is a
 	// consequence of saving, and either surface can trigger the save.
@@ -464,10 +488,7 @@ export default function ComplexityRouterPage() {
 		isSemantic && willReembedAll ? (
 			<Alert variant="warning" data-testid="complexity-router-reembed-warning">
 				<TriangleAlert className="h-4 w-4" />
-				<AlertDescription>
-					Saving will embed all {totalPhrases} reference phrases through the selected provider. Changing the provider or model invalidates
-					every stored vector, so the whole list is embedded again. This uses embedding tokens and may take a short time.
-				</AlertDescription>
+				<AlertDescription>{tcpx("reembedAll", { count: totalPhrases })}</AlertDescription>
 			</Alert>
 		) : null;
 
@@ -477,34 +498,38 @@ export default function ComplexityRouterPage() {
 		isSemantic && !willReembedAll && newPhraseCount > 0 ? (
 			<Alert variant="warning" data-testid="complexity-router-new-phrase-warning">
 				<TriangleAlert className="h-4 w-4" />
-				<AlertDescription>
-					Saving will embed {newPhraseCount} new reference phrase
-					{newPhraseCount === 1 ? "" : "s"} through the selected provider. The other {reusedPhraseCount} reuse the embeddings this gateway
-					already holds.
-				</AlertDescription>
+				<AlertDescription>{tcpx("newPhraseWarning", { count: newPhraseCount, reused: reusedPhraseCount })}</AlertDescription>
 			</Alert>
 		) : null;
 
 	const reembedWarning = reembedAllWarning ?? newPhraseWarning;
 
-	// Rendered wherever Jev runs: under its settings as the primary classifier,
+	// Rendered wherever the decision model runs: under its settings as the primary classifier,
 	// or in the fallback slot the llm prompt otherwise uses.
-	const jevGuidance = (variant: "primary" | "fallback") => (
-		<JevGuidanceSection
+	const decisionGuidance = (variant: "primary" | "fallback") => (
+		<DecisionGuidanceSection
 			control={control}
 			setValue={setValue}
-			errors={errors.jev}
+			errors={errors.decision}
 			canUpdate={canUpdate}
-			defaults={jevDefaults}
+			defaults={decisionDefaults}
 			defaultsLoading={statusLoading || statusFetching}
 			variant={variant}
 		/>
 	);
 
-	const jevSettings = (
-		<div className="space-y-4" data-testid="complexity-router-jev-settings">
-			{!isProviderListLoading && <TypesafeAlert state={typesafe} />}
-			<JevFields control={control} register={register} errors={errors.jev} canUpdate={canUpdate} />
+	const decisionSettings = (
+		<div className="space-y-4" data-testid="complexity-router-decision-settings">
+			{!isProviderListLoading && <DecisionProviderAlert state={decisionProviderState} provider={liveDecisionProvider} />}
+			<DecisionFields
+				control={control}
+				register={register}
+				setValue={setValue}
+				errors={errors.decision}
+				canUpdate={canUpdate}
+				providers={providersData ?? []}
+				providerKeyIds={enabledKeyIdsForDecisionProvider}
+			/>
 		</div>
 	);
 
@@ -515,9 +540,10 @@ export default function ComplexityRouterPage() {
 		if (next !== liveClassifier) setValue("classifier", next, { shouldDirty: true });
 		setPicked(true);
 	};
-	// Jev cannot run without Typesafe, so Next waits for it rather than opening
-	// a configuration that can only fail.
-	const canContinue = hasClassifier && (isSemantic || typesafeReady || isProviderListLoading);
+	// Next never waits on the decision provider: the picker that can switch to a ready one lives in
+	// the next step, so gating here would strand a setup without Typesafe. Step 2 shows the provider
+	// problem and Save stays blocked until it is fixed.
+	const canContinue = hasClassifier;
 	const goToConfiguration = () => {
 		setOpenStep("setup");
 		// Semantic cannot classify without an embedding model, so go straight to
@@ -526,8 +552,8 @@ export default function ComplexityRouterPage() {
 	};
 
 	const steps = [
-		{ key: "classifier", title: "Classifier", enabled: canUpdate },
-		{ key: "setup", title: "Configuration", enabled: hasClassifier },
+		{ key: "classifier", title: tcpx("stepClassifier"), enabled: canUpdate },
+		{ key: "setup", title: tcpx("stepSetup"), enabled: hasClassifier },
 	];
 	const stepIndex = step === "classifier" ? 0 : 1;
 
@@ -539,14 +565,15 @@ export default function ComplexityRouterPage() {
 			<form className="no-padding-parent flex h-full min-h-0 w-full flex-col p-4" onSubmit={submit} noValidate>
 				{/* PageTitle renders nothing inline; its badge and description are
 				    portalled into the topbar. */}
-				<PageTitle title="Complexity Router" beta>
-					{liveClassifier === "jev"
-						? "Typesafe Jev classifies each new human request, filling the"
-						: "Each request takes the tier of its nearest semantic reference phrase, filling the"}{" "}
-					<code className="bg-muted rounded-sm px-1 py-0.5 font-mono text-xs">complexity_tier</code> field that routing rules target.
-					{isLLMFallbackEnabled ? " Requests matching no phrase confidently fall back to the LLM classifier." : ""}
-					{isSemantic && liveSemantic?.fallback === "jev" ? " Requests matching no phrase confidently fall back to Jev." : ""}
-					{liveSession.enabled ? " Session-aware routing keeps the highest tier reached during the active session." : ""}
+				<PageTitle title={t("routing.complexityTitle")} beta>
+					<Trans
+						t={t}
+						i18nKey={liveClassifier === "decision" ? "routing.complexityUi.descriptionDecision" : "routing.complexityUi.description"}
+						components={{ code: <code className="bg-muted rounded-sm px-1 py-0.5 font-mono text-xs" /> }}
+					/>
+					{isLLMFallbackEnabled ? ` ${tcpx("descriptionLlm")}` : ""}
+					{isSemantic && liveSemantic?.fallback === "decision" ? ` ${tcpx("descriptionDecisionFallback")}` : ""}
+					{liveSession.enabled ? ` ${tcpx("descriptionSession")}` : ""}
 				</PageTitle>
 
 				{/* Same shape as the Edge inventory page: a slim step nav on the
@@ -573,10 +600,10 @@ export default function ComplexityRouterPage() {
 										<h2 className="text-lg font-semibold">{steps[stepIndex].title}</h2>
 										<p className="text-muted-foreground text-sm">
 											{step === "classifier"
-												? "Choose how each request is assigned a complexity tier. Switching later keeps the other classifier's settings, including your reference phrases."
+												? tcpx("stepClassifierDesc")
 												: isSemantic
-													? "Each request takes the tier of its nearest reference phrase."
-													: "A decision model scores each new request into a tier."}
+													? tcpx("stepSemanticDesc")
+													: tcpx("stepDecisionDesc")}
 										</p>
 									</div>
 									<div className="flex shrink-0 flex-wrap items-center gap-2 md:flex-nowrap">
@@ -584,6 +611,7 @@ export default function ComplexityRouterPage() {
 											<>
 												<ClassifierStatusBadge
 													status={semanticStatus}
+													semanticFallback={data.semantic?.fallback ?? "none"}
 													isLoading={statusLoading}
 													isNotConfigured={!isClassifierConfigured}
 													isNotSaved={isClassifierConfigured && !data.semantic}
@@ -606,13 +634,9 @@ export default function ComplexityRouterPage() {
 													data-testid="complexity-router-embedding-config-button"
 												>
 													<Settings2 className="size-3.5" />
-													{isClassifierConfigured ? "Edit embedding configuration" : "Configure embedding"}
+													{isClassifierConfigured ? tcpx("editEmbedding") : tcpx("configureEmbedding")}
 													{hasUnsavedEmbeddingConfigChanges && (
-														<span
-															className="size-1.5 rounded-full bg-amber-500"
-															role="status"
-															aria-label="Unsaved embedding configuration changes"
-														/>
+														<span className="size-1.5 rounded-full bg-amber-500" role="status" aria-label={tcpx("unsavedEmbeddingAria")} />
 													)}
 												</Button>
 											</>
@@ -622,20 +646,20 @@ export default function ComplexityRouterPage() {
 												type="button"
 												variant="outline"
 												size="sm"
-												onClick={() => setJevSheetOpen(true)}
-												data-testid="complexity-router-jev-settings-button"
+												onClick={() => setDecisionSheetOpen(true)}
+												data-testid="complexity-router-decision-settings-button"
 											>
 												<Settings2 className="size-3.5" />
-												Jev settings
-												{hasUnsavedJevSettingsChanges && (
-													<span className="size-1.5 rounded-full bg-amber-500" role="status" aria-label="Unsaved Jev settings changes" />
+												{tcpx("editModelConfiguration")}
+												{hasUnsavedDecisionSettingsChanges && (
+													<span className="size-1.5 rounded-full bg-amber-500" role="status" aria-label={tcpx("unsavedModelAria")} />
 												)}
 											</Button>
 										)}
 										<Button asChild variant="outline" size="sm" data-testid="complexity-router-docs-link">
 											<a href={"https://docs.getbifrost.ai/features/complexity-router"} target="_blank" rel="noopener noreferrer">
 												<ExternalLink className="size-3.5" />
-												Docs
+												{t("routing.complexityDocs")}
 											</a>
 										</Button>
 									</div>
@@ -643,25 +667,22 @@ export default function ComplexityRouterPage() {
 
 								{/* ── Step 1: classifier ── */}
 								{step === "classifier" && (
-									<>
-										<ClassifierChoice value={hasClassifier ? liveClassifier : undefined} onChange={selectClassifier} />
-										{/* One warning, and only once Jev is the pick: it is the only
-										    time a missing Typesafe provider matters here. */}
-										{hasClassifier && !isSemantic && !isProviderListLoading && <TypesafeAlert state={typesafe} />}
-									</>
+									<ClassifierChoice value={hasClassifier ? liveClassifier : undefined} onChange={selectClassifier} />
 								)}
 
 								{/* ── Step 2: semantic ── */}
 								{step === "setup" && isSemantic && (
 									<div className="space-y-3">
 										<SectionHeading
-											title="Phrase to Tier Mapping"
+											title={tcpx("phraseMappingTitle")}
 											aside={
 												<span
 													className="text-muted-foreground font-mono text-[11px] tabular-nums"
 													data-testid="complexity-router-phrase-total"
 												>
-													{isClassifierConfigured ? `${totalPhrases} / ${MAX_SEMANTIC_PHRASES} phrases` : `${totalPhrases} phrases`}
+													{isClassifierConfigured
+														? tcpx("phrasesCap", { count: totalPhrases, max: MAX_SEMANTIC_PHRASES })
+														: tcpx("phraseCount", { count: totalPhrases })}
 												</span>
 											}
 										/>
@@ -669,13 +690,11 @@ export default function ComplexityRouterPage() {
 									</div>
 								)}
 
-								{/* ── Step 2: Jev ── */}
-								{/* The page holds the tier guidance; set-once settings live in the
-								    Jev settings sheet, as embedding settings do for semantic. The
-								    Typesafe problem stays on the page because nothing runs until
-								    it is fixed. */}
-								{step === "setup" && !isSemantic && !isProviderListLoading && <TypesafeAlert state={typesafe} />}
-								{step === "setup" && !isSemantic && jevGuidance("primary")}
+								{/* ── Step 2: decision model ── */}
+								{/* The page holds the tier guidance; set-once settings, and any problem
+								    with the decision provider, live in the model configuration sheet, as
+								    the embedding configuration does for semantic. */}
+								{step === "setup" && !isSemantic && decisionGuidance("primary")}
 
 								{step === "setup" && <SessionRoutingCard control={control} errors={errors.session} canUpdate={canUpdate} />}
 
@@ -702,7 +721,7 @@ export default function ComplexityRouterPage() {
 								)}
 
 								{/* Same slot as the llm prompt: only one fallback can be on. */}
-								{step === "setup" && isJevFallbackEnabled && jevGuidance("fallback")}
+								{step === "setup" && isDecisionFallbackEnabled && decisionGuidance("fallback")}
 
 								{step === "setup" && reembedWarning}
 
@@ -727,7 +746,7 @@ export default function ComplexityRouterPage() {
 									disabled={!canContinue}
 									data-testid="complexity-router-next-button"
 								>
-									Next
+									{tc("next")}
 									<ArrowRight className="h-3.5 w-3.5" />
 								</Button>
 							) : (
@@ -741,37 +760,40 @@ export default function ComplexityRouterPage() {
 											data-testid="complexity-router-back-button"
 										>
 											<ArrowLeft className="h-3.5 w-3.5" />
-											Back
+											{tc("back")}
 										</Button>
 									)}
-									{/* The Jev warning is already on screen when Jev is primary; as
-									    the fallback it sits inside the sheet, so the page says why
-									    Save is off. Otherwise an unsaved classifier switch is
-									    called out, since the page has no leave guard. */}
+									{/* The provider warning sits inside the model configuration sheet, so the
+									    page says why Save is off. Otherwise an unsaved classifier switch
+									    is called out, since the page has no leave guard. */}
 									<p
 										className="mr-auto text-xs text-amber-700 dark:text-amber-400"
 										role="status"
 										data-testid="complexity-router-footer-note"
 									>
-										{blockedOnTypesafe && isSemantic
-											? "Jev is the fallback, and it needs a working Typesafe provider before this can be saved."
-											: !blockedOnTypesafe && liveClassifier !== toFormValues(data).classifier
-												? `Classifier changed to ${isSemantic ? "Semantic" : "Jev"}. Not saved yet.`
+										{blockedOnDecisionProvider
+											? isSemantic
+												? tcpx("footerDecisionIsFallback")
+												: tcpx("footerDecisionNeedsProvider")
+											: liveClassifier !== toFormValues(data).classifier
+												? tcpx("footerClassifierChanged", {
+														classifier: isSemantic ? tcpx("classifierNameSemantic") : tcpx("classifierNameDecision"),
+													})
 												: ""}
 									</p>
 									{/* Each classifier restores only its own defaults: the semantic
-									    phrase lists, or Jev's tier guidance. */}
+									    phrase lists, or the decision model's tier guidance. */}
 									{!isSemantic && (
 										<Button
-											data-testid="complexity-router-jev-restore-defaults-button"
+											data-testid="complexity-router-decision-restore-defaults-button"
 											type="button"
 											variant="ghost"
 											size="sm"
-											onClick={restoreJevDefaults}
-											disabled={!canUpdate || isSaving || isJevGuidanceAtDefaults}
+											onClick={restoreDecisionDefaults}
+											disabled={!canUpdate || isSaving || isDecisionGuidanceAtDefaults}
 										>
 											<RotateCcw className="h-3.5 w-3.5" />
-											Restore defaults
+											{t("routing.restoreDefaults")}
 										</Button>
 									)}
 									{isSemantic && (
@@ -784,7 +806,7 @@ export default function ComplexityRouterPage() {
 											disabled={!canUpdate || isSaving || isResetting}
 										>
 											{isResetting ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <RotateCcw className="h-3.5 w-3.5" />}
-											Restore defaults
+											{t("routing.restoreDefaults")}
 										</Button>
 									)}
 									<Button
@@ -795,11 +817,11 @@ export default function ComplexityRouterPage() {
 										onClick={handleDiscard}
 										disabled={!isDirty || isSaving || isResetting || isFetching}
 									>
-										Discard changes
+										{tcpx("discardChanges")}
 									</Button>
 									<Button data-testid="complexity-router-save-changes-button" type="submit" size="sm" disabled={!canSave || isSaving}>
 										{isSaving ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
-										{isSaving ? "Saving…" : "Save changes"}
+										{isSaving ? t("routing.saving") : tcpx("saveChanges")}
 									</Button>
 								</>
 							)}
@@ -830,13 +852,13 @@ export default function ComplexityRouterPage() {
 				isSaving={isSaving}
 				onSave={() => void submit()}
 				submitError={submitError}
-				jevSettings={jevSettings}
+				decisionSettings={decisionSettings}
 			/>
 
-			<JevSettingsSheet
-				open={jevSheetOpen && !isSemantic}
-				onOpenChange={setJevSheetOpen}
-				jevSettings={jevSettings}
+			<DecisionSettingsSheet
+				open={decisionSheetOpen && !isSemantic}
+				onOpenChange={setDecisionSheetOpen}
+				decisionSettings={decisionSettings}
 				canSave={canSave}
 				isSaving={isSaving}
 				onSave={() => void submit()}
@@ -846,12 +868,8 @@ export default function ComplexityRouterPage() {
 			<AlertDialog open={restoreDialogOpen} onOpenChange={setRestoreDialogOpen}>
 				<AlertDialogContent>
 					<AlertDialogHeader>
-						<AlertDialogTitle>Restore defaults</AlertDialogTitle>
-						<AlertDialogDescription>
-							This will replace the phrase to tier mapping with the default reference phrases. Your current phrases will be lost and this
-							action cannot be undone. Your embedding configuration is kept, so classification keeps running and the restored phrases are
-							embedded through the configured provider straight away.
-						</AlertDialogDescription>
+						<AlertDialogTitle>{t("routing.restoreDefaults")}</AlertDialogTitle>
+						<AlertDialogDescription>{tcpx("restoreDefaultsDesc")}</AlertDialogDescription>
 					</AlertDialogHeader>
 					<AlertDialogFooter>
 						<AlertDialogCancel
@@ -859,7 +877,7 @@ export default function ComplexityRouterPage() {
 							onClick={() => setRestoreDialogOpen(false)}
 							disabled={isResetting}
 						>
-							Cancel
+							{tc("cancel")}
 						</AlertDialogCancel>
 						<AlertDialogAction
 							data-testid="complexity-router-restore-confirm-button"
@@ -869,7 +887,7 @@ export default function ComplexityRouterPage() {
 							}}
 							disabled={!canUpdate || isResetting}
 						>
-							Restore defaults
+							{t("routing.restoreDefaults")}
 						</AlertDialogAction>
 					</AlertDialogFooter>
 				</AlertDialogContent>

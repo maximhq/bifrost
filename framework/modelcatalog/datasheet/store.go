@@ -79,6 +79,10 @@ type Store struct {
 	rawOverrides  []Override
 	customPricing *customPricingData
 
+	// Providers whose self-reported usage.cost is ignored in favour of catalog pricing.
+	ignoreProviderCostMu sync.RWMutex
+	ignoreProviderCost   map[schemas.ModelProvider]struct{}
+
 	// Sync configuration owned here so UpdateSyncConfig is atomic w.r.t. the
 	// URL accessors in sync.go. The composer's ticker reads SyncInterval()
 	// and LastSyncedAt() to schedule.
@@ -102,6 +106,7 @@ func New(configStore configstore.ConfigStore, logger schemas.Logger, cfg Config)
 		supportedParams:        make(map[string][]string),
 		datasheetByProvider:    make(map[schemas.ModelProvider][]string),
 		deprecatedByProvider:   make(map[schemas.ModelProvider][]string),
+		ignoreProviderCost:     make(map[schemas.ModelProvider]struct{}),
 		url:                    cfg.URL,
 		modelParametersURL:     cfg.ModelParametersURL,
 		syncInterval:           cfg.SyncInterval,
@@ -161,7 +166,7 @@ func (s *Store) MarkSynced(t time.Time) {
 // Get returns the raw pricing row for (model, provider, requestType) or nil.
 // Useful for callers that need exact pricing without override resolution.
 func (s *Store) Get(model string, provider schemas.ModelProvider, requestType schemas.RequestType) *configstoreTables.TableModelPricing {
-	key := makeKey(model, normalizeProvider(string(provider)), normalizeRequestType(requestType))
+	key := makeKeyNormalized(model, normalizeProvider(string(provider)), normalizeRequestType(requestType))
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	row, ok := s.pricingData[key]
@@ -193,7 +198,7 @@ func (s *Store) GetPricingEntryForModel(model string, provider schemas.ModelProv
 		schemas.VideoGenerationRequest,
 		schemas.OCRRequest,
 	} {
-		key := makeKey(model, catalogProvider, normalizeRequestType(mode))
+		key := makeKeyNormalized(model, catalogProvider, normalizeRequestType(mode))
 		if pricing, ok := s.pricingData[key]; ok {
 			return convertTablePricingToEntry(&pricing)
 		}
@@ -353,7 +358,7 @@ func (s *Store) GetSupportedParameters(model string) []string {
 func (s *Store) IsTextCompletionSupported(model string, provider schemas.ModelProvider) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	key := makeKey(model, normalizeProvider(string(provider)), normalizeRequestType(schemas.TextCompletionRequest))
+	key := makeKeyNormalized(model, normalizeProvider(string(provider)), normalizeRequestType(schemas.TextCompletionRequest))
 	_, ok := s.pricingData[key]
 	return ok
 }
@@ -367,13 +372,13 @@ func (s *Store) capabilityEntryForExactUnsafe(model string, provider schemas.Mod
 		schemas.TextCompletionRequest,
 	}
 	for _, mode := range preferredModes {
-		key := makeKey(model, string(provider), normalizeRequestType(mode))
+		key := makeKeyNormalized(model, string(provider), normalizeRequestType(mode))
 		if pricing, ok := s.pricingData[key]; ok {
 			return convertTablePricingToEntry(&pricing)
 		}
 	}
 
-	prefix := model + "|" + string(provider) + "|"
+	prefix := makeKeyNormalized(model, string(provider), "")
 	var matchingKeys []string
 	for key := range s.pricingData {
 		if strings.HasPrefix(key, prefix) {
@@ -461,17 +466,57 @@ func (s *Store) SetSupportedParamsForTest(params map[string][]string) {
 	s.supportedParams = params
 }
 
+// SetPricingRowsForTest replaces pricingData with rows and rebuilds the derived
+// indexes. Test-only seam for packages outside datasheet (e.g. the compat
+// plugin) that need capability lookups such as max_output_tokens without
+// running a sync.
+func (s *Store) SetPricingRowsForTest(rows []configstoreTables.TableModelPricing) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.setPricingRowsUnsafe(rows)
+}
+
+// setPricingRowsUnsafe replaces pricingData with rows and rebuilds the derived
+// view. Rows that differ only by casing share a key, so one survives: the one
+// already spelled in lowercase, then the byte-wise smallest, which keeps every
+// reload on the same row whatever order rows arrive in. The view is
+// built from all rows, so listings and base-model lookups still see every
+// spelling. Caller MUST hold s.mu write-lock.
+func (s *Store) setPricingRowsUnsafe(rows []configstoreTables.TableModelPricing) {
+	s.pricingData = make(map[string]configstoreTables.TableModelPricing, len(rows))
+	for _, row := range rows {
+		key := makeKeyNormalized(row.Model, row.Provider, row.Mode)
+		if cur, taken := s.pricingData[key]; taken && !pricingRowBeats(row, cur) {
+			continue
+		}
+		s.pricingData[key] = row
+	}
+	s.rebuildDatasheetViewUnsafe(rows)
+}
+
+// pricingRowBeats reports whether row should replace current as the row for
+// their shared lowercase key. It compares the full spelling, since the database
+// can hold rows that differ only by provider or mode casing.
+func pricingRowBeats(row, current configstoreTables.TableModelPricing) bool {
+	spelling := makeKey(row.Model, row.Provider, row.Mode)
+	currentSpelling := makeKey(current.Model, current.Provider, current.Mode)
+	rowIsLower, currentIsLower := spelling == strings.ToLower(spelling), currentSpelling == strings.ToLower(currentSpelling)
+	if rowIsLower != currentIsLower {
+		return rowIsLower
+	}
+	return spelling < currentSpelling
+}
+
 // --- Internal: rebuild the datasheet view from current pricingData ---
 
 // rebuildDatasheetViewUnsafe regenerates baseModelIndex, datasheetByProvider,
-// and deprecatedByProvider from pricingData. Caller MUST hold s.mu write-lock.
-// Called after every pricingData mutation in sync.go / params.go.
-func (s *Store) rebuildDatasheetViewUnsafe() {
+// and deprecatedByProvider from rows. Caller MUST hold s.mu write-lock.
+func (s *Store) rebuildDatasheetViewUnsafe(rows []configstoreTables.TableModelPricing) {
 	s.baseModelIndex = make(map[string]string)
 	providerModels := make(map[schemas.ModelProvider]map[string]struct{})
 	deprecatedModels := make(map[schemas.ModelProvider]map[string]struct{})
 
-	for _, pricing := range s.pricingData {
+	for _, pricing := range rows {
 		normalized := schemas.ModelProvider(normalizeProvider(pricing.Provider))
 		if normalized == "together_ai" {
 			normalized = "together"

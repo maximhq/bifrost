@@ -187,6 +187,62 @@ func TestAccounting_FailedAttemptThenSuccessfulRetry(t *testing.T) {
 	assert.Equal(t, int64(250), f.tokens(), "tokens from both attempts accumulate")
 }
 
+// TestAccounting_FailedPrimaryThenSuccessfulFallbackBothBilled pins the bug where a fallback's
+// usage was dropped as already billed. Each provider in the chain restarts the retry counter at 0
+// and keeps the request id, so a primary attempt that failed after the provider reported usage
+// (a stream that timed out or died after its first events) claimed the billing key the fallback's
+// first attempt then settled under, and the fallback that served the request was never charged.
+func TestAccounting_FailedPrimaryThenSuccessfulFallbackBothBilled(t *testing.T) {
+	logger := NewMockLogger()
+	rl := buildRateLimitWithUsage("rl-fallback", 1_000_000, 0, 1_000_000, 0)
+	vk := buildVirtualKeyWithRateLimit("vk1", "sk-bf-fallback", "Fallback VK", rl)
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+		RateLimits:  []configstoreTables.TableRateLimit{*rl},
+	}, nil, nil)
+	require.NoError(t, err)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
+
+	ctx := resolverCtx(store, "sk-bf-fallback")
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-fallback")
+	ctx.SetValue(schemas.BifrostContextKeyBillingNonce, "nonce-fallback")
+
+	// attempt runs one attempt through the funnel and settles its outcome, as the pipeline does for
+	// every provider in the chain, each starting its retries at 0.
+	attempt := func(fallbackIndex int, result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) {
+		t.Helper()
+		ctx.SetValue(schemas.BifrostContextKeyFallbackIndex, fallbackIndex)
+		ctx.SetValue(schemas.BifrostContextKeyNumberOfRetries, 0)
+		_, shortCircuit, err := plugin.PreLLMHook(ctx, newChatRequest())
+		require.NoError(t, err)
+		require.Nil(t, shortCircuit)
+		_, _, err = plugin.PostLLMHook(ctx, result, bifrostErr)
+		require.NoError(t, err)
+		plugin.wg.Wait()
+	}
+
+	// The primary's stream died after the provider had reported 40 tokens.
+	attempt(0, nil, &schemas.BifrostError{
+		StatusCode: schemas.Ptr(504),
+		Error:      &schemas.ErrorField{Message: "stream timed out"},
+		ExtraFields: schemas.BifrostErrorExtraFields{
+			RequestType:            schemas.ChatCompletionRequest,
+			Provider:               schemas.OpenAI,
+			OriginalModelRequested: "gpt-4o",
+			BilledUsage:            &schemas.BifrostLLMUsage{PromptTokens: 40, TotalTokens: 40},
+		},
+	})
+	// The first fallback serves the request on its first attempt.
+	attempt(1, countableResponse(), nil)
+
+	counted := store.GetGovernanceData(context.Background()).RateLimits["rl-fallback"]
+	require.NotNil(t, counted)
+	assert.Equal(t, int64(1040), counted.TokenCurrentUsage, "the failed primary's tokens and the fallback's are both counted")
+	assert.Equal(t, int64(1), counted.RequestCurrentUsage, "the fallback that served counts as the request")
+}
+
 // TestAccounting_NoDoubleBillSuccessVsCancelTerminal: when both a success
 // terminal and a cancellation terminal fire for the SAME physical call
 // (RequestID+attempt), the budget is charged exactly once.
@@ -603,6 +659,8 @@ func TestAccounting_RequestsThatSpendNothingAreNotCharged(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			plugin, store := governedPassthroughFixture(t)
+			// A virtual-key file list is checked against recorded object owners, which needs a config store.
+			plugin.configStore = newProviderObjectConfigStore(t)
 
 			// Through the request hook first, so the key's limits are settled onto the grant exactly
 			// as a real call's are. Without that the assertion below is worth nothing: a post hook
@@ -625,4 +683,128 @@ func TestAccounting_RequestsThatSpendNothingAreNotCharged(t *testing.T) {
 			assert.Equal(t, int64(0), rateLimit.TokenCurrentUsage)
 		})
 	}
+}
+
+// A stored Gemini Interactions run is charged once over its whole life. The create names the
+// agent, so it is a request; the provider reports the run on ProviderJob rather than as usage, so
+// neither the create nor a later poll (which repeats the run's full usage) spends tokens; the run's
+// tokens arrive once, from the settlement report. A run is one request, however many reads it took.
+func TestAccounting_InteractionRunIsChargedOnce(t *testing.T) {
+	plugin, store := governedPassthroughFixture(t)
+	run := &schemas.BifrostPassthroughJob{
+		ID: "int_gov", Status: "completed", Terminal: true, PollPath: "/interactions/int_gov",
+		Usage: &schemas.BifrostPassthroughUsage{LLMUsage: &schemas.BifrostLLMUsage{PromptTokens: 5000, CompletionTokens: 500, TotalTokens: 5500}},
+	}
+	read := func(method, path, model string, created bool) []string {
+		ctx := presentCtx("sk-bf-pt")
+		_, shortCircuit, err := plugin.PreLLMHook(ctx, &schemas.BifrostRequest{
+			RequestType: schemas.PassthroughRequest,
+			PassthroughRequest: &schemas.BifrostPassthroughRequest{
+				Provider: schemas.Vertex, Model: model, Method: method, Path: path,
+			},
+		})
+		require.NoError(t, err)
+		require.Nil(t, shortCircuit)
+		job := *run
+		job.Created = created
+		_, _, err = plugin.PostLLMHook(ctx, &schemas.BifrostResponse{
+			PassthroughResponse: &schemas.BifrostPassthroughResponse{
+				StatusCode:  200,
+				ServedModel: "deep-research-preview-04-2026",
+				ProviderJob: &job,
+				ExtraFields: schemas.BifrostResponseExtraFields{
+					RequestType:            schemas.PassthroughRequest,
+					Provider:               schemas.Vertex,
+					OriginalModelRequested: model,
+					ResolvedModelUsed:      model,
+				},
+			},
+		}, nil)
+		require.NoError(t, err)
+		// The limits the attempt answers to, read from its grant. No skip-tracking flag is set here,
+		// so these are exactly the limits governance bills.
+		require.NotNil(t, ctx.Grant())
+		require.NotNil(t, ctx.Grant().Limits())
+		return limitIDsOf(ctx.Grant().Limits().RateLimits())
+	}
+
+	createLimits := read("POST", "/projects/p/locations/global/interactions", "deep-research-preview-04-2026", true)
+	read("GET", "/projects/p/locations/global/interactions/int_gov", "", false)
+	read("GET", "/projects/p/locations/global/interactions/int_gov", "", false)
+	require.Contains(t, createLimits, "rl-vk", "the create records the limits the settlement bills")
+
+	// The settlement the logging plugin writes once the run is finished, against the create's limits.
+	report := jobaccounting.UsageReport{
+		RequestID:    "interaction-settlement-int_gov",
+		Provider:     schemas.Vertex,
+		Model:        "deep-research-preview-04-2026",
+		Cost:         0.5,
+		TokensUsed:   5500,
+		RateLimitIDs: createLimits,
+		// What the interaction settler sets: the create already counted as the run's request.
+		SkipRequestCount: true,
+	}
+	require.NoError(t, plugin.ReportUsage(context.Background(), report))
+	require.NoError(t, plugin.ReportUsage(context.Background(), report))
+	settleAccounting(t, plugin)
+
+	rateLimit := store.GetGovernanceData(context.Background()).RateLimits["rl-vk"]
+	assert.Equal(t, int64(5500), rateLimit.TokenCurrentUsage, "the run's tokens are charged once, at settlement, not on any read")
+	assert.Equal(t, int64(1), rateLimit.RequestCurrentUsage, "a run is one request: its create, not its polls or its settlement")
+}
+
+// TestAccounting_SkipRequestCountChargesCostOnly: a GPT Live voice window bills its
+// cost and tokens but is not a request, so it must not consume request allowance.
+func TestAccounting_SkipRequestCountChargesCostOnly(t *testing.T) {
+	f := newAccountingFixture(t)
+
+	window := acctUpdate("live-window-1", 0, true, 0.025, 0)
+	window.SkipRequestCount = true
+	f.apply(window, acctUpdate("req-1", 0, true, 1.0, 10))
+
+	assert.InDelta(t, 1.025, f.cost(), 1e-9)
+	assert.Equal(t, int64(1), f.requests(), "only the ordinary request counts")
+	assert.Equal(t, int64(10), f.tokens())
+}
+
+// TestAccounting_SessionContinuationSkipsRequestLimits: a continuation unit (a GPT Live window) skips
+// request limits but still charges tokens; an admission unit is refused once the limit is spent.
+func TestAccounting_SessionContinuationSkipsRequestLimits(t *testing.T) {
+	logger := NewMockLogger()
+	rateLimit := buildRateLimitWithUsage("rl-vk", 1_000_000, 0, 1, 1) // request limit already spent
+	vk := buildVirtualKeyWithRateLimit("vk1", "sk-bf-live", "Live VK", rateLimit)
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+		RateLimits:  []configstoreTables.TableRateLimit{*rateLimit},
+	}, nil, nil)
+	require.NoError(t, err)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
+	require.NoError(t, err)
+
+	admission := resolverCtx(store, "sk-bf-live")
+	_, shortCircuit, err := plugin.PreLLMHook(admission, newChatRequest())
+	require.NoError(t, err)
+	require.NotNil(t, shortCircuit, "a new request is refused once the request limit is spent")
+
+	// The flag alone is not enough: only a live session's continuation was counted at admission.
+	flagged := resolverCtx(store, "sk-bf-live")
+	flagged.SetValue(schemas.BifrostContextKeySessionContinuation, true)
+	_, shortCircuit, err = plugin.PreLLMHook(flagged, newChatRequest())
+	require.NoError(t, err)
+	require.NotNil(t, shortCircuit, "a continuation flag on an ordinary request does not skip the request limit")
+
+	continuation := resolverCtx(store, "sk-bf-live")
+	continuation.SetValue(schemas.BifrostContextKeySessionContinuation, true)
+	continuation.SetValue(schemas.BifrostContextKeyHTTPRequestType, schemas.LiveRequest)
+	_, shortCircuit, err = plugin.PreLLMHook(continuation, newChatRequest())
+	require.NoError(t, err)
+	require.Nil(t, shortCircuit, "a continuation of an admitted session is not refused by the request limit")
+
+	_, _, err = plugin.PostLLMHook(continuation, countableResponse(), nil)
+	require.NoError(t, err)
+	settleAccounting(t, plugin)
+
+	updated := store.GetGovernanceData(context.Background()).RateLimits["rl-vk"]
+	assert.Equal(t, int64(1), updated.RequestCurrentUsage, "the continuation is not counted as a request")
+	assert.Equal(t, int64(1000), updated.TokenCurrentUsage, "the continuation's tokens are still charged")
 }

@@ -67,7 +67,7 @@ define EXPOSE_ENV
 	fi
 endef
 
-.PHONY: test-memory all help dev dev-pulse build-ui build build-cli run run-cli install-air install-pulse clean test test-cli install-ui setup-workspace work-init work-clean docs docker-image docker-run cleanup-enterprise mod-tidy test-integrations test-integrations-py test-integrations-ts install-playwright run-e2e run-a11y-audit run-e2e-ui run-e2e-headed run-e2e-api run-mcp-codemode-test run-warp-test format ui install-newman run-provider-harness-test smoke-provider-harness-test run-cli-harness-test cli-harness-report test-harness-runner-lib run-video-costing-test list-video-costing-cases test-semantic-cache test-semantic-cache-complete _test-semantic-cache-complete-inner helm-index install-microsocks socks5-proxy install-tinyproxy http-proxy
+.PHONY: test-memory all help dev dev-pulse build-ui build build-cli run run-cli install-air install-pulse clean test test-cli install-ui setup-workspace work-init work-clean docs docker-image docker-run cleanup-enterprise mod-tidy test-integrations test-integrations-py test-integrations-ts install-playwright run-e2e run-a11y-audit run-e2e-ui run-e2e-headed e2e-ui-down run-e2e-api run-mcp-codemode-test run-warp-test format ui install-newman run-provider-harness-test smoke-provider-harness-test run-cli-harness-test cli-harness-report test-harness-runner-lib run-video-costing-test list-video-costing-cases test-semantic-cache test-semantic-cache-complete _test-semantic-cache-complete-inner helm-index install-microsocks socks5-proxy install-tinyproxy http-proxy install-squid install-stunnel run-e2e-api-proxy run-mcp-harness-test run-log-store-matrix
 
 all: help
 
@@ -177,6 +177,14 @@ http-proxy: install-tinyproxy ## Run a local HTTP proxy for testing provider pro
 	$(ECHO) "$(YELLOW)Point a provider's proxy_config at http://$$PROXY_HOST:$$PROXY_PORT to test$(NC)"; \
 	tinyproxy -d -c "$$CONF"
 
+install-squid: ## Install squid HTTP proxy for the proxy e2e flow (if not already installed)
+	@command -v squid > /dev/null || [ -x /usr/sbin/squid ] || (command -v brew > /dev/null && $(ECHO) "$(YELLOW)Installing squid via Homebrew...$(NC)" && brew install squid) || ($(ECHO) "$(RED)Error: squid not found and Homebrew is unavailable. Install it with your package manager (apt install squid)$(NC)" && exit 1)
+	@$(ECHO) "$(GREEN)squid is ready$(NC)"
+
+install-stunnel: ## Install stunnel (TLS in front of squid for https:// proxies) for the proxy e2e flow (if not already installed)
+	@command -v stunnel > /dev/null || command -v stunnel4 > /dev/null || (command -v brew > /dev/null && $(ECHO) "$(YELLOW)Installing stunnel via Homebrew...$(NC)" && brew install stunnel) || ($(ECHO) "$(RED)Error: stunnel not found and Homebrew is unavailable. Install it with your package manager (apt install stunnel4)$(NC)" && exit 1)
+	@$(ECHO) "$(GREEN)stunnel is ready$(NC)"
+
 dev: install-ui install-air setup-workspace $(if $(DEBUG),install-delve) ## Start complete development environment (UI + API with proxy)
 	@$(EXPOSE_ENV); \
 	set +m; \
@@ -228,9 +236,9 @@ dev: install-ui install-air setup-workspace $(if $(DEBUG),install-delve) ## Star
 	$(ECHO) "$(YELLOW)Starting UI development server...$(NC)"; \
 	$(USE_NODE); if [ -n "$(DISABLE_PROFILER)" ]; then \
 		$(ECHO) "$(CYAN)DevProfiler disabled for testing$(NC)"; \
-		(cd ui && BIFROST_DISABLE_PROFILER=1 npm run dev) & \
+		(cd ui && BIFROST_PORT=$(PORT) BIFROST_DISABLE_PROFILER=1 npm run dev) & \
 	else \
-		(cd ui && npm run dev) & \
+		(cd ui && BIFROST_PORT=$(PORT) npm run dev) & \
 	fi; \
 	ui_pid="$$!"; \
 	$(ECHO) "$(YELLOW)[make dev] UI dev server started with pid $$ui_pid$(NC)"; \
@@ -246,6 +254,7 @@ dev: install-ui install-air setup-workspace $(if $(DEBUG),install-delve) ## Star
 			-log-style "$(LOG_STYLE)" \
 			-log-level "$(LOG_LEVEL)" \
 			$(if $(PROMETHEUS_LABELS),-prometheus-labels "$(PROMETHEUS_LABELS)") \
+			$(if $(BASE_PATH),-base-path "$(BASE_PATH)") \
 			$(if $(APP_DIR),-app-dir "$(abspath $(APP_DIR))")) & \
 	else \
 		(cd transports/bifrost-http && BIFROST_UI_DEV=true air -c .air.toml -- \
@@ -254,6 +263,7 @@ dev: install-ui install-air setup-workspace $(if $(DEBUG),install-delve) ## Star
 			-log-style "$(LOG_STYLE)" \
 			-log-level "$(LOG_LEVEL)" \
 			$(if $(PROMETHEUS_LABELS),-prometheus-labels "$(PROMETHEUS_LABELS)") \
+			$(if $(BASE_PATH),-base-path "$(BASE_PATH)") \
 			$(if $(APP_DIR),-app-dir "$(abspath $(APP_DIR))")) & \
 	fi; \
 	api_pid="$$!"; \
@@ -314,9 +324,9 @@ dev-pulse: install-ui install-pulse setup-workspace $(if $(DEBUG),install-delve)
 	$(ECHO) "$(YELLOW)Starting UI development server...$(NC)"; \
 	$(USE_NODE); if [ -n "$(DISABLE_PROFILER)" ]; then \
 		$(ECHO) "$(CYAN)DevProfiler disabled for testing$(NC)"; \
-		(cd ui && BIFROST_DISABLE_PROFILER=1 npm run dev) & \
+		(cd ui && BIFROST_PORT=$(PORT) BIFROST_DISABLE_PROFILER=1 npm run dev) & \
 	else \
-		(cd ui && npm run dev) & \
+		(cd ui && BIFROST_PORT=$(PORT) npm run dev) & \
 	fi; \
 	ui_pid="$$!"; \
 	$(ECHO) "$(YELLOW)[make dev-pulse] UI dev server started with pid $$ui_pid$(NC)"; \
@@ -344,7 +354,7 @@ build-ui: install-ui ## Build ui
 	@rm -rf ui/.next
 	@$(USE_NODE); cd ui && npm run build && npm run copy-build
 
-build: build-ui ## Build bifrost-http binary
+build: build-ui ## Build bifrost-http binary (BUILD_TAGS adds Go build tags; the MCP harness passes harness)
 	@if [ -n "$(LOCAL)" ]; then \
 		$(ECHO) "$(GREEN)╔═══════════════════════════════════════════════╗$(NC)"; \
 		$(ECHO) "$(GREEN)║  Building bifrost-http with local go.work...  ║$(NC)"; \
@@ -385,6 +395,7 @@ build: build-ui ## Build bifrost-http binary
 			cd transports/bifrost-http && CGO_ENABLED=1 GOOS=$$TARGET_OS GOARCH=$$TARGET_ARCH $(if $(LOCAL),,GOWORK=off) go build \
 				-ldflags="-w -s -X main.Version=v$(VERSION)" \
 				-a -trimpath \
+				$(if $(BUILD_TAGS),-tags "$(BUILD_TAGS)") \
 				-o ../../tmp/bifrost-http \
 				.; \
 		else \
@@ -392,7 +403,7 @@ build: build-ui ## Build bifrost-http binary
 			cd transports/bifrost-http && CGO_ENABLED=1 GOOS=$$TARGET_OS GOARCH=$$TARGET_ARCH $(if $(LOCAL),,GOWORK=off) go build \
 				-ldflags="-w -s -extldflags "-static" -X main.Version=v$(VERSION)" \
 				-a -trimpath \
-				-tags "sqlite_static" \
+				-tags "sqlite_static $(BUILD_TAGS)" \
 				-o ../../tmp/bifrost-http \
 				.; \
 		fi; \
@@ -402,7 +413,7 @@ build: build-ui ## Build bifrost-http binary
 		cd transports/bifrost-http && CGO_ENABLED=1 GOOS=$$TARGET_OS GOARCH=$$TARGET_ARCH $(if $(LOCAL),,GOWORK=off) go build \
 			-ldflags="-w -s -X main.Version=v$(VERSION)" \
 			-a -trimpath \
-			-tags "sqlite_static" \
+			-tags "sqlite_static $(BUILD_TAGS)" \
 			-o ../../tmp/bifrost-http \
 			.; \
 		$(ECHO) "$(GREEN)Built: tmp/bifrost-http (version: v$(VERSION))$(NC)"; \
@@ -434,11 +445,12 @@ _build-with-docker: # Internal target for Docker-based cross-compilation
 				-e GOOS=$(TARGET_OS) \
 				-e GOARCH=$(TARGET_ARCH) \
 				 $(if $(LOCAL),,-e GOWORK=off) \
-				golang:1.27.0-alpine3.24@sha256:4c9fe60190a2a3350ddc51de80d0224b8a6698d12bdfc999fee45ea9d6c46dbc \
+				golang:1.27.3-alpine3.24@sha256:f2c872bcee949b7be9c490efd02b48a8a2fbf947cdf533f1c58525ec9d8170fd \
 				sh -c "apk add --no-cache gcc musl-dev && \
 				go build \
 					-ldflags='-w -s -X main.Version=v$(VERSION)' \
 					-a -trimpath \
+					$(if $(BUILD_TAGS),-tags \"$(BUILD_TAGS)\") \
 					-o ../../tmp/bifrost-http \
 					."; \
 		else \
@@ -451,12 +463,12 @@ _build-with-docker: # Internal target for Docker-based cross-compilation
 				-e GOOS=$(TARGET_OS) \
 				-e GOARCH=$(TARGET_ARCH) \
 				 $(if $(LOCAL),,-e GOWORK=off) \
-				golang:1.27.0-alpine3.24@sha256:4c9fe60190a2a3350ddc51de80d0224b8a6698d12bdfc999fee45ea9d6c46dbc \
+				golang:1.27.3-alpine3.24@sha256:f2c872bcee949b7be9c490efd02b48a8a2fbf947cdf533f1c58525ec9d8170fd \
 				sh -c "apk add --no-cache gcc musl-dev && \
 				go build \
 					-ldflags='-w -s -extldflags "-static" -X main.Version=v$(VERSION)' \
 					-a -trimpath \
-					-tags sqlite_static \
+					-tags \"sqlite_static $(BUILD_TAGS)\" \
 					-o ../../tmp/bifrost-http \
 					."; \
 		fi; \
@@ -501,6 +513,7 @@ run: build ## Build and run bifrost-http (no hot reload)
 		-log-style "$(LOG_STYLE)" \
 		-log-level "$(LOG_LEVEL)" \
 		$(if $(PROMETHEUS_LABELS),-prometheus-labels "$(PROMETHEUS_LABELS)") \
+		$(if $(BASE_PATH),-base-path "$(BASE_PATH)") \
 		$(if $(APP_DIR),-app-dir "$(abspath $(APP_DIR))")
 
 run-cli: build-cli ## Run bifrost CLI (Usage: make run-cli [ARGS="--config ~/.bifrost/config.json"])
@@ -614,7 +627,7 @@ test-core: install-gotestsum $(if $(DEBUG),install-delve) ## Run core tests (Usa
 		$(ECHO) "$(YELLOW)Attach your debugger to localhost:2345$(NC)"; \
 	fi; \
 	if [ -n "$(PROVIDER)" ]; then \
-		PROVIDER_TEST_NAME=$$($(ECHO) "$(PROVIDER)" | awk '{print toupper(substr($$0,1,1)) tolower(substr($$0,2))}' | sed 's/openai/OpenAI/i; s/openrouter/OpenRouter/i; s/sgl/SGL/i; s/xai/XAI/i; s/vllm/VLLM/i; s/githubcopilot/GithubCopilot/i'); \
+		PROVIDER_TEST_NAME=$$($(ECHO) "$(PROVIDER)" | awk '{print toupper(substr($$0,1,1)) tolower(substr($$0,2))}' | sed 's/openai/OpenAI/i; s/openrouter/OpenRouter/i; s/sgl/SGL/i; s/xai/XAI/i; s/vllm/VLLM/i; s/githubcopilot/GithubCopilot/i; s/sagemaker/SageMaker/i'); \
 		if [ -n "$(TESTCASE)" ]; then \
 			CLEAN_TESTCASE="$(TESTCASE)"; \
 			CLEAN_TESTCASE=$${CLEAN_TESTCASE#Test$${PROVIDER_TEST_NAME}/}; \
@@ -888,7 +901,7 @@ test-framework: install-gotestsum ## Run framework tests
 			( cd $$dir && gotestsum \
 				--format=$(GOTESTSUM_FORMAT) \
 				--junitfile=$(CURDIR)/$(TEST_REPORTS_DIR)/framework-$$pkg_name.xml \
-				-- -v ./... ) || touch $(CURDIR)/$(TEST_REPORTS_DIR)/.framework-failed; \
+				-- -v -timeout 30m ./... ) || touch $(CURDIR)/$(TEST_REPORTS_DIR)/.framework-failed; \
 			if [ -z "$$CI" ] && [ -z "$$GITHUB_ACTIONS" ] && [ -z "$$GITLAB_CI" ] && [ -z "$$CIRCLECI" ] && [ -z "$$JENKINS_HOME" ]; then \
 				if which junit-viewer > /dev/null 2>&1; then \
 					$(ECHO) "$(YELLOW)Generating HTML report for $$pkg_name...$(NC)"; \
@@ -1744,22 +1757,7 @@ build-test-plugin: ## Build test plugin for E2E tests (copies to tmp/bifrost-tes
 	@cp examples/plugins/hello-world/build/hello-world.so tmp/bifrost-test-plugin.so
 	@$(ECHO) "$(GREEN)✓ Test plugin ready at tmp/bifrost-test-plugin.so$(NC)"
 
-run-e2e: install-playwright ## Run E2E tests (Usage: make run-e2e [FLOW=providers|virtual-keys|config])
-	@$(ECHO) "$(GREEN)Running Playwright E2E tests...$(NC)"
-	@if [ -n "$(FLOW)" ]; then \
-		$(ECHO) "$(CYAN)Running $(FLOW) tests...$(NC)"; \
-		if [ "$(FLOW)" = "config" ]; then \
-			cd tests/e2e && npx playwright test --project=chromium-config; \
-		else \
-			cd tests/e2e && npx playwright test features/$(FLOW); \
-		fi; \
-	else \
-		$(ECHO) "$(CYAN)Running all E2E tests...$(NC)"; \
-		cd tests/e2e && npx playwright test; \
-	fi
-	@$(ECHO) ""
-	@$(ECHO) "$(GREEN)E2E tests complete$(NC)"
-	@$(ECHO) "$(CYAN)View HTML report: cd tests/e2e && npx playwright show-report$(NC)"
+run-e2e: run-e2e-ui ## Alias of run-e2e-ui
 
 run-a11y-audit: install-playwright ## Scan every UI route with axe-core and report accessibility coverage (Usage: make run-a11y-audit [ROUTES=logs,providers] [MIN_SCORE=80])
 	@$(ECHO) "$(GREEN)Running accessibility audit...$(NC)"
@@ -1767,27 +1765,24 @@ run-a11y-audit: install-playwright ## Scan every UI route with axe-core and repo
 	@$(ECHO) "$(CYAN)Report: tests/e2e/a11y-report/summary.md$(NC)"
 	@$(ECHO) "$(CYAN)Static JSX checks: cd ui && npm run lint:a11y$(NC)"
 
-run-e2e-ui: install-playwright ## Run E2E tests in interactive UI mode
-	@$(EXPOSE_ENV); \
-	$(ECHO) "$(GREEN)Opening Playwright UI...$(NC)"; \
-	cd tests/e2e && npx playwright test --ui
+# Flags for tests/e2e/scripts/run-e2e.mjs, built from the make variables below.
+E2E_RUNNER_ARGS = $(if $(WORKERS),--workers $(WORKERS)) $(if $(FLOW),--features $(FLOW)) $(if $(RERUN),--rerun $(RERUN)) $(if $(SKIP_BUILD),--skip-build) $(if $(KEEP),--keep) $(if $(INTERACTIVE),--ui)
 
-run-e2e-headed: install-playwright ## Run E2E tests in headed browser mode
-	@$(ECHO) "$(GREEN)Running E2E tests in headed mode...$(NC)"
-	@if [ -n "$(FLOW)" ]; then \
-		$(ECHO) "$(CYAN)Running $(FLOW) tests (headed)...$(NC)"; \
-		if [ "$(FLOW)" = "config" ]; then \
-			cd tests/e2e && npx playwright test --project=chromium-config --headed; \
-		else \
-			cd tests/e2e && npx playwright test features/$(FLOW) --headed; \
-		fi; \
-	else \
-		$(ECHO) "$(CYAN)Running all E2E tests (headed)...$(NC)"; \
-		cd tests/e2e && npx playwright test --headed; \
-	fi
+run-e2e-ui: install-playwright ## Run the UI E2E suite on isolated Bifrost workers (Usage: make run-e2e-ui [WORKERS=4] [FLOW=providers,logs] [RERUN=tests/e2e/reports/e2e-results.json] [SKIP_BUILD=1] [KEEP=1] [INTERACTIVE=1])
+	@$(USE_NODE); $(EXPOSE_ENV); \
+	. .github/workflows/scripts/setup-go-workspace.sh; \
+	node tests/e2e/scripts/run-e2e.mjs $(E2E_RUNNER_ARGS)
 
-run-e2e-api: install-newman ## Run E2E API management tests (/api/* and /health)
-	@$(ECHO) "$(GREEN)Running E2E API management tests...$(NC)"
+run-e2e-headed: install-playwright ## Run the UI E2E suite with visible browsers (same variables as run-e2e-ui)
+	@$(USE_NODE); $(EXPOSE_ENV); \
+	. .github/workflows/scripts/setup-go-workspace.sh; \
+	node tests/e2e/scripts/run-e2e.mjs $(E2E_RUNNER_ARGS) --headed
+
+e2e-ui-down: ## Stop servers left running by run-e2e-ui KEEP=1 and remove the e2e Postgres
+	@$(USE_NODE); node tests/e2e/scripts/run-e2e.mjs --down
+
+run-e2e-api: install-newman ## Run E2E API management tests (/api/* and /health). PROXY=1 runs the proxy e2e flow instead: real provider calls through squid/stunnel/microsocks for every proxy mode (Usage: make run-e2e-api PROXY=1 [PROXY_CELLS="provider-http env-socks5"] [PORT=8080])
+	@if [ -n "$(PROXY)" ]; then $(ECHO) "$(GREEN)Running proxy e2e (tests/e2e/api/runners/proxy/run-proxy-matrix.sh)...$(NC)"; else $(ECHO) "$(GREEN)Running E2E API management tests...$(NC)"; fi
 	@BASH4="$${BIFROST_BASH:-}"; \
 	if [ -z "$$BASH4" ]; then \
 		for candidate in \
@@ -1806,7 +1801,15 @@ run-e2e-api: install-newman ## Run E2E API management tests (/api/* and /health)
 		$(ECHO) "$(YELLOW)Install a newer Bash with 'brew install bash', or pass BIFROST_BASH=/path/to/bash.$(NC)"; \
 		exit 1; \
 	fi; \
+	if [ -n "$(PROXY)" ]; then \
+		$(MAKE) --no-print-directory install-squid install-stunnel install-microsocks || exit 1; \
+		$(EXPOSE_ENV); \
+		exec "$$BASH4" ./tests/e2e/api/runners/proxy/run-proxy-matrix.sh; \
+	fi; \
 	cd tests/e2e/api && "$$BASH4" ./runners/run-newman-api-tests.sh --all-reports
+
+run-e2e-api-proxy: ## Proxy e2e flow, same as make run-e2e-api PROXY=1
+	@$(MAKE) run-e2e-api PROXY=1
 
 run-mcp-codemode-test: install-newman ## Run the hermetic MCP Code Mode E2E suite (no API keys, no paid calls). Builds tmp/bifrost-http from local code unless BINARY is given (Usage: make run-mcp-codemode-test [BINARY=path/to/bifrost-http])
 	@BINARY="$(BINARY)"; \
@@ -1821,6 +1824,53 @@ run-mcp-codemode-test: install-newman ## Run the hermetic MCP Code Mode E2E suit
 	BINARY="$$(cd "$$(dirname "$$BINARY")" && pwd)/$$(basename "$$BINARY")"; \
 	$(ECHO) "$(GREEN)Running MCP Code Mode E2E tests against $$BINARY...$(NC)"; \
 	./tests/e2e/api/runners/individual/run-newman-mcp-codemode-tests.sh --binary "$$BINARY"
+
+run-mcp-harness-test: install-newman ## Run the MCP harness (generated by tests/e2e/api/runners/build-mcp-harness.mjs), one folder per test case. Hermetic: boots its own Bifrost and an mcpchaos fleet. Builds tmp/bifrost-http from local code with the harness build tag (OAS-45 needs it) unless BINARY is given (Usage: make run-mcp-harness-test [BINARY=path/to/bifrost-http] [FOLDER="ADM"] [HARNESS_PORT=8093] [CHAOS_PORT=8494] [INPUT_PORT=8496] [APPS_PORT=8497])
+	@BINARY="$(BINARY)"; \
+	if [ -z "$$BINARY" ]; then \
+		$(MAKE) build LOCAL=1 BUILD_TAGS=harness || exit 1; \
+		BINARY=tmp/bifrost-http; \
+	fi; \
+	if [ ! -x "$$BINARY" ]; then \
+		$(ECHO) "$(RED)Error: bifrost-http binary not found or not executable: $$BINARY$(NC)"; \
+		exit 1; \
+	fi; \
+	BINARY="$$(cd "$$(dirname "$$BINARY")" && pwd)/$$(basename "$$BINARY")"; \
+	$(ECHO) "$(GREEN)Running MCP harness against $$BINARY...$(NC)"; \
+	./tests/e2e/api/runners/individual/run-newman-mcp-harness-tests.sh --binary "$$BINARY" \
+		$(if $(FOLDER),--folder "$(FOLDER)") $(if $(HARNESS_PORT),--port "$(HARNESS_PORT)") $(if $(CHAOS_PORT),--chaos-port "$(CHAOS_PORT)") $(if $(INPUT_PORT),--input-port "$(INPUT_PORT)") $(if $(APPS_PORT),--apps-port "$(APPS_PORT)")
+
+run-log-store-matrix: ## Relay and LLM log permutation matrix on every log store: sqlite, postgres, and hybrid over a local fake S3 (with and without offload exclusions). Hermetic: local upstreams, no API keys, no paid calls. Postgres cells need POSTGRES_URL. Builds tmp/bifrost-http unless BINARY is given (Usage: make run-log-store-matrix [BINARY=path/to/bifrost-http] [CELLS=sqlite,sqlite+s3] [SUITES=pricing,proxy] [PARALLEL=3] [POSTGRES_URL=postgresql://bifrost:bifrost_password@localhost:5432/postgres] [SKIP_CONTENT_MATRIX=1])
+	@$(USE_NODE); BINARY="$(BINARY)"; \
+	if [ -z "$$BINARY" ]; then \
+		$(MAKE) build LOCAL=1 || exit 1; \
+		BINARY=tmp/bifrost-http; \
+	fi; \
+	if [ ! -x "$$BINARY" ]; then \
+		$(ECHO) "$(RED)Error: bifrost-http binary not found or not executable: $$BINARY$(NC)"; \
+		exit 1; \
+	fi; \
+	if ! npm --prefix tests/e2e/api ls --depth=0 >/dev/null 2>&1; then \
+		(cd tests/e2e/api && npm install --silent) || exit 1; \
+	fi; \
+	BIFROST_E2E_POSTGRES_URL="$(POSTGRES_URL)" node tests/e2e/api/runners/run-log-store-matrix.mjs --binary "$$BINARY" \
+		$(if $(CELLS),--cells "$(CELLS)") $(if $(SUITES),--suites "$(SUITES)") $(if $(PARALLEL),--parallel "$(PARALLEL)") $(if $(SKIP_CONTENT_MATRIX),--skip-content-matrix)
+
+run-log-store-matrix: ## Relay and LLM log permutation matrix on every log store: sqlite, postgres, and hybrid over a local fake S3 (with and without offload exclusions). Hermetic: local upstreams, no API keys, no paid calls. Postgres cells need POSTGRES_URL. Builds tmp/bifrost-http unless BINARY is given (Usage: make run-log-store-matrix [BINARY=path/to/bifrost-http] [CELLS=sqlite,sqlite+s3] [SUITES=pricing,proxy] [PARALLEL=3] [POSTGRES_URL=postgresql://bifrost:bifrost_password@localhost:5432/postgres] [SKIP_CONTENT_MATRIX=1])
+	@$(USE_NODE); BINARY="$(BINARY)"; \
+	if [ -z "$$BINARY" ]; then \
+		$(MAKE) build LOCAL=1 || exit 1; \
+		BINARY=tmp/bifrost-http; \
+	fi; \
+	if [ ! -x "$$BINARY" ]; then \
+		$(ECHO) "$(RED)Error: bifrost-http binary not found or not executable: $$BINARY$(NC)"; \
+		exit 1; \
+	fi; \
+	if ! npm --prefix tests/e2e/api ls --depth=0 >/dev/null 2>&1; then \
+		(cd tests/e2e/api && npm install --silent) || exit 1; \
+	fi; \
+	BIFROST_E2E_POSTGRES_URL="$(POSTGRES_URL)" node tests/e2e/api/runners/run-log-store-matrix.mjs --binary "$$BINARY" \
+		$(if $(CELLS),--cells "$(CELLS)") $(if $(SUITES),--suites "$(SUITES)") $(if $(PARALLEL),--parallel "$(PARALLEL)") $(if $(SKIP_CONTENT_MATRIX),--skip-content-matrix)
 
 run-warp-test: install-newman ## Run the Warp E2E suite: boots Bifrost on a throwaway Postgres DB, seeds it (tests/cmd/seed/warpseed) and asks Warp questions with a live model. Needs OPENAI_API_KEY (or WARP_UPSTREAM_BIFROST=<url> to use a running Bifrost's key), Postgres and Weaviate (tests/docker-compose.yml). Builds tmp/bifrost-http unless BINARY is given (Usage: make run-warp-test [BINARY=path/to/bifrost-http] [FOLDER="Guardrails"] [WARP_UPSTREAM_BIFROST=http://localhost:8080] [WEAVIATE_HOST=localhost:9000] [POSTGRES_PORT=5432] [USE_INFISICAL=1])
 	@$(EXPOSE_ENV); \
@@ -1979,6 +2029,61 @@ test-cli: install-gotestsum ## Run CLI tests
 # spaces), so a `^FAIL[ \t]` pattern would swallow every failed cell's result -
 # the single most important line in the output.
 CLI_HARNESS_FILTER = awk '/^=== /||/^[ \t]*--- (PASS|FAIL|SKIP)[: ]/||/^(PASS|FAIL)$$/||/^ok[ \t]/||/^FAIL\t/||/unsupported for /||/not configured in bifrost/{next} {print; fflush()}'
+
+test-live: install-gotestsum ## Run GPT Live e2e tests against a running gateway (Usage: make test-live [TESTCASE=TestName|PATTERN=substring] [LIVE_UPSTREAM=fake|real] [BIFROST_BASE_URL=http://localhost:8080]; fake mode: start the gateway with APP_DIR=$$(pwd)/tests/live)
+	@$(EXPOSE_ENV); \
+	$(ECHO) "$(GREEN)Running GPT Live e2e tests ($${LIVE_UPSTREAM:-fake} upstream)...$(NC)"; \
+	mkdir -p $(TEST_REPORTS_DIR); \
+	if [ -n "$(PATTERN)" ] && [ -n "$(TESTCASE)" ]; then \
+		$(ECHO) "$(RED)Error: PATTERN and TESTCASE are mutually exclusive$(NC)"; exit 1; \
+	fi; \
+	RUN_FLAG=""; \
+	if [ -n "$(TESTCASE)" ]; then RUN_FLAG="-run ^$(TESTCASE)$$"; elif [ -n "$(PATTERN)" ]; then RUN_FLAG="-run .*$(PATTERN).*"; \
+	elif [ "$${LIVE_UPSTREAM:-fake}" = "real" ]; then RUN_FLAG="-run ^Test(Real|SDK)"; fi; \
+	REPORT_FILE="$(TEST_REPORTS_DIR)/live.xml"; \
+	cd tests/live && GOWORK=off gotestsum \
+		--format=$(GOTESTSUM_FORMAT) \
+		--junitfile=../../$$REPORT_FILE \
+		-- -v -timeout 900s $$RUN_FLAG; \
+	STATUS=$$?; \
+	cd ../..; \
+	$(MAKE) cleanup-junit-xml REPORT_FILE=$$REPORT_FILE; \
+	exit $$STATUS
+
+test-live-long: install-gotestsum ## Run the long GPT Live sessions: 17 min on the fake, 15 min per transport on the real upstream (Usage: make test-live-long [TESTCASE=TestName] [LIVE_UPSTREAM=fake|real] [BIFROST_BASE_URL=http://localhost:8080])
+	@$(EXPOSE_ENV); \
+	$(ECHO) "$(GREEN)Running long GPT Live sessions ($${LIVE_UPSTREAM:-fake} upstream)...$(NC)"; \
+	mkdir -p $(TEST_REPORTS_DIR); \
+	RUN_FLAG="-run Long"; \
+	if [ -n "$(TESTCASE)" ]; then RUN_FLAG="-run ^$(TESTCASE)$$"; fi; \
+	REPORT_FILE="$(TEST_REPORTS_DIR)/live-long.xml"; \
+	cd tests/live && LIVE_LONG=1 GOWORK=off gotestsum \
+		--format=$(GOTESTSUM_FORMAT) \
+		--junitfile=../../$$REPORT_FILE \
+		-- -v -timeout 90m $$RUN_FLAG; \
+	STATUS=$$?; \
+	cd ../..; \
+	$(MAKE) cleanup-junit-xml REPORT_FILE=$$REPORT_FILE; \
+	exit $$STATUS
+
+test-realtime: install-gotestsum
+	@$(EXPOSE_ENV); \
+	$(ECHO) "$(GREEN)Running Realtime API e2e tests...$(NC)"; \
+	mkdir -p $(TEST_REPORTS_DIR); \
+	if [ -n "$(PATTERN)" ] && [ -n "$(TESTCASE)" ]; then \
+		$(ECHO) "$(RED)Error: PATTERN and TESTCASE are mutually exclusive$(NC)"; exit 1; \
+	fi; \
+	RUN_FLAG=""; \
+	if [ -n "$(TESTCASE)" ]; then RUN_FLAG="-run ^$(TESTCASE)$$"; elif [ -n "$(PATTERN)" ]; then RUN_FLAG="-run .*$(PATTERN).*"; fi; \
+	REPORT_FILE="$(TEST_REPORTS_DIR)/realtime.xml"; \
+	cd tests/realtime && REALTIME_REQUIRE_GATEWAY=1 GOWORK=off gotestsum \
+		--format=$(GOTESTSUM_FORMAT) \
+		--junitfile=../../$$REPORT_FILE \
+		-- -v -count 1 -timeout 600s $$RUN_FLAG; \
+	STATUS=$$?; \
+	cd ../..; \
+	$(MAKE) cleanup-junit-xml REPORT_FILE=$$REPORT_FILE; \
+	exit $$STATUS
 
 run-cli-harness-test: ## Run the Claude Code + Codex + OpenCode E2E harness (non-interactive, multi-turn JSON streams). Prints one line per cell plus a progress table; MIRROR=1 adds the raw CLI stream, VERBOSE=1 adds go test -v. Usage: make run-cli-harness-test [TESTCASE='TestCLIs/...'] [CLI=claude|codex|opencode] [PROVIDER=openai|anthropic|azure|gemini|bedrock|vertex] [MODEL=<id-substring>] [SCENARIO=simple-chat|conversation-memory|...] [PARALLEL=4] [BASE_URL=http://localhost:8080] [API_KEY=...] [TIMEOUT=60m] [MIRROR=1] [VERBOSE=1] [QUIET=1]
 	@$(EXPOSE_ENV); \
@@ -2229,6 +2334,7 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		printf '  %-18s %s\n' "USE_INFISICAL=1" "Source secrets from Infisical CLI ('infisical export --path /local --format dotenv') instead of .env."; \
 		printf '  %-18s %s\n' "VERTEX_GCS_BUCKET" "Env-sourced (.env/Infisical): GCS bucket for Vertex file ops (forwarded to Newman as vertexGcsBucket)."; \
 		printf '  %-18s %s\n' "VERTEX_GCS_PREFIX" "Env-sourced: GCS object prefix for Vertex file ops (forwarded as vertexGcsPrefix)."; \
+		printf '  %-18s %s\n' "CHATGPT_ACCESS_TOKEN" "Env-sourced: ChatGPT sign-in access token for the Codex passthrough cases (forwarded as chatgptAccessToken; they skip when unset)."; \
 		printf '\n%s\n' "$(CYAN)Token Parity Matrix$(NC) ('Cross-Cut Round 33', generated - FOLDER or FEATURE=\"token parity\" to target it)"; \
 		printf '  %s\n' "Runs the same 3-round conversation directly against each provider AND through Bifrost, asserts usage lands in the same"; \
 		printf '  %s\n' "range, and writes tmp/harness-token-parity.md. Reuses the SAME env vars tests/integrations/python/config.json already reads"; \
@@ -2273,6 +2379,8 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		printf '  %-30s %s\n' "tmp/harness-monitor-passes.jsonl" "Pass manifest the single run-wide status table follows (one record per newman invocation)."; \
 		printf '  %-30s %s\n' "tmp/harness-failures.md"     "Categorized failure analyzer output + coverage matrices."; \
 		printf '  %-30s %s\n' "tmp/bifrost-dev.log"         "Bifrost runtime log (only if we auto-started it)."; \
+		printf '  %-30s %s\n' "tmp/harness-mcp-fixture.log" "MCP test server log (sse_mcp on 3012; only if we started it)."; \
+		printf '  %-30s %s\n' "tmp/harness-relay-fixture.log" "Relay upstream fixture log (relays-e2e rows, 127.0.0.1:8783; only if we started it)."; \
 		printf '  %-30s %s\n' "tmp/harness-augmented.json"  "Provider harness plus generated streaming/thinking rows."; \
 		printf '  %-30s %s\n' "tmp/harness-filtered.json"   "Filtered collection (only if PROVIDER/FEATURE/RERUN_FAILED set)."; \
 		printf '  %-30s %s\n' "tmp/harness-timings.json"    "Measured median ms per request name, merged across runs. Drives both the shard sizing and the"; \
@@ -2295,6 +2403,8 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		printf '  %-30s %s\n' ""                                "  Absent means 'this run measured none'; a leftover from an earlier run reads as current and contradicts"; \
 		printf '  %-30s %s\n' ""                                "  the freshly written tmp/harness-failures.md, which is rewritten unconditionally on every run."; \
 		printf '  %-30s %s\n' "tmp/newman-report-cache-parity.json" "Newman report for the deferred sequential cache pass (merged into tmp/newman-report.json)."; \
+		printf '  %-30s %s\n' "tmp/newman-report-serial.json" "Newman report for the serial pass: [SERIAL] folders run after the parallel sweep, alone against the gateway (merged into tmp/newman-report.json)."; \
+		printf '  %-30s %s\n' "tmp/newman-cli-serial.log" "Newman CLI output of the serial pass (also appended to tmp/newman-cli.log)."; \
 		printf '  %-30s %s\n' "tmp/newman-merge.jq"            "jq program used to merge per-provider + cache-pass reports into tmp/newman-report.json."; \
 		printf '\n'; \
 		exit 0; \
@@ -2487,6 +2597,14 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 			pkill -P $$BPID 2>/dev/null; \
 			rm -f tmp/bifrost-dev.pid; \
 		fi; \
+		if [ -f tmp/harness-mcp-fixture.pid ]; then \
+			kill $$(cat tmp/harness-mcp-fixture.pid) 2>/dev/null; \
+			rm -f tmp/harness-mcp-fixture.pid; \
+		fi; \
+		if [ -f tmp/harness-relay-fixture.pid ]; then \
+			kill $$(cat tmp/harness-relay-fixture.pid) 2>/dev/null; \
+			rm -f tmp/harness-relay-fixture.pid; \
+		fi; \
 	}; \
 	preempt_viewer_port() { \
 		if [ -f tmp/harness-viewer.pid ]; then \
@@ -2524,8 +2642,58 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 			say "$(GREEN)Modalities: all (no filter)$(NC)"; \
 		fi; \
 	fi; \
+	: "The profile's sse_mcp client (localhost:3012) serves the injected web_search tool."; \
+	: "Without it injection fails open and every injected-web-search row fails, so start the"; \
+	: "examples/mcps/remote-test-server fixture before the gateway resolves its MCP clients."; \
+	MCP_FIXTURE_STARTED=0; \
+	if nc -z localhost 3012 2>/dev/null; then \
+		say "$(GREEN)MCP test server already listening on 3012$(NC)"; \
+	else \
+		MCP_FIXTURE_BIN="$(CURDIR)/examples/mcps/remote-test-server/bin/remote-test-server"; \
+		if [ ! -x "$$MCP_FIXTURE_BIN" ] || [ examples/mcps/remote-test-server/main.go -nt "$$MCP_FIXTURE_BIN" ]; then \
+			say "$(CYAN)Building MCP test server (examples/mcps/remote-test-server)...$(NC)"; \
+			(cd examples/mcps/remote-test-server && GOWORK=off go build -o bin/remote-test-server .) || { \
+				say "$(RED)Could not build the MCP test server (examples/mcps/remote-test-server); not running the harness against a stale or missing fixture$(NC)"; \
+				exit 1; \
+			}; \
+		fi; \
+		if [ -x "$$MCP_FIXTURE_BIN" ]; then \
+			MCP_HTTP_PORT=3011 MCP_SSE_PORT=3012 "$$MCP_FIXTURE_BIN" > tmp/harness-mcp-fixture.log 2>&1 & \
+			echo $$! > tmp/harness-mcp-fixture.pid; \
+			for i in $$(seq 1 40); do nc -z localhost 3012 2>/dev/null && break; sleep 0.25; done; \
+			if nc -z localhost 3012 2>/dev/null; then \
+				say "$(GREEN)MCP test server up on 3012 (log: tmp/harness-mcp-fixture.log)$(NC)"; \
+				MCP_FIXTURE_STARTED=1; \
+			else \
+				say "$(RED)MCP test server did not open 3012. See tmp/harness-mcp-fixture.log$(NC)"; \
+			fi; \
+		fi; \
+	fi; \
+	: "The profile's relays (harness-relay-*) point at a local upstream on 127.0.0.1:8783, so the"; \
+	: "relays-e2e rows never reach a third party. The gateway dials it per request, not at boot."; \
+	if nc -z 127.0.0.1 8783 2>/dev/null; then \
+		if curl -fsS --max-time 2 http://127.0.0.1:8783/__relay/health 2>/dev/null | grep -q '"fixture":"relay-upstream"'; then \
+			say "$(GREEN)Relay upstream fixture already listening on 8783$(NC)"; \
+		else \
+			say "$(RED)Port 8783 is taken by something other than the relay upstream fixture (no /__relay/health match); relays-e2e rows will fail until it is freed.$(NC)"; \
+			case "$(FEATURE)" in *relay*) exit 1;; esac; \
+		fi; \
+	else \
+		$(USE_NODE); RELAY_UPSTREAM_FIXTURE_PORT=8783 node tests/e2e/api/runners/relay-upstream-fixture.mjs > tmp/harness-relay-fixture.log 2>&1 & \
+		echo $$! > tmp/harness-relay-fixture.pid; \
+		for i in $$(seq 1 40); do nc -z 127.0.0.1 8783 2>/dev/null && break; sleep 0.25; done; \
+		if nc -z 127.0.0.1 8783 2>/dev/null; then \
+			say "$(GREEN)Relay upstream fixture up on 8783 (log: tmp/harness-relay-fixture.log)$(NC)"; \
+		else \
+			say "$(RED)Relay upstream fixture did not open 8783; relays-e2e rows will fail. See tmp/harness-relay-fixture.log$(NC)"; \
+			case "$(FEATURE)" in *relay*) exit 1;; esac; \
+		fi; \
+	fi; \
 	if curl -fsS --max-time 2 "$$BASE_URL_VAL/health" > /dev/null 2>&1; then \
 		say "$(GREEN)Bifrost already running at $$BASE_URL_VAL$(NC)"; \
+		if [ "$$MCP_FIXTURE_STARTED" = "1" ]; then \
+			say "$(YELLOW)The MCP test server started after this gateway booted, so its sse_mcp client may still be disconnected; restart the gateway if injected-web-search rows fail.$(NC)"; \
+		fi; \
 	else \
 		say "$(YELLOW)Bifrost not running - launching 'make dev' (APP_DIR=$$APP_DIR_VAL) in background...$(NC)"; \
 		$(MAKE) dev APP_DIR="$$APP_DIR_VAL" > tmp/bifrost-dev.log 2>&1 & \
@@ -2631,6 +2799,12 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 	fi; \
 	FEATURE_ANY_FLAG=""; \
 	if [ -n "$$MAIN_FEATURES" ]; then FEATURE_ANY_FLAG="--feature-any $$MAIN_FEATURES"; fi; \
+	: "[SERIAL] folders change gateway-wide state (a feature flag, client config) around the request"; \
+	: "under test. The parallel forks would run other rows against the gateway while one of them has"; \
+	: "it changed, so a parallel run carves them out of the forks and runs them afterwards in a pass"; \
+	: "of their own, alone against the gateway. A sequential run already sends one request at a time."; \
+	SERIAL_PASS=0; SERIAL_EXCLUDE_FLAG=""; SERIAL_RAN=0; MAIN_EMPTY=0; \
+	if [ "$(or $(PARALLEL),1)" != "0" ] && [ "$$SKIP_MAIN" != "1" ]; then SERIAL_PASS=1; SERIAL_EXCLUDE_FLAG="--exclude-serial"; fi; \
 	: "The main pass merges its shards over tmp/newman-report.json before the cache pass runs, so"; \
 	: "a rerun's selection for that pass is read from a snapshot taken now. Dot-prefixed so the"; \
 	: "tmp/newman-report-*.json merge glob never sweeps it in."; \
@@ -2646,6 +2820,7 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 			$(if $(FOLDER),--folder "$(FOLDER)",) \
 			$$FEATURE_ANY_FLAG \
 			$$EXCLUDE_FLAG \
+			$$SERIAL_EXCLUDE_FLAG \
 			$${SMOKE_MANIFEST:+--smoke "$$SMOKE_MANIFEST"} \
 			$(if $(RERUN_FAILED),--rerun-failed --report tmp/newman-report.json,) || { say "$(RED)Filter step failed$(NC)"; exit 1; }; \
 		COLLECTION_FILE="tmp/harness-filtered.json"; \
@@ -2740,13 +2915,13 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		: "the failure it is meant to clear. Args: <shard> <collection> <report-out> <provider>."; \
 		: "Runs in the foreground and returns the PIPELINE status (pipefail is set above), so the"; \
 		: "caller can record it; backgrounding stays at the call site so pids remain trackable."; \
-		: "Running SHARD jobs, excluding the monitor. start_monitor backgrounds the monitor into"; \
-		: "this same shell, so a plain 'jobs -pr | wc -l' counts it as a shard. At the default cap"; \
-		: "that is only an off-by-one, but with a low HARNESS_JOBS the count would sit at the cap"; \
-		: "with only the monitor running and 'wait -n' would block on a process that never exits."; \
+		: "Running SHARD jobs, excluding every long-lived helper this shell backgrounded: the"; \
+		: "monitor, the MCP and relay fixtures and a gateway started by 'make dev'. A plain"; \
+		: "'jobs -pr | wc -l' counts them as shards, and with a low HARNESS_JOBS the count would"; \
+		: "sit at the cap while 'wait -n' blocks on a process that never exits."; \
 		shard_jobs() { \
-			SJ_MON="$$(cat tmp/harness-monitor.pid 2>/dev/null)"; \
-			jobs -pr | grep -v -x -F "$${SJ_MON:-__none__}" | wc -l | tr -d ' '; \
+			SJ_SKIP="$$(cat tmp/harness-monitor.pid tmp/harness-mcp-fixture.pid tmp/harness-relay-fixture.pid tmp/bifrost-dev.pid 2>/dev/null)"; \
+			jobs -pr | grep -v -x -F "$${SJ_SKIP:-__none__}" | wc -l | tr -d ' '; \
 		}; \
 		newman_shard() { \
 			NS_SHARD="$$1"; NS_COLLECTION="$$2"; NS_REPORT="$$3"; NS_PROV="$$4"; \
@@ -2761,6 +2936,7 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 				$${VERTEX_GCS_PREFIX:+--env-var "vertexGcsPrefix=$$VERTEX_GCS_PREFIX"} \
 				$${AWS_S3_BUCKET:+--env-var "awsS3Bucket=$$AWS_S3_BUCKET"} \
 				$${OPENAI_API_KEY:+--env-var "openaiKey=$$OPENAI_API_KEY"} \
+				$${CHATGPT_ACCESS_TOKEN:+--env-var "chatgptAccessToken=$$CHATGPT_ACCESS_TOKEN"} \
 				$${ANTHROPIC_API_KEY:+--env-var "anthropicKey=$$ANTHROPIC_API_KEY"} \
 				$${GEMINI_API_KEY:+--env-var "genaiKey=$$GEMINI_API_KEY"} \
 				$${AWS_ACCESS_KEY_ID:+--env-var "bedrockDirectAccessKeyId=$$AWS_ACCESS_KEY_ID"} \
@@ -2848,14 +3024,28 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		done; \
 		done; \
 		done; \
+		MAIN_EMPTY=0; \
 		if [ "$$LAUNCHED" -eq 0 ]; then \
 			if [ "$$BUDGET_EXCEEDED" = "1" ]; then \
 				say "$(RED)Aborted before any launch: every shard would exceed HARNESS_MAX_REQUESTS=$(HARNESS_MAX_REQUESTS). Raise the cap or narrow PROVIDER/FEATURE.$(NC)"; \
 				exit 3; \
 			fi; \
-			say "$(RED)No provider runs were launched. Check PROVIDER/FEATURE/FOLDER filters.$(NC)"; \
-			exit 1; \
+			: "A filter that matches only [SERIAL] rows launches no fork: those rows were carved out"; \
+			: "for the serial pass below, which decides after it runs whether anything ran at all."; \
+			if [ "$$SERIAL_PASS" != "1" ]; then \
+				say "$(RED)No provider runs were launched. Check PROVIDER/FEATURE/FOLDER filters.$(NC)"; \
+				exit 1; \
+			fi; \
+			MAIN_EMPTY=1; \
+			say "$(CYAN)No parallel rows match the filters; going straight to the serial pass.$(NC)"; \
 		fi; \
+		if [ "$$MAIN_EMPTY" = "1" ]; then \
+		: "Nothing to drain, retry or merge. The serial pass merges its report over this empty one,"; \
+		: "so the final report is the serial report (the same skeleton a cache-only run starts from)."; \
+		printf '%s' '{"collection":{},"environment":{},"run":{"executions":[],"failures":[],"stats":{"iterations":{"total":1,"pending":0,"failed":0},"items":{"total":0},"requests":{"total":0,"failed":0}},"timings":{}}}' > tmp/newman-report.json; \
+		: > tmp/newman-cli.log; \
+		NEWMAN_EXIT=$$FILTER_FAILED; \
+		else \
 		add_pass "$$(printf '{"t":"pass","id":"main","mode":"parallel","statusFile":"tmp/parallel-status","launched":%s}' "$$LAUNCHED")"; \
 		: "Drain the shards, then read verdicts from the exit files rather than from wait's status:"; \
 		: "the cap loop above already reaped an unknown subset with 'wait -n', so a status here is"; \
@@ -3001,6 +3191,7 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 			say "$(RED)$$FILTER_FAILED shard(s) skipped - their filter step failed, so those requests never ran. See $$QUIET_LOG$(NC)"; \
 		fi; \
 		NEWMAN_EXIT=$$((PFAILED+FILTER_FAILED)); \
+		fi; \
 	else \
 		SEQ_PROVIDERS="$(or $(PROVIDER),$(HARNESS_PROVIDERS))"; \
 		: > tmp/newman-cli.log; \
@@ -3018,6 +3209,7 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 				$${VERTEX_GCS_PREFIX:+--env-var "vertexGcsPrefix=$$VERTEX_GCS_PREFIX"} \
 				$${AWS_S3_BUCKET:+--env-var "awsS3Bucket=$$AWS_S3_BUCKET"} \
 				$${OPENAI_API_KEY:+--env-var "openaiKey=$$OPENAI_API_KEY"} \
+				$${CHATGPT_ACCESS_TOKEN:+--env-var "chatgptAccessToken=$$CHATGPT_ACCESS_TOKEN"} \
 				$${ANTHROPIC_API_KEY:+--env-var "anthropicKey=$$ANTHROPIC_API_KEY"} \
 				$${GEMINI_API_KEY:+--env-var "genaiKey=$$GEMINI_API_KEY"} \
 				$${AWS_ACCESS_KEY_ID:+--env-var "bedrockDirectAccessKeyId=$$AWS_ACCESS_KEY_ID"} \
@@ -3077,6 +3269,7 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 				$(if $(filter 1 true TRUE yes YES y Y,$(INCLUDE_PREVIEW)),--env-var "include_preview=1",) \
 				$(if $(filter 1 true TRUE yes YES y Y,$(INCLUDE_SKIP)),--env-var "include_skip=1",) \
 				$${OPENAI_API_KEY:+--env-var "openaiKey=$$OPENAI_API_KEY"} \
+				$${CHATGPT_ACCESS_TOKEN:+--env-var "chatgptAccessToken=$$CHATGPT_ACCESS_TOKEN"} \
 				$${ANTHROPIC_API_KEY:+--env-var "anthropicKey=$$ANTHROPIC_API_KEY"} \
 				$${GEMINI_API_KEY:+--env-var "genaiKey=$$GEMINI_API_KEY"} \
 				$${AWS_ACCESS_KEY_ID:+--env-var "bedrockDirectAccessKeyId=$$AWS_ACCESS_KEY_ID"} \
@@ -3103,6 +3296,63 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 					|| say "$(YELLOW)Cache pass report merge failed; it remains at tmp/newman-report-cache-parity.json$(NC)"; \
 			fi; \
 		fi; \
+	fi; \
+	if [ "$$SERIAL_PASS" = "1" ]; then \
+		say "$(CYAN)Serial pass ([SERIAL] folders, one newman, alone against the gateway)...$(NC)"; \
+		rm -f tmp/harness-serial-filtered.json; SERIAL_FILTER_FAILED=0; \
+		$(USE_NODE); run_quiet node tests/e2e/api/runners/filter-collection.mjs \
+			--source tmp/harness-augmented.json \
+			--out tmp/harness-serial-filtered.json \
+			--only-serial \
+			$(if $(PROVIDER),--provider $(PROVIDER),) \
+			$(if $(FEATURE),--feature "$(FEATURE)",) \
+			$(if $(FOLDER),--folder "$(FOLDER)",) \
+			$$FEATURE_ANY_FLAG \
+			$$EXCLUDE_FLAG \
+			$${SMOKE_MANIFEST:+--smoke "$$SMOKE_MANIFEST"} \
+			$(if $(RERUN_FAILED),--rerun-failed --report tmp/.newman-report-prior.json,) || { say "$(RED)Serial pass filter step failed - the [SERIAL] folders did not run$(NC)"; NEWMAN_EXIT=$$((NEWMAN_EXIT+1)); SERIAL_FILTER_FAILED=1; }; \
+		SERIAL_COUNT="$$(grep -c '"request":' tmp/harness-serial-filtered.json 2>/dev/null || true)"; SERIAL_COUNT="$${SERIAL_COUNT:-0}"; \
+		if [ "$$SERIAL_FILTER_FAILED" = "1" ]; then \
+			:; \
+		elif [ "$$SERIAL_COUNT" -eq 0 ]; then \
+			say "$(CYAN)Serial pass: the scope selects no [SERIAL] folder - nothing to run.$(NC)"; \
+		elif [ -f tmp/harness-serial-filtered.json ] && budget_ok "$$SERIAL_COUNT" serial; then \
+			: > tmp/newman-cli-serial.log; \
+			add_pass '{"t":"pass","id":"serial","mode":"sequential","log":"tmp/newman-cli-serial.log","collection":"tmp/harness-serial-filtered.json"}'; \
+			newman run tmp/harness-serial-filtered.json \
+				--env-var "baseUrl=$$BASE_URL_VAL" \
+				$(if $(filter on true 1 yes YES y Y,$(COMPAT)),--env-var "compat=true",) \
+				$(if $(filter 1 true TRUE yes YES y Y,$(INCLUDE_PREVIEW)),--env-var "include_preview=1",) \
+				$(if $(filter 1 true TRUE yes YES y Y,$(INCLUDE_SKIP)),--env-var "include_skip=1",) \
+				$${OPENAI_API_KEY:+--env-var "openaiKey=$$OPENAI_API_KEY"} \
+				$${CHATGPT_ACCESS_TOKEN:+--env-var "chatgptAccessToken=$$CHATGPT_ACCESS_TOKEN"} \
+				$${ANTHROPIC_API_KEY:+--env-var "anthropicKey=$$ANTHROPIC_API_KEY"} \
+				$${GEMINI_API_KEY:+--env-var "genaiKey=$$GEMINI_API_KEY"} \
+				$(if $(ENV_FILE),--environment $(ENV_FILE),) \
+				--reporters cli,json \
+				--reporter-json-export tmp/newman-report-serial.json > tmp/newman-cli-serial.log 2>&1; \
+			SERIAL_EXIT=$$?; \
+			SERIAL_RAN=1; \
+			end_pass serial; \
+			cat tmp/newman-cli-serial.log >> tmp/newman-cli.log 2>/dev/null || true; \
+			if [ "$$HARNESS_MONITORED" != "1" ] && [ "$$HARNESS_QUIET" != "1" ]; then cat tmp/newman-cli-serial.log; fi; \
+			if [ "$$SERIAL_EXIT" -ne 0 ]; then NEWMAN_EXIT=$$((NEWMAN_EXIT+1)); fi; \
+			if command -v jq >/dev/null 2>&1 && [ -f tmp/newman-report-serial.json ]; then \
+				jq -c -s -f tmp/newman-merge.jq tmp/newman-report.json tmp/newman-report-serial.json > tmp/newman-report-combined.json \
+					&& mv tmp/newman-report-combined.json tmp/newman-report.json \
+					|| say "$(YELLOW)Serial pass report merge failed; it remains at tmp/newman-report-serial.json$(NC)"; \
+			fi; \
+		elif [ "$${MAIN_EMPTY:-0}" = "1" ] && [ "$${BUDGET_EXCEEDED:-0}" = "1" ]; then \
+			: "budget_ok refused the serial pass, and the main pass had nothing: nothing ran at all."; \
+			stop_monitor; \
+			say "$(RED)Aborted before any launch: the serial pass would exceed HARNESS_MAX_REQUESTS=$(HARNESS_MAX_REQUESTS). Raise the cap or narrow PROVIDER/FEATURE.$(NC)"; \
+			exit 3; \
+		fi; \
+	fi; \
+	if [ "$${MAIN_EMPTY:-0}" = "1" ] && [ "$${SERIAL_RAN:-0}" != "1" ]; then \
+		stop_monitor; \
+		say "$(RED)No provider runs were launched. Check PROVIDER/FEATURE/FOLDER filters.$(NC)"; \
+		exit 1; \
 	fi; \
 	stop_monitor; \
 	: "The single teardown for the whole run: one alt-screen exit, one persistent"; \

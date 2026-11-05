@@ -597,6 +597,82 @@ func TestToAnthropicChatRequest_ToolResultCacheControlHoistedToBlock(t *testing.
 	}
 }
 
+func TestToAnthropicChatRequest_ToolCallCacheControlCarriedToToolUse(t *testing.T) {
+	toolCallID := "toolu_1"
+	req := &schemas.BifrostChatRequest{
+		Provider: schemas.Anthropic,
+		Model:    "claude-sonnet-4-6",
+		Input: []schemas.ChatMessage{
+			{
+				Role:    schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("what is the weather in nyc")},
+			},
+			{
+				Role: schemas.ChatMessageRoleAssistant,
+				ChatAssistantMessage: &schemas.ChatAssistantMessage{
+					ToolCalls: []schemas.ChatAssistantMessageToolCall{
+						{
+							ID:   schemas.Ptr(toolCallID),
+							Type: schemas.Ptr(string(schemas.ChatToolTypeFunction)),
+							Function: schemas.ChatAssistantMessageToolCallFunction{
+								Name:      schemas.Ptr("get_weather"),
+								Arguments: `{"city":"nyc"}`,
+							},
+							CacheControl: &schemas.CacheControl{Type: schemas.CacheControlTypeEphemeral},
+						},
+						{
+							ID:   schemas.Ptr("toolu_2"),
+							Type: schemas.Ptr(string(schemas.ChatToolTypeFunction)),
+							Function: schemas.ChatAssistantMessageToolCallFunction{
+								Name:      schemas.Ptr("get_weather"),
+								Arguments: `{"city":"sf"}`,
+							},
+						},
+					},
+				},
+			},
+			{
+				Role:            schemas.ChatMessageRoleTool,
+				ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: schemas.Ptr(toolCallID)},
+				Content:         &schemas.ChatMessageContent{ContentStr: schemas.Ptr("68F, partly cloudy.")},
+			},
+		},
+	}
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	result, err := ToAnthropicChatRequest(ctx, req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var toolUseBlocks []AnthropicContentBlock
+	for i := range result.Messages {
+		msg := result.Messages[i]
+		if msg.Role != "assistant" || msg.Content.ContentBlocks == nil {
+			continue
+		}
+		for j := range msg.Content.ContentBlocks {
+			if msg.Content.ContentBlocks[j].Type == AnthropicContentBlockTypeToolUse {
+				toolUseBlocks = append(toolUseBlocks, msg.Content.ContentBlocks[j])
+			}
+		}
+	}
+	if len(toolUseBlocks) != 2 {
+		t.Fatalf("expected 2 tool_use blocks in the converted request, got %d", len(toolUseBlocks))
+	}
+
+	if toolUseBlocks[0].CacheControl == nil {
+		t.Fatal("expected cache_control on the tool_calls entry to be carried onto its tool_use block")
+	}
+	if toolUseBlocks[0].CacheControl.Type != schemas.CacheControlTypeEphemeral {
+		t.Errorf("tool_use cache_control type = %q, want %q", toolUseBlocks[0].CacheControl.Type, schemas.CacheControlTypeEphemeral)
+	}
+	if toolUseBlocks[1].CacheControl != nil {
+		t.Error("tool_use block without a marker on its tool_calls entry must not gain cache_control")
+	}
+}
+
 func TestToAnthropicChatRequest_NestedProperties_Preserved(t *testing.T) {
 	params := &schemas.ToolFunctionParameters{
 		Type: "object",
@@ -1291,6 +1367,163 @@ func TestToAnthropicChatRequest_NonOpus47_NoDefaultDisplay(t *testing.T) {
 	}
 	if result.Thinking.Display != nil {
 		t.Errorf("expected Display to be nil for non-Opus 4.7, got %q", *result.Thinking.Display)
+	}
+}
+
+// Haiku 5.5 takes the Sonnet 5+ request surface: reasoning.effort becomes
+// adaptive thinking plus output_config.effort, and temperature/top_p/top_k are
+// dropped, since any non-default value is a 400 on this model. Unrecognised, the
+// effort fell through to the budget_tokens branch and the sampling knobs were
+// forwarded. Haiku 4.5 keeps its extended-thinking surface.
+func TestToAnthropicChatRequest_Haiku55_ReasoningEffort_AdaptiveWithEffort(t *testing.T) {
+	for _, effort := range []string{"low", "medium", "high", "xhigh", "max"} {
+		t.Run(effort, func(t *testing.T) {
+			bifrostReq := &schemas.BifrostChatRequest{
+				Provider: schemas.Anthropic,
+				Model:    "claude-haiku-5-5",
+				Input: []schemas.ChatMessage{
+					{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: new("think")}},
+				},
+				Params: &schemas.ChatParameters{
+					MaxCompletionTokens: new(8192),
+					Reasoning:           &schemas.ChatReasoning{Effort: &effort},
+				},
+			}
+
+			ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+			defer cancel()
+			result, err := ToAnthropicChatRequest(ctx, bifrostReq)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			if result.Thinking == nil || result.Thinking.Type != "adaptive" {
+				t.Fatalf("expected adaptive thinking for Haiku 5.5, got %+v", result.Thinking)
+			}
+			if result.Thinking.BudgetTokens != nil {
+				t.Errorf("expected no budget_tokens for Haiku 5.5, got %v", *result.Thinking.BudgetTokens)
+			}
+			if result.Thinking.Display == nil || *result.Thinking.Display != "summarized" {
+				t.Errorf("expected Display to default to 'summarized' for Haiku 5.5, got %v", result.Thinking.Display)
+			}
+			if result.OutputConfig == nil || result.OutputConfig.Effort == nil || *result.OutputConfig.Effort != effort {
+				t.Errorf("expected output_config.effort %q, got %+v", effort, result.OutputConfig)
+			}
+		})
+	}
+
+	t.Run("haiku 4.5 keeps budget_tokens", func(t *testing.T) {
+		effort := "low"
+		bifrostReq := &schemas.BifrostChatRequest{
+			Provider: schemas.Anthropic,
+			Model:    "claude-haiku-4-5-20251001",
+			Input: []schemas.ChatMessage{
+				{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: new("think")}},
+			},
+			Params: &schemas.ChatParameters{
+				MaxCompletionTokens: new(8192),
+				Reasoning:           &schemas.ChatReasoning{Effort: &effort},
+			},
+		}
+
+		ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+		defer cancel()
+		result, err := ToAnthropicChatRequest(ctx, bifrostReq)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if result.Thinking == nil || result.Thinking.Type != "enabled" || result.Thinking.BudgetTokens == nil {
+			t.Errorf("expected enabled thinking with a budget for Haiku 4.5, got %+v", result.Thinking)
+		}
+		if result.OutputConfig != nil && result.OutputConfig.Effort != nil {
+			t.Errorf("expected no output_config.effort for Haiku 4.5, got %q", *result.OutputConfig.Effort)
+		}
+	})
+}
+
+func TestToAnthropicChatRequest_Haiku55_StripsTemperatureTopPTopK(t *testing.T) {
+	temp := 0.0
+	topP := 0.9
+
+	bifrostReq := &schemas.BifrostChatRequest{
+		Provider: schemas.Anthropic,
+		Model:    "claude-haiku-5-5",
+		Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: new("hi")}},
+		},
+		Params: &schemas.ChatParameters{
+			Temperature: &temp,
+			TopP:        &topP,
+			ExtraParams: map[string]interface{}{"top_k": 40},
+		},
+	}
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	result, err := ToAnthropicChatRequest(ctx, bifrostReq)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if result.Temperature != nil {
+		t.Errorf("expected Temperature to be nil for Haiku 5.5, got %v", *result.Temperature)
+	}
+	if result.TopP != nil {
+		t.Errorf("expected TopP to be nil for Haiku 5.5, got %v", *result.TopP)
+	}
+	if result.TopK != nil {
+		t.Errorf("expected TopK to be nil for Haiku 5.5, got %v", *result.TopK)
+	}
+}
+
+// A custom provider's own key matches no datasheet row; the worker stamps the
+// built-in provider it wraps on the context, and the converter resolves through it.
+// Without that, a model only the datasheet knows falls back to the name checks:
+// budget thinking without effort, and the sampling params forwarded.
+func TestToAnthropicChatRequest_CustomProviderUsesBaseProviderRow(t *testing.T) {
+	const model = "claude-datasheet-only-test"
+	yes, no := true, false
+	setOverride(t, model, schemas.ModelCapabilities{SupportsAdaptiveThinking: &yes, SupportsNativeEffort: &yes, SupportsSamplingParams: &no})
+
+	for _, tc := range []struct {
+		name        string
+		stampedBase bool
+	}{
+		{"base provider on the context", true},
+		{"no base provider on the context", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			temp := 0.0
+			ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+			defer cancel()
+			if tc.stampedBase {
+				ctx.SetValue(schemas.BifrostContextKeyBaseProviderType, schemas.Anthropic)
+			}
+			result, err := ToAnthropicChatRequest(ctx, &schemas.BifrostChatRequest{
+				Provider: schemas.ModelProvider("my-claude"),
+				Model:    model,
+				Input: []schemas.ChatMessage{
+					{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: new("hi")}},
+				},
+				Params: &schemas.ChatParameters{
+					MaxCompletionTokens: new(8192),
+					Temperature:         &temp,
+					Reasoning:           &schemas.ChatReasoning{Effort: new("low")},
+				},
+			})
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			rowApplied := result.Thinking != nil && result.Thinking.Type == "adaptive" &&
+				result.OutputConfig != nil && result.OutputConfig.Effort != nil && *result.OutputConfig.Effort == "low" &&
+				result.Temperature == nil
+			if rowApplied != tc.stampedBase {
+				t.Errorf("datasheet row applied = %v, want %v (thinking=%+v output_config=%+v temperature=%v)",
+					rowApplied, tc.stampedBase, result.Thinking, result.OutputConfig, result.Temperature)
+			}
+		})
 	}
 }
 
@@ -2651,5 +2884,71 @@ func TestStopSequence_ChatResponseEgress(t *testing.T) {
 			})
 			assertStopFields(t, result.StopReason, result.StopSequence, tt.wantReason, tt.wantSeq)
 		})
+	}
+}
+
+// Anthropic takes images in a tool_result; audio a tool returned becomes a placeholder beside them.
+func TestToAnthropicChatRequest_ToolResultKeepsImagesNamesOtherMedia(t *testing.T) {
+	req := &schemas.BifrostChatRequest{
+		Provider: schemas.Anthropic,
+		Model:    "claude-sonnet-4-6",
+		Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("plot it")}},
+			{Role: schemas.ChatMessageRoleTool, ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: schemas.Ptr("toolu_1")}, Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{
+		{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr("chart below")},
+		{Type: schemas.ChatContentBlockTypeImage, ImageURLStruct: &schemas.ChatInputImage{URL: "data:image/png;base64,iVBORw0KGgo="}},
+		{Type: schemas.ChatContentBlockTypeInputAudio, InputAudio: &schemas.ChatInputAudio{Data: "SUQz", Format: schemas.Ptr("mp3")}},
+	}}},
+		},
+	}
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	result, err := ToAnthropicChatRequest(ctx, req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var nested []AnthropicContentBlock
+	for _, msg := range result.Messages {
+		for _, block := range msg.Content.ContentBlocks {
+			if block.Type == AnthropicContentBlockTypeToolResult && block.Content != nil {
+				nested = block.Content.ContentBlocks
+			}
+		}
+	}
+	if len(nested) != 3 || nested[1].Type != AnthropicContentBlockTypeImage || nested[2].Text == nil || !strings.Contains(*nested[2].Text, "[audio/mp3") {
+		t.Fatalf("expected text, image, audio placeholder; got %+v", nested)
+	}
+}
+
+// A cache marker on a tool result that also carried media Anthropic cannot take still reaches the tool_result.
+func TestToAnthropicChatRequest_ToolResultCacheControlSurvivesMediaPlaceholder(t *testing.T) {
+	marker := &schemas.CacheControl{Type: schemas.CacheControlTypeEphemeral}
+	req := &schemas.BifrostChatRequest{
+		Provider: schemas.Anthropic,
+		Model:    "claude-sonnet-4-6",
+		Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("play it")}},
+			{Role: schemas.ChatMessageRoleTool, ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: schemas.Ptr("toolu_1")}, Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{
+				{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr("clip below"), CacheControl: marker},
+				{Type: schemas.ChatContentBlockTypeInputAudio, InputAudio: &schemas.ChatInputAudio{Data: "SUQz", Format: schemas.Ptr("mp3")}},
+			}}},
+		},
+	}
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	result, err := ToAnthropicChatRequest(ctx, req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var toolResult *AnthropicContentBlock
+	for _, msg := range result.Messages {
+		for i, block := range msg.Content.ContentBlocks {
+			if block.Type == AnthropicContentBlockTypeToolResult {
+				toolResult = &msg.Content.ContentBlocks[i]
+			}
+		}
+	}
+	if toolResult == nil || toolResult.CacheControl == nil {
+		t.Fatalf("expected cache_control on the tool_result; got %+v", toolResult)
 	}
 }

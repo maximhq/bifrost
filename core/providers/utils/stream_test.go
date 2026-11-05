@@ -552,6 +552,30 @@ func TestAttachBilledUsageFromContext_CopiesUsage(t *testing.T) {
 	}
 }
 
+func TestAttachBilledUsageFromContext_CopiesIterations(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	usage := &schemas.BifrostLLMUsage{
+		PromptTokens: 10,
+		TotalTokens:  10,
+		Iterations: []schemas.ResponsesResponseUsage{
+			{Type: schemas.Ptr("advisor_message"), Model: schemas.Ptr("claude-opus-4-8"), InputTokens: 2000, OutputTokens: 900},
+		},
+	}
+	ctx.SetValue(schemas.BifrostContextKeyStreamAccumulatedUsage, usage)
+
+	bifrostErr := &schemas.BifrostError{}
+	attachBilledUsageFromContext(ctx, bifrostErr)
+	usage.Iterations[0].InputTokens = 999
+
+	billed := bifrostErr.ExtraFields.BilledUsage
+	if billed == nil || len(billed.Iterations) != 1 {
+		t.Fatalf("BilledUsage dropped the advisor pass: %+v", billed)
+	}
+	if billed.Iterations[0].InputTokens != 2000 {
+		t.Fatalf("BilledUsage aliases the accumulator's iterations: got %d, want 2000", billed.Iterations[0].InputTokens)
+	}
+}
+
 func TestAttachBilledUsageFromContext_NoOpWhenEmpty(t *testing.T) {
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	ctx.SetValue(schemas.BifrostContextKeyStreamAccumulatedUsage, &schemas.BifrostLLMUsage{})
@@ -1091,5 +1115,182 @@ func TestCheckFirstStreamChunk_FirstChunkBeforeDeadlineDisarms(t *testing.T) {
 	<-done
 	if abort.Fired() || !abort.Disarm() {
 		t.Fatal("the first chunk must disarm the abort")
+	}
+}
+
+// StreamStartupState must agree with the startup checks on every sequence: an error it
+// reports as failing the attempt is one the checker returns to the retry loop,
+// and one it lets through is one the checker forwards to the client. Disagreeing
+// the first way would hide from plugins an error the client received.
+func TestStreamStartupStateAgreesWithStartupChecks(t *testing.T) {
+	failure := &schemas.BifrostStreamChunk{BifrostError: &schemas.BifrostError{
+		Error: &schemas.ErrorField{Message: "rate limit exceeded"},
+	}}
+	startupEvents := func(n int) []*schemas.BifrostStreamChunk {
+		out := make([]*schemas.BifrostStreamChunk, n)
+		for i := range out {
+			out[i] = preambleChunk()
+		}
+		return out
+	}
+	cases := map[string]struct {
+		before        []*schemas.BifrostStreamChunk
+		isPreamble    func(*schemas.BifrostStreamChunk) bool
+		underDeadline bool
+	}{
+		"error as first chunk":                {},
+		"error after first chunk":             {before: []*schemas.BifrostStreamChunk{contentChunk()}},
+		"error after startup event":           {before: []*schemas.BifrostStreamChunk{preambleChunk()}, isPreamble: isTestPreamble},
+		"error after output":                  {before: []*schemas.BifrostStreamChunk{preambleChunk(), contentChunk()}, isPreamble: isTestPreamble},
+		"error after startup byte overflow":   {before: []*schemas.BifrostStreamChunk{bigPreambleChunk(150 * 1024), bigPreambleChunk(150 * 1024)}, isPreamble: isTestPreamble},
+		"error after startup chunk cap":       {before: startupEvents(maxStreamPreambleChunks), isPreamble: isTestPreamble},
+		"error after overflow under deadline": {before: []*schemas.BifrostStreamChunk{bigPreambleChunk(3 * 1024 * 1024), bigPreambleChunk(3 * 1024 * 1024)}, isPreamble: isTestPreamble, underDeadline: true},
+		"error after output under deadline":   {before: []*schemas.BifrostStreamChunk{preambleChunk(), contentChunk()}, isPreamble: isTestPreamble, underDeadline: true},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			if tc.underDeadline {
+				ctx, _ = withAttemptAbort(t, 5*time.Second)
+			}
+			source := make(chan *schemas.BifrostStreamChunk, len(tc.before)+1)
+			for _, chunk := range tc.before {
+				source <- chunk
+			}
+			source <- failure
+			close(source)
+
+			var (
+				wrapped chan *schemas.BifrostStreamChunk
+				done    <-chan struct{}
+				err     *schemas.BifrostError
+			)
+			if tc.isPreamble != nil {
+				wrapped, done, err = CheckStreamPreambleForError(ctx, t.Name(), source, tc.isPreamble)
+			} else {
+				wrapped, done, err = CheckFirstStreamChunkForError(ctx, source)
+			}
+			if wrapped != nil {
+				for range wrapped {
+				}
+			}
+			<-done
+			committed := err == nil
+
+			startup := NewStreamStartupState(tc.isPreamble, tc.underDeadline)
+			commits := 0
+			for _, chunk := range tc.before {
+				if startup.ObserveResult(ctx, &schemas.BifrostResponse{ChatResponse: chunk.BifrostChatResponse}, nil) {
+					commits++
+				}
+			}
+			if fails := startup.IsStartupError(failure.BifrostError); fails == committed {
+				t.Fatalf("checker committed the stream = %v, but StreamStartupState.IsStartupError = %v", committed, fails)
+			}
+			// The pause/resume gate commits a held stream on this report, so it must match the checker.
+			if want := map[bool]int{true: 1, false: 0}[committed]; commits != want {
+				t.Fatalf("ObserveResult reported a commit %d times, want %d (checker committed = %v)", commits, want, committed)
+			}
+		})
+	}
+}
+
+// Results a plugin drops from the stream never reach the checker, so they must not commit.
+func TestStreamStartupStateIgnoresSkippedChunks(t *testing.T) {
+	startup := NewStreamStartupState(nil, false)
+	skip := &schemas.BifrostError{StreamControl: &schemas.StreamControl{SkipStream: new(true)}}
+	if startup.ObserveResult(context.Background(), nil, skip) {
+		t.Fatal("a skipped chunk reported a commit")
+	}
+	failure := &schemas.BifrostError{Error: &schemas.ErrorField{Message: "rate limit exceeded"}}
+	if !startup.IsStartupError(failure) {
+		t.Fatal("a skipped chunk committed the stream")
+	}
+	if !startup.ObserveResult(context.Background(), &schemas.BifrostResponse{ChatResponse: contentChunk().BifrostChatResponse}, nil) {
+		t.Fatal("output did not report a commit")
+	}
+	if startup.IsStartupError(failure) {
+		t.Fatal("output did not commit the stream")
+	}
+	if startup.ObserveResult(context.Background(), &schemas.BifrostResponse{ChatResponse: contentChunk().BifrostChatResponse}, nil) {
+		t.Fatal("a commit was reported twice")
+	}
+}
+
+// collectStream drains ch, failing the test if it does not close in time.
+func collectStream(t *testing.T, ch chan *schemas.BifrostStreamChunk) []*schemas.BifrostStreamChunk {
+	t.Helper()
+	var out []*schemas.BifrostStreamChunk
+	timeout := time.After(2 * time.Second)
+	for {
+		select {
+		case c, ok := <-ch:
+			if !ok {
+				return out
+			}
+			out = append(out, c)
+		case <-timeout:
+			t.Fatal("stream did not close")
+		}
+	}
+}
+
+// A commit marker first (a plugin holds valid output) commits the stream at once: the marker
+// is consumed, never re-injected, and a late copy behind real chunks is dropped too.
+func TestCheckFirstStreamChunk_CommitMarkerCommitsWithoutForwarding(t *testing.T) {
+	output := &schemas.BifrostStreamChunk{BifrostChatResponse: &schemas.BifrostChatResponse{ID: "output"}}
+	stream := make(chan *schemas.BifrostStreamChunk, 4)
+	stream <- schemas.StreamCommitMarker()
+	stream <- output
+	stream <- schemas.StreamCommitMarker()
+	close(stream)
+
+	wrapped, _, err := CheckFirstStreamChunkForError(context.Background(), stream)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got := collectStream(t, wrapped)
+	if len(got) != 1 || got[0] != output {
+		t.Fatalf("expected only the real chunk, got %d chunks: %+v", len(got), got)
+	}
+}
+
+// The preamble check treats a commit marker as the stream having started: it replays the
+// startup events it held and forwards the rest, dropping every marker.
+func TestCheckStreamPreamble_CommitMarkerCommitsAndReplaysPreamble(t *testing.T) {
+	preamble := &schemas.BifrostStreamChunk{BifrostChatResponse: &schemas.BifrostChatResponse{ID: "metadata"}}
+	output := &schemas.BifrostStreamChunk{BifrostChatResponse: &schemas.BifrostChatResponse{ID: "output"}}
+	stream := make(chan *schemas.BifrostStreamChunk, 4)
+	stream <- preamble
+	stream <- schemas.StreamCommitMarker()
+	stream <- output
+	stream <- schemas.StreamCommitMarker()
+	close(stream)
+
+	isPreamble := func(c *schemas.BifrostStreamChunk) bool { return c == preamble }
+	wrapped, _, err := CheckStreamPreambleForError(context.Background(), "req-commit-marker", stream, isPreamble)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got := collectStream(t, wrapped)
+	if len(got) != 2 || got[0] != preamble || got[1] != output {
+		t.Fatalf("expected [preamble output], got %d chunks: %+v", len(got), got)
+	}
+}
+
+// BenchmarkCheckFirstStreamChunkForwarding measures the first-chunk check plus forwarding a
+// 64-chunk stream through its wrapper, the path every non-gated stream takes.
+func BenchmarkCheckFirstStreamChunkForwarding(b *testing.B) {
+	chunk := &schemas.BifrostStreamChunk{BifrostChatResponse: &schemas.BifrostChatResponse{ID: "c"}}
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		stream := make(chan *schemas.BifrostStreamChunk, 64)
+		for j := 0; j < 64; j++ {
+			stream <- chunk
+		}
+		close(stream)
+		wrapped, _, _ := CheckFirstStreamChunkForError(context.Background(), stream)
+		for range wrapped {
+		}
 	}
 }

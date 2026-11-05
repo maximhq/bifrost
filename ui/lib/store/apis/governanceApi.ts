@@ -1,3 +1,4 @@
+import { virtualKeyMetadataQueryParams } from "@/lib/utils/virtualKeyMetadata";
 import {
 	Budget,
 	BudgetOverrideRequest,
@@ -81,6 +82,7 @@ export const governanceApi = baseApi.injectEndpoints({
 					...(params?.sort_by && { sort_by: params.sort_by }),
 					...(params?.order && { order: params.order }),
 					...(params?.export && { export: "true" }),
+					...virtualKeyMetadataQueryParams(params?.metadata),
 				},
 			}),
 			providesTags: ["VirtualKeys"],

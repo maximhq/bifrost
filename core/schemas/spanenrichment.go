@@ -37,6 +37,9 @@ func SpanEnrichmentFromContext(ctx context.Context) *SpanEnrichment {
 	e.BusinessUnitName = str(BifrostContextKeyGovernanceBusinessUnitName)
 	e.ProjectID = str(BifrostContextKeyGovernanceProjectID)
 	e.ProjectName = str(BifrostContextKeyGovernanceProjectName)
+	e.PromptID = str(BifrostContextKeySelectedPromptID)
+	e.PromptName = str(BifrostContextKeySelectedPromptName)
+	e.PromptVersion = str(BifrostContextKeySelectedPromptVersion)
 	e.UserID = str(BifrostContextKeyUserID)
 	e.UserName = str(BifrostContextKeyUserName)
 	e.UserEmail = str(BifrostContextKeyUserEmail)
@@ -86,6 +89,9 @@ func (e *SpanEnrichment) ApplyToSpan(span *Span) {
 	setSpanStr(span, AttrBifrostBusinessUnitName, e.BusinessUnitName)
 	setSpanStr(span, AttrBifrostProjectID, e.ProjectID)
 	setSpanStr(span, AttrBifrostProjectName, e.ProjectName)
+	setSpanStr(span, AttrBifrostPromptID, e.PromptID)
+	setSpanStr(span, AttrBifrostPromptName, e.PromptName)
+	setSpanStr(span, AttrBifrostPromptVersion, e.PromptVersion)
 	setSpanStr(span, AttrBifrostUserID, e.UserID)
 	setSpanStr(span, AttrBifrostUserName, e.UserName)
 	setSpanStr(span, AttrBifrostUserEmail, e.UserEmail)
@@ -109,6 +115,9 @@ func (s *Span) EnsureEnrichment() *SpanEnrichment {
 	if s == nil {
 		return nil
 	}
+	// Under the lock: Reset nils Enrichment on pool release, which races this.
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.Enrichment == nil {
 		s.Enrichment = &SpanEnrichment{}
 	}

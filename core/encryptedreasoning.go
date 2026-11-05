@@ -657,9 +657,10 @@ func stripContentBlockReasoningPayloads(content *schemas.ResponsesMessageContent
 // left with nothing to say -- no summary and no content blocks -- are dropped entirely
 // rather than forwarded as bare ids the upstream never issued.
 //
-// Summaries, ids, and every other item are preserved: the model loses the verbatim
+// Summaries, call ids and every other item are preserved: the model loses the verbatim
 // chain of thought from earlier turns but keeps the visible narrative, which is what
-// a client that never captured encrypted reasoning would have sent anyway.
+// a client that never captured encrypted reasoning would have sent anyway. On a retry to
+// OpenAI's Responses API item ids are not: see detachableItemTypes and clearsReplayedItemIDs.
 //
 // Both wire forms are handled, because the answer must be truthful for the caller to
 // decide whether a retry is worth an upstream call:
@@ -680,23 +681,17 @@ func stripResponsesEncryptedContent(ctx *schemas.BifrostContext, req *schemas.Bi
 		return false
 	}
 
-	// A reasoning item's id was issued by the identity that minted the encrypted_content
-	// this upstream just refused, so on a shape that resolves ids server-side it is no
-	// more replayable than the ciphertext was. /v1/responses and its token-counting twin
-	// accept an inline reasoning item whose id they never issued, and the id is worth
-	// keeping there because it is what links the item to the turn that produced it.
-	// /v1/responses/compact instead looks the id up and answers 404 "Items are not
-	// persisted when `store` is set to false", so a stripped retry that carries the id
-	// spends an upstream call only to earn a different error. Summary and content survive
-	// on both shapes -- those are the client's own bytes, not the upstream's handle.
+	targetProvider, targetModel, _ := req.GetRequestFields()
+	// Compaction looks a stripped reasoning id up and answers 404, so that id goes on every provider.
 	dropItemIDs := req.CompactionRequest != nil
+	clearIDs := clearsReplayedItemIDs(ctx, targetProvider, targetModel)
 
 	if ctx != nil {
 		if isLargePayload, ok := ctx.Value(schemas.BifrostContextKeyLargePayloadMode).(bool); ok && isLargePayload {
 			return false
 		}
 		if useRawBody, ok := ctx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); ok && useRawBody {
-			return stripRawResponsesEncryptedContent(rawBodyRef, dropItemIDs)
+			return stripRawResponsesEncryptedContent(rawBodyRef, dropItemIDs, clearIDs)
 		}
 	}
 
@@ -708,15 +703,6 @@ func stripResponsesEncryptedContent(ctx *schemas.BifrostContext, req *schemas.Bi
 
 	// Anthropic refuses a blanked signature on every turn it appears in, so there the
 	// only rewrite it accepts is deleting the block (see dropsWholeReasoningBlocks).
-	targetModel := ""
-	switch {
-	case req.ResponsesRequest != nil:
-		targetModel = req.ResponsesRequest.Model
-	case req.CountTokensRequest != nil:
-		targetModel = req.CountTokensRequest.Model
-	case req.CompactionRequest != nil:
-		targetModel = req.CompactionRequest.Model
-	}
 	dropWhole := dropsWholeReasoningBlocks(ctx, targetModel)
 
 	stripped := make([]schemas.ResponsesMessage, 0, len(input))
@@ -812,8 +798,59 @@ func stripResponsesEncryptedContent(ctx *schemas.BifrostContext, req *schemas.Bi
 		return false
 	}
 
+	// stripped holds copies of the caller's items, so clearing a pointer here leaves theirs alone.
+	for i := range stripped {
+		if clearIDs && detachableItemTypes[responsesItemType(&stripped[i])] && !isReasoningReference(&stripped[i]) {
+			stripped[i].ID = nil
+		}
+	}
+
 	*inputRef = stripped
 	return true
+}
+
+// detachableItemTypes replay without an id; the strip clears theirs so none points at dropped reasoning.
+var detachableItemTypes = map[string]bool{
+	string(schemas.ResponsesMessageTypeReasoning):      true,
+	string(schemas.ResponsesMessageTypeMessage):        true,
+	string(schemas.ResponsesMessageTypeFunctionCall):   true,
+	string(schemas.ResponsesMessageTypeCustomToolCall): true,
+	string(schemas.ResponsesMessageTypeWebSearchCall):  true,
+	string(schemas.ResponsesMessageTypeComputerCall):   true,
+	string(schemas.ResponsesMessageTypeMCPCall):        true,
+	string(schemas.ResponsesMessageTypeMCPListTools):   true,
+}
+
+// clearsReplayedItemIDs reports whether the retry goes to OpenAI's Responses API, the only upstream that pairs item ids with reasoning.
+func clearsReplayedItemIDs(ctx *schemas.BifrostContext, provider schemas.ModelProvider, model string) bool {
+	switch schemas.ResolveBaseProvider(ctx, provider) {
+	case schemas.OpenAI, schemas.Azure:
+		return !schemas.IsAnthropicModelFamily(ctx, model)
+	}
+	return false
+}
+
+// isReasoningReference reports an id-only reasoning item, which resolves server-side and keeps its id.
+func isReasoningReference(message *schemas.ResponsesMessage) bool {
+	if responsesItemType(message) != string(schemas.ResponsesMessageTypeReasoning) || message.Content != nil {
+		return false
+	}
+	reasoning := message.ResponsesReasoning
+	return reasoning == nil || (len(reasoning.Summary) == 0 && reasoning.EncryptedContent == nil)
+}
+
+// responsesItemType returns an input item's wire type, inferring it for the untyped
+// reasoning and role-only message shapes.
+func responsesItemType(message *schemas.ResponsesMessage) string {
+	switch {
+	case message.Type != nil:
+		return string(*message.Type)
+	case message.ResponsesReasoning != nil:
+		return string(schemas.ResponsesMessageTypeReasoning)
+	case message.Role != nil:
+		return string(schemas.ResponsesMessageTypeMessage)
+	}
+	return ""
 }
 
 // stripRawResponsesEncryptedContent applies the same rewrite to a buffered raw request
@@ -821,8 +858,8 @@ func stripResponsesEncryptedContent(ctx *schemas.BifrostContext, req *schemas.Bi
 // Each surviving item keeps its original bytes (minus the deleted fields) so fields
 // Bifrost's schema does not model are not lost on the way through.
 //
-// dropItemIDs carries the caller's shape decision, described at its assignment.
-func stripRawResponsesEncryptedContent(rawBody *[]byte, dropItemIDs bool) bool {
+// dropItemIDs and clearIDs carry the caller's target decisions, described at their assignment.
+func stripRawResponsesEncryptedContent(rawBody *[]byte, dropItemIDs, clearIDs bool) bool {
 	if rawBody == nil {
 		return false
 	}
@@ -930,6 +967,24 @@ func stripRawResponsesEncryptedContent(rawBody *[]byte, dropItemIDs bool) bool {
 	}
 	if !changed {
 		return false
+	}
+
+	for i, item := range items {
+		itemType := gjson.Get(item, "type").Str
+		if itemType == "" && gjson.Get(item, "role").Exists() {
+			itemType = string(schemas.ResponsesMessageTypeMessage)
+		}
+		if !clearIDs || !detachableItemTypes[itemType] || !gjson.Get(item, "id").Exists() {
+			continue
+		}
+		// A bare reasoning reference resolves server-side, see isReasoningReference.
+		if itemType == string(schemas.ResponsesMessageTypeReasoning) && len(gjson.Get(item, "summary").Array()) == 0 &&
+			!gjson.Get(item, "content").Exists() && !gjson.Get(item, "encrypted_content").Exists() {
+			continue
+		}
+		if withoutID, err := sjson.Delete(item, "id"); err == nil {
+			items[i] = withoutID
+		}
 	}
 
 	updated, err := sjson.SetRawBytes(body, "input", []byte("["+strings.Join(items, ",")+"]"))

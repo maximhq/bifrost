@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/maximhq/bifrost/core/providers/openai"
-	"github.com/maximhq/bifrost/core/providers/typesafe"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
@@ -111,9 +110,14 @@ func (provider *OpenRouterProvider) validateKey(ctx *schemas.BifrostContext, key
 	return nil
 }
 
-// fetchEmbeddingModels fetches OpenRouter's embedding-model catalog. Best-effort: any
+// openRouterEmbeddingModelsPath lists the embedding models, which OpenRouter's
+// default /v1/models omits.
+const openRouterEmbeddingModelsPath = "/v1/embeddings/models"
+
+// fetchSupplementalModels fetches one of the model catalogs OpenRouter's default
+// /v1/models omits (embedding models, decision models) from path. Best-effort: any
 // failure is logged and swallowed so it never fails the primary ListModels call.
-func (provider *OpenRouterProvider) fetchEmbeddingModels(ctx *schemas.BifrostContext, key schemas.Key) []schemas.Model {
+func (provider *OpenRouterProvider) fetchSupplementalModels(ctx *schemas.BifrostContext, key schemas.Key, path string) []schemas.Model {
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
 	defer fasthttp.ReleaseRequest(req)
@@ -121,7 +125,7 @@ func (provider *OpenRouterProvider) fetchEmbeddingModels(ctx *schemas.BifrostCon
 
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 
-	req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/embeddings/models")
+	req.SetRequestURI(provider.networkConfig.BaseURL + path)
 	req.Header.SetMethod(http.MethodGet)
 	req.Header.SetContentType("application/json")
 	if keyValue := key.Value.GetValue(); keyValue != "" {
@@ -131,16 +135,16 @@ func (provider *OpenRouterProvider) fetchEmbeddingModels(ctx *schemas.BifrostCon
 	_, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
 	defer wait()
 	if bifrostErr != nil || resp.StatusCode() != fasthttp.StatusOK {
-		provider.logger.Debug("openrouter: failed to fetch embedding models, skipping")
+		provider.logger.Debug(fmt.Sprintf("openrouter: failed to fetch models from %s, skipping", path))
 		return nil
 	}
 
-	var embeddingResponse schemas.BifrostListModelsResponse
-	if _, _, bifrostErr := providerUtils.HandleProviderResponse(resp.Body(), &embeddingResponse, nil, false, false); bifrostErr != nil {
-		provider.logger.Debug("openrouter: failed to parse embedding models response, skipping")
+	var modelsResponse schemas.BifrostListModelsResponse
+	if _, _, bifrostErr := providerUtils.HandleProviderResponse(resp.Body(), &modelsResponse, nil, false, false); bifrostErr != nil {
+		provider.logger.Debug(fmt.Sprintf("openrouter: failed to parse models from %s, skipping", path))
 		return nil
 	}
-	return embeddingResponse.Data
+	return modelsResponse.Data
 }
 
 // listModelsByKey performs a list models request for a single key.
@@ -227,7 +231,7 @@ func (provider *OpenRouterProvider) listModelsByKey(ctx *schemas.BifrostContext,
 		for _, m := range openrouterResponse.Data {
 			existing[strings.ToLower(m.ID)] = true
 		}
-		for _, m := range slices.Concat(provider.fetchEmbeddingModels(ctx, key), openRouterDecisionModels) {
+		for _, m := range slices.Concat(provider.fetchSupplementalModels(ctx, key, openRouterEmbeddingModelsPath), provider.fetchSupplementalModels(ctx, key, openRouterDecisionModelsPath)) {
 			if !existing[strings.ToLower(m.ID)] {
 				openrouterResponse.Data = append(openrouterResponse.Data, m)
 				existing[strings.ToLower(m.ID)] = true
@@ -484,18 +488,17 @@ func (provider *OpenRouterProvider) Rerank(ctx *schemas.BifrostContext, key sche
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.RerankRequest, provider.GetProviderKey())
 }
 
-// Decision sends TypeSafe System One models to OpenRouter's native decisions
-// endpoint. Other models are unsupported so core emulates them via chat.
+// Decision answers a decision request on OpenRouter's native decisions
+// endpoint. OpenRouter decides which models it serves there, so every model is
+// sent, and one it does not serve, such as a chat model, comes back as
+// OpenRouter's own error. A request the compat plugin marked for emulation
+// never reaches here: core answers it through the model's Responses API.
 func (provider *OpenRouterProvider) Decision(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostDecisionRequest) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
-	if !schemas.IsTypesafeModelFamily(ctx, request.Model) {
-		return nil, providerUtils.NewUnsupportedOperationError(schemas.DecisionRequest, provider.GetProviderKey())
-	}
-
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
-			return typesafe.ToTypesafeDecisionRequest(request)
+			return ToOpenRouterDecisionRequest(request)
 		})
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -523,6 +526,9 @@ func (provider *OpenRouterProvider) Decision(ctx *schemas.BifrostContext, key sc
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
+
+	providerResponseHeaders := providerUtils.ExtractProviderResponseHeaders(resp)
+	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerResponseHeaders)
 
 	if resp.StatusCode() != fasthttp.StatusOK {
 		return nil, providerUtils.EnrichError(ctx, parseOpenRouterError(resp), jsonData, nil, sendBackRawRequest, sendBackRawResponse, latency)
@@ -554,6 +560,7 @@ func (provider *OpenRouterProvider) Decision(ctx *schemas.BifrostContext, key sc
 	}
 
 	bifrostResp.ExtraFields.Latency = latency.Milliseconds()
+	bifrostResp.ExtraFields.ProviderResponseHeaders = providerResponseHeaders
 	if sendBackRawRequest {
 		bifrostResp.ExtraFields.RawRequest = rawRequest
 	}

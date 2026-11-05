@@ -836,6 +836,58 @@ func TestAddMissingBetaHeadersToContext_PerProvider(t *testing.T) {
 			},
 			expectHeaders: []string{AnthropicCompactionBetaHeader},
 		},
+		// Thinking display "updates" tests
+		{
+			name:     "Anthropic gets thinking display updates header",
+			provider: schemas.Anthropic,
+			req: &AnthropicMessageRequest{
+				Model:    "claude-opus-5-5",
+				Thinking: &AnthropicThinking{Type: "adaptive", Display: new("updates")},
+			},
+			expectHeaders: []string{AnthropicThinkingDisplayUpdatesBetaHeader},
+		},
+		{
+			name:     "Vertex gets thinking display updates header",
+			provider: schemas.Vertex,
+			req: &AnthropicMessageRequest{
+				Model:    "claude-opus-5-5",
+				Thinking: &AnthropicThinking{Type: "adaptive", Display: new("updates")},
+			},
+			expectHeaders: []string{AnthropicThinkingDisplayUpdatesBetaHeader},
+		},
+		{
+			name:     "Bedrock gets thinking display updates header",
+			provider: schemas.Bedrock,
+			req: &AnthropicMessageRequest{
+				Model:    "claude-opus-5-5",
+				Thinking: &AnthropicThinking{Type: "adaptive", Display: new("updates")},
+			},
+			expectHeaders: []string{AnthropicThinkingDisplayUpdatesBetaHeader},
+		},
+		{
+			name:     "Anthropic skips thinking display updates header for summarized",
+			provider: schemas.Anthropic,
+			req: &AnthropicMessageRequest{
+				Thinking: &AnthropicThinking{Type: "adaptive", Display: new("summarized")},
+			},
+			unexpectHeaders: []string{AnthropicThinkingDisplayUpdatesBetaHeader},
+		},
+		{
+			name:     "Anthropic skips thinking display updates header without a display",
+			provider: schemas.Anthropic,
+			req: &AnthropicMessageRequest{
+				Thinking: &AnthropicThinking{Type: "adaptive"},
+			},
+			unexpectHeaders: []string{AnthropicThinkingDisplayUpdatesBetaHeader},
+		},
+		{
+			name:     "Anthropic skips thinking display updates header when thinking is disabled",
+			provider: schemas.Anthropic,
+			req: &AnthropicMessageRequest{
+				Thinking: &AnthropicThinking{Type: "disabled", Display: new("updates")},
+			},
+			unexpectHeaders: []string{AnthropicThinkingDisplayUpdatesBetaHeader},
+		},
 		// Interleaved thinking tests
 		{
 			name:     "Anthropic gets interleaved thinking header for enabled",
@@ -1004,6 +1056,24 @@ func TestAddMissingBetaHeadersToContext_PerProvider(t *testing.T) {
 	}
 }
 
+// A client that already sends thinking-display-updates keeps it on the surfaces that ship the
+// beta. Vertex validates betas and 400s on one it does not know, so the header is only forwarded
+// where the feature flag says it is accepted.
+func TestFilterBetaHeadersForProvider_ThinkingDisplayUpdates(t *testing.T) {
+	for provider, want := range map[schemas.ModelProvider]bool{
+		schemas.Anthropic:     true,
+		schemas.Vertex:        true,
+		schemas.Bedrock:       true,
+		schemas.BedrockMantle: true,
+		schemas.Azure:         true,
+	} {
+		got := slices.Contains(FilterBetaHeadersForProvider([]string{AnthropicThinkingDisplayUpdatesBetaHeader}, provider), AnthropicThinkingDisplayUpdatesBetaHeader)
+		if got != want {
+			t.Errorf("%s: header forwarded = %v, want %v", provider, got, want)
+		}
+	}
+}
+
 func TestAddMissingBetaHeadersToContext_PassthroughWins(t *testing.T) {
 	// When a same-prefix header is already set from passthrough, auto-injection should NOT add a second version.
 	t.Run("passthrough_mcp_header_prevents_auto_inject", func(t *testing.T) {
@@ -1083,9 +1153,9 @@ func TestMergeBetaHeaders(t *testing.T) {
 
 	t.Run("provider_extra_headers_case_insensitive_key", func(t *testing.T) {
 		ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
-		got := MergeBetaHeaders(ctx, map[string]string{
+		got := MergeBetaHeaders(ctx, schemas.NewSecretVarMap(map[string]string{
 			"Anthropic-Beta": "mcp-client-2025-04-04",
-		})
+		}))
 		want := []string{"mcp-client-2025-04-04"}
 		if !slices.Equal(got, want) {
 			t.Fatalf("got %v, want %v", got, want)
@@ -1097,9 +1167,9 @@ func TestMergeBetaHeaders(t *testing.T) {
 		ctx.SetValue(schemas.BifrostContextKeyExtraHeaders, map[string][]string{
 			"ANTHROPIC-BETA": {"foo,bar", "bar,baz"},
 		})
-		got := MergeBetaHeaders(ctx, map[string]string{
+		got := MergeBetaHeaders(ctx, schemas.NewSecretVarMap(map[string]string{
 			"anthropic-beta": "foo",
-		})
+		}))
 		sort.Strings(got)
 		wantSorted := []string{"bar", "baz", "foo"}
 		if !slices.Equal(got, wantSorted) {
@@ -1486,7 +1556,7 @@ func TestNetworkConfigBetaOverridesFlow(t *testing.T) {
 				AnthropicBetaHeader: tc.allowedByDefault,
 			}
 			overrides := map[string]bool{tc.allowedByDefaultPfx: false}
-			got := FilterBetaHeadersForProvider(MergeBetaHeaders(ctx, providerExtra), tc.provider, overrides)
+			got := FilterBetaHeadersForProvider(MergeBetaHeaders(ctx, schemas.NewSecretVarMap(providerExtra)), tc.provider, overrides)
 			if len(got) != 0 {
 				t.Fatalf("expected override to drop %q from merged sources for %s, got %v", tc.allowedByDefault, tc.provider, got)
 			}
@@ -2651,8 +2721,13 @@ func TestSupportsAdaptiveThinking(t *testing.T) {
 		{"claude-mythos-5", true},
 		{"claude-mythos-preview", true},
 		{"global.anthropic.claude-fable-5", true},
+		// Haiku 5+: adaptive is the only thinking-on mode.
+		{"claude-haiku-5-5", true},
+		{"anthropic.claude-haiku-5-5", true},
+		{"claude-haiku-5-5@default", true},
 		{"claude-opus-4-5-20241022", false},
 		{"claude-sonnet-4-5-20241022", false},
+		{"claude-haiku-4-5-20251001", false},
 		{"claude-haiku-4-6-20250514", false}, // haiku does not support adaptive
 		{"claude-haiku-4-7-20260401", false}, // haiku, not opus
 		{"claude-haiku-4-8-20260601", false}, // haiku, not opus
@@ -2735,6 +2810,41 @@ func TestIsSonnet5Plus(t *testing.T) {
 	}
 }
 
+// TestIsHaiku5Plus pins the Haiku 5 predicate. Haiku 5.5 shares the Sonnet 5+
+// request surface (adaptive-only thinking, temperature/top_p/top_k removed). The
+// "haiku-5" substring must NOT match "haiku-4-5" or "3-5-haiku".
+func TestIsHaiku5Plus(t *testing.T) {
+	tests := []struct {
+		model    string
+		expected bool
+	}{
+		{"claude-haiku-5-5", true},
+		{"Claude-Haiku-5-5", true},
+		{"claude-haiku-5.5", true},
+		{"anthropic.claude-haiku-5-5", true},
+		{"global.anthropic.claude-haiku-5-5", true},
+		{"claude-haiku-5-5@default", true},
+		{"databricks-claude-haiku-5-5", true},
+		// Must NOT match older Haikus or other families.
+		{"claude-haiku-4-5", false},
+		{"claude-haiku-4-5-20251001", false},
+		{"anthropic.claude-haiku-4-5-20251001-v1:0", false},
+		{"claude-3-5-haiku-20241022", false},
+		{"claude-sonnet-5-5", false},
+		{"claude-opus-5", false},
+		{"", false},
+		{"some-non-claude-model", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.model, func(t *testing.T) {
+			if got := IsHaiku5Plus(tt.model); got != tt.expected {
+				t.Errorf("IsHaiku5Plus(%q) = %v, want %v", tt.model, got, tt.expected)
+			}
+		})
+	}
+}
+
 // TestIsOpus5Plus pins the Opus 5 predicate. Opus 5 shares Opus 4.8's request
 // surface (adaptive-only thinking, temperature/top_p/top_k removed, fast mode,
 // effort, mid-conversation system). The "opus-5" substring must NOT match
@@ -2793,6 +2903,9 @@ func TestIsAdaptiveOnlyThinkingModel(t *testing.T) {
 		{"claude-fable-5", true},
 		{"claude-mythos-5", true},
 		{"claude-mythos-preview", true},
+		// Haiku 5+.
+		{"claude-haiku-5-5", true},
+		{"global.anthropic.claude-haiku-5-5", true},
 		// Adaptive-capable but NOT adaptive-only (budget_tokens still accepted).
 		{"claude-opus-4-6", false},
 		{"claude-sonnet-4-6", false},
@@ -2938,6 +3051,9 @@ func TestSupportsEffortParameter(t *testing.T) {
 		{"claude-opus-4-5", true},
 		{"claude-opus-4.5-20251101", true},
 		{"claude-opus-4-5-20251101", true},
+		{"claude-haiku-5-5", true},
+		{"anthropic.claude-haiku-5-5", true},
+		{"claude-haiku-5-5@default", true},
 		// Bedrock + Vertex IDs for supported models keep the substring shape.
 		{"anthropic.claude-opus-4-8-v1", true},
 		{"anthropic.claude-opus-4-7-v1", true},
@@ -3178,6 +3294,9 @@ func TestStripUnsupportedFields_EffortLevelClamp(t *testing.T) {
 		{"claude-sonnet-4-6", "max", "max"},
 		{"claude-opus-4-7", "xhigh", "xhigh"},
 		{"claude-opus-5-5", "max", "max"},
+		{"claude-haiku-5-5", "low", "low"},
+		{"claude-haiku-5-5", "xhigh", "xhigh"},
+		{"claude-haiku-5-5", "max", "max"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.model+"/"+tt.effort+"/raw", func(t *testing.T) {
@@ -3211,6 +3330,305 @@ func TestStripUnsupportedFields_EffortLevelClamp(t *testing.T) {
 			t.Errorf("output_config.effort = %q, want \"xhigh\" from the row's ladder; body=%s", got, out)
 		}
 	})
+}
+
+// TestStripUnsupportedFieldsFromRawBody_PerMessageOutputConfig pins the raw-passthrough
+// gate for per-message effort (messages[].output_config, beta
+// mid-conversation-output-config-2026-07-01). Claude Code 2.1.285 sends it on a
+// text-bearing role:"system" message alongside the top-level output_config; Vertex
+// rejects the nested field with "messages.1.output_config: Extra inputs are not
+// permitted". Off Anthropic direct (or on a model without per-turn effort) the nested
+// field is stripped, the message text and top-level effort survive, and an effort-only
+// system message (no content) is dropped whole because it carries nothing else.
+func TestStripUnsupportedFieldsFromRawBody_PerMessageOutputConfig(t *testing.T) {
+	claudeCodeBody := func(model string) string {
+		return `{"model":"` + model + `","max_tokens":1024,"output_config":{"effort":"medium"},"messages":[` +
+			`{"role":"user","content":[{"type":"text","text":"hi"}]},` +
+			`{"role":"system","content":[{"type":"text","text":"reminder"}],"output_config":{"effort":"medium"}},` +
+			`{"role":"user","content":[{"type":"text","text":"go on"}]}]}`
+	}
+	effortOnlyBody := func(model string) string {
+		return `{"model":"` + model + `","max_tokens":1024,"output_config":{"effort":"high"},"messages":[` +
+			`{"role":"user","content":[{"type":"text","text":"hi"}]},` +
+			`{"role":"system","content":[],"output_config":{"effort":"low"}},` +
+			`{"role":"assistant","content":[{"type":"text","text":"ok"}]},` +
+			`{"role":"system","content":"","output_config":{"effort":"low"}},` +
+			`{"role":"user","content":[{"type":"text","text":"go on"}]}]}`
+	}
+
+	tests := []struct {
+		name         string
+		provider     schemas.ModelProvider
+		model        string
+		body         string
+		wantKept     bool   // messages[].output_config forwarded verbatim
+		wantMessages string // expected messages array when stripped
+	}{
+		{name: "vertex opus 5.5 claude code shape", provider: schemas.Vertex, model: "claude-opus-5-5", body: claudeCodeBody("claude-opus-5-5"),
+			wantMessages: `[{"role":"user","content":[{"type":"text","text":"hi"}]},{"role":"system","content":[{"type":"text","text":"reminder"}]},{"role":"user","content":[{"type":"text","text":"go on"}]}]`},
+		{name: "vertex fable 5.1 claude code shape", provider: schemas.Vertex, model: "claude-fable-5-1", body: claudeCodeBody("claude-fable-5-1"),
+			wantMessages: `[{"role":"user","content":[{"type":"text","text":"hi"}]},{"role":"system","content":[{"type":"text","text":"reminder"}]},{"role":"user","content":[{"type":"text","text":"go on"}]}]`},
+		{name: "vertex sonnet 5.5 claude code shape", provider: schemas.Vertex, model: "claude-sonnet-5-5", body: claudeCodeBody("claude-sonnet-5-5"),
+			wantMessages: `[{"role":"user","content":[{"type":"text","text":"hi"}]},{"role":"system","content":[{"type":"text","text":"reminder"}]},{"role":"user","content":[{"type":"text","text":"go on"}]}]`},
+		{name: "bedrock opus 5.5 claude code shape", provider: schemas.Bedrock, model: "claude-opus-5-5", body: claudeCodeBody("claude-opus-5-5"),
+			wantMessages: `[{"role":"user","content":[{"type":"text","text":"hi"}]},{"role":"system","content":[{"type":"text","text":"reminder"}]},{"role":"user","content":[{"type":"text","text":"go on"}]}]`},
+		{name: "vertex effort-only system messages dropped whole", provider: schemas.Vertex, model: "claude-opus-5-5", body: effortOnlyBody("claude-opus-5-5"),
+			wantMessages: `[{"role":"user","content":[{"type":"text","text":"hi"}]},{"role":"assistant","content":[{"type":"text","text":"ok"}]},{"role":"user","content":[{"type":"text","text":"go on"}]}]`},
+		{name: "anthropic opus 4.8 lacks per-turn effort", provider: schemas.Anthropic, model: "claude-opus-4-8", body: claudeCodeBody("claude-opus-4-8"),
+			wantMessages: `[{"role":"user","content":[{"type":"text","text":"hi"}]},{"role":"system","content":[{"type":"text","text":"reminder"}]},{"role":"user","content":[{"type":"text","text":"go on"}]}]`},
+		{name: "anthropic opus 5.5 keeps per-message effort", provider: schemas.Anthropic, model: "claude-opus-5-5", body: claudeCodeBody("claude-opus-5-5"), wantKept: true},
+		{name: "anthropic opus 5.5 keeps effort-only system message", provider: schemas.Anthropic, model: "claude-opus-5-5", body: effortOnlyBody("claude-opus-5-5"), wantKept: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out, err := StripUnsupportedFieldsFromRawBody([]byte(tt.body), tt.provider, tt.model)
+			if err != nil {
+				t.Fatalf("StripUnsupportedFieldsFromRawBody: %v", err)
+			}
+			wantTop := providerUtils.GetJSONField([]byte(tt.body), "output_config.effort").String()
+			if got := providerUtils.GetJSONField(out, "output_config.effort").String(); got != wantTop {
+				t.Errorf("top-level output_config.effort = %q, want %q; body=%s", got, wantTop, out)
+			}
+			gotMessages := providerUtils.GetJSONField(out, "messages").Raw
+			if tt.wantKept {
+				if want := providerUtils.GetJSONField([]byte(tt.body), "messages").Raw; gotMessages != want {
+					t.Errorf("messages changed on a supported pair:\n got %s\nwant %s", gotMessages, want)
+				}
+				return
+			}
+			if gotMessages != tt.wantMessages {
+				t.Errorf("messages:\n got %s\nwant %s", gotMessages, tt.wantMessages)
+			}
+		})
+	}
+}
+
+// TestStripUnsupportedFieldsFromRawBody_NoPerMessageWorkWithoutCandidates pins the hot
+// path: a long Claude Code conversation on a surface that strips per-message effort and
+// server-side fallback blocks (Vertex), where no message carries either. Both message
+// walks are skipped by byte prefilters, so the strip's allocation must not grow with the
+// number of messages. Before the prefilters each walk materialised every message
+// (gjson Array) on every request.
+func TestStripUnsupportedFieldsFromRawBody_NoPerMessageWorkWithoutCandidates(t *testing.T) {
+	build := func(turns int) []byte {
+		var b bytes.Buffer
+		b.WriteString(`{"model":"claude-opus-5-5","max_tokens":64,"output_config":{"effort":"medium"},"messages":[`)
+		for i := range turns {
+			if i > 0 {
+				b.WriteByte(',')
+			}
+			b.WriteString(`{"role":"user","content":[{"type":"text","text":"` + strings.Repeat("x", 200) + `"}]}`)
+		}
+		b.WriteString(`]}`)
+		return b.Bytes()
+	}
+	strip := func(body []byte) func() {
+		return func() {
+			if _, err := StripUnsupportedFieldsFromRawBody(body, schemas.Vertex, "claude-opus-5-5"); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		}
+	}
+	small := memtest.AllocBytesPerOp(strip(build(50)))
+	large := memtest.AllocBytesPerOp(strip(build(400)))
+	t.Logf("strip allocation: %d B at 50 messages, %d B at 400", small, large)
+	if large > small+small/2 {
+		t.Fatalf("strip allocation grew with message count on a body with nothing to strip: %d B at 50 messages, %d B at 400", small, large)
+	}
+}
+
+// TestMayCarryPerMessageOutputConfig pins the byte prefilter as conservative: it may only
+// say "no" when no message can carry output_config. False positives are allowed (they fall
+// through to the gjson walk); a false negative would forward the field to Vertex.
+func TestMayCarryPerMessageOutputConfig(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want bool
+	}{
+		{"no output_config anywhere", `{"messages":[{"role":"user","content":"hi"}]}`, false},
+		{"top-level only", `{"output_config":{"effort":"high"},"messages":[{"role":"user","content":"hi"}]}`, false},
+		{"top-level only, whitespace", `{ "output_config" : {"effort":"high"}, "messages":[]}`, false},
+		{"mentioned inside a string value", `{"output_config":{"effort":"high"},"messages":[{"role":"user","content":"set \"output_config\" please"}]}`, false},
+		{"per-message, no top-level", `{"messages":[{"role":"system","content":[],"output_config":{"effort":"low"}}]}`, true},
+		{"per-message plus top-level", `{"output_config":{"effort":"high"},"messages":[{"role":"system","content":[],"output_config":{"effort":"low"}}]}`, true},
+		{"value exactly output_config (false positive)", `{"output_config":{},"messages":[{"role":"user","content":"output_config"}]}`, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := mayCarryPerMessageOutputConfig([]byte(tc.body)); got != tc.want {
+				t.Fatalf("mayCarryPerMessageOutputConfig = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestStripUnsupportedFieldsFromRawBody_ToolChangeBlocks: tool_addition / tool_removal
+// blocks (and a replayed compaction block's tool_changes) belong to the mid-conversation
+// tool-changes beta. A surface without it (Vertex rejects "Input tag 'tool_addition' found
+// using 'type' does not match any of the expected tags") must not receive them, while the
+// surfaces that ship the beta get the messages byte-identical.
+func TestStripUnsupportedFieldsFromRawBody_ToolChangeBlocks(t *testing.T) {
+	const (
+		toolAddition = `{"type":"tool_addition","tool":{"type":"tool_definition","definition":{"name":"Skill","description":"d","input_schema":{"type":"object"}}}}`
+		toolRemoval  = `{"type":"tool_removal","tool":{"type":"tool_reference","name":"Old"}}`
+		userHi       = `{"role":"user","content":[{"type":"text","text":"hi"}]}`
+		userGoOn     = `{"role":"user","content":[{"type":"text","text":"go on"}]}`
+		assistantOk  = `{"role":"assistant","content":[{"type":"text","text":"ok"}]}`
+		reminder     = `{"type":"text","text":"reminder"}`
+	)
+	build := func(messages ...string) string {
+		return `{"model":"claude-opus-5-5","max_tokens":1024,"messages":[` + strings.Join(messages, ",") + `]}`
+	}
+	systemMsg := func(blocks ...string) string {
+		return `{"role":"system","content":[` + strings.Join(blocks, ",") + `]}`
+	}
+	compaction := func(withChanges bool) string {
+		changes := ""
+		if withChanges {
+			changes = `,"tool_changes":[` + toolAddition + `,` + toolRemoval + `]`
+		}
+		return `{"role":"assistant","content":[{"type":"compaction","content":"summary"` + changes + `}]}`
+	}
+
+	tests := []struct {
+		name     string
+		body     string
+		wantKept bool // messages forwarded byte-identical on a surface that ships the beta
+		want     string
+	}{
+		{name: "claude code shape: text plus tool_addition",
+			body: build(userHi, systemMsg(reminder, toolAddition), userGoOn),
+			want: `[` + userHi + `,` + systemMsg(reminder) + `,` + userGoOn + `]`},
+		{name: "tool_removal next to text",
+			body: build(userHi, systemMsg(toolRemoval, reminder), userGoOn),
+			want: `[` + userHi + `,` + systemMsg(reminder) + `,` + userGoOn + `]`},
+		{name: "tool-change-only system messages are dropped whole",
+			body: build(userHi, systemMsg(toolAddition), assistantOk, systemMsg(toolRemoval, toolAddition), userGoOn),
+			want: `[` + userHi + `,` + assistantOk + `,` + userGoOn + `]`},
+		{name: "compaction tool_changes removed, summary kept",
+			body: build(userHi, compaction(true), userGoOn),
+			want: `[` + userHi + `,` + compaction(false) + `,` + userGoOn + `]`},
+		{name: "plain system message untouched",
+			body:     build(userHi, systemMsg(reminder), userGoOn),
+			wantKept: true},
+		{name: "string-content system message untouched",
+			body:     build(userHi, `{"role":"system","content":"reminder"}`, userGoOn),
+			wantKept: true},
+		{name: "no tool-change blocks at all",
+			body:     build(userHi, assistantOk, userGoOn),
+			wantKept: true},
+	}
+
+	for _, p := range []struct {
+		provider schemas.ModelProvider
+		ships    bool
+	}{
+		{schemas.Vertex, false},
+		{schemas.Bedrock, false},
+		{schemas.Azure, false},
+		{schemas.Anthropic, true},
+		{schemas.BedrockMantle, true},
+	} {
+		for _, tt := range tests {
+			t.Run(string(p.provider)+"/"+tt.name, func(t *testing.T) {
+				out, err := StripUnsupportedFieldsFromRawBody([]byte(tt.body), p.provider, "claude-opus-5-5")
+				if err != nil {
+					t.Fatalf("StripUnsupportedFieldsFromRawBody: %v", err)
+				}
+				got := providerUtils.GetJSONField(out, "messages").Raw
+				if p.ships || tt.wantKept {
+					if want := providerUtils.GetJSONField([]byte(tt.body), "messages").Raw; got != want {
+						t.Fatalf("messages changed:\n got %s\nwant %s", got, want)
+					}
+					return
+				}
+				if got != tt.want {
+					t.Fatalf("messages:\n got %s\nwant %s", got, tt.want)
+				}
+			})
+		}
+	}
+}
+
+// BenchmarkStripUnsupportedFieldsFromRawBody_ToolChangeBlocks measures the strip on a
+// 400-turn Claude Code body for Vertex: the common case (nothing to strip, which pays only
+// the byte prefilter) and one carrying a system message with a tool_addition block.
+func BenchmarkStripUnsupportedFieldsFromRawBody_ToolChangeBlocks(b *testing.B) {
+	build := func(withToolChange bool) []byte {
+		var buf bytes.Buffer
+		buf.WriteString(`{"model":"claude-opus-5-5","max_tokens":64,"messages":[`)
+		for i := range 400 {
+			if i > 0 {
+				buf.WriteByte(',')
+			}
+			if withToolChange && i == 200 {
+				buf.WriteString(`{"role":"system","content":[{"type":"text","text":"reminder"},{"type":"tool_addition","tool":{"type":"tool_definition","definition":{"name":"Skill","input_schema":{"type":"object"}}}}]},`)
+			}
+			buf.WriteString(`{"role":"user","content":[{"type":"text","text":"` + strings.Repeat("x", 200) + `"}]}`)
+		}
+		buf.WriteString(`]}`)
+		return buf.Bytes()
+	}
+	for _, bc := range []struct {
+		name string
+		body []byte
+	}{
+		{"no tool-change blocks", build(false)},
+		{"one tool_addition block", build(true)},
+	} {
+		b.Run(bc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				if _, err := StripUnsupportedFieldsFromRawBody(bc.body, schemas.Vertex, "claude-opus-5-5"); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+// TestMayCarryToolChangeBlocks pins the byte prefilter as conservative: it may only say
+// "no" when no message can carry a tool_addition / tool_removal block. False positives fall
+// through to the gjson walk; a false negative would forward the block to Vertex.
+func TestMayCarryToolChangeBlocks(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want bool
+	}{
+		{"plain conversation", `{"messages":[{"role":"user","content":"hi"}]}`, false},
+		{"tool_addition block", `{"messages":[{"role":"system","content":[{"type":"tool_addition"}]}]}`, true},
+		{"tool_removal block, whitespace", `{"messages":[{"role":"system","content":[{"type": "tool_removal"}]}]}`, true},
+		{"compaction tool_changes entry", `{"messages":[{"role":"assistant","content":[{"type":"compaction","tool_changes":[{"type":"tool_addition"}]}]}]}`, true},
+		{"mentioned inside a string value", `{"messages":[{"role":"user","content":"explain \"tool_addition\" blocks"}]}`, false},
+		{"tool_changes key without a change type", `{"messages":[{"role":"assistant","content":[{"type":"compaction","tool_changes":[]}]}]}`, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := mayCarryToolChangeBlocks([]byte(tc.body)); got != tc.want {
+				t.Fatalf("mayCarryToolChangeBlocks = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestStripUnsupportedFieldsFromRawBody_ScopeTokenWithoutCacheControlScope: a "scope" key
+// elsewhere (here a tool input property) passes the byte prefilter but no block carries
+// cache_control.scope, so the detection pass must leave messages byte-identical.
+func TestStripUnsupportedFieldsFromRawBody_ScopeTokenWithoutCacheControlScope(t *testing.T) {
+	body := `{"model":"claude-opus-5-5","max_tokens":64,"messages":[` +
+		`{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"auth","input":{"scope":"repo"}}]},` +
+		`{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"ok","cache_control":{"type":"ephemeral"}}]}]}`
+	out, err := StripUnsupportedFieldsFromRawBody([]byte(body), schemas.Vertex, "claude-opus-5-5")
+	if err != nil {
+		t.Fatalf("StripUnsupportedFieldsFromRawBody: %v", err)
+	}
+	want := providerUtils.GetJSONField([]byte(body), "messages").Raw
+	if got := providerUtils.GetJSONField(out, "messages").Raw; got != want {
+		t.Fatalf("messages changed:\n got %s\nwant %s", got, want)
+	}
 }
 
 func TestAddMissingBetaHeadersToContext_TaskBudgets(t *testing.T) {
@@ -4054,6 +4472,32 @@ func TestRemapRawToolVersionsForProvider_AllocationScaling(t *testing.T) {
 	})
 }
 
+// TestApplyDefaultEagerInputStreamingToRawBody_AllocationScaling covers the
+// passthrough eager_input_streaming default, which marks every custom tool in
+// the request. Claude Code sends 50+ of them on Vertex and Bedrock.
+func TestApplyDefaultEagerInputStreamingToRawBody_AllocationScaling(t *testing.T) {
+	memtest.AssertAllocScaling(t, func(tools int) []byte {
+		var b bytes.Buffer
+		b.WriteString(`{"model":"claude-opus-4-8","tools":[`)
+		for i := range tools {
+			if i > 0 {
+				b.WriteByte(',')
+			}
+			// A custom tool with no eager_input_streaming, so every tool in the
+			// array triggers a write.
+			fmt.Fprintf(&b, `{"name":"tool_%d","input_schema":{"type":"object"},"description":"`, i)
+			b.WriteString(strings.Repeat("d", 400))
+			b.WriteString(`"}`)
+		}
+		b.WriteString(`],"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`)
+		return b.Bytes()
+	}, func(body []byte) {
+		if _, err := ApplyDefaultEagerInputStreamingToRawBody(body, schemas.Vertex, "claude-opus-4-8"); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+}
+
 // TestStripUnsupportedFieldsFromRawBody_AllocationScaling covers the system-block
 // cache_control scope strip, whose loop walks every system block in the request.
 func TestStripUnsupportedFieldsFromRawBody_AllocationScaling(t *testing.T) {
@@ -4123,8 +4567,18 @@ func betaHeaderCorpus() map[string]string {
 		// empty content array and a string-content system message may carry it too.
 		"per-message output_config.effort on an effort-only system message":   `{"model":"claude-opus-5-5","output_config":{"effort":"high"},"messages":[{"role":"user","content":"hi"},{"role":"system","content":[],"output_config":{"effort":"low"}}]}`,
 		"per-message output_config.effort on a string-content system message": `{"model":"claude-opus-5-5","messages":[{"role":"user","content":"hi"},{"role":"system","content":"be brief","output_config":{"effort":"low"}}]}`,
-		"per-message output_config without effort (must NOT trigger)":         `{"model":"claude-opus-5-5","messages":[{"role":"user","content":"hi"},{"role":"system","content":[],"output_config":{"effort":null}}]}`,
-		"no messages field at all":                                            `{"model":"` + model + `","max_tokens":64}`,
+		// Mid-conversation tool changes (#8207): a by-reference block needs the tool-changes
+		// beta; a by-value tool_definition (on the block, or recorded in a compaction block's
+		// tool_changes) additionally needs inline-tools.
+		"tool_removal by reference on a system message":                 `{"model":"claude-sonnet-5-5","tools":[{"name":"t","input_schema":{"type":"object"}}],"messages":[{"role":"user","content":"hi"},{"role":"system","content":[{"type":"tool_removal","tool":{"type":"tool_reference","name":"t"}}]}]}`,
+		"tool_addition with an inline tool_definition":                  `{"model":"claude-sonnet-5-5","messages":[{"role":"user","content":"hi"},{"role":"system","content":[{"type":"tool_addition","tool":{"type":"tool_definition","definition":{"name":"t","input_schema":{"type":"object"}}}}]}]}`,
+		"compaction tool_changes with an inline tool_definition":        `{"model":"claude-sonnet-5-5","messages":[{"role":"assistant","content":[{"type":"compaction","content":"summary","tool_changes":[{"type":"tool_addition","tool":{"type":"tool_definition","definition":{"name":"t","input_schema":{"type":"object"}}}}]}]},{"role":"user","content":"hi"}]}`,
+		"compaction tool_changes by reference only (no inline beta)":    `{"model":"claude-sonnet-5-5","tools":[{"name":"t","input_schema":{"type":"object"}}],"messages":[{"role":"assistant","content":[{"type":"compaction","content":"summary","tool_changes":[{"type":"tool_removal","tool":{"type":"tool_reference","name":"t"}}]}]},{"role":"user","content":"hi"}]}`,
+		"tool_addition inline definition with strict and defer_loading": `{"model":"claude-sonnet-5-5","messages":[{"role":"user","content":"hi"},{"role":"system","content":[{"type":"tool_addition","tool":{"type":"tool_definition","definition":{"name":"t","input_schema":{"type":"object"},"strict":true,"defer_loading":true}}}]}]}`,
+		"compaction tool_changes inline definition with strict":         `{"model":"claude-sonnet-5-5","messages":[{"role":"assistant","content":[{"type":"compaction","content":"summary","tool_changes":[{"type":"tool_addition","tool":{"type":"tool_definition","definition":{"name":"t","input_schema":{"type":"object"},"strict":true}}}]}]},{"role":"user","content":"hi"}]}`,
+		"tool_addition inline mcp_toolset definition":                   `{"model":"claude-sonnet-5-5","mcp_servers":[{"type":"url","url":"https://mcp.example.com","name":"calendar"}],"messages":[{"role":"user","content":"hi"},{"role":"system","content":[{"type":"tool_addition","tool":{"type":"tool_definition","definition":{"type":"mcp_toolset","mcp_server_name":"calendar"}}}]}]}`,
+		"per-message output_config without effort (must NOT trigger)":   `{"model":"claude-opus-5-5","messages":[{"role":"user","content":"hi"},{"role":"system","content":[],"output_config":{"effort":null}}]}`,
+		"no messages field at all":                                      `{"model":"` + model + `","max_tokens":64}`,
 
 		// --- scope found elsewhere; the messages branch must not double-add or mask it ---
 		"scoped cache_control in system": `{"model":"` + model + `","system":[{"type":"text","text":"sys","cache_control":{"type":"ephemeral","scope":"organization"}}],"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`,
@@ -4153,6 +4607,13 @@ func betaHeaderCorpus() map[string]string {
 		"output_format":                        `{"model":"` + model + `","output_format":{"type":"json_schema","schema":{"type":"object"}},"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`,
 		"diagnostics":                          `{"model":"` + model + `","diagnostics":{"cache":true},"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`,
 		"fallback_credit_token":                `{"model":"` + model + `","fallback_credit_token":"tok_1","messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`,
+
+		// thinking.display:"updates" is read off the decoded top-level thinking object, so it
+		// agrees across both paths by construction; the corpus pins that and its negatives.
+		"thinking display updates":                         `{"model":"claude-opus-5-5","thinking":{"type":"adaptive","display":"updates"},"messages":[{"role":"user","content":"hi"}]}`,
+		"thinking display updates on enabled":              `{"model":"claude-opus-4-6","thinking":{"type":"enabled","budget_tokens":1024,"display":"updates"},"messages":[{"role":"user","content":"hi"}]}`,
+		"thinking display summarized (must NOT trigger)":   `{"model":"claude-opus-5-5","thinking":{"type":"adaptive","display":"summarized"},"messages":[{"role":"user","content":"hi"}]}`,
+		"thinking display updates but disabled (must NOT)": `{"model":"claude-opus-4-6","thinking":{"type":"disabled","display":"updates"},"messages":[{"role":"user","content":"hi"}]}`,
 
 		// --- everything at once, to catch ordering/dedup divergence ---
 		"kitchen sink": `{"model":"` + model + `","thinking":{"type":"enabled","budget_tokens":1024},` +
@@ -4827,14 +5288,12 @@ func TestStripUnsupportedAnthropicFieldsSafeguards(t *testing.T) {
 // cannot produce from a request body, with the reason. Everything else must be exercised
 // by the corpus in TestAddMissingBetaHeadersFromRawBody_MatchesTypedPath.
 var notEmittedByRequestGating = map[string]string{
-	"AnthropicFallbackCreditBetaHeaderAWS": "FilterBetaHeadersForProvider rewrites the canonical " +
-		"fallback-credit date to the AWS one on Bedrock/Mantle; gating emits only the canonical value",
 	"AnthropicMCPClientBetaHeaderDeprecated": "superseded version constant kept for inbound matching; " +
 		"gating emits AnthropicMCPClientBetaHeader",
-	"AnthropicContext1MBetaHeader":                  "opted into via network config or passthrough headers, not derived from the request body",
-	"AnthropicRedactThinkingBetaHeader":             "opted into via network config or passthrough headers, not derived from the request body",
-	"AnthropicSkillsBetaHeader":                     "opted into via network config or passthrough headers, not derived from the request body",
-	"AnthropicMidConversationToolChangesBetaHeader": "opted into via network config or passthrough headers, not derived from the request body",
+	"AnthropicContext1MBetaHeader":      "opted into via network config or passthrough headers, not derived from the request body",
+	"AnthropicRedactThinkingBetaHeader": "opted into via network config or passthrough headers, not derived from the request body",
+	"AnthropicSkillsBetaHeader":         "opted into via network config or passthrough headers, not derived from the request body",
+	"AnthropicOAuthBetaHeader":          "added by setKeyAuth for a workload identity bearer, not derived from the request body",
 }
 
 // TestEveryBetaHeaderIsCoveredByTheCorpus makes a newly added beta header loud.
@@ -4852,8 +5311,7 @@ func TestEveryBetaHeaderIsCoveredByTheCorpus(t *testing.T) {
 	//
 	// Deliberately measured after MergeBetaHeaders + FilterBetaHeadersForProvider rather
 	// than off the context. The gating computing a header is not the same as the request
-	// carrying it: the filter can drop a value the provider does not support, or rewrite
-	// it (that is how the AWS fallback-credit date is produced). Stopping at the context
+	// carrying it: the filter can drop a value the provider does not support. Stopping at the context
 	// would pass for a header that is computed correctly and then silently discarded
 	// before req.Header.Set(AnthropicBetaHeader, ...) in anthropic.go.
 	providers := betaHeaderTestProviders()
@@ -5322,6 +5780,66 @@ func TestAddMissingBetaHeaders_PerMessageEffortInjectsMidConversationOutputConfi
 	})
 }
 
+// TestAddMissingBetaHeaders_ToolChangesInjectBetas (#8207): tool_addition / tool_removal
+// blocks derive mid-conversation-tool-changes-2026-07-01 from the body; a by-value
+// tool_definition (on the block or inside a compaction block's tool_changes) additionally
+// derives inline-tools-2026-09-15. Both paths (typed and raw body) must agree, and the
+// headers must not appear for a body without the blocks.
+func TestAddMissingBetaHeaders_ToolChangesInjectBetas(t *testing.T) {
+	corpus := betaHeaderCorpus()
+	cases := []struct {
+		name       string
+		body       string
+		wantChange bool
+		wantInline bool
+	}{
+		{"by-reference removal", corpus["tool_removal by reference on a system message"], true, false},
+		{"inline definition", corpus["tool_addition with an inline tool_definition"], true, true},
+		{"compaction tool_changes inline definition", corpus["compaction tool_changes with an inline tool_definition"], true, true},
+		{"compaction tool_changes by reference", corpus["compaction tool_changes by reference only (no inline beta)"], true, false},
+		{"no tool changes", corpus["bare request"], false, false},
+	}
+	check := func(t *testing.T, merged []string, wantChange, wantInline bool) {
+		t.Helper()
+		if got := slices.Contains(merged, AnthropicMidConversationToolChangesBetaHeader); got != wantChange {
+			t.Errorf("%s present=%v, want %v; got %v", AnthropicMidConversationToolChangesBetaHeader, got, wantChange, merged)
+		}
+		if got := slices.Contains(merged, AnthropicInlineToolsBetaHeader); got != wantInline {
+			t.Errorf("%s present=%v, want %v; got %v", AnthropicInlineToolsBetaHeader, got, wantInline, merged)
+		}
+	}
+	for _, tc := range cases {
+		if tc.body == "" {
+			t.Fatalf("corpus entry for %q missing", tc.name)
+		}
+		t.Run(tc.name+"/typed", func(t *testing.T) {
+			var req AnthropicMessageRequest
+			if err := schemas.Unmarshal([]byte(tc.body), &req); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			if err := AddMissingBetaHeadersToContext(ctx, &req, schemas.Anthropic); err != nil {
+				t.Fatalf("AddMissingBetaHeadersToContext: %v", err)
+			}
+			check(t, FilterBetaHeadersForProvider(MergeBetaHeaders(ctx, nil), schemas.Anthropic), tc.wantChange, tc.wantInline)
+		})
+		t.Run(tc.name+"/raw", func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			if err := AddMissingBetaHeadersToContextFromRawBody(ctx, []byte(tc.body), schemas.Anthropic); err != nil {
+				t.Fatalf("AddMissingBetaHeadersToContextFromRawBody: %v", err)
+			}
+			check(t, FilterBetaHeadersForProvider(MergeBetaHeaders(ctx, nil), schemas.Anthropic), tc.wantChange, tc.wantInline)
+		})
+	}
+	t.Run("dropped where the provider lacks the feature", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		if err := AddMissingBetaHeadersToContextFromRawBody(ctx, []byte(corpus["tool_addition with an inline tool_definition"]), schemas.Vertex); err != nil {
+			t.Fatalf("AddMissingBetaHeadersToContextFromRawBody: %v", err)
+		}
+		check(t, FilterBetaHeadersForProvider(MergeBetaHeaders(ctx, nil), schemas.Vertex), false, false)
+	})
+}
+
 // TestDefaultSupportsMidConversationSystem_ModelList pins the documented model list for
 // mid-conversation system messages: Opus 4.8+, Sonnet 5.5 (not Sonnet 5), Fable/Mythos.
 // Source: https://platform.claude.com/docs/en/build-with-claude/mid-conversation-system-messages
@@ -5448,5 +5966,205 @@ func TestHandleAnthropicResponsesStream_KeepsBedrockInvokeGuardrailOutcome(t *te
 	}
 	if carrying != 1 {
 		t.Fatalf("%d chunks carried the guardrail outcome, want exactly 1", carrying)
+	}
+}
+
+// TestResolveAnthropicProgrammaticCaller pins the version rule. allowed_callers must
+// name the code execution version the request declares: Anthropic auto-injects a
+// code_execution tool for the caller, which 400s ("Auto-injecting tools would
+// conflict with existing tool names: ['code_execution']") when the versions differ.
+func TestResolveAnthropicProgrammaticCaller(t *testing.T) {
+	tests := []struct {
+		name            string
+		declaredVersion string
+		hasCodeExec     bool
+		wantCaller      string
+		wantEmitVersion string
+	}{
+		{
+			name:        "no code execution tool: Anthropic auto-injects the named version",
+			hasCodeExec: false,
+			wantCaller:  "code_execution_20260120",
+		},
+		{
+			name:            "version-less code_interpreter is raised to reach programmatic tool calling",
+			declaredVersion: "",
+			hasCodeExec:     true,
+			wantCaller:      "code_execution_20260120",
+			wantEmitVersion: "code_execution_20260120",
+		},
+		{
+			name:            "explicit 20250825 is matched verbatim",
+			declaredVersion: "code_execution_20250825",
+			hasCodeExec:     true,
+			wantCaller:      "code_execution_20250825",
+		},
+		{
+			name:            "explicit 20260120 is matched verbatim",
+			declaredVersion: "code_execution_20260120",
+			hasCodeExec:     true,
+			wantCaller:      "code_execution_20260120",
+		},
+		{
+			name:            "explicit 20260521 is matched verbatim",
+			declaredVersion: "code_execution_20260521",
+			hasCodeExec:     true,
+			wantCaller:      "code_execution_20260521",
+		},
+		{
+			name:            "unrecognized version is named as declared and left alone",
+			declaredVersion: "code_execution_20270101",
+			hasCodeExec:     true,
+			wantCaller:      "code_execution_20270101",
+		},
+		{
+			name:            "legacy 20250522 has no caller value",
+			declaredVersion: "code_execution_20250522",
+			hasCodeExec:     true,
+			wantCaller:      "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			caller, emitVersion := resolveAnthropicProgrammaticCaller(tt.declaredVersion, tt.hasCodeExec)
+			if caller != tt.wantCaller {
+				t.Errorf("caller = %q, want %q", caller, tt.wantCaller)
+			}
+			if emitVersion != tt.wantEmitVersion {
+				t.Errorf("emitVersion = %q, want %q", emitVersion, tt.wantEmitVersion)
+			}
+		})
+	}
+}
+
+// TestAnthropicAllowedCallers covers the value rewrite itself.
+func TestAnthropicAllowedCallers(t *testing.T) {
+	tests := []struct {
+		name               string
+		in                 []string
+		programmaticCaller string
+		want               []string
+	}{
+		{name: "direct is shared", in: []string{"direct"}, programmaticCaller: "code_execution_20260120", want: []string{"direct"}},
+		{name: "programmatic is renamed", in: []string{"programmatic"}, programmaticCaller: "code_execution_20260120", want: []string{"code_execution_20260120"}},
+		{name: "renamed to the declared version", in: []string{"programmatic"}, programmaticCaller: "code_execution_20250825", want: []string{"code_execution_20250825"}},
+		{name: "mixed list", in: []string{"direct", "programmatic"}, programmaticCaller: "code_execution_20260521", want: []string{"direct", "code_execution_20260521"}},
+		{name: "anthropic values pass through", in: []string{"code_execution_20260120"}, programmaticCaller: "code_execution_20260120", want: []string{"code_execution_20260120"}},
+		{name: "collapses duplicates after rename", in: []string{"programmatic", "code_execution_20260120"}, programmaticCaller: "code_execution_20260120", want: []string{"code_execution_20260120"}},
+		{name: "unexpressible caller is dropped", in: []string{"programmatic"}, programmaticCaller: "", want: nil},
+		{name: "unexpressible caller leaves direct alone", in: []string{"direct", "programmatic"}, programmaticCaller: "", want: []string{"direct"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := anthropicAllowedCallers(tt.in, tt.programmaticCaller)
+			if len(got) != len(tt.want) {
+				t.Fatalf("got %v, want %v", got, tt.want)
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Fatalf("got %v, want %v", got, tt.want)
+				}
+			}
+		})
+	}
+}
+
+// TestAddMissingBetaHeaders_InlineDefinitionCarriesItsOwnBetas: a tool defined by value inside
+// a tool_addition block needs the same beta headers its tools[] twin would get (strict ->
+// structured outputs, defer_loading -> tool search), on both the typed and the raw path, and
+// inside compaction tool_changes too. An inline mcp_toolset needs the MCP client beta.
+func TestAddMissingBetaHeaders_InlineDefinitionCarriesItsOwnBetas(t *testing.T) {
+	corpus := betaHeaderCorpus()
+	cases := []struct {
+		name string
+		body string
+		want []string
+	}{
+		{"inline strict + defer_loading", corpus["tool_addition inline definition with strict and defer_loading"],
+			[]string{AnthropicStructuredOutputsBetaHeader, AnthropicToolSearchBetaHeader, AnthropicInlineToolsBetaHeader}},
+		{"compaction inline strict", corpus["compaction tool_changes inline definition with strict"],
+			[]string{AnthropicStructuredOutputsBetaHeader, AnthropicInlineToolsBetaHeader}},
+		{"inline mcp_toolset", corpus["tool_addition inline mcp_toolset definition"],
+			[]string{AnthropicMCPClientInlineToolsBetaHeader, AnthropicInlineToolsBetaHeader}},
+	}
+	for _, tc := range cases {
+		if tc.body == "" {
+			t.Fatalf("corpus entry for %q missing", tc.name)
+		}
+		check := func(t *testing.T, merged []string) {
+			t.Helper()
+			for _, want := range tc.want {
+				if !slices.Contains(merged, want) {
+					t.Errorf("beta %s missing; got %v", want, merged)
+				}
+			}
+		}
+		t.Run(tc.name+"/typed", func(t *testing.T) {
+			var req AnthropicMessageRequest
+			if err := schemas.Unmarshal([]byte(tc.body), &req); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			if err := AddMissingBetaHeadersToContext(ctx, &req, schemas.Anthropic); err != nil {
+				t.Fatalf("AddMissingBetaHeadersToContext: %v", err)
+			}
+			check(t, FilterBetaHeadersForProvider(MergeBetaHeaders(ctx, nil), schemas.Anthropic))
+		})
+		t.Run(tc.name+"/raw", func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			if err := AddMissingBetaHeadersToContextFromRawBody(ctx, []byte(tc.body), schemas.Anthropic); err != nil {
+				t.Fatalf("AddMissingBetaHeadersToContextFromRawBody: %v", err)
+			}
+			check(t, FilterBetaHeadersForProvider(MergeBetaHeaders(ctx, nil), schemas.Anthropic))
+		})
+	}
+}
+
+// TestAddMissingBetaHeaders_SingleMCPClientDate: mcp_servers and an inline mcp_toolset must
+// not produce two mcp-client-* betas. With an inline toolset present the inline-era date is
+// the one sent; without it the regular one stays.
+func TestAddMissingBetaHeaders_SingleMCPClientDate(t *testing.T) {
+	corpus := betaHeaderCorpus()
+	cases := []struct {
+		name string
+		body string
+		want string
+	}{
+		{"mcp_servers + inline toolset", corpus["tool_addition inline mcp_toolset definition"], AnthropicMCPClientInlineToolsBetaHeader},
+		{"mcp_servers only", `{"model":"claude-sonnet-5-5","mcp_servers":[{"type":"url","url":"https://mcp.example.com","name":"calendar"}],"messages":[{"role":"user","content":"hi"}]}`, AnthropicMCPClientBetaHeader},
+	}
+	for _, tc := range cases {
+		check := func(t *testing.T, merged []string) {
+			t.Helper()
+			var mcp []string
+			for _, h := range merged {
+				if strings.HasPrefix(h, AnthropicMCPClientBetaHeaderPrefix) {
+					mcp = append(mcp, h)
+				}
+			}
+			if len(mcp) != 1 || mcp[0] != tc.want {
+				t.Errorf("mcp-client betas = %v, want exactly [%s]", mcp, tc.want)
+			}
+		}
+		t.Run(tc.name+"/typed", func(t *testing.T) {
+			var req AnthropicMessageRequest
+			if err := schemas.Unmarshal([]byte(tc.body), &req); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			if err := AddMissingBetaHeadersToContext(ctx, &req, schemas.Anthropic); err != nil {
+				t.Fatalf("AddMissingBetaHeadersToContext: %v", err)
+			}
+			check(t, FilterBetaHeadersForProvider(MergeBetaHeaders(ctx, nil), schemas.Anthropic))
+		})
+		t.Run(tc.name+"/raw", func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			if err := AddMissingBetaHeadersToContextFromRawBody(ctx, []byte(tc.body), schemas.Anthropic); err != nil {
+				t.Fatalf("AddMissingBetaHeadersToContextFromRawBody: %v", err)
+			}
+			check(t, FilterBetaHeadersForProvider(MergeBetaHeaders(ctx, nil), schemas.Anthropic))
+		})
 	}
 }

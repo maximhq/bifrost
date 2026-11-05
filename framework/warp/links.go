@@ -66,12 +66,12 @@ var logsPageParams = map[string]struct{}{
 	"parent_request_id": {}, "providers": {}, "models": {}, "aliases": {}, "status": {}, "stop_reasons": {},
 	"tool_call_names": {}, "objects": {}, "selected_key_ids": {}, "virtual_key_ids": {}, "routing_rule_ids": {},
 	"routing_engine_used": {}, "apps": {}, "user_agents": {}, "complexity_tiers": {}, "complexity_mechanisms": {},
-	"session_id": {}, "user_ids": {}, "team_ids": {}, "customer_ids": {}, "business_unit_ids": {}, "project_ids": {},
+	"session_id": {}, "user_ids": {}, "team_ids": {}, "customer_ids": {}, "business_unit_ids": {}, "project_ids": {}, "topic_ids": {},
 	"content_search": {}, "request_id": {}, "min_latency": {}, "max_latency": {}, "min_cost": {}, "max_cost": {},
 	"min_tokens": {}, "max_tokens": {},
 	"start_time": {}, "end_time": {}, "limit": {}, "offset": {}, "sort_by": {}, "order": {}, "polling": {},
 	"period": {}, "missing_cost_only": {}, "cache_hit_types": {}, "metadata_filters": {}, "selected_log": {},
-	"grouped": {},
+	"grouped": {}, "agent_names": {}, "agent_correlation_id": {},
 }
 
 // markdownLink matches an inline link, allowing one level of brackets in its
@@ -294,9 +294,11 @@ func failuresLink(filters *logstore.SearchFilters, totalRequests int64, successR
 // select. It has no error-type, error-code or status-code filter, by decision,
 // so a query narrowed by one cannot be reproduced there: the link would open
 // every failure beside a count of seventeen. Such a result gets no link - each
-// row still carries its own - rather than one that is silently wider.
+// row still carries its own - rather than one that is silently wider. The same
+// holds for guardrail_outcomes, which only the Guardrail Incidents view reads.
 func linkableInLogsView(filters *logstore.SearchFilters) bool {
-	return len(filters.ErrorTypes) == 0 && len(filters.ErrorCodes) == 0 && len(filters.StatusCodes) == 0
+	return len(filters.ErrorTypes) == 0 && len(filters.ErrorCodes) == 0 && len(filters.StatusCodes) == 0 &&
+		len(filters.GuardrailOutcomes) == 0
 }
 
 // setLogsLink puts logs_link on a result when there is one to give.
@@ -337,9 +339,11 @@ func logsViewLink(filters *logstore.SearchFilters) string {
 		{"customer_ids", filters.CustomerIDs},
 		{"business_unit_ids", filters.BusinessUnitIDs},
 		{"project_ids", filters.ProjectIDs},
+		{"topic_ids", filters.TopicIDs},
 		{"apps", filters.Apps},
 		{"user_agents", filters.UserAgents},
 		{"cache_hit_types", filters.CacheHitTypes},
+		{"agent_names", filters.AgentNames},
 	}
 	for _, list := range lists {
 		if len(list.values) > 0 {
@@ -354,6 +358,7 @@ func logsViewLink(filters *logstore.SearchFilters) string {
 		{"request_id", filters.RequestID},
 		{"parent_request_id", filters.ParentRequestID},
 		{"session_id", filters.SessionID},
+		{"agent_correlation_id", filters.AgentCorrelationID},
 	}
 	for _, text := range texts {
 		if strings.TrimSpace(text.value) != "" {
@@ -389,7 +394,16 @@ func logsViewLink(filters *logstore.SearchFilters) string {
 		// The page reads this one as a JSON object. encoding/json rather than
 		// sonic because it sorts map keys: the same filters must give the same
 		// link, or a reordered copy stops matching the link that was issued.
-		if encoded, err := json.Marshal(filters.MetadataFilters); err == nil {
+		// One value stays a plain string, the form the page has always read; several go as an array.
+		pairs := make(map[string]any, len(filters.MetadataFilters))
+		for key, vals := range filters.MetadataFilters {
+			if len(vals) == 1 {
+				pairs[key] = vals[0]
+			} else {
+				pairs[key] = vals
+			}
+		}
+		if encoded, err := json.Marshal(pairs); err == nil {
 			values.Set("metadata_filters", string(encoded))
 		}
 	}
@@ -462,7 +476,11 @@ type linkedDimensionRankingResult struct {
 // unassignedRankingID is the id the store gives owner-less traffic in a rollup
 // ranking. The Logs page cannot filter on the absence of an owner, so that
 // row gets no link rather than one that opens everyone's traffic.
-const unassignedRankingID = "unassigned"
+const unassignedRankingID = logstore.UnassignedDimensionID
+
+// otherRankingID is the id the store gives traffic whose entity the caller may
+// not be shown. Filtering on it would name that entity, so it gets no link.
+const otherRankingID = logstore.OtherDimensionID
 
 // narrowToDimension returns filters narrowed to ranking rows, or false for
 // a dimension the Logs page has no URL parameter for.
@@ -514,7 +532,7 @@ func linkDimensionRankings(result *logstore.DimensionRankingResult, filters *log
 	rows := make([]linkedDimensionRanking, len(result.Rankings))
 	for i, ranking := range result.Rankings {
 		rows[i] = linkedDimensionRanking{DimensionRankingWithTrend: ranking}
-		if ranking.ID == "" || ranking.ID == unassignedRankingID {
+		if ranking.ID == "" || ranking.ID == unassignedRankingID || ranking.ID == otherRankingID {
 			continue
 		}
 		if narrowed, ok := narrowToDimension(filters, dimension, ranking.ID); ok {
@@ -536,13 +554,15 @@ func linkDimensionRankings(result *logstore.DimensionRankingResult, filters *log
 // linkable row, keeps the tool's filters.
 func setRankingLogsLink(out map[string]any, result *logstore.DimensionRankingResult, filters *logstore.SearchFilters, dimension logstore.RankingDimension) map[string]any {
 	var ids []string
-	unassigned := false
+	unassigned, other := false, false
 	if result != nil {
 		for _, ranking := range result.Rankings {
 			switch ranking.ID {
 			case "":
 			case unassignedRankingID:
 				unassigned = true
+			case otherRankingID:
+				other = true
 			default:
 				ids = append(ids, ranking.ID)
 			}
@@ -560,6 +580,9 @@ func setRankingLogsLink(out map[string]any, result *logstore.DimensionRankingRes
 	covers := fmt.Sprintf("the requests of the %d %s rows returned here, not every request in the window", len(ids), dimension)
 	if unassigned {
 		covers += "; Unassigned traffic has no Logs filter and is left out"
+	}
+	if other {
+		covers += "; Other traffic has no Logs filter and is left out"
 	}
 	out["logs_link_covers"] = covers
 	return out

@@ -263,3 +263,25 @@ func BenchmarkTraceLifecycle_ConnectorWithoutPluginSpans(b *testing.B) {
 		[]schemas.ObservabilityPlugin{&benchMetricsOnlyPlugin{name: "bench-metrics"}}, nil)
 	benchLifecycle(b, tracer)
 }
+
+// AddStreamingChunk runs per chunk, so the TTFT stamp must cost nothing after the first.
+func BenchmarkAddStreamingChunk_SteadyState(b *testing.B) {
+	store := NewTraceStore(5*time.Minute, nil)
+	defer store.Stop()
+	tracer := NewTracer(store, nil, nil)
+	defer tracer.Stop()
+
+	traceID := tracer.CreateTrace("")
+	ctx := context.WithValue(context.Background(), schemas.BifrostContextKeyTraceID, traceID)
+	_, handle := tracer.StartSpan(ctx, "chat gpt-4o-mini", schemas.SpanKindLLMCall)
+	tracer.StoreDeferredSpan(traceID, handle)
+
+	chunk := &schemas.BifrostResponse{}
+	tracer.AddStreamingChunk(traceID, chunk) // first chunk: the one that stamps
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		tracer.AddStreamingChunk(traceID, chunk)
+	}
+}

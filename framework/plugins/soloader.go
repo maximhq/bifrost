@@ -190,6 +190,21 @@ func (l *SharedObjectPluginLoader) LoadPlugin(path string, config any) (schemas.
 		}
 	}
 
+	// Optional: PreA2AHook (A2APlugin — Agent Gateway traffic). Plugins that
+	// don't export it keep working; DynamicPlugin's default is a no-op passthrough.
+	if sym, err := pluginObj.Lookup("PreA2AHook"); err == nil {
+		if dp.preA2AHook, ok = sym.(func(ctx *schemas.BifrostContext, req *schemas.BifrostA2ARequest) (*schemas.BifrostA2ARequest, *schemas.A2APluginShortCircuit, error)); !ok {
+			return nil, fmt.Errorf("failed to cast PreA2AHook to expected signature")
+		}
+	}
+
+	// Optional: PostA2AHook (A2APlugin — Agent Gateway traffic).
+	if sym, err := pluginObj.Lookup("PostA2AHook"); err == nil {
+		if dp.postA2AHook, ok = sym.(func(ctx *schemas.BifrostContext, resp *schemas.BifrostA2AResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostA2AResponse, *schemas.BifrostError, error)); !ok {
+			return nil, fmt.Errorf("failed to cast PostA2AHook to expected signature")
+		}
+	}
+
 	// Optional: PreMCPConnectionHook (MCPConnectionPlugin — typed Connect hook).
 	// New .so plugins built against MCPConnectionPlugin can export this symbol to
 	// observe Connect events. Legacy plugins that don't export it keep working;

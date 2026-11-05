@@ -134,13 +134,14 @@ Bifrost automatically manages Anthropic beta headers - detecting required header
 | `response_format` | Converted to `output_format` |
 | `tools` | Schema restructured (see [Tool Conversion](#tool-conversion)) |
 | `tool_choice` | Type mapped (see [Tool Conversion](#tool-conversion)) |
+| `parallel_tool_calls` | `false` → `tool_choice.disable_parallel_tool_use` |
 | `reasoning` | Mapped to `thinking` (see [Reasoning / Thinking](#reasoning--thinking)) |
 | `user` | Wrapped in `metadata.user_id` |
 | `top_k` | Via `extra_params` (Anthropic-specific) |
 
 ### Dropped Parameters
 
-The following parameters are silently ignored: `frequency_penalty`, `presence_penalty`, `logit_bias`, `logprobs`, `top_logprobs`, `seed`, `parallel_tool_calls`, `service_tier`
+The following parameters are silently ignored: `frequency_penalty`, `presence_penalty`, `logit_bias`, `logprobs`, `top_logprobs`, `seed`, `service_tier`
 
 ### Extra Parameters
 
@@ -395,6 +396,7 @@ The Responses API uses the same underlying `/v1/messages` endpoint but converts 
 | `instructions` | Becomes system message |
 | `tools` | Schema restructured (see [Chat Completions](#1-chat-completions)) |
 | `tool_choice` | Type mapped (see [Chat Completions](#1-chat-completions)) |
+| `parallel_tool_calls` | `false` → `tool_choice.disable_parallel_tool_use` |
 | `reasoning` | Mapped to `thinking` (see [Reasoning / Thinking](#reasoning--thinking)) |
 | `user` | Wrapped in `metadata.user_id` |
 | `text` | Converted to `output_format` |

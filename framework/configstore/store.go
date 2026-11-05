@@ -29,6 +29,9 @@ type VirtualKeyQueryParams struct {
 	ExcludeAccessProfileManagedVirtual bool   // When true, exclude VKs managed through enterprise access profiles
 	ExcludeAssignedVirtualKeys         bool   // When true, exclude VKs that already have any user assignment
 	ForUserAssignment                  bool   // When true, exclude VKs assigned to any entity (team, customer, access profile, or user) — intended for user-assignment pickers
+	// MetadataFilters narrows to keys whose metadata has every listed key set to exactly the given
+	// value (AND). Keys failing tables.IsValidVirtualKeyMetadataKey match nothing.
+	MetadataFilters map[string]string
 }
 
 // ModelConfigsQueryParams holds pagination, filtering, and search parameters for model configs queries.
@@ -136,9 +139,10 @@ type MCPClientsQueryParams struct {
 
 // VirtualMCPsQueryParams holds pagination and search parameters for Virtual MCP list queries.
 type VirtualMCPsQueryParams struct {
-	Limit  int
-	Offset int
-	Search string // matches name (case-insensitive)
+	Limit       int
+	Offset      int
+	Search      string // matches name (case-insensitive)
+	MCPClientID string // only Virtual MCPs with a tool spec for this exact client_id
 }
 
 // MCPLibraryQueryParams holds pagination, filtering, search, and sort
@@ -217,6 +221,15 @@ type MCPSessionsFilterParams struct {
 	// filter ORs `{table}.user_id IN (matched)` into the search WHERE.
 	// Only consulted when Search is non-empty.
 	MatchedUserIDs []string
+}
+
+// MCPPerUserDiscoveryBinding names one caller's discovery on one MCP client:
+// the (mode, identity, client) binding the discovery shares with the
+// credential it was made with.
+type MCPPerUserDiscoveryBinding struct {
+	Mode        schemas.MCPAuthMode
+	Identity    string
+	MCPClientID string
 }
 
 // OAuth2SessionsQueryParams holds the filters + pagination for the OAuth2
@@ -305,25 +318,26 @@ type ConfigStore interface {
 	GetMCPClientByID(ctx context.Context, id string) (*tables.TableMCPClient, error)
 	GetMCPClientConfigByID(ctx context.Context, id string) (*schemas.MCPClientConfig, error)
 	GetMCPClientByName(ctx context.Context, name string) (*tables.TableMCPClient, error)
+	// MCPEndpointSlugTaken reports whether a Virtual MCP or MCP client already
+	// serves /mcp/<slug>.
+	MCPEndpointSlugTaken(ctx context.Context, slug string) (bool, error)
 	GetMCPClientByOauthConfigID(ctx context.Context, oauthConfigID string) (*tables.TableMCPClient, error)
 	UpdateMCPClientOAuthConfigID(ctx context.Context, clientID string, oauthConfigID *string) error
-	ClearMCPClientPendingOAuthConfig(ctx context.Context, clientID string) error
+	ClearMCPClientPendingVerification(ctx context.Context, clientID string) error
 	GetMCPClientsPaginated(ctx context.Context, params MCPClientsQueryParams) ([]tables.TableMCPClient, int64, error)
 	CreateMCPClientConfig(ctx context.Context, clientConfig *schemas.MCPClientConfig) error
 	UpdateMCPClientConfig(ctx context.Context, id string, clientConfig *tables.TableMCPClient) error
-	// UpdateMCPClientTools is a targeted column update for
-	// discovered_tools_json/tool_name_mapping_json/discovered_instructions only —
-	// safe to call from a periodic background tool-sync without racing a concurrent
-	// full UpdateMCPClientConfig call over unrelated fields.
-	UpdateMCPClientTools(ctx context.Context, clientID string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string, instructions string) error
+	// UpdateMCPClientDiscovery writes only the discovery columns; safe from a background refresh.
+	UpdateMCPClientDiscovery(ctx context.Context, clientID string, discovery *schemas.MCPDiscovery) error
 	DeleteMCPClientConfig(ctx context.Context, id string) error
 
 	// MCP library catalog (synced + org-custom)
 	GetMCPLibraryPaginated(ctx context.Context, params MCPLibraryQueryParams) ([]tables.TableMCPLibrary, int64, error)
 	GetMCPLibraryFilterData(ctx context.Context) (*MCPLibraryFilterData, error)
 	UpsertMCPLibraryEntry(ctx context.Context, entry *tables.TableMCPLibrary, tx ...*gorm.DB) error
-	// CreateCustomMCPLibraryEntry inserts an org-internal ("custom") library row.
-	// Returns ErrAlreadyExists when the slug collides with an existing entry.
+	// CreateCustomMCPLibraryEntry inserts an org-internal ("custom") library row,
+	// replacing a deleted entry with the same slug. Returns ErrAlreadyExists when
+	// the slug collides with a live entry.
 	CreateCustomMCPLibraryEntry(ctx context.Context, entry *tables.TableMCPLibrary) error
 	// SoftDeleteMCPLibraryEntry tombstones a library row by ID (sets deleted_at)
 	// so it is hidden from listings and never resurrected by the remote sync.
@@ -380,6 +394,43 @@ type ConfigStore interface {
 	CreateVirtualKey(ctx context.Context, virtualKey *tables.TableVirtualKey, tx ...*gorm.DB) error
 	UpdateVirtualKey(ctx context.Context, virtualKey *tables.TableVirtualKey, tx ...*gorm.DB) error
 	DeleteVirtualKey(ctx context.Context, id string, tx ...*gorm.DB) error
+	ReplaceVirtualKeyAgentGrants(ctx context.Context, virtualKeyID string, agentNames []string, tx ...*gorm.DB) error
+	ReplaceVirtualKeyRelayGrants(ctx context.Context, virtualKeyID string, endpointNames []string, tx ...*gorm.DB) error
+
+	// Relay CRUD.
+	ListRelays(ctx context.Context) ([]*schemas.RelayConfig, error)
+	GetRelay(ctx context.Context, name string) (*schemas.RelayConfig, error)
+	CreateRelay(ctx context.Context, cfg *schemas.RelayConfig, configHash string) error
+	UpdateRelay(ctx context.Context, cfg *schemas.RelayConfig, configHash string) error
+	DeleteRelay(ctx context.Context, name string) error
+	GetRelayConfigHashes(ctx context.Context) (map[string]string, error)
+	GetRelayGrantedVirtualKeyIDs(ctx context.Context, name string) ([]string, error)
+
+	// Agent Gateway registration CRUD. Declared on the interface (not just the
+	// RDB implementation) so wrappers that embed ConfigStore — like the
+	// enterprise config store — forward them and still satisfy agent.Store.
+	CreateAgentRegistration(ctx context.Context, registration *schemas.AgentRegistration) error
+	UpdateAgentRegistration(ctx context.Context, registration *schemas.AgentRegistration) error
+	ListAgentRegistrations(ctx context.Context) ([]schemas.AgentRegistration, error)
+	GetAgentRegistration(ctx context.Context, name string) (*schemas.AgentRegistration, error)
+	DeleteAgentRegistration(ctx context.Context, name string) error
+
+	// Agent Gateway push relay persistence, mirroring agent.PushStore for the
+	// same wrapper-forwarding reason as the registration CRUD above.
+	SaveAgentPushConfig(ctx context.Context, config *schemas.AgentPushConfig) error
+	BindAgentPushConfigTask(ctx context.Context, agentName, ingressTokenHash, pendingTaskID, taskID string) error
+	GetAgentPushConfig(ctx context.Context, agentName, taskID, configID string) (*schemas.AgentPushConfig, error)
+	GetAgentPushConfigByIngressTokenHash(ctx context.Context, agentName, hash string) (*schemas.AgentPushConfig, error)
+	ListAgentPushConfigs(ctx context.Context, agentName, taskID string) ([]schemas.AgentPushConfig, error)
+	ListAgentPushConfigsPaginated(ctx context.Context, query schemas.AgentPushConfigQuery) ([]schemas.AgentPushConfig, int64, error)
+	ListAgentPushConfigAgentNames(ctx context.Context) ([]string, error)
+	DeleteAgentPushConfig(ctx context.Context, agentName, taskID, configID string) (bool, error)
+	DeletePendingAgentPushConfig(ctx context.Context, agentName, ingressTokenHash, pendingTaskID string) (bool, error)
+	CreateAgentPushDeliveryIfNotExists(ctx context.Context, delivery *schemas.AgentPushDelivery) (bool, error)
+	ListDueAgentPushDeliveries(ctx context.Context, now time.Time, limit int) ([]schemas.AgentPushDelivery, error)
+	ClaimAgentPushDelivery(ctx context.Context, id, runnerID string, leaseUntil time.Time) (*schemas.AgentPushDelivery, error)
+	UpdateAgentPushDeliveryOutcome(ctx context.Context, delivery *schemas.AgentPushDelivery, runnerID string, leaseUntil time.Time) error
+	PruneAgentPushDeliveries(ctx context.Context, before time.Time) error
 
 	// Virtual key provider config CRUD
 	GetVirtualKeyProviderConfigs(ctx context.Context, virtualKeyID string) ([]tables.TableVirtualKeyProviderConfig, error)
@@ -452,6 +503,13 @@ type ConfigStore interface {
 	// Budget CRUD
 	GetBudgets(ctx context.Context) ([]tables.TableBudget, error)
 	GetBudget(ctx context.Context, id string, tx ...*gorm.DB) (*tables.TableBudget, error)
+	// GetVirtualKeyBudgets returns the budgets a virtual key holds directly, through virtual_key_id:
+	// the ones config.json declares inline on the key. Budgets held through a model config are not
+	// included.
+	GetVirtualKeyBudgets(ctx context.Context, virtualKeyID string, tx ...*gorm.DB) ([]tables.TableBudget, error)
+	// GetVirtualKeyProviderConfigBudgets returns the budgets a virtual key provider config holds
+	// directly, through provider_config_id. Budgets held through a model config are not included.
+	GetVirtualKeyProviderConfigBudgets(ctx context.Context, providerConfigID uint, tx ...*gorm.DB) ([]tables.TableBudget, error)
 	CreateBudget(ctx context.Context, budget *tables.TableBudget, tx ...*gorm.DB) error
 	UpdateBudget(ctx context.Context, budget *tables.TableBudget, tx ...*gorm.DB) error
 	// UpdateBudgetOverride updates only the override state and returns the refreshed budget.
@@ -710,6 +768,12 @@ type ConfigStore interface {
 	// state. The two claim methods partition the table by flow_mode, so a
 	// given state can only ever be claimed by one of them.
 	ClaimOauthFlowByState(ctx context.Context, state string) (*tables.TableMCPOauthFlow, error)
+	// CompleteOauthUserSession consumes the claimed per-identity flow row
+	// sessionID and stores the token it produced, in one transaction. Returns
+	// ErrNotFound, storing nothing, when the row is gone: a revoke deletes the
+	// binding's flows before its token, so a completion that finishes after a
+	// revoke cannot bring the token back.
+	CompleteOauthUserSession(ctx context.Context, sessionID string, token *tables.TableMCPOauthToken) error
 	// GetOauthUserSessionByModeIdentityAndMCPClient returns the canonical flow
 	// row for an (identity, mcp_client) binding. Used at flow-init time as the
 	// single source of truth: reauth updates this row in place rather than
@@ -717,6 +781,9 @@ type ConfigStore interface {
 	GetOauthUserSessionByModeIdentityAndMCPClient(ctx context.Context, mode schemas.MCPAuthMode, identity, mcpClientID string) (*tables.TableMCPOauthFlow, error)
 	CreateOauthUserSession(ctx context.Context, session *tables.TableMCPOauthFlow) error
 	UpdateOauthUserSession(ctx context.Context, session *tables.TableMCPOauthFlow) error
+	// RecordOAuthFlowIssuer writes only a flow's expected issuer, while the flow is still pending with
+	// state; it reports whether the row matched.
+	RecordOAuthFlowIssuer(ctx context.Context, id, state, issuer string, issParameterSupported bool) (bool, error)
 
 	// Per-user OAuth token CRUD. These operate on the same TableMCPOauthToken /
 	// oauth_tokens rows as the shared-token methods above, scoped to
@@ -756,6 +823,10 @@ type ConfigStore interface {
 	// client's connection-failure record can say what actually failed rather
 	// than only that the row is no longer usable.
 	MarkOauthUserTokenNeedsReauthByID(ctx context.Context, tokenID string, reason string) error
+	// MarkOauthTokenNeedsReauthIfUnrenewable flips one token row to 'needs_reauth' only while it is
+	// still active, has no refresh token and its access token has expired, so a reauthorize that
+	// landed in between is not overwritten. Reports whether the row was flipped.
+	MarkOauthTokenNeedsReauthIfUnrenewable(ctx context.Context, tokenID string, reason string) (bool, error)
 	// MarkTokensNeedsReauthByConfigID flips status to 'needs_reauth' on every
 	// token row bound to an OAuth config in one bulk UPDATE, with no
 	// auth_mode filter — rotating an oauth_configs row's client_id/client_secret
@@ -785,6 +856,9 @@ type ConfigStore interface {
 	// config changes behave identically from both entry points. Returns
 	// whether a rotation actually happened.
 	RotateMCPOAuthConfig(ctx context.Context, existingOauthConfig *tables.TableOauthConfig, fields MCPOAuthConfigFields) (bool, error)
+	// BindOAuthConfigIssuer writes only an oauth config's issuer binding, while its stored issuer and
+	// token_url are still the expected ones; it reports whether the row matched.
+	BindOAuthConfigIssuer(ctx context.Context, id, expectedIssuer, expectedTokenURL, issuer string, issParameterSupported bool) (bool, error)
 	// GetOauthUserTokenByID looks up a single per-user token row by primary
 	// key. Returns nil, nil when not found. Unlike GetOauthTokenByID above,
 	// this DOES filter to auth_mode IN ('user','vk','session'): the sessions
@@ -819,6 +893,10 @@ type ConfigStore interface {
 	// DeleteExpiredOauthUserSessions hard-deletes pending OAuth flow rows
 	// whose ExpiresAt has passed. Returns the number of rows removed.
 	DeleteExpiredOauthUserSessions(ctx context.Context) (int64, error)
+	// DeleteAbandonedOauthConfigs hard-deletes 'pending' or 'failed'
+	// oauth_configs rows older than olderThan that no MCP client, live flow,
+	// or token row references. Returns the number of rows removed.
+	DeleteAbandonedOauthConfigs(ctx context.Context, olderThan time.Duration) (int64, error)
 	// DeleteOrphanedOauthUserTokens hard-deletes token rows where status='orphaned'
 	// and updated_at is older than olderThan. Returns the number of rows removed.
 	// Scoped to auth_mode IN ('user','vk','session') — a shared token can't
@@ -858,6 +936,36 @@ type ConfigStore interface {
 	// status='orphaned' and updated_at is older than olderThan.
 	DeleteOrphanedMCPPerUserHeaderCredentials(ctx context.Context, olderThan time.Duration) (int64, error)
 
+	// Per-user MCP discovery CRUD, for clients with per_user_discovery on.
+	// One row per (auth_mode, identity, mcp_client_id) binding — the same key
+	// the per-user credential rows use — holding the tools and instructions
+	// discovered with that caller's own credential. There is no staleness
+	// sweep: rows are refreshed only by the caller's manual refresh and die
+	// with their credential or their client.
+	GetMCPPerUserDiscoveryByMode(ctx context.Context, mode schemas.MCPAuthMode, identity, mcpClientID string) (*tables.TableMCPPerUserDiscovery, error)
+	// GetMCPPerUserDiscoveryBindings lists who holds a discovery on one
+	// client: the user and virtual-key rows with only their identity columns
+	// and discovery hash filled.
+	GetMCPPerUserDiscoveryBindings(ctx context.Context, mcpClientID string) ([]tables.TableMCPPerUserDiscovery, error)
+	// GetMCPPerUserDiscoveryToolCallerCounts returns, for each of the clients,
+	// every tool name in its user and virtual-key callers' discoveries with how
+	// many of those discoveries include it. Clients no caller holds a discovery
+	// of are left out.
+	GetMCPPerUserDiscoveryToolCallerCounts(ctx context.Context, mcpClientIDs []string) (map[string]map[string]int, error)
+	// GetMCPPerUserDiscoveryNames returns, for each of the clients, the union
+	// of the tool and prompt names and the resource and template URIs its user
+	// and virtual-key callers' discoveries hold. Clients no caller holds a
+	// discovery of are left out.
+	GetMCPPerUserDiscoveryNames(ctx context.Context, mcpClientIDs []string) (map[string]MCPPerUserDiscoveryNames, error)
+	// GetMCPPerUserDiscoverySummaries returns the discovery each of the user
+	// and virtual-key bindings holds, keyed by binding, with only the identity
+	// columns, the counts and discovered_at read. Bindings without one, and
+	// bindings of any other mode, are left out.
+	GetMCPPerUserDiscoverySummaries(ctx context.Context, bindings []MCPPerUserDiscoveryBinding) (map[MCPPerUserDiscoveryBinding]tables.TableMCPPerUserDiscovery, error)
+	UpsertMCPPerUserDiscovery(ctx context.Context, discovery *tables.TableMCPPerUserDiscovery) error
+	DeleteMCPPerUserDiscovery(ctx context.Context, mode schemas.MCPAuthMode, identity, mcpClientID string) error
+	DeleteMCPPerUserDiscoveriesByClient(ctx context.Context, mcpClientID string) error
+
 	// Per-user-headers submission flow CRUD. Mirrors the OAuth user-session
 	// surface — the resolver creates a pending flow row when the inline-401
 	// fires, the submit endpoint deletes the row on success, and the sweep
@@ -880,6 +988,11 @@ type ConfigStore interface {
 	// DeleteOauthUserSessionsByModeIdentityAndMCPClient.
 	DeleteMCPPerUserHeaderFlowsByModeIdentityAndMCPClient(ctx context.Context, mode schemas.MCPAuthMode, identity, mcpClientID string) error
 	DeleteMCPPerUserHeaderFlow(ctx context.Context, id string) error
+	// CompleteMCPPerUserHeaderFlow consumes the submission flow row flowID and
+	// upserts the credential it produced, in one transaction. Returns
+	// ErrNotFound, storing nothing, when the row is gone: revoked, swept as
+	// expired, or already consumed by a concurrent submit.
+	CompleteMCPPerUserHeaderFlow(ctx context.Context, flowID string, cred *tables.TableMCPPerUserHeaderCredential) error
 	// ListPendingMCPPerUserHeaderFlows returns non-expired pending header
 	// submission flow rows matching the supplied filters. Mirrors
 	// ListPendingOauthUserSessions on the OAuth side. Always restricted to
@@ -978,7 +1091,7 @@ type ConfigStore interface {
 	ListClaimableSidekiqJobs(ctx context.Context, staleBefore time.Time) ([]tables.TableSidekiqJob, error)
 	GetInFlightSidekiqJobByKind(ctx context.Context, kind string) (*tables.TableSidekiqJob, error)
 	GetLatestSidekiqJobByKind(ctx context.Context, kind string) (*tables.TableSidekiqJob, error)
-	ListSidekiqJobs(ctx context.Context, terminalSince time.Time, limit int) ([]tables.TableSidekiqJob, error)
+	ListSidekiqJobs(ctx context.Context, terminalSince time.Time, limit int, quietKinds []string) ([]tables.TableSidekiqJob, error)
 	MarkStaleSidekiqJobsFailed(ctx context.Context, staleBefore time.Time) (int64, error)
 
 	// Batch jobs - mutable coordination state for delayed batch accounting
@@ -994,6 +1107,31 @@ type ConfigStore interface {
 	CompleteProviderJob(ctx context.Context, jobID, runnerID string) error
 	MarkProviderJobUnpriceable(ctx context.Context, jobID, runnerID, reason string, err error) error
 	FailProviderJob(ctx context.Context, jobID, runnerID string, err error) error
+	// GetProviderJobsByFileIDs returns the provider jobs on provider whose input,
+	// output or error file is one of fileIDs.
+	GetProviderJobsByFileIDs(ctx context.Context, provider string, fileIDs []string) ([]*tables.TableProviderJob, error)
+	// GetProviderJobsByJobIDSuffixes returns the provider jobs of kind on provider
+	// whose provider-side id ends in "/"+one of suffixes: full resource names
+	// addressed by their last segment.
+	GetProviderJobsByJobIDSuffixes(ctx context.Context, kind, provider string, suffixes []string) ([]*tables.TableProviderJob, error)
+
+	// Provider objects - which virtual key created a provider-side object
+	UpsertProviderObject(ctx context.Context, object *tables.TableProviderObject) error
+	// GetProviderObjectsByIDs returns the provider objects among the given stable
+	// ids that exist; ids with no row are simply absent from the result.
+	GetProviderObjectsByIDs(ctx context.Context, ids []string) ([]*tables.TableProviderObject, error)
+	// GetProviderObjectsByObjectIDSuffixes returns the provider objects of kind on
+	// provider whose provider-side id ends in "/"+one of suffixes: full resource
+	// names addressed by their last segment.
+	GetProviderObjectsByObjectIDSuffixes(ctx context.Context, kind, provider string, suffixes []string) ([]*tables.TableProviderObject, error)
+	// GetProviderObjectsByObjectID returns the provider objects of kind recorded for
+	// objectID under any provider name, in no particular order.
+	GetProviderObjectsByObjectID(ctx context.Context, kind, objectID string) ([]*tables.TableProviderObject, error)
+	DeleteProviderObject(ctx context.Context, id string) error
+	// DeleteProviderObjectsByObjectIDSuffix forgets the provider objects of kind on
+	// provider that virtualKeyID created and whose provider-side id ends in
+	// "/"+suffix: a full resource name addressed by its last segment.
+	DeleteProviderObjectsByObjectIDSuffix(ctx context.Context, kind, provider, suffix, virtualKeyID string) error
 
 	// Webhook Endpoints
 	GetWebhookEndpoints(ctx context.Context) ([]tables.TableWebhookEndpoint, error)
@@ -1056,6 +1194,9 @@ type ConfigStore interface {
 	// OAuth2 authorize requests
 	CreateOAuth2AuthorizeRequest(ctx context.Context, req *tables.TableOAuth2AuthorizeRequest) error
 	GetOAuth2AuthorizeRequestByID(ctx context.Context, id string) (*tables.TableOAuth2AuthorizeRequest, error)
+	// GetOAuth2AuthorizeRequestByCodeHash returns the request an auth code was
+	// minted for while it is consented or already exchanged (code_issued), so the
+	// token endpoint can tell a replayed code from an unknown one.
 	GetOAuth2AuthorizeRequestByCodeHash(ctx context.Context, codeHash string) (*tables.TableOAuth2AuthorizeRequest, error)
 	// ConsentOAuth2AuthorizeRequest atomically transitions a still-pending request
 	// to consented (recording the code hash and resolved identity) — returns
@@ -1106,7 +1247,11 @@ type ConfigStore interface {
 }
 
 // NewConfigStore creates a new config store based on the configuration
-func NewConfigStore(ctx context.Context, config *Config, logger schemas.Logger) (ConfigStore, error) {
+func NewConfigStore(ctx context.Context, config *Config, logger schemas.Logger, opts ...Option) (ConfigStore, error) {
+	var o storeOptions
+	for _, opt := range opts {
+		opt(&o)
+	}
 	if config == nil {
 		return nil, fmt.Errorf("config cannot be nil")
 	}
@@ -1122,7 +1267,7 @@ func NewConfigStore(ctx context.Context, config *Config, logger schemas.Logger) 
 		return nil, fmt.Errorf("invalid sqlite config: %T", config.Config)
 	case ConfigStoreTypePostgres:
 		if postgresConfig, ok := config.Config.(*PostgresConfig); ok {
-			return newPostgresConfigStore(ctx, postgresConfig, logger)
+			return newPostgresConfigStore(ctx, postgresConfig, logger, o.migrationMatViewPause)
 		}
 		return nil, fmt.Errorf("invalid postgres config: %T", config.Config)
 	}

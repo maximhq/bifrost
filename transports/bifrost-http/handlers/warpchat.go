@@ -10,7 +10,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/queryscope"
 	"github.com/maximhq/bifrost/framework/warp"
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
 

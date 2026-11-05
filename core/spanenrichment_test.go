@@ -29,6 +29,9 @@ var contextDimSources = []struct {
 	{schemas.AttrBifrostTeamName, schemas.BifrostContextKeyGovernanceTeamName, "team-name"},
 	{schemas.AttrBifrostProjectID, schemas.BifrostContextKeyGovernanceProjectID, "project-id"},
 	{schemas.AttrBifrostProjectName, schemas.BifrostContextKeyGovernanceProjectName, "project-name"},
+	{schemas.AttrBifrostPromptID, schemas.BifrostContextKeySelectedPromptID, "prompt-id"},
+	{schemas.AttrBifrostPromptName, schemas.BifrostContextKeySelectedPromptName, "prompt-name"},
+	{schemas.AttrBifrostPromptVersion, schemas.BifrostContextKeySelectedPromptVersion, "3"},
 	{schemas.AttrBifrostCustomerID, schemas.BifrostContextKeyGovernanceCustomerID, "cust-id"},
 	{schemas.AttrBifrostCustomerName, schemas.BifrostContextKeyGovernanceCustomerName, "cust-name"},
 	{schemas.AttrBifrostBusinessUnitID, schemas.BifrostContextKeyGovernanceBusinessUnitID, "bu-id"},
@@ -201,6 +204,50 @@ func TestContextSpanEnrichmentMatchesAttributes(t *testing.T) {
 		}
 		if !reflect.DeepEqual(got, want) {
 			t.Errorf("%s: typed = %#v, attribute = %#v", attr, got, want)
+		}
+	}
+}
+
+// The prompts plugin resolves a stored prompt onto the request, and nothing but the
+// logging plugin could see which one. Registered as enrichment dimensions, so the
+// contextDimSources entries above cover the wiring and this pins the empty-value cases.
+func TestPromptSpanAttributesEmit(t *testing.T) {
+	ctx := context.Background()
+	ctx = context.WithValue(ctx, schemas.BifrostContextKeySelectedPromptID, "prompt-1")
+	ctx = context.WithValue(ctx, schemas.BifrostContextKeySelectedPromptName, "support-triage")
+	ctx = context.WithValue(ctx, schemas.BifrostContextKeySelectedPromptVersion, "3")
+
+	span := &schemas.Span{}
+	applyContextSpanAttributes(span, ctx)
+
+	for attr, want := range map[string]string{
+		schemas.AttrBifrostPromptID:      "prompt-1",
+		schemas.AttrBifrostPromptName:    "support-triage",
+		schemas.AttrBifrostPromptVersion: "3",
+	} {
+		if got := span.Attributes[attr]; got != want {
+			t.Errorf("%s = %v, want %q", attr, got, want)
+		}
+	}
+
+	// The prompts plugin sets the version even for a prompt with no name, so a version
+	// without an id is reachable and must not emit an empty id.
+	versionOnly := &schemas.Span{}
+	applyContextSpanAttributes(versionOnly, context.WithValue(context.Background(),
+		schemas.BifrostContextKeySelectedPromptVersion, "7"))
+	if got := versionOnly.Attributes[schemas.AttrBifrostPromptVersion]; got != "7" {
+		t.Errorf("version-only prompt version = %v, want 7", got)
+	}
+	if _, ok := versionOnly.Attributes[schemas.AttrBifrostPromptID]; ok {
+		t.Error("prompt id emitted with nothing on the context")
+	}
+
+	// No prompt applied, no attributes.
+	none := &schemas.Span{}
+	applyContextSpanAttributes(none, context.Background())
+	for _, attr := range []string{schemas.AttrBifrostPromptID, schemas.AttrBifrostPromptName, schemas.AttrBifrostPromptVersion} {
+		if _, ok := none.Attributes[attr]; ok {
+			t.Errorf("%s emitted for a request with no prompt", attr)
 		}
 	}
 }

@@ -331,11 +331,12 @@ func (plugin *Plugin) buildNonStreamingResponseFromResult(ctx *schemas.BifrostCo
 		return nil, fmt.Errorf("cached response is not a string")
 	}
 	var cachedResponse schemas.BifrostResponse
-	if err := json.Unmarshal([]byte(responseStr), &cachedResponse); err != nil {
+	if err := unmarshalCachedResponse([]byte(responseStr), &cachedResponse); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal cached response: %w", err)
 	}
 
 	plugin.stampCacheMetadataForHit(state, cachedResponse.GetExtraFields(), result.ID, requestedProvider, requestedModel, cacheType, threshold, similarity, inputTokens)
+	plugin.recordCacheLookupHit(ctx, state, result.ID, requestedProvider, requestedModel, cacheType, threshold, similarity, inputTokens)
 	state.ShortCircuited = true
 	return &schemas.LLMPluginShortCircuit{Response: &cachedResponse}, nil
 }
@@ -346,6 +347,7 @@ func (plugin *Plugin) buildNonStreamingResponseFromResult(ctx *schemas.BifrostCo
 // process.
 func (plugin *Plugin) buildStreamingResponseFromResult(ctx *schemas.BifrostContext, state *cacheState, req *schemas.BifrostRequest, result vectorstore.SearchResult, streamArray []string, cacheType CacheType, threshold *float64, similarity *float64, inputTokens *int) (*schemas.LLMPluginShortCircuit, error) {
 	requestedProvider, requestedModel, _ := req.GetRequestFields()
+	plugin.recordCacheLookupHit(ctx, state, result.ID, requestedProvider, requestedModel, cacheType, threshold, similarity, inputTokens)
 	streamChan := make(chan *schemas.BifrostStreamChunk)
 	done := ctx.Done()
 
@@ -358,7 +360,7 @@ func (plugin *Plugin) buildStreamingResponseFromResult(ctx *schemas.BifrostConte
 		defer close(streamChan)
 		for i, chunkStr := range streamArray {
 			var cachedResponse schemas.BifrostResponse
-			if err := json.Unmarshal([]byte(chunkStr), &cachedResponse); err != nil {
+			if err := unmarshalCachedResponse([]byte(chunkStr), &cachedResponse); err != nil {
 				plugin.logger.Warn("Failed to unmarshal stream chunk %d, skipping: %v", i, err)
 				continue
 			}

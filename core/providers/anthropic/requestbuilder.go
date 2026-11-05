@@ -52,7 +52,7 @@ type AnthropicRequestBuildConfig struct {
 	// InjectBetaHeadersIntoBody = true (Vertex only). Both come from the
 	// caller's NetworkConfig at request time.
 	BetaHeaderOverrides  map[string]bool
-	ProviderExtraHeaders map[string]string
+	ProviderExtraHeaders map[string]schemas.SecretVar
 
 	// ShouldSendBackRawRequest / ShouldSendBackRawResponse control whether raw
 	// request/response bytes are attached to BifrostError.ExtraFields via
@@ -310,6 +310,11 @@ func BuildAnthropicResponsesRequestBody(ctx *schemas.BifrostContext, request *sc
 			return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
 		}
 
+		jsonBody, err = ApplyDefaultEagerInputStreamingToRawBody(jsonBody, cfg.Provider, capModel)
+		if err != nil {
+			return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
+		}
+
 		if defaults.AddAnthropicVersion && !providerUtils.JSONFieldExists(jsonBody, "anthropic_version") {
 			jsonBody, err = providerUtils.SetJSONField(jsonBody, "anthropic_version", defaults.AnthropicVersion)
 			if err != nil {
@@ -404,6 +409,25 @@ func BuildAnthropicResponsesRequestBody(ctx *schemas.BifrostContext, request *sc
 		// so a Bifrost alias would otherwise match none of them and skip every
 		// model-level strip. The raw path above already uses capModel.
 		stripUnsupportedAnthropicFields(reqBody, cfg.Provider, capModel)
+		applyDefaultEagerInputStreaming(reqBody, cfg.Provider, capModel)
+
+		// stripUnsupportedAnthropicFields above rewrites thinking for the whole
+		// adaptive-only family one pass AFTER the conversion, so a
+		// converter-only restore of a caller's own thinking mode would be
+		// silently undone here. Re-assert it -- scoped exactly as the converter
+		// scopes it, to a recorded native Anthropic Messages ingress plus the
+		// model -- and leave that shared strip itself untouched, so every other
+		// caller of it keeps its existing behaviour, including the
+		// OpenAI-shaped chat path that promotes thinking out of ExtraParams.
+		//
+		// This runs BEFORE AddMissingBetaHeadersToContext, which DERIVES beta
+		// headers by reading this very body: deriving them first would describe
+		// a body that is about to be replaced, and would disagree with the raw
+		// path, whose derivation already reads a body the raw-body strip
+		// exemption left alone. Restoring first is what keeps one request's
+		// body and the headers describing it decided from the same bytes on
+		// both paths.
+		restoreNativeAnthropicRequestSurface(ctx, reqBody, request.Params, cfg.Provider, capModel)
 
 		AddMissingBetaHeadersToContext(ctx, reqBody, cfg.Provider)
 
@@ -642,6 +666,11 @@ func BuildAnthropicChatRequestBody(ctx *schemas.BifrostContext, request *schemas
 			return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
 		}
 
+		jsonBody, err = ApplyDefaultEagerInputStreamingToRawBody(jsonBody, cfg.Provider, capModel)
+		if err != nil {
+			return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
+		}
+
 		if defaults.AddAnthropicVersion && !providerUtils.JSONFieldExists(jsonBody, "anthropic_version") {
 			jsonBody, err = providerUtils.SetJSONField(jsonBody, "anthropic_version", defaults.AnthropicVersion)
 			if err != nil {
@@ -717,6 +746,7 @@ func BuildAnthropicChatRequestBody(ctx *schemas.BifrostContext, request *schemas
 		// as the responses builder: the model predicates match canonical
 		// Anthropic model names, not Bifrost aliases.
 		stripUnsupportedAnthropicFields(reqBody, cfg.Provider, capModel)
+		applyDefaultEagerInputStreaming(reqBody, cfg.Provider, capModel)
 
 		AddMissingBetaHeadersToContext(ctx, reqBody, cfg.Provider)
 

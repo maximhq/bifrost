@@ -17,6 +17,7 @@ type mockInMemoryStore struct {
 	clientNames             map[string]string // clientID → clientName, configured clients that are not allowed by default
 	clientSlugs             map[string]string // endpoint slug → clientID
 	configuredProviders     map[schemas.ModelProvider]configstore.ProviderConfig
+	enabledAgents           map[string]bool
 }
 
 func (m *mockInMemoryStore) GetConfiguredProviders() map[schemas.ModelProvider]configstore.ProviderConfig {
@@ -29,6 +30,10 @@ func (m *mockInMemoryStore) GetConfiguredProviderNames() []string {
 		names = append(names, string(provider))
 	}
 	return names
+}
+
+func (m *mockInMemoryStore) GetEnabledAgents() map[string]bool {
+	return m.enabledAgents
 }
 
 func (m *mockInMemoryStore) GetMCPClientsAllowedByDefault() map[string]string {

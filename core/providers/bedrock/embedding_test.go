@@ -336,7 +336,7 @@ func TestToBedrockTitanMultimodalEmbeddingRequest(t *testing.T) {
 			}}},
 		})
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), `do not support "audio" parts`)
+		assert.Contains(t, err.Error(), `does not support "audio" parts`)
 	})
 
 	t.Run("two images cannot be represented in one request", func(t *testing.T) {
@@ -548,6 +548,98 @@ func TestToBedrockCohereEmbeddingRequest(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, []string{"hello", "world"}, req.Texts)
 		assert.Equal(t, "search_document", req.InputType)
+	})
+
+	t.Run("image-only input uses images[] with input_type image", func(t *testing.T) {
+		// Embed v3 rejects inputs[] (v4 only) and needs input_type "image" for images[];
+		// v4 accepts both, so lone images always go out as images[].
+		img := "data:image/png;base64,iVBORw0KGgo="
+		req, err := ToBedrockCohereEmbeddingRequest(&schemas.BifrostEmbeddingRequest{
+			Model: "cohere.embed-english-v3",
+			Input: []schemas.EmbeddingInputItem{
+				{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeImage, Image: &schemas.EmbeddingMediaPart{Data: &img}}}},
+			},
+		})
+		require.NoError(t, err)
+		assert.Equal(t, []string{img}, req.Images)
+		assert.Nil(t, req.Inputs)
+		assert.Equal(t, "image", req.InputType)
+	})
+
+	t.Run("image-only input keeps a caller input_type", func(t *testing.T) {
+		img := "data:image/png;base64,iVBORw0KGgo="
+		req, err := ToBedrockCohereEmbeddingRequest(&schemas.BifrostEmbeddingRequest{
+			Model: "cohere.embed-v4:0",
+			Input: []schemas.EmbeddingInputItem{
+				{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeImage, Image: &schemas.EmbeddingMediaPart{Data: &img}}}},
+			},
+			Params: &schemas.EmbeddingParameters{ExtraParams: map[string]interface{}{"input_type": "search_document"}},
+		})
+		require.NoError(t, err)
+		assert.Equal(t, []string{img}, req.Images)
+		assert.Equal(t, "search_document", req.InputType)
+	})
+
+	t.Run("bare base64 with mime_type becomes a data uri", func(t *testing.T) {
+		// Bedrock Cohere rejects bare base64 in images[] and inputs[] image_url.
+		data := "iVBORw0KGgo="
+		mime := "image/png"
+		image := schemas.EmbeddingContentPart{Type: schemas.EmbeddingContentPartTypeImage, Image: &schemas.EmbeddingMediaPart{Data: &data, MIMEType: &mime}}
+		text := "caption"
+
+		req, err := ToBedrockCohereEmbeddingRequest(&schemas.BifrostEmbeddingRequest{
+			Input: []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{image}}},
+		})
+		require.NoError(t, err)
+		assert.Equal(t, []string{"data:image/png;base64,iVBORw0KGgo="}, req.Images)
+
+		req, err = ToBedrockCohereEmbeddingRequest(&schemas.BifrostEmbeddingRequest{
+			Input: []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: &text}, image}}},
+		})
+		require.NoError(t, err)
+		require.Len(t, req.Inputs, 1)
+		require.NotNil(t, req.Inputs[0].Content[1].ImageURL)
+		assert.Equal(t, "data:image/png;base64,iVBORw0KGgo=", req.Inputs[0].Content[1].ImageURL.URL)
+	})
+
+	t.Run("data uri with mime_type is not wrapped twice", func(t *testing.T) {
+		data := "data:image/png;base64,iVBORw0KGgo="
+		mime := "image/png"
+		req, err := ToBedrockCohereEmbeddingRequest(&schemas.BifrostEmbeddingRequest{
+			Input: []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeImage, Image: &schemas.EmbeddingMediaPart{Data: &data, MIMEType: &mime}}}}},
+		})
+		require.NoError(t, err)
+		assert.Equal(t, []string{data}, req.Images)
+	})
+
+	t.Run("native lone-image body sends one image shape under passthrough", func(t *testing.T) {
+		// The Bedrock integration keeps the native images/inputs in ExtraParams; merging them
+		// back must not add a second image representation beside the rebuilt one.
+		img := "data:image/png;base64,iVBORw0KGgo="
+		for name, body := range map[string]string{
+			"inputs": `{"input_type":"search_document","inputs":[{"content":[{"type":"image_url","image_url":{"url":"` + img + `"}}]}]}`,
+			"images": `{"input_type":"image","images":["` + img + `"]}`,
+		} {
+			t.Run(name, func(t *testing.T) {
+				var invokeReq BedrockInvokeRequest
+				require.NoError(t, json.Unmarshal([]byte(body), &invokeReq))
+				invokeReq.ModelID = "cohere.embed-v4:0"
+				bifrostReq, err := invokeReq.ToBifrostEmbeddingRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline))
+				require.NoError(t, err)
+
+				req, err := ToBedrockCohereEmbeddingRequest(bifrostReq)
+				require.NoError(t, err)
+				wire, err := json.Marshal(req)
+				require.NoError(t, err)
+				merged, err := providerUtils.MergeExtraParamsIntoJSON(wire, req.ExtraParams)
+				require.NoError(t, err)
+
+				var out map[string]json.RawMessage
+				require.NoError(t, json.Unmarshal(merged, &out))
+				assert.Contains(t, out, "images", string(merged))
+				assert.NotContains(t, out, "inputs", string(merged))
+			})
+		}
 	})
 
 	t.Run("defaults input_type when the caller omits it", func(t *testing.T) {
@@ -1073,7 +1165,7 @@ func TestToBedrockNovaEmbeddingRequest(t *testing.T) {
 				input: []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{
 					{Type: schemas.EmbeddingContentPartTypeFile, File: &schemas.EmbeddingMediaPart{Data: schemas.Ptr("data:application/pdf;base64,AA==")}},
 				}}},
-				message: `do not support "file" parts`,
+				message: `does not support "file" parts`,
 			},
 			{
 				name: "an https url Nova will not fetch",

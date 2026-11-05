@@ -144,6 +144,7 @@ Virtual key enforcement is controlled by the `client` block:
 | Parameter | Description | Default |
 |-----------|-------------|---------|
 | `bifrost.client.enforceAuthOnInference` | Require a virtual key (`x-bf-vk`) on every inference request | `false` |
+| `bifrost.client.dualCredentialConflictBehavior` | Enterprise. Handling of requests that carry both an identity-provider token and a virtual key: `prefer_idp`, `prefer_vk`, or `error`. See [Requests with both an identity token and a virtual key](/enterprise/user-provisioning#requests-with-both-an-identity-token-and-a-virtual-key) | `prefer_idp` |
 
 ```yaml
 bifrost:
@@ -177,6 +178,7 @@ Two modes:
 | `bifrost.plugins.semanticCache.config.cache_by_model` | Include model name in cache key | `true` |
 | `bifrost.plugins.semanticCache.config.cache_by_provider` | Include provider name in cache key | `true` |
 | `bifrost.plugins.semanticCache.config.exclude_system_prompt` | Exclude system prompt from cache key | `false` |
+| `bifrost.plugins.semanticCache.config.cache_tool_call_responses` | Cache responses that carry tool calls. Off by default, since a replayed tool call runs in a later caller's agent loop with arguments chosen for someone else's prompt | `false` |
 
 **Semantic mode (with OpenAI embeddings + Weaviate):**
 

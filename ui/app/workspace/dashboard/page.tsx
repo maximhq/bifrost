@@ -7,10 +7,12 @@ import { parseAsSafeArrayOf, parseAsSafeString } from "@/lib/queryParamsParser";
 import { useGetMCPAvailableFilterDataQuery } from "@/lib/store";
 import type { LogFilters, MCPToolLogFilters } from "@/lib/types/logs";
 import { dateUtils } from "@/lib/types/logs";
+import { parseMetadataFiltersParam } from "@/lib/utils/metadataFilters";
 import { getRangeForPeriod, TIME_PERIODS } from "@/lib/utils/timeRange";
 import { useLocation } from "@tanstack/react-router";
 import { parseAsBoolean, parseAsInteger, parseAsString, useQueryStates } from "nuqs";
 import { type RefObject, useCallback, useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { type ChartType } from "./components/charts/chartTypeToggle";
 import { ModelFilterSelect } from "./components/charts/modelFilterSelect";
 import { ExportPopover } from "./components/exportPopover";
@@ -32,6 +34,7 @@ const nextFrames = () =>
 	});
 
 export default function DashboardPage() {
+	const { t } = useTranslation("observability");
 	// MCP filter data
 	const { data: mcpFilterData } = useGetMCPAvailableFilterDataQuery();
 
@@ -83,7 +86,9 @@ export default function DashboardPage() {
 			mcp_tool_names: parseAsString.withDefault(""),
 			mcp_server_labels: parseAsString.withDefault(""),
 			parent_request_id: parseAsString.withDefault(""),
+			agent_names: parseAsSafeArrayOf.withDefault([]),
 			session_id: parseAsSafeString.withDefault(""),
+			agent_correlation_id: parseAsSafeString.withDefault(""),
 			user_ids: parseAsSafeArrayOf.withDefault([]),
 			team_ids: parseAsSafeArrayOf.withDefault([]),
 			customer_ids: parseAsSafeArrayOf.withDefault([]),
@@ -105,14 +110,7 @@ export default function DashboardPage() {
 		[urlState.mcp_server_labels],
 	);
 
-	const metadataFilters = useMemo(() => {
-		if (!urlState.metadata_filters) return undefined;
-		try {
-			return JSON.parse(urlState.metadata_filters) as Record<string, string>;
-		} catch {
-			return undefined;
-		}
-	}, [urlState.metadata_filters]);
+	const metadataFilters = useMemo(() => parseMetadataFiltersParam(urlState.metadata_filters), [urlState.metadata_filters]);
 
 	const filters: LogFilters = useMemo(
 		() => ({
@@ -145,7 +143,9 @@ export default function DashboardPage() {
 					metadata_filters: metadataFilters,
 				}),
 			...(urlState.parent_request_id && { parent_request_id: urlState.parent_request_id }),
+			...(urlState.agent_names.length > 0 && { agent_names: urlState.agent_names }),
 			...(urlState.session_id && { session_id: urlState.session_id }),
+			...(urlState.agent_correlation_id && { agent_correlation_id: urlState.agent_correlation_id }),
 			...(urlState.user_ids.length > 0 && { user_ids: urlState.user_ids }),
 			...(urlState.team_ids.length > 0 && { team_ids: urlState.team_ids }),
 			...(urlState.customer_ids.length > 0 && { customer_ids: urlState.customer_ids }),
@@ -159,7 +159,9 @@ export default function DashboardPage() {
 			urlState.start_time,
 			urlState.end_time,
 			urlState.parent_request_id,
+			urlState.agent_names,
 			urlState.session_id,
+			urlState.agent_correlation_id,
 			urlState.providers,
 			urlState.models,
 			urlState.selected_key_ids,
@@ -197,6 +199,8 @@ export default function DashboardPage() {
 			...(selectedMcpServerLabels.length > 0 && {
 				server_labels: selectedMcpServerLabels,
 			}),
+			...(urlState.agent_names.length > 0 && { agent_names: urlState.agent_names }),
+			...(urlState.agent_correlation_id && { agent_correlation_id: urlState.agent_correlation_id }),
 			...(urlState.status.length > 0 && { status: urlState.status }),
 			...(urlState.virtual_key_ids.length > 0 && {
 				virtual_key_ids: urlState.virtual_key_ids,
@@ -208,6 +212,8 @@ export default function DashboardPage() {
 			urlState.end_time,
 			selectedMcpToolNames,
 			selectedMcpServerLabels,
+			urlState.agent_names,
+			urlState.agent_correlation_id,
 			urlState.status,
 			urlState.virtual_key_ids,
 		],
@@ -382,7 +388,9 @@ export default function DashboardPage() {
 						? JSON.stringify(newFilters.metadata_filters)
 						: "",
 				parent_request_id: newFilters.parent_request_id || "",
+				agent_names: newFilters.agent_names || [],
 				session_id: newFilters.session_id || "",
+				agent_correlation_id: newFilters.agent_correlation_id || "",
 				user_ids: newFilters.user_ids || [],
 				team_ids: newFilters.team_ids || [],
 				customer_ids: newFilters.customer_ids || [],
@@ -506,37 +514,37 @@ export default function DashboardPage() {
 								    stretch every tab across the row. */}
 								<TabsList className="w-max min-w-max">
 									<TabsTrigger className="shrink-0" value="overview" data-testid="dashboard-tab-overview">
-										Overview
+										{t("dashboard.tabs.overview")}
 									</TabsTrigger>
 									<TabsTrigger className="shrink-0" value="provider-usage" data-testid="dashboard-tab-provider-usage">
-										Provider Usage
+										{t("dashboard.tabs.providerUsage")}
 									</TabsTrigger>
 									<TabsTrigger className="shrink-0" value="rankings" data-testid="dashboard-tab-rankings">
-										Model Rankings
+										{t("dashboard.tabs.modelRankings")}
 									</TabsTrigger>
 									<TabsTrigger className="shrink-0" value="mcp" data-testid="dashboard-tab-mcp">
-										MCP usage
+										{t("dashboard.tabs.mcpUsage")}
 									</TabsTrigger>
 									<TabsTrigger className="shrink-0" value="team-rankings" data-testid="dashboard-tab-team-rankings">
-										Team Rankings
+										{t("dashboard.tabs.teamRankings")}
 									</TabsTrigger>
 									<TabsTrigger className="shrink-0" value="user-rankings" data-testid="dashboard-tab-user-rankings">
-										User Rankings
+										{t("dashboard.tabs.userRankings")}
 									</TabsTrigger>
 									<TabsTrigger className="shrink-0" value="virtual-key-rankings" data-testid="dashboard-tab-virtual-key-rankings">
-										Virtual Key Rankings
+										{t("dashboard.tabs.virtualKeyRankings")}
 									</TabsTrigger>
 									<TabsTrigger className="shrink-0" value="customer-rankings" data-testid="dashboard-tab-customer-rankings">
-										Customer Rankings
+										{t("dashboard.tabs.customerRankings")}
 									</TabsTrigger>
 									<TabsTrigger className="shrink-0" value="bu-rankings" data-testid="dashboard-tab-bu-rankings">
-										BU Rankings
+										{t("dashboard.tabs.buRankings")}
 									</TabsTrigger>
 									<TabsTrigger className="shrink-0" value="project-rankings" data-testid="dashboard-tab-project-rankings">
-										Project Rankings
+										{t("dashboard.tabs.projectRankings")}
 									</TabsTrigger>
 									<TabsTrigger value="app-rankings" data-testid="dashboard-tab-app-rankings">
-										App Rankings
+										{t("dashboard.tabs.appRankings")}
 									</TabsTrigger>
 								</TabsList>
 							</div>
@@ -561,7 +569,7 @@ export default function DashboardPage() {
 														setUrlState({ mcp_tool_names: value });
 													}
 												}}
-												placeholder="All Tools"
+												placeholder={t("labels.allTools")}
 												data-testid="dashboard-mcp-tool-filter"
 											/>
 										)}
@@ -576,7 +584,7 @@ export default function DashboardPage() {
 														setUrlState({ mcp_server_labels: value });
 													}
 												}}
-												placeholder="All Servers"
+												placeholder={t("labels.allServers")}
 												data-testid="dashboard-mcp-server-filter"
 											/>
 										)}
@@ -695,7 +703,7 @@ export default function DashboardPage() {
 									filters={filters}
 									active={activeTab === "team-rankings" || exportingAll}
 									dimension="team"
-									dimensionLabel="Team"
+									dimensionLabel={t("labels.team")}
 									testIdPrefix="dashboard-team-rankings"
 									dataKey="teamRankingsData"
 									pdfMode={isExportingTab("team-rankings")}
@@ -711,7 +719,7 @@ export default function DashboardPage() {
 									filters={filters}
 									active={activeTab === "customer-rankings" || exportingAll}
 									dimension="customer"
-									dimensionLabel="Customer"
+									dimensionLabel={t("labels.customer")}
 									testIdPrefix="dashboard-customer-rankings"
 									dataKey="customerRankingsData"
 									pdfMode={isExportingTab("customer-rankings")}
@@ -727,7 +735,7 @@ export default function DashboardPage() {
 									filters={filters}
 									active={activeTab === "bu-rankings" || exportingAll}
 									dimension="business_unit"
-									dimensionLabel="Business Unit"
+									dimensionLabel={t("labels.businessUnit")}
 									testIdPrefix="dashboard-bu-rankings"
 									dataKey="buRankingsData"
 									pdfMode={isExportingTab("bu-rankings")}
@@ -743,7 +751,7 @@ export default function DashboardPage() {
 									filters={filters}
 									active={activeTab === "project-rankings" || exportingAll}
 									dimension="project"
-									dimensionLabel="Project"
+									dimensionLabel={t("labels.project")}
 									testIdPrefix="dashboard-project-rankings"
 									dataKey="projectRankingsData"
 									pdfMode={isExportingTab("project-rankings")}
@@ -759,7 +767,7 @@ export default function DashboardPage() {
 									filters={filters}
 									active={activeTab === "user-rankings" || exportingAll}
 									dimension="user"
-									dimensionLabel="User"
+									dimensionLabel={t("labels.user")}
 									testIdPrefix="dashboard-user-rankings"
 									dataKey="userRankingsData"
 									pdfMode={isExportingTab("user-rankings")}
@@ -775,7 +783,7 @@ export default function DashboardPage() {
 									filters={filters}
 									active={activeTab === "virtual-key-rankings" || exportingAll}
 									dimension="virtual_key"
-									dimensionLabel="Virtual Key"
+									dimensionLabel={t("labels.virtualKey")}
 									testIdPrefix="dashboard-virtual-key-rankings"
 									dataKey="virtualKeyRankingsData"
 									pdfMode={isExportingTab("virtual-key-rankings")}
@@ -790,7 +798,7 @@ export default function DashboardPage() {
 									filters={filters}
 									active={activeTab === "app-rankings" || isExportingTab("app-rankings")}
 									dimension="app"
-									dimensionLabel="App"
+									dimensionLabel={t("labels.app")}
 									testIdPrefix="dashboard-app-rankings"
 									dataKey="appRankingsData"
 									pdfMode={isExportingTab("app-rankings")}

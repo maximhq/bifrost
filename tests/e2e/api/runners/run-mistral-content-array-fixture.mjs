@@ -48,7 +48,7 @@ export function createMistralContentArrayFixture() {
       const contentIn = body.messages?.find((item) => item.role === "user")?.content;
       const message = Array.isArray(contentIn) && contentIn.every((item) => item.type === "text" && typeof item.text === "string")
         ? contentIn.map((item) => item.text).join("") : contentIn;
-      const match = typeof message === "string" && /^mistral-content-array:(text-chat|text-responses|text-anthropic|thinking-chat|mixed-responses|reference-anthropic):([a-zA-Z0-9_-]+)$/.exec(message);
+      const match = typeof message === "string" && /^mistral-content-array:(text-chat|text-responses|text-anthropic|thinking-chat|thinking-responses|thinking-anthropic|mixed-responses|reference-anthropic):([a-zA-Z0-9_-]+)$/.exec(message);
       if (!match || body.model !== "mistral-array-fixture" || body.stream !== true || req.headers.authorization !== "Bearer mistral-array-fixture-key") {
         json(400, { error: { message: "invalid fixture model, scenario, stream flag or dummy key" } });
         return;
@@ -57,7 +57,7 @@ export function createMistralContentArrayFixture() {
       const text = [{ type: "text", text: "mistral array " }, { type: "text", text: "fixture " + nonce }];
       const thinking = { type: "thinking", thinking: [{ type: "text", text: "private reasoning " + nonce }], signature: "fixture-signature", closed: false };
       const content = scenario.startsWith("text-") ? text
-        : scenario === "thinking-chat" ? [thinking]
+        : scenario.startsWith("thinking-") ? [thinking, ...text]
           : scenario === "mixed-responses" ? [text[0], thinking]
             : [{ type: "reference", reference_ids: [7, "fixture-" + nonce] }];
       const envelope = { id: "mistral-array-" + nonce, object: "chat.completion.chunk", created: 1, model: body.model };

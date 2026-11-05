@@ -67,7 +67,8 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/maximhq/bifrost/framework/passthroughparse"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/tidwall/gjson"
 	"github.com/valyala/fasthttp"
 )
@@ -376,11 +377,29 @@ type ErrorConverter func(ctx *schemas.BifrostContext, err *schemas.BifrostError)
 // It takes a BifrostError and returns the streaming error format expected by the specific integration.
 type StreamErrorConverter func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{}
 
+// StreamCleanupFunc releases per-stream provider state once the transport has
+// finished converting the stream's chunks. It runs from the producer's deferred
+// cleanup, after the chunk loop has drained, so a stream that ends without a
+// terminal frame still reclaims what it opened.
+type StreamCleanupFunc func(ctx *schemas.BifrostContext)
+
 // RequestParser is a function that handles custom request body parsing.
 // It replaces the default JSON parsing when configured (e.g., for multipart/form-data).
 // The parser should populate the provided request object from the fasthttp context.
 // If it returns an error, the request processing stops.
 type RequestParser func(ctx *fasthttp.RequestCtx, req interface{}) error
+
+// rawBodyForRequest returns the raw body to attach to a Bifrost request. rawBody
+// aliases fasthttp's pooled body buffer, which the next request on the same
+// keep-alive connection reuses; an async job reads it after the 202 is sent, so
+// async requests get their own copy. Synchronous requests finish with the body
+// before fasthttp resets the ctx, so they keep the zero-copy alias.
+func rawBodyForRequest(ctx *fasthttp.RequestCtx, rawBody []byte) []byte {
+	if len(ctx.Request.Header.Peek(schemas.AsyncHeaderCreate)) == 0 {
+		return rawBody
+	}
+	return bytes.Clone(rawBody)
+}
 
 func parseJSONRequestBody(rawBody []byte, req interface{}) error {
 	if len(rawBody) == 0 {
@@ -455,6 +474,7 @@ type StreamConfig struct {
 	TranscriptionStreamResponseConverter   TranscriptionStreamResponseConverter   // Function to convert BifrostTranscriptionResponse to streaming format
 	ImageGenerationStreamResponseConverter ImageGenerationStreamResponseConverter // Function to convert BifrostImageGenerationStreamResponse to streaming format
 	ErrorConverter                         StreamErrorConverter                   // Function to convert BifrostError to streaming error format
+	Cleanup                                StreamCleanupFunc                      // Releases per-stream provider state after the chunk loop drains
 	HeartbeatFraming                       lib.SSEHeartbeatFraming                // Wire framing for no-op SSE heartbeat comments
 }
 
@@ -467,6 +487,7 @@ const (
 	RouteConfigTypeBedrock   RouteConfigType = "bedrock"
 	RouteConfigTypeCohere    RouteConfigType = "cohere"
 	RouteConfigTypeTypesafe  RouteConfigType = "typesafe"
+	RouteConfigTypeAzure     RouteConfigType = "azure"
 )
 
 // RouteConfig defines the configuration for a single route in an integration.
@@ -544,7 +565,11 @@ type PassthroughConfig struct {
 	// AllowedRoutes, when non-empty, restricts the passthrough catch-all to exactly
 	// these method+path pairs instead of forwarding every request under StripPrefix.
 	AllowedRoutes []PassthroughRoute
-	StreamingPath func(method, path string) bool // optional: decides which requests stream, replacing the generic markers
+	StreamingPath func(method, path string) bool   // optional: decides which requests stream, replacing the generic markers
+	ModelFreePath func(method, path string) bool   // optional: requests that run no model, so model allowlists are skipped
+	PathModel     func(path string) string         // optional: the model a provider-shaped path addresses, used for key selection and governance
+	BodyModelKey  func(method, path string) string // optional: a body key that names what the request runs in place of "model" (an agent id)
+	NoPathModel   func(method, path string) bool   // optional: paths that never name a model, so the model comes from the body alone
 }
 
 // streams reports whether a passthrough request is served by the streaming handler. When the provider
@@ -942,7 +967,7 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 			return
 		}
 		if sendRawRequestBody, ok := (*bifrostCtx).Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); ok && sendRawRequestBody {
-			bifrostReq.SetRawRequestBody(rawBody)
+			bifrostReq.SetRawRequestBody(rawBodyForRequest(ctx, rawBody))
 		}
 
 		// Extract and parse fallbacks from the request if present
@@ -975,6 +1000,23 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 	}
 }
 
+// directKeyListModelsProvider is the provider a drop-in model listing asks when the caller sent a
+// direct key and named no provider. The key is the caller's credential for the provider whose SDK
+// called the route; listing every provider would send it to each of them, which ListAllModels
+// refuses. A route type that implies no single provider returns "", so that listing needs
+// x-bf-model-provider.
+func directKeyListModelsProvider(routeType RouteConfigType) schemas.ModelProvider {
+	switch routeType {
+	case RouteConfigTypeOpenAI:
+		return schemas.OpenAI
+	case RouteConfigTypeAnthropic:
+		return schemas.Anthropic
+	case RouteConfigTypeGenAI:
+		return schemas.Gemini
+	}
+	return ""
+}
+
 // handleNonStreamingRequest handles regular (non-streaming) requests
 func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, config RouteConfig, req interface{}, bifrostReq *schemas.BifrostRequest, bifrostCtx *schemas.BifrostContext) {
 	// Use the cancellable context from ConvertToBifrostContext
@@ -998,7 +1040,21 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 		listModelsProvider := strings.ToLower(string(ctx.Request.Header.Peek("x-bf-model-provider")))
 		switch listModelsProvider {
 		case "":
-			// keep any provider already set on the request
+			// keep any provider already set on the request; a direct key with none asks the
+			// route's own provider (see directKeyListModelsProvider)
+			if bifrostReq.ListModelsRequest.Provider == "" {
+				if _, ok := bifrostCtx.Value(schemas.BifrostContextKeyDirectKey).(schemas.Key); ok {
+					if provider := directKeyListModelsProvider(config.Type); provider != "" {
+						if !g.handlerStore.IsProviderConfigured(provider) {
+							g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostErrorWithCode(nil,
+								fmt.Sprintf("provider %s is not configured: a model listing with a direct key asks only this route's provider; name a configured one with x-bf-model-provider", provider),
+								fasthttp.StatusBadRequest))
+							return
+						}
+						bifrostReq.ListModelsRequest.Provider = provider
+					}
+				}
+			}
 		case "all":
 			bifrostReq.ListModelsRequest.Provider = ""
 		default:
@@ -1036,7 +1092,7 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "Bifrost response is nil after post-request callback"))
 			return
 		}
-		g.markDeprecatedListModelsResponse(listModelsResponse)
+		g.modelCatalog().EnrichListModelsResponse(listModelsResponse)
 
 		response, err = config.ListModelsResponseConverter(bifrostCtx, listModelsResponse)
 		bifrostExtraFields = listModelsResponse.ExtraFields
@@ -1058,6 +1114,8 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "Bifrost response is nil after post-request callback"))
 			return
 		}
+
+		g.modelCatalog().EnrichModelRetrieveResponse(modelRetrieveResponse)
 
 		response, err = config.ModelRetrieveResponseConverter(bifrostCtx, modelRetrieveResponse)
 		bifrostExtraFields = modelRetrieveResponse.ExtraFields
@@ -1107,7 +1165,7 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 		}
 
 		// Convert Bifrost response to integration-specific format and send
-		response, err = config.ChatResponseConverter(bifrostCtx, chatResponse)
+		response, err = config.ChatResponseConverter(bifrostCtx, chatResponseForConverter(bifrostCtx, chatResponse))
 		bifrostExtraFields = chatResponse.ExtraFields
 	case bifrostReq.ResponsesRequest != nil:
 		responsesResponse, bifrostErr := g.client.ResponsesRequest(bifrostCtx, bifrostReq.ResponsesRequest)
@@ -1131,7 +1189,7 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 		}
 
 		// Convert Bifrost response to integration-specific format and send
-		response, err = config.ResponsesResponseConverter(bifrostCtx, responsesResponse)
+		response, err = config.ResponsesResponseConverter(bifrostCtx, responsesResponseForConverter(bifrostCtx, responsesResponse))
 		bifrostExtraFields = responsesResponse.ExtraFields
 	case bifrostReq.EmbeddingRequest != nil:
 		embeddingResponse, bifrostErr := g.client.EmbeddingRequest(bifrostCtx, bifrostReq.EmbeddingRequest)
@@ -1258,6 +1316,12 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 			}
 			// Early return skips the common footer — apply routed-identity headers here.
 			lib.ApplyBifrostResponseHeaders(ctx, bifrostCtx, bifrostExtraFields)
+			// Raw bytes are the audio itself, under the Content-Type the PostCallback set.
+			if rawBytes, ok := response.([]byte); ok {
+				ctx.Response.Header.Set("Content-Length", strconv.Itoa(len(rawBytes)))
+				ctx.Response.SetBody(rawBytes)
+				return
+			}
 			g.sendSuccess(ctx, bifrostCtx, config.ErrorConverter, response, nil)
 			return
 		} else {
@@ -1946,30 +2010,16 @@ func (g *GenericRouter) handleAsyncJobResponse(ctx *fasthttp.RequestCtx, bifrost
 	}
 }
 
-// markDeprecatedListModelsResponse annotates deprecated models with the
-// IsDeprecated flag using catalog pricing data, without removing them from the
-// response. Clients decide how to surface deprecated entries (e.g. the UI keeps
-// them visible but non-selectable).
-func (g *GenericRouter) markDeprecatedListModelsResponse(resp *schemas.BifrostListModelsResponse) {
-	if resp == nil || len(resp.Data) == 0 {
-		return
+// modelCatalog returns the server's model catalog, or nil when the handler store
+// has none. The catalog's enrich methods are nil-safe, so callers need no check.
+// Drop-in models routes enrich through it exactly as the native /v1/models
+// route does, so an SDK listing reports the same limits, pricing and
+// deprecation as the native one.
+func (g *GenericRouter) modelCatalog() *modelcatalog.ModelCatalog {
+	if provider, ok := g.handlerStore.(modelCatalogProvider); ok {
+		return provider.GetModelCatalog()
 	}
-	catalogProvider, ok := g.handlerStore.(modelCatalogProvider)
-	if !ok || catalogProvider.GetModelCatalog() == nil {
-		return
-	}
-	catalog := catalogProvider.GetModelCatalog()
-	for i := range resp.Data {
-		model := resp.Data[i]
-		provider, modelName := schemas.ParseModelString(model.ID, "")
-		pricingEntry := catalog.GetPricingEntryForModel(modelName, provider)
-		if pricingEntry == nil && model.Alias != nil {
-			pricingEntry = catalog.GetPricingEntryForModel(*model.Alias, provider)
-		}
-		if pricingEntry != nil && pricingEntry.IsDeprecated {
-			resp.Data[i].IsDeprecated = true
-		}
-	}
+	return nil
 }
 
 // handleBatchRequest handles batch API requests (create, list, retrieve, cancel, results)
@@ -2764,9 +2814,7 @@ func (g *GenericRouter) handleStreamingRequest(ctx *fasthttp.RequestCtx, config 
 
 	// Forward provider response headers stored in context by streaming handlers
 	if headers, ok := bifrostCtx.Value(schemas.BifrostContextKeyProviderResponseHeaders).(map[string]string); ok {
-		for key, value := range headers {
-			ctx.Response.Header.Set(key, value)
-		}
+		lib.ForwardProviderResponseHeaders(ctx, headers)
 	}
 
 	// Routed-identity headers from the context snapshot — routing is final once
@@ -2812,7 +2860,34 @@ func (g *GenericRouter) handleStreamingRequest(ctx *fasthttp.RequestCtx, config 
 
 	// Handle streaming using the centralized approach
 	// Pass cancel function so it can be called when the writer exits (errors, completion, etc.)
-	g.handleStreaming(ctx, bifrostCtx, config, stream, cancel)
+	g.handleStreaming(ctx, bifrostCtx, config, requestType, stream, cancel)
+}
+
+// streamErrorEventType names the SSE event line for a mid-stream error object.
+// OpenAI Responses streams type every frame, and both the OpenAI API and the
+// native /v1/responses handler send a failure as "event: error", so the OpenAI
+// integration's Responses routes do the same. The error's request type decides it
+// (the Azure deployments route serves chat and responses on one path); an error
+// with none takes the request type of the stream it ends, and only when that is
+// unknown too does the route path decide. Chat and text completion streams keep
+// bare data frames.
+func streamErrorEventType(config RouteConfig, bifrostErr *schemas.BifrostError, streamRequestType schemas.RequestType) string {
+	if config.Type != RouteConfigTypeOpenAI || bifrostErr == nil {
+		return ""
+	}
+	requestType := bifrostErr.ExtraFields.RequestType
+	if requestType == "" {
+		requestType = streamRequestType
+	}
+	switch requestType {
+	case schemas.ResponsesStreamRequest, schemas.ResponsesRetrieveStreamRequest:
+		return string(schemas.ResponsesStreamResponseTypeError)
+	case "":
+		if strings.Contains(config.Path, "/responses") {
+			return string(schemas.ResponsesStreamResponseTypeError)
+		}
+	}
+	return ""
 }
 
 // handleStreaming processes a stream of BifrostResponse objects and sends them as Server-Sent Events (SSE).
@@ -2871,7 +2946,7 @@ func (g *GenericRouter) handleStreamingRequest(ctx *fasthttp.RequestCtx, config 
 // only stops when this context is cancelled or the client socket dies. Returning without
 // cancelling leaks the watcher and the entire request-scoped BifrostContext for as long as the
 // client keeps its connection open.
-func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, config RouteConfig, streamChan chan *schemas.BifrostStreamChunk, cancel context.CancelFunc) {
+func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, config RouteConfig, streamRequestType schemas.RequestType, streamChan chan *schemas.BifrostStreamChunk, cancel context.CancelFunc) {
 	// Signal to tracing middleware that trace completion should be deferred
 	// The streaming callback will complete the trace after the stream ends
 	ctx.SetUserValue(schemas.BifrostContextKeyDeferTraceCompletion, true)
@@ -2881,6 +2956,9 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 	// ctx.UserValue (ctx may be recycled by fasthttp by the time this fires).
 	// Router path has no transport post-hook phase, so we always pass nil.
 	traceCompleter, _ := ctx.UserValue(schemas.BifrostContextKeyTraceCompleter).(func([]schemas.PluginLogEntry))
+
+	// Read here for the same reason: in headers mode every chunk drops extra_fields.
+	stripExtraFields := lib.ExtraFieldsInHeaders(ctx)
 
 	// Get stream chunk interceptor for plugin hooks
 	interceptor := g.handlerStore.GetStreamChunkInterceptor()
@@ -2944,6 +3022,13 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 			// leaving traceCompleter and the post-hooks below an uncancelled context.
 			// cancel is idempotent, so the explicit error-path calls still stand.
 			defer cancel()
+			// The chunk loop below has drained by the time this runs, so every queued
+			// chunk is already converted -- the one ordering a stream cleanup needs.
+			// The error path has its own release in ErrorConverter; this is the normal
+			// close, including a stream that ended without a terminal frame.
+			if config.StreamConfig != nil && config.StreamConfig.Cleanup != nil {
+				config.StreamConfig.Cleanup(bifrostCtx)
+			}
 			// Must run before reader.Done(): closing eventCh while the heartbeat goroutine
 			// could still be mid-send on it panics ("send on closed channel"). See
 			// lib.StopSSEHeartbeat's doc for the full ordering rationale.
@@ -3026,8 +3111,11 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 					}
 				}
 
-				// Send error as SSE data
-				reader.SendEvent("", errorJSON)
+				if stripExtraFields {
+					errorJSON = lib.StripExtraFields(errorJSON)
+				}
+				// Send error as SSE data, typed for routes whose frames carry an event line
+				reader.SendEvent(streamErrorEventType(config, bifrostErr, streamRequestType), errorJSON)
 			}
 		}
 
@@ -3215,6 +3303,9 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 					if err != nil {
 						g.logger.Warn("Failed to marshal streaming response: %v", err)
 						continue
+					}
+					if stripExtraFields {
+						responseJSON = lib.StripExtraFields(responseJSON)
 					}
 					sent = reader.SendEvent(eventType, responseJSON)
 				}
@@ -3446,32 +3537,95 @@ func parsePassthroughBody(contentType string, body []byte) (model string, isStre
 		return
 	}
 	root := gjson.ParseBytes(body)
+	if root.IsArray() {
+		// A task array (Runware) names a model per task. One agreed model is the request's, so key
+		// selection sees it; tasks naming different models leave it empty, and governance reads the
+		// models from the body instead.
+		// Every task is checked, even after two have disagreed: a later task with a malformed
+		// model key is refused the same way, since governance reads every model from the body.
+		var taskErr error
+		var disagree bool
+		root.ForEach(func(_, task gjson.Result) bool {
+			if !task.IsObject() {
+				return true
+			}
+			taskModel, err := passthroughObjectModel(task)
+			if err != nil {
+				taskErr = err
+				return false
+			}
+			switch {
+			case taskModel == "":
+			case model == "":
+				model = taskModel
+			case model != taskModel:
+				disagree = true
+			}
+			return true
+		})
+		if taskErr != nil {
+			return "", false, taskErr
+		}
+		if disagree {
+			model = ""
+		}
+		return model, false, nil
+	}
 	if !root.IsObject() {
 		return
 	}
-	var modelKeys int
-	var modelValue gjson.Result
-	root.ForEach(func(key, value gjson.Result) bool {
-		if strings.EqualFold(key.Str, "model") {
-			modelKeys++
-			if key.Str == "model" {
-				modelValue = value
+	model, err = passthroughObjectModel(root)
+	if err != nil {
+		return "", false, err
+	}
+	isStream = root.Get("stream").Type == gjson.True
+	return
+}
+
+// passthroughObjectModel reads the model a JSON object names, strictly: the key spelled "model",
+// once, with a string value. A missing key is no model, not an error.
+func passthroughObjectModel(object gjson.Result) (string, error) {
+	return passthroughObjectKey(object, "model")
+}
+
+// passthroughObjectKey reads a model-naming key from a JSON object with the same strictness as
+// "model": spelled exactly, present at most once, holding a string. A missing key is not an error.
+func passthroughObjectKey(object gjson.Result, name string) (string, error) {
+	var keys int
+	var value gjson.Result
+	object.ForEach(func(key, v gjson.Result) bool {
+		if strings.EqualFold(key.Str, name) {
+			keys++
+			if key.Str == name {
+				value = v
 			}
 		}
 		return true
 	})
 	switch {
-	case modelKeys > 1:
-		return "", false, errors.New("passthrough request body must carry the model key at most once")
-	case modelKeys == 1 && !modelValue.Exists():
-		return "", false, errors.New("passthrough request body model key must be spelled \"model\"")
-	case modelKeys == 1 && modelValue.Type != gjson.String:
-		return "", false, errors.New("passthrough request body model must be a string")
-	case modelKeys == 1:
-		model = strings.TrimSpace(modelValue.Str)
+	case keys > 1:
+		return "", fmt.Errorf("passthrough request body must carry the %s key at most once", name)
+	case keys == 1 && !value.Exists():
+		return "", fmt.Errorf("passthrough request body %s key must be spelled %q", name, name)
+	case keys == 1 && value.Type != gjson.String:
+		return "", fmt.Errorf("passthrough request body %s must be a string", name)
+	case keys == 1:
+		return strings.TrimSpace(value.Str), nil
 	}
-	isStream = root.Get("stream").Type == gjson.True
-	return
+	return "", nil
+}
+
+// passthroughBodyKeyModel reads the model a JSON object body names under key, for agent-style
+// endpoints whose body names an agent instead of a model. A body that is not a JSON object names none.
+func passthroughBodyKeyModel(body []byte, key string) (string, error) {
+	if len(body) == 0 || !gjson.ValidBytes(body) {
+		return "", nil
+	}
+	root := gjson.ParseBytes(body)
+	if !root.IsObject() {
+		return "", nil
+	}
+	return passthroughObjectKey(root, key)
 }
 
 // isJSONMediaType reports whether a parsed media type declares a JSON body.
@@ -3532,7 +3686,8 @@ func applyPassthroughCallerAuth(bifrostCtx *schemas.BifrostContext, safeHeaders 
 	case schemas.Anthropic:
 		forward = isAnthropicOAuthBearer(authHeader)
 	case schemas.OpenAI:
-		forward = isJWTBearer(authHeader)
+		// Only the ChatGPT backend takes a caller token, and only one ChatGPT issued; everything else keeps the stored key.
+		forward = upstreamURL == chatGPTUpstreamURL && isChatGPTBearer(authHeader)
 	}
 	if !forward {
 		return
@@ -3551,7 +3706,7 @@ func (g *GenericRouter) handlePassthrough(ctx *fasthttp.RequestCtx) {
 		switch keyStr {
 		case "authorization":
 			callerAuth = string(value)
-		case "api-key", "x-api-key", "x-goog-api-key",
+		case "api-key", "x-api-key", "x-goog-api-key", "ocp-apim-subscription-key",
 			"host", "connection", "transfer-encoding", "cookie", "set-cookie", "proxy-authorization", "accept-encoding":
 		default:
 			if strings.HasPrefix(keyStr, "x-bf-") {
@@ -3570,18 +3725,13 @@ func (g *GenericRouter) handlePassthrough(ctx *fasthttp.RequestCtx) {
 	// provider, so it must be anchored at a segment boundary and shaped like a rooted path
 	// before anything else happens. Both checks run before the Bifrost context exists so a
 	// rejected request never reaches key selection or the upstream.
-	path, ok := stripPassthroughPrefix(string(ctx.Path()), cfg.StripPrefix)
+	path, apiVersion, ok := stripPassthroughPrefix(string(ctx.Path()), cfg.StripPrefix)
 	if !ok {
 		g.sendError(ctx, nil, passthroughErr, newBifrostErrorWithCode(nil, "no passthrough route matches the request path", fasthttp.StatusNotFound))
 		return
 	}
 	if err := validatePassthroughPath(path); err != nil {
 		g.sendError(ctx, nil, passthroughErr, newBifrostErrorWithCode(err, err.Error(), fasthttp.StatusBadRequest))
-		return
-	}
-
-	if !passthroughInferenceRoute(cfg, string(ctx.Method()), path) {
-		g.sendError(ctx, nil, passthroughErr, newBifrostErrorWithCode(nil, "passthrough requires a supported inference endpoint and method", fasthttp.StatusForbidden))
 		return
 	}
 
@@ -3593,31 +3743,65 @@ func (g *GenericRouter) handlePassthrough(ctx *fasthttp.RequestCtx) {
 		g.sendError(ctx, nil, passthroughErr, newBifrostErrorWithCode(err, err.Error(), fasthttp.StatusBadRequest))
 		return
 	}
-	resolvedModel := extractPassthroughModel(path, bodyModel)
+	if cfg.BodyModelKey != nil {
+		if key := cfg.BodyModelKey(string(ctx.Method()), path); key != "" {
+			keyModel, err := passthroughBodyKeyModel(body, key)
+			if err != nil {
+				g.sendError(ctx, nil, passthroughErr, newBifrostErrorWithCode(err, err.Error(), fasthttp.StatusBadRequest))
+				return
+			}
+			if keyModel != "" {
+				bodyModel = keyModel
+			}
+		}
+	}
+	var resolvedModel string
+	if cfg.NoPathModel != nil && cfg.NoPathModel(string(ctx.Method()), path) {
+		// A segment such as a Vertex project id may read as "models/{x}" here, so the path is not parsed.
+		resolvedModel = normalizeResourceModel(bodyModel)
+	} else {
+		resolvedModel = extractPassthroughModel(path, bodyModel)
+	}
+	if cfg.PathModel != nil {
+		resolvedModel = cfg.PathModel(path)
+	}
 	provider := cfg.Provider
 	if cfg.ProviderDetector != nil {
 		provider = cfg.ProviderDetector(ctx, bodyModel)
 	}
-	provider, err = getPassthroughProvider(ctx, provider)
+	// The route's provider is the API its bodies speak: a custom provider is accepted below only when it is based on it.
+	baseProvider := provider
+	// Host-backed routes have a fixed upstream and route list, so only their own provider serves them.
+	provider, err = getPassthroughProvider(ctx, g.handlerStore, provider, cfg.UpstreamURL == "")
 	if err != nil {
-		g.sendError(ctx, nil, passthroughErr, newBifrostErrorWithCode(err, err.Error(), fasthttp.StatusBadRequest))
+		status := fasthttp.StatusBadRequest
+		if errors.Is(err, errPassthroughNotEnabled) {
+			status = fasthttp.StatusForbidden
+		}
+		g.sendError(ctx, nil, passthroughErr, newBifrostErrorWithCode(err, err.Error(), status))
 		return
 	}
 
 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, g.handlerStore)
 	applyPassthroughCallerAuth(bifrostCtx, safeHeaders, provider, callerAuth, cfg.UpstreamURL)
-	isStreaming := cfg.streams(string(ctx.Method()), path, bodyStream)
+	if cfg.ModelFreePath != nil && cfg.ModelFreePath(string(ctx.Method()), path) {
+		bifrostCtx.SetValue(schemas.BifrostContextKeySkipModelCheck, true)
+	}
+	isStreaming := cfg.streams(string(ctx.Method()), path, bodyStream || passthroughQueryStreams(string(ctx.Method()), string(ctx.URI().QueryString())))
 
 	passthroughReq := &schemas.BifrostPassthroughRequest{
-		Method:      string(ctx.Method()),
-		Path:        path,
-		RawQuery:    string(ctx.URI().QueryString()),
-		UpstreamURL: cfg.UpstreamURL,
-		Body:        body,
-		SafeHeaders: safeHeaders,
-		Provider:    provider,
-		Model:       resolvedModel,
+		Method:       string(ctx.Method()),
+		Path:         path,
+		APIVersion:   apiVersion,
+		RawQuery:     string(ctx.URI().QueryString()),
+		UpstreamURL:  cfg.UpstreamURL,
+		Body:         body,
+		SafeHeaders:  safeHeaders,
+		Provider:     provider,
+		BaseProvider: baseProvider,
+		Model:        resolvedModel,
 	}
+	registerPassthroughTextRewriters(bifrostCtx, passthroughparse.Classify(baseProvider, resolvedModel, passthroughReq.Method, path))
 
 	if isStreaming {
 		g.handlePassthroughStream(ctx, bifrostCtx, cancel, provider, passthroughReq)
@@ -3645,6 +3829,9 @@ func (g *GenericRouter) handlePassthroughNonStream(
 
 	ctx.SetStatusCode(resp.StatusCode)
 	for k, v := range resp.Headers {
+		if lib.IsGatewayOwnedResponseHeader(k) {
+			continue
+		}
 		switch strings.ToLower(k) {
 		case "connection", "transfer-encoding", "set-cookie", "proxy-authenticate", "www-authenticate":
 			// drop
@@ -3674,6 +3861,184 @@ func passthroughHeartbeatEligible(provider schemas.ModelProvider, contentType st
 	}
 	mediaType, _, _ := strings.Cut(contentType, ";")
 	return strings.EqualFold(strings.TrimSpace(mediaType), "text/event-stream")
+}
+
+// passthroughEndsWithResponsesFailed reports whether a passthrough stream speaks OpenAI's Responses
+// SSE protocol, where a stream that fails ends with a response.failed event. Every other stream is
+// raw bytes in a protocol the relay does not own, so it keeps ending without a frame of ours.
+func passthroughEndsWithResponsesFailed(ctx *schemas.BifrostContext, provider schemas.ModelProvider, path, contentType string) bool {
+	switch schemas.ResolveBaseProvider(ctx, provider) {
+	case schemas.OpenAI, schemas.Azure:
+	default:
+		return false
+	}
+	mediaType, _, _ := strings.Cut(contentType, ";")
+	if !strings.EqualFold(strings.TrimSpace(mediaType), "text/event-stream") {
+		return false
+	}
+	return strings.HasSuffix(strings.TrimRight(path, "/"), "/responses")
+}
+
+// passthroughResponsesFailedFrame renders a mid-stream failure as the response.failed event OpenAI
+// ends a failed Responses stream with (developers.openai.com/api/reference/resources/responses/streaming-events),
+// with the error under response.error where clients read it. responseID is the id the upstream's
+// response.created carried, omitted when none was seen, and seq continues the upstream sequence.
+func passthroughResponsesFailedFrame(bifrostErr *schemas.BifrostError, responseID string, seq int) []byte {
+	code, message := "server_error", "upstream stream failed"
+	if bifrostErr == nil {
+		message = "upstream closed the stream before response.completed"
+	}
+	// A gateway-side failure ("Error reading stream: read tcp 10.0.0.5:...") stays in the
+	// server log; only an upstream's own error text reaches the client.
+	if bifrostErr != nil && !bifrostErr.IsBifrostError {
+		if sanitized := lib.SanitizeBifrostErrorForClient(bifrostErr); sanitized != nil && sanitized.Error != nil {
+			if sanitized.Error.Code != nil && *sanitized.Error.Code != "" {
+				code = *sanitized.Error.Code
+			}
+			if sanitized.Error.Message != "" {
+				message = sanitized.Error.Message
+			}
+		}
+	}
+	response := map[string]any{
+		"object": "response",
+		"status": "failed",
+		"error":  map[string]any{"code": code, "message": message},
+	}
+	if responseID != "" {
+		response["id"] = responseID
+	}
+	data, err := schemas.MarshalSorted(map[string]any{
+		"type":            "response.failed",
+		"sequence_number": seq,
+		"response":        response,
+	})
+	if err != nil {
+		return nil
+	}
+	frame := make([]byte, 0, len(data)+40)
+	frame = append(frame, "event: response.failed\ndata: "...)
+	frame = append(frame, data...)
+	return append(frame, "\n\n"...)
+}
+
+// responsesFrameRelayMaxPending bounds one unterminated frame at the per-event ceiling core's native
+// SSE reader uses (sseMaxBufSize), so passthrough accepts exactly what the native path does.
+const responsesFrameRelayMaxPending = 10 << 20
+
+// responsesFrameRelay forwards a Responses SSE stream one whole frame at a time and notes whether a
+// terminal event went by. SSE cannot cancel a half-sent line, so a failure frame written after one
+// would be glued onto it; holding the unterminated tail costs clients nothing, since the SSE spec
+// has them discard an unterminated frame at end of stream anyway.
+type responsesFrameRelay struct {
+	pending     []byte // bytes after the last complete frame
+	sawTerminal bool   // a response.completed/incomplete/failed or error event was forwarded
+	overflowed  bool   // an unterminated frame passed the cap; its tail was discarded
+	responseID  string // id from the forwarded response.created, "" until one went by
+	lastSeq     int    // sequence_number of the last forwarded event
+	sawSeq      bool   // lastSeq was read from a forwarded event
+}
+
+// failedFrame renders the response.failed that ends this stream, naming the response the client
+// already received and continuing its sequence.
+func (r *responsesFrameRelay) failedFrame(bifrostErr *schemas.BifrostError) []byte {
+	seq := 0
+	if r.sawSeq {
+		seq = r.lastSeq + 1
+	}
+	return passthroughResponsesFailedFrame(bifrostErr, r.responseID, seq)
+}
+
+// complete appends body and returns the complete frames now available, keeping the remainder.
+func (r *responsesFrameRelay) complete(body []byte) []byte {
+	// Upstreams flush whole events, so a chunk that ends on a frame boundary goes out as is.
+	if len(r.pending) == 0 && lastSSEFrameEnd(body) == len(body) {
+		r.observe(body)
+		return body
+	}
+	// pending holds no blank line, so only the new bytes (plus a 3-byte overlap for a split
+	// "\r\n\r\n") can complete a frame; rescanning the whole tail is quadratic on large events.
+	from := max(0, len(r.pending)-3)
+	r.pending = append(r.pending, body...)
+	end := lastSSEFrameEnd(r.pending[from:])
+	if end < 0 {
+		if len(r.pending) > responsesFrameRelayMaxPending {
+			r.pending, r.overflowed = nil, true
+		}
+		return nil
+	}
+	end += from
+	frames := r.pending[:end]
+	r.observe(frames)
+	r.pending = append([]byte(nil), r.pending[end:]...)
+	return frames
+}
+
+// lastSSEFrameEnd returns the offset just past the last blank line (LF or CRLF) in data, or -1.
+func lastSSEFrameEnd(data []byte) int {
+	lf := bytes.LastIndex(data, []byte("\n\n"))
+	crlf := bytes.LastIndex(data, []byte("\r\n\r\n"))
+	switch {
+	case crlf >= 0 && crlf+4 > lf+2:
+		return crlf + 4
+	case lf >= 0:
+		return lf + 2
+	}
+	return -1
+}
+
+// observe records what the client has now been sent: whether a terminal event went by, the id from
+// response.created, and the last sequence number. Nothing is recorded once a terminal event has
+// passed, since no synthetic failure can follow it.
+func (r *responsesFrameRelay) observe(frames []byte) {
+	for len(frames) > 0 && !r.sawTerminal {
+		line := frames
+		if i := bytes.IndexByte(frames, '\n'); i >= 0 {
+			line, frames = frames[:i], frames[i+1:]
+		} else {
+			frames = nil
+		}
+		payload, ok := bytes.CutPrefix(bytes.TrimRight(line, "\r"), []byte("data:"))
+		if !ok {
+			continue
+		}
+		if seq, ok := sseSequenceNumber(payload); ok {
+			r.lastSeq, r.sawSeq = seq, true
+		}
+		if r.responseID == "" && bytes.Contains(payload, []byte("response.created")) {
+			r.responseID = gjson.GetBytes(payload, "response.id").Str
+		}
+		// Only a payload naming a terminal type is parsed; a delta frame skips the parse.
+		if !(bytes.Contains(payload, []byte("response.completed")) || bytes.Contains(payload, []byte("response.incomplete")) ||
+			bytes.Contains(payload, []byte("response.failed")) || bytes.Contains(payload, []byte(`"error"`))) {
+			continue
+		}
+		switch gjson.GetBytes(bytes.TrimSpace(payload), "type").Str {
+		case "response.completed", "response.incomplete", "response.failed", "error":
+			r.sawTerminal = true
+		}
+	}
+}
+
+// sseSequenceNumber reads the first "sequence_number" value in an event payload without parsing
+// the event; every Responses streaming event carries it at the top level.
+func sseSequenceNumber(payload []byte) (int, bool) {
+	i := bytes.Index(payload, []byte(`"sequence_number"`))
+	if i < 0 {
+		return 0, false
+	}
+	rest := bytes.TrimLeft(payload[i+len(`"sequence_number"`):], " \t")
+	rest, ok := bytes.CutPrefix(rest, []byte(":"))
+	if !ok {
+		return 0, false
+	}
+	rest = bytes.TrimLeft(rest, " \t")
+	n, digits := 0, 0
+	for digits < len(rest) && digits < 18 && rest[digits] >= '0' && rest[digits] <= '9' {
+		n = n*10 + int(rest[digits]-'0')
+		digits++
+	}
+	return n, digits > 0
 }
 
 func (g *GenericRouter) handlePassthroughStream(
@@ -3753,6 +4118,9 @@ func (g *GenericRouter) handlePassthroughStream(
 	ctx.Response.Header.Set("Connection", "keep-alive")
 	ctx.Response.Header.Set("X-Accel-Buffering", "no")
 	for k, v := range passthroughResp.Headers {
+		if lib.IsGatewayOwnedResponseHeader(k) {
+			continue
+		}
 		switch strings.ToLower(k) {
 		case "connection", "transfer-encoding", "content-length", "content-type",
 			"cache-control", "x-accel-buffering",
@@ -3779,6 +4147,7 @@ func (g *GenericRouter) handlePassthroughStream(
 	// unrecognized Bedrock EventStream event-type, there is no protocol guarantee that extra
 	// bytes here are safely ignorable. So the heartbeat only runs when the resolved
 	// content-type is actually SSE.
+	endsWithResponsesFailed := passthroughEndsWithResponsesFailed(bifrostCtx, provider, req.Path, contentType)
 	var heartbeatDone chan struct{}
 	var heartbeatExited <-chan struct{}
 	if passthroughHeartbeatEligible(provider, contentType) {
@@ -3799,27 +4168,82 @@ func (g *GenericRouter) handlePassthroughStream(
 			cancel()
 		}()
 
+		var frames *responsesFrameRelay
+		if endsWithResponsesFailed {
+			frames = &responsesFrameRelay{}
+		}
+		send := func(body []byte) bool {
+			if frames != nil {
+				body = frames.complete(body)
+			}
+			return len(body) == 0 || reader.Send(body)
+		}
+
 		// Write the first chunk's data.
 		if len(passthroughResp.Body) > 0 {
-			if !reader.Send(passthroughResp.Body) {
+			if !send(passthroughResp.Body) {
 				cancel()
 				return
 			}
 		}
 
+		var streamErr *schemas.BifrostError
 		for chunk := range stream {
 			if chunk == nil {
 				continue
 			}
 			if chunk.BifrostError != nil {
+				streamErr = chunk.BifrostError
 				break
 			}
 			if chunk.BifrostPassthroughResponse != nil && len(chunk.BifrostPassthroughResponse.Body) > 0 {
-				if !reader.Send(chunk.BifrostPassthroughResponse.Body) {
+				if !send(chunk.BifrostPassthroughResponse.Body) {
 					cancel()
 					return
 				}
 			}
+			// An unterminated frame passed the cap: stop forwarding rather than leak a partial frame.
+			if frames != nil && frames.overflowed {
+				streamErr = &schemas.BifrostError{Error: &schemas.ErrorField{Code: schemas.Ptr("server_error"), Message: "upstream event exceeded the 10 MB frame limit"}}
+				break
+			}
+		}
+
+		// Headers and earlier events are already on the wire, so a Responses stream that ended,
+		// by an error or by a clean close, without a terminal event can only be reported in the
+		// stream. Without one the client sees a bare close and retries blind.
+		if frames != nil {
+			if frames.sawTerminal {
+				if len(frames.pending) > 0 && !frames.overflowed {
+					reader.Send(frames.pending)
+				}
+			} else if frame := frames.failedFrame(streamErr); frame != nil {
+				reader.Send(frame)
+			}
 		}
 	}()
+}
+
+// chatResponseForConverter is the response an integration converter gets. Several
+// converters answer with the raw upstream bytes when they are present. After
+// provider-injected tools ran, the response is assembled from several model turns and
+// RawResponse holds only the last one, so the converter gets a copy without it. The
+// original keeps the raw bytes; logging has already read them in the post-hooks.
+func chatResponseForConverter(ctx *schemas.BifrostContext, resp *schemas.BifrostChatResponse) *schemas.BifrostChatResponse {
+	if executed, _ := ctx.Value(schemas.BifrostContextKeyInjectedToolsExecuted).(bool); !executed || resp == nil || resp.ExtraFields.RawResponse == nil {
+		return resp
+	}
+	assembled := *resp
+	assembled.ExtraFields.RawResponse = nil
+	return &assembled
+}
+
+// responsesResponseForConverter is the Responses API counterpart of chatResponseForConverter.
+func responsesResponseForConverter(ctx *schemas.BifrostContext, resp *schemas.BifrostResponsesResponse) *schemas.BifrostResponsesResponse {
+	if executed, _ := ctx.Value(schemas.BifrostContextKeyInjectedToolsExecuted).(bool); !executed || resp == nil || resp.ExtraFields.RawResponse == nil {
+		return resp
+	}
+	assembled := *resp
+	assembled.ExtraFields.RawResponse = nil
+	return &assembled
 }

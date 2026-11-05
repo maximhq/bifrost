@@ -19,13 +19,12 @@
 //
 // Authentication is either a Databricks personal access token (set as the key value) or
 // OAuth machine-to-machine using a service principal (set client_id/client_secret and leave
-// the key value empty). M2M tokens are minted and refreshed by a cached oauth2.TokenSource.
+// the key value empty). M2M tokens are minted, cached and refreshed by the shared token
+// cache in core/providers/utils/tokencache, the same path custom OpenAI-compatible providers use.
 package databricks
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"net/http"
 	"net/url"
 	"strings"
@@ -34,10 +33,9 @@ import (
 
 	"github.com/maximhq/bifrost/core/providers/openai"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
+	"github.com/maximhq/bifrost/core/providers/utils/tokencache"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
-	"golang.org/x/oauth2"
-	"golang.org/x/oauth2/clientcredentials"
 )
 
 const (
@@ -47,10 +45,10 @@ const (
 	// aiGatewayBasePath is the OpenAI-compatible base path for Unity AI Gateway model APIs.
 	aiGatewayBasePath = "/ai-gateway/mlflow/v1"
 
-	// oauthTokenPath is the workspace-level OAuth token endpoint for M2M service principals.
-	oauthTokenPath = "/oidc/v1/token"
-	// oauthScope is the scope Databricks requires for M2M client-credentials grants.
-	oauthScope = "all-apis"
+	// oauthTokenPath and oauthScope are fixed per workspace; DatabricksKeyConfig.OAuthConfig
+	// folds them into the common OAuth key config the shared token cache mints from.
+	oauthTokenPath = schemas.DatabricksOAuthTokenPath
+	oauthScope     = schemas.DatabricksOAuthScope
 
 	// gatewayRequestTagsHeader carries JSON string-to-string labels that Databricks records
 	// against the request for usage tracking and cost attribution.
@@ -72,13 +70,9 @@ type DatabricksProvider struct {
 	sendBackRawRequest  bool                  // Whether to include raw request in BifrostResponse
 	sendBackRawResponse bool                  // Whether to include raw response in BifrostResponse
 
-	// tokenSources caches oauth2.TokenSource instances keyed by a hash of the workspace
-	// host and service principal credentials. The clientcredentials TokenSource refreshes
-	// on expiry and serialises concurrent refreshes, so caching the source avoids a token
-	// mint per request. It is per provider because each source is bound to
-	// authHTTPClient: a config change rebuilds the provider, and a source built for the
-	// old proxy must not outlive it.
-	tokenSources sync.Map
+	// tokens caches OAuth M2M tokens per service principal. It is per provider so a config
+	// change (proxy, TLS) rebuilds it cold rather than reusing tokens minted under the old one.
+	tokens *tokencache.Cache[string]
 
 	// responsesUnsupported records "<workspace host>|<model>" pairs whose Model Serving
 	// endpoint has declined the native Responses API, so those requests go straight to
@@ -115,6 +109,7 @@ func NewDatabricksProvider(config *schemas.ProviderConfig, logger schemas.Logger
 		streamingClient:     streamingClient,
 		networkConfig:       config.NetworkConfig,
 		authHTTPClient:      providerUtils.NewProviderHTTPClient(config.ProxyConfig, config.NetworkConfig, logger),
+		tokens:              tokencache.New[string](tokencache.Options{}),
 		sendBackRawRequest:  config.SendBackRawRequest,
 		sendBackRawResponse: config.SendBackRawResponse,
 	}, nil
@@ -254,58 +249,14 @@ func (provider *DatabricksProvider) workspaceAPIURL(key schemas.Key, path string
 	return "https://" + host + path, nil
 }
 
-// tokenSourceCacheKey hashes the credential tuple so no secret is used as a map key in a form
-// that could be logged.
-func tokenSourceCacheKey(host, clientID, clientSecret string) string {
-	sum := sha256.Sum256([]byte(host + "|" + clientID + "|" + clientSecret))
-	return hex.EncodeToString(sum[:])
-}
-
-// getTokenSource returns a cached OAuth M2M token source for the given workspace and service
-// principal, creating one on first use.
-func (provider *DatabricksProvider) getTokenSource(host, clientID, clientSecret string) oauth2.TokenSource {
-	cacheKey := tokenSourceCacheKey(host, clientID, clientSecret)
-	if cached, ok := provider.tokenSources.Load(cacheKey); ok {
-		return cached.(oauth2.TokenSource)
-	}
-	conf := &clientcredentials.Config{
-		ClientID:     clientID,
-		ClientSecret: clientSecret,
-		TokenURL:     "https://" + host + oauthTokenPath,
-		Scopes:       []string{oauthScope},
-		// Databricks expects the service principal credentials as HTTP Basic auth.
-		AuthStyle: oauth2.AuthStyleInHeader,
-	}
-	// oauth2.ReuseTokenSource caches the token until shortly before expiry and refreshes
-	// under a mutex, so a burst of concurrent requests mints exactly one token.
-	ts := oauth2.ReuseTokenSource(nil, conf.TokenSource(provider.oauthContext()))
-	actual, _ := provider.tokenSources.LoadOrStore(cacheKey, ts)
-	return actual.(oauth2.TokenSource)
-}
-
-// oauthContext returns the context the client-credentials token exchange runs under. It
-// carries authHTTPClient, so the exchange leaves through the provider's proxy_config with
-// its network_config TLS settings, instead of http.DefaultClient. The token source keeps
-// this context for every refresh.
-func (provider *DatabricksProvider) oauthContext() context.Context {
-	if provider.authHTTPClient != nil {
-		return context.WithValue(context.Background(), oauth2.HTTPClient, provider.authHTTPClient)
-	}
-	return context.Background()
-}
-
-// removeTokenSource evicts a cached token source so the next request re-mints. Called when
-// credentials are rejected, mirroring the eviction the Vertex provider performs on 401/403.
-func (provider *DatabricksProvider) removeTokenSource(host, clientID, clientSecret string) {
-	provider.tokenSources.Delete(tokenSourceCacheKey(host, clientID, clientSecret))
-}
-
 // authHeader builds the Authorization header for a request: a personal access token when the
-// key carries a value, otherwise an OAuth M2M bearer token minted from the service principal.
+// key carries a value, otherwise an OAuth M2M bearer token minted from the service principal
+// through the shared token cache (see core/providers/utils/tokencache), which caches the token
+// per credential, collapses concurrent mints into one, and backs off a failing credential.
 //
 // Unlike SigV4-style providers this needs no BodySigner, because the credential does not
 // depend on the request body and can be resolved before the body is built.
-func (provider *DatabricksProvider) authHeader(key schemas.Key) (map[string]string, *schemas.BifrostError) {
+func (provider *DatabricksProvider) authHeader(ctx context.Context, key schemas.Key) (map[string]string, *schemas.BifrostError) {
 	if token := key.Value.GetValue(); token != "" {
 		return map[string]string{"Authorization": "Bearer " + token}, nil
 	}
@@ -314,24 +265,15 @@ func (provider *DatabricksProvider) authHeader(key schemas.Key) (map[string]stri
 	if cfg == nil || cfg.ClientID == nil || cfg.ClientSecret == nil {
 		return nil, providerUtils.NewConfigurationError("databricks key has no credentials: set the key value to a personal access token, or set databricks_key_config.client_id and client_secret for OAuth M2M")
 	}
-	clientID, clientSecret := cfg.ClientID.GetValue(), cfg.ClientSecret.GetValue()
-	if clientID == "" || clientSecret == "" {
+	if cfg.ClientID.GetValue() == "" || cfg.ClientSecret.GetValue() == "" {
 		return nil, providerUtils.NewConfigurationError("databricks oauth m2m requires both databricks_key_config.client_id and databricks_key_config.client_secret")
 	}
 	host, bErr := provider.resolveWorkspaceHost(key)
 	if bErr != nil {
 		return nil, bErr
 	}
-
-	token, err := provider.getTokenSource(host, clientID, clientSecret).Token()
-	if err != nil {
-		// The credentials may have been rotated or revoked; drop the cached source so the
-		// next attempt re-mints rather than replaying a source pinned to a failing refresh.
-		provider.removeTokenSource(host, clientID, clientSecret)
-		// err can embed the token endpoint response; never surface or log the secret itself.
-		return nil, providerUtils.NewBifrostOperationError("failed to acquire databricks oauth token", err)
-	}
-	return map[string]string{"Authorization": "Bearer " + token.AccessToken}, nil
+	oauthCfg, _ := cfg.OAuthConfig(host)
+	return tokencache.ResolveBearerFrom(ctx, provider.tokens, oauthCfg, provider.authHTTPClient)
 }
 
 // gatewayTagsHeader returns the Databricks-Ai-Gateway-Request-Tags value for this request when
@@ -380,7 +322,7 @@ func (provider *DatabricksProvider) prepareRequest(ctx *schemas.BifrostContext, 
 	if bErr != nil {
 		return "", nil, bErr
 	}
-	auth, bErr := provider.authHeader(key)
+	auth, bErr := provider.authHeader(ctx, key)
 	if bErr != nil {
 		return "", nil, bErr
 	}
