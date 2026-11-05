@@ -308338,6 +308338,463 @@
           ]
         }
       ]
+    },
+    {
+      "name": "316. OpenAI 12h prompt cache TTL (prompt cache ttl 12h)",
+      "description": "OpenAI gpt-5.6+ accepts prompt_cache_breakpoint.ttl (\"30m\" | \"12h\") on content parts and reports Responses cache writes split by lifetime under usage.input_tokens_details.cache_write_tokens_details {ttl_30m_tokens, ttl_12h_tokens}. Bifrost used to drop the breakpoint ttl at ingress (every 12h breakpoint silently became a 30m write) and drop the per-lifetime split from usage, so 12h writes were billed at the 30m rate. Each case sends a fresh >1024-token prefix marked with a 12h breakpoint and pins: the ttl reaches OpenAI (raw_request), and a 12h write comes back in OpenAI's usage shape.",
+      "item": [
+        {
+          "name": "openai gpt-5.6-sol /v1/responses 12h breakpoint ttl non-streaming",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Fresh prefix per request so the 12h write happens even on a rerun within the same run.",
+                  "pm.variables.set('ttl12hNonce', String(Date.now()) + '-' + Math.floor(Math.random() * 1e9) + '-resp');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('status is 200', function () { pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200); });",
+                  "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "pm.test('prompt_cache_breakpoint.ttl 12h reaches OpenAI', function () {",
+                  "  pm.expect(rr, 'raw_request missing: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "  var bp = (((rr.input || [])[0] || {}).content || [])[0] || {};",
+                  "  pm.expect((bp.prompt_cache_breakpoint || {}).ttl, 'breakpoint ttl dropped before the provider: ' + wire.slice(0, 400)).to.eql('12h');",
+                  "});",
+                  "pm.test('usage reports a 12h cache write in OpenAI shape', function () {",
+                  "  var d = ((body.usage || {}).input_tokens_details) || {};",
+                  "  pm.expect(d.cache_write_tokens_details, 'cache_write_tokens_details missing: ' + JSON.stringify(body.usage)).to.be.an('object');",
+                  "  pm.expect(d.cache_write_tokens_details.ttl_12h_tokens, 'no 12h write: ' + JSON.stringify(body.usage)).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-5.6-sol\",\n  \"max_output_tokens\": 8000,\n  \"input\": [\n    {\n      \"role\": \"developer\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"{{cachePrefix}} [ttl12h {{ttl12hNonce}}]\",\n          \"prompt_cache_breakpoint\": {\n            \"mode\": \"explicit\",\n            \"ttl\": \"12h\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Answer in one short word: is the sky blue?\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai gpt-5.6-sol /v1/responses 12h breakpoint ttl streaming",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Fresh prefix per request so the 12h write happens even on a rerun within the same run.",
+                  "pm.variables.set('ttl12hNonce', String(Date.now()) + '-' + Math.floor(Math.random() * 1e9) + '-resp-stream');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('status is 200', function () { pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200); });",
+                  "var completed = null;",
+                  "txt.split('\\n').forEach(function (l) {",
+                  "  if (l.indexOf('data: ') !== 0) { return; }",
+                  "  try { var j = JSON.parse(l.slice(6).trim()); if (j.type === 'response.completed') { completed = j; } } catch (e) {}",
+                  "});",
+                  "pm.test('response.completed reports a 12h cache write in OpenAI shape', function () {",
+                  "  pm.expect(completed, 'no response.completed event: ' + txt.slice(-400)).to.be.an('object');",
+                  "  var u = ((completed.response || {}).usage) || {};",
+                  "  var d = u.input_tokens_details || {};",
+                  "  pm.expect(d.cache_write_tokens_details, 'cache_write_tokens_details missing: ' + JSON.stringify(u)).to.be.an('object');",
+                  "  pm.expect(d.cache_write_tokens_details.ttl_12h_tokens, 'no 12h write: ' + JSON.stringify(u)).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-5.6-sol\",\n  \"max_output_tokens\": 8000,\n  \"stream\": true,\n  \"input\": [\n    {\n      \"role\": \"developer\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"{{cachePrefix}} [ttl12h {{ttl12hNonce}}]\",\n          \"prompt_cache_breakpoint\": {\n            \"mode\": \"explicit\",\n            \"ttl\": \"12h\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Answer in one short word: is the sky blue?\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai gpt-5.6-sol /v1/chat/completions 12h breakpoint ttl stripped non-streaming",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Fresh prefix per request so the 12h write happens even on a rerun within the same run.",
+                  "pm.variables.set('ttl12hNonce', String(Date.now()) + '-' + Math.floor(Math.random() * 1e9) + '-chat');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('status is 200', function () { pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200); });",
+                  "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "pm.test('prompt_cache_breakpoint.ttl stripped on Chat (OpenAI rejects it there)', function () {",
+                  "  pm.expect(rr, 'raw_request missing: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "  var bp = (((rr.messages || [])[0] || {}).content || [])[0] || {};",
+                  "  pm.expect((bp.prompt_cache_breakpoint || {}).mode, 'breakpoint dropped: ' + wire.slice(0, 400)).to.eql('explicit'); pm.expect((bp.prompt_cache_breakpoint || {}).ttl, 'ttl forwarded to Chat: ' + wire.slice(0, 400)).to.be.undefined;",
+                  "});",
+                  "pm.test('usage reports a cache write', function () {",
+                  "  var d = ((body.usage || {}).prompt_tokens_details) || {};",
+                  "  pm.expect(d.cache_write_tokens, 'no cache write: ' + JSON.stringify(body.usage)).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-5.6-sol\",\n  \"max_tokens\": 8000,\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"{{cachePrefix}} [ttl12h {{ttl12hNonce}}]\",\n          \"prompt_cache_breakpoint\": {\n            \"mode\": \"explicit\",\n            \"ttl\": \"12h\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Answer in one short word: is the sky blue?\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock openai.gpt-5.6-sol /v1/responses 12h breakpoint ttl stripped non-streaming",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Fresh prefix per request so the 12h write happens even on a rerun within the same run.",
+                  "pm.variables.set('ttl12hNonce', String(Date.now()) + '-' + Math.floor(Math.random() * 1e9) + '-mantle');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('status is 200', function () { pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200); });",
+                  "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "pm.test('prompt_cache_breakpoint.ttl stripped for Bedrock Mantle (it rejects the field)', function () {",
+                  "  pm.expect(rr, 'raw_request missing: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "  var bp = (((rr.input || [])[0] || {}).content || [])[0] || {};",
+                  "  pm.expect((bp.prompt_cache_breakpoint || {}).mode, 'breakpoint dropped: ' + wire.slice(0, 400)).to.eql('explicit'); pm.expect((bp.prompt_cache_breakpoint || {}).ttl, 'ttl forwarded to Mantle: ' + wire.slice(0, 400)).to.be.undefined;",
+                  "});",
+                  "pm.test('usage reports a cache write', function () {",
+                  "  var d = ((body.usage || {}).input_tokens_details) || {};",
+                  "  pm.expect(d.cache_write_tokens, 'no cache write: ' + JSON.stringify(body.usage)).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/openai.gpt-5.6-sol\",\n  \"max_output_tokens\": 8000,\n  \"input\": [\n    {\n      \"role\": \"developer\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"{{cachePrefix}} [ttl12h {{ttl12hNonce}}]\",\n          \"prompt_cache_breakpoint\": {\n            \"mode\": \"explicit\",\n            \"ttl\": \"12h\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Answer in one short word: is the sky blue?\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock openai.gpt-5.6-sol /v1/responses 12h request-level ttl stripped non-streaming",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Fresh prefix per request so the 12h write happens even on a rerun within the same run.",
+                  "pm.variables.set('ttl12hNonce', String(Date.now()) + '-' + Math.floor(Math.random() * 1e9) + '-mantle-req');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('status is 200', function () { pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200); });",
+                  "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "pm.test('prompt_cache_options.ttl 12h stripped for Bedrock Mantle (it accepts only 30m)', function () {",
+                  "  pm.expect(rr, 'raw_request missing: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "  pm.expect((rr.prompt_cache_options || {}).mode, 'prompt_cache_options.mode dropped: ' + wire.slice(0, 400)).to.eql('explicit'); pm.expect((rr.prompt_cache_options || {}).ttl, 'request-level ttl forwarded to Mantle: ' + wire.slice(0, 400)).to.be.undefined;",
+                  "});",
+                  "pm.test('usage reports a cache write', function () {",
+                  "  var d = ((body.usage || {}).input_tokens_details) || {};",
+                  "  pm.expect(d.cache_write_tokens, 'no cache write: ' + JSON.stringify(body.usage)).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/openai.gpt-5.6-sol\",\n  \"max_output_tokens\": 8000,\n  \"prompt_cache_options\": {\n    \"mode\": \"explicit\",\n    \"ttl\": \"12h\"\n  },\n  \"input\": [\n    {\n      \"role\": \"developer\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"{{cachePrefix}} [ttl12h {{ttl12hNonce}}]\",\n          \"prompt_cache_breakpoint\": {\n            \"mode\": \"explicit\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Answer in one short word: is the sky blue?\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai gpt-5.6-sol /v1/responses 12h request-level ttl non-streaming",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Fresh prefix per request so the 12h write happens even on a rerun within the same run.",
+                  "pm.variables.set('ttl12hNonce', String(Date.now()) + '-' + Math.floor(Math.random() * 1e9) + '-resp-req');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('status is 200', function () { pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200); });",
+                  "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "pm.test('prompt_cache_options.ttl 12h reaches OpenAI', function () {",
+                  "  pm.expect(rr, 'raw_request missing: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "  pm.expect((rr.prompt_cache_options || {}).ttl, 'request-level ttl dropped before the provider: ' + wire.slice(0, 400)).to.eql('12h');",
+                  "});",
+                  "pm.test('usage reports a 12h cache write in OpenAI shape', function () {",
+                  "  var d = ((body.usage || {}).input_tokens_details) || {};",
+                  "  pm.expect(d.cache_write_tokens_details, 'cache_write_tokens_details missing: ' + JSON.stringify(body.usage)).to.be.an('object');",
+                  "  pm.expect(d.cache_write_tokens_details.ttl_12h_tokens, 'no 12h write: ' + JSON.stringify(body.usage)).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-5.6-sol\",\n  \"max_output_tokens\": 8000,\n  \"prompt_cache_options\": {\n    \"ttl\": \"12h\"\n  },\n  \"input\": [\n    {\n      \"role\": \"developer\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"{{cachePrefix}} [ttl12h {{ttl12hNonce}}]\",\n          \"prompt_cache_breakpoint\": {\n            \"mode\": \"explicit\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Answer in one short word: is the sky blue?\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai gpt-5.6-sol /v1/chat/completions 12h request-level ttl stripped non-streaming",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Fresh prefix per request so the 12h write happens even on a rerun within the same run.",
+                  "pm.variables.set('ttl12hNonce', String(Date.now()) + '-' + Math.floor(Math.random() * 1e9) + '-chat-req');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('status is 200', function () { pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200); });",
+                  "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "pm.test('prompt_cache_options.ttl 12h stripped on Chat (Chat accepts only 30m)', function () {",
+                  "  pm.expect(rr, 'raw_request missing: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "  pm.expect((rr.prompt_cache_options || {}).ttl, 'request-level ttl forwarded to Chat: ' + wire.slice(0, 400)).to.be.undefined;",
+                  "});",
+                  "pm.test('usage reports a cache write', function () {",
+                  "  var d = ((body.usage || {}).prompt_tokens_details) || {};",
+                  "  pm.expect(d.cache_write_tokens, 'no cache write: ' + JSON.stringify(body.usage)).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-5.6-sol\",\n  \"max_tokens\": 8000,\n  \"prompt_cache_options\": {\n    \"ttl\": \"12h\"\n  },\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"{{cachePrefix}} [ttl12h {{ttl12hNonce}}]\",\n          \"prompt_cache_breakpoint\": {\n            \"mode\": \"explicit\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Answer in one short word: is the sky blue?\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
