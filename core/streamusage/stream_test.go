@@ -17,6 +17,14 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
+// TestMain enables every embedded vocabulary, as `usage_estimation_tokenizers:
+// ["all"]` does, so family tests run against their own vocabulary.
+// TestConfigureGatesFamilies covers the default (none enabled).
+func TestMain(m *testing.M) {
+	Configure([]string{FamilyAll})
+	os.Exit(m.Run())
+}
+
 func newContext() *schemas.BifrostContext {
 	return schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 }
@@ -521,6 +529,56 @@ func TestEstimateSelectsModelFamily(t *testing.T) {
 		estimateFrom(newContext(), chatSnapshot("hello world", false), chatRequest(model), model, err)
 		if got := err.ExtraFields.BilledUsage; got == nil || got.Estimation == nil || got.Estimation.Tokenizer != want {
 			t.Errorf("%s: usage=%+v want tokenizer %s", model, got, want)
+		}
+	}
+}
+
+// A family's vocabulary is used only once configured; until then its models are
+// counted with the base encodings, and disabling a family drops its vocabulary.
+func TestConfigureGatesFamilies(t *testing.T) {
+	t.Cleanup(func() { Configure([]string{FamilyAll}) })
+	tokenizer := func(model string) string {
+		t.Helper()
+		err := cancellation()
+		estimateFrom(newContext(), chatSnapshot("hello world", false), chatRequest(model), model, err)
+		if got := err.ExtraFields.BilledUsage; got != nil && got.Estimation != nil {
+			return got.Estimation.Tokenizer
+		}
+		return ""
+	}
+
+	if unknown := Configure(nil); len(unknown) != 0 {
+		t.Fatalf("Configure(nil) unknown=%v", unknown)
+	}
+	for _, kind := range Families {
+		if _, ok := counters.Load(kind); ok {
+			t.Errorf("%s vocabulary still cached after it was disabled", kind)
+		}
+	}
+	for model, want := range map[string]string{"claude-opus-4-5": "cl100k_base", "deepseek-chat": "cl100k_base", "llama-3-70b": "cl100k_base", "gpt-4o": "o200k_base"} {
+		if got := tokenizer(model); got != want {
+			t.Errorf("default: %s tokenizer=%q want %q", model, got, want)
+		}
+	}
+
+	// Configuring a family starts loading it before any stream is cancelled.
+	if unknown := Configure([]string{" Anthropic ", "no-such-family"}); len(unknown) != 1 || unknown[0] != "no-such-family" {
+		t.Fatalf("unknown=%v want [no-such-family]", unknown)
+	}
+	if _, ok := counters.Load("anthropic"); !ok {
+		t.Error("anthropic vocabulary was not preloaded")
+	}
+	if got := tokenizer("claude-opus-4-5"); got != "anthropic" {
+		t.Errorf("anthropic enabled: tokenizer=%q", got)
+	}
+	if got := tokenizer("deepseek-chat"); got != "cl100k_base" {
+		t.Errorf("deepseek not enabled: tokenizer=%q want cl100k_base", got)
+	}
+
+	Configure([]string{FamilyAll})
+	for model, want := range map[string]string{"claude-opus-4-5": "anthropic", "deepseek-chat": "deepseek", "llama-2-70b-chat": "llama2", "llama-3-70b": "llama3"} {
+		if got := tokenizer(model); got != want {
+			t.Errorf("all: %s tokenizer=%q want %q", model, got, want)
 		}
 	}
 }

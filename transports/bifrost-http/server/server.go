@@ -101,6 +101,7 @@ type ServerCallbacks interface {
 	// Client config related callbacks
 	ReloadHeaderFilterConfig(ctx context.Context, config *tables.GlobalHeaderFilterConfig) error
 	UpdateDropExcessRequests(ctx context.Context, value bool)
+	UpdateUsageEstimationTokenizers(ctx context.Context, families []string)
 	// Governance related callbacks
 	GetGovernanceData(ctx context.Context) *governance.GovernanceData
 	ReloadTeam(ctx context.Context, id string) (*tables.TableTeam, error)
@@ -1710,6 +1711,8 @@ func (s *BifrostHTTPServer) ReloadClientConfigFromConfigStore(ctx context.Contex
 			RelayPlugins:       s.Config.GetLoadedRelayPlugins(),
 			MCPConfig:          mcpConfig,
 			Logger:             logger,
+
+			UsageEstimationTokenizers: s.Config.ClientConfig.UsageEstimationTokenizers,
 		})
 		if err := s.Client.UpdateToolManagerConfig(
 			s.Config.ClientConfig.MCPAgentDepth,
@@ -1807,6 +1810,15 @@ func (s *BifrostHTTPServer) UpdateDropExcessRequests(ctx context.Context, value 
 		return
 	}
 	s.Client.UpdateDropExcessRequests(value)
+}
+
+// UpdateUsageEstimationTokenizers sets the tokenizer families a cancelled stream's
+// usage is estimated with.
+func (s *BifrostHTTPServer) UpdateUsageEstimationTokenizers(ctx context.Context, families []string) {
+	if s.Config == nil {
+		return
+	}
+	s.Client.UpdateUsageEstimationTokenizers(families)
 }
 
 // UpdateMCPToolManagerConfig updates the MCP tool manager config.
@@ -3647,6 +3659,8 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 
 		MCPSharedDiscoveryStore:  sharedDiscoveryStore,
 		MCPPerUserDiscoveryStore: perUserDiscoveryStore,
+
+		UsageEstimationTokenizers: s.Config.ClientConfig.UsageEstimationTokenizers,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to initialize bifrost: %v", err)

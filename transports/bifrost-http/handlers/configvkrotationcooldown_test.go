@@ -25,6 +25,7 @@ func (stubConfigManager) ReloadClientConfigFromConfigStore(context.Context) erro
 func (stubConfigManager) UpdateSyncConfig(context.Context) error                          { return nil }
 func (stubConfigManager) ForceReloadPricing(context.Context) error                        { return nil }
 func (stubConfigManager) UpdateDropExcessRequests(context.Context, bool)                  {}
+func (stubConfigManager) UpdateUsageEstimationTokenizers(context.Context, []string)       {}
 func (stubConfigManager) UpdateMCPToolManagerConfig(context.Context, int, int, string, bool, int, int, *schemas.MCPCodeModeLimits) error {
 	return nil
 }
@@ -119,4 +120,56 @@ func TestUpdateConfig_MCPMaxProtocolVersion(t *testing.T) {
 
 	require.Equal(t, fasthttp.StatusOK, save(t, `"mcp_max_protocol_version":"auto",`))
 	assert.Equal(t, "auto", stored(t))
+}
+
+// tokenizerRecorder records the tokenizer families PUT /api/config applies at runtime.
+type tokenizerRecorder struct {
+	stubConfigManager
+	applied [][]string
+}
+
+func (r *tokenizerRecorder) UpdateUsageEstimationTokenizers(_ context.Context, families []string) {
+	r.applied = append(r.applied, families)
+}
+
+// PUT /api/config sets usage_estimation_tokenizers: names are normalized, applied to the
+// running client and persisted; omitting the field keeps the stored list, and an unknown
+// family is rejected before anything is applied.
+func TestUpdateConfig_UsageEstimationTokenizers(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := newRealOAuth2Store(t)
+	cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false)
+	recorder := &tokenizerRecorder{}
+	h := &ConfigHandler{store: cfg, configManager: recorder}
+	save := func(t *testing.T, body string) int {
+		t.Helper()
+		ctx := putConfigCtx(`{"client_config":{` + body + `"log_retention_days":7}}`)
+		h.updateConfig(ctx)
+		return ctx.Response.StatusCode()
+	}
+	stored := func(t *testing.T) []string {
+		t.Helper()
+		persisted, err := store.GetClientConfig(bgCtx())
+		require.NoError(t, err)
+		return persisted.UsageEstimationTokenizers
+	}
+
+	require.Equal(t, fasthttp.StatusOK, save(t, `"usage_estimation_tokenizers":[" Anthropic ","llama3","anthropic"],`))
+	assert.Equal(t, []string{"anthropic", "llama3"}, stored(t))
+	assert.Equal(t, []string{"anthropic", "llama3"}, cfg.ClientConfig.UsageEstimationTokenizers)
+	require.Len(t, recorder.applied, 1)
+	assert.Equal(t, []string{"anthropic", "llama3"}, recorder.applied[0])
+
+	require.Equal(t, fasthttp.StatusOK, save(t, ``))
+	assert.Equal(t, []string{"anthropic", "llama3"}, stored(t), "omitted keeps the stored list")
+	assert.Len(t, recorder.applied, 1, "an unchanged list is not re-applied")
+
+	require.Equal(t, fasthttp.StatusBadRequest, save(t, `"usage_estimation_tokenizers":["gpt2"],`))
+	assert.Equal(t, []string{"anthropic", "llama3"}, stored(t))
+	assert.Len(t, recorder.applied, 1, "a rejected list is never applied")
+
+	require.Equal(t, fasthttp.StatusOK, save(t, `"usage_estimation_tokenizers":[],`))
+	assert.Empty(t, stored(t), "an empty list returns to the base encodings")
+	require.Len(t, recorder.applied, 2)
+	assert.Empty(t, recorder.applied[1])
 }

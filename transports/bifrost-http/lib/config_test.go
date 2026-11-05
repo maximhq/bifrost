@@ -27146,3 +27146,19 @@ func TestAgentGrantsFromConfigFile_NewKeyUnknownAgent(t *testing.T) {
 		assert.Empty(t, vk.AgentGrants)
 	}
 }
+
+func TestNormalizeUsageEstimationTokenizers(t *testing.T) {
+	got, err := NormalizeUsageEstimationTokenizers([]string{" Anthropic ", "", "llama3", "anthropic", "ALL"})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"anthropic", "llama3", "all"}, got)
+
+	got, err = NormalizeUsageEstimationTokenizers([]string{" ", ""})
+	require.NoError(t, err)
+	assert.Nil(t, got, "nothing left is a single nil representation")
+
+	_, err = NormalizeUsageEstimationTokenizers([]string{"anthropic", "gpt2"})
+	require.ErrorContains(t, err, `"gpt2"`)
+
+	// config.json and stored rows reach the runtime through validateClientConfig.
+	require.Error(t, validateClientConfig(&configstore.ClientConfig{UsageEstimationTokenizers: []string{"gpt2"}}))
+}

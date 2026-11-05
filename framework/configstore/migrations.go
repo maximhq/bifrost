@@ -589,6 +589,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_mcp_per_user_discoveries"}, run: migrationAddMCPPerUserDiscoveries},
 	{IDs: []string{"add_mcp_client_pending_verification_column"}, run: migrationAddMCPClientPendingVerificationColumn},
 	{IDs: []string{"add_cache_creation_above_12hr_pricing_columns"}, run: migrationAddCacheCreationAbove12hrPricingColumns},
+	{IDs: []string{"add_usage_estimation_tokenizers_json_column"}, run: migrationAddUsageEstimationTokenizersJSONColumn},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -17103,6 +17104,37 @@ func migrationAddCacheCreationAbove12hrPricingColumns(ctx context.Context, db *g
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while running cache creation above 12hr pricing columns migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddUsageEstimationTokenizersJSONColumn adds the usage_estimation_tokenizers_json
+// column to config_client. Existing rows get an empty list, which keeps cancelled-stream
+// estimation on the base tiktoken encodings; a value in config.json's client section
+// reconciles in on boot.
+func migrationAddUsageEstimationTokenizersJSONColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_usage_estimation_tokenizers_json_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := addColumnIfNotExists(tx, logger, &tables.TableClientConfig{}, "UsageEstimationTokenizersJSON"); err != nil {
+				return fmt.Errorf("failed to add usage_estimation_tokenizers_json column: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := dropColumnIfExists(tx, logger, &tables.TableClientConfig{}, "usage_estimation_tokenizers_json"); err != nil {
+				return fmt.Errorf("failed to drop usage_estimation_tokenizers_json column: %w", err)
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
 	}
 	return nil
 }

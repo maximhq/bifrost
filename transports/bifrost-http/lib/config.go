@@ -31,6 +31,7 @@ import (
 	mcputils "github.com/maximhq/bifrost/core/mcp/utils"
 	"github.com/maximhq/bifrost/core/network"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/core/streamusage"
 	"github.com/maximhq/bifrost/framework"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
@@ -1481,6 +1482,30 @@ func NormalizeHiddenRequestTypes(types []string) []string {
 	return out
 }
 
+// NormalizeUsageEstimationTokenizers trims, lowercases and de-duplicates the tokenizer
+// families a cancelled stream's usage is estimated with, preserving the caller's order.
+// A name that is neither an embedded family nor "all" is an error. A list with nothing
+// left returns nil, so "base encodings only" has one representation in the store and hash.
+func NormalizeUsageEstimationTokenizers(families []string) ([]string, error) {
+	var out []string
+	seen := make(map[string]struct{}, len(families))
+	for _, f := range families {
+		f = strings.ToLower(strings.TrimSpace(f))
+		if f == "" {
+			continue
+		}
+		if f != streamusage.FamilyAll && !slices.Contains(streamusage.Families, f) {
+			return nil, fmt.Errorf("usage_estimation_tokenizers: unknown tokenizer %q; supported: %s or %q", f, strings.Join(streamusage.Families, ", "), streamusage.FamilyAll)
+		}
+		if _, ok := seen[f]; ok {
+			continue
+		}
+		seen[f] = struct{}{}
+		out = append(out, f)
+	}
+	return out, nil
+}
+
 func applyClientConfigDefaults(cc *configstore.ClientConfig) {
 	if cc.InitialPoolSize == 0 {
 		cc.InitialPoolSize = DefaultClientConfig.InitialPoolSize
@@ -1517,6 +1542,12 @@ func applyClientConfigDefaults(cc *configstore.ClientConfig) {
 // fails loudly at startup instead of diverging in-memory state from what the
 // operator wrote — and stays wrong (re-warned, unpersisted) on every restart.
 func validateClientConfig(cc *configstore.ClientConfig) error {
+	// PUT /api/config rejects an unknown tokenizer family; config.json and stored rows
+	// reach the runtime here, so a typo fails boot instead of silently counting with
+	// the base encodings.
+	if _, err := NormalizeUsageEstimationTokenizers(cc.UsageEstimationTokenizers); err != nil {
+		return err
+	}
 	// The /api/config handler rejects an over-max auth_code_ttl, but config.json
 	// and any DB row written before the cap existed bypass that path. Fail fast
 	// here, the point where every config source converges, so a leaked one-time
