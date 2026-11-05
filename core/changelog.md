@@ -3,3 +3,4 @@
 - fix: anthropic - preserve explicit web search and web fetch versions, and keep a declared code execution tool beside versions that do not auto-inject it (#9258) [@ykakade](https://github.com/ykakade)
 - fix: multi-key providers - follow-up calls on a stored response, container or video now find the key that created it instead of returning 404 from another key; video list pages across every key
 - feat: count the containers a request starts through OpenAI and Azure code interpreter and hosted shell on `usage.tool_usage.container_sessions`, so they can be billed
+- feat: anthropic - count the code execution containers a request starts on `usage.tool_usage.container_sessions`, so they can be billed
