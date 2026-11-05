@@ -266,3 +266,49 @@ func containsColumn(clause, column string) bool {
 	}
 	return false
 }
+
+// TestClientIPRoundTripsThroughListQueries pins that client_ip reaches the list views of LLM, MCP and relay logs.
+func TestClientIPRoundTripsThroughListQueries(t *testing.T) {
+	ctx := context.Background()
+	store := newProjectionTestStore(t)
+	now := time.Now().UTC()
+	ip, email := "2001:db8::7", "ada@example.com"
+
+	llm := &Log{ID: "llm-ip", Timestamp: now, Object: "chat_completion", Provider: "openai", Model: "gpt-4o", Status: "success", ClientIP: &ip, UserEmail: &email}
+	require.NoError(t, llm.SerializeFields())
+	require.NoError(t, store.Create(ctx, llm))
+	noIP := &Log{ID: "llm-no-ip", Timestamp: now.Add(-time.Second), Object: "chat_completion", Provider: "openai", Model: "gpt-4o", Status: "success"}
+	require.NoError(t, noIP.SerializeFields())
+	require.NoError(t, store.Create(ctx, noIP))
+	list, err := store.SearchLogs(ctx, SearchFilters{}, PaginationOptions{Limit: 10})
+	require.NoError(t, err)
+	byID := map[string]Log{}
+	for _, l := range list.Logs {
+		byID[l.ID] = l
+	}
+	require.NotNil(t, byID["llm-ip"].ClientIP, "the list projection must select client_ip")
+	assert.Equal(t, ip, *byID["llm-ip"].ClientIP)
+	require.NotNil(t, byID["llm-ip"].UserEmail, "the list projection must select user_email")
+	assert.Equal(t, email, *byID["llm-ip"].UserEmail)
+	assert.Nil(t, byID["llm-no-ip"].UserEmail)
+	assert.Nil(t, byID["llm-no-ip"].ClientIP, "an absent IP stays NULL")
+
+	require.NoError(t, store.CreateMCPToolLog(ctx, &MCPToolLog{ID: "mcp-ip", Timestamp: now, ToolName: "search", ServerLabel: "srv", Status: "success", CreatedAt: now, ClientIP: &ip, UserEmail: &email}))
+	mcp, err := store.SearchMCPToolLogs(ctx, MCPToolLogSearchFilters{}, PaginationOptions{Limit: 10})
+	require.NoError(t, err)
+	require.Len(t, mcp.Logs, 1)
+	require.NotNil(t, mcp.Logs[0].ClientIP)
+	assert.Equal(t, ip, *mcp.Logs[0].ClientIP)
+	require.NotNil(t, mcp.Logs[0].UserEmail)
+	assert.Equal(t, email, *mcp.Logs[0].UserEmail)
+
+	_, err = store.BatchCreateRelayLogsIfNotExists(ctx, []*RelayLog{{ID: "relay-ip", RequestID: "relay-ip", Timestamp: now, RelayName: "docs", Status: RelayLogStatusSuccess, ClientIP: &ip, UserEmail: &email}})
+	require.NoError(t, err)
+	relay, err := store.SearchRelayLogs(ctx, RelayLogFilters{}, PaginationOptions{Limit: 10})
+	require.NoError(t, err)
+	require.Len(t, relay.Logs, 1)
+	require.NotNil(t, relay.Logs[0].ClientIP)
+	assert.Equal(t, ip, *relay.Logs[0].ClientIP)
+	require.NotNil(t, relay.Logs[0].UserEmail)
+	assert.Equal(t, email, *relay.Logs[0].UserEmail)
+}

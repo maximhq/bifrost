@@ -1910,6 +1910,8 @@
 			"layaNoteOther": "Laya liest 512 Tokens pro Anfrage (die Hinweise zu den Stufen kurz halten).",
 			"decisionMaxMessagesTip": "Benutzernachrichten, die zusätzlich zur aktuellen Anfrage an das Entscheidungsmodell gesendet werden, von der ältesten zur neuesten. Ein höherer Wert lässt eine kurze Folgenachricht wie „und mach es schneller“ die frühere Absicht übernehmen, sendet aber mehr Eingabe-Tokens pro Anfrage. Antworten des Assistenten werden nie gesendet. Standardwert ist 1.",
 			"decisionTimeoutTip": "Maximale Wartezeit auf den API-Aufruf des Entscheidungsmodells. Wird das Limit überschritten, überspringen wir den Schritt und greifen auf das ursprüngliche Anfragemodell zurück. Typesafe Jev antwortet in der Regel in etwa 600 - 800 ms.",
+			"confidenceThreshold": "Konfidenzschwelle",
+			"decisionMinConfidenceTip": "Mindestkonfidenz (0–1), ab der die Stufe des Entscheidungsmodells verwendet wird. Darunter erhält die Anfrage keine Stufe, sodass Komplexitätsregeln sie überspringen (der Aufruf wird trotzdem abgerechnet). Höher setzen für weniger, aber sicherere Umleitungen; 0 übernimmt jede Antwort.",
 			"guidanceNote": "Wir empfehlen, mit diesen Standardwerten zu beginnen und sie anschließend anzupassen, sodass sie zur Bedeutung der einzelnen Stufen für dich passen.",
 			"guidanceUsage": "Definition, Signale und Beispiele jeder Stufe werden bei jeder Anfrage an das Entscheidungsmodell gesendet.",
 			"signalsLabel": "Signale",

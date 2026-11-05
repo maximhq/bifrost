@@ -7,6 +7,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { useGetMCPClientsQuery } from "@/lib/store";
 import { MCPClient } from "@/lib/types/mcp";
+import { toolSubtitle } from "@/lib/utils/mcpPerUserDiscovery";
 import { Info, Trash2 } from "lucide-react";
 import { ReactNode, useCallback, useEffect, useState } from "react";
 import { Trans, useTranslation } from "react-i18next";
@@ -219,7 +220,7 @@ export function MCPClientConfigsEditor({
 														.map((tool) => ({
 															label: tool.name,
 															value: tool.name,
-															description: tool.description,
+															description: mcpClient ? toolSubtitle(mcpClient, tool) : tool.description,
 														})),
 												]}
 												defaultValue={selectedTools}

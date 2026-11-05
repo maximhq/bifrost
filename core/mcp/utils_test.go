@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	"github.com/mark3labs/mcp-go/mcp"
-	"github.com/maximhq/bifrost/core/internal/injectedauth"
+	"github.com/maximhq/bifrost/core/internal/mcpvouch"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -328,8 +328,9 @@ func TestAuthorizeCodeModeToolCall(t *testing.T) {
 }
 
 func injectedToolTestManager(state schemas.MCPConnectionState) *MCPManager {
-	return &MCPManager{
-		logger: &MockLogger{},
+	m := &MCPManager{
+		logger:         &MockLogger{},
+		discoveryStore: NewDiscoveryStore(nil, nil),
 		clientMap: map[string]*schemas.MCPClientState{
 			"id-tavily": {
 				State: state,
@@ -340,25 +341,28 @@ func injectedToolTestManager(state schemas.MCPConnectionState) *MCPManager {
 					// provider's injected web search must still resolve and run.
 					ToolsToExecute: schemas.WhiteList{},
 				},
-				ToolMap: map[string]schemas.ChatTool{
-					"tavily-search": {
-						Type: schemas.ChatToolTypeFunction,
-						Function: &schemas.ChatToolFunction{
-							Name:        "tavily-search",
-							Description: schemas.Ptr("Search the web"),
-							Parameters:  &schemas.ToolFunctionParameters{Type: "object", Required: []string{"query"}},
-						},
-					},
-				},
 			},
 		},
 	}
+	m.discoveryStore.SetDiscovery(context.Background(), &schemas.MCPClientConfig{ID: "id-tavily"}, &schemas.MCPDiscovery{
+		Tools: map[string]schemas.ChatTool{
+			"tavily-search": {
+				Type: schemas.ChatToolTypeFunction,
+				Function: &schemas.ChatToolFunction{
+					Name:        "tavily-search",
+					Description: schemas.Ptr("Search the web"),
+					Parameters:  &schemas.ToolFunctionParameters{Type: "object", Required: []string{"query"}},
+				},
+			},
+		},
+	})
+	return m
 }
 
 func TestGetInjectedTool(t *testing.T) {
 	m := injectedToolTestManager(schemas.MCPConnectionStateHealthy)
 
-	tool, err := m.GetInjectedTool("tavily", "search")
+	tool, err := m.GetInjectedTool(context.Background(), "tavily", "search")
 	require.NoError(t, err, "injected tools ignore tools_to_execute: the provider config is the authorization")
 	require.NotNil(t, tool.Function)
 	assert.Equal(t, "tavily-search", tool.Function.Name)
@@ -366,18 +370,18 @@ func TestGetInjectedTool(t *testing.T) {
 	tool.Function.Name = "mutated"
 	tool.Function.Parameters.Required[0] = "mutated"
 	tool.Function.Parameters.Type = "mutated"
-	again, err := m.GetInjectedTool("tavily", "search")
+	again, err := m.GetInjectedTool(context.Background(), "tavily", "search")
 	require.NoError(t, err)
-	assert.Equal(t, "tavily-search", again.Function.Name, "the returned tool must be a copy, never the client's ToolMap entry")
+	assert.Equal(t, "tavily-search", again.Function.Name, "the returned tool must be a copy, never the stored discovery's entry")
 	assert.Equal(t, "object", again.Function.Parameters.Type, "the parameter schema is copied too")
 	assert.Equal(t, []string{"query"}, again.Function.Parameters.Required, "nested schema slices are copied too")
 
-	_, err = m.GetInjectedTool("exa", "search")
+	_, err = m.GetInjectedTool(context.Background(), "exa", "search")
 	assert.ErrorContains(t, err, "not found")
-	_, err = m.GetInjectedTool("tavily", "crawl")
+	_, err = m.GetInjectedTool(context.Background(), "tavily", "crawl")
 	assert.ErrorContains(t, err, "does not expose")
 
-	_, err = injectedToolTestManager(schemas.MCPConnectionStateDisabled).GetInjectedTool("tavily", "search")
+	_, err = injectedToolTestManager(schemas.MCPConnectionStateDisabled).GetInjectedTool(context.Background(), "tavily", "search")
 	assert.ErrorContains(t, err, "disabled")
 }
 
@@ -437,19 +441,19 @@ func TestCheckToolExecutionPermitted_InjectedToolBypassesFilters(t *testing.T) {
 		"without the injected marker the client's allow-list still applies")
 
 	injected := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-	injectedauth.Set(injected, "tavily", "tavily-search")
+	mcpvouch.Set(injected, schemas.MCPToolCallKindInjected, "tavily", "tavily-search")
 	injected.SetValue(schemas.MCPContextKeyIncludeClients, []string{"other"})
 	injected.SetValue(schemas.MCPContextKeyIncludeTools, []string{"other-tool"})
 	assert.NoError(t, checkToolExecutionPermitted(injected, state, "tavily-search", m.logger),
 		"the injected tool runs whatever the caller's include lists say")
 
 	other := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-	injectedauth.Set(other, "tavily", "tavily-crawl")
+	mcpvouch.Set(other, schemas.MCPToolCallKindInjected, "tavily", "tavily-crawl")
 	assert.Error(t, checkToolExecutionPermitted(other, state, "tavily-search", m.logger),
 		"the marker authorizes exactly one tool, never its siblings")
 
 	wrongClient := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-	injectedauth.Set(wrongClient, "exa", "tavily-search")
+	mcpvouch.Set(wrongClient, schemas.MCPToolCallKindInjected, "exa", "tavily-search")
 	assert.Error(t, checkToolExecutionPermitted(wrongClient, state, "tavily-search", m.logger),
 		"the marker authorizes one client's tool; the executing client must be that client")
 
@@ -480,7 +484,7 @@ func TestCheckToolExecutionPermitted_PluginCannotRetargetInjectedMarker(t *testi
 	state := m.clientMap["id-tavily"]
 
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-	injectedauth.Set(ctx, "tavily", "tavily-crawl")
+	mcpvouch.Set(ctx, schemas.MCPToolCallKindInjected, "tavily", "tavily-crawl")
 	for key := range ctx.GetUserValues() {
 		if _, isBifrostKey := key.(schemas.BifrostContextKey); !isBifrostKey {
 			ctx.SetValue(key, struct{ clientName, toolName string }{"tavily", "tavily-search"})
@@ -497,7 +501,7 @@ func TestCheckToolExecutionPermitted_PluginCannotCopyInjectedMarker(t *testing.T
 	state := m.clientMap["id-tavily"]
 
 	genuine := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-	injectedauth.Set(genuine, "tavily", "tavily-search")
+	mcpvouch.Set(genuine, schemas.MCPToolCallKindInjected, "tavily", "tavily-search")
 	other := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	for key, value := range genuine.GetUserValues() {
 		other.SetValue(key, value)
@@ -582,6 +586,112 @@ func TestValidateMCPClientConfig_STDIONeedsACommand(t *testing.T) {
 	}
 }
 
+// TestValidateMCPClientConfig_PerUserDiscovery pins where the flag is valid: on
+// a per-user auth type, which has a credential per caller to discover with,
+// and not on an openapi client, whose tools come from its document.
+func TestValidateMCPClientConfig_PerUserDiscovery(t *testing.T) {
+	base := func(authType schemas.MCPAuthType) *schemas.MCPClientConfig {
+		config := &schemas.MCPClientConfig{
+			ID:               "pudtest",
+			Name:             "pudtest",
+			ConnectionType:   schemas.MCPConnectionTypeHTTP,
+			ConnectionString: schemas.NewSecretVar("http://127.0.0.1:0/mcp"),
+			AuthType:         authType,
+			PerUserDiscovery: schemas.Ptr(true),
+		}
+		if authType == schemas.MCPAuthTypePerUserHeaders {
+			config.PerUserHeaderKeys = []string{"x-api-key"}
+		}
+		return config
+	}
+
+	t.Run("rejected_for_shared_auth_types", func(t *testing.T) {
+		for _, authType := range []schemas.MCPAuthType{
+			schemas.MCPAuthTypeNone,
+			schemas.MCPAuthTypeHeaders,
+			schemas.MCPAuthTypeOauth,
+		} {
+			err := validateMCPClientConfig(base(authType))
+			if err == nil {
+				t.Errorf("per_user_discovery with auth type %q must be rejected", authType)
+			}
+		}
+	})
+
+	t.Run("rejected_for_openapi", func(t *testing.T) {
+		config := base(schemas.MCPAuthTypePerUserHeaders)
+		config.ConnectionType = schemas.MCPConnectionTypeOpenAPI
+		config.OpenAPIConfig = &schemas.MCPOpenAPIConfig{Spec: `{"openapi":"3.0.0","info":{"title":"t","version":"1"},"paths":{}}`}
+		assert.ErrorContains(t, ValidatePerUserDiscovery(config), "openapi")
+	})
+
+	t.Run("accepted_for_per_user_auth_types", func(t *testing.T) {
+		for _, authType := range []schemas.MCPAuthType{
+			schemas.MCPAuthTypePerUserOauth,
+			schemas.MCPAuthTypePerUserHeaders,
+			schemas.MCPAuthTypeTokenExchange,
+		} {
+			config := base(authType)
+			if authType == schemas.MCPAuthTypeTokenExchange {
+				config.TokenExchange = &schemas.MCPTokenExchangeConfig{Audience: "api://pudtest", ClientID: schemas.NewSecretVar("exchange-app")}
+			}
+			assert.NoError(t, validateMCPClientConfig(config), "auth type %q", authType)
+		}
+	})
+
+	t.Run("flag_off_stays_valid", func(t *testing.T) {
+		for _, off := range []*bool{nil, schemas.Ptr(false)} {
+			config := base(schemas.MCPAuthTypePerUserHeaders)
+			config.PerUserDiscovery = off
+			if err := validateMCPClientConfig(config); err != nil {
+				t.Errorf("per_user_discovery unset or false must not affect validation, got: %v", err)
+			}
+		}
+	})
+}
+
+// benchmarkSharedManager returns a manager with clients shared clients of tools tools each, all
+// open to every tool, and a caller context carrying a virtual key the way governance stamps it.
+func benchmarkSharedManager(clients, tools int) (*MCPManager, *schemas.BifrostContext) {
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	for c := 0; c < clients; c++ {
+		name := fmt.Sprintf("client%d", c)
+		config := &schemas.MCPClientConfig{ID: name + "-id", Name: name, ToolsToExecute: []string{"*"}}
+		discovery := &schemas.MCPDiscovery{Tools: map[string]schemas.ChatTool{}}
+		for t := 0; t < tools; t++ {
+			tool := fmt.Sprintf("tool%d", t)
+			prefixed := name + "-" + tool
+			discovery.Tools[prefixed] = schemas.ChatTool{Type: schemas.ChatToolTypeFunction, Function: &schemas.ChatToolFunction{Name: prefixed}}
+		}
+		m.clientMap[config.ID] = &schemas.MCPClientState{Name: name, ExecutionConfig: config, State: schemas.MCPConnectionStateHealthy}
+		m.discoveryStore.SetDiscovery(context.Background(), config, discovery)
+	}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyGovernanceVirtualKeyID, "vk-bench")
+	return m, ctx
+}
+
+// The tool list of a request when every client is shared: the path every request without
+// per_user_discovery takes.
+func BenchmarkGetToolPerClient(b *testing.B) {
+	m, ctx := benchmarkSharedManager(10, 20)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = m.GetToolPerClient(ctx)
+	}
+}
+
+// Resolving a shared client's tool for execution.
+func BenchmarkGetClientForTool(b *testing.B) {
+	m, ctx := benchmarkSharedManager(10, 20)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, _ = m.GetClientForTool(ctx, "client7-tool13")
+	}
+}
+
 // TestValidateMCPClientConfig_TokenExchangeIDJAG checks the id_jag profile needs
 // Bifrost's client at the upstream authorization server, at config load too,
 // and no exchange client of its own: it always exchanges as the SSO app, so the
@@ -642,4 +752,168 @@ func BenchmarkDescribeUnservableInput(b *testing.B) {
 			}
 		})
 	}
+}
+
+// A gateway caller's capabilities are declared upstream only where Bifrost can relay them.
+func TestRelayableCapabilities(t *testing.T) {
+	const ui = schemas.MCPAppsExtension
+	elicitation := &mcp.ElicitationCapability{}
+	sampling := &mcp.SamplingCapability{}
+	cases := []struct {
+		name            string
+		caller, relayed mcp.ClientCapabilities
+		want            mcp.ClientCapabilities
+	}{
+		{name: "nothing relayed", caller: mcp.ClientCapabilities{Elicitation: elicitation, Sampling: sampling}, want: mcp.ClientCapabilities{}},
+		{name: "relayed and declared",
+			caller:  mcp.ClientCapabilities{Elicitation: elicitation, Sampling: sampling},
+			relayed: mcp.ClientCapabilities{Elicitation: &mcp.ElicitationCapability{}},
+			want:    mcp.ClientCapabilities{Elicitation: elicitation}},
+		{name: "relayed but not declared", relayed: mcp.ClientCapabilities{Elicitation: &mcp.ElicitationCapability{}}, want: mcp.ClientCapabilities{}},
+		{name: "extensions by name",
+			caller:  mcp.ClientCapabilities{Extensions: map[string]any{ui: map[string]any{"mimeTypes": []any{schemas.MCPAppsMimeType}}, "other": map[string]any{}}},
+			relayed: mcp.ClientCapabilities{Extensions: map[string]any{ui: map[string]any{}}},
+			want:    mcp.ClientCapabilities{Extensions: map[string]any{ui: map[string]any{"mimeTypes": []any{schemas.MCPAppsMimeType}}}}},
+		{name: "experimental and tasks are never relayed",
+			caller:  mcp.ClientCapabilities{Experimental: map[string]any{"x": true}, Tasks: &mcp.TasksCapability{}},
+			relayed: mcp.ClientCapabilities{Experimental: map[string]any{"x": true}, Tasks: &mcp.TasksCapability{}},
+			want:    mcp.ClientCapabilities{}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, relayableCapabilities(tc.caller, tc.relayed))
+		})
+	}
+}
+
+// A caller can answer an elicitation only in a mode it declared; an empty capability means form only.
+func TestCanAnswer_ElicitationModes(t *testing.T) {
+	form := mcp.InputRequests{"q": {Method: mcp.MethodElicitationCreate, Elicitation: &mcp.ElicitationParams{Message: "Which environment?"}}}
+	url := mcp.InputRequests{"q": {Method: mcp.MethodElicitationCreate, Elicitation: &mcp.ElicitationParams{Mode: mcp.ElicitationModeURL, URL: "https://example.com/connect"}}}
+	cases := []struct {
+		name     string
+		cap      *mcp.ElicitationCapability
+		requests mcp.InputRequests
+		want     bool
+	}{
+		{"empty capability answers form", &mcp.ElicitationCapability{}, form, true},
+		{"empty capability cannot answer url", &mcp.ElicitationCapability{}, url, false},
+		{"form capability cannot answer url", &mcp.ElicitationCapability{Form: &struct{}{}}, url, false},
+		{"url capability answers url", &mcp.ElicitationCapability{URL: &struct{}{}}, url, true},
+		{"url-only capability cannot answer form", &mcp.ElicitationCapability{URL: &struct{}{}}, form, false},
+		{"no capability", nil, form, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, canAnswer(mcp.ClientCapabilities{Elicitation: tc.cap}, tc.requests))
+		})
+	}
+}
+
+// The explanation of a mixed input_required names the same request every time.
+func TestDescribeInputRequests_IsStable(t *testing.T) {
+	requests := mcp.InputRequests{
+		"a_summary": {Method: mcp.MethodSamplingCreateMessage, Sampling: &mcp.CreateMessageParams{MaxTokens: 10}},
+		"b_login":   {Method: mcp.MethodElicitationCreate, Elicitation: &mcp.ElicitationParams{Message: "GitHub username?"}},
+		"c_roots":   {Method: mcp.MethodListRoots, Roots: &mcp.ListRootsParams{}},
+	}
+	want := describeInputRequests(requests, "upstream")
+	assert.Contains(t, want, "an LLM completion (sampling)", "the first request by id is named")
+	for range 50 {
+		require.Equal(t, want, describeInputRequests(requests, "upstream"))
+	}
+}
+
+// MCP Apps fields are read from the tool's _meta; no visibility means model and app.
+func TestToolMetadata_MCPAppsFields(t *testing.T) {
+	withMeta := func(fields map[string]any) *mcp.Tool {
+		tool := mcp.NewTool("t")
+		tool.Meta = &mcp.Meta{AdditionalFields: fields}
+		return &tool
+	}
+	cases := []struct {
+		name         string
+		tool         *mcp.Tool
+		wantURI      string
+		wantVisible  []string
+		model, app   bool
+		wantMetaJSON string
+	}{
+		{name: "resource and visibility", tool: withMeta(map[string]any{"ui": map[string]any{"resourceUri": "ui://charts/view", "visibility": []any{"app"}}}),
+			wantURI: "ui://charts/view", wantVisible: []string{"app"}, model: false, app: true,
+			wantMetaJSON: `{"ui":{"resourceUri":"ui://charts/view","visibility":["app"]}}`},
+		{name: "deprecated resourceUri key", tool: withMeta(map[string]any{"ui/resourceUri": "ui://charts/view"}),
+			wantURI: "ui://charts/view", model: true, app: true, wantMetaJSON: `{"ui/resourceUri":"ui://charts/view"}`},
+		{name: "non-ui URI is not an app resource", tool: withMeta(map[string]any{"ui": map[string]any{"resourceUri": "https://example.com/view"}}),
+			model: true, app: true, wantMetaJSON: `{"ui":{"resourceUri":"https://example.com/view"}}`},
+		{name: "model only", tool: withMeta(map[string]any{"ui": map[string]any{"visibility": []any{"model"}}}),
+			wantVisible: []string{"model"}, model: true, app: false, wantMetaJSON: `{"ui":{"visibility":["model"]}}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := toolMetadata(tc.tool)
+			require.NotNil(t, got)
+			assert.Equal(t, tc.wantURI, got.UIResourceURI)
+			assert.Equal(t, tc.wantVisible, got.Visibility)
+			assert.Equal(t, tc.model, got.ModelVisible())
+			assert.Equal(t, tc.app, got.AppVisible())
+			assert.JSONEq(t, tc.wantMetaJSON, string(got.Meta))
+		})
+	}
+
+	plain := mcp.NewTool("plain")
+	got := toolMetadata(&plain)
+	assert.Nil(t, got, "a tool with no metadata keeps none")
+	assert.True(t, got.ModelVisible())
+	assert.True(t, got.AppVisible())
+}
+
+// A client name with "/", "?" or "#" stays one path segment of a namespaced ui:// URI, so two clients
+// never share a prefix and the URI keeps its path.
+func TestGatewayUIResourceURI_EscapesClientName(t *testing.T) {
+	cases := []struct{ client, uri, want string }{
+		{"apps", "ui://dash/view", "ui://apps/dash/view"},
+		{"a/b", "ui://x", "ui://a%2Fb/x"},
+		{"q?a#b", "ui://x", "ui://q%3Fa%23b/x"},
+		{"apps", "https://example.com/x", "https://example.com/x"},
+	}
+	for _, tc := range cases {
+		got := GatewayUIResourceURI(tc.client, tc.uri)
+		assert.Equal(t, tc.want, got, tc.client)
+		back, ok := upstreamUIResourceURI(tc.client, got)
+		assert.Equal(t, tc.uri, back, tc.client)
+		assert.Equal(t, got != tc.uri, ok, tc.client)
+	}
+	_, ok := upstreamUIResourceURI("a", GatewayUIResourceURI("a/b", "ui://x"))
+	assert.False(t, ok, "client a must not own client a/b's resources")
+}
+
+func TestToolClientName(t *testing.T) {
+	assert.Equal(t, "apps", ToolClientName("apps-view"))
+	assert.Equal(t, "apps", ToolClientName("apps-my-tool"))
+	assert.Equal(t, "", ToolClientName("executeToolCode"), "an unprefixed tool has no client")
+	assert.Equal(t, "", ToolClientName("-x"))
+}
+
+// TestRoundTripState: Bifrost's wrap of a requestState round-trips, keeps one id across a call's rounds,
+// and leaves a state it did not wrap alone.
+func TestRoundTripState(t *testing.T) {
+	id := RoundTripID("req-1")
+	assert.Len(t, id, 16)
+	assert.NotEqual(t, id, RoundTripID("req-2"), "separate calls get separate ids")
+
+	for _, upstream := range []string{"busy", "", "a.b.c", "bfrt1.0123456789abcdef.inner"} {
+		gotID, gotState := UnwrapRoundTripState(WrapRoundTripState(id, upstream))
+		assert.Equal(t, id, gotID)
+		assert.Equal(t, upstream, gotState, "the upstream's own state comes back unchanged")
+	}
+	for _, foreign := range []string{"", "busy", "bfrt1.", "bfrt1.0123456789abcdef", "bfrt1.0123456789ABCDEF.x", "bfrt1.0123456789abcdeg.x", "bfrt1.short.x"} {
+		gotID, gotState := UnwrapRoundTripState(foreign)
+		assert.Empty(t, gotID, foreign)
+		assert.Equal(t, foreign, gotState, foreign)
+	}
+
+	ctx := context.WithValue(context.Background(), schemas.BifrostContextKeyRequestID, "req-2")
+	assert.Equal(t, RoundTripID("req-2"), CallRoundTripID(ctx), "a first round's id comes from its request")
+	assert.Equal(t, id, CallRoundTripID(context.WithValue(ctx, schemas.BifrostContextKeyMCPRoundTripID, id)), "a retry keeps the id it carried")
 }

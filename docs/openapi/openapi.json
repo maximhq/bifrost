@@ -45618,6 +45618,38 @@
                               },
                               "description": "A `token_exchange` block only applies to auth_type \"token_exchange\";\nreject it for every other auth_type instead of silently ignoring it.\n"
                             }
+                          },
+                          {
+                            "if": {
+                              "required": [
+                                "per_user_discovery"
+                              ],
+                              "properties": {
+                                "per_user_discovery": {
+                                  "const": true
+                                }
+                              }
+                            },
+                            "then": {
+                              "required": [
+                                "auth_type"
+                              ],
+                              "properties": {
+                                "auth_type": {
+                                  "enum": [
+                                    "per_user_oauth",
+                                    "per_user_headers",
+                                    "token_exchange"
+                                  ]
+                                },
+                                "connection_type": {
+                                  "not": {
+                                    "const": "openapi"
+                                  }
+                                }
+                              },
+                              "description": "`per_user_discovery` discovers each caller's tools with their own\ncredential, so it only applies to the per-user auth types, and not to\nan openapi client, whose tools come from its document.\n"
+                            }
                           }
                         ],
                         "properties": {
@@ -45829,6 +45861,11 @@
                             ],
                             "additionalProperties": false,
                             "description": "Required when creating a client with auth_type \"token_exchange\".\nVerification runs automatically as the signed-in admin, exchanging the\nidentity-provider token on the request or, when it carries none, the\naccess token from the admin's own Bifrost sign-in (see\nPOST /api/mcp/client/{id}/verify-exchange). A request with neither,\nsuch as one made with an API key, creates the client in\npending_verification. There is no sample-token field on this request.\n"
+                          },
+                          "per_user_discovery": {
+                            "type": "boolean",
+                            "default": false,
+                            "description": "Per-user auth types only (`per_user_oauth`, `per_user_headers`,\n`token_exchange`), and not for connection_type \"openapi\". When true,\neach caller's tools, prompts and resources are discovered with their\nown credential when they connect, and the client keeps no admin\ncredential or discovery of its own: the admin's verification only\nchecks the server. Every caller is served their own tools, prompts,\nresources and resource templates, the MCP gateway (`/mcp`) included, and a caller who has not\nconnected yet is offered the client's `<name>-connect` tool. When false\nor omitted, every caller is served what was discovered with the admin\ncredential.\n"
                           },
                           "user_headers": {
                             "type": "object",
@@ -45935,6 +45972,38 @@
                               },
                               "description": "A `token_exchange` block only applies to auth_type \"token_exchange\";\nreject it for every other auth_type instead of silently ignoring it.\n"
                             }
+                          },
+                          {
+                            "if": {
+                              "required": [
+                                "per_user_discovery"
+                              ],
+                              "properties": {
+                                "per_user_discovery": {
+                                  "const": true
+                                }
+                              }
+                            },
+                            "then": {
+                              "required": [
+                                "auth_type"
+                              ],
+                              "properties": {
+                                "auth_type": {
+                                  "enum": [
+                                    "per_user_oauth",
+                                    "per_user_headers",
+                                    "token_exchange"
+                                  ]
+                                },
+                                "connection_type": {
+                                  "not": {
+                                    "const": "openapi"
+                                  }
+                                }
+                              },
+                              "description": "`per_user_discovery` discovers each caller's tools with their own\ncredential, so it only applies to the per-user auth types, and not to\nan openapi client, whose tools come from its document.\n"
+                            }
                           }
                         ],
                         "properties": {
@@ -46146,6 +46215,11 @@
                             ],
                             "additionalProperties": false,
                             "description": "Required when creating a client with auth_type \"token_exchange\".\nVerification runs automatically as the signed-in admin, exchanging the\nidentity-provider token on the request or, when it carries none, the\naccess token from the admin's own Bifrost sign-in (see\nPOST /api/mcp/client/{id}/verify-exchange). A request with neither,\nsuch as one made with an API key, creates the client in\npending_verification. There is no sample-token field on this request.\n"
+                          },
+                          "per_user_discovery": {
+                            "type": "boolean",
+                            "default": false,
+                            "description": "Per-user auth types only (`per_user_oauth`, `per_user_headers`,\n`token_exchange`), and not for connection_type \"openapi\". When true,\neach caller's tools, prompts and resources are discovered with their\nown credential when they connect, and the client keeps no admin\ncredential or discovery of its own: the admin's verification only\nchecks the server. Every caller is served their own tools, prompts,\nresources and resource templates, the MCP gateway (`/mcp`) included, and a caller who has not\nconnected yet is offered the client's `<name>-connect` tool. When false\nor omitted, every caller is served what was discovered with the admin\ncredential.\n"
                           },
                           "user_headers": {
                             "type": "object",
@@ -46261,6 +46335,38 @@
                               },
                               "description": "A `token_exchange` block only applies to auth_type \"token_exchange\";\nreject it for every other auth_type instead of silently ignoring it.\n"
                             }
+                          },
+                          {
+                            "if": {
+                              "required": [
+                                "per_user_discovery"
+                              ],
+                              "properties": {
+                                "per_user_discovery": {
+                                  "const": true
+                                }
+                              }
+                            },
+                            "then": {
+                              "required": [
+                                "auth_type"
+                              ],
+                              "properties": {
+                                "auth_type": {
+                                  "enum": [
+                                    "per_user_oauth",
+                                    "per_user_headers",
+                                    "token_exchange"
+                                  ]
+                                },
+                                "connection_type": {
+                                  "not": {
+                                    "const": "openapi"
+                                  }
+                                }
+                              },
+                              "description": "`per_user_discovery` discovers each caller's tools with their own\ncredential, so it only applies to the per-user auth types, and not to\nan openapi client, whose tools come from its document.\n"
+                            }
                           }
                         ],
                         "properties": {
@@ -46472,6 +46578,11 @@
                             ],
                             "additionalProperties": false,
                             "description": "Required when creating a client with auth_type \"token_exchange\".\nVerification runs automatically as the signed-in admin, exchanging the\nidentity-provider token on the request or, when it carries none, the\naccess token from the admin's own Bifrost sign-in (see\nPOST /api/mcp/client/{id}/verify-exchange). A request with neither,\nsuch as one made with an API key, creates the client in\npending_verification. There is no sample-token field on this request.\n"
+                          },
+                          "per_user_discovery": {
+                            "type": "boolean",
+                            "default": false,
+                            "description": "Per-user auth types only (`per_user_oauth`, `per_user_headers`,\n`token_exchange`), and not for connection_type \"openapi\". When true,\neach caller's tools, prompts and resources are discovered with their\nown credential when they connect, and the client keeps no admin\ncredential or discovery of its own: the admin's verification only\nchecks the server. Every caller is served their own tools, prompts,\nresources and resource templates, the MCP gateway (`/mcp`) included, and a caller who has not\nconnected yet is offered the client's `<name>-connect` tool. When false\nor omitted, every caller is served what was discovered with the admin\ncredential.\n"
                           },
                           "user_headers": {
                             "type": "object",
@@ -46607,6 +46718,38 @@
                               },
                               "description": "A `token_exchange` block only applies to auth_type \"token_exchange\";\nreject it for every other auth_type instead of silently ignoring it.\n"
                             }
+                          },
+                          {
+                            "if": {
+                              "required": [
+                                "per_user_discovery"
+                              ],
+                              "properties": {
+                                "per_user_discovery": {
+                                  "const": true
+                                }
+                              }
+                            },
+                            "then": {
+                              "required": [
+                                "auth_type"
+                              ],
+                              "properties": {
+                                "auth_type": {
+                                  "enum": [
+                                    "per_user_oauth",
+                                    "per_user_headers",
+                                    "token_exchange"
+                                  ]
+                                },
+                                "connection_type": {
+                                  "not": {
+                                    "const": "openapi"
+                                  }
+                                }
+                              },
+                              "description": "`per_user_discovery` discovers each caller's tools with their own\ncredential, so it only applies to the per-user auth types, and not to\nan openapi client, whose tools come from its document.\n"
+                            }
                           }
                         ],
                         "properties": {
@@ -46818,6 +46961,11 @@
                             ],
                             "additionalProperties": false,
                             "description": "Required when creating a client with auth_type \"token_exchange\".\nVerification runs automatically as the signed-in admin, exchanging the\nidentity-provider token on the request or, when it carries none, the\naccess token from the admin's own Bifrost sign-in (see\nPOST /api/mcp/client/{id}/verify-exchange). A request with neither,\nsuch as one made with an API key, creates the client in\npending_verification. There is no sample-token field on this request.\n"
+                          },
+                          "per_user_discovery": {
+                            "type": "boolean",
+                            "default": false,
+                            "description": "Per-user auth types only (`per_user_oauth`, `per_user_headers`,\n`token_exchange`), and not for connection_type \"openapi\". When true,\neach caller's tools, prompts and resources are discovered with their\nown credential when they connect, and the client keeps no admin\ncredential or discovery of its own: the admin's verification only\nchecks the server. Every caller is served their own tools, prompts,\nresources and resource templates, the MCP gateway (`/mcp`) included, and a caller who has not\nconnected yet is offered the client's `<name>-connect` tool. When false\nor omitted, every caller is served what was discovered with the admin\ncredential.\n"
                           },
                           "user_headers": {
                             "type": "object",
@@ -47093,6 +47241,10 @@
                       "type": "string"
                     },
                     "description": "For `per_user_headers` clients only. Cannot be set to an empty list.\nUpdating this list flips every existing active per-user credential row\nto `needs_update`; callers will be sent back to the submission form on\ntheir next tool call to satisfy the new schema. The retained admin\ndiscovery credential is flipped the same way; repair it by calling\nPOST /api/mcp/client/{id}/verify-headers with fresh sample values.\n"
+                  },
+                  "per_user_discovery": {
+                    "type": "boolean",
+                    "description": "Per-user auth types only, and not for openapi clients. Omitted\npreserves the stored value. Turning it on deletes the admin credential\nand the discovery the client keeps; each caller's tools, prompts and\nresources are then discovered with their own credential. Turning it\noff deletes every caller's discovery, and the client goes back to\npending_verification until an admin verifies it again: through\nPOST /api/mcp/client/{id}/verify-headers, verify-exchange, or, for\n`per_user_oauth`, initiate-verification or reauthorize, which sign the\nadmin in on the client's existing OAuth registration so callers keep\ntheir sign-ins. For a provider that no longer recognises that\nregistration, reregister registers a new OAuth client first, which\nneeds the OAuth config's registration_url and a provider that accepts\nthe registration (otherwise it answers 400 and changes nothing), and\nevery caller then signs in again. While a client declared in\nconfig.json has not completed its first sign-in, reauthorize and\nreregister answer 400 for it, and initiate-verification runs that\nfirst sign-in.\nWhile it is on, POST /api/mcp/client/{id}/refresh-tools and\nPOST /api/mcp/client/{id}/reauthorize return 400, as do\nPOST /api/mcp/client/{id}/verify-headers and\nPOST /api/mcp/client/{id}/verify-exchange on a verified client.\n"
                   },
                   "token_exchange": {
                     "type": "object",
@@ -47567,7 +47719,7 @@
           "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `MCPGateway:Create` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "Initiate verification for a pending MCP client",
-        "description": "Starts the one-time admin OAuth authorization for an MCP client sitting\nin pending_verification state (declared via config.json with auth_type\n\"oauth\" or \"per_user_oauth\"). Runs OAuth metadata discovery (RFC 8414)\nand dynamic client registration (RFC 7591) against the client's\nconnection_string when the declared oauth_config omits those fields,\ncreates a fresh OAuth flow, and returns the authorization URL.\n\nComplete the flow like a create-time OAuth flow: open authorize_url in a\nbrowser, poll status_url until \"authorized\", then POST complete_url.\nSafe to call again if a previous attempt expired or was abandoned — each\ncall starts a fresh flow.\n",
+        "description": "Starts the one-time admin OAuth authorization for an MCP client sitting\nin pending_verification state (declared via config.json with auth_type\n\"oauth\" or \"per_user_oauth\"). Runs OAuth metadata discovery (RFC 8414)\nand dynamic client registration (RFC 7591) against the client's\nconnection_string when the declared oauth_config omits those fields,\ncreates a fresh OAuth flow, and returns the authorization URL.\n\nA per_user_oauth client back in pending_verification because\nper_user_discovery was turned off keeps its OAuth registration: the call\nopens an admin sign-in on that registration instead, so callers keep\ntheir sign-ins, and the response carries a flow_id that status_url\nalready includes. POST /api/mcp/client/{id}/reauthorize does the same\nfor such a client. If its provider no longer recognises that\nregistration, POST /api/mcp/client/{id}/reregister registers a new\nclient first; every caller then signs in again.\n\nComplete the flow like a create-time OAuth flow: open authorize_url in a\nbrowser, poll status_url until \"authorized\", then POST complete_url.\nSafe to call again if a previous attempt expired or was abandoned — each\ncall starts a fresh flow.\n",
         "tags": [
           "MCP",
           "OAuth"
@@ -47642,7 +47794,7 @@
           "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `MCPGateway:Create` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "Reauthorize an MCP client",
-        "description": "Redoes the OAuth consent flow for an already-authorized OAuth-based MCP\nclient, without delete-and-recreate. The flow always runs against the\ncredentials currently stored on the client's OAuth config.\n\n- auth_type \"oauth\": serves both a standalone admin-triggered reauth\n  (e.g. the upstream provider revoked the credential and the client sits\n  in needs_reauth) and the follow-up to rotating oauth_config via\n  PUT /api/mcp/client/{id} (which cascades every bound token to\n  needs_reauth).\n- auth_type \"per_user_oauth\": repairs the retained admin discovery\n  credential used for periodic tool-list refresh. Only allowed while\n  that credential actually sits in needs_reauth (409 otherwise);\n  end-user credentials are untouched either way.\n\nComplete the returned flow like any other admin OAuth flow: open\nauthorize_url in a browser, poll status_url until \"authorized\", then\nPOST complete_url.\n",
+        "description": "Redoes the OAuth consent flow for an already-authorized OAuth-based MCP\nclient, without delete-and-recreate. The flow always runs against the\ncredentials currently stored on the client's OAuth config.\n\n- auth_type \"oauth\": serves both a standalone admin-triggered reauth\n  (e.g. the upstream provider revoked the credential and the client sits\n  in needs_reauth) and the follow-up to rotating oauth_config via\n  PUT /api/mcp/client/{id} (which cascades every bound token to\n  needs_reauth).\n- auth_type \"per_user_oauth\": refreshes the retained admin discovery\n  credential used for periodic tool-list refresh, whether or not it\n  needs repair; end-user credentials are untouched either way. It also\n  verifies a client back in pending_verification because\n  per_user_discovery was turned off, the same way\n  POST /api/mcp/client/{id}/initiate-verification does: the admin signs\n  in on the client's existing OAuth registration.\n\nA client still in its first sign-in (declared in config.json and not\nyet verified) gets 400: use initiate-verification instead.\n\nComplete the returned flow like any other admin OAuth flow: open\nauthorize_url in a browser, poll status_url until \"authorized\", then\nPOST complete_url.\n",
         "tags": [
           "MCP",
           "OAuth"
@@ -47734,7 +47886,7 @@
       "post": {
         "operationId": "reregisterMCPClient",
         "summary": "Reauthorize an MCP client against a newly registered OAuth client",
-        "description": "Registers a replacement OAuth client (RFC 7591 Dynamic Client\nRegistration) at the config's registration_url, writes it over the\nstored credentials, and then runs the same consent flow\nPOST /api/mcp/client/{id}/reauthorize runs, against the new client.\n\nThis exists for a provider that no longer recognises the client_id it\nissued, which is common with Dynamic Client Registration because the\nprovider's client registry is often in memory and does not survive a\nrestart. Once that happens the stored client_id is rejected at the token\nendpoint on every refresh and at the authorize endpoint on every\nreauthorization, so plain reauthorize cannot recover the connection.\n\nReplacing the client_id marks every credential stored under the OAuth\nconfig needs_reauth and stops using it, since none of them can be\nrefreshed against a client the provider no longer associates them\nwith. It does not revoke access tokens the provider already issued\n(Bifrost never calls the provider's revocation endpoint), so those can\nstay valid at the provider until they expire. For auth_type\n\"per_user_oauth\" that includes every end-user credential, not just the\nretained admin one, and each user must authenticate again. Plain\nreauthorize leaves end-user credentials untouched; this endpoint does\nnot.\n\nComplete the returned flow exactly like reauthorize's: open\nauthorize_url in a browser, poll status_url until \"authorized\", then\nPOST complete_url.\n",
+        "description": "Registers a replacement OAuth client (RFC 7591 Dynamic Client\nRegistration) at the config's registration_url, writes it over the\nstored credentials, and then runs the same consent flow\nPOST /api/mcp/client/{id}/reauthorize runs, against the new client.\n\nThis exists for a provider that no longer recognises the client_id it\nissued, which is common with Dynamic Client Registration because the\nprovider's client registry is often in memory and does not survive a\nrestart. Once that happens the stored client_id is rejected at the token\nendpoint on every refresh and at the authorize endpoint on every\nreauthorization, so plain reauthorize cannot recover the connection.\n\nReplacing the client_id marks every credential stored under the OAuth\nconfig needs_reauth and stops using it, since none of them can be\nrefreshed against a client the provider no longer associates them\nwith. It does not revoke access tokens the provider already issued\n(Bifrost never calls the provider's revocation endpoint), so those can\nstay valid at the provider until they expire. For auth_type\n\"per_user_oauth\" that includes every end-user credential, not just the\nretained admin one, and each user must authenticate again. Plain\nreauthorize leaves end-user credentials untouched; this endpoint does\nnot.\n\nA per_user_oauth client back in pending_verification because\nper_user_discovery was turned off can be reregistered too, for when its\nprovider no longer recognises the client it kept: completing the flow\nverifies it. A client still in its first sign-in (declared in\nconfig.json and not yet verified) gets 400: use initiate-verification\ninstead.\n\nComplete the returned flow exactly like reauthorize's: open\nauthorize_url in a browser, poll status_url until \"authorized\", then\nPOST complete_url.\n",
         "tags": [
           "MCP",
           "OAuth"
@@ -48351,6 +48503,117 @@
                 }
               }
             }
+          }
+        }
+      }
+    },
+    "/api/mcp/sessions/{id}/refresh": {
+      "post": {
+        "summary": "Refresh the tools of an MCP session's caller",
+        "description": "Discovers the tools, prompts and resources of the caller a session row\nbelongs to again, with the credential the row stores, and keeps what it\nfinds as that caller's discovery of the row's MCP client. Use it after the\nupstream server adds or removes tools, so the caller is served them\nwithout signing in again.\n\nOnly an `active` OAuth token or header credential of a `user` or `vk`\ncaller can be refreshed, on an MCP client with `per_user_discovery` on\nthat is not awaiting admin verification. A `user` row can be refreshed\nonly by that user; the row's `can_refresh` says whether the caller may.\n\nA refresh that cannot discover answers 502 and keeps the caller's\nexisting discovery. If the row is revoked or replaced while discovery\nruns, nothing is stored and the refresh answers 409.\n",
+        "operationId": "refreshMcpSession",
+        "x-mint": {
+          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `MCPGateway:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+        },
+        "tags": [
+          "MCP"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Session row ID (OAuth token or header credential)"
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The caller's tools were discovered again",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "Response for POST /api/mcp/sessions/{id}/refresh, with what the new discovery holds.",
+                  "required": [
+                    "status",
+                    "tool_count",
+                    "prompt_count",
+                    "resource_count"
+                  ],
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "example": "success"
+                    },
+                    "tool_count": {
+                      "type": "integer",
+                      "description": "Tools the caller's new discovery holds"
+                    },
+                    "prompt_count": {
+                      "type": "integer",
+                      "description": "Prompts the caller's new discovery holds"
+                    },
+                    "resource_count": {
+                      "type": "integer",
+                      "description": "Resources plus resource templates the caller's new discovery holds"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The row cannot be refreshed: its client keeps one tool list for every\ncaller, it belongs to a session-bound caller, its client is awaiting\nadmin verification, or its credential needs reauthorizing or updated\nheaders first\n"
+          },
+          "401": {
+            "description": "Unauthorized — missing or invalid credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "A user's session, refreshed by someone other than that user"
+          },
+          "404": {
+            "description": "Resource not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The row was revoked or replaced while its tools were being discovered"
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Discovery with the stored credential failed; the caller keeps their existing discovery"
           }
         }
       }
@@ -48999,7 +49262,7 @@
           "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `VirtualKeys:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "List virtual keys",
-        "description": "Returns a list of all virtual keys with their configurations.\n\n**Metadata filters:** add one `metadata_<key>=<value>` query parameter per metadata\nkey to match, where `<key>` is the metadata key itself (for example\n`?metadata_cost_center=cc-42&metadata_environment=prod`). Only virtual keys whose\nmetadata has every given key set to exactly the given value are returned. A key that\nis not 1-256 characters of letters, digits, '.', '_' and '-' is rejected with a 400.\nThese parameters have dynamic names, so they are described here rather than declared\nas individual parameters.\n",
+        "description": "Returns a list of all virtual keys with their configurations.\n\n**Pagination:** with none of `limit`, `offset`, `search`, `export`, `sort_by` or a\nfilter parameter, the response holds every virtual key, including each key's `value`.\nAny of those parameters switches to the paged path: one page of at most 100 keys,\n25 by default, ordered by `created_at` ascending unless `sort_by` says otherwise. A\n`limit` above 100 is clamped to 100 without an error, so `?limit=1000` returns the\noldest 100 keys. Read `limit` and `total_count` from the response and page with\n`offset` until `offset >= total_count`. `export=true` raises the cap to 10,000 keys\nper page and defaults `limit` to 10,000.\n\n**Metadata filters:** add one `metadata_<key>=<value>` query parameter per metadata\nkey to match, where `<key>` is the metadata key itself (for example\n`?metadata_cost_center=cc-42&metadata_environment=prod`). Only virtual keys whose\nmetadata has every given key set to exactly the given value are returned. A key that\nis not 1-256 characters of letters, digits, '.', '_' and '-' is rejected with a 400.\nThese parameters have dynamic names, so they are described here rather than declared\nas individual parameters.\n",
         "tags": [
           "Governance"
         ],
@@ -49016,10 +49279,12 @@
           {
             "name": "limit",
             "in": "query",
-            "description": "Maximum number of virtual keys to return",
+            "description": "Page size, 0 to 100 (default 25). Values above 100 are clamped to 100 without an error, and 0 uses the default, so read `limit` back from the response. Page with `offset` until `offset >= total_count`. With `export=true` the bound is 10,000 and the default is 10,000.",
             "schema": {
               "type": "integer",
-              "minimum": 0
+              "minimum": 0,
+              "maximum": 100,
+              "default": 25
             }
           },
           {
@@ -49028,7 +49293,8 @@
             "description": "Number of virtual keys to skip",
             "schema": {
               "type": "integer",
-              "minimum": 0
+              "minimum": 0,
+              "default": 0
             }
           },
           {
@@ -49092,7 +49358,7 @@
           {
             "name": "export",
             "in": "query",
-            "description": "If true, enables export pagination limits",
+            "description": "If true, uses the export page bounds: `limit` defaults to 10,000 and is capped at 10,000 instead of 100.",
             "schema": {
               "type": "boolean",
               "default": false
@@ -50211,7 +50477,7 @@
           "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Teams:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "List teams",
-        "description": "Returns a list of all teams.\n",
+        "description": "Returns a list of all teams.\n\n**Pagination:** without `limit`, `offset` or `search`, the response holds every\nteam. Any of the three switches to the paged path: one page of at most 100 teams,\n25 by default, ordered by `created_at` ascending. A `limit` above 100 is clamped\nto 100 without an error. Page with `offset` until `offset >= total_count`.\n",
         "tags": [
           "Governance"
         ],
@@ -50220,6 +50486,35 @@
             "name": "customer_id",
             "in": "query",
             "description": "Filter teams by customer ID",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Page size, 0 to 100 (default 25). Values above 100 are clamped to 100 without an error, and 0 uses the default, so read `limit` back from the response. Page with `offset` until `offset >= total_count`.",
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 100,
+              "default": 25
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "description": "Number of teams to skip",
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0
+            }
+          },
+          {
+            "name": "search",
+            "in": "query",
+            "description": "Case-insensitive substring match against the team name",
             "schema": {
               "type": "string"
             }
@@ -50734,11 +51029,40 @@
           "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Customers:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "List customers",
-        "description": "Returns a list of all customers.\n",
+        "description": "Returns a list of all customers.\n\n**Pagination:** without `limit`, `offset` or `search`, the response holds every\ncustomer. Any of the three switches to the paged path: one page of at most 100\ncustomers, 25 by default, ordered by `created_at` ascending. A `limit` above 100\nis clamped to 100 without an error. Page with `offset` until `offset >= total_count`.\n",
         "tags": [
           "Governance"
         ],
         "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Page size, 0 to 100 (default 25). Values above 100 are clamped to 100 without an error, and 0 uses the default, so read `limit` back from the response. Page with `offset` until `offset >= total_count`.",
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 100,
+              "default": 25
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "description": "Number of customers to skip",
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0
+            }
+          },
+          {
+            "name": "search",
+            "in": "query",
+            "description": "Case-insensitive substring match against the customer name",
+            "schema": {
+              "type": "string"
+            }
+          },
           {
             "name": "from_memory",
             "in": "query",
@@ -52865,10 +53189,12 @@
           {
             "name": "limit",
             "in": "query",
-            "description": "Maximum number of results to return",
+            "description": "Page size, 0 to 100 (default 25). Values above 100 are clamped to 100 without an error, and 0 uses the default, so read `limit` back from the response. Page with `offset` until `offset >= total_count`. Without `limit`, `offset`, `search`, `scope`, `scope_id` or `provider`, every model limit is returned. With `from_memory=true` the 100 cap does not apply and an omitted `limit` returns every match.",
             "schema": {
               "type": "integer",
-              "minimum": 1
+              "minimum": 0,
+              "maximum": 100,
+              "default": 25
             }
           },
           {
@@ -52877,7 +53203,8 @@
             "description": "Number of results to skip (for pagination)",
             "schema": {
               "type": "integer",
-              "minimum": 0
+              "minimum": 0,
+              "default": 0
             }
           },
           {
@@ -53482,10 +53809,12 @@
           {
             "name": "limit",
             "in": "query",
-            "description": "Maximum number of results to return. A non-empty `limit`, `offset`, or `search` value switches the response to the paginated shape.",
+            "description": "Page size, 0 to 100 (default 25). Values above 100 are clamped to 100 without an error, and 0 uses the default, so read `limit` back from the response. Page with `offset` until `offset >= total_count`. A non-empty `limit`, `offset`, or `search` value switches the response to the paginated shape.",
             "schema": {
               "type": "integer",
-              "minimum": 0
+              "minimum": 0,
+              "maximum": 100,
+              "default": 25
             }
           },
           {
@@ -53494,7 +53823,8 @@
             "description": "Number of results to skip",
             "schema": {
               "type": "integer",
-              "minimum": 0
+              "minimum": 0,
+              "default": 0
             }
           }
         ],
@@ -72315,7 +72645,7 @@
           }
         },
         "summary": "List teams (deprecated path)",
-        "description": "Returns a list of all teams.\n",
+        "description": "Legacy alias that lists teams one page at a time. `page` is 1-based and `limit`\ndefaults to 20 with a maximum of 100. Use `/api/governance/teams` for new\nintegrations.\n",
         "tags": [
           "Governance"
         ],
@@ -80707,10 +81037,12 @@
           {
             "name": "limit",
             "in": "query",
+            "description": "Page size, 0 to 100 (default 25). Values above 100 are clamped to 100 without an error, and 0 uses the default, so read `limit` back from the response. Page with `offset` until `offset >= total_count`.",
             "schema": {
               "type": "integer",
-              "default": 25,
-              "maximum": 100
+              "minimum": 0,
+              "maximum": 100,
+              "default": 25
             }
           },
           {
@@ -80718,6 +81050,7 @@
             "in": "query",
             "schema": {
               "type": "integer",
+              "minimum": 0,
               "default": 0
             }
           },
@@ -80725,6 +81058,14 @@
             "name": "search",
             "in": "query",
             "description": "Search by name.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "mcp_client_id",
+            "in": "query",
+            "description": "Only Virtual MCPs with a tool spec for this MCP client (exact `client_id` match). `total_count` counts only the matches, so this answers which Virtual MCPs bundle a server without paging through every Virtual MCP.",
             "schema": {
               "type": "string"
             }
@@ -84125,10 +84466,12 @@
           {
             "name": "limit",
             "in": "query",
-            "description": "Page size (default 25, maximum 100). Sending limit, offset or search returns one page. Ignored when scope is set.",
+            "description": "Page size, 0 to 100 (default 25). Values above 100 are clamped to 100 without an error, and 0 uses the default, so read `limit` back from the response. Page with `offset` until `offset >= total_count`. Sending limit, offset or search returns one page; without them every rule is returned. Ignored when scope is set.",
             "schema": {
               "type": "integer",
-              "minimum": 0
+              "minimum": 0,
+              "maximum": 100,
+              "default": 25
             }
           },
           {
@@ -84137,7 +84480,8 @@
             "description": "Number of rules to skip.",
             "schema": {
               "type": "integer",
-              "minimum": 0
+              "minimum": 0,
+              "default": 0
             }
           },
           {
@@ -84751,6 +85095,13 @@
                             }
                           ]
                         },
+                        "min_confidence": {
+                          "type": "number",
+                          "minimum": 0,
+                          "maximum": 1,
+                          "default": 0,
+                          "description": "Confidence an answer must reach to publish its tier. An answer below it publishes no tier. A missing confidence is derived from the tier probabilities; an answer with neither is kept. 0 keeps every answer."
+                        },
                         "criteria": {
                           "type": "object",
                           "description": "Per-tier overrides of the shipped decision-model definitions, signals, and examples. Any tier or field left out sends the default.",
@@ -85193,6 +85544,13 @@
                           }
                         ]
                       },
+                      "min_confidence": {
+                        "type": "number",
+                        "minimum": 0,
+                        "maximum": 1,
+                        "default": 0,
+                        "description": "Confidence an answer must reach to publish its tier. An answer below it publishes no tier. A missing confidence is derived from the tier probabilities; an answer with neither is kept. 0 keeps every answer."
+                      },
                       "criteria": {
                         "type": "object",
                         "description": "Per-tier overrides of the shipped decision-model definitions, signals, and examples. Any tier or field left out sends the default.",
@@ -85611,6 +85969,13 @@
                               "minimum": 0
                             }
                           ]
+                        },
+                        "min_confidence": {
+                          "type": "number",
+                          "minimum": 0,
+                          "maximum": 1,
+                          "default": 0,
+                          "description": "Confidence an answer must reach to publish its tier. An answer below it publishes no tier. A missing confidence is derived from the tier probabilities; an answer with neither is kept. 0 keeps every answer."
                         },
                         "criteria": {
                           "type": "object",
@@ -86074,6 +86439,13 @@
                               "minimum": 0
                             }
                           ]
+                        },
+                        "min_confidence": {
+                          "type": "number",
+                          "minimum": 0,
+                          "maximum": 1,
+                          "default": 0,
+                          "description": "Confidence an answer must reach to publish its tier. An answer below it publishes no tier. A missing confidence is derived from the tier probabilities; an answer with neither is kept. 0 keeps every answer."
                         },
                         "criteria": {
                           "type": "object",
@@ -86766,10 +87138,12 @@
           {
             "name": "limit",
             "in": "query",
-            "description": "Page size (default 25, maximum 100). Sending limit, offset or search returns one page. Ignored when scope is set.",
+            "description": "Page size, 0 to 100 (default 25). Values above 100 are clamped to 100 without an error, and 0 uses the default, so read `limit` back from the response. Page with `offset` until `offset >= total_count`. Sending limit, offset or search returns one page; without them every rule is returned. Ignored when scope is set.",
             "schema": {
               "type": "integer",
-              "minimum": 0
+              "minimum": 0,
+              "maximum": 100,
+              "default": 25
             }
           },
           {
@@ -86778,7 +87152,8 @@
             "description": "Number of rules to skip.",
             "schema": {
               "type": "integer",
-              "minimum": 0
+              "minimum": 0,
+              "default": 0
             }
           },
           {
@@ -87422,6 +87797,13 @@
                             }
                           ]
                         },
+                        "min_confidence": {
+                          "type": "number",
+                          "minimum": 0,
+                          "maximum": 1,
+                          "default": 0,
+                          "description": "Confidence an answer must reach to publish its tier. An answer below it publishes no tier. A missing confidence is derived from the tier probabilities; an answer with neither is kept. 0 keeps every answer."
+                        },
                         "criteria": {
                           "type": "object",
                           "description": "Per-tier overrides of the shipped decision-model definitions, signals, and examples. Any tier or field left out sends the default.",
@@ -87870,6 +88252,13 @@
                           }
                         ]
                       },
+                      "min_confidence": {
+                        "type": "number",
+                        "minimum": 0,
+                        "maximum": 1,
+                        "default": 0,
+                        "description": "Confidence an answer must reach to publish its tier. An answer below it publishes no tier. A missing confidence is derived from the tier probabilities; an answer with neither is kept. 0 keeps every answer."
+                      },
                       "criteria": {
                         "type": "object",
                         "description": "Per-tier overrides of the shipped decision-model definitions, signals, and examples. Any tier or field left out sends the default.",
@@ -88288,6 +88677,13 @@
                               "minimum": 0
                             }
                           ]
+                        },
+                        "min_confidence": {
+                          "type": "number",
+                          "minimum": 0,
+                          "maximum": 1,
+                          "default": 0,
+                          "description": "Confidence an answer must reach to publish its tier. An answer below it publishes no tier. A missing confidence is derived from the tier probabilities; an answer with neither is kept. 0 keeps every answer."
                         },
                         "criteria": {
                           "type": "object",
@@ -88757,6 +89153,13 @@
                               "minimum": 0
                             }
                           ]
+                        },
+                        "min_confidence": {
+                          "type": "number",
+                          "minimum": 0,
+                          "maximum": 1,
+                          "default": 0,
+                          "description": "Confidence an answer must reach to publish its tier. An answer below it publishes no tier. A missing confidence is derived from the tier probabilities; an answer with neither is kept. 0 keeps every answer."
                         },
                         "criteria": {
                           "type": "object",
@@ -89385,6 +89788,16 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "timestamp",
+            "in": "query",
+            "required": false,
+            "description": "The log entry's `timestamp` as returned by `GET /api/logs`, in RFC 3339 format. Optional:\nthe ClickHouse log store uses it to look the entry up without scanning every partition,\nand still finds the entry by ID alone when the timestamp does not match. Other log stores ignore it.\n",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
           }
         ],
         "security": [
@@ -89402,6 +89815,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/LogEntry"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
                 }
               }
             }
@@ -96981,6 +97404,16 @@
                             "type": "string",
                             "description": "Name of the virtual key used for this tool execution"
                           },
+                          "user_email": {
+                            "type": "string",
+                            "description": "Email of the user the request was attributed to, recorded at request time. Set by enterprise governance for user sessions and for virtual keys assigned to a user.",
+                            "nullable": true
+                          },
+                          "client_ip": {
+                            "type": "string",
+                            "description": "The caller's IP, taken from the leftmost `X-Forwarded-For` entry, else `X-Real-IP`, else the TCP peer address. The headers are sent by the caller and not verified. Recorded only when `logs_store.capture_client_ip` is true.",
+                            "nullable": true
+                          },
                           "arguments": {
                             "type": "object",
                             "additionalProperties": true,
@@ -97269,6 +97702,16 @@
                     "virtual_key_name": {
                       "type": "string",
                       "description": "Name of the virtual key used for this tool execution"
+                    },
+                    "user_email": {
+                      "type": "string",
+                      "description": "Email of the user the request was attributed to, recorded at request time. Set by enterprise governance for user sessions and for virtual keys assigned to a user.",
+                      "nullable": true
+                    },
+                    "client_ip": {
+                      "type": "string",
+                      "description": "The caller's IP, taken from the leftmost `X-Forwarded-For` entry, else `X-Real-IP`, else the TCP peer address. The headers are sent by the caller and not verified. Recorded only when `logs_store.capture_client_ip` is true.",
+                      "nullable": true
                     },
                     "arguments": {
                       "type": "object",
@@ -103494,16 +103937,23 @@
             "name": "limit",
             "in": "query",
             "required": false,
+            "description": "Page size, 0 to 100 (default 25). Values above 100 are clamped to 100 without an error, and 0 uses the default, so read `limit` back from the response. Page with `offset` until `offset >= total_count`. A negative value is rejected with a 400.",
             "schema": {
-              "type": "integer"
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 100,
+              "default": 25
             }
           },
           {
             "name": "offset",
             "in": "query",
             "required": false,
+            "description": "Number of rows to skip. A negative value is rejected with a 400.",
             "schema": {
-              "type": "integer"
+              "type": "integer",
+              "minimum": 0,
+              "default": 0
             }
           }
         ],
@@ -103943,16 +104393,23 @@
             "name": "limit",
             "in": "query",
             "required": false,
+            "description": "Page size, 0 to 100 (default 25). Values above 100 are clamped to 100 without an error, and 0 uses the default, so read `limit` back from the response. Page with `offset` until `offset >= total_count`. A negative value is rejected with a 400.",
             "schema": {
-              "type": "integer"
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 100,
+              "default": 25
             }
           },
           {
             "name": "offset",
             "in": "query",
             "required": false,
+            "description": "Number of rows to skip. A negative value is rejected with a 400.",
             "schema": {
-              "type": "integer"
+              "type": "integer",
+              "minimum": 0,
+              "default": 0
             }
           }
         ],
@@ -104116,16 +104573,23 @@
             "name": "limit",
             "in": "query",
             "required": false,
+            "description": "Page size, 0 to 100 (default 25). Values above 100 are clamped to 100 without an error, and 0 uses the default, so read `limit` back from the response. Page with `offset` until `offset >= total_count`. A negative value is rejected with a 400.",
             "schema": {
-              "type": "integer"
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 100,
+              "default": 25
             }
           },
           {
             "name": "offset",
             "in": "query",
             "required": false,
+            "description": "Number of rows to skip. A negative value is rejected with a 400.",
             "schema": {
-              "type": "integer"
+              "type": "integer",
+              "minimum": 0,
+              "default": 0
             }
           }
         ],
@@ -106582,16 +107046,21 @@
             "in": "query",
             "required": false,
             "schema": {
-              "type": "integer"
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 100,
+              "default": 25
             },
-            "description": "Page size. Nonpositive values default to 25; values above 100 are clamped to 100."
+            "description": "Page size. Nonpositive values default to 25; values above 100 are clamped to 100 without an error. Page with `offset` until `offset >= total_count`."
           },
           {
             "name": "offset",
             "in": "query",
             "required": false,
             "schema": {
-              "type": "integer"
+              "type": "integer",
+              "minimum": 0,
+              "default": 0
             },
             "description": "Page offset. Negative values are clamped to zero."
           }
@@ -110912,7 +111381,7 @@
             }
           },
           {
-            "name": "statuses",
+            "name": "status",
             "in": "query",
             "description": "Statuses to filter by (`success`, `error`, `cancelled`). Accepts repeated parameters or comma-separated values.",
             "schema": {
@@ -111037,6 +111506,46 @@
             "name": "job_id",
             "in": "query",
             "description": "Exact upstream job ID.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session_id",
+            "in": "query",
+            "description": "Exact session ID resolved at ingress (x-bf-session-id), as on /api/logs.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "min_latency",
+            "in": "query",
+            "description": "Minimum latency in milliseconds.",
+            "schema": {
+              "type": "number"
+            }
+          },
+          {
+            "name": "max_latency",
+            "in": "query",
+            "description": "Maximum latency in milliseconds.",
+            "schema": {
+              "type": "number"
+            }
+          },
+          {
+            "name": "period",
+            "in": "query",
+            "description": "Window resolved on the server, one of 1h, 6h, 24h, 7d, 30d, today, this_week, this_month; any other value is refused with 400. Wins over start_time and end_time, as on /api/logs.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "timezone",
+            "in": "query",
+            "description": "IANA timezone the calendar periods (today, this_week, this_month) are resolved in.",
             "schema": {
               "type": "string"
             }
@@ -111384,7 +111893,7 @@
             }
           },
           {
-            "name": "statuses",
+            "name": "status",
             "in": "query",
             "description": "Statuses to filter by (`success`, `error`, `cancelled`). Accepts repeated parameters or comma-separated values.",
             "schema": {
@@ -111509,6 +112018,46 @@
             "name": "job_id",
             "in": "query",
             "description": "Exact upstream job ID.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session_id",
+            "in": "query",
+            "description": "Exact session ID resolved at ingress (x-bf-session-id), as on /api/logs.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "min_latency",
+            "in": "query",
+            "description": "Minimum latency in milliseconds.",
+            "schema": {
+              "type": "number"
+            }
+          },
+          {
+            "name": "max_latency",
+            "in": "query",
+            "description": "Maximum latency in milliseconds.",
+            "schema": {
+              "type": "number"
+            }
+          },
+          {
+            "name": "period",
+            "in": "query",
+            "description": "Window resolved on the server, one of 1h, 6h, 24h, 7d, 30d, today, this_week, this_month; any other value is refused with 400. Wins over start_time and end_time, as on /api/logs.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "timezone",
+            "in": "query",
+            "description": "IANA timezone the calendar periods (today, this_week, this_month) are resolved in.",
             "schema": {
               "type": "string"
             }
@@ -111722,7 +112271,7 @@
             }
           },
           {
-            "name": "statuses",
+            "name": "status",
             "in": "query",
             "description": "Statuses to filter by (`success`, `error`, `cancelled`). Accepts repeated parameters or comma-separated values.",
             "schema": {
@@ -111852,6 +112401,46 @@
             }
           },
           {
+            "name": "session_id",
+            "in": "query",
+            "description": "Exact session ID resolved at ingress (x-bf-session-id), as on /api/logs.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "min_latency",
+            "in": "query",
+            "description": "Minimum latency in milliseconds.",
+            "schema": {
+              "type": "number"
+            }
+          },
+          {
+            "name": "max_latency",
+            "in": "query",
+            "description": "Maximum latency in milliseconds.",
+            "schema": {
+              "type": "number"
+            }
+          },
+          {
+            "name": "period",
+            "in": "query",
+            "description": "Window resolved on the server, one of 1h, 6h, 24h, 7d, 30d, today, this_week, this_month; any other value is refused with 400. Wins over start_time and end_time, as on /api/logs.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "timezone",
+            "in": "query",
+            "description": "IANA timezone the calendar periods (today, this_week, this_month) are resolved in.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "search",
             "in": "query",
             "description": "Free-text match on the path, matched route, model and request ID. Metadata columns only, never bodies.",
@@ -111860,13 +112449,23 @@
             }
           },
           {
-            "name": "bucket_size_seconds",
+            "name": "bucket_size",
             "in": "query",
-            "description": "Width of each bucket in seconds.",
+            "description": "Width of each bucket in seconds. Omitted, the width follows the window as on /api/logs/histogram. Between 60 and 2678400; below an hour it must divide 3600, otherwise it must be a whole number of hours, and the window may not need more than 5000 buckets.",
             "schema": {
               "type": "integer",
-              "minimum": 1,
-              "default": 3600
+              "minimum": 60,
+              "maximum": 2678400
+            }
+          },
+          {
+            "name": "bucket_size_seconds",
+            "in": "query",
+            "description": "Alias of bucket_size, kept for earlier clients.",
+            "schema": {
+              "type": "integer",
+              "minimum": 60,
+              "maximum": 2678400
             }
           }
         ],
@@ -111971,7 +112570,7 @@
             }
           },
           {
-            "name": "statuses",
+            "name": "status",
             "in": "query",
             "description": "Statuses to filter by (`success`, `error`, `cancelled`). Accepts repeated parameters or comma-separated values.",
             "schema": {
@@ -116470,6 +117069,34 @@
                 },
                 "error": {
                   "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "fallback_attempts": {
+            "type": "array",
+            "description": "Set when the primary and every fallback failed and the primary's error was returned: what became of each fallback, in chain order. A fallback refused before reaching its provider (for example by a virtual key that does not allow it) is only visible here.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "provider": {
+                  "$ref": "#/components/schemas/ModelProvider"
+                },
+                "model": {
+                  "type": "string"
+                },
+                "status_code": {
+                  "type": "integer"
+                },
+                "type": {
+                  "type": "string"
+                },
+                "message": {
+                  "type": "string"
+                },
+                "skipped": {
+                  "type": "boolean",
+                  "description": "The fallback was never attempted (no provider config, or the request type has no fallback support)"
                 }
               }
             }
@@ -134650,6 +135277,14 @@
               }
             }
           },
+          "callers_by_tool": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "description": "Set for a client with `per_user_discovery` on, whose `tools` are the\nnames seen in its callers' discoveries, names only, since descriptions\nand schemas can differ from one caller to another: how many callers'\ndiscoveries include each. Absent until a caller holds one.\n"
+          },
           "state": {
             "type": "string",
             "enum": [
@@ -134697,6 +135332,76 @@
               }
             },
             "description": "Virtual key assignments for this MCP client"
+          },
+          "credential": {
+            "type": "object",
+            "description": "Read-only view of the credential the client holds on its own behalf, as\nopposed to the per-caller credentials listed under /api/mcp/sessions: the\nshared token of an `oauth` client, the retained admin token of a\n`per_user_oauth` or `token_exchange` client, or the retained admin header\nvalues of a `per_user_headers` client. Absent for auth types that hold no\nsuch credential (`none`, `headers`), while none has been issued yet (a\nclient still pending its one-time authorization), and for a client with\n`per_user_discovery` on, which keeps none. Secret material never appears:\na refresh token is reported as present or absent, and header values only\nby name.\n",
+            "required": [
+              "kind",
+              "status",
+              "has_refresh_token",
+              "created_at",
+              "updated_at"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "oauth",
+                  "headers"
+                ]
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "active",
+                  "orphaned",
+                  "needs_reauth",
+                  "needs_update"
+                ],
+                "description": "`oauth` credentials are `active`, `orphaned` or `needs_reauth`;\n`headers` credentials are `active`, `orphaned` or `needs_update`.\n"
+              },
+              "status_reason": {
+                "type": "string",
+                "description": "Why an `oauth` credential left `active`: the provider's rejection of\nthe last refresh (HTTP status plus the OAuth error and description), a\ncredential rotation, or a failed admin exchange. Absent while `active`\nand for `headers` credentials.\n"
+              },
+              "expires_at": {
+                "type": "string",
+                "format": "date-time",
+                "description": "When the access token of an `oauth` credential expires. Absent when\nthe provider did not report an expiry, and for `headers` credentials.\n"
+              },
+              "last_refreshed_at": {
+                "type": "string",
+                "format": "date-time",
+                "description": "Set on an `oauth` credential once its access token has been refreshed\nor the credential re-authorized at least once.\n"
+              },
+              "has_refresh_token": {
+                "type": "boolean",
+                "description": "Whether the provider issued a refresh token, so the access token can\nbe renewed without another consent. Always false for `headers`\ncredentials.\n"
+              },
+              "scopes": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "The scopes the provider reported at consent time. Absent when it\nreported none.\n"
+              },
+              "header_keys": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "The names of the headers the stored admin values of a `headers`\ncredential cover, sorted. Absent when the stored values hold no\nheaders or could not be read. A name in the client's\n`per_user_header_keys` that is missing from a present list is one the\nstored values predate.\n"
+              },
+              "created_at": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "updated_at": {
+                "type": "string",
+                "format": "date-time"
+              }
+            }
           }
         }
       },
@@ -134906,6 +135611,11 @@
             ],
             "additionalProperties": false,
             "description": "For `token_exchange` clients only. `client_id` and `client_secret` are\nredacted in this response.\n"
+          },
+          "per_user_discovery": {
+            "type": "boolean",
+            "default": false,
+            "description": "When true, each caller's tools, prompts and resources are discovered\nwith their own credential, and the client keeps no admin credential or\ndiscovery of its own. The list response's `tools` are then the names\nseen in callers' discoveries (see `callers_by_tool`).\n"
           },
           "disabled": {
             "type": "boolean",
@@ -135704,6 +136414,10 @@
           },
           "name": {
             "type": "string"
+          },
+          "per_user_discovery": {
+            "type": "boolean",
+            "description": "Set on sessions list rows. True when each caller keeps their own\ndiscovery on this client; absent when the client keeps one discovery\nevery caller shares.\n"
           }
         }
       },
@@ -135741,7 +136455,8 @@
           "auth_mode",
           "status",
           "created_at",
-          "can_reauth"
+          "can_reauth",
+          "can_refresh"
         ],
         "properties": {
           "id": {
@@ -135838,6 +136553,38 @@
           "can_reauth": {
             "type": "boolean",
             "description": "Mirrors the server-side identity gate on POST /api/mcp/sessions/{id}/reauth.\nAlways true for vk- and session-mode rows. For user-mode rows, true only\nwhen the calling user matches the row's bound user — admin DAC scope is\nenough to see the row, but reauthing mints credentials under whoever clicks\nthe URL, so the server returns 403 to non-bound callers. The UI hides the\nRe-authenticate / Edit values action when this is false.\n"
+          },
+          "can_refresh": {
+            "type": "boolean",
+            "description": "Whether POST /api/mcp/sessions/{id}/refresh accepts this row for the\ncalling user: an active OAuth token or header credential of a `user` or\n`vk` caller on an MCP client with `per_user_discovery` on that is not\nawaiting admin verification, and, for a `user` row, only when the calling\nuser is the row's user. The UI offers Refresh tools only when this is true.\n"
+          },
+          "discovery": {
+            "type": "object",
+            "description": "What Bifrost discovered with this credential's binding on a client with\nper_user_discovery on. Token and header rows of user and virtual-key\ncallers only; absent when the binding holds none.\n",
+            "required": [
+              "discovered_at",
+              "tool_count",
+              "prompt_count",
+              "resource_count"
+            ],
+            "properties": {
+              "discovered_at": {
+                "type": "string",
+                "format": "date-time",
+                "description": "When the upstream last answered tools/list for this caller"
+              },
+              "tool_count": {
+                "type": "integer"
+              },
+              "prompt_count": {
+                "type": "integer"
+              },
+              "resource_count": {
+                "type": "integer",
+                "description": "Resources plus resource templates"
+              }
+            },
+            "nullable": true
           }
         }
       },
@@ -136007,6 +136754,10 @@
           "updated_at": {
             "type": "string",
             "format": "date-time"
+          },
+          "discovery_error": {
+            "type": "string",
+            "description": "Present when the credential was stored but the MCP client's tools could not be loaded with it. Connecting to the client again retries."
           }
         }
       },
@@ -137019,7 +137770,20 @@
             }
           },
           "count": {
-            "type": "integer"
+            "type": "integer",
+            "description": "Number of teams in this response"
+          },
+          "total_count": {
+            "type": "integer",
+            "description": "Number of teams matching the query before `limit` and `offset`. Equals `count` on the unpaged path."
+          },
+          "limit": {
+            "type": "integer",
+            "description": "Page size applied after clamping (default 25, maximum 100). On the unpaged path, the number of teams returned."
+          },
+          "offset": {
+            "type": "integer",
+            "description": "Offset applied; 0 on the unpaged path."
           }
         }
       },
@@ -137140,7 +137904,20 @@
             }
           },
           "count": {
-            "type": "integer"
+            "type": "integer",
+            "description": "Number of customers in this response"
+          },
+          "total_count": {
+            "type": "integer",
+            "description": "Number of customers matching the query before `limit` and `offset`. Equals `count` on the unpaged path."
+          },
+          "limit": {
+            "type": "integer",
+            "description": "Page size applied after clamping (default 25, maximum 100). On the unpaged path, the number of customers returned."
+          },
+          "offset": {
+            "type": "integer",
+            "description": "Offset applied; 0 on the unpaged path."
           }
         }
       },
@@ -138999,9 +139776,21 @@
               "$ref": "#/components/schemas/ModelConfig"
             }
           },
+          "count": {
+            "type": "integer",
+            "description": "Number of model configs in this response"
+          },
           "total_count": {
             "type": "integer",
-            "description": "Total number of model configs matching the filter (used for pagination)"
+            "description": "Number of model configs matching the query before `limit` and `offset`. Equals `count` on the unpaged path."
+          },
+          "limit": {
+            "type": "integer",
+            "description": "Page size applied after clamping (default 25, maximum 100). On the unpaged path, the number of model configs returned."
+          },
+          "offset": {
+            "type": "integer",
+            "description": "Offset applied; 0 on the unpaged path."
           }
         }
       },
@@ -140681,6 +141470,16 @@
           "session_id": {
             "type": "string",
             "description": "Raw opaque Bifrost session ID resolved at ingress for key stickiness and request correlation.",
+            "nullable": true
+          },
+          "user_email": {
+            "type": "string",
+            "description": "Email of the user the request was attributed to, recorded at request time. Set by enterprise governance for user sessions and for virtual keys assigned to a user.",
+            "nullable": true
+          },
+          "client_ip": {
+            "type": "string",
+            "description": "The caller's IP, taken from the leftmost `X-Forwarded-For` entry, else `X-Real-IP`, else the TCP peer address. The headers are sent by the caller and not verified. Recorded only when `logs_store.capture_client_ip` is true.",
             "nullable": true
           },
           "child_count": {
@@ -145967,6 +146766,11 @@
           "user_name": {
             "type": "string"
           },
+          "user_email": {
+            "type": "string",
+            "description": "Email of the user the request was attributed to, recorded at request time. Set by enterprise governance for user sessions and for virtual keys assigned to a user.",
+            "nullable": true
+          },
           "virtual_key_id": {
             "type": "string"
           },
@@ -146034,6 +146838,10 @@
               "type": "string"
             }
           },
+          "session_id": {
+            "type": "string",
+            "description": "Session identity resolved at ingress (x-bf-session-id), as on LLM and MCP log rows."
+          },
           "user_agent": {
             "type": "string",
             "description": "Raw HTTP `User-Agent` of the calling client."
@@ -146041,6 +146849,11 @@
           "app": {
             "type": "string",
             "description": "Client application detected from `user_agent`."
+          },
+          "client_ip": {
+            "type": "string",
+            "description": "The caller's IP, taken from the leftmost `X-Forwarded-For` entry, else `X-Real-IP`, else the TCP peer address. The headers are sent by the caller and not verified. Recorded only when `logs_store.capture_client_ip` is true.",
+            "nullable": true
           },
           "request_id": {
             "type": "string"
@@ -146177,13 +146990,18 @@
             "type": "integer",
             "format": "int64"
           },
+          "cancelled_count": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Calls the caller hung up on, answered with 499, or whose own deadline expired."
+          },
           "success_rate": {
             "type": "number",
-            "description": "Percentage of requests that succeeded."
+            "description": "Percentage of finished calls (success, error, cancelled) that succeeded, as on /api/logs/stats; calls still processing are left out."
           },
           "average_latency": {
             "type": "number",
-            "description": "Milliseconds."
+            "description": "Milliseconds, over finished calls."
           },
           "total_cost": {
             "type": "number"

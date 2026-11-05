@@ -2,10 +2,12 @@ package handlers
 
 import (
 	"context"
+	"crypto/rsa"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"math/big"
 	"net/url"
 	"path/filepath"
 	"strings"
@@ -13,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configtables "github.com/maximhq/bifrost/framework/configstore/tables"
@@ -167,6 +170,28 @@ func TestHandleRegister_DCR(t *testing.T) {
 		assert.Equal(t, longName, stored.ClientName)
 		assert.Equal(t, longScope, stored.Scope)
 	})
+
+	// Registration bodies real DCR clients send, as built by their source on 2026-11-03.
+	for _, tc := range []struct{ name, body string }{
+		// gemini-cli packages/core/src/mcp/oauth-provider.ts registerClient (scope is "" with no configured scopes)
+		{"Gemini CLI", `{"client_name":"Gemini CLI MCP Client","redirect_uris":["http://localhost:7777/oauth/callback"],"grant_types":["authorization_code","refresh_token"],"response_types":["code"],"token_endpoint_auth_method":"none","scope":""}`},
+		// zed crates/context_server/src/oauth.rs dcr_registration_body (scope omitted with no advertised scopes)
+		{"Zed", `{"client_name":"Zed","redirect_uris":["http://127.0.0.1:12345/callback"],"grant_types":["authorization_code","refresh_token"],"response_types":["code"],"token_endpoint_auth_method":"none"}`},
+	} {
+		t.Run("real client "+tc.name+" registers", func(t *testing.T) {
+			h, _, _ := newIssuanceHandler(t)
+			ctx := formPostCtx("")
+			ctx.Request.SetBodyString(tc.body)
+			ctx.Request.Header.SetContentType("application/json")
+
+			h.handleRegister(ctx)
+			require.Equal(t, fasthttp.StatusCreated, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+			var resp map[string]any
+			require.NoError(t, json.Unmarshal(ctx.Response.Body(), &resp))
+			assert.Equal(t, []any{"authorization_code", "refresh_token"}, resp["grant_types"])
+			assert.Equal(t, "mcp", resp["scope"])
+		})
+	}
 
 	t.Run("missing redirect_uris is rejected", func(t *testing.T) {
 		h, _, _ := newIssuanceHandler(t)
@@ -788,9 +813,12 @@ func TestHandleToken_RefreshAfterIssuerChange(t *testing.T) {
 	assert.Equal(t, fasthttp.StatusOK, current.Response.StatusCode(), "control: a grant for the current resource refreshes: %s", current.Response.Body())
 }
 
-// TestHandleToken_RefreshNeedsTheRefreshGrant pins that only a client registered for the refresh_token
-// grant can refresh. Registration recorded grant_types but the token endpoint never consulted them.
-func TestHandleToken_RefreshNeedsTheRefreshGrant(t *testing.T) {
+// TestHandleToken_RefreshByAClientRegisteredWithoutTheRefreshGrant pins that a client registered for
+// authorization_code only, which is what RFC 7591 records when a registration omits grant_types, still
+// refreshes the refresh token its code exchange was issued. Neither the MCP authorization spec nor RFC
+// 7591 asks the token endpoint to enforce the registered grant types, and refusing here stopped every
+// existing grant of such a client from refreshing on upgrade.
+func TestHandleToken_RefreshByAClientRegisteredWithoutTheRefreshGrant(t *testing.T) {
 	store := newRealOAuth2Store(t)
 	h := NewOAuth2IssuanceHandler(newTestOAuth2Config(store, configtables.MCPServerAuthModeOAuth, false), nil, nil)
 	require.NoError(t, store.CreateOAuth2Client(context.Background(), &configtables.TableOAuth2Client{
@@ -810,10 +838,11 @@ func TestHandleToken_RefreshNeedsTheRefreshGrant(t *testing.T) {
 		"grant_type": {"refresh_token"}, "refresh_token": {"refresh-vk-1"}, "client_id": {"client-1"},
 	}.Encode())
 	h.handleToken(ctx)
-	assert.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode())
-	body := string(ctx.Response.Body())
-	assert.Contains(t, body, "unauthorized_client")
-	assert.Contains(t, body, "client is not registered for the refresh_token grant")
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	var tokens map[string]any
+	require.NoError(t, json.Unmarshal(ctx.Response.Body(), &tokens))
+	assert.NotEmpty(t, tokens["access_token"], "the refresh issues a new access token")
+	assert.NotEmpty(t, tokens["refresh_token"], "the refresh rotates the refresh token")
 }
 
 // TestHandleToken_CodeReplayRevokesItsTokens pins RFC 6749 section 4.1.2: an authorization code used a
@@ -1456,4 +1485,161 @@ func TestIssueTokenPair_KeepsConsentedClientName(t *testing.T) {
 	_, _, rt, err := h.issueTokenPair(ctx, "family", clientID, "user", "sub", "mcp", "https://bifrost.example.com/mcp", "Example MCP Client")
 	require.NoError(t, err)
 	assert.Equal(t, "Example MCP Client", rt.ClientDisplayName)
+}
+
+// TestHandleToken_IssuedAccessTokenClaims issues an access token for a VK consent through the token
+// endpoint and checks every claim it carries, and that it is signed by the one key JWKS publishes.
+func TestHandleToken_IssuedAccessTokenClaims(t *testing.T) {
+	const verifier = "test-verifier-string-of-sufficient-length-1234567890"
+	h, store, cfg := newIssuanceHandler(t)
+	cid := seedClient(t, store, []string{"http://127.0.0.1/cb"})
+	seedConsentedRequest(t, store, "req-1", cid, "code-1", pkceChallenge(verifier), "vk", "vk-row-1", time.Now().Add(time.Minute))
+
+	ctx := formPostCtx(url.Values{
+		"grant_type":    {"authorization_code"},
+		"code":          {"code-1"},
+		"code_verifier": {verifier},
+		"client_id":     {cid},
+		"redirect_uri":  {"http://127.0.0.1/cb"},
+	}.Encode())
+	h.handleToken(ctx)
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	var resp struct {
+		AccessToken string `json:"access_token"`
+	}
+	require.NoError(t, json.Unmarshal(ctx.Response.Body(), &resp))
+
+	jwksCtx := bgCtx()
+	NewOAuth2DiscoveryHandler(cfg).handleJWKS(jwksCtx)
+	require.Equal(t, fasthttp.StatusOK, jwksCtx.Response.StatusCode(), string(jwksCtx.Response.Body()))
+	assert.Equal(t, "no-store", string(jwksCtx.Response.Header.Peek("Cache-Control")))
+	var jwks struct {
+		Keys []struct {
+			Kty string `json:"kty"`
+			Use string `json:"use"`
+			Alg string `json:"alg"`
+			Kid string `json:"kid"`
+			N   string `json:"n"`
+			E   string `json:"e"`
+		} `json:"keys"`
+	}
+	require.NoError(t, json.Unmarshal(jwksCtx.Response.Body(), &jwks))
+	require.Len(t, jwks.Keys, 1)
+	jwk := jwks.Keys[0]
+	assert.Equal(t, "RSA", jwk.Kty)
+	assert.Equal(t, "sig", jwk.Use)
+	assert.Equal(t, "RS256", jwk.Alg)
+	n, err := base64.RawURLEncoding.DecodeString(jwk.N)
+	require.NoError(t, err)
+	e, err := base64.RawURLEncoding.DecodeString(jwk.E)
+	require.NoError(t, err)
+	published := &rsa.PublicKey{N: new(big.Int).SetBytes(n), E: int(new(big.Int).SetBytes(e).Int64())}
+
+	claims := jwt.MapClaims{}
+	token, err := jwt.ParseWithClaims(resp.AccessToken, claims, func(*jwt.Token) (any, error) { return published, nil },
+		jwt.WithValidMethods([]string{"RS256"}))
+	require.NoError(t, err, "the access token must verify with the key JWKS publishes")
+	assert.Equal(t, "RS256", token.Header["alg"])
+	assert.Equal(t, jwk.Kid, token.Header["kid"], "the token names the published key")
+
+	assert.Equal(t, testIssuer, claims["iss"])
+	aud, err := claims.GetAudience()
+	require.NoError(t, err)
+	assert.Equal(t, jwt.ClaimStrings{testMCPResource}, aud)
+	assert.Equal(t, "vk-row-1", claims["sub"])
+	assert.Equal(t, "vk", claims["bf_mode"])
+	assert.Equal(t, "mcp", claims["scope"])
+	iat, err := claims.GetIssuedAt()
+	require.NoError(t, err)
+	exp, err := claims.GetExpirationTime()
+	require.NoError(t, err)
+	nbf, err := claims.GetNotBefore()
+	require.NoError(t, err)
+	assert.Equal(t, time.Duration(configtables.DefaultAccessTokenTTL)*time.Second, exp.Sub(iat.Time), "exp - iat is the access token TTL")
+	assert.Equal(t, iat.Unix(), nbf.Unix(), "nbf is iat")
+}
+
+// TestConsentFlowSubmit_ConcurrentSubmitsMintOneCode races consent submits on one pending flow:
+// exactly one mints a code, every other is told the flow is already completed, and only the
+// winner's code is stored and exchanges.
+func TestConsentFlowSubmit_ConcurrentSubmitsMintOneCode(t *testing.T) {
+	const verifier = "test-verifier-string-of-sufficient-length-1234567890"
+	h, store, cfg := newIssuanceHandler(t)
+	cid := seedClient(t, store, []string{"http://127.0.0.1/cb"})
+	active := true
+	require.NoError(t, store.CreateVirtualKey(context.Background(), &configtables.TableVirtualKey{
+		ID: "vk-row-1", Name: "consent race", Value: *schemas.NewSecretVar("sk-bf-consent-race"), IsActive: &active,
+	}))
+	require.NoError(t, store.CreateOAuth2AuthorizeRequest(context.Background(), &configtables.TableOAuth2AuthorizeRequest{
+		ID:                  "flow-1",
+		ClientID:            cid,
+		RedirectURI:         "http://127.0.0.1/cb",
+		State:               "st",
+		Scope:               "mcp",
+		Resource:            testMCPResource,
+		CodeChallenge:       pkceChallenge(verifier),
+		CodeChallengeMethod: "S256",
+		Status:              configtables.OAuth2AuthorizeRequestStatusPending,
+		ExpiresAt:           time.Now().Add(time.Minute),
+		CreatedAt:           time.Now(),
+		UpdatedAt:           time.Now(),
+	}))
+	consent := NewOAuth2ConsentHandler(cfg, nil, nil)
+
+	const submits = 8
+	ctxs := make([]*fasthttp.RequestCtx, submits)
+	for i := range ctxs {
+		var req fasthttp.Request
+		req.Header.SetMethod("PUT")
+		req.SetBodyString(`{"mode":"vk","value":"sk-bf-consent-race"}`)
+		ctxs[i] = initCtx(&req)
+		ctxs[i].SetUserValue("id", "flow-1")
+	}
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for _, ctx := range ctxs {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			consent.flowSubmit(ctx)
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	var winner *fasthttp.RequestCtx
+	for _, ctx := range ctxs {
+		switch status := ctx.Response.StatusCode(); status {
+		case fasthttp.StatusOK:
+			require.Nil(t, winner, "a second submit minted a code: %s", ctx.Response.Body())
+			winner = ctx
+		case fasthttp.StatusConflict, fasthttp.StatusGone:
+			assert.Contains(t, string(ctx.Response.Body()), "authorization flow has already been completed")
+		default:
+			t.Errorf("submit answered %d: %s", status, ctx.Response.Body())
+		}
+	}
+	require.NotNil(t, winner, "no submit minted a code")
+
+	var submitted consentFlowSubmitResponse
+	require.NoError(t, json.Unmarshal(winner.Response.Body(), &submitted))
+	redirect, err := url.Parse(submitted.RedirectURL)
+	require.NoError(t, err)
+	code := redirect.Query().Get("code")
+	require.NotEmpty(t, code)
+	stored, err := store.GetOAuth2AuthorizeRequestByID(context.Background(), "flow-1")
+	require.NoError(t, err)
+	require.NotNil(t, stored.CodeHash)
+	assert.Equal(t, hashSHA256Hex(code), *stored.CodeHash, "the stored code is the winner's")
+
+	exchange := formPostCtx(url.Values{
+		"grant_type":    {"authorization_code"},
+		"code":          {code},
+		"code_verifier": {verifier},
+		"client_id":     {cid},
+		"redirect_uri":  {"http://127.0.0.1/cb"},
+	}.Encode())
+	h.handleToken(exchange)
+	assert.Equal(t, fasthttp.StatusOK, exchange.Response.StatusCode(), string(exchange.Response.Body()))
 }

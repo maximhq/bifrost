@@ -1129,6 +1129,9 @@ func (cu *BifrostLLMUsage) ToResponsesResponseUsage() *ResponsesResponseUsage {
 		TotalTokens:    cu.TotalTokens,
 		Cost:           cu.Cost,
 		CostInUsdTicks: cu.CostInUsdTicks,
+
+		InputTokensExplicitZero:  cu.PromptTokensExplicitZero,
+		OutputTokensExplicitZero: cu.CompletionTokensExplicitZero,
 	}
 
 	if cu.PromptTokensDetails != nil {
@@ -1175,6 +1178,9 @@ func (ru *ResponsesResponseUsage) ToBifrostLLMUsage() *BifrostLLMUsage {
 		TotalTokens:      ru.TotalTokens,
 		Cost:             ru.Cost,
 		CostInUsdTicks:   ru.CostInUsdTicks,
+
+		PromptTokensExplicitZero:     ru.InputTokensExplicitZero,
+		CompletionTokensExplicitZero: ru.OutputTokensExplicitZero,
 	}
 
 	if ru.InputTokensDetails != nil {
@@ -1782,6 +1788,7 @@ func (responsesResp *BifrostResponsesResponse) ToBifrostChatResponse() *BifrostC
 	if responsesResp.Usage != nil {
 		// Map Responses usage to Chat usage
 		chatResp.Usage = responsesResp.Usage.ToBifrostLLMUsage()
+		chatResp.Usage.ToolUsage = chatResp.Usage.ToolUsage.withoutZeroImageGen()
 	}
 
 	// Copy other relevant fields
@@ -2864,6 +2871,7 @@ func (rsr *BifrostResponsesStreamResponse) ToBifrostChatResponse() *BifrostChatR
 			output = rsr.Response.Output
 			if rsr.Response.Usage != nil {
 				resp.Usage = rsr.Response.Usage.ToBifrostLLMUsage()
+				resp.Usage.ToolUsage = resp.Usage.ToolUsage.withoutZeroImageGen()
 			}
 		}
 
@@ -2923,6 +2931,7 @@ func (cr *BifrostChatResponse) ToBifrostTextCompletionResponse() *BifrostTextCom
 				OriginalModelRequested:  cr.ExtraFields.OriginalModelRequested,
 				Latency:                 cr.ExtraFields.Latency,
 				RawResponse:             cr.ExtraFields.RawResponse,
+				RawResponseFormat:       cr.ExtraFields.RawResponseFormat,
 				CacheDebug:              cr.ExtraFields.CacheDebug,
 				GuardrailDebug:          cr.ExtraFields.GuardrailDebug,
 				ProviderResponseHeaders: cr.ExtraFields.ProviderResponseHeaders,
@@ -2958,6 +2967,7 @@ func (cr *BifrostChatResponse) ToBifrostTextCompletionResponse() *BifrostTextCom
 				OriginalModelRequested:  cr.ExtraFields.OriginalModelRequested,
 				Latency:                 cr.ExtraFields.Latency,
 				RawResponse:             cr.ExtraFields.RawResponse,
+				RawResponseFormat:       cr.ExtraFields.RawResponseFormat,
 				CacheDebug:              cr.ExtraFields.CacheDebug,
 				GuardrailDebug:          cr.ExtraFields.GuardrailDebug,
 				ProviderResponseHeaders: cr.ExtraFields.ProviderResponseHeaders,
@@ -3009,6 +3019,7 @@ func (cr *BifrostChatResponse) ToBifrostTextCompletionResponse() *BifrostTextCom
 				OriginalModelRequested:  cr.ExtraFields.OriginalModelRequested,
 				Latency:                 cr.ExtraFields.Latency,
 				RawResponse:             cr.ExtraFields.RawResponse,
+				RawResponseFormat:       cr.ExtraFields.RawResponseFormat,
 				CacheDebug:              cr.ExtraFields.CacheDebug,
 				GuardrailDebug:          cr.ExtraFields.GuardrailDebug,
 				ProviderResponseHeaders: cr.ExtraFields.ProviderResponseHeaders,
@@ -3031,6 +3042,7 @@ func (cr *BifrostChatResponse) ToBifrostTextCompletionResponse() *BifrostTextCom
 			OriginalModelRequested:  cr.ExtraFields.OriginalModelRequested,
 			Latency:                 cr.ExtraFields.Latency,
 			RawResponse:             cr.ExtraFields.RawResponse,
+			RawResponseFormat:       cr.ExtraFields.RawResponseFormat,
 			CacheDebug:              cr.ExtraFields.CacheDebug,
 			GuardrailDebug:          cr.ExtraFields.GuardrailDebug,
 			ProviderResponseHeaders: cr.ExtraFields.ProviderResponseHeaders,

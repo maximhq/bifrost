@@ -693,9 +693,17 @@ bifrost:
       #     # tokenUrl: "https://idp.corp/oauth2/token"           # optional — discovered when omitted
       #     # registrationUrl: "https://idp.corp/oauth2/register" # optional — discovered when omitted
       #     # scopes: ["read", "write"]                           # optional — OAuth scopes to request
+      #     # resource: "https://mcp.example.com/mcp"             # optional — RFC 8707 resource indicator, discovered when omitted
+      #     # Sign in with Bifrost's client metadata document even when the authorization server does
+      #     # not advertise support. Needs Bifrost on a public HTTPS address; cannot be combined with clientId.
+      #     # useClientMetadataDocument: true
       #   # Only meaningful for connectionType "http": true keeps one persistent connection reused
       #   # across every caller; false (default for new clients) connects fresh per call.
       #   needsSessionStickiness: false
+      #   # Only with a per-user authType (per_user_oauth, per_user_headers, token_exchange), not
+      #   # openapi: discover each caller's tools, prompts and resources with their own credential
+      #   # instead of serving everyone the admin credential's discovery.
+      #   perUserDiscovery: false
       #   # When true, this MCP server is available to every caller that has not been assigned it
       #   # explicitly, with all tools allowed. An explicit assignment takes precedence for that caller.
       #   # Replaces the deprecated allowOnAllVirtualKeys, which is read only when this is absent.
@@ -1289,6 +1297,7 @@ bifrost:
       #   model: "jev-latest"              # Set together with provider; omit both for typesafe/jev-latest
       #   previous_message_count: 1        # Earlier user messages sent with the current request (0-5)
       #   timeout: "1.5s"                  # Maximum wait for one decision-model call; usage counts toward request cost and budgets
+      #   min_confidence: 0.7              # Optional: an answer below this publishes no tier (0-1; 0 keeps every answer)
       #   criteria:                        # Optional: per-tier overrides; tiers are SIMPLE, MEDIUM, COMPLEX
       #     COMPLEX:
       #       definition: "..."            # Replaces the shipped definition of this tier (max 500 chars)
@@ -1491,6 +1500,27 @@ bifrost:
       #   enabled: true
       #   accessTokenTtl: 86400   # seconds, 60-86400; 0 or omitted = 86400
       #   provisionUsers: false   # create a Bifrost user for an unknown assertion subject instead of refusing
+      #
+      # # Workload identity (Enterprise). Shared across every provider above: token issuers,
+      # # besides the provider itself, whose workload tokens can be mapped to service accounts.
+      # # Workloads are mapped in the dashboard (the service account's Workload identity tab) or
+      # # through the API, not in values. Mappings refer to an issuer by its name, unique without
+      # # case: renaming or removing it leaves them without an issuer, and changing its issuerUrl,
+      # # kind or identityClaim stops them working (Bifrost refuses that save while any exist).
+      # # Kinds: aws (named by IAM role ARN) or generic (any OIDC issuer; also set identityClaim and
+      # # machineCheck, e.g. Okta: identityClaim cid, machineCheck {kind: sub_equals_claim, claim: cid}).
+      # workloadIdentity:
+      #   additionalTrustedIssuers:
+      #     - name: "AWS prod"
+      #       kind: "aws"
+      #       issuerUrl: "https://<id>.tokens.sts.global.api.aws"  # exactly as tokens carry it in iss
+      #       audiences: ["https://bifrost.example.com"]
+      #     - name: "Okta workloads"
+      #       kind: "generic"
+      #       issuerUrl: "https://acme.okta.com/oauth2/default"
+      #       audiences: ["api://bifrost"]
+      #       identityClaim: "cid"            # matched exactly
+      #       machineCheck: { kind: "sub_equals_claim", claim: "cid" }  # or {kind: any} to take only mapped IDs
       #
       # # Auth proxy / identity-aware proxy (Enterprise). Shared across every provider above:
       # # when a Zero Trust / ZTNA proxy fronts the IdP, Bifrost reads the login credential from the
@@ -2083,6 +2113,11 @@ storage:
     # These logs are kept in full in the logs database instead. Hidden logs (content
     # logging disabled with retainContentInObjectStorage on) are still offloaded.
     objectStorageExcludeRequestTypes: []
+    # Record the caller's IP as client_ip on LLM, MCP and relay logs (leftmost
+    # X-Forwarded-For, else X-Real-IP, else the TCP peer). The headers are not
+    # verified, so only trust the value behind a proxy that overwrites them.
+    # Off by default. Maps to logs_store.capture_client_ip.
+    # captureClientIp: true
 
     # Object storage for offloading large log payloads (optional)
     # When enabled, request/response payloads are stored in S3/GCS/Azure Blob

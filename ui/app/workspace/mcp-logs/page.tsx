@@ -72,6 +72,7 @@ export default function MCPLogsPage() {
 			agent_names: parseAsArrayOf(parseAsString).withDefault([]),
 			session_id: parseAsSafeString.withDefault(""),
 			agent_correlation_id: parseAsSafeString.withDefault(""),
+			round_trip_id: parseAsSafeString.withDefault(""),
 			content_search: parseAsSafeString.withDefault(""),
 			start_time: parseAsInteger.withDefault(defaultTimeRange.startTime),
 			end_time: parseAsInteger.withDefault(defaultTimeRange.endTime),
@@ -113,6 +114,7 @@ export default function MCPLogsPage() {
 			agent_names: urlState.agent_names,
 			session_id: urlState.session_id,
 			agent_correlation_id: urlState.agent_correlation_id,
+			round_trip_id: urlState.round_trip_id,
 			content_search: urlState.content_search,
 			...(urlState.period
 				? { period: urlState.period }
@@ -136,6 +138,7 @@ export default function MCPLogsPage() {
 			urlState.agent_names,
 			urlState.session_id,
 			urlState.agent_correlation_id,
+			urlState.round_trip_id,
 			urlState.content_search,
 			urlState.period,
 			urlState.start_time,
@@ -297,6 +300,7 @@ export default function MCPLogsPage() {
 				agent_names: newFilters.agent_names || [],
 				session_id: newFilters.session_id || "",
 				agent_correlation_id: newFilters.agent_correlation_id || "",
+				round_trip_id: newFilters.round_trip_id || "",
 				content_search: newFilters.content_search || "",
 				start_time: newFilters.start_time ? dateUtils.toUnixTimestamp(new Date(newFilters.start_time)) : undefined,
 				end_time: newFilters.end_time ? dateUtils.toUnixTimestamp(new Date(newFilters.end_time)) : undefined,

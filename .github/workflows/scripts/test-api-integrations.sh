@@ -245,3 +245,12 @@ echo "🧪 Running model-catalog-wiring newman collection..."
 echo ""
 echo "🧪 Running semantic cache wiring newman collection (Redis and Weaviate)..."
 "$REPO_ROOT/tests/e2e/api/runners/individual/run-newman-semantic-cache-wiring-tests.sh" --binary "$BIFROST_BINARY" --port "$((PORT + 11))" --store both $REPORT_ARGS
+# The log-store matrix boots a clean server per log-store configuration (sqlite, postgres, and
+# the hybrid store over a local fake S3, with and without offload exclusions), because the store
+# is read at boot only, and runs the content-logging matrix (LLM and relay rows) and the relay
+# permutation matrix against each. Everything it calls is local: no keys, no paid calls. Its
+# Postgres cells each get a fresh database on the compose stack's server.
+echo ""
+echo "🧪 Running the relay and LLM log-store matrix..."
+LOG_STORE_MATRIX_PG="postgresql://$(jq -rn --arg v "$POSTGRES_USER" '$v|@uri'):$(jq -rn --arg v "$POSTGRES_PASSWORD" '$v|@uri')@${POSTGRES_HOST}:${POSTGRES_PORT}/postgres?sslmode=${POSTGRES_SSLMODE}"
+BIFROST_E2E_POSTGRES_URL="$LOG_STORE_MATRIX_PG" node "$REPO_ROOT/tests/e2e/api/runners/run-log-store-matrix.mjs" --binary "$BIFROST_BINARY" --parallel 3

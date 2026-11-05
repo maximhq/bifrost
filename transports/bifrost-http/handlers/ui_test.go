@@ -173,3 +173,24 @@ func BenchmarkUIHandler_ServeShell(b *testing.B) {
 		})
 	}
 }
+
+func TestServeDashboardAPIPathsReturnJSONNotFound(t *testing.T) {
+	h := NewUIHandler(uiTestFS(), nil, "")
+
+	for _, path := range []string{"/api", "/api/logs", "/api/logs/stats", "/api/mcp-logs/anything"} {
+		ctx := serveUITest(h, path)
+
+		assert.Equal(t, fasthttp.StatusNotFound, ctx.Response.StatusCode(), path)
+		assert.True(t, strings.HasPrefix(string(ctx.Response.Header.ContentType()), "application/json"), path)
+		assert.Contains(t, string(ctx.Response.Body()), "Route not found: "+path, path)
+	}
+}
+
+func TestServeDashboardKeepsNonAPIPathsOnTheSPAPath(t *testing.T) {
+	h := NewUIHandler(uiTestFS(), nil, "")
+
+	for _, path := range []string{"/apiary", "/dashboard/api-keys"} {
+		body := string(serveUITest(h, path).Response.Body())
+		assert.NotContains(t, body, "Route not found", path)
+	}
+}

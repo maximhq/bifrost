@@ -1910,6 +1910,8 @@
 			"layaNoteOther": "Laya reads 512 tokens per request (keep tier guidance short).",
 			"decisionMaxMessagesTip": "User messages sent to the decision model in addition to the current request, oldest to newest. Widening this lets a short follow-up like “and make it faster” inherit earlier intent, but sends more input tokens per request. Assistant replies are never sent. Defaults to 1.",
 			"decisionTimeoutTip": "Maximum wait for the decision model's API call. If the limit is exceeded, we skip and fall back to the original request model. Typesafe Jev typically responds in about 600 - 800 ms.",
+			"confidenceThreshold": "Confidence threshold",
+			"decisionMinConfidenceTip": "Minimum confidence (0–1) for the decision model's tier to be used. Below it, the request gets no tier, so complexity rules skip it (the call is still billed). Raise it for fewer, surer reroutes; 0 accepts every answer.",
 			"guidanceNote": "We recommend starting with these defaults, then refining them to match what each tier means for you.",
 			"guidanceUsage": "Each tier's definition, signals and examples are sent to the decision model with every request.",
 			"signalsLabel": "Signals",

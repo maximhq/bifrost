@@ -1,6 +1,6 @@
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { importOpenAPI, parseOpenAPIText, type OpenAPIImport } from "@/lib/utils/openapiImport";
 import { getErrorMessage, useFetchRelayOpenAPISpecMutation } from "@/lib/store";
 import { relayOpenAPISpecUrlSchema } from "@/lib/types/schemas";
@@ -9,7 +9,7 @@ import { specFingerprint, type OpenAPISourceMode } from "../../mcp-registry/view
 import { OpenAPISpecSource } from "../../mcp-registry/views/openApiSpecSource";
 import { useTranslation } from "react-i18next";
 
-interface OpenAPIImportDialogProps {
+interface OpenAPIImportSheetProps {
 	open: boolean;
 	onClose: () => void;
 	onImport: (result: OpenAPIImport) => void;
@@ -22,7 +22,7 @@ interface OpenAPIImportDialogProps {
  * gateway on request (the browser cannot fetch most spec URLs itself) and parsed here the same way.
  * The summary is what Import hands over. Nothing is saved until the relay is.
  */
-export function OpenAPIImportDialog({ open, onClose, onImport }: OpenAPIImportDialogProps) {
+export function OpenAPIImportSheet({ open, onClose, onImport }: OpenAPIImportSheetProps) {
 	const { t } = useTranslation("config");
 
 	const [mode, setMode] = useState<OpenAPISourceMode>("paste");
@@ -70,8 +70,8 @@ export function OpenAPIImportDialog({ open, onClose, onImport }: OpenAPIImportDi
 	}, [mode, specUrl, text, sourceKey, fetchSpec, t]);
 
 	const reset = () => {
-		// A fetch still in flight belongs to the dialog being closed: retire it so its result or error
-		// never reaches a reopened dialog, and stop the spinner so Fetch is usable again at once.
+		// A fetch still in flight belongs to the sheet being closed: retire it so its result or error
+		// never reaches a reopened sheet, and stop the spinner so Fetch is usable again at once.
 		parseSeq.current++;
 		setIsParsing(false);
 		setMode("paste");
@@ -95,15 +95,13 @@ export function OpenAPIImportDialog({ open, onClose, onImport }: OpenAPIImportDi
 	const result = isCurrent ? preview?.result : undefined;
 
 	return (
-		<Dialog open={open} onOpenChange={(o) => !o && close()}>
-			<DialogContent className="sm:max-w-2xl">
-				<DialogHeader>
-					<DialogTitle>{t("relays.openapiImport.title")}</DialogTitle>
-					<DialogDescription>
-						{t("relays.openapiImport.description")}
-					</DialogDescription>
-				</DialogHeader>
-				<div data-testid="relay-openapi-source">
+		<Sheet open={open} onOpenChange={(o) => !o && close()}>
+			<SheetContent className="p-0 pt-4" data-testid="relay-openapi-sheet" onInteractOutside={(e) => e.preventDefault()}>
+				<SheetHeader className="flex flex-col items-start py-4" headerClassName="mb-0 sticky -top-4 bg-card z-10 px-4 md:px-8">
+					<SheetTitle>{t("relays.openapiImport.title")}</SheetTitle>
+					<SheetDescription>{t("relays.openapiImport.description")}</SheetDescription>
+				</SheetHeader>
+				<div className="flex grow flex-col gap-4 px-4 pt-4 md:px-8" data-testid="relay-openapi-source">
 					<OpenAPISpecSource
 						mode={mode}
 						onModeChange={(next) => {
@@ -132,46 +130,43 @@ export function OpenAPIImportDialog({ open, onClose, onImport }: OpenAPIImportDi
 						isCurrent={isCurrent}
 						sourceKey={sourceKey}
 					/>
-				</div>
-				{result && (
-					<div className="bg-muted/40 space-y-1.5 rounded-md border p-3 text-sm" data-testid="relay-openapi-preview">
-						<div className="flex flex-wrap items-center gap-2">
-							<span className="font-medium">{result.title ?? t("relays.openapiImport.untitled")}</span>
-							{result.version && <Badge variant="outline">v{result.version}</Badge>}
-							<Badge variant="secondary">
-								{t("relays.openapiImport.routeCount", { count: result.routes.length })}
-								</Badge>
-							{result.partial && <Badge variant="outline">{t("relays.openapiImport.partial")}</Badge>}
-						</div>
-						<div className="text-muted-foreground text-xs">
-							{result.baseUrl ? (
-								<>
-									{t("relays.openapiImport.baseUrl")} <code className="font-mono">{result.baseUrl}</code>
-								</>
-							) : (
-								t("relays.openapiImport.noServer")
+					{result && (
+						<div className="bg-muted/40 space-y-1.5 rounded-md border p-3 text-sm" data-testid="relay-openapi-preview">
+							<div className="flex flex-wrap items-center gap-2">
+								<span className="font-medium">{result.title ?? t("relays.openapiImport.untitled")}</span>
+								{result.version && <Badge variant="outline">v{result.version}</Badge>}
+								<Badge variant="secondary">{t("relays.openapiImport.routeCount", { count: result.routes.length })}</Badge>
+								{result.partial && <Badge variant="outline">{t("relays.openapiImport.partial")}</Badge>}
+							</div>
+							<div className="text-muted-foreground text-xs">
+								{result.baseUrl ? (
+									<>
+										{t("relays.openapiImport.baseUrl")} <code className="font-mono">{result.baseUrl}</code>
+									</>
+								) : (
+									t("relays.openapiImport.noServer")
+								)}
+								{result.auth ? ` · ${t("relays.openapiImport.authSuggestion", { type: result.auth.type })}` : ""}
+							</div>
+							{result.warnings.length > 0 && (
+								<ul className="list-disc space-y-0.5 pl-4 text-xs text-amber-700 dark:text-amber-400">
+									{result.warnings.map((w) => (
+										<li key={w}>{w}</li>
+									))}
+								</ul>
 							)}
-							{result.auth ? ` · ${t("relays.openapiImport.authSuggestion", { type: result.auth.type })}` : ""}
 						</div>
-						{result.warnings.length > 0 && (
-							<ul className="list-disc space-y-0.5 pl-4 text-xs text-amber-700 dark:text-amber-400">
-								{result.warnings.map((w) => (
-									<li key={w}>{w}</li>
-								))}
-							</ul>
-						)}
-					</div>
-				)}
-				<DialogFooter>
+					)}
+				</div>
+				<div className="bg-card sticky bottom-0 z-10 mt-6 flex justify-end gap-2 border-t px-4 py-4 md:px-8">
 					<Button variant="outline" onClick={close}>
 						{t("cancel", { ns: "common" })}
-
 					</Button>
 					<Button onClick={apply} disabled={!result || isParsing} data-testid="relay-openapi-import">
 						{result ? t("relays.openapiImport.importCount", { count: result.routes.length }) : t("relays.openapiImport.import")}
 					</Button>
-				</DialogFooter>
-			</DialogContent>
-		</Dialog>
+				</div>
+			</SheetContent>
+		</Sheet>
 	);
 }

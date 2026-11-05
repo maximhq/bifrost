@@ -1217,3 +1217,58 @@ func TestBedrockTransportProxyMatrix(t *testing.T) {
 		}
 	}
 }
+
+// TestResponsesStreamAttachesEachRawEventOnce verifies a Converse event that expands into several Responses events
+// rides on exactly one of them, the one streaming its text, declared as Bedrock's format, so its raw text never
+// reaches the client ahead of (or apart from) the normalized text it backs.
+func TestResponsesStreamAttachesEachRawEventOnce(t *testing.T) {
+	events := []struct{ eventType, payload string }{
+		{"messageStart", `{"role":"assistant"}`},
+		{"contentBlockDelta", `{"contentBlockIndex":0,"delta":{"text":"mail alex@example.com"}}`},
+		{"contentBlockStop", `{"contentBlockIndex":0}`},
+		{"messageStop", `{"stopReason":"end_turn"}`},
+		{"metadata", `{"usage":{"inputTokens":3,"outputTokens":4,"totalTokens":7},"metrics":{"latencyMs":10}}`},
+	}
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/vnd.amazon.eventstream")
+		w.WriteHeader(http.StatusOK)
+		for _, event := range events {
+			writeEventStreamEvent(t, w, event.eventType, []byte(event.payload))
+		}
+	}))
+	defer ts.Close()
+
+	ctx := testBedrockCtx()
+	ctx.SetValue(schemas.BifrostContextKeyCaptureRawResponse, true)
+	req := testResponsesRequest()
+	req.Model = testConverseStreamModel
+	stream, bifrostErr := newTestProviderWithServer(t, ts).ResponsesStream(ctx, noopPostHookRunner, nil, testBedrockKey(), req)
+	require.Nil(t, bifrostErr)
+
+	carried := map[string]int{}
+	var textCarrier *schemas.BifrostResponsesStreamResponse
+	for chunk := range stream {
+		event := chunk.BifrostResponsesStreamResponse
+		if event == nil {
+			continue
+		}
+		if raw, ok := event.ExtraFields.RawResponse.(string); ok {
+			carried[raw]++
+			if raw == events[1].payload {
+				textCarrier = event
+			}
+		}
+	}
+	for _, event := range events {
+		assert.LessOrEqual(t, carried[event.payload], 1, "%s raw attached more than once", event.eventType)
+	}
+	require.NotNil(t, textCarrier, "the text event's raw payload was not attached")
+	assert.Equal(t, schemas.ResponsesStreamResponseTypeOutputTextDelta, textCarrier.Type)
+	assert.Equal(t, schemas.RawResponseFormatBedrockConverseStreamEvent, textCarrier.ExtraFields.RawResponseFormat)
+
+	redacted := *textCarrier
+	redacted.Delta = schemas.Ptr("mail [EMAIL]")
+	synced, err := schemas.SyncRawResponseText(textCarrier.ExtraFields.RawResponse, textCarrier.ExtraFields.RawResponseFormat, textCarrier, &redacted)
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"contentBlockIndex":0,"delta":{"text":"mail [EMAIL]"}}`, synced.(string))
+}

@@ -222,6 +222,76 @@ const FOOTER_NUMBER_FORMAT = { ...COMPACT_NUMBER_FORMAT, maximumFractionDigits: 
 /** Exact figures for the readouts, where the strip itself shows compact ones. */
 export const formatCount = (n: number) => Math.round(n).toLocaleString(getLocale());
 
+interface LatencyMetricSegmentProps {
+	state: ReturnType<typeof metricsState>;
+	averageLatency?: number;
+	latencyHistogram?: LatencyHistogramResponse;
+	testId?: string;
+	trailingTestId?: string;
+}
+
+/**
+ * The Avg Latency tile: the window's average, a sparkline of the per-bucket average with the
+ * bucket p95 on hover, and an approximate window p95. Shared by the LLM and relay strips, which
+ * both read a /histogram/latency response.
+ */
+export function LatencyMetricSegment({
+	state,
+	averageLatency,
+	latencyHistogram,
+	testId,
+	trailingTestId = "logs-metric-trailing",
+}: LatencyMetricSegmentProps) {
+	const { t } = useTranslation("observability");
+	const latencyPoints = useMemo(
+		() => buildSparkPoints((latencyHistogram?.buckets ?? []).map<SeriesPoint>((b) => ({ timestamp: b.timestamp, value: b.avg_latency }))),
+		[latencyHistogram],
+	);
+	const latencyP95Points = useMemo(
+		() => buildSparkPoints((latencyHistogram?.buckets ?? []).map<SeriesPoint>((b) => ({ timestamp: b.timestamp, value: b.p95_latency }))),
+		[latencyHistogram],
+	);
+	// A request-weighted mean of the per-bucket p95s, not a true whole-window
+	// percentile - see weightedP95 for why, and note the "~" it is rendered with.
+	const p95 = useMemo(() => weightedP95(latencyHistogram?.buckets ?? []), [latencyHistogram]);
+	return (
+		<MetricSegment
+			state={state}
+			title={t("logs.stats.avgLatency")}
+			testId={testId}
+			footer={
+				<>
+					<Sparkline
+						points={latencyPoints}
+						bucketSizeSeconds={latencyHistogram?.bucket_size_seconds}
+						className={warning}
+						rows={(point, index) => (
+							<>
+								<MetricTooltipRow name={t("logs.stats.tooltipAverage")}>{averaged(point, formatMs(point.value), t)}</MetricTooltipRow>
+								{latencyP95Points[index] && (
+									<MetricTooltipRow name={t("logs.stats.p95")}>
+										{averaged(point, formatMs(latencyP95Points[index].value), t)}
+									</MetricTooltipRow>
+								)}
+							</>
+						)}
+					/>
+					{/* "~" because this is a weighted mean of bucket p95s, not the
+					    window's own 95th percentile. */}
+					{p95 > 0 && (
+						<MetricTrailing testId={trailingTestId} className={warning}>
+							p95 ~{formatMs(p95)}
+						</MetricTrailing>
+					)}
+				</>
+			}
+		>
+			<NumberFlow value={Math.round(averageLatency ?? 0)} />
+			<MetricUnit>ms</MetricUnit>
+		</MetricSegment>
+	);
+}
+
 interface MetricStripProps {
 	stats?: LogStatsResponse;
 	requestHistogram?: LogsHistogramResponse;
@@ -259,22 +329,10 @@ export function MetricStrip({ stats, requestHistogram, latencyHistogram, costHis
 			),
 		[requestHistogram],
 	);
-	const latencyPoints = useMemo(
-		() => buildSparkPoints((latencyHistogram?.buckets ?? []).map<SeriesPoint>((b) => ({ timestamp: b.timestamp, value: b.avg_latency }))),
-		[latencyHistogram],
-	);
-	const latencyP95Points = useMemo(
-		() => buildSparkPoints((latencyHistogram?.buckets ?? []).map<SeriesPoint>((b) => ({ timestamp: b.timestamp, value: b.p95_latency }))),
-		[latencyHistogram],
-	);
 	const costPoints = useMemo(
 		() => buildSparkPoints((costHistogram?.buckets ?? []).map<SeriesPoint>((b) => ({ timestamp: b.timestamp, value: b.total_cost }))),
 		[costHistogram],
 	);
-
-	// A request-weighted mean of the per-bucket p95s, not a true whole-window
-	// percentile - see weightedP95 for why, and note the "~" it is rendered with.
-	const p95 = useMemo(() => weightedP95(latencyHistogram?.buckets ?? []), [latencyHistogram]);
 
 	const previous = stats?.has_previous_period ? stats.previous : undefined;
 	const totalRequests = stats?.total_requests ?? 0;
@@ -419,39 +477,7 @@ export function MetricStrip({ stats, requestHistogram, latencyHistogram, costHis
 					<MetricUnit>%</MetricUnit>
 				</MetricSegment>
 
-				<MetricSegment
-					state={state}
-					title={t("logs.stats.avgLatency")}
-					footer={
-						<>
-							<Sparkline
-								points={latencyPoints}
-								bucketSizeSeconds={latencyHistogram?.bucket_size_seconds}
-								className={warning}
-								rows={(point, index) => (
-									<>
-										<MetricTooltipRow name={t("logs.stats.tooltipAverage")}>{averaged(point, formatMs(point.value), t)}</MetricTooltipRow>
-										{latencyP95Points[index] && (
-											<MetricTooltipRow name={t("logs.stats.p95")}>
-												{averaged(point, formatMs(latencyP95Points[index].value), t)}
-											</MetricTooltipRow>
-										)}
-									</>
-								)}
-							/>
-							{/* "~" because this is a weighted mean of bucket p95s, not the
-							    window's own 95th percentile. */}
-							{p95 > 0 && (
-								<MetricTrailing testId="logs-metric-trailing" className={warning}>
-									p95 ~{formatMs(p95)}
-								</MetricTrailing>
-							)}
-						</>
-					}
-				>
-					<NumberFlow value={Math.round(stats?.average_latency ?? 0)} />
-					<MetricUnit>ms</MetricUnit>
-				</MetricSegment>
+				<LatencyMetricSegment state={state} averageLatency={stats?.average_latency} latencyHistogram={latencyHistogram} />
 
 				<MetricSegment
 					state={state}

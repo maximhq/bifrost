@@ -267,8 +267,6 @@ github.com/kr/text v0.2.0 h1:5Nx0Ya0ZqY2ygV366QzturHI13Jq95ApcVaJBhpS+AY=
 github.com/kr/text v0.2.0/go.mod h1:eLer722TekiGuMkidMxC/pM04lWEeraHUUmBw8l2grE=
 github.com/kylelemons/godebug v1.1.0 h1:RPNrshWIDI6G2gRW9EHilWtl7Z6Sb1BR0xunSBf0SNc=
 github.com/kylelemons/godebug v1.1.0/go.mod h1:9/0rRGxNHcop5bhtWyNeEfOS8JIWk580+fNqagV/RAw=
-github.com/mark3labs/mcp-go v1.3.0 h1:0nqegnwaTULVV1pCQLBmDjD2+0/lSXRt6eTHS7bH1o0=
-github.com/mark3labs/mcp-go v1.3.0/go.mod h1:r2fW4o3wsoJ7IMsx1Wuq5xeP8PRGXPDfNveoGAYbb/s=
 github.com/mattn/go-colorable v0.1.13/go.mod h1:7S9/ev0klgBDR4GtXTXX8a3vIGJpMovkB8vQcUbaXHg=
 github.com/mattn/go-colorable v0.1.14 h1:9A9LHSqF/7dyVVX6g0U9cwm9pG3kP9gSzcuIPHPsaIE=
 github.com/mattn/go-colorable v0.1.14/go.mod h1:6LmQG8QLFO4G5z1gPvYEzlUgJ2wF+stgPZH1UqBm1s8=
@@ -282,6 +280,8 @@ github.com/maximhq/bifrost/core v1.14.1 h1:gOshOCcfrCny3cjX98ypJ5q/VASRq3yOy47r7
 github.com/maximhq/bifrost/core v1.14.1/go.mod h1:J/xWAPO7np9GCmNRhXjBYEu7GL4V6aBh+B4/s4GuJYc=
 github.com/maximhq/bifrost/framework v1.11.1 h1:NSVA87XsklSTQMg+LdtKtnW16v3tu53tgAtHK+ZljOY=
 github.com/maximhq/bifrost/framework v1.11.1/go.mod h1:KJCgd5peNNlNJWrjEY17z8PLAMd7POv0HisFt+/fSJ4=
+github.com/maximhq/mcp-go v0.0.0-20261102181017-b7da3bc145a1 h1:vn9eGk7ghkI0Z+YQir35oMFVfqNXZ1KLRuHtDAC30zk=
+github.com/maximhq/mcp-go v0.0.0-20261102181017-b7da3bc145a1/go.mod h1:6L8eBboqlAMnYrvl8rpbUeV2qE/SJh52aVGrXIomVb0=
 github.com/molecule-man/go-brrr v1.0.1 h1:cEjgx8hgNw6UGdhQ94SPDbPkKuRbkUcxBO3IzbGpA/o=
 github.com/molecule-man/go-brrr v1.0.1/go.mod h1:7ybW6/7gA3oKY45jOfVNjSJDtrr6ea4tzbsTkjmQDC4=
 github.com/montanaflynn/stats v0.0.0-20171201202039-1bf9dbcd8cbe/go.mod h1:wL8QJuTMNUDYhXwkmfOly8iTdp5TEcJFWZD2D7SIkUc=

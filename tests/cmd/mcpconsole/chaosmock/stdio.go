@@ -134,6 +134,7 @@ func forward(ctx context.Context, client *http.Client, endpoint string, payload 
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")
+	req.Header.Set(HeaderStdioBridge, "1")
 	if sessionID != "" {
 		req.Header.Set(HeaderSessionID, sessionID)
 	}

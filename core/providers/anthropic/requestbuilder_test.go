@@ -1120,6 +1120,49 @@ func TestBuildAnthropicResponsesRequestBody_BedrockInvokeKeepsToolSearch(t *test
 	}
 }
 
+// TestBuildAnthropicResponsesRequestBody_BedrockInvokeDropsWebSearch pins the Codex
+// shape on Bedrock Claude: a tool_search moves the request onto InvokeModel, where the
+// web_search Codex always sends used to go out as web_search_20250305 and Bedrock
+// answered 400 "tool type 'web_search_20250305' is not supported for this model".
+// Converse already drops it for non-Nova models; InvokeModel must too.
+func TestBuildAnthropicResponsesRequestBody_BedrockInvokeDropsWebSearch(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	request := &schemas.BifrostResponsesRequest{
+		Provider: schemas.Bedrock,
+		Model:    "global.anthropic.claude-sonnet-5-5",
+		Input:    makeSimpleInput("What changed in the repo?"),
+		Params: &schemas.ResponsesParameters{
+			Tools: []schemas.ResponsesTool{
+				responsesToolFromJSON(t, `{"type":"tool_search","execution":"client"}`),
+				responsesToolFromJSON(t, `{"type":"web_search","external_web_access":false}`),
+				responsesToolFromJSON(t, `{"type":"code_interpreter","container":{"type":"auto"}}`),
+				responsesToolFromJSON(t, `{"type":"function","name":"shell","parameters":{"type":"object","properties":{}}}`),
+			},
+		},
+	}
+	body, err := BuildAnthropicResponsesRequestBody(ctx, request, AnthropicRequestBuildConfig{
+		Provider:      schemas.Bedrock,
+		Model:         "global.anthropic.claude-sonnet-5-5",
+		ValidateTools: true,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var sawShell bool
+	for _, tool := range providerUtils.GetJSONField(body, "tools").Array() {
+		typ := tool.Get("type").String()
+		if strings.HasPrefix(typ, "web_search_") || strings.HasPrefix(typ, "code_execution_") {
+			t.Errorf("Bedrock Claude does not accept %s, but it was sent: %s", typ, string(body))
+		}
+		if tool.Get("name").String() == "shell" {
+			sawShell = true
+		}
+	}
+	if !sawShell {
+		t.Errorf("function tool was lost: %s", string(body))
+	}
+}
+
 // TestRawBodyBuilderKeepsToolsAndSetsBetaHeaders checks the thing that actually goes
 // upstream, rather than any one step of building it.
 //
@@ -1378,6 +1421,59 @@ func TestClaudeCodeBodyRetargetedToHaiku(t *testing.T) {
 	}
 	if got := providerUtils.GetJSONField(out, "context_management.edits.0.type").String(); got != "clear_thinking_20251015" {
 		t.Errorf("context_management edit = %q, want clear_thinking_20251015 kept; body: %s", got, out)
+	}
+}
+
+// A custom provider with an Anthropic base resolves capabilities under its own
+// name, which no datasheet row carries, so ToAnthropicChatRequest decides on the
+// name fallbacks; the builder's re-strip runs under cfg.Provider, where a row can
+// apply. For Haiku 5.5 the fallbacks did not know the model: the converter built
+// enabled thinking with a budget, dropped the effort and kept temperature. With a
+// row the re-strip turned the thinking back into adaptive, so the upstream ran at
+// its default effort and rejected temperature; without one, budget_tokens went out
+// as well, which Haiku 5.5 also rejects. Pinned both ways.
+func TestBuildAnthropicChatRequestBody_Haiku55OnCustomProvider(t *testing.T) {
+	const model = "claude-haiku-5-5"
+	yes, no := true, false
+	for _, withRow := range []bool{false, true} {
+		t.Run(fmt.Sprintf("datasheet_row=%v", withRow), func(t *testing.T) {
+			if withRow {
+				// The published row is keyed to provider "anthropic", so only the re-strip sees it.
+				providerUtils.SetCapabilityResolver(func(p schemas.ModelProvider, m string) *schemas.ModelCapabilities {
+					if p == schemas.Anthropic && m == model {
+						return &schemas.ModelCapabilities{SupportsNativeEffort: &yes, SupportsAdaptiveThinking: &yes, SupportsSamplingParams: &no}
+					}
+					return nil
+				})
+				t.Cleanup(func() { providerUtils.SetCapabilityResolver(nil) })
+			}
+			for _, effort := range []string{"low", "max"} {
+				temp := 0.0
+				ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+				out, err := BuildAnthropicChatRequestBody(ctx, &schemas.BifrostChatRequest{
+					Provider: schemas.ModelProvider("my-claude"),
+					Model:    model,
+					Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: new("hi")}}},
+					Params: &schemas.ChatParameters{
+						MaxCompletionTokens: new(8000),
+						Temperature:         &temp,
+						Reasoning:           &schemas.ChatReasoning{Effort: new(effort)},
+					},
+				}, AnthropicRequestBuildConfig{Provider: schemas.Anthropic})
+				if err != nil {
+					t.Fatalf("effort %q: build: %v", effort, err)
+				}
+				if got := providerUtils.GetJSONField(out, "thinking").Raw; got != `{"type":"adaptive","display":"summarized"}` {
+					t.Errorf("effort %q: thinking = %s, want adaptive with summarized display; body: %s", effort, got, out)
+				}
+				if got := providerUtils.GetJSONField(out, "output_config.effort").String(); got != effort {
+					t.Errorf("effort %q: output_config.effort = %q; body: %s", effort, got, out)
+				}
+				if providerUtils.JSONFieldExists(out, "temperature") {
+					t.Errorf("effort %q: temperature forwarded to a model that rejects it; body: %s", effort, out)
+				}
+			}
+		})
 	}
 }
 
@@ -3441,6 +3537,123 @@ func TestThinkingDisplayUpdatesRequestBuilders(t *testing.T) {
 					})
 				}
 			}
+		}
+	}
+}
+
+func TestSearchToolVersionsOnProviderWire(t *testing.T) {
+	for _, provider := range []schemas.ModelProvider{schemas.Anthropic, schemas.Azure, schemas.Vertex} {
+		for _, version := range []AnthropicToolType{AnthropicToolTypeWebSearch20250305, AnthropicToolTypeWebSearch20260209, AnthropicToolTypeWebFetch20250910} {
+			// Vertex does not support web fetch.
+			if provider == schemas.Vertex && strings.HasPrefix(string(version), "web_fetch_") {
+				continue
+			}
+			for _, stream := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/%s/stream=%t", provider, version, stream), func(t *testing.T) {
+					name := "web_search"
+					if strings.HasPrefix(string(version), "web_fetch_") {
+						name = "web_fetch"
+					}
+					client := &AnthropicMessageRequest{Model: "claude-sonnet-4-6", MaxTokens: 32,
+						Tools: []AnthropicTool{{Type: &version, Name: name}}}
+					request := client.ToBifrostResponsesRequest(nil)
+					request.Provider = provider
+					request.Input = makeSimpleInput("Reply hello without using tools.")
+					ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+					body, err := BuildAnthropicResponsesRequestBody(ctx, request,
+						AnthropicRequestBuildConfig{Provider: provider, Model: request.Model, IsStreaming: stream, ValidateTools: true})
+					if err != nil {
+						t.Fatalf("build: %v", err)
+					}
+					want := string(version)
+					if provider == schemas.Vertex && version == AnthropicToolTypeWebSearch20260209 {
+						want = string(AnthropicToolTypeWebSearch20250305)
+					}
+					if got := gjson.GetBytes(body, "tools.0.type").String(); got != want {
+						t.Errorf("tool = %s, want %s; body=%s", got, want, body)
+					}
+					if gjson.GetBytes(body, "tools.#").Int() != 1 {
+						t.Errorf("unexpected tools: %s", body)
+					}
+					if strings.Contains(string(body), "web_search_version") || strings.Contains(string(body), "web_fetch_version") {
+						t.Errorf("neutral metadata leaked: %s", body)
+					}
+					if want == string(AnthropicToolTypeWebSearch20250305) || want == string(AnthropicToolTypeWebFetch20250910) {
+						if doesWebSearchOrFetchAutoInjectCodeExecution(gjson.GetBytes(body, "tools.0.type").String()) {
+							t.Errorf("old version now enables code execution: %s", body)
+						}
+					}
+				})
+			}
+		}
+	}
+}
+
+// Regression for PR #9258: an older web tool version supplies no code execution, so a
+// declared code execution tool beside it must reach the wire.
+func TestSearchToolVersionKeepsDeclaredCodeExecution(t *testing.T) {
+	codeExec := AnthropicToolTypeCodeExecution20260120
+	cases := []struct {
+		provider     schemas.ModelProvider
+		webTool      *AnthropicToolType // nil sends the neutral tool with no version
+		webName      string
+		wantCodeExec bool
+	}{
+		{schemas.Anthropic, schemas.Ptr(AnthropicToolTypeWebSearch20250305), "web_search", true},
+		{schemas.Anthropic, schemas.Ptr(AnthropicToolTypeWebFetch20250910), "web_fetch", true},
+		{schemas.Azure, schemas.Ptr(AnthropicToolTypeWebSearch20250305), "web_search", true},
+		{schemas.Anthropic, schemas.Ptr(AnthropicToolTypeWebSearch20260209), "web_search", false},
+		{schemas.Anthropic, schemas.Ptr(AnthropicToolTypeWebFetch20260309), "web_fetch", false},
+		{schemas.Anthropic, nil, "web_search", false}, // Sonnet 4.6 defaults to web_search_20260209.
+		// Vertex has no code execution, so the earlier omission still applies there.
+		{schemas.Vertex, schemas.Ptr(AnthropicToolTypeWebSearch20250305), "web_search", false},
+	}
+	for _, tc := range cases {
+		for _, stream := range []bool{false, true} {
+			label := "neutral"
+			if tc.webTool != nil {
+				label = string(*tc.webTool)
+			}
+			t.Run(fmt.Sprintf("%s/%s/stream=%t", tc.provider, label, stream), func(t *testing.T) {
+				var tools []schemas.ResponsesTool
+				if tc.webTool != nil {
+					client := &AnthropicMessageRequest{Model: "claude-sonnet-4-6", MaxTokens: 32,
+						Tools: []AnthropicTool{{Type: tc.webTool, Name: tc.webName}}}
+					tools = client.ToBifrostResponsesRequest(nil).Params.Tools
+				} else {
+					tools = []schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeWebSearch}}
+				}
+				tools = append(tools, schemas.ResponsesTool{
+					Type:                         schemas.ResponsesToolTypeCodeInterpreter,
+					ResponsesToolCodeInterpreter: &schemas.ResponsesToolCodeInterpreter{Version: schemas.Ptr(string(codeExec))},
+				})
+				request := &schemas.BifrostResponsesRequest{
+					Provider: tc.provider, Model: "claude-sonnet-4-6",
+					Input:  makeSimpleInput("Reply hello without using tools."),
+					Params: &schemas.ResponsesParameters{Tools: tools},
+				}
+				ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+				body, err := BuildAnthropicResponsesRequestBody(ctx, request,
+					AnthropicRequestBuildConfig{Provider: tc.provider, Model: request.Model, IsStreaming: stream, ValidateTools: true})
+				if err != nil {
+					t.Fatalf("build: %v", err)
+				}
+				gotCodeExec := false
+				for _, tool := range gjson.GetBytes(body, "tools").Array() {
+					if tool.Get("type").String() == string(codeExec) {
+						gotCodeExec = true
+					}
+				}
+				if gotCodeExec != tc.wantCodeExec {
+					t.Errorf("code execution sent = %t, want %t; body=%s", gotCodeExec, tc.wantCodeExec, body)
+				}
+				if tc.webTool != nil {
+					want := string(*tc.webTool)
+					if got := gjson.GetBytes(body, "tools.0.type").String(); got != want {
+						t.Errorf("web tool = %s, want %s; body=%s", got, want, body)
+					}
+				}
+			})
 		}
 	}
 }

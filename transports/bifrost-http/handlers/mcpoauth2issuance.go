@@ -24,7 +24,6 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configtables "github.com/maximhq/bifrost/framework/configstore/tables"
-	"github.com/maximhq/bifrost/framework/oauth2"
 	"github.com/maximhq/bifrost/framework/temptoken"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
@@ -117,6 +116,21 @@ func (e *oauth2ClientMetadataError) httpStatus() int {
 	return fasthttp.StatusBadRequest
 }
 
+// oauth2ClientGrantTypes are the grants a registered or CIMD client can hold: the token endpoint
+// only implements the authorization-code and refresh-token grants for them.
+var oauth2ClientGrantTypes = []string{"authorization_code", "refresh_token"}
+
+// offeredOAuth2GrantTypes keeps the requested grant types this server offers, in their original order.
+func offeredOAuth2GrantTypes(requested []string) []string {
+	offered := make([]string, 0, len(requested))
+	for _, gt := range requested {
+		if slices.Contains(oauth2ClientGrantTypes, gt) && !slices.Contains(offered, gt) {
+			offered = append(offered, gt)
+		}
+	}
+	return offered
+}
+
 // validateOAuth2ClientMetadata validates DCR or CIMD client metadata and returns its grant types,
 // response types and scope with defaults applied. Redirects must be https or loopback http
 // (RFC 9700 §4.1.3), unless administrator-approved.
@@ -152,9 +166,8 @@ func validateOAuth2ClientMetadata(store *lib.Config, req dcrRequest) (grantTypes
 	if len(grantTypes) == 0 {
 		grantTypes = []string{"authorization_code"}
 	}
-	// The token endpoint only implements the authorization-code and refresh-token grants.
 	for _, gt := range grantTypes {
-		if gt != "authorization_code" && gt != "refresh_token" {
+		if !slices.Contains(oauth2ClientGrantTypes, gt) {
 			return reject("invalid_client_metadata", "unsupported grant_type")
 		}
 	}
@@ -503,8 +516,10 @@ func (h *OAuth2IssuanceHandler) handleTokenAuthCode(ctx *fasthttp.RequestCtx) {
 }
 
 // handleTokenRefresh rotates a refresh token for the client it was issued to,
-// after checking that the client registered the refresh_token grant and that the
-// grant's identity and resource are still valid.
+// after checking that the grant's identity and resource are still valid. The
+// client's registered grant_types are not consulted: RFC 7591 records
+// authorization_code alone for a registration that omits them, and the code
+// exchange issues a refresh token either way.
 func (h *OAuth2IssuanceHandler) handleTokenRefresh(ctx *fasthttp.RequestCtx) {
 	refreshToken := string(ctx.FormValue("refresh_token"))
 	clientID := clientIDFromRequest(ctx)
@@ -547,23 +562,6 @@ func (h *OAuth2IssuanceHandler) handleTokenRefresh(ctx *fasthttp.RequestCtx) {
 	}
 	if rt.ClientID != clientID {
 		sendOAuthError(ctx, fasthttp.StatusBadRequest, "invalid_grant", "client_id mismatch")
-		return
-	}
-	// Only a client registered for the refresh_token grant may refresh (RFC 7591
-	// grant_types), whether it registered or is identified by a Client ID Metadata
-	// Document. Checked after the client_id match so a token presented by another
-	// client keeps reporting that mismatch.
-	client, metadataErr, err := lookupOAuth2Client(ctx, h.store, h.clientMetadata, clientID)
-	if metadataErr != nil {
-		sendOAuthError(ctx, metadataErr.httpStatus(), metadataErr.code, metadataErr.description)
-		return
-	}
-	if err != nil && !errors.Is(err, configstore.ErrNotFound) {
-		sendOAuthError(ctx, fasthttp.StatusInternalServerError, "server_error", "failed to look up client")
-		return
-	}
-	if client == nil || !slices.Contains(client.GrantTypes, "refresh_token") {
-		sendOAuthError(ctx, fasthttp.StatusBadRequest, "unauthorized_client", "client is not registered for the refresh_token grant")
 		return
 	}
 
@@ -712,7 +710,7 @@ func (h *OAuth2IssuanceHandler) issueTokenPair(
 // consentedClientName is the name a metadata-document client was consented under, kept on its grant
 // because it has no client row to be listed by. Best effort: consent just resolved it, so this is cached.
 func (h *OAuth2IssuanceHandler) consentedClientName(ctx context.Context, clientID string) string {
-	if !oauth2.IsClientMetadataURL(clientID) {
+	if !isClientMetadataDocumentID(clientID) {
 		return ""
 	}
 	client, metadataErr, err := lookupOAuth2Client(ctx, h.store, h.clientMetadata, clientID)
