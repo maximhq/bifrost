@@ -164,6 +164,8 @@ export default function SecurityView() {
 			IS_ENTERPRISE &&
 			(localConfig.skip_access_profile_user_virtual_key_deletion ?? false) !==
 				(config.skip_access_profile_user_virtual_key_deletion ?? false);
+		const accessProfileHierarchyModeChanged =
+			IS_ENTERPRISE && (localConfig.access_profile_hierarchy_mode || "additive") !== (config.access_profile_hierarchy_mode || "additive");
 		const dualCredentialConflictBehaviorChanged =
 			(localConfig.dual_credential_conflict_behavior || "prefer_idp") !== (config.dual_credential_conflict_behavior || "prefer_idp");
 		const vkRotationCooldownChanged = formatCooldown(localConfig.vk_rotation_cooldown) !== formatCooldown(config.vk_rotation_cooldown);
@@ -181,6 +183,7 @@ export default function SecurityView() {
 			enforceVKObjectOwnershipChanged ||
 			skipAccessProfileUserVirtualKeyCreationChanged ||
 			skipAccessProfileUserVirtualKeyDeletionChanged ||
+			accessProfileHierarchyModeChanged ||
 			dualCredentialConflictBehaviorChanged ||
 			vkRotationCooldownChanged ||
 			issuerURLChanged
@@ -699,6 +702,38 @@ export default function SecurityView() {
 						/>
 					</div>
 				)}
+				{/* Whether team, business unit and customer access profiles widen or cap their members */}
+				{IS_ENTERPRISE && (
+					<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
+						<div className="space-y-0.5">
+							<label htmlFor="access-profile-hierarchy-mode" className="text-sm font-medium">
+								{t("security.accessProfileHierarchy")}
+							</label>
+							<p className="text-muted-foreground text-sm">{t("security.accessProfileHierarchyHelp")}</p>
+						</div>
+						<Select
+							value={localConfig.access_profile_hierarchy_mode || "additive"}
+							onValueChange={(value) =>
+								setLocalConfig((prev) => ({
+									...prev,
+									access_profile_hierarchy_mode: value as CoreConfig["access_profile_hierarchy_mode"],
+								}))
+							}
+						>
+							<SelectTrigger
+								id="access-profile-hierarchy-mode"
+								data-testid="security-access-profile-hierarchy-mode-select"
+								className="w-full sm:w-[180px]"
+							>
+								<SelectValue />
+							</SelectTrigger>
+							<SelectContent>
+								<SelectItem value="additive">{t("security.accessProfileHierarchyAdditive")}</SelectItem>
+								<SelectItem value="restrictive">{t("security.accessProfileHierarchyRestrictive")}</SelectItem>
+							</SelectContent>
+						</Select>
+					</div>
+				)}
 				{/* OAuth issuer URL: shared by MCP OAuth and Cross App Access */}
 				<div className="space-y-2 rounded-sm border p-4" data-testid="oauth2-issuer-url-section">
 					<div className="space-y-0.5">
@@ -731,9 +766,7 @@ export default function SecurityView() {
 						!secretVarEquals(localConfig.oauth2_server_config?.issuer_url, config?.oauth2_server_config?.issuer_url) && (
 							<Alert variant="warning" data-testid="oauth2-issuer-url-change-warning">
 								<AlertTriangle className="size-4" />
-								<AlertDescription>
-									{t("security.issuerChangeWarning")}
-								</AlertDescription>
+								<AlertDescription>{t("security.issuerChangeWarning")}</AlertDescription>
 							</Alert>
 						)}
 				</div>

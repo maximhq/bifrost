@@ -248,7 +248,11 @@
 		"skipAccessProfileKeyCreation": "Don't Create User Virtual Keys for Access Profiles",
 		"skipAccessProfileKeyCreationHelp": "When enabled, a user's first access profile doesn't create a virtual key for them. Keys the user already owns, or that you add for them, are still governed by the profile while they hold one.",
 		"skipAccessProfileKeyDeletion": "Don't Delete User Virtual Keys When Access Profiles Are Removed",
-		"skipAccessProfileKeyDeletionHelp": "When enabled, removing a user's last access profile keeps their virtual keys as ordinary keys, with none of the profile's providers or access. Deleting the user still deletes their keys."
+		"skipAccessProfileKeyDeletionHelp": "When enabled, removing a user's last access profile keeps their virtual keys as ordinary keys, with none of the profile's providers or access. Deleting the user still deletes their keys.",
+		"accessProfileHierarchy": "Access Profile Hierarchy",
+		"accessProfileHierarchyHelp": "How the access profiles of a user's teams, business units and customers combine with the user's own access. Additive: each of them adds to what the user can reach. Restrictive: each level with an active profile caps it instead, so the user keeps only what their own profile or virtual key allows and at least one profile at every such level also allows. Budgets and rate limits are charged the same way in both modes.",
+		"accessProfileHierarchyAdditive": "Additive",
+		"accessProfileHierarchyRestrictive": "Restrictive"
 	},
 	"logging": {
 		"title": "Logs Settings",

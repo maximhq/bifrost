@@ -248,7 +248,11 @@
 		"skipAccessProfileKeyCreation": "No crear claves virtuales de usuario para los perfiles de acceso",
 		"skipAccessProfileKeyCreationHelp": "Si se activa, el primer perfil de acceso de un usuario no le crea una clave virtual. Las claves que ya posee o que añadas en su nombre seguirán regidas por el perfil mientras lo tenga.",
 		"skipAccessProfileKeyDeletion": "No eliminar las claves virtuales de usuario al quitar perfiles de acceso",
-		"skipAccessProfileKeyDeletionHelp": "Si se activa, al quitar el último perfil de acceso de un usuario, sus claves virtuales se conservan como claves normales, sin los proveedores ni el acceso del perfil. Si eliminas al usuario, también se eliminarán sus claves."
+		"skipAccessProfileKeyDeletionHelp": "Si se activa, al quitar el último perfil de acceso de un usuario, sus claves virtuales se conservan como claves normales, sin los proveedores ni el acceso del perfil. Si eliminas al usuario, también se eliminarán sus claves.",
+		"accessProfileHierarchy": "Jerarquía de perfiles de acceso",
+		"accessProfileHierarchyHelp": "Cómo se combinan los perfiles de acceso de los equipos, unidades de negocio y clientes de un usuario con su propio acceso. Aditivo: cada uno de ellos amplía lo que el usuario puede alcanzar. Restrictivo: cada nivel con un perfil activo lo limita, de modo que el usuario conserva solo lo que permite su propio perfil o clave virtual y que además permite al menos un perfil de cada uno de esos niveles. Los presupuestos y límites de tasa se cobran igual en ambos modos.",
+		"accessProfileHierarchyAdditive": "Aditivo",
+		"accessProfileHierarchyRestrictive": "Restrictivo"
 	},
 	"logging": {
 		"title": "Ajustes de registros",
