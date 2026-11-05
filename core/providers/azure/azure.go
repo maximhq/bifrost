@@ -3899,7 +3899,7 @@ func (provider *AzureProvider) PassthroughStream(
 
 	var anthropicUsage *anthropic.AnthropicPassthroughStreamUsage
 	if schemas.IsAnthropicModelFamily(ctx, req.Model) {
-		anthropicUsage = &anthropic.AnthropicPassthroughStreamUsage{}
+		anthropicUsage = &anthropic.AnthropicPassthroughStreamUsage{RequestBody: req.Body}
 	}
 	return providerUtils.StreamPassthrough(
 		ctx, postHookRunner, postHookSpanFinalizer, resp, rawBodyStream,

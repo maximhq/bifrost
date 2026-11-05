@@ -192,8 +192,11 @@ func urlSourceScheme(rawURL string) string {
 // text/plain (or "txt") file_type means file_data is plain text, and anything else without a
 // data: prefix is base64. A data URL is left as it is, and so is a payload that is not valid
 // base64, since there is no basis to guess what it is.
+//
+// An empty text/plain payload is still a document (Anthropic accepts a text source with
+// data ""), so it becomes the empty data URL rather than a bare "" no OpenAI surface parses.
 func fileDataAsDataURL(fileData string, fileType *string) string {
-	if fileData == "" || strings.HasPrefix(fileData, "data:") {
+	if strings.HasPrefix(fileData, "data:") {
 		return fileData
 	}
 
@@ -203,6 +206,9 @@ func fileDataAsDataURL(fileData string, fileType *string) string {
 	}
 	if mediaType == "text/plain" {
 		return "data:text/plain;base64," + base64.StdEncoding.EncodeToString([]byte(fileData))
+	}
+	if fileData == "" {
+		return fileData
 	}
 
 	decoded, err := base64.StdEncoding.DecodeString(fileData)
@@ -258,4 +264,68 @@ func sniffFileMediaType(data []byte) string {
 // marshal gates copy the block even when the caller sent no file_type to strip.
 func fileDataNeedsDataURL(fileData *string) bool {
 	return fileData != nil && *fileData != "" && !strings.HasPrefix(*fileData, "data:")
+}
+
+// fileNeedsWireRewrite reports whether a file block carries something openAIWireFile has to
+// change before it can go out: a file_type to fold into file_data, bare file_data, or inline
+// file_data with no filename beside it.
+func fileNeedsWireRewrite(fileData, filename, fileType *string) bool {
+	return fileType != nil || fileDataNeedsDataURL(fileData) ||
+		(fileData != nil && *fileData != "" && (filename == nil || *filename == ""))
+}
+
+// openAIWireFile returns file_data as a data URL and a filename to go with it. OpenAI rejects
+// inline file_data without a filename, and validates the filename's extension against the
+// payload, so a missing name is synthesized from the data URL's media type. Ingress converters
+// leave a missing name missing, so a document routed to a provider without the requirement
+// (Anthropic, where it would surface as a title) keeps the shape the client sent.
+func openAIWireFile(fileData, filename, fileType *string) (*string, *string) {
+	if fileData == nil {
+		return nil, filename
+	}
+	data := fileDataAsDataURL(*fileData, fileType)
+	if data != "" && (filename == nil || *filename == "") {
+		filename = schemas.Ptr(defaultInlineFilename(data, fileType))
+	}
+	return &data, filename
+}
+
+// officeDocumentExtensions maps Office media types, whose subtypes are not usable extensions,
+// onto the extensions OpenAI accepts for file inputs.
+var officeDocumentExtensions = map[string]string{
+	"application/vnd.openxmlformats-officedocument.wordprocessingml.document":   ".docx",
+	"application/vnd.openxmlformats-officedocument.presentationml.presentation": ".pptx",
+	"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":         ".xlsx",
+	"application/msword":            ".doc",
+	"application/vnd.ms-powerpoint": ".ppt",
+	"application/vnd.ms-excel":      ".xls",
+}
+
+// defaultInlineFilename names an inline file after its media type: the data URL's when it has
+// one, otherwise the caller's file_type, otherwise PDF, which is what the native converters
+// assume for an untyped document.
+func defaultInlineFilename(fileData string, fileType *string) string {
+	mediaType := ""
+	if rest, ok := strings.CutPrefix(fileData, "data:"); ok {
+		mediaType, _, _ = strings.Cut(rest, ",")
+		mediaType, _, _ = strings.Cut(mediaType, ";")
+		mediaType = normalizeFileType(mediaType)
+	}
+	if mediaType == "" && fileType != nil {
+		mediaType = normalizeFileType(*fileType)
+	}
+	if ext, ok := mediaTypeExtensions[mediaType]; ok {
+		return "document" + ext
+	}
+	if ext, ok := officeDocumentExtensions[mediaType]; ok {
+		return "document" + ext
+	}
+	// "application/vnd.ms-excel+xml" -> ".xml", "image/png" -> ".png".
+	if _, subtype, found := strings.Cut(mediaType, "/"); found && subtype != "" {
+		if _, suffix, hasSuffix := strings.Cut(subtype, "+"); hasSuffix && suffix != "" {
+			subtype = suffix
+		}
+		return "document." + subtype
+	}
+	return "document.pdf"
 }

@@ -353,6 +353,7 @@ var logstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"relay_logs_add_session_id"}, run: migrationAddRelayLogSessionID},
 	{IDs: []string{"relay_logs_add_large_payload_response"}, run: migrationAddRelayLogLargePayloadResponse},
 	{IDs: []string{"relay_logs_add_correlation_columns"}, run: migrationAddRelayLogCorrelationColumns},
+	{IDs: []string{"mcp_tool_logs_add_round_trip_id_column"}, run: migrationAddRoundTripIDColumnToMCPToolLogs},
 }
 
 // areThereAnyPendingMigrations returns true if there are any pending migrations to be applied.
@@ -3031,6 +3032,11 @@ var performanceIndexes = []performanceIndexDef{
 		table: "mcp_tool_logs",
 		name:  "idx_mcp_logs_agent_correlation_id",
 		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_mcp_logs_agent_correlation_id ON mcp_tool_logs(agent_correlation_id) WHERE agent_correlation_id IS NOT NULL",
+	},
+	{
+		table: "mcp_tool_logs",
+		name:  "idx_mcp_logs_round_trip_id",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_mcp_logs_round_trip_id ON mcp_tool_logs(round_trip_id) WHERE round_trip_id IS NOT NULL",
 	},
 	{
 		table: "mcp_tool_logs",
@@ -5998,6 +6004,52 @@ func migrationAddMethodColumnToMCPToolLogs(ctx context.Context, db *gorm.DB, log
 		return fmt.Errorf("error while running db migration %s: %w", migrationName, err)
 	}
 	return nil
+}
+
+// migrationAddRoundTripIDColumnToMCPToolLogs adds the column linking the rounds of an MCP gateway tool call
+// that asked its caller for input; other rows leave it null, so there is no backfill. Postgres builds its index
+// concurrently through performanceIndexes; other dialects create it here.
+func migrationAddRoundTripIDColumnToMCPToolLogs(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "mcp_tool_logs_add_round_trip_id_column"
+	logger.Info("[logstore] starting migration %s", migrationName)
+	defer logger.Info("[logstore] finished migration %s", migrationName)
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{roundTripIDColumnMigration(ctx, logger)})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running db migration %s: %w", migrationName, err)
+	}
+	return nil
+}
+
+// roundTripIDColumnMigration refuses its rollback while round_trip_id holds a value: the links between a call's
+// rounds cannot be recaptured once dropped.
+func roundTripIDColumnMigration(ctx context.Context, logger schemas.Logger) *migrator.Migration {
+	return &migrator.Migration{
+		ID: "mcp_tool_logs_add_round_trip_id_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := boundDDLLockWait(tx); err != nil {
+				return err
+			}
+			if err := addColumnIfNotExists(tx, logger, &MCPToolLog{}, "round_trip_id"); err != nil {
+				return err
+			}
+			if tx.Dialector.Name() != "postgres" && !tx.Migrator().HasIndex(&MCPToolLog{}, "idx_mcp_logs_round_trip_id") {
+				if err := tx.Migrator().CreateIndex(&MCPToolLog{}, "idx_mcp_logs_round_trip_id"); err != nil {
+					return fmt.Errorf("create idx_mcp_logs_round_trip_id index: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := refuseRollbackWhileRecorded(tx, "mcp_tool_logs_add_round_trip_id_column", []any{&MCPToolLog{}}, "round_trip_id"); err != nil {
+				return err
+			}
+			return dropColumnIfExists(tx, logger, &MCPToolLog{}, "round_trip_id")
+		},
+	}
 }
 
 // migrationCreateRelayLogsTable creates the Relay Logs table with the indexes its

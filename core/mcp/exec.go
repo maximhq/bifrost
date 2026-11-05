@@ -172,7 +172,17 @@ func (m *MCPManager) prepareToolExecution(ctx *schemas.BifrostContext, request *
 	if err := checkToolExecutionPermitted(ctx, state, toolName, m.logger); err != nil {
 		return nil, nil, nil, err
 	}
-	if !AppToolsAllowed(ctx) && !discovery.GetTools()[toolName].MCP.ModelVisible() {
+	toolMeta := discovery.GetTools()[toolName].MCP
+	// Marked before the app-only refusal, so a refused call's log says why.
+	if toolMeta != nil {
+		if toolMeta.UIResourceURI != "" {
+			ctx.SetValue(schemas.BifrostContextKeyMCPToolUIResourceURI, toolMeta.UIResourceURI)
+		}
+		if !toolMeta.ModelVisible() {
+			ctx.SetValue(schemas.BifrostContextKeyMCPToolAppOnly, true)
+		}
+	}
+	if !AppToolsAllowed(ctx) && !toolMeta.ModelVisible() {
 		return nil, nil, nil, fmt.Errorf("tool '%s' is not permitted (it is only callable from an MCP App)", toolName)
 	}
 	// NeedsReauth is the one hard gate left besides Disabled: the credential

@@ -3,11 +3,11 @@ package schemas
 import (
 	"maps"
 	"sort"
-	"strconv"
 	"strings"
 )
 
-// RawRequestBodyTextRewriter synchronizes runtime literal replacements into provider-native JSON.
+// RawRequestBodyTextRewriter synchronizes runtime literal replacements, from redaction or provider-managed
+// transformations, into provider-native JSON.
 // Integrations implement this contract because only they know which native fields correspond to
 // guardrail-visible normalized text. Callers must pass owned rawBody bytes and use only the returned
 // slice because implementations may mutate the input in place; any rewrite error is unsafe to forward.
@@ -23,7 +23,7 @@ type RawRequestLiteralsNotFoundError struct {
 
 // Error describes the failure without naming any literal.
 func (e *RawRequestLiteralsNotFoundError) Error() string {
-	return "one or more runtime redaction literals were not found in an integration-owned content path"
+	return "one or more runtime replacement literals were not found in an integration-owned content path"
 }
 
 // DecodedJSONLiteral returns literal with its JSON string escapes decoded, and whether that differs from literal. A
@@ -39,36 +39,6 @@ func DecodedJSONLiteral(literal string) (string, bool) {
 	}
 	return decoded, true
 }
-
-// TextTargetID identifies one integration-owned text field that mirrors normalized guardrail content.
-// It is opaque outside the integration/guardrail boundary so callers cannot infer native JSON paths
-// or replace a similarly-valued field by accident.
-type TextTargetID string
-
-// TextTargetIDForIndex returns the stable identifier for one guardrail-visible text row.
-// Native integrations and guardrail extraction use the same row order only within one request or response phase.
-func TextTargetIDForIndex(index int) TextTargetID {
-	return TextTargetID(strconv.Itoa(index))
-}
-
-// TextRewrite replaces one exact guardrail-visible text field after its original value is verified.
-// Unlike literal redaction maps, repeated originals may have distinct replacements because TargetID
-// identifies the field rather than its content.
-type TextRewrite struct {
-	TargetID    TextTargetID
-	Original    string
-	Replacement string
-}
-
-// RawRequestBodyTextTransformer synchronizes exact provider-managed transformations into provider-native JSON.
-// Integrations must verify TargetID ownership and Original before returning a body; a rewrite error is unsafe to
-// forward because raw passthrough would otherwise retain the untransformed value.
-type RawRequestBodyTextTransformer func(rawBody []byte, rewrites []TextRewrite) ([]byte, error)
-
-// RawResponseTextTransformer synchronizes exact provider-managed transformations into a native client response.
-// Integrations preserve the concrete raw response type and may rewrite only fields they own; errors must prevent
-// forwarding the original native response when its normalized counterpart has changed.
-type RawResponseTextTransformer func(rawResponse any, rewrites []TextRewrite) (any, error)
 
 // RedactionPhase identifies which request lifecycle phase produced a redaction finding.
 type RedactionPhase string

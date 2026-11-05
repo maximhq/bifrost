@@ -319,8 +319,6 @@ const (
 	BifrostContextKeyURLPath                             BifrostContextKey = "bifrost-extra-url-path"                  // string
 	BifrostContextKeyUseRawRequestBody                   BifrostContextKey = "bifrost-use-raw-request-body"
 	BifrostContextKeyRawRequestBodyTextRewriter          BifrostContextKey = "bifrost-raw-request-body-text-rewriter"           // RawRequestBodyTextRewriter (set by native integrations because raw passthrough bypasses normalized runtime redaction)
-	BifrostContextKeyRawRequestBodyTextTransformer       BifrostContextKey = "bifrost-raw-request-body-text-transformer"        // RawRequestBodyTextTransformer (set by native integrations for exact provider-managed transformations)
-	BifrostContextKeyRawResponseTextTransformer          BifrostContextKey = "bifrost-raw-response-text-transformer"            // RawResponseTextTransformer (set by native integrations that forward a native non-stream response)
 	BifrostContextKeyAnthropicNativeRequestSurface       BifrostContextKey = "bifrost-anthropic-native-request-surface"         // opaque provider-owned value (set by the Anthropic Messages ingress converter, recording the caller's own thinking and sampling surface so the Anthropic egress can rebuild what the neutral shape cannot carry). The key is exported ONLY so ClearContextForInternalRequest can shed it: a plugin-owned sub-request built on a derived context would otherwise inherit the caller's parameters. The value type is unexported, so nothing outside that provider can forge one.
 	BifrostContextKeyChangeRequestType                   BifrostContextKey = "bifrost-change-request-type"                      // RequestType (set by plugins to trigger request type conversion in core, e.g. text->chat or chat->responses)
 	BifrostContextKeySendBackRawRequest                  BifrostContextKey = "bifrost-send-back-raw-request"                    // bool (per-request override — read by bifrost.go, never overwritten)
@@ -468,6 +466,10 @@ const (
 	BifrostContextKeyMCPToolListing                      BifrostContextKey = "bifrost-mcp-tool-listing"                   // string (set by bifrost - DO NOT SET THIS MANUALLY) - overrides which tools an MCP tool listing includes: "model" (code mode) or "all" (the gateway's sync)
 	BifrostContextKeyMCPGatewayClient                    BifrostContextKey = "bifrost-mcp-gateway-client"                 // string (set by the MCP gateway - DO NOT SET THIS MANUALLY) - the one MCP client a /mcp/<slug> request serves
 	BifrostContextKeyMCPInputResumption                  BifrostContextKey = "bifrost-mcp-input-resumption"               // *mcp.MultiRoundTripParams (set by the MCP gateway - DO NOT SET THIS MANUALLY) - the caller's answers and requestState when it retries a tools/call that needed input
+	BifrostContextKeyMCPRoundTripID                      BifrostContextKey = "bifrost-mcp-round-trip-id"                  // string (set by the MCP gateway - DO NOT SET THIS MANUALLY) - the round-trip id a caller's retry carried in its requestState
+	BifrostContextKeyMCPRequestedToolName                BifrostContextKey = "bifrost-mcp-requested-tool-name"            // string (set by the MCP gateway - DO NOT SET THIS MANUALLY) - the server-given name a caller used when the gateway resolved it to a Bifrost tool name
+	BifrostContextKeyMCPToolUIResourceURI                BifrostContextKey = "bifrost-mcp-tool-ui-resource-uri"           // string (set by bifrost - DO NOT SET THIS MANUALLY) - the ui:// resource the MCP Apps tool being executed opens
+	BifrostContextKeyMCPToolAppOnly                      BifrostContextKey = "bifrost-mcp-tool-app-only"                  // bool (set by bifrost - DO NOT SET THIS MANUALLY) - the MCP tool being executed is visible only to MCP Apps
 	BifrostContextKeyCompatConvertTextToChat             BifrostContextKey = "bifrost-compat-convert-text-to-chat"        // bool (per-request override from x-bf-compat header)
 	BifrostContextKeyCompatConvertChatToResponses        BifrostContextKey = "bifrost-compat-convert-chat-to-responses"   // bool (per-request override from x-bf-compat header)
 	BifrostContextKeyCompatShouldDropParams              BifrostContextKey = "bifrost-compat-should-drop-params"          // bool (per-request override from x-bf-compat header)
@@ -2257,9 +2259,9 @@ func IsStreamCommitMarker(chunk *BifrostStreamChunk) bool { return chunk == stre
 // This ensures that only the non-nil embedded struct is marshaled,
 func (bs BifrostStreamChunk) MarshalJSON() ([]byte, error) {
 	if bs.BifrostTextCompletionResponse != nil {
-		return MarshalSorted(bs.BifrostTextCompletionResponse)
+		return MarshalSorted(bs.BifrostTextCompletionResponse.WithPreservedUsage())
 	} else if bs.BifrostChatResponse != nil {
-		return MarshalSorted(bs.BifrostChatResponse)
+		return MarshalSorted(bs.BifrostChatResponse.WithPreservedUsage())
 	} else if bs.BifrostResponsesStreamResponse != nil {
 		return MarshalSorted(bs.BifrostResponsesStreamResponse)
 	} else if bs.BifrostSpeechStreamResponse != nil {
@@ -2474,6 +2476,20 @@ func (e *ErrorField) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// FallbackAttempt is what became of one fallback when every attempt of a request failed. The
+// caller is answered with the primary's error, so this is the only place a fallback that was
+// refused before reaching its provider (a virtual key that does not allow it, a provider with no
+// config) is visible to them. It carries the error's classification and message only, never the
+// fallback's full error, whose raw request can hold provider credentials.
+type FallbackAttempt struct {
+	Provider   ModelProvider `json:"provider"`
+	Model      string        `json:"model"`
+	StatusCode *int          `json:"status_code,omitempty"`
+	Type       string        `json:"type,omitempty"`
+	Message    string        `json:"message,omitempty"`
+	Skipped    bool          `json:"skipped,omitempty"` // never attempted: no provider config, or the request type has no fallback support
+}
+
 // BifrostErrorExtraFields contains additional fields in an error response.
 type BifrostErrorExtraFields struct {
 	RoutingInfo RoutingInfo `json:"routing_info"`
@@ -2511,6 +2527,7 @@ type BifrostErrorExtraFields struct {
 	Latency                   int64                 `json:"latency,omitempty"`        // in milliseconds
 	RetryAfter                int64                 `json:"retry_after_ms,omitempty"` // provider's retry hint in milliseconds, clamped to 1s..5m; zero when it gave none
 	KeyStatuses               []KeyStatus           `json:"key_statuses,omitempty"`
+	FallbackAttempts          []FallbackAttempt     `json:"fallback_attempts,omitempty"` // fallbacks that failed or were skipped, set when the primary's error is returned after the chain ran out
 	MCPAuthRequired           *MCPAuthRequiredError `json:"mcp_auth_required,omitempty"` // Set when a per-user MCP tool requires the caller to complete an inline auth flow (OAuth or headers)
 	// BilledUsage carries provider-reported token usage that was consumed even
 	// though the request ultimately failed or was cancelled (e.g. a stream

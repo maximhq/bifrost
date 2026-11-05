@@ -9,6 +9,7 @@ require (
 	github.com/maximhq/bifrost/core v1.14.1
 	github.com/maximhq/bifrost/framework v1.11.1
 	github.com/maximhq/bifrost/plugins/mocker v1.6.14
+	github.com/stretchr/testify v1.12.1
 )
 
 require (
@@ -92,7 +93,6 @@ require (
 	github.com/savsgio/gotils v0.0.0-20250408102913-196191ec6287 // indirect
 	github.com/spf13/cast v1.10.0 // indirect
 	github.com/stretchr/objx v0.5.3 // indirect
-	github.com/stretchr/testify v1.12.1 // indirect
 	github.com/tidwall/gjson v1.18.0 // indirect
 	github.com/tidwall/match v1.1.1 // indirect
 	github.com/tidwall/pretty v1.2.1 // indirect
