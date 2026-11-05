@@ -594,12 +594,53 @@ func parseSecurityScheme(name string, m map[string]any, swagger2 bool) SecurityS
 		default:
 			scheme.Reason = fmt.Sprintf("http authentication scheme %q is not supported (bearer and basic only)", scheme.Scheme)
 		}
-	case "oauth2", "openIdConnect", "mutualTLS":
-		scheme.Reason = fmt.Sprintf("%s security schemes are not supported; configure an API key or bearer/basic credential, or static headers", scheme.Type)
+	case "oauth2":
+		// No stored credential applies: the bearer comes from the client's
+		// oauth or per_user_oauth auth type. The authorization code endpoints
+		// are kept so that client's oauth_config can default from them.
+		scheme.Supported = true
+		parseOAuthFlow(&scheme, m, swagger2)
+	case "openIdConnect":
+		scheme.Supported = true
+		if u := strings.TrimSpace(asString(m["openIdConnectUrl"])); isAbsoluteHTTPURL(u) {
+			scheme.OAuth = &OAuthFlow{OpenIDConnectURL: u}
+		}
+	case "mutualTLS":
+		scheme.Reason = "mutualTLS security schemes are not supported; configure an API key or bearer/basic credential, or static headers"
 	default:
 		scheme.Reason = fmt.Sprintf("security scheme type %q is not supported", scheme.Type)
 	}
 	return scheme
+}
+
+// parseOAuthFlow records an oauth2 scheme's authorization code flow (swagger
+// 2.0: the "accessCode" flow on the scheme itself). Relative endpoints are left
+// out rather than resolved against a server that may not be the authorization
+// server.
+func parseOAuthFlow(scheme *SecurityScheme, m map[string]any, swagger2 bool) {
+	flow := asMap(asMap(m["flows"])["authorizationCode"])
+	if swagger2 {
+		if strings.TrimSpace(asString(m["flow"])) != "accessCode" {
+			return
+		}
+		flow = m
+	}
+	if flow == nil {
+		return
+	}
+	var f OAuthFlow
+	if u := strings.TrimSpace(asString(flow["authorizationUrl"])); isAbsoluteHTTPURL(u) {
+		f.AuthorizationURL = u
+	}
+	if u := strings.TrimSpace(asString(flow["tokenUrl"])); isAbsoluteHTTPURL(u) {
+		f.TokenURL = u
+	}
+	if scopes := sortedKeys(asMap(flow["scopes"])); len(scopes) > 0 {
+		f.Scopes = scopes
+	}
+	if f.AuthorizationURL != "" || f.TokenURL != "" || len(f.Scopes) > 0 {
+		scheme.OAuth = &f
+	}
 }
 
 func parseSecurityRequirements(raw any) []SecurityRequirement {
