@@ -2939,6 +2939,24 @@ func TestValidateClientConfig_IssuerURLRequiredForDiscovery(t *testing.T) {
 	}
 }
 
+// TestLoadConfig_InvalidTrustedHostDoesNotOpenStores prevents a rejected
+// deployment from creating or reconciling persistent store state.
+func TestLoadConfig_InvalidTrustedHostDoesNotOpenStores(t *testing.T) {
+	initTestLogger()
+	dir := t.TempDir()
+	createConfigFile(t, dir, &ConfigData{
+		SourceOfTruth: SourceOfTruthConfigJSON,
+		Server:        &ServerConfig{TrustedForwardedHost: "https://public.example.com"},
+	})
+	config, err := LoadConfig(context.Background(), dir)
+	if config != nil {
+		defer config.Close(context.Background())
+	}
+	require.ErrorContains(t, err, "server.trusted_forwarded_host")
+	require.NoFileExists(t, filepath.Join(dir, "config.db"))
+	require.NoFileExists(t, filepath.Join(dir, "logs.db"))
+}
+
 // TestLoadConfig_OAuthDiscoveryWithoutIssuerURLFailsBoot verifies OAuth
 // discovery enabled with no issuer_url in config.json makes LoadConfig fail
 // rather than silently falling back to Host-derived issuer identity.
