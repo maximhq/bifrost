@@ -872,9 +872,15 @@ func TestBuildBaseURL(t *testing.T) {
 		host     string
 		xfProto  string
 		xbfProto string
+		xfHost   string
 		want     string
 	}{
 		{name: "defaults to http", host: host, want: "http://" + host},
+		{name: "forwarded host without configured URL ignored", host: host, xfHost: "public.example.com:8443", xfProto: "https", want: "https://" + host},
+		{name: "forwarded host matching configured domain", external: "https://public.example.com/edge", host: host, xfHost: "public.example.com", want: "https://public.example.com/edge"},
+		{name: "forwarded host mismatching configured domain ignored", external: "https://configured.example.com", host: host, xfHost: "attacker.example.com", want: "https://configured.example.com"},
+		{name: "forwarded host matching domain cannot override port", external: "https://public.example.com:8443", host: host, xfHost: "public.example.com:9999", want: "https://public.example.com:8443"},
+		{name: "forwarded host cannot replace missing host without configured URL", xfHost: "public.example.com", want: ""},
 		{name: "x-forwarded-proto https", host: host, xfProto: "https", want: "https://" + host},
 		{name: "x-forwarded-proto comma list", host: host, xfProto: "https, http", want: "https://" + host},
 		{name: "x-forwarded-proto uppercase", host: host, xfProto: "HTTPS", want: "https://" + host},
@@ -899,6 +905,7 @@ func TestBuildBaseURL(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			ctx := &fasthttp.RequestCtx{}
 			ctx.Request.SetHost(tt.host)
+			ctx.Request.Header.Set("X-Forwarded-Host", tt.xfHost)
 			if tt.xfProto != "" {
 				ctx.Request.Header.Set("X-Forwarded-Proto", tt.xfProto)
 			}
