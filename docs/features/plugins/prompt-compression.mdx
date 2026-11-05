@@ -91,7 +91,7 @@ The plugin is designed so that, in the worst case, your request goes out exactly
 </Note>
 
 - **Structure is preserved.** No message is removed or reordered. Roles, tool call IDs and call/output pairing stay intact.
-- **Stable edits.** While the client's cache-protected prefix does not move, every message already sent stays byte-identical on later requests. The only new edits are at tool outputs that just became old enough. If a client moves a cache marker forward, outputs inside the new protected prefix go back to the text the client sent (they must match it); edits outside the prefix stay.
+- **Stable edits.** While the client's cache-protected prefix does not move, every edit already made stays as it was (and untouched messages stay untouched) on later requests. The only new edits are at tool outputs that just became old enough. If a client moves a cache marker forward, outputs inside the new protected prefix go back to the text the client sent (they must match it), and edits outside the prefix can change between requests.
 - **The cache-protected prefix is byte-identical.** Provider prompt caches match on an exact prefix, so everything up to and including the last client-supplied cache marker is never modified. Recognised markers:
   - Anthropic `cache_control` on content blocks, and on assistant tool calls (Chat)
   - OpenAI `prompt_cache_breakpoint` on content blocks
@@ -108,7 +108,7 @@ The plugin is designed so that, in the worst case, your request goes out exactly
 Compression and provider prompt caching pull in opposite directions, so it is worth understanding how they interact.
 
 - **Clients that mark the latest message every turn** (for example Claude Code style clients) already protect the entire conversation. For client-supplied markers the plugin does nothing, since changing anything would turn a cache hit into a full-price miss.
-- **Clients that move a marker forward** each turn get the stability guarantee above: outputs that fall inside the new protected prefix revert to the text the client sent, so the prefix still matches.
+- **Clients that move a marker forward** each turn keep hitting the provider's cached prefix: outputs that fall inside the new protected prefix revert to the text the client sent, so the prefix still matches. The stability guarantee above does not cover them, because it assumes the prefix does not move.
 - **Automatic prefix caching without markers** (for example OpenAI) is where the plugin acts. When an output just aged past the threshold and gets edited, the cached part of the prompt after it no longer matches and is re-billed.
 - **Steady state.** Each new edit sits at the newest output that became old enough, so every request re-bills the cached content after that edit, roughly the last `tool_output_min_age_turns` turns. Raise `tool_output_min_age_turns` to trade a smaller saving for fewer new edits per request.
 - **A non-zero `min_savings_tokens`** can switch compression on later than the first possible edit, and off again when a client moves a cache marker and the savings drop below the threshold. That is a cache-miss risk, so the default is 0.
@@ -116,10 +116,10 @@ Compression and provider prompt caching pull in opposite directions, so it is wo
 
 ## Limitations
 
-- **Passthrough reach.** Requests sent with the raw request body skip the plugin because they bypass the structured input. That includes Claude Code requests to Claude models (OAuth or API key) and `/genai` requests with an explicit Gemini model. Large-payload mode is also skipped.
+- **Passthrough reach.** Requests sent with the raw request body skip the plugin because they bypass the structured input. That normally includes Claude Code requests to Claude models (OAuth or API key); structured-output providers and Vertex beta headers turn raw passthrough off for a request. It also includes `/genai` requests with an explicit Gemini model. Large-payload mode is also skipped.
 - **Only `function_call_output` and `tool` outputs are compressed.** Other output types (shell, computer, custom tool and so on) and non-text content are left as they are.
 - **Line-based trimming.** A single huge line (minified JSON, a one-line log) cannot be shortened. A JSON output with many lines can be cut in the middle of a structure, so the model sees invalid JSON around the marker.
-- **The logging plugin stores the uncompressed request.** It runs before this plugin (order 3 versus 10), so logs and the cost shown there do not show what was sent to the provider.
+- **The logging plugin stores the uncompressed messages.** It runs before this plugin (order 3 versus 10). The logs show the original messages, not the compressed ones; token usage and cost reflect what was actually sent.
 - **Requests that end on an assistant message or prefill.** For Responses, two model responses can merge into one turn, so the turn count, and with it a dedupe decision, can differ from the one the previous request saw. The stability guarantee assumes each request ends on a whole model response followed by new client input.
 - **Only Chat and Responses requests.** Other request types (embeddings, speech, and so on) pass through.
 - **No LLM summarisation.** Trimmed content is gone from the request; the model sees only the marker.
