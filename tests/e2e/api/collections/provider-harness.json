@@ -146873,12 +146873,19 @@
                       "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
                       "});",
                       "if (!rr) { return; }",
-                      "// The caller expressed caching intent in the OTHER dialect. Anthropic's serializer",
-                      "// ignores prompt_cache_breakpoint, so if the injector had failed to recognise it as a",
-                      "// marker it would have added a cache_control of its own and silently overridden the",
-                      "// caller's placement. An empty wire is the proof it stood down.",
-                      "pm.test('64.5.2 nothing was injected on top of the client\\'s breakpoint', function () {",
-                      "  pm.expect(rawStr, 'raw_request: ' + rawStr.slice(0, 1000)).to.not.include('cache_control');",
+                      "// The caller expressed caching intent in the OTHER dialect. The Anthropic converter",
+                      "// translates that prompt_cache_breakpoint into cache_control on the same block, so the",
+                      "// wire carries exactly one marker, on bp-second. Had the injector failed to stand down,",
+                      "// its default first-block marker would also appear on bp-first.",
+                      "var marked = [];",
+                      "((rr.messages || [])).forEach(function (m) {",
+                      "  (Array.isArray(m.content) ? m.content : []).forEach(function (b) {",
+                      "    if (b && b.cache_control) { marked.push(String(b.text || b.type)); }",
+                      "  });",
+                      "});",
+                      "pm.test('64.5.2 the client\\'s breakpoint is the only marker, nothing injected', function () {",
+                      "  pm.expect(marked.length, 'markers: ' + JSON.stringify(marked) + ' raw_request: ' + rawStr.slice(0, 1000)).to.equal(1);",
+                      "  pm.expect(marked[0], 'raw_request: ' + rawStr.slice(0, 1000)).to.include('bp-second');",
                       "});"
                     ]
                   }
@@ -309457,6 +309464,557 @@
                 "anthropic",
                 "v1",
                 "messages"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "306. OpenAI prompt_cache_breakpoint reaches Claude as cache_control (breakpoint to cache_control)",
+      "description": "A /v1/responses or /v1/chat/completions request written for OpenAI's explicit prompt caching carries prompt_cache_breakpoint {\"mode\":\"explicit\"} on content blocks. Routed to a Claude model, that marker used to be dropped silently: the Anthropic and Bedrock Converse converters only read cache_control, so the request reached the provider with no cache marker and neither wrote nor read the cache.\n\nThe converters now run providerUtils.ResponsesBreakpointsAsCacheControl / ChatBreakpointsAsCacheControl (core/providers/utils/promptcache.go) first: each explicit breakpoint becomes cache_control {\"type\":\"ephemeral\"} on the same block, a breakpoint inside a function_call_output becomes tool_result.cache_control (never nested in tool_result.content, which Anthropic rejects), the breakpoint ttl is not mapped (30m/12h have no cache_control equivalent, so the default lifetime applies), and translated markers only spend the 4-slot budget the caller's own cache_control markers leave.\n\nEvery row asserts the OUTBOUND payload via x-bf-send-back-raw-request, since the response is identical with or without a marker. Rows: (1) Anthropic /v1/responses with a developer breakpoint carrying ttl 12h plus a function_call_output breakpoint, (2) the same streaming, (3) Anthropic /v1/chat/completions with a user block and a tool message breakpoint, (4) Bedrock Claude /v1/responses and (5) /v1/chat/completions (Converse cachePoint or InvokeModel cache_control), (6) Vertex Claude /v1/responses. Nova on Bedrock takes a cachePoint only directly after a text block and 400s on one after a toolResult or image (\"extraneous key [cachePoint] is not permitted\"), so the converter drops those: (7) Nova /v1/responses with breakpoints on user text and a function_call_output, (8) Nova /v1/chat/completions with breakpoints on text and an image; each keeps exactly the text cachePoint. The budget and precedence rules are pinned by Go unit tests in core/providers/anthropic/responses_test.go.",
+      "item": [
+        {
+          "name": "anthropic claude-sonnet-4-6 /v1/responses breakpoint to cache_control non-streaming",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('306.1 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var rr = ((pm.response.json() || {}).extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var rawStr = rr ? JSON.stringify(rr) : '';",
+                  "pm.test('306.1 raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "pm.test('306.1 prompt_cache_breakpoint does not reach the Claude wire', function () {",
+                  "  pm.expect(rawStr, rawStr.slice(0, 1000)).to.not.include('prompt_cache_breakpoint');",
+                  "});",
+                  "var sys = Array.isArray(rr.system) ? rr.system : [];",
+                  "var sysCC = sys.length ? sys[0].cache_control : null;",
+                  "pm.test('306.1 developer breakpoint became system cache_control', function () {",
+                  "  pm.expect(sysCC, 'system: ' + JSON.stringify(rr.system)).to.be.an('object');",
+                  "  pm.expect(sysCC.type).to.equal('ephemeral');",
+                  "});",
+                  "pm.test('306.1 12h ttl has no cache_control equivalent and is not forwarded', function () {",
+                  "  pm.expect(sysCC && sysCC.ttl, 'system: ' + JSON.stringify(rr.system)).to.equal(undefined);",
+                  "});",
+                  "var toolResult = null;",
+                  "(rr.messages || []).forEach(function (m) {",
+                  "  (Array.isArray(m.content) ? m.content : []).forEach(function (b) { if (b && b.type === 'tool_result') { toolResult = b; } });",
+                  "});",
+                  "pm.test('306.1 tool output breakpoint became tool_result.cache_control', function () {",
+                  "  pm.expect(toolResult, 'messages: ' + JSON.stringify(rr.messages)).to.be.an('object');",
+                  "  pm.expect(toolResult.cache_control, 'tool_result: ' + JSON.stringify(toolResult)).to.be.an('object');",
+                  "});",
+                  "pm.test('306.1 no cache_control nested inside tool_result.content (Anthropic rejects it)', function () {",
+                  "  var nested = JSON.stringify((toolResult && toolResult.content) || '');",
+                  "  pm.expect(nested, nested).to.not.include('cache_control');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-4-6\",\n  \"max_output_tokens\": 16,\n  \"input\": [\n    {\n      \"role\": \"developer\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"[bf-306 system] You answer weather questions in one word.\",\n          \"prompt_cache_breakpoint\": {\n            \"mode\": \"explicit\",\n            \"ttl\": \"12h\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Weather in Paris?\"\n        }\n      ]\n    },\n    {\n      \"type\": \"function_call\",\n      \"call_id\": \"call_bf306\",\n      \"name\": \"get_weather\",\n      \"arguments\": \"{\\\"city\\\":\\\"Paris\\\"}\"\n    },\n    {\n      \"type\": \"function_call_output\",\n      \"call_id\": \"call_bf306\",\n      \"output\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"18C and sunny\",\n          \"prompt_cache_breakpoint\": {\n            \"mode\": \"explicit\"\n          }\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"get_weather\",\n      \"description\": \"Get the weather for a city.\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"city\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"city\"\n        ]\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "anthropic claude-sonnet-4-6 /v1/responses breakpoint to cache_control streaming",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text();",
+                  "pm.test('306.2 streaming 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "pm.test('306.2 stream completed', function () {",
+                  "  pm.expect(txt.indexOf('response.completed'), txt.slice(-800)).to.be.above(-1);",
+                  "});",
+                  "// The terminal response.completed event carries extra_fields.raw_request.",
+                  "var rr = null;",
+                  "txt.split('\\n').forEach(function (l) {",
+                  "  if (l.indexOf('data:') !== 0) { return; }",
+                  "  var ev; try { ev = JSON.parse(l.slice(5)); } catch (e) { return; }",
+                  "  if (ev && ev.type === 'response.completed' && ev.extra_fields && ev.extra_fields.raw_request) { rr = ev.extra_fields.raw_request; }",
+                  "});",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var rawStr = rr ? JSON.stringify(rr) : '';",
+                  "pm.test('306.2 raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "pm.test('306.2 prompt_cache_breakpoint does not reach the Claude wire', function () {",
+                  "  pm.expect(rawStr, rawStr.slice(0, 1000)).to.not.include('prompt_cache_breakpoint');",
+                  "});",
+                  "var sys = Array.isArray(rr.system) ? rr.system : [];",
+                  "var sysCC = sys.length ? sys[0].cache_control : null;",
+                  "pm.test('306.2 developer breakpoint became system cache_control', function () {",
+                  "  pm.expect(sysCC, 'system: ' + JSON.stringify(rr.system)).to.be.an('object');",
+                  "  pm.expect(sysCC.type).to.equal('ephemeral');",
+                  "});",
+                  "pm.test('306.2 12h ttl has no cache_control equivalent and is not forwarded', function () {",
+                  "  pm.expect(sysCC && sysCC.ttl, 'system: ' + JSON.stringify(rr.system)).to.equal(undefined);",
+                  "});",
+                  "var toolResult = null;",
+                  "(rr.messages || []).forEach(function (m) {",
+                  "  (Array.isArray(m.content) ? m.content : []).forEach(function (b) { if (b && b.type === 'tool_result') { toolResult = b; } });",
+                  "});",
+                  "pm.test('306.2 tool output breakpoint became tool_result.cache_control', function () {",
+                  "  pm.expect(toolResult, 'messages: ' + JSON.stringify(rr.messages)).to.be.an('object');",
+                  "  pm.expect(toolResult.cache_control, 'tool_result: ' + JSON.stringify(toolResult)).to.be.an('object');",
+                  "});",
+                  "pm.test('306.2 no cache_control nested inside tool_result.content (Anthropic rejects it)', function () {",
+                  "  var nested = JSON.stringify((toolResult && toolResult.content) || '');",
+                  "  pm.expect(nested, nested).to.not.include('cache_control');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-4-6\",\n  \"max_output_tokens\": 16,\n  \"input\": [\n    {\n      \"role\": \"developer\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"[bf-306 system] You answer weather questions in one word.\",\n          \"prompt_cache_breakpoint\": {\n            \"mode\": \"explicit\",\n            \"ttl\": \"12h\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Weather in Paris?\"\n        }\n      ]\n    },\n    {\n      \"type\": \"function_call\",\n      \"call_id\": \"call_bf306\",\n      \"name\": \"get_weather\",\n      \"arguments\": \"{\\\"city\\\":\\\"Paris\\\"}\"\n    },\n    {\n      \"type\": \"function_call_output\",\n      \"call_id\": \"call_bf306\",\n      \"output\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"18C and sunny\",\n          \"prompt_cache_breakpoint\": {\n            \"mode\": \"explicit\"\n          }\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"get_weather\",\n      \"description\": \"Get the weather for a city.\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"city\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"city\"\n        ]\n      }\n    }\n  ],\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "anthropic claude-sonnet-4-6 /v1/chat/completions breakpoint to cache_control non-streaming",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('306.3 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var rr = ((pm.response.json() || {}).extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var rawStr = rr ? JSON.stringify(rr) : '';",
+                  "pm.test('306.3 raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "pm.test('306.3 prompt_cache_breakpoint does not reach the Claude wire', function () {",
+                  "  pm.expect(rawStr, rawStr.slice(0, 1000)).to.not.include('prompt_cache_breakpoint');",
+                  "});",
+                  "var first = ((rr.messages || [])[0] || {}).content;",
+                  "var firstCC = Array.isArray(first) && first.length ? first[0].cache_control : null;",
+                  "pm.test('306.3 user block breakpoint became cache_control', function () {",
+                  "  pm.expect(firstCC, 'messages[0]: ' + JSON.stringify(first)).to.be.an('object');",
+                  "  pm.expect(firstCC.type).to.equal('ephemeral');",
+                  "});",
+                  "var toolResult = null;",
+                  "(rr.messages || []).forEach(function (m) {",
+                  "  (Array.isArray(m.content) ? m.content : []).forEach(function (b) { if (b && b.type === 'tool_result') { toolResult = b; } });",
+                  "});",
+                  "pm.test('306.3 tool output breakpoint became tool_result.cache_control', function () {",
+                  "  pm.expect(toolResult, 'messages: ' + JSON.stringify(rr.messages)).to.be.an('object');",
+                  "  pm.expect(toolResult.cache_control, 'tool_result: ' + JSON.stringify(toolResult)).to.be.an('object');",
+                  "});",
+                  "pm.test('306.3 no cache_control nested inside tool_result.content (Anthropic rejects it)', function () {",
+                  "  var nested = JSON.stringify((toolResult && toolResult.content) || '');",
+                  "  pm.expect(nested, nested).to.not.include('cache_control');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-4-6\",\n  \"max_tokens\": 16,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"[bf-306 prefix] Weather in Paris?\",\n          \"prompt_cache_breakpoint\": {\n            \"mode\": \"explicit\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"assistant\",\n      \"tool_calls\": [\n        {\n          \"id\": \"call_bf306\",\n          \"type\": \"function\",\n          \"function\": {\n            \"name\": \"get_weather\",\n            \"arguments\": \"{\\\"city\\\":\\\"Paris\\\"}\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"tool\",\n      \"tool_call_id\": \"call_bf306\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"18C and sunny\",\n          \"prompt_cache_breakpoint\": {\n            \"mode\": \"explicit\"\n          }\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"get_weather\",\n        \"description\": \"Get the weather for a city.\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"city\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"city\"\n          ]\n        }\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock claude-haiku-4-5 /v1/responses breakpoint to cache_control non-streaming",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('306.4 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var rr = ((pm.response.json() || {}).extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var rawStr = rr ? JSON.stringify(rr) : '';",
+                  "pm.test('306.4 raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "pm.test('306.4 prompt_cache_breakpoint does not reach the Claude wire', function () {",
+                  "  pm.expect(rawStr, rawStr.slice(0, 1000)).to.not.include('prompt_cache_breakpoint');",
+                  "});",
+                  "pm.test('306.4 breakpoint became a Bedrock cache marker', function () {",
+                  "  var hit = rawStr.indexOf('cachePoint') !== -1 || rawStr.indexOf('cache_control') !== -1;",
+                  "  pm.expect(hit, 'raw_request: ' + rawStr.slice(0, 1500)).to.equal(true);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0\",\n  \"max_output_tokens\": 16,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"[bf-306 prefix] Stable prefix.\",\n          \"prompt_cache_breakpoint\": {\n            \"mode\": \"explicit\"\n          }\n        },\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Reply with OK.\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock claude-haiku-4-5 /v1/chat/completions breakpoint to cache_control non-streaming",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('306.5 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var rr = ((pm.response.json() || {}).extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var rawStr = rr ? JSON.stringify(rr) : '';",
+                  "pm.test('306.5 raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "pm.test('306.5 prompt_cache_breakpoint does not reach the Claude wire', function () {",
+                  "  pm.expect(rawStr, rawStr.slice(0, 1000)).to.not.include('prompt_cache_breakpoint');",
+                  "});",
+                  "pm.test('306.5 breakpoint became a Bedrock cache marker', function () {",
+                  "  var hit = rawStr.indexOf('cachePoint') !== -1 || rawStr.indexOf('cache_control') !== -1;",
+                  "  pm.expect(hit, 'raw_request: ' + rawStr.slice(0, 1500)).to.equal(true);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0\",\n  \"max_tokens\": 16,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"[bf-306 prefix] Stable prefix.\",\n          \"prompt_cache_breakpoint\": {\n            \"mode\": \"explicit\"\n          }\n        },\n        {\n          \"type\": \"text\",\n          \"text\": \"Reply with OK.\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "vertex claude-sonnet-4-6 /v1/responses breakpoint to cache_control non-streaming",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('306.6 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var rr = ((pm.response.json() || {}).extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var rawStr = rr ? JSON.stringify(rr) : '';",
+                  "pm.test('306.6 raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "pm.test('306.6 prompt_cache_breakpoint does not reach the Claude wire', function () {",
+                  "  pm.expect(rawStr, rawStr.slice(0, 1000)).to.not.include('prompt_cache_breakpoint');",
+                  "});",
+                  "var first = ((rr.messages || [])[0] || {}).content;",
+                  "var firstCC = Array.isArray(first) && first.length ? first[0].cache_control : null;",
+                  "pm.test('306.6 breakpoint became cache_control on the marked block', function () {",
+                  "  pm.expect(firstCC, 'messages[0]: ' + JSON.stringify(first)).to.be.an('object');",
+                  "  pm.expect(firstCC.type).to.equal('ephemeral');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/claude-sonnet-4-6\",\n  \"max_output_tokens\": 16,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"[bf-306 prefix] Stable prefix.\",\n          \"prompt_cache_breakpoint\": {\n            \"mode\": \"explicit\"\n          }\n        },\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Reply with OK.\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock nova-lite /v1/responses breakpoint to cache_control on a function_call_output non-streaming",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('306.7 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var rr = ((pm.response.json() || {}).extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var rawStr = rr ? JSON.stringify(rr) : '';",
+                  "pm.test('306.7 raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "var afterText = 0, misplaced = [];",
+                  "(rr.messages || []).forEach(function (m, i) {",
+                  "  var c = Array.isArray(m.content) ? m.content : [];",
+                  "  c.forEach(function (b, j) {",
+                  "    if (b && b.cachePoint) {",
+                  "      if (j > 0 && c[j - 1] && typeof c[j - 1].text === 'string') { afterText++; } else { misplaced.push(i + '.' + j); }",
+                  "    }",
+                  "    if (b && b.toolResult && JSON.stringify(b.toolResult).indexOf('cachePoint') !== -1) { misplaced.push(i + '.' + j + ' (nested)'); }",
+                  "  });",
+                  "});",
+                  "pm.test('306.7 text breakpoint kept as a cachePoint after text', function () {",
+                  "  pm.expect(afterText, 'messages: ' + JSON.stringify(rr.messages).slice(0, 1500)).to.equal(1);",
+                  "});",
+                  "pm.test('306.7 no cachePoint after a toolResult (Nova rejects it)', function () {",
+                  "  pm.expect(misplaced, 'messages: ' + JSON.stringify(rr.messages).slice(0, 1500)).to.deep.equal([]);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/us.amazon.nova-lite-v1:0\",\n  \"max_output_tokens\": 16,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"[bf-306 prefix] Weather in Paris?\",\n          \"prompt_cache_breakpoint\": {\n            \"mode\": \"explicit\"\n          }\n        }\n      ]\n    },\n    {\n      \"type\": \"function_call\",\n      \"call_id\": \"call_bf306\",\n      \"name\": \"get_weather\",\n      \"arguments\": \"{\\\"city\\\":\\\"Paris\\\"}\"\n    },\n    {\n      \"type\": \"function_call_output\",\n      \"call_id\": \"call_bf306\",\n      \"output\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"18C and sunny\",\n          \"prompt_cache_breakpoint\": {\n            \"mode\": \"explicit\"\n          }\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"get_weather\",\n      \"description\": \"Get the weather for a city.\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"city\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"city\"\n        ]\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock nova-lite /v1/chat/completions breakpoint to cache_control on an image non-streaming",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('306.8 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var rr = ((pm.response.json() || {}).extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var rawStr = rr ? JSON.stringify(rr) : '';",
+                  "pm.test('306.8 raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "var afterText = 0, misplaced = [];",
+                  "(rr.messages || []).forEach(function (m, i) {",
+                  "  var c = Array.isArray(m.content) ? m.content : [];",
+                  "  c.forEach(function (b, j) {",
+                  "    if (b && b.cachePoint) {",
+                  "      if (j > 0 && c[j - 1] && typeof c[j - 1].text === 'string') { afterText++; } else { misplaced.push(i + '.' + j); }",
+                  "    }",
+                  "    if (b && b.toolResult && JSON.stringify(b.toolResult).indexOf('cachePoint') !== -1) { misplaced.push(i + '.' + j + ' (nested)'); }",
+                  "  });",
+                  "});",
+                  "pm.test('306.8 text breakpoint kept as a cachePoint after text', function () {",
+                  "  pm.expect(afterText, 'messages: ' + JSON.stringify(rr.messages).slice(0, 1500)).to.equal(1);",
+                  "});",
+                  "pm.test('306.8 no cachePoint after a image (Nova rejects it)', function () {",
+                  "  pm.expect(misplaced, 'messages: ' + JSON.stringify(rr.messages).slice(0, 1500)).to.deep.equal([]);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/us.amazon.nova-lite-v1:0\",\n  \"max_tokens\": 16,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"[bf-306 prefix] Stable prefix.\",\n          \"prompt_cache_breakpoint\": {\n            \"mode\": \"explicit\"\n          }\n        },\n        {\n          \"type\": \"image_url\",\n          \"image_url\": {\n            \"url\": \"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAF0lEQVR4nGP4z8BAEiJN9aiGUQ1DSgMAkPn/Afnh+ngAAAAASUVORK5CYII=\"\n          },\n          \"prompt_cache_breakpoint\": {\n            \"mode\": \"explicit\"\n          }\n        },\n        {\n          \"type\": \"text\",\n          \"text\": \"Reply with one word: what colour is this?\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
               ]
             }
           }
