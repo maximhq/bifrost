@@ -7,7 +7,7 @@ icon: "shuffle"
 This guide shows how to put NGINX in front of Bifrost for TLS termination, centralized routing, and load balancing.
 
 <Note>
-Incoming reverse-proxy behavior is configured in your infrastructure layer (NGINX/Ingress), not in `config.json`. The one exception is serving Bifrost under a path prefix, which also needs `server.base_path` (see [Serving under a path prefix](#serving-under-a-path-prefix)).
+Incoming reverse-proxy behavior is configured in your infrastructure layer (NGINX/Ingress). Bifrost also provides deploy-time settings for [serving under a path prefix](#serving-under-a-path-prefix) and [trusting a forwarded public host](#trusting-a-forwarded-public-host) when constructing public URLs.
 </Note>
 
 ---
@@ -137,6 +137,16 @@ ingress:
       hosts:
         - bifrost.example.com
 ```
+
+---
+
+## Trusting a forwarded public host
+
+If your proxy sends an internal `Host` to Bifrost and the public hostname in `X-Forwarded-Host`, set `server.trusted_forwarded_host` in `config.json` to that public authority, for example `bifrost.example.com:8443`, and restart Bifrost. This is a single hostname with an optional port, not a full URL or wildcard pattern. It defaults to `""`, which disables use of `X-Forwarded-Host`.
+
+For public base URLs derived from the request, Bifrost considers only the first comma-delimited `X-Forwarded-Host` value, trims its surrounding whitespace, and compares it case-insensitively with the configured authority. The hostname and port must match exactly. If the header is absent or the first value does not match, Bifrost uses `Host`; it does not search later values for a match.
+
+Valid explicit public base URL overrides still win. Otherwise, the existing scheme selection and `server.base_path` are preserved. This setting does not rewrite the incoming `Host` header, change request routing, or bypass other host checks. Configure your proxy to overwrite caller-supplied forwarded headers and prevent clients from reaching Bifrost directly.
 
 ---
 
