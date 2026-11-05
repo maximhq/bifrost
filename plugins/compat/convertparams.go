@@ -50,6 +50,17 @@ func (p *CompatPlugin) convertUnsupportedParamValues(req *schemas.BifrostRequest
 	return changes
 }
 
+// supportedParameters returns the catalog allowlist for the model a key alias
+// names, falling back to the requested name when that model has no list.
+func (p *CompatPlugin) supportedParameters(provider schemas.ModelProvider, model string) []string {
+	if canonical := p.canonicalModel(provider, model); canonical != model {
+		if params := p.modelCatalog.GetSupportedParameters(canonical); params != nil {
+			return params
+		}
+	}
+	return p.modelCatalog.GetSupportedParameters(model)
+}
+
 // canonicalModel resolves a key alias to the model it names, so capability
 // lookups and the built-in Claude and Gemini tables see the real model.
 func (p *CompatPlugin) canonicalModel(provider schemas.ModelProvider, model string) string {

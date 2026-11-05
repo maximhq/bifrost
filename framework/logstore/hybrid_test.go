@@ -2835,3 +2835,19 @@ func TestHybrid_RelayLogUpdateClearsBody(t *testing.T) {
 	require.NoError(t, err)
 	assert.Nil(t, row.RequestBody, "the row's preview is cleared")
 }
+
+// retentionIntervalStore reports a fixed retention interval; any other LogStore call panics.
+type retentionIntervalStore struct {
+	LogStore
+	interval time.Duration
+}
+
+func (s *retentionIntervalStore) RetentionInterval() time.Duration { return s.interval }
+
+// The cleaner reads the interval through the hybrid store, so a dropped forward would move a
+// Postgres deployment's hourly retention back to whatever the hybrid store returned.
+func TestHybridLogStoreForwardsRetentionInterval(t *testing.T) {
+	want := 37 * time.Minute // matches neither the hourly nor the daily default
+	hybrid := &HybridLogStore{inner: &retentionIntervalStore{interval: want}}
+	assert.Equal(t, want, hybrid.RetentionInterval())
+}
