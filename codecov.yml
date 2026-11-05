@@ -1,0 +1,5 @@
+# Tests, profile validity and upload failures are enforced by the Test Coverage job.
+coverage:
+  status:
+    project: false
+    patch: false
