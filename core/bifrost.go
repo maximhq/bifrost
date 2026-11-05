@@ -9039,6 +9039,10 @@ func prepareResponsesRequest(ctx *schemas.BifrostContext, config *schemas.Provid
 		if bifrostErr != nil {
 			return nil, bifrostErr
 		}
+		r, bifrostErr = hoistClientToolSearchOutputTools(ctx, r)
+		if bifrostErr != nil {
+			return nil, bifrostErr
+		}
 	}
 	// Codex's explicit "functions" namespace is the default namespace by definition,
 	// so it is unwrapped for every wire before the support check: Bedrock Mantle

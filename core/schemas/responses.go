@@ -2256,6 +2256,30 @@ func (m *ResponsesMessage) IsClientToolSearchItem() bool {
 	return m.ResponsesToolMessage != nil && m.Execution != nil && *m.Execution == ToolSearchExecutionClient
 }
 
+// IsClientToolSearch reports whether t is a tool_search the caller runs itself.
+func (t *ResponsesTool) IsClientToolSearch() bool {
+	return t.Type == ResponsesToolTypeToolSearch && t.ResponsesToolToolSearch != nil &&
+		t.ResponsesToolToolSearch.Execution != nil && *t.ResponsesToolToolSearch.Execution == ToolSearchExecutionClient
+}
+
+// ForEachInlineToolDefinition calls fn with every tool a tool_addition block in input
+// defines by value, stopping when fn returns false. Compaction tool_changes are not
+// visited: the provider writes them, and they go back unchanged.
+func ForEachInlineToolDefinition(input []ResponsesMessage, fn func(def *ResponsesTool) bool) {
+	for i := range input {
+		if input[i].Content == nil {
+			continue
+		}
+		for j := range input[i].Content.ContentBlocks {
+			block := &input[i].Content.ContentBlocks[j]
+			if block.Type == ResponsesInputMessageContentBlockTypeToolAddition && block.ToolChange != nil &&
+				block.ToolChange.Definition != nil && !fn(block.ToolChange.Definition) {
+				return
+			}
+		}
+	}
+}
+
 // ToolSearchOutputToolNames returns the names of the tools a tool_search_output
 // loaded, flattening namespaces into their member tools.
 func (m *ResponsesMessage) ToolSearchOutputToolNames() []string {
