@@ -1,0 +1,158 @@
+{
+  "info": {
+    "name": "Bifrost Code Mode ripgrep sandbox",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Code Mode ripgrep sandbox",
+      "description": "Explicit opt-in local coverage; no LLM calls. Run make setup-ripgrep-test, start Bifrost with the generated tmp/ripgrep-test config on port 8081, then make run-ripgrep-test. Requires rg on the server PATH. Kept separate from provider-harness.json because the default gateway config disables host-file search.",
+      "item": [
+        {
+          "name": "[EXPECT-200] openai ripgrep-sandbox matching lines and truncation",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('ripgrep sandbox '+\"matching lines and truncation\", function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.json().is_error === true, pm.response.text()).to.equal(false);",
+                  "  pm.expect(pm.response.text()).to.include(\"ripgrep-ok\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/mcp/tool/execute",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "mcp",
+                "tool",
+                "execute"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": \"ripgrep-sandbox-0\",\n  \"type\": \"function\",\n  \"function\": {\n    \"name\": \"executeToolCode\",\n    \"arguments\": \"{\\\"code\\\": \\\"r = ripgrep(\\\\\\\"timeout\\\\\\\", path=\\\\\\\"logs.txt\\\\\\\", max_results=1)\\\\nif len(r[\\\\\\\"matches\\\\\\\"]) != 1 or not r[\\\\\\\"truncated\\\\\\\"]:\\\\n    fail(\\\\\\\"missing bounded match\\\\\\\")\\\\nm = r[\\\\\\\"matches\\\\\\\"][0]\\\\nif m[\\\\\\\"path\\\\\\\"] != \\\\\\\"logs.txt\\\\\\\" or m[\\\\\\\"line\\\\\\\"] != 2 or m[\\\\\\\"text\\\\\\\"] != \\\\\\\"connection timeout\\\\\\\":\\\\n    fail(\\\\\\\"wrong structured match\\\\\\\")\\\\nresult = \\\\\\\"ripgrep-ok\\\\\\\"\\\"}\"\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai ripgrep-sandbox no matches",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('ripgrep sandbox '+\"no matches\", function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.json().is_error === true, pm.response.text()).to.equal(false);",
+                  "  pm.expect(pm.response.text()).to.include(\"ripgrep-ok\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/mcp/tool/execute",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "mcp",
+                "tool",
+                "execute"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": \"ripgrep-sandbox-1\",\n  \"type\": \"function\",\n  \"function\": {\n    \"name\": \"executeToolCode\",\n    \"arguments\": \"{\\\"code\\\": \\\"r = ripgrep(\\\\\\\"absent\\\\\\\", path=\\\\\\\"logs.txt\\\\\\\")\\\\nif r[\\\\\\\"matches\\\\\\\"] != [] or r[\\\\\\\"truncated\\\\\\\"]:\\\\n    fail(\\\\\\\"incorrect no-match result\\\\\\\")\\\\nresult = \\\\\\\"ripgrep-ok\\\\\\\"\\\"}\"\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai ripgrep-sandbox traversal denied",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('ripgrep sandbox '+\"traversal denied\", function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.json().is_error === true, pm.response.text()).to.equal(true);",
+                  "  pm.expect(pm.response.text()).to.include(\"relative\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/mcp/tool/execute",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "mcp",
+                "tool",
+                "execute"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": \"ripgrep-sandbox-2\",\n  \"type\": \"function\",\n  \"function\": {\n    \"name\": \"executeToolCode\",\n    \"arguments\": \"{\\\"code\\\": \\\"result = ripgrep(\\\\\\\"secret\\\\\\\", path=\\\\\\\"../secret\\\\\\\")\\\"}\"\n  }\n}"
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8081"
+    }
+  ]
+}

@@ -10299,6 +10299,10 @@
           "description": "Byte bound on the whole forwarded aggregate across every visible MCP server. Rides on every MCP-bearing request that carries tools, so raising it raises per-request tokens. 0 uses the built-in default of 16384.",
           "default": 0
         },
+        "code_mode_ripgrep_root": {
+          "type": "string",
+          "description": "Opt-in absolute host directory readable by every Code Mode execution through ripgrep. Empty disables host-file search. Requires rg on the server PATH. Configure only a directory safe for all Code Mode callers."
+        },
         "code_mode_limits": {
           "$ref": "#/$defs/mcp_code_mode_limits"
         },

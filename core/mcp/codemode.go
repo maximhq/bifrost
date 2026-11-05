@@ -57,6 +57,9 @@ type CodeModeConfig struct {
 
 	// Limits bounds each execution; nil keeps the current limits
 	Limits *schemas.MCPCodeModeLimits
+
+	// RipgrepRoot opts into host-file search. nil keeps the current root; empty disables it.
+	RipgrepRoot *string
 }
 
 // CodeModeDependencies holds the dependencies required by CodeMode implementations.

@@ -49,6 +49,10 @@ type ExecutionEnvironment struct {
 // createExecuteToolCodeTool creates the executeToolCode tool definition for code mode.
 // This tool allows executing Python (Starlark) code in a sandboxed interpreter with access to MCP server tools.
 func (s *StarlarkCodeMode) createExecuteToolCodeTool() schemas.ChatTool {
+	ripgrepHelp := ""
+	if root := s.ripgrepRoot.Load(); root != nil && *root != "" {
+		ripgrepHelp = `HOST FILE SEARCH: ripgrep(pattern, path=".", max_results=100, ignore_case=False) searches the administrator-configured root and returns {"matches": [{"path": str, "line": int, "text": str}], "truncated": bool}. Paths are relative to that root. A server named ripgrep takes precedence. `
+	}
 	executeToolCodeProps := schemas.NewOrderedMapFromPairs(
 		schemas.KV("code", map[string]interface{}{
 			"type": "string",
@@ -72,7 +76,7 @@ func (s *StarlarkCodeMode) createExecuteToolCodeTool() schemas.ChatTool {
 					"STARLARK DIFFERENCES FROM PYTHON — READ BEFORE WRITING CODE: " +
 					"1. NO try/except/finally/raise. A failed tool call returns an error value instead of raising: check hasattr(r, \"error\"), read r.error, and call fail(r.error) to stop the run. A timeout or a lost connection still stops the script. " +
 					"2. NO classes — use dicts and functions. " +
-					"3. NO imports, direct network access, or direct filesystem access — use MCP tools instead. " +
+					"3. NO imports, direct network access, or general filesystem access — use MCP tools, or ripgrep when enabled. " +
 					"4. NO is operator — use == for comparison. " +
 					"5. NO f-strings — use % formatting: \"Hello %s, count=%d\" % (name, n). " +
 					"6. Each executeToolCode call runs in a FRESH ISOLATED SCOPE — no variables, functions, or state persist between calls. Re-fetch data or store it via MCP tools (e.g., SQLite, FileSystem) if needed across calls. " +
@@ -93,7 +97,7 @@ func (s *StarlarkCodeMode) createExecuteToolCodeTool() schemas.ChatTool {
 					"int, float, str, bool, list, dict, tuple, set, hasattr, getattr, type, chr, ord, any, all, hash, repr, fail. " +
 					"MODULES: json (json.decode(s), json.encode(v)), math (math.floor, math.sqrt and the like); a server named json or math takes that name. " +
 
-					"RETRY POLICY: Retry after fixing syntax or logic errors, especially for read-only flows. Before rerunning code that already made tool calls, inspect prior outputs and avoid replaying stateful operations.",
+					ripgrepHelp + "RETRY POLICY: Retry after fixing syntax or logic errors, especially for read-only flows. Before rerunning code that already made tool calls, inspect prior outputs and avoid replaying stateful operations.",
 			),
 
 			Parameters: &schemas.ToolFunctionParameters{
@@ -231,7 +235,7 @@ func (s *StarlarkCodeMode) executeCode(ctx *schemas.BifrostContext, code string)
 	failedCalls := 0
 	result := runSandbox(timeoutCtx, limits, code, bindings, func(callCtx context.Context, client, tool string, args map[string]interface{}, log func(string)) (interface{}, error) {
 		return s.callMCPTool(schemas.NewBifrostContext(callCtx, schemas.NoDeadline), client, tool, args, log, func() { failedCalls++ })
-	})
+	}, s.ripgrepBuiltins())
 	result.FailedToolCalls = failedCalls
 	return result
 }

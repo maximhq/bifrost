@@ -815,3 +815,54 @@ The effect is most visible at large scale: with **508 tools across 16 servers**,
     Expose your tools to external clients
   </Card>
 </CardGroup>
+
+
+## Optional ripgrep file search
+
+Install `rg` on the gateway's PATH and set an absolute directory in `config.json`:
+
+```json
+{
+  "mcp": {
+    "tool_manager_config": {
+      "code_mode_ripgrep_root": "/srv/searchable-files"
+    }
+  }
+}
+```
+
+This grants **every Code Mode execution** read access to the text files in that directory. Use a dedicated directory safe for all callers; it is independent of MCP server tool permissions. Leave the setting omitted or empty to disable host-file search. This is a server configuration setting, not a dashboard setting.
+
+Inside `executeToolCode`:
+
+```python
+result = ripgrep("connection timeout", path="logs", max_results=20, ignore_case=True)
+```
+
+`path` is a file or directory relative to the configured root and defaults to `"."`. Patterns use ripgrep's default regular-expression syntax. Each match contains `path`, a 1-based `line`, and the matching line's `text`. `truncated` is true when additional matching lines were omitted by `max_results` (default and maximum: 100). No matches returns an object with `matches=[]` and `truncated=False`. A connected server named `ripgrep` retains its name and takes precedence over the builtin.
+
+Search includes hidden files and does not apply ignore files. Symlinks encountered during directory enumeration, special files, NUL-containing files, and invalid UTF-8 files are skipped. Paths cannot escape the configured root. File contents are passed to `rg` over stdin without a shell, arbitrary flags, or host paths.
+
+Ripgrep runs with one worker and 1 MiB limits on compiled regex and DFA size. Each search allows at most 32 regular files, 8 MiB of input, 1 MiB per file, 256 directory traversal operations, 256 KiB each of process stdout/stderr, and 64 KiB of match data. Traversal counts both enumerated and visited entries. Exceeding these budgets raises an error rather than returning incomplete search results. A file that grows during reading also raises an error. Each execution allows four searches, each with a five-second timeout or the remaining execution deadline, whichever is shorter. Interpreter memory/value limits apply in addition to these bounds.
+
+Filesystem traversal and reads run in a separate helper process. On cancellation, the gateway terminates the helper and returns without waiting for a blocked filesystem syscall. At most four filesystem helpers may remain unreaped per gateway; their slots are held until OS cleanup completes, and further searches fail when all slots are occupied. This bounds resources even when the OS defers termination of an uninterruptible filesystem call. Helpers retain at most 8 MiB of input each, and pipe buffers are bounded by the execution memory budget. Searches collect a bounded snapshot before invoking `rg`; snapshot transport and decoding also count against interpreter memory limits. These byte budgets do not impose an OS-level memory limit on helper or `rg` runtime overhead.
+
+Missing `rg`, invalid patterns, denied paths, or process failures stop the script with an execution error. No files are modified and no search state persists between executions.
+
+
+### Testing ripgrep locally
+
+The ripgrep HTTP cases live in a separate collection because they require an explicitly enabled search root. They are not included in the default provider harness sweep. Install `rg` on the gateway's PATH, then run these commands from the repository root:
+
+```sh
+make setup-ripgrep-test
+NODE_OPTIONS="--dns-result-order=ipv4first" make dev PORT=8081 APP_DIR="$(pwd)/tmp/ripgrep-test"
+```
+
+The setup target creates a local config with the absolute fixture directory and a random setup token. It refuses to overwrite an existing config with a different search root. Keep the gateway running, then in another terminal run:
+
+```sh
+make run-ripgrep-test
+```
+
+For a different gateway port, pass `BASE_URL=http://localhost:<port>` to the test target. The three requests exercise matching/truncation, no matches, and denied traversal. They do not call an LLM provider. Other server configurations must explicitly enable the same fixture root before running this collection.
