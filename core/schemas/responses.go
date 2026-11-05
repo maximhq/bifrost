@@ -4564,6 +4564,8 @@ const (
 	ResponsesStreamResponseTypeReasoningSummaryPartDone  ResponsesStreamResponseType = "response.reasoning_summary_part.done"
 	ResponsesStreamResponseTypeReasoningSummaryTextDelta ResponsesStreamResponseType = "response.reasoning_summary_text.delta"
 	ResponsesStreamResponseTypeReasoningSummaryTextDone  ResponsesStreamResponseType = "response.reasoning_summary_text.done"
+	ResponsesStreamResponseTypeReasoningTextDelta        ResponsesStreamResponseType = "response.reasoning_text.delta"
+	ResponsesStreamResponseTypeReasoningTextDone         ResponsesStreamResponseType = "response.reasoning_text.done"
 
 	ResponsesStreamResponseTypeImageGenerationCallCompleted    ResponsesStreamResponseType = "response.image_generation_call.completed"
 	ResponsesStreamResponseTypeImageGenerationCallGenerating   ResponsesStreamResponseType = "response.image_generation_call.generating"
