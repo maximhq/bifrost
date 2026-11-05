@@ -12281,6 +12281,282 @@ const GO37 = folder("GO-37 Per-user discovery under load", `Setup: ${HDOOR_TEXT(
   }),
 ]);
 
+// ================================================================ SYNC upstream tool changes, on every client type
+
+// A client with per_user_discovery off keeps one shared tool list, and three things bring it up to date with its
+// upstream: the client's sync interval (tool_sync_interval), a tools/list_changed push on a connection the client holds
+// open (sticky connections only: a per-call client holds none to hear it), and POST /api/mcp/client/{id}/refresh-tools.
+// Every SYNC case makes the same upstream change, new_tool added and add_tool removed, lets exactly one of the three
+// pick it up, and then checks the change on every route a caller reaches tools through: the client listing; tools/list
+// and tools/call on /mcp, on the client's slug endpoint and on a Virtual MCP over all of the client's tools; the
+// execute API; the tools a chat completion offers the model; and, once the client is switched to code mode, getToolDocs
+// and executeToolCode. The caller is a VK granted every tool of the client and attached to the Virtual MCP. Only the
+// client type and the mechanism differ from case to case.
+//
+// Not covered here: OpenAPI clients, whose tools come from a stored spec rather than an upstream tools/list, and the
+// per-user auth types over SSE or STDIO, which Bifrost refuses (CONN-19).
+
+// SYNC_ROWS lists every client type: connection type, auth type and, for HTTP, per call or sticky. SSE and STDIO are
+// always sticky; the per-user auth types are always per call.
+const SYNC_ROWS = [
+  { label: "HTTP, auth none, per call", conn: "http", auth: "none" },
+  { label: "HTTP, auth none, sticky", conn: "http", auth: "none", sticky: true },
+  { label: "HTTP, auth headers, per call", conn: "http", auth: "headers" },
+  { label: "HTTP, auth headers, sticky", conn: "http", auth: "headers", sticky: true },
+  { label: "HTTP, shared OAuth, per call", conn: "http", auth: "oauth" },
+  { label: "HTTP, shared OAuth, sticky", conn: "http", auth: "oauth", sticky: true },
+  { label: "HTTP, per_user_headers", conn: "http", auth: "per_user_headers" },
+  { label: "HTTP, per_user_oauth", conn: "http", auth: "per_user_oauth" },
+  { label: "SSE, auth none", conn: "sse", auth: "none", sticky: true },
+  { label: "SSE, auth headers", conn: "sse", auth: "headers", sticky: true },
+  { label: "SSE, shared OAuth", conn: "sse", auth: "oauth", sticky: true },
+  { label: "STDIO", conn: "stdio", auth: "none", sticky: true },
+];
+
+// SYNC_WAYS are the three mechanisms. The push and refresh-tools cases sync every 10m, so nothing but the mechanism
+// under test can pick the change up in time.
+const SYNC_WAYS = [
+  { key: "interval", title: "the 5s sync interval", interval: "5s" },
+  { key: "push", title: "a tools/list_changed push", interval: "10m", stickyOnly: true },
+  { key: "refresh", title: "refresh-tools", interval: "10m" },
+];
+
+// SYNC_AUTH says, for each auth type, how the upstream is set up, what the client holds, how the caller signs in, and
+// which identity the mock counts requests under: the client's own credential (what its syncs list with) and the
+// caller's. Only the per-user types tell the two apart.
+const SYNC_AUTH = {
+  none: { upstream: "serves anyone", client: "", signIn: "", own: null, caller: null },
+  headers: { upstream: "requires x-key: good and counts requests under the x-key value", client: ", sending x-key: good", signIn: "", own: "good", caller: "good" },
+  oauth: { upstream: "is an OAuth protected resource", client: ", connected as id1", signIn: "", own: "id1", caller: "id1" },
+  per_user_headers: { upstream: "counts requests under the x-key value", client: ", admin sample x-key: admin-key", signIn: ", signed in with x-key: key-a", own: "admin-key", caller: "key-a" },
+  per_user_oauth: { upstream: "is an OAuth protected resource", client: ", verified by the admin consenting as admin", signIn: ", signed in as alice", own: "admin", caller: "alice" },
+};
+const SYNC_SERVED = ["echo_tool", "add_tool"];
+const SYNC_OLD = ["add_tool", "echo_tool"];
+const SYNC_NEW = ["echo_tool", "new_tool"];
+const SYNC_CALL_TEXT = (tool) => `${tool}:{"text":"hi"}`;
+
+// syncBody is the client config for row at <p>-c on fleet server p.
+const syncBody = (row, p, interval) => {
+  const target = row.conn === "stdio"
+    ? { connection_type: "stdio", stdio_config: { command: "{{chaos_bin}}", args: ["-stdio", "-fleet", CHAOS, "-server", p], envs: [] } }
+    : { connection_type: row.conn, connection_string: `${CHAOS}/s/${p}/${row.conn === "sse" ? "sse" : "mcp"}` };
+  const auth = {
+    none: { auth_type: "none" },
+    headers: { auth_type: "headers", headers: { "x-key": "good" } },
+    oauth: { auth_type: "oauth", oauth_config: {} },
+    per_user_headers: { auth_type: "per_user_headers", per_user_header_keys: ["x-key"], user_headers: { "x-key": "admin-key" } },
+    per_user_oauth: { auth_type: "per_user_oauth", oauth_config: {} },
+  }[row.auth];
+  return {
+    client_id: `${p}-c`, name: p, ...target, ...auth, tools_to_execute: ["*"], tool_sync_interval: interval,
+    ...(row.conn === "http" && row.sticky ? { needs_session_stickiness: true } : {}),
+  };
+};
+
+// syncSetup readies fleet server p and creates the client on it; the OAuth types also take it through consent.
+const syncSetup = (id, row, p, interval) => {
+  const body = syncBody(row, p, interval);
+  const what = `setup: create the client, syncing every ${interval}`;
+  switch (row.auth) {
+    case "headers":
+      return [...freshServer(id, p, SYNC_SERVED), mockAuth(id, p, `setup: ${p} requires x-key: good and counts requests under the x-key value`, { require_headers: { "x-key": "good" }, identity_header: "x-key" }), createClient(id, body, what)];
+    case "per_user_headers":
+      return [...freshServer(id, p, SYNC_SERVED), mockAuth(id, p, `setup: ${p} counts requests under the x-key value`, { identity_header: "x-key" }), createClient(id, body, `${what}, with the admin sample x-key: admin-key`)];
+    case "oauth":
+      return [
+        ...allowlistOn(id), ...asServer(id, p),
+        createOAuth(id, what, body, p),
+        consentAs(id, "setup: connect the client, consenting as id1", p, "id1"),
+        followCallback(id, "setup: follow the callback", p, callbackSuccess()),
+        completeOAuth(id, "setup: complete the connection", p, [A.status(200)]),
+      ];
+    case "per_user_oauth":
+      return [
+        ...puConfig(id, false), ...asServer(id, p),
+        createOAuth(id, what, body, p),
+        consentAs(id, "setup: the admin verifies the client, consenting as admin", p, "admin"),
+        followCallback(id, "setup: follow the admin's callback", p, callbackSuccess()),
+        completeOAuth(id, "setup: complete the admin's verification", p, [A.status(200)]),
+      ];
+    default:
+      return [...freshServer(id, p, SYNC_SERVED), createClient(id, body, what)];
+  }
+};
+
+// syncSignIn signs the caller's VK in to a per-user client: its first call opens a flow, which the caller completes.
+const syncSignIn = (id, row, p, vk) => {
+  const tool = `${p}-echo_tool`;
+  if (row.auth === "per_user_headers") {
+    return [
+      execAs(id, "setup: the caller's first call opens a header flow", tool, [vk], [A.status(400), headersFlow({ saveAs: `${p}_flow` })]),
+      hdrSubmit(id, "setup: the caller submits x-key: key-a", `${p}_flow`, { "x-key": "key-a" }, [A.status(200)]),
+    ];
+  }
+  if (row.auth === "per_user_oauth") {
+    return [
+      execAs(id, "setup: the caller's first call opens a sign-in flow", tool, [vk], [A.status(400), keepFlow(`${p}_flow`)]),
+      ...puFinish(id, `${p}_flow`, "alice", "the caller's sign-in"),
+    ];
+  }
+  return [];
+};
+
+// syncListCount reads how many tools/list requests the mock counted, under identity when one is given; syncPingCount
+// reads its pings.
+const syncListCount = (who) => (who
+  ? `(((pm.response.json().counters.methods_by_identity || {})[${lit(who)}] || {})['tools/list'] || 0)`
+  : "((pm.response.json().counters.methods || {})['tools/list'] || 0)");
+const syncPingCount = "((pm.response.json().counters.methods || {}).ping || 0)";
+
+// syncSeen polls the client listing, 500ms apart, until it lists exactly echo_tool and new_tool or seconds pass after
+// the change (the time kept in <p>_t0), and keeps how long after the change that took in <p>_seen_ms (-1: never).
+const syncSeen = (cid, p, seconds) => [
+  `var t0 = Number(pm.collectionVariables.get(${lit(p + "_t0")}));`,
+  `var deadline = t0 + ${seconds * 1000};`,
+  `pm.collectionVariables.set(${lit(p + "_seen_ms")}, -1);`,
+  "function poll() {",
+  `  pm.sendRequest({ url: pm.variables.get('base_url') + '/api/mcp/clients?server=${cid}', method: 'GET', header: { Authorization: pm.variables.get('admin_auth_header') } }, function (err, res) {`,
+  "    var c = !err && res.code === 200 ? (res.json().clients || [])[0] : null;",
+  "    var names = c ? (c.tools || []).map(function (t) { return t.name; }).sort().join(',') : '';",
+  `    if (names === ${lit(SYNC_NEW.join(","))}) { pm.collectionVariables.set(${lit(p + "_seen_ms")}, Date.now() - t0); return; }`,
+  "    if (Date.now() >= deadline) { return; }",
+  "    setTimeout(poll, 500);",
+  "  });",
+  "}",
+  "poll();",
+];
+const syncWithin = (p, seconds) => A.custom(`it did so within ${seconds}s of the change`, [
+  `var ms = Number(pm.collectionVariables.get(${lit(p + "_seen_ms")}));`,
+  "pm.expect(ms, 'ms after the change (-1: never)').to.be.at.least(0);",
+  `pm.expect(ms, 'ms after the change').to.be.at.most(${seconds * 1000});`,
+]);
+
+// syncGwPoll re-sends tools/list to an MCP endpoint (path) as the caller, 200ms apart for up to 5s, until p's tools are
+// echo_tool and new_tool: the endpoints re-register a client's tools in the background once its list changes.
+const syncGwNames = (p) => `(((pm.response.json().result || {}).tools) || []).map(function (t) { return t.name; }).filter(function (n) { return n.indexOf(${lit(p + "-")}) === 0; }).sort()`;
+const syncGwPoll = (p, path) => [
+  "var left = 25;",
+  "function poll() {",
+  `  pm.sendRequest({ url: pm.variables.get('base_url') + ${lit(path)}, method: 'POST', header: { 'Content-Type': 'application/json', 'Accept': 'application/json, text/event-stream', 'x-bf-vk': pm.variables.get(${lit(p + "_vk")}) }, body: { mode: 'raw', raw: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }) } }, function (err, res) {`,
+  "    var tools = !err && res.code === 200 && res.json().result ? res.json().result.tools : [];",
+  `    var names = tools.map(function (t) { return t.name; }).filter(function (n) { return n.indexOf(${lit(p + "-")}) === 0; }).sort().join(',');`,
+  `    if (names === ${lit(SYNC_NEW.map((t) => `${p}-${t}`).join(","))} || --left <= 0) { return; }`,
+  "    setTimeout(poll, 200);",
+  "  });",
+  "}",
+  "poll();",
+];
+
+// syncEndpoint checks one MCP endpoint (where names it in titles) as the caller: tools/list offers exactly p's echo_tool
+// and new_tool, new_tool runs, and add_tool is unknown.
+const syncEndpoint = (id, p, vk, path, where) => {
+  const t = (tool) => `${p}-${tool}`;
+  const send = (title, msg, asserts, pre = []) => rpc(id, `${where}: ${title}`, msg, { path, headers: [MCP_ACCEPT, vk], pre, asserts: [A.status(200), ...asserts] });
+  return [
+    send(`tools/list offers ${t("echo_tool")} and ${t("new_tool")}, not ${t("add_tool")}`, listMsg,
+      [A.custom(`${p}'s tools are exactly ${lit(SYNC_NEW.map(t))}`, [`pm.expect(${syncGwNames(p)}, 'body: ' + pm.response.text()).to.eql(${lit(SYNC_NEW.map(t))});`])], syncGwPoll(p, path)),
+    send(`tools/call ${t("new_tool")} runs it`, call(t("new_tool"), { text: "hi" }), [gwTextIs(SYNC_CALL_TEXT("new_tool"))]),
+    send(`tools/call ${t("add_tool")} is refused`, call(t("add_tool"), { text: "hi" }), [NOT_FOUND_TOOL(t("add_tool"))]),
+  ];
+};
+
+// syncCodeMode switches the client to code mode, which rebinds its stored tools without asking the upstream, and checks
+// the code-mode tools as the caller: new_tool is documented and runs, add_tool is neither.
+const syncCodeMode = (id, p, cid, vk) => [
+  request(id, "the client is switched to code mode", "PUT", `/api/mcp/client/${cid}`, { body: { is_code_mode_client: true }, asserts: [A.status(200)] }),
+  execAs(id, `code mode: getToolDocs documents ${p}.new_tool`, "getToolDocs", [vk], [A.status(200), contentHas(`# Documentation for ${p}.new_tool tool`)], { args: { server: p, tool: "new_tool" } }),
+  execAs(id, `code mode: getToolDocs does not know ${p}.add_tool`, "getToolDocs", [vk], [A.status(200), isError(), contentHas(`Tool 'add_tool' not found in server '${p}'`)], { args: { server: p, tool: "add_tool" } }),
+  execAs(id, `code mode: executeToolCode runs ${p}.new_tool`, "executeToolCode", [vk], [A.status(200), noIsError(), contentEquals(`Execution completed successfully.\nReturn value: ${lit(SYNC_CALL_TEXT("new_tool"))}`)], { args: { code: `result = ${p}.new_tool(text='hi')` } }),
+  execAs(id, `code mode: executeToolCode cannot call ${p}.add_tool`, "executeToolCode", [vk], [A.status(200), isError(), contentHas("has no .add_tool attribute")], { args: { code: `r = ${p}.add_tool(text='hi')` } }),
+];
+
+// syncCase builds one case: row's client type, picking the change up through way.
+const syncCase = (id, row, way) => {
+  const p = id.toLowerCase().replace("-", "");
+  const cid = `${p}-c`;
+  const auth = SYNC_AUTH[row.auth];
+  const vk = { key: "x-bf-vk", value: `{{${p}_vk}}` };
+  const t = (tool) => `${p}-${tool}`;
+  const sticky = row.sticky;
+  const pings = way.key === "interval" && sticky;
+  const ownWho = auth.own ? ` as ${auth.own}` : "";
+  const callerWho = auth.caller ? ` (all under ${auth.caller})` : "";
+  const configChanged = row.auth === "oauth" || row.auth === "per_user_oauth";
+  const mode = row.conn === "http" ? (sticky ? "sticky" : "per call") : "sticky";
+  const then = { interval: "nothing else asks for a sync", push: `${p} pushes tools/list_changed`, refresh: "refresh-tools is called" }[way.key];
+  const setupText = `fleet server ${p} (echo_tool, add_tool) ${auth.upstream}; client ${p} on it over ${row.conn.toUpperCase()}, auth ${row.auth}, ${mode}, tools_to_execute ["*"], tool_sync_interval "${way.interval}"${auth.client}; `
+    + `a Virtual MCP ${p}-vmcp over all of ${p}'s tools; the caller, a VK granted every tool of ${p} and the openai provider and attached to the Virtual MCP${auth.signIn}; ${LLM_TEXT}`;
+
+  const pickUp = {
+    interval: [
+      getClient(id, cid, `within 20s, with nothing else asking, the client lists ${SYNC_NEW.join(" and ")}`, [toolNamesAre(SYNC_NEW), syncWithin(p, 20)], { pre: syncSeen(cid, p, 20) }),
+    ],
+    push: [
+      getClient(id, cid, `control: before the push the client still lists ${SYNC_OLD.join(" and ")}`, [toolNamesAre(SYNC_OLD)]),
+      mockGet(id, p, `${p} holds one open stream for the push to reach`, [counterIs("open_streams", 1)]),
+      request(id, `upstream: ${p} pushes tools/list_changed`, "POST", `/control/${p}/notify/tools-changed`, {
+        base: CHAOS, noAuth: true, body: {}, asserts: [A.status(200)], extraTests: [`pm.collectionVariables.set(${lit(p + "_t0")}, Date.now());`],
+      }),
+      getClient(id, cid, `within 5s the client lists ${SYNC_NEW.join(" and ")}`, [toolNamesAre(SYNC_NEW), syncWithin(p, 5)], { pre: syncSeen(cid, p, 5) }),
+    ],
+    refresh: [
+      getClient(id, cid, `control: before refresh-tools the client still lists ${SYNC_OLD.join(" and ")}`, [toolNamesAre(SYNC_OLD)]),
+      clientPost(id, "refresh-tools reports 2 tools", cid, "refresh-tools", [A.status(200), A.jsonMessage("MCP client tools refreshed successfully"), A.jsonEquals("tool_count", 2)]),
+      getClient(id, cid, `the client lists ${SYNC_NEW.join(" and ")}`, [toolNamesAre(SYNC_NEW)]),
+    ],
+  }[way.key];
+
+  return folder(`${id} ${row.label}: ${way.title} picks up an added and a removed tool`,
+    `Setup: ${setupText}. Then ${p} adds new_tool and removes add_tool, and ${then}. Last, the client is switched to code mode.`, [
+      ...syncSetup(id, row, p, way.interval),
+      vkCreate(id, `setup: create the caller's VK, granted every tool of ${p} and the openai provider`, { name: `${id} caller`, provider_configs: OPENAI_GRANT, mcp_configs: [{ mcp_client_name: p, tools_to_execute: ["*"] }] }, `${p}_vk`),
+      request(id, `setup: create the Virtual MCP ${p}-vmcp over all of ${p}'s tools`, "POST", "/api/mcp/virtual-mcps", {
+        body: { name: `${id} virtual MCP`, endpoint_slug: `${p}-vmcp`, tools: [{ mcp_client_id: cid, tool_names: ["*"] }] }, asserts: [A.status(201)],
+        extraTests: [`pm.collectionVariables.set(${lit(p + "_vmcp")}, pm.response.json().virtual_mcp.id);`],
+      }),
+      request(id, "setup: attach the caller's VK to the Virtual MCP", "POST", `/api/mcp/virtual-mcps/{{${p}_vmcp}}/virtual-keys/{{${p}_vk_id}}`, { asserts: [A.status(200)] }),
+      ...syncSignIn(id, row, p, vk),
+      llmScript(id, p, TEXT_OK),
+      getClient(id, cid, `control: the client is healthy and lists ${SYNC_OLD.join(" and ")}${row.auth === "per_user_headers" ? ", with an active headers credential" : ""}`, [
+        clientState("healthy"), toolNamesAre(SYNC_OLD), ...(row.auth === "per_user_headers" ? [credKind("headers"), credStatus("active")] : []),
+      ]),
+      mockGet(id, p, `setup: record how many times ${p} has been asked tools/list${ownWho}${pings ? ", and pinged" : ""}`, [], [
+        `pm.collectionVariables.set(${lit(p + "_lists")}, ${syncListCount(auth.own)});`,
+        ...(pings ? [`pm.collectionVariables.set(${lit(p + "_pings")}, ${syncPingCount});`] : []),
+      ]),
+      mockPost(id, p, "tools/add", `upstream: ${p} adds new_tool`, { tool: { name: "new_tool" } }),
+      request(id, `upstream: ${p} removes add_tool`, "POST", `/control/${p}/tools/remove`, {
+        base: CHAOS, noAuth: true, body: { name: "add_tool" }, asserts: [A.status(200)], extraTests: [`pm.collectionVariables.set(${lit(p + "_t0")}, Date.now());`],
+      }),
+      ...pickUp,
+      mockGet(id, p, `${p} was asked tools/list again${ownWho}${pings ? ", and pinged again" : ""}`, [A.custom(`tools/list${ownWho} +1 or more${pings ? ", ping +1 or more" : ""}`, [
+        `pm.expect(${syncListCount(auth.own)}, 'counters: ' + JSON.stringify(pm.response.json().counters)).to.be.at.least(Number(pm.collectionVariables.get(${lit(p + "_lists")})) + 1);`,
+        ...(pings ? [`pm.expect(${syncPingCount}, 'counters: ' + JSON.stringify(pm.response.json().counters)).to.be.at.least(Number(pm.collectionVariables.get(${lit(p + "_pings")})) + 1);`] : []),
+      ])]),
+      ...syncEndpoint(id, p, vk, "/mcp", "/mcp"),
+      ...syncEndpoint(id, p, vk, `/mcp/${p}`, `slug endpoint /mcp/${p}`),
+      ...syncEndpoint(id, p, vk, `/mcp/${p}-vmcp`, `Virtual MCP /mcp/${p}-vmcp`),
+      execAs(id, `execute ${t("new_tool")} runs it`, t("new_tool"), [vk], [A.status(200), contentIs(SYNC_CALL_TEXT("new_tool"))]),
+      execAs(id, `execute ${t("add_tool")} is refused`, t("add_tool"), [vk], [A.status(400), A.msgEquals(`tool '${t("add_tool")}' is not available or not permitted`)]),
+      infChat(id, "the caller sends a chat completion", p, [A.status(200)], { headers: [vk] }),
+      llmCaptured(id, `the model was offered ${t("echo_tool")} and ${t("new_tool")}, not ${t("add_tool")}`, p, [reqCount(1), A.custom(`${p}'s tools in the request are exactly ${lit(SYNC_NEW.map(t))}`, [
+        REQS,
+        `pm.expect(((reqs[0] && reqs[0].tools) || []).filter(function (n) { return n.indexOf(${lit(p + "-")}) === 0; }).sort(), 'body: ' + pm.response.text()).to.eql(${lit(SYNC_NEW.map(t))});`,
+      ])]),
+      ...syncCodeMode(id, p, cid, vk),
+      mockGet(id, p, `${p} ran new_tool 5 times${callerWho} and add_tool never`, [callsIs("new_tool", 5), callsIs("add_tool", 0), ...(auth.caller ? [identityCallsAre({ [auth.caller]: 5 })] : [])]),
+      request(id, "teardown: delete the Virtual MCP", "DELETE", `/api/mcp/virtual-mcps/{{${p}_vmcp}}`, { asserts: [A.status(200)] }),
+      vkDelete(id, "teardown: delete the caller's VK", `${p}_vk`),
+      deleteClient(id, cid),
+      ...(configChanged ? [restoreConfig(id)] : []),
+    ]);
+};
+
+const SYNC = SYNC_ROWS
+  .flatMap((row) => SYNC_WAYS.filter((way) => !way.stickyOnly || row.sticky).map((way) => ({ row, way })))
+  .map(({ row, way }, i) => syncCase(`SYNC-${String(i + 1).padStart(2, "0")}`, row, way));
+
 const collection = {
   info: {
     _postman_id: "bifrost-mcp-harness",
@@ -12306,6 +12582,7 @@ const collection = {
     section("LOG Logs and telemetry", "Logs and telemetry tests.", [LOG01, LOG02, LOG03, LOG04, LOG05, LOG06, LOG07, LOG08, LOG09, LOG10, LOG11, LOG12, LOG13, LOG14, LOG16, LOG17, LOG18, LOG19, LOG20, LOG21, LOG22, LOG23, LOG26, LOG27, LOG28, LOG29, LOG30, LOG31, LOG32, LOG33, LOG34, LOG35, LOG37, LOG38, LOG39, LOG40, LOG41, LOG43, LOG49]),
     section("FAIL Failure handling", "Failure handling tests.", [FAIL01, FAIL02, FAIL04, FAIL05, FAIL06, FAIL07, FAIL09, FAIL10, FAIL12, FAIL14, FAIL16, FAIL18, FAIL19, FAIL23, FAIL24, FAIL25, FAIL27, FAIL28]),
     section("PUD Per-user discovery", "Per-user discovery tests.", [PUD01, PUD02, PUD03, PUD04, PUD05, PUD06, PUD07, PUD08, PUD09, PUD10, PUD11, PUD12, PUD13, PUD14, PUD15, PUD16, PUD17, PUD18, PUD19, PUD20, PUD21, PUD22, PUD23, PUD24, PUD25, PUD26, PUD27, PUD28, PUD29, PUD30, PUD31, PUD32, PUD33, PUD34, PUD35, PUD36, PUD37, PUD38, PUD39, PUD40, PUD41, PUD42, PUD43, PUD44, PUD45, PUD46, PUD47, PUD48, PUD49, PUD50, PUD51, PUD52, PUD53, PUD54, PUD55, PUD56, PUD57, PUD58, PUD59, PUD60, PUD61, PUD62, PUD63, PUD64, PUD65, PUD66, PUD67, PUD68, PUD69, PUD70, PUD71, PUD72, PUD73, PUD74, PUD75, PUD76, PUD77, PUD78, PUD79, PUD80, PUD81, PUD82, PUD83, PUD84, PUD85, PUD86, PUD87, PUD88, PUD89, PUD90, GO37]),
+    section("SYNC Tool sync", "Upstream tool changes reaching every client type: the sync interval, a tools/list_changed push and refresh-tools.", SYNC),
   ],
 };
 
