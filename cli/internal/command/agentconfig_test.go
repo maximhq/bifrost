@@ -717,9 +717,11 @@ func TestRollbackFailedConfigureRemovesReceiptWhenRollbackSucceeds(t *testing.T)
 }
 
 func TestConfigureAllHarnessesRoundTrip(t *testing.T) {
+	t.Setenv("SHELL", "/bin/bash")
+	t.Setenv("PI_CODING_AGENT_DIR", "")
 	t.Setenv("BIFROST_AGENT_TOKEN", "sso-token-must-not-be-written")
 	t.Setenv("BIFROST_VIRTUAL_KEY", "sk-bf-configure-test")
-	for _, agent := range []string{"claude", "codex", "opencode", "gemini"} {
+	for _, agent := range []string{"claude", "codex", "opencode", "gemini", "pi", "anti-gravity", "AGUI"} {
 		t.Run(agent, func(t *testing.T) {
 			home := t.TempDir()
 			t.Setenv("HOME", home)

@@ -836,6 +836,7 @@ Commands:
   run                  Run a coding agent directly
   claude, codex        Direct coding-agent aliases
   gemini, opencode     Direct coding-agent aliases
+  pi, antigravity      Direct coding-agent aliases (also anti-gravity, agy, AGUI)
   configure            Persist reversible coding-agent configuration
   unconfigure          Restore coding-agent configuration from a receipt
   context              Manage gateway contexts

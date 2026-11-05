@@ -6,6 +6,7 @@ No personal configuration, keyring credentials, live gateway, or provider is use
 """
 import json
 import os
+import shutil
 from pathlib import Path
 import re
 import subprocess
@@ -17,7 +18,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlsplit
 
 CLI_ROOT = Path(__file__).resolve().parents[1]
-AGENTS = ("claude", "codex", "opencode", "gemini")
+AGENTS = ("claude", "codex", "opencode", "gemini", "pi", "antigravity")
 KEY = "sk-bf-subprocess-integration"
 
 
@@ -25,8 +26,9 @@ def isolated_env(home):
     env = {key: value for key, value in os.environ.items()
            if not key.startswith("BIFROST_") and key not in {
                "HOME", "USERPROFILE", "CODEX_HOME", "XDG_CONFIG_HOME",
-               "OPENCODE_CONFIG", "OPENCODE_CONFIG_CONTENT", "CLAUDE_CONFIG_DIR"}}
-    env.update(HOME=str(home), USERPROFILE=str(home),
+               "OPENCODE_CONFIG", "OPENCODE_CONFIG_CONTENT", "CLAUDE_CONFIG_DIR",
+               "PI_CODING_AGENT_DIR", "ZDOTDIR", "SHELL"}}
+    env.update(HOME=str(home), USERPROFILE=str(home), SHELL="/bin/bash",
                CODEX_HOME=str(home / "codex-home"),
                XDG_CONFIG_HOME=str(home / "xdg"),
                BIFROST_STATE_PATH=str(home / "bifrost" / "state.json"),
@@ -43,6 +45,8 @@ def config_paths(home, agent, existing=False):
         "opencode": [home / ("xdg/opencode/opencode.jsonc" if existing
                              else "xdg/opencode/opencode.json")],
         "gemini": [home / ".gemini/settings.json", home / ".gemini/.env"],
+        "pi": [home / ".pi/agent/models.json", home / ".pi/agent/settings.json", home / ".pi/agent/auth.json"],
+        "antigravity": [home / ".gemini/antigravity-cli/settings.json", home / ".bashrc"],
     }[agent]
 
 
@@ -72,7 +76,8 @@ class CLIProcessTests(unittest.TestCase):
     def check_configured(self, home, agent, paths, model):
         for path in paths:
             body = path.read_text()
-            self.assertIn(model, body, str(path))
+            if not (agent == "pi" and path.name == "auth.json") and not (agent == "antigravity" and path.name == ".bashrc"):
+                self.assertIn(model, body, str(path))
             self.assertNotIn("sso-must-not-be-persisted", body)
             self.assertNotIn("management-must-not-be-persisted", body)
             if os.name != "nt":
@@ -96,6 +101,17 @@ class CLIProcessTests(unittest.TestCase):
                 options = cfg["provider"]["bifrost"]["options"]
                 self.assertEqual(options["apiKey"], KEY)
                 self.assertEqual(options["baseURL"], "http://127.0.0.1:1/openai/v1")
+            elif agent == "pi":
+                provider = cfg["providers"]["bifrost"]
+                self.assertEqual(provider["api"], "openai-completions")
+                self.assertEqual(provider["baseUrl"], "http://127.0.0.1:1/openai/v1")
+                self.assertEqual(json.loads(paths[1].read_text())["defaultModel"], model)
+                self.assertEqual(json.loads(paths[2].read_text())["bifrost"]["key"], KEY)
+            elif agent == "antigravity":
+                self.assertEqual(cfg["modelProvider"], "gemini")
+                self.assertEqual(cfg["customModelsConfig"]["customModels"][model]["modelName"], "gemini-api://" + model)
+                self.assertIn("GEMINI_API_KEY='" + KEY + "'", paths[1].read_text())
+                self.assertEqual(paths[1].read_text().count("# >>> bifrost antigravity >>>"), 1)
             else:
                 self.assertEqual(cfg["security"]["auth"]["selectedType"], "gemini-api-key")
                 self.assertIn(f"GEMINI_API_KEY='{KEY}'", paths[1].read_text())
@@ -121,7 +137,7 @@ class CLIProcessTests(unittest.TestCase):
                                 original = b'{\n // original comment\n "theme": "preserved",\n}\n'
                             if agent == "codex":
                                 original = b'model = "old"\n[model_providers.bifrost.auth]\ncommand = "stale-helper"\n'
-                            if index == 1:
+                            if index == 1 and agent in ("gemini", "antigravity"):
                                 original = b"# original env\nKEEP='preserved'\nGEMINI_API_KEY='old-key'\n"
                             path.parent.mkdir(parents=True, exist_ok=True)
                             path.write_bytes(original)
@@ -186,7 +202,7 @@ class CLIProcessTests(unittest.TestCase):
             self.assertEqual(path.read_bytes(), original)
 
     def test_malformed_settings_roll_back_without_losing_original(self):
-        for agent in ("claude", "opencode", "gemini"):
+        for agent in ("claude", "opencode", "gemini", "pi", "antigravity"):
             with self.subTest(agent=agent), tempfile.TemporaryDirectory() as directory:
                 home = Path(directory)
                 env = isolated_env(home)
@@ -198,6 +214,120 @@ class CLIProcessTests(unittest.TestCase):
                 self.assertIn("parse", result.stderr)
                 self.assertEqual(path.read_bytes(), original)
                 self.assertEqual(list((home / "bifrost/receipts").glob("*.json")), [])
+
+    @unittest.skipIf(os.name == "nt", "POSIX executable fixtures")
+    def test_new_agent_aliases_launch_and_restore(self):
+        for agent in ("pi", "antigravity", "anti-gravity", "agy", "AGUI"):
+            with self.subTest(agent=agent), tempfile.TemporaryDirectory() as directory:
+                home = Path(directory)
+                env = isolated_env(home)
+                env.pop("BIFROST_AGENT_TOKEN", None)
+                bin_dir = home / "bin"
+                bin_dir.mkdir()
+                executable = bin_dir / ("pi" if agent == "pi" else "agy")
+                executable.write_text("#!" + shutil.which("python3") + "\n" +
+                    "import os,json,sys,pathlib\n" +
+                    "p=pathlib.Path(os.environ['HOME'])\n" +
+                    "if pathlib.Path(sys.argv[0]).name=='pi':\n" +
+                    " d=pathlib.Path(os.environ['PI_CODING_AGENT_DIR']); c=json.loads((d/'models.json').read_text()); assert c['providers']['bifrost']['api']=='openai-completions'; assert json.loads((d/'auth.json').read_text())['bifrost']['key']==os.environ['OPENAI_API_KEY']\n" +
+                    "else:\n" +
+                    " c=json.loads((p/'.gemini/antigravity-cli/settings.json').read_text()); assert c['modelProvider']=='gemini'; assert os.environ['GEMINI_API_KEY']=='" + KEY + "'\n" +
+                    "assert sys.argv[-2:]==['--print','argument with spaces']\n" +
+                    "print('AGENT_FIXTURE_OK')\n")
+                executable.chmod(0o700)
+                env["PATH"] = str(bin_dir) + os.pathsep + env["PATH"]
+                result = self.cli(env, agent, "--skip-verify", "--model", "provider/model",
+                                  "--print", "argument with spaces")
+                self.assertIn("AGENT_FIXTURE_OK", result.stdout)
+                canonical = "pi" if agent == "pi" else "antigravity"
+                for path in config_paths(home, canonical):
+                    self.assertFalse(path.exists(), str(path))
+                self.cli(env, "configure", agent, "--model", "provider/saved")
+                # The bare alias must also launch using persisted model settings.
+                result = self.cli(env, agent, "--skip-verify", "--print", "argument with spaces")
+                self.assertIn("AGENT_FIXTURE_OK", result.stdout)
+                self.cli(env, "unconfigure", agent)
+
+    @unittest.skipUnless(os.environ.get("BIFROST_TEST_NATIVE_AGENTS") == "1",
+                         "set BIFROST_TEST_NATIVE_AGENTS=1 with Pi and agy installed")
+    def test_native_agents_stream_from_local_gateway(self):
+        received = []
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(b'{"data":[{"id":"provider/test","object":"model"}]}')
+
+            def do_POST(self):
+                body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))))
+                received.append((self.path, self.headers, body))
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.end_headers()
+                if self.path.startswith("/genai/"):
+                    events = [{"candidates": [{"content": {"role": "model", "parts": [{"text": "native fixture ok"}]}, "finishReason": "STOP"}], "usageMetadata": {"promptTokenCount": 1, "candidatesTokenCount": 3, "totalTokenCount": 4}}]
+                else:
+                    events = [{"id": "fixture", "object": "chat.completion.chunk", "created": 1, "model": "provider/test", "choices": [{"index": 0, "delta": {"role": "assistant", "content": "native fixture ok"}, "finish_reason": None}]}, {"id": "fixture", "object": "chat.completion.chunk", "created": 1, "model": "provider/test", "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}]
+                for event in events:
+                    self.wfile.write(("data: " + json.dumps(event) + "\n\n").encode())
+                if not self.path.startswith("/genai/"):
+                    self.wfile.write(b"data: [DONE]\n\n")
+
+            def log_message(self, *args):
+                pass
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            for agent, binary_name in (("pi", "pi"), ("antigravity", "agy")):
+                with self.subTest(agent=agent), tempfile.TemporaryDirectory() as directory:
+                    home = Path(directory)
+                    env = isolated_env(home)
+                    env.pop("BIFROST_AGENT_TOKEN", None)
+                    native = os.environ.get("BIFROST_TEST_PI_BINARY") if agent == "pi" else None
+                    native = native or shutil.which(binary_name)
+                    self.assertTrue(native, f"Install {binary_name} for native integration tests")
+                    bin_dir = home / "bin"
+                    bin_dir.mkdir()
+                    (bin_dir / binary_name).symlink_to(Path(native).resolve())
+                    env["PATH"] = str(bin_dir) + os.pathsep + env["PATH"]
+                    before = len(received)
+                    result = self.cli(env, agent, "--model", "provider/test", "--", "--print", "Say native fixture ok",
+                                      base=f"http://127.0.0.1:{server.server_port}")
+                    self.assertIn("native fixture ok", result.stdout)
+                    # A configured alias must also work without Bifrost model flags.
+                    self.cli(env, "configure", agent, "--model", "provider/test",
+                             base=f"http://127.0.0.1:{server.server_port}")
+                    result = self.cli(env, agent, "--", "--print", "Say native fixture ok",
+                                      base=f"http://127.0.0.1:{server.server_port}")
+                    self.assertIn("native fixture ok", result.stdout)
+                    self.cli(env, "unconfigure", agent, "--force")
+                    requests = received[before:]
+                    if agent == "pi":
+                        matching = [r for r in requests if r[0] == "/openai/v1/chat/completions"]
+                        self.assertTrue(matching, requests)
+                        self.assertEqual(matching[0][1].get("Authorization"), "Bearer " + KEY)
+                        self.assertEqual(matching[0][2]["model"], "provider/test")
+                    else:
+                        matching = [r for r in requests if r[0].startswith("/genai/v1beta/models/provider/test:streamGenerateContent")]
+                        self.assertTrue(matching, requests)
+                        self.assertEqual(matching[0][1].get("X-Goog-Api-Key"), KEY)
+                    for path in config_paths(home, agent):
+                        if agent == "antigravity" and path.name == "settings.json" and path.exists():
+                            # The native CLI saves its own onboarding preferences.
+                            saved = json.loads(path.read_text())
+                            self.assertNotIn("modelProvider", saved)
+                            self.assertNotIn("model", saved)
+                            self.assertNotIn("customModelsConfig", saved)
+                        else:
+                            self.assertFalse(path.exists(), str(path))
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
 
     def test_all_supplemental_management_operations_over_http(self):
         received = []

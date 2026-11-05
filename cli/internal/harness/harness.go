@@ -21,6 +21,7 @@ type Harness struct {
 	Label        string
 	Binary       string
 	InstallPkg   string
+	InstallURL   string // manual install instructions when InstallPkg is empty
 	VersionArgs  []string
 	BasePath     string
 	BaseURLEnv   string
@@ -146,10 +147,28 @@ var all = map[string]Harness{
 		WriteNativeConfig: opencodeWriteNativeConfig,
 		NativeConfigPath:  "~/.config/opencode/opencode.json",
 	},
+	"pi": {
+		ID: "pi", Label: "Pi", Binary: "pi", InstallPkg: "@earendil-works/pi-coding-agent",
+		VersionArgs: []string{"--version"}, BasePath: "/openai", BaseURLEnv: "OPENAI_BASE_URL", APIKeyEnv: "OPENAI_API_KEY", AgentTokenEnv: "OPENAI_API_KEY",
+		RunArgsForMod: func(model string) []string {
+			if strings.TrimSpace(model) == "" {
+				return nil
+			}
+			return []string{"--provider", "bifrost", "--model", model}
+		},
+		PreLaunch: piPreLaunch, WriteNativeConfig: piWriteNativeConfig, NativeConfigPath: "~/.pi/agent/{models,settings,auth}.json",
+	},
+	"antigravity": {
+		ID: "antigravity", Label: "Antigravity CLI", Binary: "agy", InstallURL: "https://antigravity.google/docs/cli/install/", VersionArgs: []string{"--version"},
+		BasePath: "/genai", BaseURLEnv: "GOOGLE_GEMINI_BASE_URL", APIKeyEnv: "GEMINI_API_KEY",
+		RunArgsForMod: antigravityRunArgs,
+		PreLaunch:     antigravityPreLaunch, WriteNativeConfig: antigravityWriteNativeConfig, NativeConfigPath: "~/.gemini/antigravity-cli/settings.json and shell startup file",
+	},
 }
 
 // Get returns the harness with the given ID and whether it exists.
 func Get(id string) (Harness, bool) {
+	id = CanonicalID(id)
 	h, ok := all[id]
 	return h, ok
 }
@@ -485,4 +504,13 @@ func stripTrailingCommas(data []byte) []byte {
 	}
 
 	return out
+}
+
+// CanonicalID normalizes public aliases without consulting the harness registry.
+func CanonicalID(id string) string {
+	switch strings.ToLower(strings.TrimSpace(id)) {
+	case "anti-gravity", "agy", "agui", "antigravity":
+		return "antigravity"
+	}
+	return id
 }
