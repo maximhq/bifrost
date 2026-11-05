@@ -632,16 +632,6 @@
         "x-source": "Enterprise:transports/bifrost-http/handlers/budgetrequests.go"
       }
     },
-    "/api/governance/budget-requests/{request_id}/approve": {
-      "post": {
-        "operationId": "managementPostGovernanceBudgetRequestsRequestIdApprove",
-        "summary": "POST /api/governance/budget-requests/{request_id}/approve (Enterprise management)",
-        "tags": [
-          "Governance"
-        ],
-        "x-source": "Enterprise:transports/bifrost-http/handlers/budgetrequests.go"
-      }
-    },
     "/api/governance/budget-requests/{request_id}/deny": {
       "post": {
         "operationId": "managementPostGovernanceBudgetRequestsRequestIdDeny",
@@ -1407,70 +1397,6 @@
           "Providers"
         ],
         "x-source": "OSS:transports/handlers/providers.go"
-      }
-    },
-    "/api/rss/feeds": {
-      "get": {
-        "operationId": "listRSSFeeds",
-        "summary": "List news feeds",
-        "tags": [
-          "News Feeds"
-        ],
-        "x-source": "OSS:transports/bifrost-http/handlers/rssfeeds.go"
-      },
-      "post": {
-        "operationId": "createRSSFeed",
-        "summary": "Add a custom news feed",
-        "tags": [
-          "News Feeds"
-        ],
-        "x-source": "OSS:transports/bifrost-http/handlers/rssfeeds.go"
-      }
-    },
-    "/api/rss/feeds/{id}": {
-      "put": {
-        "operationId": "updateRSSFeed",
-        "summary": "Update a news feed",
-        "tags": [
-          "News Feeds"
-        ],
-        "x-source": "OSS:transports/bifrost-http/handlers/rssfeeds.go"
-      },
-      "delete": {
-        "operationId": "deleteRSSFeed",
-        "summary": "Delete a custom news feed",
-        "tags": [
-          "News Feeds"
-        ],
-        "x-source": "OSS:transports/bifrost-http/handlers/rssfeeds.go"
-      }
-    },
-    "/api/rss/items": {
-      "get": {
-        "operationId": "listRSSItems",
-        "summary": "List news items",
-        "tags": [
-          "News Feeds"
-        ],
-        "x-source": "OSS:transports/bifrost-http/handlers/rssfeeds.go"
-      }
-    },
-    "/api/rss/settings": {
-      "get": {
-        "operationId": "getRSSSettings",
-        "summary": "Get news settings",
-        "tags": [
-          "News Feeds"
-        ],
-        "x-source": "OSS:transports/bifrost-http/handlers/rssfeeds.go"
-      },
-      "put": {
-        "operationId": "updateRSSSettings",
-        "summary": "Turn news on or off",
-        "tags": [
-          "News Feeds"
-        ],
-        "x-source": "OSS:transports/bifrost-http/handlers/rssfeeds.go"
       }
     },
     "/api/scim/oauth/config": {
