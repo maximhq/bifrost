@@ -230,9 +230,8 @@ The `path` label contains the matched route template (e.g. `/genai/v1beta/models
 | Metric | Type | Description |
 |--------|------|-------------|
 | `bifrost_upstream_requests_total` | Counter | Total requests to LLM providers |
-| `bifrost_upstream_latency_seconds` | Histogram | Time one attempt spent in outbound HTTP calls and in reading the provider's stream, retries included, including media URL fetches. Excludes queue wait, retry backoff, key selection, plugin hooks and cost calculation. Not observed for an attempt that made no such call |
-| `bifrost_upstream_queue_wait_seconds` | Histogram | Time one attempt waited for a provider worker, from the start of its enqueue (which blocks while the queue is full) until a worker took it. Not observed for an attempt that never reached a worker |
-| `bifrost_turn_duration_seconds` | Histogram | Time between the telemetry plugin's pre and post LLM hooks, for requests that open no attempt window (WebSocket and realtime turns). Not provider latency |
+| `bifrost_upstream_latency_seconds` | Histogram | Time one attempt spent in outbound HTTP calls and reading the provider's stream, retries included. Excludes provider queue wait. WebSocket and realtime turns are timed from the pre-hook to the post-hook |
+| `bifrost_provider_queue_wait_seconds` | Histogram | Time one attempt waited for a provider worker, including a blocking enqueue on a full queue |
 | `bifrost_overhead_latency_microseconds` | Histogram | Total Bifrost overhead per request in microseconds (Bifrost's own work, excluding upstream provider time) |
 | `bifrost_overhead_component_microseconds` | Histogram | That same overhead broken down by internal component via the `overhead_component` label. Opt-in, and populated only when tracing is active — see [Overhead Breakdown](#overhead-breakdown) |
 | `bifrost_success_requests_total` | Counter | Successful provider requests |
@@ -251,12 +250,6 @@ The `path` label contains the matched route template (e.g. `/genai/v1beta/models
 | `bifrost_routing_embedding_cost_total` | Counter | Cost in USD of semantic routing embeddings (same labels as above). Recorded regardless of whether embedding usage counts toward budgets. |
 | `bifrost_routing_llm_requests_total` | Counter | Chat completions made by the semantic router's LLM fallback. Labels: `provider`, `model`. |
 | `bifrost_routing_llm_cost_total` | Counter | Cost in USD of those LLM fallback completions (same labels as above). Recorded regardless of whether usage counts toward budgets. |
-
-<Note>
-`bifrost_upstream_latency_seconds` now measures the time an attempt spends in outbound HTTP calls and in reading the provider's stream, which includes media URL fetches. It used to measure the whole time between the plugin's pre and post hooks, so it also included queue wait, retry backoff, other plugins' hooks and cost calculation, and it rose when a provider queue filled even though the provider was healthy. Individual values get lower. Averages and quantiles can move either way, because an attempt that made no outbound call (a cache hit or a request rejected before dispatch) used to add a fast sample and now adds none. Queue wait moved to `bifrost_upstream_queue_wait_seconds`. Alerts or panels that used the old metric to see queueing should read the new histogram. Requests that open no attempt window, such as native WebSocket and realtime turns, and whose terminal hook runs, now report `bifrost_turn_duration_seconds`, which runs from the pre-hook to the post-hook and stops before the metric work that the old histogram also included. The name, labels and buckets are unchanged.
-
-Each fallback attempt is observed on its own, and a stream is observed once, on its final chunk, with the call and read time of the whole stream. The OTEL exporter's metric of the same name is measured from the `llm.call` and retry spans, reports each retry as its own sample, and is not affected.
-</Note>
 
 ### Error Types
 

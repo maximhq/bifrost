@@ -183,7 +183,6 @@ type PrometheusPlugin struct {
 	UpstreamRequestsTotal          *prometheus.CounterVec
 	UpstreamLatencySeconds         *prometheus.HistogramVec
 	QueueWaitSeconds               *prometheus.HistogramVec
-	TurnDurationSeconds            *prometheus.HistogramVec
 	OverheadLatencyMicros          *prometheus.HistogramVec
 	OverheadComponentMicros        *prometheus.HistogramVec
 	SuccessRequestsTotal           *prometheus.CounterVec
@@ -493,7 +492,7 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 	bifrostUpstreamLatencySeconds := factory.NewHistogramVec(
 		prometheus.HistogramOpts{
 			Name:    "bifrost_upstream_latency_seconds",
-			Help:    "Time one attempt spent in outbound HTTP calls and in reading the provider's stream, in seconds, retries included. Media URL fetches made for the request count too. Excludes provider queue wait (see bifrost_upstream_queue_wait_seconds), retry backoff, key selection, plugin hooks and cost calculation. Not observed for an attempt that made no such call.",
+			Help:    "Time one attempt spent in outbound HTTP calls and in reading the provider's stream, in seconds, retries included. Media URL fetches made for the request count too. Excludes provider queue wait (see bifrost_provider_queue_wait_seconds), retry backoff, key selection, plugin hooks and cost calculation. Not observed for an attempt that made no such call. WebSocket and realtime turns, which skip the provider queue, are timed from the pre-hook to the post-hook.",
 			Buckets: upstreamLatencyBuckets, // Extended range for AI model inference times
 		},
 		bifrostLabels("is_success"),
@@ -503,24 +502,11 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 	// cannot depend on the outcome.
 	bifrostQueueWaitSeconds := factory.NewHistogramVec(
 		prometheus.HistogramOpts{
-			Name:    "bifrost_upstream_queue_wait_seconds",
+			Name:    "bifrost_provider_queue_wait_seconds",
 			Help:    "Time one attempt waited for a provider worker, in seconds: from the start of its enqueue (which blocks while the provider queue is full) until a worker took it. Not observed for an attempt that never reached a worker.",
 			Buckets: queueWaitBuckets,
 		},
 		bifrostLabels(),
-	)
-
-	// WebSocket and realtime turns open no attempt window, so bifrost_upstream_latency_seconds
-	// cannot cover them. They report the pre-hook to post-hook duration here instead, under a name
-	// that does not claim to be provider time. It ends at the post-hook, before the metric work the
-	// old upstream latency histogram also included.
-	bifrostTurnDurationSeconds := factory.NewHistogramVec(
-		prometheus.HistogramOpts{
-			Name:    "bifrost_turn_duration_seconds",
-			Help:    "Time between the telemetry plugin's pre and post LLM hooks, in seconds, for requests that open no attempt window (WebSocket and realtime turns). Includes everything between the hooks, so it is not provider latency.",
-			Buckets: upstreamLatencyBuckets,
-		},
-		bifrostLabels("is_success"),
 	)
 
 	// Labelled without is_success: unlike upstream latency, overhead is dominated by
@@ -802,7 +788,6 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 		UpstreamRequestsTotal:          bifrostUpstreamRequestsTotal,
 		UpstreamLatencySeconds:         bifrostUpstreamLatencySeconds,
 		QueueWaitSeconds:               bifrostQueueWaitSeconds,
-		TurnDurationSeconds:            bifrostTurnDurationSeconds,
 		OverheadLatencyMicros:          bifrostOverheadLatencyMicros,
 		OverheadComponentMicros:        bifrostOverheadComponentMicros,
 		SuccessRequestsTotal:           bifrostSuccessRequestsTotal,
@@ -1505,16 +1490,17 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 
 		p.UpstreamRequestsTotal.WithLabelValues(promLabelValues...).Inc()
 
-		// Zero means this attempt made no outbound HTTP call (cache hit, plugin
-		// short-circuit, rejected before dispatch) or has no accumulator, so there is no
-		// provider latency to report.
 		// Default labels, then is_success, then custom labels.
 		latencyLabelValues := spliceLabelValues(promLabelValues, len(p.defaultBifrostLabels), strconv.FormatBool(bifrostErr == nil))
+		// WebSocket and realtime turns open no attempt window and skip the provider queue,
+		// so the hook window is the closest measure they have. With a window, zero means the
+		// attempt made no outbound call (cache hit, plugin short-circuit, rejected before
+		// dispatch), so there is no provider latency to report.
+		if !hasWindow && isStreamFinal {
+			upstream = llmHookWindow
+		}
 		if upstream > 0 {
 			p.UpstreamLatencySeconds.WithLabelValues(latencyLabelValues...).Observe(upstream.Seconds())
-		}
-		if isStreamFinal && !hasWindow {
-			p.TurnDurationSeconds.WithLabelValues(latencyLabelValues...).Observe(llmHookWindow.Seconds())
 		}
 		if queueWait > 0 {
 			p.QueueWaitSeconds.WithLabelValues(promLabelValues...).Observe(queueWait.Seconds())
