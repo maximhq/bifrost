@@ -26,6 +26,7 @@ info:
     - `/genai/*` - Google GenAI (Gemini) compatible API
     - `/bedrock/*` - AWS Bedrock compatible API
     - `/cohere/*` - Cohere compatible API
+    - `/azure/*` - Azure AI Speech, Voice Live and Azure OpenAI resource paths
 
     ### Framework Integration APIs
     Multi-provider proxy endpoints for AI frameworks:
@@ -114,7 +115,7 @@ tags:
   - name: OpenAI Integration
     description: OpenAI-compatible API endpoints (/openai/*)
   - name: Azure Integration
-    description: Azure OpenAI integration endpoints
+    description: Azure OpenAI, Azure AI Speech and Voice Live endpoints (/azure/*, /openai/openai/deployments/*)
   - name: Anthropic Integration
     description: Anthropic-compatible API endpoints (/anthropic/*)
   - name: GenAI Integration
@@ -548,6 +549,19 @@ paths:
   # Tokenize (v1)
   /cohere/v1/tokenize:
     $ref: "./paths/integrations/cohere/tokenize.yaml#/tokenize"
+
+  # ==================== Azure Integration ====================
+  # Azure AI Speech REST
+  /azure/cognitiveservices/v1:
+    $ref: "./paths/integrations/azure/speech.yaml#/text-to-speech"
+  /azure/speechtotext/transcriptions:transcribe:
+    $ref: "./paths/integrations/azure/speech.yaml#/fast-transcription"
+  /azure/stt/speech/recognition/{mode}/cognitiveservices/v1:
+    $ref: "./paths/integrations/azure/speech.yaml#/short-audio"
+
+  # Voice Live (WebSocket)
+  /azure/voice-live/realtime:
+    $ref: "./paths/integrations/azure/speech.yaml#/voice-live"
 
   # ==================== Cursor IDE Integration ====================
   # Hybrid chat completions (parses Responses payload, returns chat-completions shape)
@@ -1531,7 +1545,7 @@ components:
       in: header
       name: x-bf-vk
       description: |
-        Bifrost Virtual Key for governance, routing, and access control. Supported on all inference endpoints (`/v1/*`, `/openai/*`, `/anthropic/*`, `/bedrock/*`, `/cohere/*`, `/genai/*`, `/langchain/*`, `/litellm/*`, `/pydanticai/*`, `/mcp`), not on management APIs (`/api/*`) - with the single
+        Bifrost Virtual Key for governance, routing, and access control. Supported on all inference endpoints (`/v1/*`, `/openai/*`, `/anthropic/*`, `/bedrock/*`, `/cohere/*`, `/azure/*`, `/genai/*`, `/langchain/*`, `/litellm/*`, `/pydanticai/*`, `/mcp`), not on management APIs (`/api/*`) - with the single
         exception of the self-service `GET /api/governance/virtual-keys/quota`, where the virtual key is the credential.
         Example: `sk-bf-*` prefixed keys.
     ApiKeyAuth:
@@ -1569,6 +1583,13 @@ components:
       description: |
         Virtual key passed via the Azure-style `api-key` header. The value MUST be
         `sk-bf-` prefixed.
+    VirtualKeyAzureSpeechAuth:
+      type: apiKey
+      in: header
+      name: Ocp-Apim-Subscription-Key
+      description: |
+        Virtual key passed via the Azure AI Speech `Ocp-Apim-Subscription-Key` header. Only a
+        value with the `sk-bf-` prefix is read as a virtual key.
     SessionCookieAuth:
       type: apiKey
       in: cookie

@@ -229,7 +229,7 @@ Supports multiple keys with weighted load balancing. Mark one key with `use_for_
 
 ### Azure OpenAI
 
-Azure requires `azure_key_config` on every key with `endpoint`. Bifrost uses the Azure OpenAI v1 API — no `api_version` needed. List your Azure deployment names in `models` - Bifrost routes requests using the model name as the deployment name. If your deployment names differ from the model names you use in requests, add an `aliases` map on the key.
+Azure requires `azure_key_config` on every key with `endpoint`. Bifrost uses the Azure OpenAI v1 API — no `api_version` needed. List your Azure deployment names in `models` - Bifrost routes requests using the model name as the deployment name. If your deployment names differ from the model names you use in requests, add an `aliases` map on the key. To send speech, transcription or realtime sessions on the same key to Azure AI Speech or Voice Live, set `use_speech_endpoints` or `use_voice_live_endpoints` (see [Azure AI Speech](/providers/supported-providers/azure#11-azure-ai-speech) and [Azure Voice Live](/providers/supported-providers/azure#12-azure-voice-live)).
 
 <Tabs>
 <Tab title="API Key">
