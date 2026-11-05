@@ -602,6 +602,8 @@ HTTP server settings. Every field is deploy-time only: Bifrost reads them once a
 
 `trusted_forwarded_host` is deploy-time only, like the other server settings: change it in `config.json` and restart Bifrost. The port is part of the exact match, so `bifrost.example.com:8443` does not match `bifrost.example.com` or `bifrost.example.com:443`. Leave it empty to ignore `X-Forwarded-Host`.
 
+Invalid authorities, including ports outside `0`–`65535`, are rejected before stores are opened or reconciled. OAuth client metadata responses include `Vary: X-Forwarded-Host` so shared caches keep forwarded-host variants separate.
+
 Valid explicit public base URL overrides take priority over both headers. For request-derived URLs, the existing scheme selection and `server.base_path` still apply. This setting only affects public base URL construction; it does not rewrite the incoming `Host` header or change routing and other host checks. See [Trusting a forwarded public host](/deployment-guides/how-to/nginx-reverse-proxy#trusting-a-forwarded-public-host).
 
 `base_path` rules:

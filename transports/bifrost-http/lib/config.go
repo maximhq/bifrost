@@ -1183,6 +1183,11 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 			applyV1Compat(&configData)
 		}
 	}
+	if configData.Server != nil {
+		if err := validateTrustedForwardedHost(configData.Server.TrustedForwardedHost); err != nil {
+			return nil, err
+		}
+	}
 
 	// 1. Encryption (before stores so BeforeSave hooks work correctly)
 	if err := initEncryption(&configData); err != nil {

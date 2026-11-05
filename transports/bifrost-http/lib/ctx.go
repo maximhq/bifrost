@@ -940,14 +940,29 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 // trustedForwardedHost retains one configured authority for the server lifetime.
 var trustedForwardedHost atomic.Pointer[string]
 
+// configureTrustedForwardedHost publishes a validated authority for URL inference.
 func configureTrustedForwardedHost(authority string) error {
+	if err := validateTrustedForwardedHost(authority); err != nil {
+		return err
+	}
+	trustedForwardedHost.Store(&authority)
+	return nil
+}
+
+// validateTrustedForwardedHost rejects URLs and authorities that cannot identify
+// an HTTP endpoint. It runs before opening stores and again before publication.
+func validateTrustedForwardedHost(authority string) error {
 	if authority != "" {
 		u, err := url.Parse("https://" + authority)
 		if err != nil || u.Host != authority || strings.ContainsAny(authority, "*,") || configstore.ValidatePublicBaseURL("https://"+authority) != nil {
 			return fmt.Errorf("invalid server.trusted_forwarded_host: expected a hostname with optional port")
 		}
+		if port := u.Port(); port != "" {
+			if _, err := strconv.ParseUint(port, 10, 16); err != nil {
+				return fmt.Errorf("invalid server.trusted_forwarded_host: port must be in the range 0-65535")
+			}
+		}
 	}
-	trustedForwardedHost.Store(&authority)
 	return nil
 }
 
