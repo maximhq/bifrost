@@ -545,3 +545,28 @@ func TestToGeminiChatCompletionRequest_ToolResultRefKeyStaysOpaque(t *testing.T)
 		assert.JSONEq(t, plainOutput, string(resp), "plain JSON tool output must still be forwarded as a structured object")
 	})
 }
+
+// Gemini's function response is text: media a tool returned is named, not silently dropped.
+func TestToGeminiChatCompletionRequest_ToolResultNamesMedia(t *testing.T) {
+	out, err := gemini.ToGeminiChatCompletionRequest(nil, &schemas.BifrostChatRequest{
+		Provider: schemas.Gemini,
+		Model:    "gemini-flash-latest",
+		Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("plot it")}},
+			{Role: schemas.ChatMessageRoleAssistant, ChatAssistantMessage: &schemas.ChatAssistantMessage{ToolCalls: []schemas.ChatAssistantMessageToolCall{{
+				ID: schemas.Ptr("c1"), Type: schemas.Ptr("function"),
+				Function: schemas.ChatAssistantMessageToolCallFunction{Name: schemas.Ptr("plot"), Arguments: `{}`},
+			}}}},
+			{Role: schemas.ChatMessageRoleTool, ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: schemas.Ptr("c1")}, Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{
+		{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr("chart below")},
+		{Type: schemas.ChatContentBlockTypeImage, ImageURLStruct: &schemas.ChatInputImage{URL: "data:image/png;base64,iVBORw0KGgo="}},
+		{Type: schemas.ChatContentBlockTypeInputAudio, InputAudio: &schemas.ChatInputAudio{Data: "SUQz", Format: schemas.Ptr("mp3")}},
+	}}},
+		},
+	})
+	require.NoError(t, err)
+	response := gjson.GetBytes(out.Contents[2].Parts[0].FunctionResponse.Response, "content").String()
+	assert.Contains(t, response, "chart below")
+	assert.Contains(t, response, "[image/png")
+	assert.Contains(t, response, "[audio/mp3")
+}

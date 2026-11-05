@@ -2,6 +2,7 @@ package openai_test
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -441,9 +442,9 @@ func TestOpenAI(t *testing.T) {
 			{Provider: schemas.OpenAI, Model: "whisper-1"},
 		},
 		SpeechSynthesisModel:    "gpt-4o-mini-tts",
-		ReasoningModel:          "o4-mini", // o4-mini properly returns both reasoning items and message output
-		ImageGenerationModel:    "gpt-image-1",
-		ImageEditModel:          "gpt-image-1",
+		ReasoningModel:          "gpt-5-mini", // o4-mini was retired; gpt-5-mini returns both reasoning items and message output
+		ImageGenerationModel:    "gpt-image-1.5",
+		ImageEditModel:          "gpt-image-1.5",
 		ImageVariationModel:     "", // dall-e-2 is deprecated and no other OpenAI model supports image variations
 		VideoGenerationModel:    "sora-2",
 		ChatAudioModel:          "gpt-audio-mini",
@@ -524,4 +525,185 @@ func TestOpenAI(t *testing.T) {
 	t.Run("OpenAITests", func(t *testing.T) {
 		llmtests.RunAllComprehensiveTests(t, client, ctx, testConfig)
 	})
+}
+
+// TestOpenAIDisableStoreForcesStoreFalse verifies that openai_config.disable_store forces store=false on chat and
+// responses requests, including a passthrough extra_params store, without rewriting the caller's request that fallbacks share.
+func TestOpenAIDisableStoreForcesStoreFalse(t *testing.T) {
+	for _, api := range []string{"chat", "responses"} {
+		for _, streaming := range []bool{false, true} {
+			for _, mode := range []string{"typed", "passthrough"} {
+				t.Run(fmt.Sprintf("%s/stream=%v/%s", api, streaming, mode), func(t *testing.T) {
+					var body []byte
+					server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+						body, _ = io.ReadAll(r.Body)
+						switch {
+						case api == "chat" && streaming:
+							w.Header().Set("Content-Type", "text/event-stream")
+							_, _ = w.Write([]byte("data: {\"id\":\"c1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"m\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"))
+						case api == "chat":
+							w.Header().Set("Content-Type", "application/json")
+							_, _ = w.Write([]byte(`{"id":"c1","object":"chat.completion","created":1,"model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`))
+						case streaming:
+							w.Header().Set("Content-Type", "text/event-stream")
+							_, _ = w.Write([]byte("data: {\"type\":\"response.completed\",\"sequence_number\":0,\"response\":{\"id\":\"resp_1\",\"object\":\"response\",\"created_at\":1,\"status\":\"completed\",\"model\":\"m\",\"output\":[]}}\n\n"))
+						default:
+							w.Header().Set("Content-Type", "application/json")
+							_, _ = w.Write([]byte(`{"id":"resp_1","object":"response","created_at":1,"status":"completed","model":"m","output":[]}`))
+						}
+					}))
+					defer server.Close()
+
+					provider := openai.NewOpenAIProvider(&schemas.ProviderConfig{
+						NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL, DefaultRequestTimeoutInSeconds: 10, AllowPrivateNetwork: true},
+						OpenAIConfig:  &schemas.OpenAIConfig{DisableStore: true},
+					}, oauthTestLogger{})
+					ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+					var extraParams map[string]interface{}
+					if mode == "passthrough" {
+						ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+						extraParams = map[string]interface{}{"store": true}
+					}
+					key := schemas.Key{Value: *schemas.NewSecretVar("test-key")}
+					postHookRunner := func(_ *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+						return result, err
+					}
+
+					var callerStore *bool
+					var callerExtra map[string]interface{}
+					if api == "chat" {
+						req := &schemas.BifrostChatRequest{
+							Provider: schemas.OpenAI,
+							Model:    "gpt-4o-mini",
+							Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")}}},
+							Params:   &schemas.ChatParameters{Store: schemas.Ptr(true), ExtraParams: extraParams},
+						}
+						if streaming {
+							stream, bErr := provider.ChatCompletionStream(ctx, postHookRunner, nil, key, req)
+							if bErr != nil {
+								t.Fatalf("ChatCompletionStream returned error: %v", llmtests.GetErrorMessage(bErr))
+							}
+							for range stream {
+							}
+						} else if _, bErr := provider.ChatCompletion(ctx, key, req); bErr != nil {
+							t.Fatalf("ChatCompletion returned error: %v", llmtests.GetErrorMessage(bErr))
+						}
+						callerStore, callerExtra = req.Params.Store, req.Params.ExtraParams
+					} else {
+						req := &schemas.BifrostResponsesRequest{
+							Provider: schemas.OpenAI,
+							Model:    "gpt-4o-mini",
+							Input:    []schemas.ResponsesMessage{llmtests.CreateBasicResponsesMessage("hello")},
+							Params:   &schemas.ResponsesParameters{Store: schemas.Ptr(true), ExtraParams: extraParams},
+						}
+						if streaming {
+							stream, bErr := provider.ResponsesStream(ctx, postHookRunner, nil, key, req)
+							if bErr != nil {
+								t.Fatalf("ResponsesStream returned error: %v", llmtests.GetErrorMessage(bErr))
+							}
+							for range stream {
+							}
+						} else if _, bErr := provider.Responses(ctx, key, req); bErr != nil {
+							t.Fatalf("Responses returned error: %v", llmtests.GetErrorMessage(bErr))
+						}
+						callerStore, callerExtra = req.Params.Store, req.Params.ExtraParams
+					}
+
+					if !strings.Contains(string(body), `"store":false`) || strings.Count(string(body), `"store":`) != 1 {
+						t.Fatalf("expected upstream body to contain exactly one \"store\":false, got %s", body)
+					}
+					if !*callerStore {
+						t.Fatalf("caller's Params.Store was rewritten to false")
+					}
+					if v, ok := callerExtra["store"]; ok && v != true {
+						t.Fatalf("caller's ExtraParams store was rewritten to %v", v)
+					}
+				})
+			}
+		}
+	}
+}
+
+// TestContainerFileListFindsTheContainersKey pins that a container's file listing asks each key until
+// one owns the container, keeps later pages on that key, and never continues into the next key.
+func TestContainerFileListFindsTheContainersKey(t *testing.T) {
+	var mu sync.Mutex
+	var seen []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth := r.Header.Get("Authorization")
+		mu.Lock()
+		seen = append(seen, auth+" after="+r.URL.Query().Get("after"))
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		if auth != "Bearer key-b" {
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"error":{"message":"Container not found","type":"invalid_request_error"}}`))
+			return
+		}
+		if r.URL.Query().Get("after") == "" {
+			_, _ = w.Write([]byte(`{"object":"list","data":[{"id":"cfile-1","object":"container.file"}],"has_more":true}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"object":"list","data":[{"id":"cfile-2","object":"container.file"}],"has_more":false}`))
+	}))
+	t.Cleanup(server.Close)
+
+	provider := openai.NewOpenAIProvider(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL, DefaultRequestTimeoutInSeconds: 10, AllowPrivateNetwork: true},
+	}, nil)
+	keys := []schemas.Key{
+		{ID: "a", Value: *schemas.NewSecretVar("key-a")},
+		{ID: "b", Value: *schemas.NewSecretVar("key-b")},
+		{ID: "c", Value: *schemas.NewSecretVar("key-c")},
+	}
+	ctx := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
+
+	first, err := provider.ContainerFileList(ctx, keys, &schemas.BifrostContainerFileListRequest{Provider: schemas.OpenAI, ContainerID: "cntr_1"})
+	if err != nil {
+		t.Fatalf("first page: %v", err.Error.Message)
+	}
+	if len(first.Data) != 1 || first.Data[0].ID != "cfile-1" || !first.HasMore || first.After == nil {
+		t.Fatalf("first page = %+v", first)
+	}
+
+	second, err := provider.ContainerFileList(ctx, keys, &schemas.BifrostContainerFileListRequest{Provider: schemas.OpenAI, ContainerID: "cntr_1", After: first.After})
+	if err != nil {
+		t.Fatalf("second page: %v", err.Error.Message)
+	}
+	if len(second.Data) != 1 || second.Data[0].ID != "cfile-2" || second.HasMore || second.After != nil {
+		t.Fatalf("second page = %+v", second)
+	}
+
+	want := []string{"Bearer key-a after=", "Bearer key-b after=", "Bearer key-b after=cfile-1"}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(seen) != len(want) {
+		t.Fatalf("upstream calls = %v, want %v", seen, want)
+	}
+	for i := range want {
+		if seen[i] != want[i] {
+			t.Fatalf("upstream calls = %v, want %v", seen, want)
+		}
+	}
+}
+
+// TestContainerFileListNotFoundOnEveryKey pins that a container no key owns comes back as the provider's 404.
+func TestContainerFileListNotFoundOnEveryKey(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":{"message":"Container not found","type":"invalid_request_error"}}`))
+	}))
+	t.Cleanup(server.Close)
+
+	provider := openai.NewOpenAIProvider(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL, DefaultRequestTimeoutInSeconds: 10, AllowPrivateNetwork: true},
+	}, nil)
+	keys := []schemas.Key{{ID: "a", Value: *schemas.NewSecretVar("key-a")}, {ID: "b", Value: *schemas.NewSecretVar("key-b")}}
+	ctx := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
+
+	_, err := provider.ContainerFileList(ctx, keys, &schemas.BifrostContainerFileListRequest{Provider: schemas.OpenAI, ContainerID: "cntr_missing"})
+	if err == nil || err.StatusCode == nil || *err.StatusCode != http.StatusNotFound {
+		t.Fatalf("error = %+v, want 404", err)
+	}
 }

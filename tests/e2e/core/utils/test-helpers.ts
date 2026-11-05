@@ -71,6 +71,28 @@ export async function assertToast(
 }
 
 /**
+ * Fail the list request at apiPath with a 500 and reload. The page must show the
+ * load error with the server's message instead of its empty state.
+ */
+export async function expectListLoadError(
+  page: Page,
+  apiPath: string,
+  loadErrorTestId: string,
+  emptyStateTestId: string
+): Promise<void> {
+  await page.route(
+    (url) => url.pathname === apiPath,
+    (route) =>
+      route.request().method() === 'GET'
+        ? route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ error: { message: 'database is down' } }) })
+        : route.fallback()
+  )
+  await page.reload()
+  await expect(page.getByTestId(loadErrorTestId)).toContainText(/database is down/i)
+  await expect(page.getByTestId(emptyStateTestId)).toHaveCount(0)
+}
+
+/**
  * Assert that page URL matches expected pattern
  */
 export async function assertUrl(page: Page, pattern: string | RegExp): Promise<void> {

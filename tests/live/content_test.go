@@ -63,6 +63,26 @@ func TestContent_AnonymousDownloadIsRefused(t *testing.T) {
 	assert.Equal(t, http.StatusUnauthorized, status, "%s", body)
 }
 
+// Azure does not store GPT Live sessions yet, so the gateway refuses a recording download.
+func TestContent_AzureRecordingIsUnsupported(t *testing.T) {
+	requireFake(t)
+	t.Parallel()
+	vk := createVirtualKey(t, virtualKeySpec{provider: "azure"})
+	session := sessionFor(t, "azure/"+voiceModel, backendModel, nil)
+	c := openLive(t, wsTransport, clientOptions{headers: vkHeaders(vk), session: session})
+	c.CloseSession()
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, gatewayURL+"/v1/live/sessions/"+c.ProviderSessionID+"/content?provider=azure", nil)
+	require.NoError(t, err)
+	req.Header.Set("x-bf-vk", vk.Value)
+	resp, err := (&http.Client{Timeout: 30 * time.Second}).Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode, "%s", body)
+	assert.Contains(t, string(body), "unsupported_operation")
+}
+
 // A long call's recording is relayed as it arrives: the first byte reaches the client while the
 // provider is still sending, and the gateway holds chunks, not the recording.
 func TestContent_LargeRecordingStreamsThroughTheGateway(t *testing.T) {

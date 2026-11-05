@@ -300,6 +300,18 @@ func ExtraFieldsInHeaders(ctx *fasthttp.RequestCtx) bool {
 //	// Maxim tracing data, MCP filters, governance keys, API keys, cache settings,
 //	// session stickiness, and extra headers
 
+// ClientForwardedIP returns the leftmost X-Forwarded-For entry, else X-Real-IP, else "".
+// Both headers are caller-controlled and not verified unless a trusted proxy overwrites them.
+func ClientForwardedIP(ctx *fasthttp.RequestCtx) string {
+	if xff := strings.TrimSpace(string(ctx.Request.Header.Peek("X-Forwarded-For"))); xff != "" {
+		if first, _, found := strings.Cut(xff, ","); found {
+			return strings.TrimSpace(first)
+		}
+		return xff
+	}
+	return strings.TrimSpace(string(ctx.Request.Header.Peek("X-Real-IP")))
+}
+
 func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*schemas.BifrostContext, context.CancelFunc) {
 	// "transport-context" overhead phase: building the request-scoped BifrostContext —
 	// child-context alloc, request-id resolution, and the full request-header iteration
@@ -542,6 +554,11 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 			return true
 		}
 		if keyStr == "api-key" && strings.HasPrefix(strings.ToLower(string(value)), governance.VirtualKeyPrefix) {
+			bifrostCtx.SetValue(schemas.BifrostContextKeyVirtualKey, string(value))
+			return true
+		}
+		// Azure AI Speech clients send their key as Ocp-Apim-Subscription-Key.
+		if keyStr == "ocp-apim-subscription-key" && strings.HasPrefix(strings.ToLower(string(value)), governance.VirtualKeyPrefix) {
 			bifrostCtx.SetValue(schemas.BifrostContextKeyVirtualKey, string(value))
 			return true
 		}
@@ -847,6 +864,15 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 	})
 	bifrostCtx.SetValue(schemas.BifrostContextKeyRequestHeaders, allHeaders)
 
+	// Same order as enterprise audit logs: the forwarding headers first, then the TCP peer.
+	if store != nil && store.ShouldCaptureClientIP() {
+		if clientIP := ClientForwardedIP(ctx); clientIP != "" {
+			bifrostCtx.SetValue(schemas.BifrostContextKeyClientIP, clientIP)
+		} else if ip := ctx.RemoteIP(); ip != nil && !ip.IsUnspecified() {
+			bifrostCtx.SetValue(schemas.BifrostContextKeyClientIP, ip.String())
+		}
+	}
+
 	// Session stickiness: an explicit x-bf-session-id wins, otherwise the
 	// harness's own session header applies, so Claude Code / Codex CLI /
 	// OpenCode traffic gets key stickiness without the caller renaming anything.
@@ -912,6 +938,8 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 // When externalBaseURL is non-empty (set via config/UI/API), it takes priority so that
 // deployments behind a reverse proxy advertise the proxy's public URL rather than the
 // internal Host header seen by Bifrost.
+// Otherwise it is derived from the request's scheme and Host, plus server.base_path,
+// since the browser reached Bifrost under that prefix even when the proxy strips it.
 func BuildBaseURL(ctx *fasthttp.RequestCtx, externalBaseURL string) string {
 	if override := strings.TrimRight(strings.TrimSpace(externalBaseURL), "/"); override != "" {
 		if configstore.ValidatePublicBaseURL(override) == nil {
@@ -919,24 +947,41 @@ func BuildBaseURL(ctx *fasthttp.RequestCtx, externalBaseURL string) string {
 		}
 	}
 	scheme := "http"
-	xfProto := strings.ToLower(strings.TrimSpace(string(ctx.Request.Header.Peek("X-Forwarded-Proto"))))
-	if comma := strings.IndexByte(xfProto, ','); comma >= 0 {
-		xfProto = strings.TrimSpace(xfProto[:comma])
-	}
-	// x-bf-forwarded-proto is honored for setups where a managed LB overwrites the
-	// standard X-Forwarded-Proto (e.g. AWS L4 NLB -> ALB hops); the edge injects it.
-	xbfProto := strings.ToLower(strings.TrimSpace(string(ctx.Request.Header.Peek("x-bf-forwarded-proto"))))
-	if comma := strings.IndexByte(xbfProto, ','); comma >= 0 {
-		xbfProto = strings.TrimSpace(xbfProto[:comma])
-	}
-	if ctx.IsTLS() || xfProto == "https" || xbfProto == "https" {
+	if RequestIsHTTPS(ctx) {
 		scheme = "https"
 	}
 	host := string(ctx.Host())
 	if host == "" {
 		return ""
 	}
-	return fmt.Sprintf("%s://%s", scheme, host)
+	return scheme + "://" + host + BasePath()
+}
+
+// RequestIsHTTPS reports whether the client reached Bifrost over HTTPS: directly
+// over TLS, or through a proxy that says so in a forwarded-proto header (first
+// value of a comma-separated chain). x-bf-forwarded-proto exists for setups where
+// a managed LB overwrites the standard header (e.g. AWS L4 NLB -> ALB hops); the
+// edge injects it with the scheme the client really used, so when it is present
+// it decides, and X-Forwarded-Proto is only consulted without it. Every
+// scheme-dependent decision (public URLs, HSTS, cookie Secure, trace attributes)
+// goes through here so they cannot disagree.
+func RequestIsHTTPS(ctx *fasthttp.RequestCtx) bool {
+	if ctx.IsTLS() {
+		return true
+	}
+	if edge := ctx.Request.Header.Peek("x-bf-forwarded-proto"); len(edge) > 0 {
+		return forwardedProtoIsHTTPS(edge)
+	}
+	return forwardedProtoIsHTTPS(ctx.Request.Header.Peek("X-Forwarded-Proto"))
+}
+
+// forwardedProtoIsHTTPS reports whether the first value of a forwarded-proto header is https.
+func forwardedProtoIsHTTPS(value []byte) bool {
+	proto := strings.TrimSpace(string(value))
+	if comma := strings.IndexByte(proto, ','); comma >= 0 {
+		proto = strings.TrimSpace(proto[:comma])
+	}
+	return strings.EqualFold(proto, "https")
 }
 
 // BuildHTTPRequestFromFastHTTP creates an HTTPRequest from fasthttp context for streaming handlers.

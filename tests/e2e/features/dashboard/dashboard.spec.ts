@@ -1,3 +1,4 @@
+import type { Page } from '@playwright/test'
 import { featureFlagsApi } from '../../core/actions/api'
 import { expect, test } from '../../core/fixtures/base.fixture'
 import { waitForNetworkIdle } from '../../core/utils/test-helpers'
@@ -89,6 +90,34 @@ test.describe('Dashboard', () => {
       const url = dashboardPage.page.url()
       expect(url).toMatch(/period=30d|start_time=\d+&end_time=\d+/)
     })
+
+    for (const [period, label] of [
+      ['today', 'Today'],
+      ['this_week', 'This week'],
+      ['this_month', 'This month'],
+    ] as const) {
+      test(`should change time period to ${label.toLowerCase()} and send it with the timezone`, async ({ dashboardPage }) => {
+        // Calendar periods depend on the viewer's timezone. The server resolves them, so the
+        // request carries the period plus the timezone picked in the date picker.
+        await dashboardPage.page.evaluate(() => localStorage.setItem('bifrost.timezone', 'America/New_York'))
+        await dashboardPage.goto()
+
+        const requestPromise = dashboardPage.page.waitForRequest(
+          (req) => req.url().includes('/logs/histogram') && req.url().includes(`period=${period}`),
+          { timeout: 15000 }
+        )
+
+        await dashboardPage.selectTimePeriod(period)
+
+        expect(await dashboardPage.getSelectedPeriodLabel()).toContain(label)
+        expect(dashboardPage.page.url()).toContain(`period=${period}`)
+
+        const histogramUrl = new URL((await requestPromise).url())
+        expect(histogramUrl.searchParams.get('period')).toBe(period)
+        expect(histogramUrl.searchParams.get('timezone')).toBe('America/New_York')
+        expect(histogramUrl.searchParams.get('start_time')).toBeNull()
+      })
+    }
   })
 
   test.describe('Chart Type Toggling', () => {
@@ -413,4 +442,49 @@ test.describe('Dashboard', () => {
     })
   })
 
+})
+
+// Bifrost running from config.json alone has no config store. Pages served entirely by the logs
+// store stay usable; the rest show the "not available" banner. The store flags come from /api/config,
+// so the mode is stubbed there: the suite's servers always have a config store.
+test.describe('Config-file-only mode', () => {
+  async function stubStores(page: Page, stores: { is_db_connected: boolean; is_logs_connected: boolean }) {
+    await page.route(
+      (url) => url.pathname.endsWith('/api/config'),
+      async (route) => {
+        const response = await route.fetch()
+        await route.fulfill({ response, json: { ...(await response.json()), ...stores } })
+      },
+    )
+  }
+
+  test('renders the dashboard when only the logs store is connected', async ({ page, dashboardPage }) => {
+    await stubStores(page, { is_db_connected: false, is_logs_connected: true })
+    await page.goto('/workspace/dashboard')
+    // The heading sits in the topbar, outside the store gate, so only page content proves the gate opened.
+    await expect(dashboardPage.logVolumeChart).toBeVisible()
+    await expect(page.getByTestId('config-store-documentation-link')).toHaveCount(0)
+  })
+
+  test('renders MCP logs when only the logs store is connected', async ({ page }) => {
+    await stubStores(page, { is_db_connected: false, is_logs_connected: true })
+    // The page loads its logs only once it mounts, and a fresh database shows the empty state, so the
+    // request is the marker that holds with or without data.
+    const logsRequest = page.waitForResponse((r) => new URL(r.url()).pathname.endsWith('/api/mcp-logs') && r.ok())
+    await page.goto('/workspace/mcp-logs')
+    await logsRequest
+    await expect(page.getByTestId('config-store-documentation-link')).toHaveCount(0)
+  })
+
+  test('shows the banner on pages that need the config store', async ({ page }) => {
+    await stubStores(page, { is_db_connected: false, is_logs_connected: true })
+    await page.goto('/workspace/providers')
+    await expect(page.getByTestId('config-store-documentation-link')).toBeVisible()
+  })
+
+  test('shows the banner on the dashboard when no logs store is connected', async ({ page }) => {
+    await stubStores(page, { is_db_connected: false, is_logs_connected: false })
+    await page.goto('/workspace/dashboard')
+    await expect(page.getByTestId('config-store-documentation-link')).toBeVisible()
+  })
 })

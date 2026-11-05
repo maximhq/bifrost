@@ -331,8 +331,18 @@ func vertexServiceTierHeaderValue(region string, model string, tier schemas.Bifr
 	}
 }
 
+// vertexKeyUsesAPIKeyOnly reports whether key authenticates with an API key alone, with no service
+// account or workload identity to mint the OAuth token that Model Garden listing requires.
+func vertexKeyUsesAPIKeyOnly(key schemas.Key) bool {
+	if key.Value.GetValue() == "" {
+		return false
+	}
+	cfg := key.VertexKeyConfig
+	return cfg == nil || (cfg.AuthCredentials.GetValue() == "" && !cfg.AWSWorkloadIdentity.IsSet())
+}
+
 // buildResponseFromConfig builds a list models response from configured deployments and allowedModels.
-// This is used when the user has explicitly configured which models they want to use.
+// This is used for API-key-only keys, which cannot list the Model Garden catalog.
 func buildResponseFromConfig(deployments schemas.KeyAliases, allowedModels schemas.WhiteList, blacklistedModels schemas.BlackList) *schemas.BifrostListModelsResponse {
 	response := &schemas.BifrostListModelsResponse{
 		Data: make([]schemas.Model, 0),

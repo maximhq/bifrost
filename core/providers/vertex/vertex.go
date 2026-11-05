@@ -328,8 +328,11 @@ func (provider *VertexProvider) GetProviderKey() schemas.ModelProvider {
 // Returns the response and latency, or an error if the request fails.
 //
 // The logic is:
-// 1. If deployments or allowedModels are configured, return those (no API call needed)
-// 2. Otherwise, fetch from the publishers.models.list API endpoint (Model Garden)
+//  1. An API-key-only key with deployments or a restricted allowlist returns its configuration
+//     (no API call): Model Garden only accepts OAuth credentials.
+//  2. Otherwise, fetch from the publishers.models.list API endpoint (Model Garden). The pipeline
+//     filters the catalog through the allowlist, "*" and regex: entries included, and adds the
+//     deployments and exact entries the catalog does not return.
 func (provider *VertexProvider) listModelsByKey(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
 	region := resolveVertexRegion(ctx, key)
 	if region == "" {
@@ -343,9 +346,9 @@ func (provider *VertexProvider) listModelsByKey(ctx *schemas.BifrostContext, key
 		return &schemas.BifrostListModelsResponse{Data: make([]schemas.Model, 0)}, nil
 	}
 
-	// If deployments or allowedModels are configured, return those directly without API call
+	// An API-key-only key cannot list Model Garden, so it returns its deployments and allowlist directly.
 	// Skip this fast path when Unfiltered is set so the full Vertex catalog can be retrieved
-	if !request.Unfiltered && (len(deployments) > 0 || allowedModels.IsRestricted()) {
+	if !request.Unfiltered && vertexKeyUsesAPIKeyOnly(key) && (len(deployments) > 0 || allowedModels.IsRestricted()) {
 		return buildResponseFromConfig(deployments, allowedModels, key.BlacklistedModels), nil
 	}
 
@@ -690,6 +693,9 @@ func (provider *VertexProvider) inlineDocumentURLsResponses(ctx *schemas.Bifrost
 // It supports both text and image content in messages.
 // Returns a BifrostResponse containing the completion results or an error if the request fails.
 func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
+	if endpoint := schemas.GetVertexEndpoint(ctx); endpoint != nil {
+		return provider.openAIChatCompletion(ctx, key, request, endpoint)
+	}
 	var jsonBody []byte
 	var bifrostErr *schemas.BifrostError
 	// Resolve URL sources the target model family cannot read for itself: http(s) is
@@ -729,6 +735,9 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 					extraParams = reqBody.GetExtraParams()
 					// Strip unsupported fields for Vertex Gemini
 					stripVertexGeminiUnsupportedFields(reqBody)
+					if request.Params != nil {
+						applyVertexSessionRouting(ctx, key, request.Model, request.Params.PromptCacheKey, reqBody)
+					}
 					// Marshal to JSON bytes
 					rawBody, err = providerUtils.MarshalSorted(reqBody)
 					if err != nil {
@@ -762,7 +771,7 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 	if schemas.IsGeminiModelFamily(ctx, request.Model) || schemas.IsAllDigitsASCII(request.Model) || schemas.IsGemmaModelFamily(ctx, request.Model) {
 		gt, gh := providerUtils.StartPhaseSpan(ctx, "request-marshal")
 		if rawBody, ok := ctx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); ok && rawBody {
-			jsonBody = gemini.NormalizeRawGenerateContentRequestForCompatibility(jsonBody)
+			jsonBody = gemini.NormalizeRawGenerateContentRequestForCompatibility(ctx, jsonBody, provider.GetProviderKey(), request.Model)
 		}
 		jsonBody = stripVertexGeminiUnsupportedFieldsRaw(jsonBody)
 		if gt != nil {
@@ -856,9 +865,16 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 			req.Header.Set(VertexServiceTierHeader, v)
 		}
 	}
-	// Skip anthropic-beta from context headers — Anthropic models on Vertex use the
-	// anthropic_beta body field instead, and other model families don't use it.
+	// anthropic-beta is rebuilt from the filtered list for Anthropic models only, as in Responses;
+	// other model families don't use it.
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, []string{anthropic.AnthropicBetaHeader})
+	if schemas.IsAnthropicModelFamily(ctx, request.Model) {
+		if betaHeaders := anthropic.FilterBetaHeadersForProvider(anthropic.MergeBetaHeaders(ctx, provider.networkConfig.ExtraHeaders), schemas.Vertex, provider.networkConfig.BetaHeaderOverrides); len(betaHeaders) > 0 {
+			req.Header.Set(anthropic.AnthropicBetaHeader, strings.Join(betaHeaders, ","))
+		} else {
+			req.Header.Del(anthropic.AnthropicBetaHeader)
+		}
+	}
 
 	// If auth query is set, add it to the URL
 	// Otherwise, get the oauth2 token and set the Authorization header
@@ -999,6 +1015,9 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 // It supports both OpenAI-style streaming (for non-Claude models) and Anthropic-style streaming (for Claude models).
 // Returns a channel of BifrostStreamChunk objects for streaming results or an error if the request fails.
 func (provider *VertexProvider) ChatCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	if endpoint := schemas.GetVertexEndpoint(ctx); endpoint != nil {
+		return provider.openAIChatCompletionStream(ctx, postHookRunner, postHookSpanFinalizer, key, request, endpoint)
+	}
 	providerName := provider.GetProviderKey()
 	projectID := resolveVertexProjectID(ctx, key)
 	if projectID == "" {
@@ -1114,6 +1133,9 @@ func (provider *VertexProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 				}
 				// Strip unsupported fields for Vertex Gemini
 				stripVertexGeminiUnsupportedFields(reqBody)
+				if request.Params != nil {
+					applyVertexSessionRouting(ctx, key, request.Model, request.Params.PromptCacheKey, reqBody)
+				}
 				return reqBody, nil
 			},
 		)
@@ -1251,6 +1273,13 @@ func (provider *VertexProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 
 // Responses performs a responses request to the Vertex API.
 func (provider *VertexProvider) Responses(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+	if endpoint := schemas.GetVertexEndpoint(ctx); endpoint != nil {
+		response, err := provider.openAIChatCompletion(ctx, key, request.ToChatRequest(), endpoint)
+		if err != nil {
+			return nil, err
+		}
+		return response.ToBifrostResponsesResponse(), nil
+	}
 	// Resolve URL sources the target model family cannot read for itself: http(s) is
 	// downloaded for both families (Vertex's own crawler rejects forwarded URLs), while a
 	// gs:// URI is forwarded to Gemini as fileData.fileUri and read from Cloud Storage for
@@ -1399,6 +1428,9 @@ func (provider *VertexProvider) Responses(ctx *schemas.BifrostContext, key schem
 				}
 				// Strip unsupported fields for Vertex Gemini
 				stripVertexGeminiUnsupportedFields(reqBody)
+				if request.Params != nil {
+					applyVertexSessionRouting(ctx, key, request.Model, request.Params.PromptCacheKey, reqBody)
+				}
 				return reqBody, nil
 			},
 		)
@@ -1407,7 +1439,7 @@ func (provider *VertexProvider) Responses(ctx *schemas.BifrostContext, key schem
 		}
 		gt, gh := providerUtils.StartPhaseSpan(ctx, "request-marshal")
 		if rawBody, ok := ctx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); ok && rawBody {
-			jsonBody = gemini.NormalizeRawGenerateContentRequestForCompatibility(jsonBody)
+			jsonBody = gemini.NormalizeRawGenerateContentRequestForCompatibility(ctx, jsonBody, provider.GetProviderKey(), request.Model)
 		}
 		jsonBody = stripVertexGeminiUnsupportedFieldsRaw(jsonBody)
 		if gt != nil {
@@ -1551,6 +1583,10 @@ func (provider *VertexProvider) Responses(ctx *schemas.BifrostContext, key schem
 
 // ResponsesStream performs a streaming responses request to the Vertex API.
 func (provider *VertexProvider) ResponsesStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	if endpoint := schemas.GetVertexEndpoint(ctx); endpoint != nil {
+		ctx.SetValue(schemas.BifrostContextKeyIsResponsesToChatCompletionFallback, true)
+		return provider.openAIChatCompletionStream(ctx, postHookRunner, postHookSpanFinalizer, key, request.ToChatRequest(), endpoint)
+	}
 	// Resolve URL sources the target model family cannot read for itself: http(s) is
 	// downloaded for both families (Vertex's own crawler rejects forwarded URLs), while a
 	// gs:// URI is forwarded to Gemini as fileData.fileUri and read from Cloud Storage for
@@ -1647,6 +1683,9 @@ func (provider *VertexProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 				}
 				// Strip unsupported fields for Vertex Gemini
 				stripVertexGeminiUnsupportedFields(reqBody)
+				if request.Params != nil {
+					applyVertexSessionRouting(ctx, key, request.Model, request.Params.PromptCacheKey, reqBody)
+				}
 				return reqBody, nil
 			},
 		)
@@ -1654,7 +1693,7 @@ func (provider *VertexProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 			return nil, bifrostErr
 		}
 		if rawBody, ok := ctx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); ok && rawBody {
-			jsonData = gemini.NormalizeRawGenerateContentRequestForCompatibility(jsonData)
+			jsonData = gemini.NormalizeRawGenerateContentRequestForCompatibility(ctx, jsonData, provider.GetProviderKey(), request.Model)
 		}
 		jsonData = stripVertexGeminiUnsupportedFieldsRaw(jsonData)
 
@@ -2904,6 +2943,23 @@ func stripVertexGeminiUnsupportedFields(requestBody *gemini.GeminiGenerationRequ
 	}
 }
 
+// applyVertexSessionRouting sends prompt_cache_key as session_id when the Vertex key enables session routing.
+func applyVertexSessionRouting(ctx *schemas.BifrostContext, key schemas.Key, model string, promptCacheKey *string, reqBody *gemini.GeminiGenerationRequest) {
+	if key.VertexKeyConfig == nil || !key.VertexKeyConfig.UseSessionRouting || promptCacheKey == nil || *promptCacheKey == "" || !schemas.IsGeminiModelFamily(ctx, model) {
+		return
+	}
+	// A session ID the caller passes through as an extra param wins; sending both spellings would conflict.
+	if ctx.Value(schemas.BifrostContextKeyPassthroughExtraParams) == true {
+		if _, ok := reqBody.ExtraParams["session_id"]; ok {
+			return
+		}
+		if _, ok := reqBody.ExtraParams["sessionId"]; ok {
+			return
+		}
+	}
+	reqBody.SessionID = &gemini.GeminiSessionID{Value: *promptCacheKey}
+}
+
 func stripVertexGeminiUnsupportedFieldsRaw(jsonBody []byte) []byte {
 	if len(jsonBody) == 0 {
 		return jsonBody
@@ -3567,6 +3623,8 @@ func (provider *VertexProvider) batchResultsByKey(ctx *schemas.BifrostContext, k
 	return batchResultsResp, nil
 }
 
+// vertexNormalizeBatchUsage normalizes Vertex usageMetadata into OpenAI-compatible
+// usage, ensuring reasoning tokens from thoughtsTokenCount are included in completion_tokens.
 func vertexNormalizeBatchUsage(body map[string]any) map[string]any {
 	raw, ok := body["usageMetadata"]
 	if !ok {
@@ -3582,8 +3640,13 @@ func vertexNormalizeBatchUsage(body map[string]any) map[string]any {
 	}
 	usage := map[string]any{
 		"prompt_tokens":     meta.PromptTokenCount,
-		"completion_tokens": meta.CandidatesTokenCount,
+		"completion_tokens": meta.CandidatesTokenCount + meta.ThoughtsTokenCount,
 		"total_tokens":      meta.TotalTokenCount,
+	}
+	if meta.ThoughtsTokenCount > 0 {
+		usage["completion_tokens_details"] = map[string]any{
+			"reasoning_tokens": meta.ThoughtsTokenCount,
+		}
 	}
 	if meta.CachedContentTokenCount > 0 {
 		usage["prompt_tokens_details"] = map[string]any{
@@ -4389,7 +4452,7 @@ func (provider *VertexProvider) CountTokens(ctx *schemas.BifrostContext, key sch
 		}
 
 		if rawBody, ok := ctx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); ok && rawBody {
-			jsonBody = gemini.NormalizeRawGenerateContentRequestForCompatibility(jsonBody)
+			jsonBody = gemini.NormalizeRawGenerateContentRequestForCompatibility(ctx, jsonBody, provider.GetProviderKey(), request.Model)
 		}
 
 		// Skip field-stripping when large payload mode is active — jsonBody is nil
@@ -4731,6 +4794,8 @@ func (provider *VertexProvider) Passthrough(
 	}
 
 	var passthroughUsage *schemas.BifrostPassthroughUsage
+	var servedModel string
+	var providerJob *schemas.BifrostPassthroughJob
 	if resp.StatusCode() >= 200 && resp.StatusCode() < 300 {
 		switch PassthroughWireFormat(req.Path) {
 		case schemas.Anthropic:
@@ -4740,7 +4805,11 @@ func (provider *VertexProvider) Passthrough(
 		case schemas.OpenAI:
 			passthroughUsage = openai.ExtractOpenAIPassthroughUsage(req.Method, req.Path, req.Body, body)
 		default:
-			passthroughUsage = gemini.ExtractGeminiPassthroughUsage(req.Path, req.Body, body)
+			if gemini.IsInteractionsPassthroughPath(req.Path) {
+				passthroughUsage, servedModel, providerJob = gemini.InteractionsPassthroughResult(req, body)
+			} else {
+				passthroughUsage = gemini.ExtractGeminiPassthroughUsage(req.Path, req.Body, body)
+			}
 		}
 	}
 
@@ -4755,6 +4824,8 @@ func (provider *VertexProvider) Passthrough(
 			RawRequest:              req.Body,
 		},
 		PassthroughUsage: passthroughUsage,
+		ServedModel:      servedModel,
+		ProviderJob:      providerJob,
 	}
 
 	return bifrostResponse, nil
@@ -4913,6 +4984,7 @@ func (provider *VertexProvider) PassthroughStream(
 	observe := func(event []byte) *schemas.BifrostPassthroughUsage {
 		return gemini.ExtractGeminiPassthroughUsage(req.Path, req.Body, event)
 	}
+	var finalize func(*schemas.BifrostPassthroughResponse)
 	switch PassthroughWireFormat(req.Path) {
 	case schemas.Anthropic:
 		messagesUsage := &anthropic.AnthropicPassthroughStreamUsage{}
@@ -4927,6 +4999,12 @@ func (provider *VertexProvider) PassthroughStream(
 		hasUsage = openai.HasOpenAIPassthroughUsage
 		observe = func(event []byte) *schemas.BifrostPassthroughUsage {
 			return openai.ExtractOpenAIPassthroughUsage(req.Method, req.Path, req.Body, event)
+		}
+	default:
+		if gemini.IsInteractionsPassthroughPath(req.Path) {
+			observer := gemini.NewInteractionsStreamObserver(req)
+			observe, finalize = observer.Observe, observer.Finalize
+			hasUsage = gemini.HasInteractionsStreamInfo
 		}
 	}
 
@@ -4943,6 +5021,7 @@ func (provider *VertexProvider) PassthroughStream(
 			Logger:              provider.logger,
 			HasUsage:            hasUsage,
 			Observe:             observe,
+			Finalize:            finalize,
 		},
 	), nil
 }

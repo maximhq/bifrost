@@ -18,6 +18,9 @@ var ErrRoutingRulePriorityTaken = fmt.Errorf("%w", ErrAlreadyExists)
 // ErrInvalidAgentGrant marks malformed Agent grant input supplied by a caller.
 var ErrInvalidAgentGrant = errors.New("invalid agent grant")
 
+// ErrInvalidRelayGrant reports a virtual-key grant naming an empty, duplicate or unknown endpoint.
+var ErrInvalidRelayGrant = errors.New("invalid relay grant")
+
 // ErrMCPEndpointSlugExists is returned when a create resolves an endpoint slug already used by a
 // Virtual MCP or an MCP client. Both serve at /mcp/<slug>, so the slug namespace is shared; callers
 // answer with a clear message and a 409. (Name uniqueness is left to each table's own unique index
@@ -52,3 +55,6 @@ type ErrUnresolvedKeys struct {
 func (e *ErrUnresolvedKeys) Error() string {
 	return fmt.Sprintf("could not resolve keys: %s", strings.Join(e.Identifiers, ", "))
 }
+
+// ErrOAuthConfigChanged is returned when an oauth config was rebound by another caller first.
+var ErrOAuthConfigChanged = errors.New("oauth config was changed concurrently")

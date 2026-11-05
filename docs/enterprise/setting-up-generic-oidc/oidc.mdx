@@ -9,7 +9,7 @@ This guide applies to any identity provider that implements the OpenID Connect (
 
 - An OIDC-capable identity provider with admin access
 - Bifrost Enterprise deployed and accessible
-- Your Bifrost callback URL: `https://<your-bifrost-domain>/login`
+- Your Bifrost callback URL: `https://<your-bifrost-domain>/login` (under a `server.base_path` prefix: `https://<your-bifrost-domain>/<prefix>/login`; the SSO wizard shows the exact value)
 - The ability to create a **confidential** (client secret) OAuth 2.0 application in your IdP
 - Bifrost [roles](../rbac) created for the roles you plan to map
 
@@ -33,8 +33,8 @@ Set the following URIs in your IdP:
 
 | Field | Value |
 | --- | --- |
-| **Redirect / Callback URI** | `https://<your-bifrost-domain>/login` |
-| **Discovery callback URI** | `https://<your-bifrost-domain>/workspace/scim/oauth-discover-callback` |
+| **Redirect / Callback URI** | `https://<your-bifrost-domain>/login` (or `https://<your-bifrost-domain>/<prefix>/login` under a `server.base_path`) |
+| **Discovery callback URI** | `https://<your-bifrost-domain>/workspace/scim/oauth-discover-callback` (or `https://<your-bifrost-domain>/<prefix>/workspace/scim/oauth-discover-callback` under a `server.base_path`) |
 | **Logout / Sign-out URI** | `https://<your-bifrost-domain>` (optional) |
 
 Save the application.
@@ -304,4 +304,4 @@ For providers that support it, see [SCIM with Generic OIDC](./scim) to enable re
 
 **Claims are present in Discover Claims but role mapping is not working** - confirm the claim name matches exactly what the IdP sends (case-sensitive, including namespacing). Dotted paths (e.g. `realm_access.roles`) are supported.
 
-**Login fails after successful IdP authentication** - check that the redirect URI in your IdP exactly matches `https://<your-bifrost-domain>/login`. Trailing slashes and path differences are not allowed.
+**Login fails after successful IdP authentication** - check that the redirect URI in your IdP exactly matches `https://<your-bifrost-domain>/login` (or `https://<your-bifrost-domain>/<prefix>/login` under a `server.base_path`). Trailing slashes and path differences are not allowed.

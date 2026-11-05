@@ -134,6 +134,9 @@ func stripUnsupportedChatFields(ctx *schemas.BifrostContext, request *schemas.Bi
 			paramsCopy.ExtraParams = map[string]any{}
 		}
 		paramsCopy.ExtraParams["thinking"] = thinking
+		if outputConfig := outputConfigParam(thinking, params); outputConfig != nil {
+			paramsCopy.ExtraParams["output_config"] = outputConfig
+		}
 		if thinkingMaxTokens != nil {
 			paramsCopy.MaxCompletionTokens = thinkingMaxTokens
 		}

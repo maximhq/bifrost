@@ -2979,10 +2979,12 @@ func TestResponsesAPIParallelFunctionCalling(t *testing.T) {
 					}
 				}
 				require.NotNil(t, fr, "Should have a functionResponse")
-				// Text is still preserved, but the image is dropped (older models reject
-				// multimodal function responses with a hard 400), so no parts are emitted.
+				// Text is kept; the image is dropped (older models reject multimodal function
+				// responses with a 400) and named in the text output instead.
 				assert.Contains(t, string(fr.Response), "result:", "Text output should be preserved")
 				assert.Empty(t, fr.Parts, "Media must be dropped for non-Gemini-3 models (no 400)")
+				assert.Contains(t, string(fr.Response), "image/png", "the dropped image is named in the output, not lost silently")
+				assert.Contains(t, string(fr.Response), "returned by the tool, not shown")
 			},
 		},
 		{
@@ -3670,6 +3672,39 @@ func TestConvertGeminiUsageMetadataToResponsesUsage(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestGeminiImageUsage_ThoughtsTokenCountRoundTrip(t *testing.T) {
+	// Gemini reports thinking in thoughtsTokenCount, separate from candidatesTokenCount
+	resp := &gemini.GenerateContentResponse{
+		Candidates: []*gemini.Candidate{{Content: &gemini.Content{Parts: []*gemini.Part{
+			{InlineData: &gemini.Blob{MIMEType: "image/png", Data: "aW1n"}},
+		}}}},
+		UsageMetadata: &gemini.GenerateContentResponseUsageMetadata{
+			PromptTokenCount:     8,
+			CandidatesTokenCount: 1120,
+			ThoughtsTokenCount:   283,
+			TotalTokenCount:      1411,
+			CandidatesTokensDetails: []*gemini.ModalityTokenCount{
+				{Modality: gemini.ModalityImage, TokenCount: 1120},
+			},
+		},
+	}
+
+	bifrostResp, bifrostErr := resp.ToBifrostImageGenerationResponse()
+	require.Nil(t, bifrostErr)
+	require.NotNil(t, bifrostResp.Usage)
+	assert.Equal(t, 1403, bifrostResp.Usage.OutputTokens)
+	require.NotNil(t, bifrostResp.Usage.OutputTokensDetails)
+	assert.Equal(t, 1120, bifrostResp.Usage.OutputTokensDetails.ImageTokens)
+	assert.Equal(t, 283, bifrostResp.Usage.OutputTokensDetails.ReasoningTokens)
+
+	geminiResp, err := gemini.ToGeminiImageGenerationResponse(context.Background(), bifrostResp)
+	require.NoError(t, err)
+	require.NotNil(t, geminiResp.UsageMetadata)
+	assert.Equal(t, int32(1120), geminiResp.UsageMetadata.CandidatesTokenCount)
+	assert.Equal(t, int32(283), geminiResp.UsageMetadata.ThoughtsTokenCount)
+	assert.Equal(t, int32(1411), geminiResp.UsageMetadata.TotalTokenCount)
 }
 
 // TestGeminiToolInputKeyOrderPreservation verifies that multiple parallel tool calls
@@ -4846,15 +4881,15 @@ func TestNormalizeRawGenerateContentRequestForCompatibility(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := gemini.NormalizeRawGenerateContentRequestForCompatibility([]byte(tt.input))
+			result := gemini.NormalizeRawGenerateContentRequestForCompatibility(nil, []byte(tt.input), schemas.Gemini, "")
 			require.NotEmpty(t, result)
 			tt.validate(t, parseBody(t, result))
 		})
 	}
 
 	t.Run("EmptyBodyReturnsEmpty", func(t *testing.T) {
-		assert.Empty(t, gemini.NormalizeRawGenerateContentRequestForCompatibility(nil))
-		assert.Empty(t, gemini.NormalizeRawGenerateContentRequestForCompatibility([]byte{}))
+		assert.Empty(t, gemini.NormalizeRawGenerateContentRequestForCompatibility(nil, nil, schemas.Gemini, ""))
+		assert.Empty(t, gemini.NormalizeRawGenerateContentRequestForCompatibility(nil, []byte{}, schemas.Gemini, ""))
 	})
 }
 

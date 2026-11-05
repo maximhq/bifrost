@@ -99,14 +99,17 @@ export class DashboardPage extends BasePage {
     '24h': 'Last 24 hours',
     '7d': 'Last 7 days',
     '30d': 'Last 30 days',
+    today: 'Today',
+    this_week: 'This week',
+    this_month: 'This month',
   }
 
   /**
    * Get the date picker trigger button (the button that shows the current period and opens the popover).
-   * Identified by having the calendar icon so we don't match preset buttons inside the popover.
+   * Looked up by test id so preset buttons inside the popover never match.
    */
   getDatePickerTrigger(): Locator {
-    return this.page.locator('button').filter({ has: this.page.locator('svg') }).filter({ hasText: /Last|Pick/i }).first()
+    return this.page.getByTestId('dashboard-filter-daterange')
   }
 
   /**
@@ -122,7 +125,7 @@ export class DashboardPage extends BasePage {
   /**
    * Select a predefined time period
    */
-  async selectTimePeriod(period: '1h' | '6h' | '24h' | '7d' | '30d'): Promise<void> {
+  async selectTimePeriod(period: keyof typeof DashboardPage.PERIOD_LABELS): Promise<void> {
     await this.closePopups()
 
     const trigger = this.getDatePickerTrigger()

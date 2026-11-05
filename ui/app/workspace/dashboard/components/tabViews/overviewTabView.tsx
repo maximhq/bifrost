@@ -14,7 +14,6 @@ import {
 	useLazyGetLogsThroughputHistogramQuery,
 	useLazyGetLogsTokenHistogramQuery,
 } from "@/lib/store";
-import "@enterprise/lib/registrations/dashboard";
 import { getOverviewCharts } from "@/lib/registries/dashboard";
 import type { LogFilters } from "@/lib/types/logs";
 import { forwardRef, useCallback, useImperativeHandle, useMemo } from "react";

@@ -756,7 +756,7 @@ func TestExecuteToolCode_GuardrailedResultNeverReachesModel(t *testing.T) {
 			b.SetMCPManager(manager)
 
 			args, err := json.Marshal(map[string]any{
-				"code": fmt.Sprintf("page = bifrostInternal.%s()\nresult = {\"len\": len(page)}", tc.tool),
+				"code": fmt.Sprintf("page = bifrostInternal.%s()\nresult = {\"len\": len(page), \"redacted\": \"[REDACTED]\" in page}", tc.tool),
 			})
 			require.NoError(t, err)
 			call := schemas.ChatAssistantMessageToolCall{
@@ -778,11 +778,16 @@ func TestExecuteToolCode_GuardrailedResultNeverReachesModel(t *testing.T) {
 			assert.NotContains(t, *msg.Content.ContentStr, secret,
 				"guarded content reached the model through the code-mode execution log")
 			if tc.redact {
-				// Redaction rewrites the result rather than withholding it, so the
-				// surviving body is expected - only the matched span must be gone.
-				assert.Contains(t, *msg.Content.ContentStr, "[REDACTED]",
-					"the model should see the post-hook text, not the wire result")
-				// Bounded on both channels: the log preview and the raised error.
+				// Redaction rewrites the result rather than withholding it, so the surviving
+				// body is expected - only the matched span must be gone. A text result goes
+				// to the script, which reports seeing the post-hook text; an error result is
+				// raised, so the post-hook text reaches the model in the reply.
+				want := `"redacted": true`
+				if strings.HasPrefix(tc.text, "Error: ") {
+					want = "[REDACTED]"
+				}
+				assert.Contains(t, *msg.Content.ContentStr, want,
+					"the post-hook text, not the wire result, must be what the script or model sees")
 				assert.Less(t, len(*msg.Content.ContentStr), 4096,
 					"approved tool text must stay bounded before it reaches the model")
 				return

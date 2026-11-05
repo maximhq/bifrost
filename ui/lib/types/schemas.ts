@@ -1,4 +1,7 @@
 import { KnownProvidersNames } from "@/lib/constants/logs";
+import { MCP_MAX_PROTOCOL_VERSIONS } from "@/lib/constants/mcp";
+import i18n from "@/lib/i18n";
+import { msg } from "@/lib/i18n/validationMessage";
 import { isRedacted } from "@/lib/utils/validation";
 import { z } from "zod";
 
@@ -9,37 +12,37 @@ z.config({
 		if (issue.code === "invalid_type") {
 			// Field is missing / undefined
 			if (issue.input === undefined || issue.input === null) {
-				return "This field is required";
+				return i18n.t("validation.fieldRequired");
 			}
 			const expected = issue.expected;
 			const received = typeof issue.input;
-			if (expected === "number") return "Must be a valid number";
-			if (expected === "string") return "Must be a valid text value";
-			if (expected === "boolean") return "Must be true or false";
-			return `Expected ${expected}, received ${received}`;
+			if (expected === "number") return i18n.t("validation.validNumber");
+			if (expected === "string") return i18n.t("validation.validText");
+			if (expected === "boolean") return i18n.t("validation.trueOrFalse");
+			return i18n.t("validation.expectedReceived", { expected, received });
 		}
 		if (issue.code === "too_small") {
 			if (issue.origin === "string" && issue.minimum === 1) {
-				return "This field is required";
+				return i18n.t("validation.fieldRequired");
 			}
 			if (issue.origin === "number") {
-				return `Must be at least ${issue.minimum}`;
+				return i18n.t("validation.minNumber", { minimum: String(issue.minimum) });
 			}
 			if (issue.origin === "array" && issue.minimum === 1) {
-				return "At least one item is required";
+				return i18n.t("validation.atLeastOneItem");
 			}
 		}
 		if (issue.code === "too_big") {
 			if (issue.origin === "number") {
-				return `Must be at most ${issue.maximum}`;
+				return i18n.t("validation.maxNumber", { maximum: String(issue.maximum) });
 			}
 			if (issue.origin === "string") {
-				return `Must be at most ${issue.maximum} characters`;
+				return i18n.t("validation.maxChars", { maximum: String(issue.maximum) });
 			}
 		}
 		if (issue.code === "invalid_format") {
-			if (issue.format === "url") return "Must be a valid URL";
-			if (issue.format === "email") return "Must be a valid email";
+			if (issue.format === "url") return i18n.t("validation.validUrl");
+			if (issue.format === "email") return i18n.t("validation.validEmail");
 		}
 		return undefined; // fall back to Zod default
 	},
@@ -51,7 +54,7 @@ z.config({
 export const knownProviderSchema = z.enum(KnownProvidersNames as unknown as [string, ...string[]]);
 
 // Custom provider name schema (branded type simulation)
-export const customProviderNameSchema = z.string().min(1, "Custom provider name is required");
+export const customProviderNameSchema = z.string().min(1, msg("validation.customProviderNameIsRequired"));
 
 // Model provider name schema (union of known and custom providers)
 export const modelProviderNameSchema = z.union([knownProviderSchema, customProviderNameSchema]);
@@ -69,9 +72,44 @@ export const secretVarSchema = Object.assign(_secretVarBase, {
 });
 
 // Helper to check if a secretVar field has a value or secret reference
-function isSecretVarSet(v: { value?: string; ref?: string } | undefined): boolean {
+export function isSecretVarSet(v: { value?: string; ref?: string } | undefined): boolean {
 	if (!v) return false;
 	return !!v.value?.trim() || !!v.ref?.trim();
+}
+
+// Message for private_key_jwt settings saved without the key they configure.
+export const privateKeyRequiredMessage = () => i18n.t("validation.mcp.privateKeyRequired");
+
+// Message for a send method chosen without the secret it sends.
+export const secretRequiredForMethodMessage = () => i18n.t("validation.mcp.secretRequiredForMethod");
+
+// The id_jag upstream-authentication fields the form checks below read.
+interface IDJAGUpstreamAuthFields {
+	profile?: string;
+	resource_auth_mode?: string;
+	resource_client_secret?: { value?: string; ref?: string };
+	resource_client_auth_method?: string;
+	resource_private_key?: { value?: string; ref?: string };
+	resource_key_id?: string;
+	resource_signing_algorithm?: string;
+	resource_assertion_audience?: string;
+}
+
+// hasPrivateKeySettingsWithoutKey reports an id_jag config set to private_key_jwt, or carrying a key
+// ID, signing algorithm or assertion audience, without a private key. Saved as is, the payload would
+// store a public client, so the forms refuse it.
+export function hasPrivateKeySettingsWithoutKey(te?: IDJAGUpstreamAuthFields): boolean {
+	if (te?.profile !== "id_jag" || isSecretVarSet(te.resource_private_key)) return false;
+	return (
+		te.resource_auth_mode === "private_key" ||
+		!!(te.resource_key_id?.trim() || te.resource_signing_algorithm || te.resource_assertion_audience?.trim())
+	);
+}
+
+// hasSendMethodWithoutSecret reports an id_jag config that names how to send the client secret but
+// has none. The payload would drop the method and store a public client, which the server refuses.
+export function hasSendMethodWithoutSecret(te?: IDJAGUpstreamAuthFields): boolean {
+	return te?.profile === "id_jag" && !!te.resource_client_auth_method && !isSecretVarSet(te.resource_client_secret);
 }
 
 // Azure key config schema
@@ -83,9 +121,11 @@ export const azureKeyConfigSchema = z
 		client_secret: secretVarSchema.optional(),
 		tenant_id: secretVarSchema.optional(),
 		scopes: z.array(z.string()).optional(),
+		use_speech_endpoints: z.boolean().optional(),
+		use_voice_live_endpoints: z.boolean().optional(),
 	})
 	.refine((data) => isSecretVarSet(data.endpoint), {
-		message: "Endpoint is required",
+		error: () => i18n.t("validation.endpointIsRequired"),
 		path: ["endpoint"],
 	})
 	.refine(
@@ -103,7 +143,7 @@ export const azureKeyConfigSchema = z
 			return hasClientId && hasClientSecret && hasTenantId;
 		},
 		{
-			message: "Client ID, Client Secret, and Tenant ID are all required for Entra ID authentication",
+			error: () => i18n.t("validation.clientIdClientSecretAndTenantIdAreAllRequired"),
 			path: ["client_id"],
 		},
 	);
@@ -115,9 +155,9 @@ export const vertexAWSWorkloadIdentitySchema = z.object({
 	service_account_email: secretVarSchema.optional(),
 	token_lifetime_seconds: z
 		.number()
-		.int("Token lifetime must be a whole number of seconds")
-		.min(600, "Token lifetime must be at least 600 seconds")
-		.max(43200, "Token lifetime must be at most 43200 seconds")
+		.int(msg("validation.tokenLifetimeMustBeAWholeNumberOfSeconds"))
+		.min(600, msg("validation.tokenLifetimeMustBeAtLeast600Seconds"))
+		.max(43200, msg("validation.tokenLifetimeMustBeAtMost43200Seconds"))
 		.optional(),
 	aws_region: secretVarSchema.optional(),
 	aws_role_arn: secretVarSchema.optional(),
@@ -132,14 +172,15 @@ export const vertexKeyConfigSchema = z
 		region: secretVarSchema.optional(),
 		auth_credentials: secretVarSchema.optional(),
 		force_single_region: z.boolean().optional(),
+		use_session_routing: z.boolean().optional(),
 		aws_workload_identity: vertexAWSWorkloadIdentitySchema.optional(),
 	})
 	.refine((data) => isSecretVarSet(data.project_id), {
-		message: "Project ID is required",
+		error: () => i18n.t("validation.projectIdIsRequired"),
 		path: ["project_id"],
 	})
 	.refine((data) => isSecretVarSet(data.region), {
-		message: "Region is required",
+		error: () => i18n.t("validation.regionIsRequired"),
 		path: ["region"],
 	})
 	.refine(
@@ -151,7 +192,7 @@ export const vertexKeyConfigSchema = z
 			return true;
 		},
 		{
-			message: "Auth Credentials is required for service account JSON authentication",
+			error: () => i18n.t("validation.authCredentialsIsRequiredForServiceAccountJsonAuthentication"),
 			path: ["auth_credentials"],
 		},
 	)
@@ -165,7 +206,7 @@ export const vertexKeyConfigSchema = z
 			return true;
 		},
 		{
-			message: "Workload Identity Pool provider audience is required",
+			error: () => i18n.t("validation.workloadIdentityPoolProviderAudienceIsRequired"),
 			path: ["aws_workload_identity", "audience"],
 		},
 	)
@@ -178,14 +219,14 @@ export const vertexKeyConfigSchema = z
 			return true;
 		},
 		{
-			message: "Remove the auth credentials JSON when using AWS workload identity",
+			error: () => i18n.t("validation.removeTheAuthCredentialsJsonWhenUsingAwsWorkloadIdentity"),
 			path: ["auth_credentials"],
 		},
 	);
 
 // S3 bucket configuration for Bedrock batch operations
 export const s3BucketConfigSchema = z.object({
-	bucket_name: z.string().min(1, "Bucket name is required"),
+	bucket_name: z.string().min(1, msg("validation.bucketNameIsRequired")),
 	prefix: z.string().optional(),
 	is_default: z.boolean().optional(),
 });
@@ -226,7 +267,7 @@ export const bedrockKeyConfigSchema = z
 			return isSecretVarSet(data.region);
 		},
 		{
-			message: "Region is required",
+			error: () => i18n.t("validation.regionIsRequired"),
 			path: ["region"],
 		},
 	)
@@ -243,7 +284,7 @@ export const bedrockKeyConfigSchema = z
 			return hasAccessKey && hasSecretKey;
 		},
 		{
-			message: "Both Access Key and Secret Key are required for explicit credentials",
+			error: () => i18n.t("validation.bothAccessKeyAndSecretKeyAreRequiredForExplicit"),
 			path: ["access_key"],
 		},
 	);
@@ -263,7 +304,7 @@ export const bedrockMantleKeyConfigSchema = z
 		endpoints: bedrockEndpointsSchema.optional(),
 	})
 	.refine((data) => isSecretVarSet(data.region), {
-		message: "Region is required",
+		error: () => i18n.t("validation.regionIsRequired"),
 		path: ["region"],
 	})
 	.refine(
@@ -280,7 +321,42 @@ export const bedrockMantleKeyConfigSchema = z
 			return hasAccessKey && hasSecretKey;
 		},
 		{
-			message: "Both Access Key and Secret Key are required for explicit credentials",
+			error: () => i18n.t("validation.bothAccessKeyAndSecretKeyAreRequiredForExplicit"),
+			path: ["access_key"],
+		},
+	);
+
+// SageMaker key config schema: AWS credentials Bifrost mints the endpoint bearer token from,
+// or a pre-minted token in the key value (api_key auth).
+export const sageMakerKeyConfigSchema = z
+	.object({
+		_auth_type: z.enum(["iam_role", "explicit", "api_key"]).optional(),
+		access_key: secretVarSchema.optional(),
+		secret_key: secretVarSchema.optional(),
+		session_token: secretVarSchema.optional(),
+		region: secretVarSchema.optional(),
+		role_arn: secretVarSchema.optional(),
+		external_id: secretVarSchema.optional(),
+		session_name: secretVarSchema.optional(),
+		endpoints: z.object({ runtime: secretVarSchema.optional() }).optional(),
+	})
+	.refine((data) => isSecretVarSet(data.region), {
+		...msg("validation.regionIsRequired"),
+		path: ["region"],
+	})
+	.refine(
+		(data) => {
+			if (data._auth_type === "explicit") {
+				return isSecretVarSet(data.access_key) && isSecretVarSet(data.secret_key);
+			}
+			const hasAccessKey = isSecretVarSet(data.access_key);
+			const hasSecretKey = isSecretVarSet(data.secret_key);
+			// Default-chain path: both keys empty is valid, but a lone session token cannot mint a token.
+			if (!hasAccessKey && !hasSecretKey) return !isSecretVarSet(data.session_token);
+			return hasAccessKey && hasSecretKey;
+		},
+		{
+			...msg("validation.bothAccessKeyAndSecretKeyAreRequiredForExplicit"),
 			path: ["access_key"],
 		},
 	);
@@ -289,10 +365,10 @@ export const bedrockMantleKeyConfigSchema = z
 export const vllmKeyConfigSchema = z
 	.object({
 		url: secretVarSchema.optional(),
-		model_name: z.string().trim().min(1, "Model name is required"),
+		model_name: z.string().trim().min(1, msg("validation.modelNameIsRequired")),
 	})
 	.refine((data) => isSecretVarSet(data.url), {
-		message: "Server URL is required",
+		error: () => i18n.t("validation.serverUrlIsRequired"),
 		path: ["url"],
 	});
 
@@ -320,76 +396,40 @@ const isSecretVarMasked = (v: { value?: string; ref?: string; type?: string } | 
 	return isRedacted(value);
 };
 
-const isLiteralDigits = (v: { value?: string; ref?: string; type?: string } | undefined): boolean => {
-	if (!isSecretVarSet(v)) return true; // presence is checked separately
-	if (isSecretVarRef(v) || isSecretVarMasked(v)) return true;
-	return /^\d+$/.test((v?.value ?? "").trim());
-};
+// The id_jag fields resourceCredentialResendRequired compares.
+interface IDJAGResourceTarget {
+	audience?: string;
+	resource_token_endpoint?: string;
+	resource_assertion_audience?: string;
+	resource_client_secret?: { value?: string; ref?: string; type?: string };
+	resource_private_key?: { value?: string; ref?: string; type?: string };
+}
 
-// GitHub issues App keys as PKCS#1 ("RSA PRIVATE KEY"); openssl can convert them to PKCS#8
-// ("PRIVATE KEY"). Nothing else signs an RS256 App JWT, so an EC or passphrase-encrypted key
-// is rejected here rather than at the first inference call.
-//
-// This checks the envelope only: the browser cannot parse DER. The server does the real
-// parse in validateProviderKeyURL, so this is a fast typo check, not the security boundary.
-// Literal backslash-n is tolerated because that is how a PEM most often arrives when it has
-// been round-tripped through JSON or an environment variable.
-const PEM_PRIVATE_KEY = /^-----BEGIN (RSA PRIVATE KEY|PRIVATE KEY)-----\s*\n([\s\S]*?)\n\s*-----END \1-----$/;
+// resourceCredentialResendMessage explains why a saved secret or key must be typed again.
+export const resourceCredentialResendMessage = () => i18n.t("validation.mcp.credentialResend");
 
-const isLiteralPEM = (v: { value?: string; ref?: string; type?: string } | undefined): boolean => {
-	if (!isSecretVarSet(v)) return true;
-	if (isSecretVarRef(v) || isSecretVarMasked(v)) return true;
-	const body = (v?.value ?? "").replace(/\\n/g, "\n").trim();
-	const match = PEM_PRIVATE_KEY.exec(body);
-	// The back-reference makes BEGIN and END agree; the body must also carry something.
-	return !!match && match[2].trim().length > 0;
-};
-
-// githubCopilotKeyConfigComplete reports whether all four App credentials are present. It is
-// the check the outer key schema uses to decide whether this block is a real credential.
-export const githubCopilotKeyConfigComplete = (
-	data: { app_id?: unknown; installation_id?: unknown; repository_id?: unknown; private_key?: unknown } | undefined,
-): boolean => {
-	if (!data) return false;
-	const d = data as Record<string, { value?: string; ref?: string } | undefined>;
-	return isSecretVarSet(d.app_id) && isSecretVarSet(d.installation_id) && isSecretVarSet(d.repository_id) && isSecretVarSet(d.private_key);
-};
-
-// GitHub Copilot key config schema. Every field is optional because the whole block is
-// optional: a Copilot API token in `value` is the other valid auth mode. Once the operator
-// starts filling this block in, all four become required together and literals are checked
-// for shape, so a typo is caught in the form rather than at the first inference call.
-export const githubCopilotKeyConfigSchema = z
-	.object({
-		app_id: secretVarSchema.optional(),
-		installation_id: secretVarSchema.optional(),
-		repository_id: secretVarSchema.optional(),
-		private_key: secretVarSchema.optional(),
-		github_domain: secretVarSchema.optional(),
-	})
-	.superRefine((data, ctx) => {
-		const started =
-			isSecretVarSet(data.app_id) ||
-			isSecretVarSet(data.installation_id) ||
-			isSecretVarSet(data.repository_id) ||
-			isSecretVarSet(data.private_key);
-		if (!started) return;
-
-		for (const field of ["app_id", "installation_id", "repository_id", "private_key"] as const) {
-			if (!isSecretVarSet(data[field])) {
-				ctx.addIssue({ code: "custom", path: [field], message: "Required when using GitHub App credentials" });
-			}
-		}
-		if (!isLiteralDigits(data.installation_id)) {
-			ctx.addIssue({ code: "custom", path: ["installation_id"], message: "Installation ID must be numeric" });
-		}
-		if (!isLiteralDigits(data.repository_id)) {
-			ctx.addIssue({ code: "custom", path: ["repository_id"], message: "Repository ID must be numeric" });
-		}
-		if (!isLiteralPEM(data.private_key)) {
-			ctx.addIssue({ code: "custom", path: ["private_key"], message: "Private key must be a PKCS#1 or PKCS#8 PEM block" });
-		}
-	});
+// resourceCredentialResendRequired mirrors the server's rule: an edit that changes where the
+// upstream credential is sent (the audience it is discovered from, the token endpoint, or the
+// client assertion's audience) must carry a saved literal secret or key again rather than its
+// mask. It returns the field to re-enter, or undefined when the edit can be saved as is.
+export function resourceCredentialResendRequired(
+	saved: IDJAGResourceTarget | undefined,
+	edited: IDJAGResourceTarget | undefined,
+): "resource_client_secret" | "resource_private_key" | undefined {
+	if (!saved || !edited) return undefined;
+	const same = (a?: string, b?: string) => (a ?? "").trim() === (b ?? "").trim();
+	const targetChanged =
+		!same(saved.audience, edited.audience) ||
+		!same(saved.resource_token_endpoint, edited.resource_token_endpoint) ||
+		!same(saved.resource_assertion_audience, edited.resource_assertion_audience);
+	if (!targetChanged) return undefined;
+	// A credential kept as an env or vault reference is resent as the reference, which the server
+	// accepts; only a saved literal, shown masked, has to be typed again.
+	const savedLiteral = (v?: { value?: string; ref?: string; type?: string }) => !v?.ref?.trim() && isSecretVarMasked(v);
+	if (savedLiteral(edited.resource_client_secret)) return "resource_client_secret";
+	if (savedLiteral(edited.resource_private_key)) return "resource_private_key";
+	return undefined;
+}
 
 // oauthKeyConfigComplete reports whether the block carries a usable credential for its grant.
 // It is the check the outer key schema uses to decide whether an empty key value is fine.
@@ -453,14 +493,14 @@ const literalURLCarriesForbiddenParts = (v: { value?: string; ref?: string; type
 	const u = parseLiteralURL(v);
 	return !!u && (u.username !== "" || u.password !== "" || u.search !== "" || u.hash !== "");
 };
-const isLiteralHTTPSOrLoopbackURL = (v: { value?: string; ref?: string; type?: string } | undefined): boolean => {
-	if (!isSecretVarSet(v)) return true;
-	if (isSecretVarRef(v) || isSecretVarMasked(v)) return true;
-	const raw = (v?.value ?? "").trim();
+// hasHTTPSOrLoopbackScheme accepts https URLs, and plain http only on a loopback host, for local
+// testing. Same loopback rule as the server (net.IP.IsLoopback): any 127.x.x.x, ::1, or localhost.
+// The server re-checks every URL and refuses private targets when it connects; this only lets the
+// form reject a value the server would refuse.
+const hasHTTPSOrLoopbackScheme = (raw: string): boolean => {
 	try {
-		const u = new URL(raw);
-		if (u.protocol === "https:") return true;
-		// Same loopback rule as the server (net.IP.IsLoopback): any 127.x.x.x, ::1, or localhost.
+		const u = new URL(raw.trim());
+		if (u.protocol === "https:") return u.hostname !== "";
 		const host = u.hostname.toLowerCase();
 		return (
 			u.protocol === "http:" &&
@@ -469,6 +509,26 @@ const isLiteralHTTPSOrLoopbackURL = (v: { value?: string; ref?: string; type?: s
 	} catch {
 		return false;
 	}
+};
+
+// isHTTPSOrLoopbackURL is hasHTTPSOrLoopbackScheme for the id_jag URLs, which the server also
+// refuses when they carry credentials or a fragment.
+export const isHTTPSOrLoopbackURL = (raw: string): boolean => {
+	try {
+		const u = new URL(raw.trim());
+		if (u.username !== "" || u.password !== "" || u.hash !== "") return false;
+	} catch {
+		return false;
+	}
+	return hasHTTPSOrLoopbackScheme(raw);
+};
+
+// isLiteralHTTPSOrLoopbackURL checks only the scheme: the OAuth token URL's credentials, query and
+// fragment are reported separately, pointing at extra_params.
+const isLiteralHTTPSOrLoopbackURL = (v: { value?: string; ref?: string; type?: string } | undefined): boolean => {
+	if (!isSecretVarSet(v)) return true;
+	if (isSecretVarRef(v) || isSecretVarMasked(v)) return true;
+	return hasHTTPSOrLoopbackScheme(v?.value ?? "");
 };
 
 // OAuth key config schema. Honoured by openai-based providers: the key value may be empty
@@ -505,47 +565,122 @@ export const oauthKeyConfigSchema = z
 			isSecretVarSet(data.private_key);
 		if (!started) return;
 		if (!data.grant_type) {
-			ctx.addIssue({ code: "custom", path: ["grant_type"], message: "Choose a grant type" });
+			ctx.addIssue({ code: "custom", path: ["grant_type"], message: i18n.t("validation.chooseAGrantType") });
 		}
 		if (!isSecretVarSet(data.token_url)) {
-			ctx.addIssue({ code: "custom", path: ["token_url"], message: "Token URL is required" });
+			ctx.addIssue({ code: "custom", path: ["token_url"], message: i18n.t("validation.tokenUrlIsRequired") });
 		} else if (!isLiteralHTTPSOrLoopbackURL(data.token_url)) {
-			ctx.addIssue({ code: "custom", path: ["token_url"], message: "Token URL must be an https URL" });
+			ctx.addIssue({ code: "custom", path: ["token_url"], message: i18n.t("validation.tokenUrlMustBeAnHttpsUrl") });
 		} else if (literalURLCarriesForbiddenParts(data.token_url)) {
 			ctx.addIssue({
 				code: "custom",
 				path: ["token_url"],
-				message: "Token URL must not carry userinfo, a query or a fragment; send extra parameters through extra_params",
+				message: i18n.t("validation.tokenUrlMustNotCarryUserinfoAQueryOrA"),
 			});
 		}
 		if (data.grant_type === "client_credentials") {
 			if (!isSecretVarSet(data.client_id)) {
-				ctx.addIssue({ code: "custom", path: ["client_id"], message: "Client ID is required for client credentials" });
+				ctx.addIssue({ code: "custom", path: ["client_id"], message: i18n.t("validation.clientIdIsRequiredForClientCredentials") });
 			}
 			if (!isSecretVarSet(data.client_secret)) {
-				ctx.addIssue({ code: "custom", path: ["client_secret"], message: "Client Secret is required for client credentials" });
+				ctx.addIssue({ code: "custom", path: ["client_secret"], message: i18n.t("validation.clientSecretIsRequiredForClientCredentials") });
 			}
 		}
 		if (data.grant_type === "jwt_bearer") {
 			if (!isSecretVarSet(data.private_key)) {
-				ctx.addIssue({ code: "custom", path: ["private_key"], message: "Private key is required for JWT bearer" });
+				ctx.addIssue({ code: "custom", path: ["private_key"], message: i18n.t("validation.privateKeyIsRequiredForJwtBearer") });
 			} else if (!isLiteralAsymmetricPEM(data.private_key)) {
-				ctx.addIssue({ code: "custom", path: ["private_key"], message: "Private key must be an RSA or EC PEM block" });
+				ctx.addIssue({ code: "custom", path: ["private_key"], message: i18n.t("validation.privateKeyMustBeAnRsaOrEcPemBlock") });
 			}
 			if (!data.issuer?.trim()) {
-				ctx.addIssue({ code: "custom", path: ["issuer"], message: "Issuer is required for JWT bearer" });
+				ctx.addIssue({ code: "custom", path: ["issuer"], message: i18n.t("validation.issuerIsRequiredForJwtBearer") });
 			}
 			if (!data.audience?.trim()) {
-				ctx.addIssue({ code: "custom", path: ["audience"], message: "Audience is required for JWT bearer" });
+				ctx.addIssue({ code: "custom", path: ["audience"], message: i18n.t("validation.audienceIsRequiredForJwtBearer") });
 			}
 			const lifetime = data.assertion_lifetime_seconds;
 			if (lifetime !== undefined && lifetime !== 0 && (lifetime < 1 || lifetime > 3600)) {
 				ctx.addIssue({
 					code: "custom",
 					path: ["assertion_lifetime_seconds"],
-					message: "Assertion lifetime must be between 1 and 3600 seconds (0 for the default)",
+					message: i18n.t("validation.assertionLifetimeMustBeBetween1And3600Seconds0"),
 				});
 			}
+		}
+	});
+
+// Anthropic Workload Identity Federation block. Values are not shape-checked: each one may be a
+// reference, and the server is the authority on ID formats.
+export const anthropicWorkloadIdentitySchema = z.object({
+	federation_rule_id: secretVarSchema.optional(),
+	organization_id: secretVarSchema.optional(),
+	service_account_id: secretVarSchema.optional(),
+	workspace_id: secretVarSchema.optional(),
+	identity_source: z
+		.object({
+			type: z.enum(["file", "inline"]).optional(),
+			path: secretVarSchema.optional(),
+			token: secretVarSchema.optional(),
+		})
+		.optional(),
+});
+
+type IdentitySourceInput = NonNullable<z.input<typeof anthropicWorkloadIdentitySchema>["identity_source"]>;
+
+// identitySourceType is the source's type, or the one its fields imply when a reset dropped it.
+export const identitySourceType = (src: IdentitySourceInput | undefined): "file" | "inline" =>
+	src?.type ?? (isSecretVarSet(src?.token) && !isSecretVarSet(src?.path) ? "inline" : "file");
+
+// anthropicWorkloadIdentityComplete reports whether the block can federate on its own: the three
+// IDs plus the field its identity source type needs. The outer key schema uses it to decide whether
+// an empty key value is fine when the UI discriminator is absent.
+export const anthropicWorkloadIdentityComplete = (data: Record<string, unknown> | null | undefined): boolean => {
+	if (!data) return false;
+	const d = data as z.input<typeof anthropicWorkloadIdentitySchema>;
+	if (!isSecretVarSet(d.federation_rule_id) || !isSecretVarSet(d.organization_id) || !isSecretVarSet(d.service_account_id)) {
+		return false;
+	}
+	const src = d.identity_source;
+	return identitySourceType(src) === "file" ? isSecretVarSet(src?.path) : isSecretVarSet(src?.token);
+};
+
+// Anthropic key config schema. On the workload identity method the key value is empty, so the
+// block must be whole: the server rejects a missing ID or an identity source without its field.
+export const anthropicKeyConfigSchema = z
+	.object({
+		_auth_type: z.enum(["api_key", "workload_identity"]).optional(),
+		workload_identity: anthropicWorkloadIdentitySchema.optional(),
+	})
+	.superRefine((data, ctx) => {
+		// The API-key tab leaves the block inert; it is dropped on save.
+		if (data._auth_type === "api_key") return;
+		if (data._auth_type !== "workload_identity" && !data.workload_identity) return;
+		const wif = data.workload_identity;
+		const required = [
+			["federation_rule_id", "validation.federationRuleIdIsRequired"],
+			["organization_id", "validation.organizationIdIsRequired"],
+			["service_account_id", "validation.serviceAccountIdIsRequired"],
+		] as const;
+		for (const [field, key] of required) {
+			if (!isSecretVarSet(wif?.[field])) {
+				ctx.addIssue({ code: "custom", path: ["workload_identity", field], message: i18n.t(key) });
+			}
+		}
+		const src = wif?.identity_source;
+		if (identitySourceType(src) === "file") {
+			if (!isSecretVarSet(src?.path)) {
+				ctx.addIssue({
+					code: "custom",
+					path: ["workload_identity", "identity_source", "path"],
+					message: i18n.t("validation.tokenFilePathIsRequired"),
+				});
+			}
+		} else if (!isSecretVarSet(src?.token)) {
+			ctx.addIssue({
+				code: "custom",
+				path: ["workload_identity", "identity_source", "token"],
+				message: i18n.t("validation.identityTokenIsRequired"),
+			});
 		}
 	});
 
@@ -555,7 +690,7 @@ export const ollamaKeyConfigSchema = z
 		url: secretVarSchema.optional(),
 	})
 	.refine((data) => isSecretVarSet(data.url), {
-		message: "Server URL is required",
+		error: () => i18n.t("validation.serverUrlIsRequired"),
 		path: ["url"],
 	});
 
@@ -565,7 +700,7 @@ export const sglKeyConfigSchema = z
 		url: secretVarSchema.optional(),
 	})
 	.refine((data) => isSecretVarSet(data.url), {
-		message: "Server URL is required",
+		error: () => i18n.t("validation.serverUrlIsRequired"),
 		path: ["url"],
 	});
 
@@ -575,7 +710,7 @@ export const cloudflareKeyConfigSchema = z
 		account_id: secretVarSchema.optional(),
 	})
 	.refine((data) => isSecretVarSet(data.account_id), {
-		message: "Account ID is required",
+		error: () => i18n.t("validation.accountIdIsRequired"),
 		path: ["account_id"],
 	});
 
@@ -591,18 +726,18 @@ export const databricksKeyConfigSchema = z
 		_auth_type: z.enum(["pat", "oauth_m2m"]).optional(),
 	})
 	.refine((data) => isSecretVarSet(data.workspace_url), {
-		message: "Workspace URL is required",
+		error: () => i18n.t("validation.workspaceUrlIsRequired"),
 		path: ["workspace_url"],
 	})
 	// The OAuth M2M tab hides the token field, so a key saved from it needs the whole service
 	// principal or it has no credentials at all. Mirrors the Azure Entra ID rule.
 	.refine((data) => data._auth_type !== "oauth_m2m" || (isSecretVarSet(data.client_id) && isSecretVarSet(data.client_secret)), {
-		message: "Client ID and Client Secret are both required for OAuth M2M authentication",
+		error: () => i18n.t("validation.clientIdAndClientSecretAreBothRequiredForOauth"),
 		path: ["client_id"],
 	})
 	// A service principal only authenticates as a pair; half of one is always a misconfiguration.
 	.refine((data) => isSecretVarSet(data.client_id) === isSecretVarSet(data.client_secret), {
-		message: "Client ID and Client Secret must be set together",
+		error: () => i18n.t("validation.clientIdAndClientSecretMustBeSetTogether"),
 		path: ["client_secret"],
 	});
 
@@ -625,7 +760,7 @@ export const modelFamilySchema = z.enum([
 // provider sub-configs flattened to top-level optional fields (matches Go's
 // embedded-pointer-struct JSON output).
 const aliasConfigObjectSchema = z.object({
-	model_id: z.string().trim().min(1, "Model ID is required"),
+	model_id: z.string().trim().min(1, msg("validation.modelIdIsRequired")),
 	model_name: z.string().trim().optional(),
 	model_family: modelFamilySchema.optional(),
 	description: z.string().optional(),
@@ -634,11 +769,20 @@ const aliasConfigObjectSchema = z.object({
 	api_version: z.string().optional(),
 	anthropic_version: z.string().optional(),
 	endpoint: secretVarSchema.optional(),
+	use_speech_endpoints: z.boolean().optional(),
+	use_voice_live_endpoints: z.boolean().optional(),
 	// Shared per-alias project override (Vertex / Bedrock / Bedrock Mantle)
 	project_id: secretVarSchema.optional(),
 	// Vertex overrides
 	project_number: secretVarSchema.optional(),
 	force_single_region: z.boolean().optional(),
+	vertex_endpoint: z
+		.object({
+			endpoint_id: z.string().regex(/^[A-Za-z0-9_-]+$/, msg("validation.vertexEndpointId")),
+			format: z.enum(["openai_chat"]),
+			method: z.enum(["raw_predict", "chat_completions"]).optional(),
+		})
+		.optional(),
 	// Bedrock overrides
 	inference_profile_arn: secretVarSchema.optional(),
 	// Replicate overrides
@@ -658,8 +802,8 @@ export const aliasConfigSchema = z.preprocess(
 // Model provider key schema
 export const modelProviderKeySchema = z
 	.object({
-		id: z.string().min(1, "Id is required"),
-		name: z.string().min(1, "Name is required"),
+		id: z.string().min(1, msg("validation.idIsRequired")),
+		name: z.string().min(1, msg("validation.nameIsRequired")),
 		value: secretVarSchema.optional(),
 		models: z.array(z.string()).optional().default(["*"]),
 		blacklisted_models: z.array(z.string()).default([]).optional(),
@@ -674,26 +818,29 @@ export const modelProviderKeySchema = z
 				if (!Number.isFinite(num)) {
 					ctx.addIssue({
 						code: "custom",
-						message: "Weight must be a valid number between 0 and 1",
+						message: i18n.t("validation.weightMustBeAValidNumberBetween0And1"),
 					});
 					return z.NEVER;
 				}
 				return num;
 			})
-			.pipe(z.number().min(0, "Weight must be equal to or greater than 0").max(1, "Weight must be equal to or less than 1")),
+			.pipe(
+				z.number().min(0, msg("validation.weightMustBeEqualToOrGreaterThan0")).max(1, msg("validation.weightMustBeEqualToOrLessThan1")),
+			),
 		aliases: z.record(z.string(), aliasConfigSchema).optional(),
 		azure_key_config: azureKeyConfigSchema.optional(),
 		vertex_key_config: vertexKeyConfigSchema.optional(),
 		bedrock_key_config: bedrockKeyConfigSchema.optional(),
 		bedrock_mantle_key_config: bedrockMantleKeyConfigSchema.optional(),
+		sagemaker_key_config: sageMakerKeyConfigSchema.optional(),
 		vllm_key_config: vllmKeyConfigSchema.optional(),
 		replicate_key_config: replicateKeyConfigSchema.optional(),
 		ollama_key_config: ollamaKeyConfigSchema.optional(),
 		sgl_key_config: sglKeyConfigSchema.optional(),
 		databricks_key_config: databricksKeyConfigSchema.optional(),
-		github_copilot_key_config: githubCopilotKeyConfigSchema.optional(),
 		cloudflare_key_config: cloudflareKeyConfigSchema.optional(),
 		oauth_key_config: oauthKeyConfigSchema.optional(),
+		anthropic_key_config: anthropicKeyConfigSchema.optional(),
 		use_for_batch_api: z.boolean().optional(),
 		use_anthropic_endpoints: z.boolean().optional(),
 		use_openai_endpoints: z.boolean().optional(),
@@ -711,6 +858,19 @@ export const modelProviderKeySchema = z
 					return true;
 				}
 				if (data.oauth_key_config._auth_type === undefined && oauthKeyConfigComplete(data.oauth_key_config)) {
+					return true;
+				}
+			}
+			// A workload identity key federates its credential and carries no value; same
+			// discriminator-absent inference as OAuth above.
+			if (data.anthropic_key_config) {
+				if (data.anthropic_key_config._auth_type === "workload_identity") {
+					return true;
+				}
+				if (
+					data.anthropic_key_config._auth_type === undefined &&
+					anthropicWorkloadIdentityComplete(data.anthropic_key_config.workload_identity)
+				) {
 					return true;
 				}
 			}
@@ -732,17 +892,18 @@ export const modelProviderKeySchema = z
 				}
 				return isSecretVarSet(data.value);
 			}
-			// GitHub Copilot authenticates from its own key config when no API token is given.
-			// An empty block, or one carrying only github_domain, is not a credential: the
-			// nested schema permits it so token auth stays valid, so this is the only place
-			// that catches a key with no usable authentication at all.
-			if (githubCopilotKeyConfigComplete(data.github_copilot_key_config)) {
-				return true;
-			}
 			// Bedrock Mantle authenticates via SigV4 (its key config) or a Bearer key — only require
 			// a top-level API key when the user explicitly chose the api_key auth method.
 			if (data.bedrock_mantle_key_config) {
 				if (data.bedrock_mantle_key_config._auth_type === "api_key") {
+					return isSecretVarSet(data.value);
+				}
+				return true;
+			}
+			// SageMaker mints a bearer token from AWS credentials; a key value (a pre-minted
+			// token) is only required when the user chose the api_key auth method.
+			if (data.sagemaker_key_config) {
+				if (data.sagemaker_key_config._auth_type === "api_key") {
 					return isSecretVarSet(data.value);
 				}
 				return true;
@@ -772,7 +933,7 @@ export const modelProviderKeySchema = z
 			return isSecretVarSet(data.value);
 		},
 		{
-			message: "API Key is required",
+			error: () => i18n.t("validation.apiKeyIsRequired"),
 			path: ["value"],
 		},
 	);
@@ -780,46 +941,46 @@ export const modelProviderKeySchema = z
 // Network config schema
 export const networkConfigSchema = z
 	.object({
-		base_url: z.union([z.string().url("Must be a valid URL"), z.string().length(0)]).optional(),
+		base_url: z.union([z.string().url(msg("validation.validUrl")), z.string().length(0)]).optional(),
 		extra_headers: z.record(z.string(), z.string()).optional(),
 		default_request_timeout_in_seconds: z
 			.number()
-			.min(1, "Timeout must be greater than 0 seconds")
-			.max(3600, "Timeout must be less than 3600 seconds"),
-		max_retries: z.number().min(0, "Max retries must be greater than 0").max(10, "Max retries must be less than 10"),
+			.min(1, msg("validation.timeoutMustBeGreaterThan0Seconds"))
+			.max(3600, msg("validation.timeoutMustBeLessThan3600Seconds")),
+		max_retries: z.number().min(0, msg("validation.maxRetriesMustBeGreaterThan0")).max(10, msg("validation.maxRetriesMustBeLessThan10")),
 		retry_backoff_initial: z.number().min(100),
 		retry_backoff_max: z.number().min(100),
 		insecure_skip_verify: z.boolean().optional(),
 		ca_cert_pem: secretVarSchema.optional(),
 		stream_idle_timeout_in_seconds: z
 			.number()
-			.int("Stream idle timeout must be a whole number of seconds")
-			.min(5, "Stream idle timeout must be at least 5 seconds")
-			.max(3600, "Stream idle timeout must be at most 3600 seconds i.e. 60 minutes")
+			.int(msg("validation.streamIdleTimeoutMustBeAWholeNumberOfSeconds"))
+			.min(5, msg("validation.streamIdleTimeoutMustBeAtLeast5Seconds"))
+			.max(3600, msg("validation.streamIdleTimeoutMustBeAtMost3600SecondsI"))
 			.optional(),
 		keep_alive_timeout_in_seconds: z
 			.number()
-			.int("Keep-alive timeout must be a whole number of seconds")
-			.min(1, "Keep-alive timeout must be at least 1 second")
-			.max(3600, "Keep-alive timeout must be at most 3600 seconds i.e. 60 minutes")
+			.int(msg("validation.keepAliveTimeoutMustBeAWholeNumberOfSeconds"))
+			.min(1, msg("validation.keepAliveTimeoutMustBeAtLeast1Second"))
+			.max(3600, msg("validation.keepAliveTimeoutMustBeAtMost3600SecondsI"))
 			.optional(),
 		max_conns_per_host: z
 			.number()
-			.int("Max connections must be a whole number")
-			.min(1, "Max connections must be at least 1")
-			.max(10000, "Max connections must be at most 10000")
+			.int(msg("validation.maxConnectionsMustBeAWholeNumber"))
+			.min(1, msg("validation.maxConnectionsMustBeAtLeast1"))
+			.max(10000, msg("validation.maxConnectionsMustBeAtMost10000"))
 			.optional(),
 		enforce_http2: z.boolean().optional(),
 		http2_ping_interval_in_seconds: z
 			.number()
-			.int("HTTP/2 ping interval must be a whole number of seconds")
-			.min(0, "HTTP/2 ping interval must be at least 0 seconds")
-			.max(3600, "HTTP/2 ping interval must be at most 3600 seconds i.e. 60 minutes")
+			.int(msg("validation.http2PingIntervalMustBeAWholeNumberOf"))
+			.min(0, msg("validation.http2PingIntervalMustBeAtLeast0Seconds"))
+			.max(3600, msg("validation.http2PingIntervalMustBeAtMost3600Seconds"))
 			.optional(),
 		allow_private_network: z.boolean().optional(),
 	})
 	.refine((d) => d.retry_backoff_initial <= d.retry_backoff_max, {
-		message: "retry_backoff_initial must be <= retry_backoff_max",
+		error: () => i18n.t("validation.retryBackoffInitialMustBeRetryBackoffMax"),
 		path: ["retry_backoff_initial"],
 	});
 
@@ -830,68 +991,74 @@ export const networkFormConfigSchema = z
 			.union([
 				z
 					.string()
-					.url("Must be a valid URL")
+					.url(msg("validation.validUrl"))
 					.refine((url) => url.startsWith("https://") || url.startsWith("http://"), {
-						message: "Must be a valid HTTP or HTTPS URL",
+						error: () => i18n.t("validation.mustBeAValidHttpOrHttpsUrl"),
 					}),
 				z.string().length(0),
 			])
 			.optional(),
 		extra_headers: z.record(z.string(), secretVarSchema).optional(),
 		default_request_timeout_in_seconds: z.coerce
-			.number("Timeout must be a number")
-			.min(1, "Timeout must be greater than 0 seconds")
-			.max(172800, "Timeout must be less than 172800 seconds i.e. 48 hours"),
+			.number(msg("validation.timeoutMustBeANumber"))
+			.min(1, msg("validation.timeoutMustBeGreaterThan0Seconds"))
+			.max(172800, msg("validation.timeoutMustBeLessThan172800SecondsIE48")),
 		max_retries: z.coerce
-			.number("Max retries must be a number")
-			.min(0, "Max retries must be greater than 0")
-			.max(10, "Max retries must be less than 10"),
+			.number(msg("validation.maxRetriesMustBeANumber"))
+			.min(0, msg("validation.maxRetriesMustBeGreaterThan0"))
+			.max(10, msg("validation.maxRetriesMustBeLessThan10")),
 		retry_backoff_initial: z.coerce
-			.number("Retry backoff initial must be a number")
-			.min(100, "Retry backoff initial must be at least 100ms")
-			.max(1000000, "Retry backoff initial must be at most 1000000ms"),
+			.number(msg("validation.retryBackoffInitialMustBeANumber"))
+			.min(100, msg("validation.retryBackoffInitialMustBeAtLeast100ms"))
+			.max(1000000, msg("validation.retryBackoffInitialMustBeAtMost1000000ms")),
 		retry_backoff_max: z.coerce
-			.number("Retry backoff max must be a number")
-			.min(100, "Retry backoff max must be at least 100ms")
-			.max(1000000, "Retry backoff max must be at most 1000000ms"),
+			.number(msg("validation.retryBackoffMaxMustBeANumber"))
+			.min(100, msg("validation.retryBackoffMaxMustBeAtLeast100ms"))
+			.max(1000000, msg("validation.retryBackoffMaxMustBeAtMost1000000ms")),
 		insecure_skip_verify: z.boolean().optional(),
 		ca_cert_pem: secretVarSchema.optional(),
 		stream_idle_timeout_in_seconds: z.coerce
-			.number("Stream idle timeout must be a number")
-			.int("Stream idle timeout must be a whole number of seconds")
-			.min(5, "Stream idle timeout must be at least 5 seconds")
-			.max(3600, "Stream idle timeout must be at most 3600 seconds i.e. 60 minutes")
+			.number(msg("validation.streamIdleTimeoutMustBeANumber"))
+			.int(msg("validation.streamIdleTimeoutMustBeAWholeNumberOfSeconds"))
+			.min(5, msg("validation.streamIdleTimeoutMustBeAtLeast5Seconds"))
+			.max(3600, msg("validation.streamIdleTimeoutMustBeAtMost3600SecondsI"))
 			.optional(),
 		keep_alive_timeout_in_seconds: z.coerce
-			.number("Keep-alive timeout must be a number")
-			.int("Keep-alive timeout must be a whole number of seconds")
-			.min(1, "Keep-alive timeout must be at least 1 second")
-			.max(3600, "Keep-alive timeout must be at most 3600 seconds i.e. 60 minutes")
+			.number(msg("validation.keepAliveTimeoutMustBeANumber"))
+			.int(msg("validation.keepAliveTimeoutMustBeAWholeNumberOfSeconds"))
+			.min(1, msg("validation.keepAliveTimeoutMustBeAtLeast1Second"))
+			.max(3600, msg("validation.keepAliveTimeoutMustBeAtMost3600SecondsI"))
 			.optional(),
 		max_conns_per_host: z.coerce
-			.number("Max connections must be a number")
-			.int("Max connections must be a whole number")
-			.min(1, "Max connections must be at least 1")
-			.max(10000, "Max connections must be at most 10000")
+			.number(msg("validation.maxConnectionsMustBeANumber"))
+			.int(msg("validation.maxConnectionsMustBeAWholeNumber"))
+			.min(1, msg("validation.maxConnectionsMustBeAtLeast1"))
+			.max(10000, msg("validation.maxConnectionsMustBeAtMost10000"))
 			.optional(),
 		enforce_http2: z.boolean().optional(),
 		http2_ping_interval_in_seconds: z.coerce
-			.number("HTTP/2 ping interval must be a number")
-			.int("HTTP/2 ping interval must be a whole number of seconds")
-			.min(0, "HTTP/2 ping interval must be at least 0 seconds")
-			.max(3600, "HTTP/2 ping interval must be at most 3600 seconds i.e. 60 minutes")
+			.number(msg("validation.http2PingIntervalMustBeANumber"))
+			.int(msg("validation.http2PingIntervalMustBeAWholeNumberOf"))
+			.min(0, msg("validation.http2PingIntervalMustBeAtLeast0Seconds"))
+			.max(3600, msg("validation.http2PingIntervalMustBeAtMost3600Seconds"))
 			.optional(),
 		allow_private_network: z.boolean().optional(),
 	})
 	.refine((d) => d.retry_backoff_initial <= d.retry_backoff_max, {
-		message: "Initial backoff must be less than or equal to max backoff",
+		error: () => i18n.t("validation.initialBackoffMustBeLessThanOrEqualToMax"),
 		path: ["retry_backoff_initial"],
 	});
 
 // Concurrency and buffer size schema
 export const concurrencyAndBufferSizeSchema = z.object({
-	concurrency: z.number().min(1, "Concurrency must be greater than 0").max(100, "Concurrency must be less than or equal to 100"),
-	buffer_size: z.number().min(1, "Buffer size must be greater than 0").max(1000, "Buffer size must be less than or equal to 1000"),
+	concurrency: z
+		.number()
+		.min(1, msg("validation.concurrencyMustBeGreaterThan0"))
+		.max(100, msg("validation.concurrencyMustBeLessThanOrEqualTo100")),
+	buffer_size: z
+		.number()
+		.min(1, msg("validation.bufferSizeMustBeGreaterThan0"))
+		.max(1000, msg("validation.bufferSizeMustBeLessThanOrEqualTo1000")),
 });
 
 // Proxy type schema
@@ -913,7 +1080,7 @@ export const proxyConfigSchema = z
 			data.url?.type === "vault" ||
 			(data.url?.value && data.url.value.trim().length > 0),
 		{
-			message: "Proxy URL is required when using HTTP or SOCKS5 proxy",
+			error: () => i18n.t("validation.proxyUrlIsRequiredWhenUsingHttpOrSocks5Proxy"),
 			path: ["url"],
 		},
 	)
@@ -933,7 +1100,7 @@ export const proxyConfigSchema = z
 			return true;
 		},
 		{
-			message: "Must be a valid URL (e.g., http://proxy.example.com:8080)",
+			error: () => i18n.t("validation.mustBeAValidUrlEGHttpProxyExample"),
 			path: ["url"],
 		},
 	);
@@ -962,7 +1129,7 @@ export const proxyFormConfigSchema = z
 			return true;
 		},
 		{
-			message: "Proxy URL is required when using HTTP or SOCKS5 proxy",
+			error: () => i18n.t("validation.proxyUrlIsRequiredWhenUsingHttpOrSocks5Proxy"),
 			path: ["url"],
 		},
 	)
@@ -983,7 +1150,7 @@ export const proxyFormConfigSchema = z
 			return true;
 		},
 		{
-			message: "Must be a valid URL (e.g., http://proxy.example.com:8080)",
+			error: () => i18n.t("validation.mustBeAValidUrlEGHttpProxyExample"),
 			path: ["url"],
 		},
 	);
@@ -1003,7 +1170,7 @@ export const cacheControlInjectionPointSchema = z
 		index: z.number().int().optional(),
 	})
 	.refine((p) => p.role !== undefined || p.index !== undefined, {
-		message: "Set a role, an index, or both - a point with neither matches nothing",
+		error: () => i18n.t("validation.setARoleAnIndexOrBothAPointWith"),
 	});
 
 export const promptCacheFormSchema = z.object({
@@ -1021,9 +1188,9 @@ export const INJECTED_TOOL_NAME_PATTERN = /^[a-zA-Z0-9_-]{1,64}$/;
 // The saved injected_tools list, as the provider API returns and accepts it.
 export const injectedToolsConfigSchema = z.array(
 	z.object({
-		name: z.string().regex(INJECTED_TOOL_NAME_PATTERN, "Use 1-64 letters, digits, _ or -"),
-		mcp_client_name: z.string().min(1, "Pick an MCP server"),
-		tool_name: z.string().min(1, "Pick a tool"),
+		name: z.string().regex(INJECTED_TOOL_NAME_PATTERN, msg("validation.use164LettersDigitsOr")),
+		mcp_client_name: z.string().min(1, msg("validation.pickAnMcpServer")),
+		tool_name: z.string().min(1, msg("validation.pickATool")),
 	}),
 );
 
@@ -1031,10 +1198,10 @@ export const injectedToolsConfigSchema = z.array(
 // name, client name and tool name are saved. A row is savable only once its server's
 // name has resolved and a tool is picked, so Save never writes a half-filled row.
 export const injectedToolRowSchema = z.object({
-	name: z.string().regex(INJECTED_TOOL_NAME_PATTERN, "Use 1-64 letters, digits, _ or -"),
-	mcp_client_id: z.string().min(1, "Pick an MCP server"),
-	mcp_client_name: z.string().min(1, "Waiting for the MCP server to load"),
-	tool_name: z.string().min(1, "Pick a tool"),
+	name: z.string().regex(INJECTED_TOOL_NAME_PATTERN, msg("validation.use164LettersDigitsOr")),
+	mcp_client_id: z.string().min(1, msg("validation.pickAnMcpServer")),
+	mcp_client_name: z.string().min(1, msg("validation.waitingForTheMcpServerToLoad")),
+	tool_name: z.string().min(1, msg("validation.pickATool")),
 });
 
 // The name is what the model calls and what decides which client tool a row replaces,
@@ -1050,7 +1217,7 @@ export const injectedToolsFormSchema = z
 		data.tools.forEach((tool, index) => {
 			if (tool.name !== "") {
 				if (names.has(tool.name)) {
-					ctx.addIssue({ code: "custom", path: ["tools", index, "name"], message: "Another tool already uses this name" });
+					ctx.addIssue({ code: "custom", path: ["tools", index, "name"], message: i18n.t("validation.anotherToolAlreadyUsesThisName") });
 				} else {
 					names.set(tool.name, index);
 				}
@@ -1058,7 +1225,7 @@ export const injectedToolsFormSchema = z
 			if (tool.mcp_client_name !== "" && tool.tool_name !== "") {
 				const ref = `${tool.mcp_client_name}\u0000${tool.tool_name}`;
 				if (refs.has(ref)) {
-					ctx.addIssue({ code: "custom", path: ["tools", index, "tool_name"], message: "This MCP tool is already injected" });
+					ctx.addIssue({ code: "custom", path: ["tools", index, "tool_name"], message: i18n.t("validation.thisMcpToolIsAlreadyInjected") });
 				} else {
 					refs.set(ref, index);
 				}
@@ -1068,6 +1235,84 @@ export const injectedToolsFormSchema = z
 
 export type InjectedToolRowSchema = z.infer<typeof injectedToolRowSchema>;
 export type InjectedToolsFormSchema = z.infer<typeof injectedToolsFormSchema>;
+
+// PASSTHROUGH_METHODS are the HTTP methods a passthrough route rule can name.
+export const PASSTHROUGH_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"] as const;
+export type PassthroughMethod = (typeof PASSTHROUGH_METHODS)[number];
+
+export function isPassthroughMethod(method: string): boolean {
+	return (PASSTHROUGH_METHODS as readonly string[]).includes(method);
+}
+
+// passthroughPathIssue mirrors the server's check on a rule path and returns the first
+// problem, or undefined when the path is valid.
+export function passthroughPathIssue(path: string): string | undefined {
+	if (path === "") return i18n.t("providers.passthrough.validation.enterPath", { ns: "models" });
+	if (!path.startsWith("/")) return i18n.t("providers.passthrough.validation.mustStartWithSlash", { ns: "models" });
+	if (/[?#%\\[\]]/.test(path)) return i18n.t("providers.passthrough.validation.forbiddenChars", { ns: "models" });
+	if (path === "/") return undefined;
+	const segments = path.slice(1).split("/");
+	for (let i = 0; i < segments.length; i++) {
+		const segment = segments[i];
+		if (segment === "" || segment === "." || segment === "..")
+			return i18n.t("providers.passthrough.validation.emptySegments", { ns: "models" });
+		if (segment.includes("**") && (segment !== "**" || i !== segments.length - 1))
+			return i18n.t("providers.passthrough.validation.doubleStarLast", { ns: "models" });
+	}
+	return undefined;
+}
+
+// One saved passthrough rule: a path pattern with optional methods.
+export const passthroughRouteRuleSchema = z
+	.object({
+		methods: z.array(z.string()).optional(),
+		path: z.string().optional(),
+	})
+	.superRefine((rule, ctx) => {
+		rule.methods?.forEach((method, index) => {
+			if (!isPassthroughMethod(method)) {
+				ctx.addIssue({
+					code: "custom",
+					path: ["methods", index],
+					message: i18n.t("providers.passthrough.validation.unsupportedMethod", { ns: "models", method }),
+				});
+			}
+		});
+		const issue = passthroughPathIssue(rule.path ?? "");
+		if (issue) ctx.addIssue({ code: "custom", path: ["path"], message: issue });
+	});
+
+// The saved passthrough policy, as the provider API returns and accepts it.
+export const passthroughPolicySchema = z.object({
+	allowed_routes: z.array(passthroughRouteRuleSchema),
+});
+
+// One row of the provider Passthrough tab's rule editor.
+export const passthroughRuleRowSchema = z.object({
+	methods: z.array(z.enum(PASSTHROUGH_METHODS)),
+	path: z.string(),
+});
+
+// The Passthrough tab. Rules are checked only in custom mode; the other modes ignore them.
+export const passthroughFormSchema = z
+	.object({
+		mode: z.enum(["all", "custom", "off"]),
+		rules: z.array(passthroughRuleRowSchema),
+	})
+	.superRefine((data, ctx) => {
+		if (data.mode !== "custom") return;
+		if (data.rules.length === 0) {
+			ctx.addIssue({ code: "custom", path: ["rules"], message: i18n.t("providers.passthrough.validation.addRule", { ns: "models" }) });
+			return;
+		}
+		data.rules.forEach((rule, index) => {
+			const issue = passthroughPathIssue(rule.path);
+			if (issue) ctx.addIssue({ code: "custom", path: ["rules", index, "path"], message: issue });
+		});
+	});
+
+export type PassthroughRuleRowSchema = z.infer<typeof passthroughRuleRowSchema>;
+export type PassthroughFormSchema = z.infer<typeof passthroughFormSchema>;
 
 // Allowed requests schema
 export const allowedRequestsSchema = z.object({
@@ -1102,6 +1347,8 @@ export const allowedRequestsSchema = z.object({
 	video_delete: z.boolean(),
 	video_list: z.boolean(),
 	video_remix: z.boolean(),
+	passthrough: z.boolean().optional(),
+	passthrough_stream: z.boolean().optional(),
 	count_tokens: z.boolean(),
 	list_models: z.boolean(),
 	model_retrieve: z.boolean().optional(),
@@ -1128,7 +1375,7 @@ export const customProviderConfigSchema = z
 			return true;
 		},
 		{
-			message: "Is keyless is not allowed for Bedrock",
+			error: () => i18n.t("validation.isKeylessIsNotAllowedForBedrock"),
 			path: ["is_key_less"],
 		},
 	);
@@ -1136,7 +1383,7 @@ export const customProviderConfigSchema = z
 // Form-specific custom provider config schema
 export const formCustomProviderConfigSchema = z
 	.object({
-		base_provider_type: z.string().min(1, "Base provider type is required"),
+		base_provider_type: z.string().min(1, msg("validation.baseProviderTypeIsRequired")),
 		is_key_less: z.boolean().optional(),
 		does_not_send_done_marker: z.boolean().optional(),
 		wait_for_usage: z.boolean().optional(),
@@ -1151,14 +1398,14 @@ export const formCustomProviderConfigSchema = z
 			return true;
 		},
 		{
-			message: "Is keyless is not allowed for Bedrock",
+			error: () => i18n.t("validation.isKeylessIsNotAllowedForBedrock"),
 			path: ["is_key_less"],
 		},
 	);
 
 // Full model provider config schema
 export const modelProviderConfigSchema = z.object({
-	keys: z.array(modelProviderKeySchema).min(1, "At least one key is required"),
+	keys: z.array(modelProviderKeySchema).min(1, msg("validation.atLeastOneKeyIsRequired")),
 	network_config: networkConfigSchema.optional(),
 	concurrency_and_buffer_size: concurrencyAndBufferSizeSchema.optional(),
 	proxy_config: proxyConfigSchema.optional(),
@@ -1176,7 +1423,7 @@ export const modelProviderSchema = modelProviderConfigSchema.extend({
 
 // Form-specific model provider config schema
 export const formModelProviderConfigSchema = z.object({
-	keys: z.array(modelProviderKeySchema).min(1, "At least one key is required"),
+	keys: z.array(modelProviderKeySchema).min(1, msg("validation.atLeastOneKeyIsRequired")),
 	network_config: networkConfigSchema.optional(),
 	concurrency_and_buffer_size: concurrencyAndBufferSizeSchema.optional(),
 	proxy_config: proxyConfigSchema.optional(),
@@ -1189,13 +1436,13 @@ export const formModelProviderConfigSchema = z.object({
 
 // Flexible model provider schema for form data - allows any string for name
 export const formModelProviderSchema = formModelProviderConfigSchema.extend({
-	name: z.string().min(1, "Provider name is required"),
+	name: z.string().min(1, msg("validation.providerNameIsRequired")),
 });
 
 // Add provider request schema
 export const addProviderRequestSchema = z.object({
 	provider: modelProviderNameSchema,
-	keys: z.array(modelProviderKeySchema).min(1, "At least one key is required"),
+	keys: z.array(modelProviderKeySchema).min(1, msg("validation.atLeastOneKeyIsRequired")),
 	network_config: networkConfigSchema.optional(),
 	concurrency_and_buffer_size: concurrencyAndBufferSizeSchema.optional(),
 	proxy_config: proxyConfigSchema.optional(),
@@ -1207,11 +1454,12 @@ export const addProviderRequestSchema = z.object({
 	openai_config: openaiConfigFormSchema.optional(),
 	prompt_cache: promptCacheFormSchema.optional(),
 	injected_tools: injectedToolsConfigSchema.nullable().optional(),
+	passthrough: passthroughPolicySchema.nullable().optional(),
 });
 
 // Update provider request schema
 export const updateProviderRequestSchema = z.object({
-	keys: z.array(modelProviderKeySchema).min(1, "At least one key is required"),
+	keys: z.array(modelProviderKeySchema).min(1, msg("validation.atLeastOneKeyIsRequired")),
 	network_config: networkConfigSchema,
 	concurrency_and_buffer_size: concurrencyAndBufferSizeSchema,
 	proxy_config: proxyConfigSchema,
@@ -1223,6 +1471,7 @@ export const updateProviderRequestSchema = z.object({
 	openai_config: openaiConfigFormSchema.optional(),
 	prompt_cache: promptCacheFormSchema.optional(),
 	injected_tools: injectedToolsConfigSchema.nullable().optional(),
+	passthrough: passthroughPolicySchema.nullable().optional(),
 });
 
 // Cache config schema
@@ -1251,8 +1500,8 @@ const providerBackedCacheConfigSchema = baseCacheConfigSchema
 	.extend({
 		provider: modelProviderNameSchema,
 		keys: z.array(modelProviderKeySchema).optional(),
-		embedding_model: z.string().min(1, "Embedding model is required"),
-		dimension: z.number().int().min(2, "Dimension must be greater than 1 for provider-backed semantic cache"),
+		embedding_model: z.string().min(1, msg("validation.embeddingModelIsRequired")),
+		dimension: z.number().int().min(2, msg("validation.dimensionMustBeGreaterThan1ForProviderBackedSemantic")),
 	})
 	.strict();
 
@@ -1269,6 +1518,8 @@ export const coreConfigSchema = z.object({
 	hide_deleted_virtual_keys_in_filters: z.boolean().default(false),
 	delete_expired_virtual_keys: z.boolean().default(false),
 	enforce_vk_object_ownership: z.boolean().default(true),
+	skip_access_profile_user_virtual_key_creation: z.boolean().default(false),
+	skip_access_profile_user_virtual_key_deletion: z.boolean().default(false),
 	extra_fields_placement: z.enum(["body", "headers"]).default("body"),
 	hidden_request_types: z.array(z.string()).default([]),
 	allowed_origins: z.array(z.string()).default(["*"]),
@@ -1289,7 +1540,7 @@ export const coreConfigSchema = z.object({
 			max_value_bytes: z
 				.number()
 				.int()
-				.refine((v) => v === 0 || v >= 1024, { message: "max_value_bytes must be 0 or at least 1024" })
+				.refine((v) => v === 0 || v >= 1024, { error: () => i18n.t("validation.maxValueBytesMustBe0OrAtLeast1024") })
 				.optional(),
 			max_nesting_depth: z.number().int().min(0).max(1000).optional(),
 		})
@@ -1331,16 +1582,16 @@ export const performanceFormSchema = z.object({
 	concurrency_and_buffer_size: z
 		.object({
 			concurrency: z
-				.number({ error: "Concurrency must be a number" })
-				.min(1, "Concurrency must be greater than 0")
-				.max(100000, "Concurrency must be less than 100000"),
+				.number({ error: () => i18n.t("validation.concurrencyMustBeANumber") })
+				.min(1, msg("validation.concurrencyMustBeGreaterThan0"))
+				.max(100000, msg("validation.concurrencyMustBeLessThan100000")),
 			buffer_size: z
-				.number({ error: "Buffer size must be a number" })
-				.min(1, "Buffer size must be greater than 0")
-				.max(100000, "Buffer size must be less than 100000"),
+				.number({ error: () => i18n.t("validation.bufferSizeMustBeANumber") })
+				.min(1, msg("validation.bufferSizeMustBeGreaterThan0"))
+				.max(100000, msg("validation.bufferSizeMustBeLessThan100000")),
 		})
 		.refine((data) => data.concurrency <= data.buffer_size, {
-			message: "Concurrency must be less than or equal to buffer size",
+			error: () => i18n.t("validation.concurrencyMustBeLessThanOrEqualToBufferSize"),
 			path: ["concurrency"],
 		}),
 });
@@ -1379,7 +1630,7 @@ export const otelConfigSchema = z
 		collector_url: secretVarSchema.default({ value: "" }),
 		trace_type: z
 			.enum(["genai_extension", "vercel", "open_inference"], {
-				message: "Please select a trace type",
+				error: () => i18n.t("validation.pleaseSelectATraceType"),
 			})
 			.default("genai_extension"),
 		// Common headers go to both endpoints; per-signal headers override on collision.
@@ -1388,7 +1639,7 @@ export const otelConfigSchema = z
 		metrics_headers: z.record(z.string(), secretVarSchema).optional(),
 		protocol: z
 			.enum(["http", "grpc"], {
-				message: "Please select a protocol",
+				error: () => i18n.t("validation.pleaseSelectAProtocol"),
 			})
 			.default("http"),
 		// TLS configuration
@@ -1425,7 +1676,7 @@ export const otelConfigSchema = z
 					ctx.addIssue({
 						code: "custom",
 						path,
-						message: "Must be a valid HTTP or HTTPS URL",
+						message: i18n.t("validation.mustBeAValidHttpOrHttpsUrl"),
 					});
 					return false;
 				}
@@ -1434,7 +1685,7 @@ export const otelConfigSchema = z
 				ctx.addIssue({
 					code: "custom",
 					path,
-					message: "Must be a valid HTTP or HTTPS URL",
+					message: i18n.t("validation.mustBeAValidHttpOrHttpsUrl"),
 				});
 				return false;
 			}
@@ -1447,7 +1698,7 @@ export const otelConfigSchema = z
 				ctx.addIssue({
 					code: "custom",
 					path,
-					message: `Must be in the format <host>:<port> for gRPC (e.g. ${example})`,
+					message: i18n.t("validation.grpcHostPortFormat", { example }),
 				});
 				return false;
 			}
@@ -1456,7 +1707,7 @@ export const otelConfigSchema = z
 				ctx.addIssue({
 					code: "custom",
 					path,
-					message: "Port must be between 1 and 65535",
+					message: i18n.t("validation.portMustBeBetween1And65535"),
 				});
 				return false;
 			}
@@ -1469,7 +1720,7 @@ export const otelConfigSchema = z
 				ctx.addIssue({
 					code: "custom",
 					path: ["collector_url"],
-					message: "Collector address is required",
+					message: i18n.t("validation.collectorAddressIsRequired"),
 				});
 			}
 
@@ -1489,7 +1740,7 @@ export const otelConfigSchema = z
 				ctx.addIssue({
 					code: "custom",
 					path: ["metrics_endpoint"],
-					message: "Metrics endpoint is required when metrics push is enabled",
+					message: i18n.t("validation.metricsEndpointIsRequiredWhenMetricsPushIsEnabled"),
 				});
 			} else if (metricsEndpoint && (data.metrics_endpoint?.type === "plain_text" || !data.metrics_endpoint?.type) && protocol === "http") {
 				validateHttpUrl(metricsEndpoint, ["metrics_endpoint"]);
@@ -1503,7 +1754,7 @@ export const otelConfigSchema = z
 // it carries one or more export profiles, each independently enable-able.
 export const otelFormSchema = z.object({
 	enabled: z.boolean().default(true),
-	profiles: z.array(otelConfigSchema).min(1, "At least one profile is required"),
+	profiles: z.array(otelConfigSchema).min(1, msg("validation.atLeastOneProfileIsRequired")),
 });
 
 // Maxim Configuration Schema
@@ -1526,13 +1777,13 @@ export const maximFormSchema = z
 				ctx.addIssue({
 					code: "custom",
 					path: ["maxim_config", "api_key"],
-					message: "API key is required",
+					message: i18n.t("validation.apiKeyIsRequired2"),
 				});
 			} else if (!apiKey.startsWith("sk_mx_")) {
 				ctx.addIssue({
 					code: "custom",
 					path: ["maxim_config", "api_key"],
-					message: "API key must start with 'sk_mx_'",
+					message: i18n.t("validation.apiKeyMustStartWithSkMx"),
 				});
 			}
 		}
@@ -1558,14 +1809,14 @@ export const prometheusConfigSchema = z
 					ctx.addIssue({
 						code: "custom",
 						path: ["push_gateway_url"],
-						message: "Must be a valid HTTP or HTTPS URL",
+						message: i18n.t("validation.mustBeAValidHttpOrHttpsUrl"),
 					});
 				}
 			} catch {
 				ctx.addIssue({
 					code: "custom",
 					path: ["push_gateway_url"],
-					message: "Must be a valid URL (e.g., http://pushgateway:9091)",
+					message: i18n.t("validation.mustBeAValidUrlEGHttpPushgateway9091"),
 				});
 			}
 		}
@@ -1577,14 +1828,14 @@ export const prometheusConfigSchema = z
 			ctx.addIssue({
 				code: "custom",
 				path: ["basic_auth_password"],
-				message: "Password is required when username is provided",
+				message: i18n.t("validation.passwordIsRequiredWhenUsernameIsProvided"),
 			});
 		}
 		if (hasPassword && !hasUsername) {
 			ctx.addIssue({
 				code: "custom",
 				path: ["basic_auth_username"],
-				message: "Username is required when password is provided",
+				message: i18n.t("validation.usernameIsRequiredWhenPasswordIsProvided"),
 			});
 		}
 	});
@@ -1605,13 +1856,13 @@ export const prometheusFormSchema = z
 				ctx.addIssue({
 					code: "custom",
 					path: ["prometheus_config", "push_gateway_url"],
-					message: "Push Gateway URL is required when the push gateway is enabled",
+					message: i18n.t("validation.pushGatewayUrlIsRequiredWhenThePushGatewayIs"),
 				});
 			}
 		}
 	});
 
-const httpUrlOrEmpty = (message: string) =>
+const httpUrlOrEmpty = (message: ReturnType<typeof msg>) =>
 	z
 		.string()
 		.optional()
@@ -1638,8 +1889,8 @@ export const mcpOpenAPICredentialSchema = z.object({
 // onto the stored block, so it may carry only the fields being changed.
 export const mcpOpenAPIConfigBaseSchema = z.object({
 	spec: z.string().optional(),
-	spec_url: httpUrlOrEmpty("Spec URL must be a valid http:// or https:// URL"),
-	base_url: httpUrlOrEmpty("Base URL must be a valid http:// or https:// URL"),
+	spec_url: httpUrlOrEmpty(msg("validation.specUrlMustBeAValidHttpOrHttpsUrl")),
+	base_url: httpUrlOrEmpty(msg("validation.baseUrlMustBeAValidHttpOrHttpsUrl")),
 	security_credentials: z.record(z.string(), mcpOpenAPICredentialSchema).optional(),
 	include_deprecated: z.boolean().optional(),
 	max_response_bytes: z.number().int().min(0).optional(),
@@ -1650,7 +1901,7 @@ export const mcpOpenAPIConfigSchema = mcpOpenAPIConfigBaseSchema.superRefine((v,
 	const hasSpec = !!v.spec?.trim();
 	const hasUrl = !!v.spec_url?.trim();
 	if (!hasSpec && !hasUrl) {
-		ctx.addIssue({ code: "custom", path: ["spec"], message: "Paste or upload a spec, or provide a spec URL" });
+		ctx.addIssue({ code: "custom", path: ["spec"], message: i18n.t("validation.pasteOrUploadASpecOrProvideASpecUrl") });
 	}
 });
 export type MCPOpenAPIConfigSchema = z.infer<typeof mcpOpenAPIConfigSchema>;
@@ -1661,25 +1912,26 @@ export const mcpClientUpdateSchema = z
 		is_code_mode_client: z.boolean().optional(),
 		is_ping_available: z.boolean().optional(),
 		needs_session_stickiness: z.boolean().optional(),
+		per_user_discovery: z.boolean().optional(),
 		allow_by_default: z.boolean().optional(),
 		disabled: z.boolean().optional(),
 		// openapi clients only; undefined = leave the stored document alone.
 		openapi_config: mcpOpenAPIConfigBaseSchema.optional(),
 		name: z
 			.string()
-			.min(1, "Name is required")
+			.min(1, msg("validation.nameIsRequired"))
 			.refine((val) => !val.includes("-"), {
-				message: "Client name cannot contain hyphens",
+				error: () => i18n.t("validation.clientNameCannotContainHyphens"),
 			})
 			.refine((val) => !val.includes(" "), {
-				message: "Client name cannot contain spaces",
+				error: () => i18n.t("validation.clientNameCannotContainSpaces"),
 			})
 			.refine((val) => !/^[0-9]/.test(val), {
-				message: "Client name cannot start with a number",
+				error: () => i18n.t("validation.clientNameCannotStartWithANumber"),
 			}),
 		headers: z.record(z.string(), secretVarSchema).optional().nullable(),
 		per_user_header_keys: z
-			.array(z.string().trim().min(1, "Header name cannot be empty"))
+			.array(z.string().trim().min(1, msg("validation.headerNameCannotBeEmpty")))
 			.optional()
 			.refine(
 				(headers) => {
@@ -1687,7 +1939,7 @@ export const mcpClientUpdateSchema = z
 					const normalized = headers.map((h) => h.trim().toLowerCase());
 					return normalized.length === new Set(normalized).size;
 				},
-				{ message: "Duplicate header names are not allowed" },
+				{ error: () => i18n.t("validation.duplicateHeaderNamesAreNotAllowed") },
 			),
 		tools_to_execute: z
 			.array(z.string())
@@ -1698,14 +1950,14 @@ export const mcpClientUpdateSchema = z
 					const hasWildcard = tools.includes("*");
 					return !hasWildcard || tools.length === 1;
 				},
-				{ message: "Wildcard '*' cannot be combined with other tool names" },
+				{ error: () => i18n.t("validation.wildcardCannotBeCombinedWithOtherToolNames") },
 			)
 			.refine(
 				(tools) => {
 					if (!tools) return true;
 					return tools.length === new Set(tools).size;
 				},
-				{ message: "Duplicate tool names are not allowed" },
+				{ error: () => i18n.t("validation.duplicateToolNamesAreNotAllowed") },
 			),
 		tools_to_auto_execute: z
 			.array(z.string())
@@ -1716,17 +1968,20 @@ export const mcpClientUpdateSchema = z
 					const hasWildcard = tools.includes("*");
 					return !hasWildcard || tools.length === 1;
 				},
-				{ message: "Wildcard '*' cannot be combined with other tool names" },
+				{ error: () => i18n.t("validation.wildcardCannotBeCombinedWithOtherToolNames") },
 			)
 			.refine(
 				(tools) => {
 					if (!tools) return true;
 					return tools.length === new Set(tools).size;
 				},
-				{ message: "Duplicate tool names are not allowed" },
+				{ error: () => i18n.t("validation.duplicateToolNamesAreNotAllowed") },
 			),
-		tool_pricing: z.record(z.string(), z.number().min(0, "Cost must be non-negative")).optional(),
-		tool_sync_interval: z.number().min(0, "Tool sync interval must be 0 or a positive number of minutes").optional(), // 0 = use global, >0 = custom interval in minutes
+		prompts_to_expose: z.array(z.string()).optional(), // ["*"] = all, [] = none
+		resources_to_expose: z.array(z.string()).optional(), // ["*"] = all, [] = none
+		tool_pricing: z.record(z.string(), z.number().min(0, msg("validation.costMustBeNonNegative"))).optional(),
+		tool_sync_interval: z.number().min(0, msg("validation.toolSyncIntervalMustBe0OrAPositiveNumber")).optional(), // 0 = use global, >0 = custom interval in minutes
+		max_protocol_version: z.union([z.literal(""), z.enum(MCP_MAX_PROTOCOL_VERSIONS)]).optional(), // "" = use global
 		tool_execution_timeout: z.number().int().min(0).optional(), // 0 = use global, >0 = per-server timeout in seconds
 		max_instructions_length: z.number().int().min(0).optional(), // 0 = use global, >0 = per-server instruction byte cap
 		allowed_extra_headers: z
@@ -1738,7 +1993,7 @@ export const mcpClientUpdateSchema = z
 					const hasWildcard = headers.includes("*");
 					return !hasWildcard || headers.length === 1;
 				},
-				{ message: "Wildcard '*' cannot be combined with specific header names" },
+				{ error: () => i18n.t("validation.wildcardCannotBeCombinedWithSpecificHeaderNames") },
 			),
 		oauth_config: z
 			.object({
@@ -1747,22 +2002,25 @@ export const mcpClientUpdateSchema = z
 				authorize_url: z
 					.string()
 					.optional()
-					.refine((val) => !val || /^https?:\/\/.+$/.test(val), { message: "Authorize URL must start with http:// or https://" }),
+					.refine((val) => !val || /^https?:\/\/.+$/.test(val), { error: () => i18n.t("validation.authorizeUrlMustStartWithHttpOrHttps") }),
 				token_url: z
 					.string()
 					.optional()
-					.refine((val) => !val || /^https?:\/\/.+$/.test(val), { message: "Token URL must start with http:// or https://" }),
+					.refine((val) => !val || /^https?:\/\/.+$/.test(val), { error: () => i18n.t("validation.tokenUrlMustStartWithHttpOrHttps") }),
 				registration_url: z
 					.string()
 					.optional()
-					.refine((val) => !val || /^https?:\/\/.+$/.test(val), { message: "Registration URL must start with http:// or https://" }),
+					.refine((val) => !val || /^https?:\/\/.+$/.test(val), {
+						error: () => i18n.t("validation.registrationUrlMustStartWithHttpOrHttps"),
+					}),
 				scopes: z.array(z.string()).optional(),
 				resource: z.string().optional(),
+				use_client_metadata_document: z.boolean().optional(),
 			})
 			.optional(),
 		token_exchange: z
 			.object({
-				audience: z.string().trim().min(1, "Audience is required"),
+				audience: z.string().trim().min(1, msg("validation.audienceIsRequired")),
 				use_idp_credentials: z.boolean().optional(),
 				client_id: secretVarSchema.optional(),
 				client_secret: secretVarSchema.optional(),
@@ -1770,9 +2028,45 @@ export const mcpClientUpdateSchema = z
 					.string()
 					.optional()
 					.refine((val) => !val || /^https?:\/\/.+$/.test(val), {
-						message: "Authorization Server URL must start with http:// or https://",
+						error: () => i18n.t("validation.authorizationServerUrlMustStartWithHttpOrHttps"),
 					}),
 				scopes: z.array(z.string()).optional(),
+				profile: z.enum(["", "id_jag"]).optional(),
+				resource: z.string().optional(),
+				resource_token_endpoint: z.string().optional(),
+				resource_client_id: secretVarSchema.optional(),
+				resource_client_secret: secretVarSchema.optional(),
+				resource_client_auth_method: z.enum(["", "client_secret_basic", "client_secret_post"]).optional(),
+				resource_private_key: secretVarSchema.optional(),
+				resource_key_id: z.string().optional(),
+				resource_signing_algorithm: z.string().optional(),
+				resource_auth_mode: z.enum(["secret", "private_key"]).optional(),
+				resource_assertion_audience: z.string().optional(),
+			})
+			// The id_jag fields are hidden for the direct profile, so they are checked only
+			// with it selected: a value left behind must not block Save with no visible error.
+			.superRefine((te, ctx) => {
+				if (te.profile !== "id_jag") return;
+				const issue = (path: string, message: string) => ctx.addIssue({ code: "custom", path: [path], message });
+				if (!isSecretVarSet(te.resource_client_id)) {
+					issue("resource_client_id", i18n.t("registry.form.resourceClientIdRequired", { ns: "mcp" }));
+				}
+				if (te.resource_token_endpoint && !isHTTPSOrLoopbackURL(te.resource_token_endpoint)) {
+					issue("resource_token_endpoint", i18n.t("registry.form.resourceTokenEndpointHttps", { ns: "mcp" }));
+				}
+				const audience = te.resource_assertion_audience?.trim();
+				if (audience && !isHTTPSOrLoopbackURL(audience)) {
+					issue("resource_assertion_audience", i18n.t("registry.form.assertionAudienceHttps", { ns: "mcp" }));
+				}
+				if (isSecretVarSet(te.resource_client_secret) && isSecretVarSet(te.resource_private_key)) {
+					issue("resource_private_key", i18n.t("registry.form.resourceBothAuth", { ns: "mcp" }));
+				}
+				if (hasPrivateKeySettingsWithoutKey(te)) {
+					issue("resource_private_key", privateKeyRequiredMessage());
+				}
+				if (hasSendMethodWithoutSecret(te)) {
+					issue("resource_client_secret", secretRequiredForMethodMessage());
+				}
 			})
 			.optional(),
 		tls_config: z
@@ -1790,7 +2084,7 @@ export const mcpClientUpdateSchema = z
 			ctx.addIssue({
 				code: "custom",
 				path: ["per_user_header_keys"],
-				message: "Declare at least one header name users must supply.",
+				message: i18n.t("validation.declareAtLeastOneHeaderNameUsersMustSupply"),
 			});
 		}
 	});
@@ -1823,17 +2117,22 @@ export const globalProxyConfigSchema = z
 			return true;
 		},
 		{
-			message: "Proxy URL is required when proxy is enabled",
+			error: () => i18n.t("validation.proxyUrlIsRequiredWhenProxyIsEnabled"),
 			path: ["url"],
 		},
 	)
 	.refine(
 		(data) => {
-			// Validate URL format when provided and enabled
+			// Validate URL format when provided and enabled. A bare host:port takes the type's
+			// scheme, as on the server: "10.0.0.5:1080" is not a URL on its own.
 			if (data.enabled && data.url && data.url.trim().length > 0) {
+				// The server trims the URL before reading it.
+				const url = data.url.trim();
 				try {
-					new URL(data.url);
-					return true;
+					// socks5 is not a special scheme, so its URLs can parse with an empty host. Parsing
+					// accepts port 0, which the server refuses.
+					const parsed = new URL(url.includes("://") ? url : `${data.type === "socks5" ? "socks5" : "http"}://${url}`);
+					return parsed.hostname !== "" && parsed.port !== "0";
 				} catch {
 					return false;
 				}
@@ -1841,7 +2140,35 @@ export const globalProxyConfigSchema = z
 			return true;
 		},
 		{
-			message: "Must be a valid URL (e.g., http://proxy.example.com:8080)",
+			error: () => i18n.t("validation.mustBeAValidUrlEGHttpProxyExample"),
+			path: ["url"],
+		},
+	)
+	.refine(
+		(data) => {
+			// The dialer follows the URL's scheme, so a SOCKS5 proxy must be named by a socks5 URL.
+			// A bare host:port takes its scheme from the type, as on the server.
+			if (data.enabled && data.type === "socks5" && data.url && data.url.includes("://")) {
+				return /^socks5h?:\/\//i.test(data.url.trim());
+			}
+			return true;
+		},
+		{
+			error: () => i18n.t("validation.socks5ProxyUrlMustStartWithSocks5Scheme"),
+			path: ["url"],
+		},
+	)
+	.refine(
+		(data) => {
+			// Switching the type keeps the URL, and the server refuses an http proxy named by
+			// another scheme. A bare host:port takes the type's scheme.
+			if (data.enabled && data.type === "http" && data.url && data.url.includes("://")) {
+				return /^https?:\/\//i.test(data.url.trim());
+			}
+			return true;
+		},
+		{
+			error: () => i18n.t("validation.httpProxyUrlMustStartWithHttpScheme"),
 			path: ["url"],
 		},
 	);
@@ -1866,32 +2193,32 @@ export const globalHeaderFilterFormSchema = z.object({
 // Routing rule creation schema
 export const routingRuleSchema = z
 	.object({
-		name: z.string().min(1, "Rule name is required").max(255, "Rule name must be less than 255 characters"),
-		description: z.string().max(1000, "Description must be less than 1000 characters").optional(),
+		name: z.string().min(1, msg("validation.ruleNameIsRequired")).max(255, msg("validation.ruleNameMustBeLessThan255Characters")),
+		description: z.string().max(1000, msg("validation.descriptionMustBeLessThan1000Characters")).optional(),
 		cel_expression: z.string().optional(),
-		provider: z.string().min(1, "Provider is required"),
+		provider: z.string().min(1, msg("validation.providerIsRequired")),
 		model: z.string().optional(),
 		fallbacks: z.array(z.string()).optional().default([]),
 		scope: z.enum(["global", "team", "customer", "virtual_key"]),
 		scope_id: z.string().optional(),
-		priority: z.number().min(0, "Priority must be 0 or greater").max(1000, "Priority must be 1000 or less"),
+		priority: z.number().min(0, msg("validation.priorityMustBe0OrGreater")).max(1000, msg("validation.priorityMustBe1000OrLess")),
 		enabled: z.boolean().default(true),
 		chain_rule: z.boolean().default(false),
 	})
 	.refine((data) => data.scope === "global" || (data.scope_id != null && data.scope_id.trim() !== ""), {
-		message: "Scope ID is required when scope is not global",
+		error: () => i18n.t("validation.scopeIdIsRequiredWhenScopeIsNotGlobal"),
 		path: ["scope_id"],
 	});
 
 // Budget override form schema (BudgetOverrideDialog)
 export const budgetOverrideFormSchema = z
 	.object({
-		amount: z.number("Additional budget must be greater than 0.").positive("Additional budget must be greater than 0."),
+		amount: z.number(msg("validation.additionalBudgetMustBeGreaterThan0")).positive(msg("validation.additionalBudgetMustBeGreaterThan0")),
 		mode: z.enum(["cycles", "forever"]),
 		cycles: z.number().optional(),
 	})
 	.refine((data) => data.mode !== "cycles" || (data.cycles !== undefined && Number.isSafeInteger(data.cycles) && data.cycles > 0), {
-		message: "Reset cycles must be a positive whole number.",
+		error: () => i18n.t("validation.resetCyclesMustBeAPositiveWholeNumber"),
 		path: ["cycles"],
 	});
 
@@ -1912,8 +2239,7 @@ export const authProofOfControlSchema = z
 			ctx.addIssue({
 				code: "custom",
 				path: ["current_password"],
-				message:
-					"Enter the current admin password to confirm this change. Dashboard protection is off, so this session is not signed in. If you do not know the password, use the setup token instead.",
+				message: i18n.t("security.proofRequired", { ns: "config" }),
 			});
 		}
 	});
@@ -1945,7 +2271,321 @@ export type RoutingRuleSchema = z.infer<typeof routingRuleSchema>;
 export type BudgetOverrideFormSchema = z.infer<typeof budgetOverrideFormSchema>;
 // OSS setup lock: the operator's setup token entered on the login setup view.
 export const setupTokenFormSchema = z.object({
-	setup_token: z.string().trim().min(1, "Enter the setup token configured for this Bifrost instance"),
+	setup_token: z.string().trim().min(1, msg("validation.enterTheSetupTokenConfiguredForThisBifrostInstance")),
 });
 
 export type SetupTokenFormSchema = z.infer<typeof setupTokenFormSchema>;
+// RSS feed added from the notification tray's Sources sheet. The server also
+// fetches the URL once and rejects anything that is not an RSS or Atom feed.
+export const rssFeedFormSchema = z.object({
+	name: z.string().trim().min(1, msg("validation.giveTheFeedAName")).max(120, msg("validation.nameMustBe120CharactersOrFewer")),
+	url: z
+		.string()
+		.trim()
+		.min(1, msg("validation.enterTheFeedUrl"))
+		.max(2048, msg("validation.urlIsTooLong"))
+		.refine((value) => /^https?:\/\/[^\s/]+/i.test(value), msg("validation.urlMustStartWithHttpOrHttps")),
+	// Optional logo: an image URL typed in, or the data: URI of an uploaded file.
+	icon_url: z
+		.string()
+		.trim()
+		.refine(
+			(value) => value === "" || value.startsWith("data:image/") || /^https?:\/\/[^\s/]+/i.test(value),
+			msg("validation.logoMustBeAnHttpSImageUrlOrAn"),
+		),
+});
+
+export type RSSFeedFormSchema = z.infer<typeof rssFeedFormSchema>;
+
+// ---------------------------------------------------------------------------
+// Relays (/workspace/relays). Mirrors
+// core/schemas/relay.go; the backend validates the same rules.
+// ---------------------------------------------------------------------------
+
+const endpointGjsonPath = z.string().trim().optional();
+
+// A usage mapping: where usage is read (gjson paths) and how a call is priced. The endpoint-level
+// mapping must name a path for a positive rate; a route's override may inherit it, which the backend
+// checks, so routes use the base object.
+export const relayUsageBaseSchema = z.object({
+	model_path: endpointGjsonPath,
+	model_source: z.enum(["body", "query"]).nullish(),
+	input_tokens_path: endpointGjsonPath,
+	output_tokens_path: endpointGjsonPath,
+	total_tokens_path: endpointGjsonPath,
+	cost_path: endpointGjsonPath,
+	// Cleared fields hold null, not undefined: react-hook-form shows a field's loaded value again when
+	// it is set to undefined, so an emptied price would snap back. null and "" are dropped on save.
+	cost_per_request: z.number().min(0, msg("validation.relays.costPerRequestNegative")).nullish(),
+	units_path: endpointGjsonPath,
+	units_source: z.enum(["response", "request"]).nullish(),
+	units_measure: z.enum(["value", "chars", "body_bytes", "body_chars"]).nullish(),
+	cost_per_unit: z.number().min(0, msg("validation.relays.costPerUnitNegative")).nullish(),
+	units_block_size: z.number().positive(msg("validation.relays.blockSizePositive")).nullish(),
+	units_minimum: z.number().min(0, msg("validation.relays.minimumUnitsNegative")).nullish(),
+});
+
+/** A route is billable by default only for POST, so the flag is stored only when it differs. */
+export function routeBillableByDefault(method: string): boolean {
+	return method.toUpperCase() === "POST";
+}
+
+export type RelayUsageForm = z.infer<typeof relayUsageBaseSchema>;
+
+type UsageRule = {
+	units_path?: string | null;
+	units_measure?: string | null;
+	cost_per_unit?: number | null;
+};
+
+/**
+ * Mirrors RelayUsageConfig.validate in core/schemas/relay.go: a positive per-unit rate needs a units
+ * path unless the measure reads the whole body. On a route, the rate, path and measure it leaves
+ * empty come from the relay (base), so the check runs on the merged values as the backend's does.
+ */
+export function relayUsageUnitsPathError(usage: UsageRule | undefined, base?: UsageRule): string | undefined {
+	const pick = <K extends keyof UsageRule>(k: K) => {
+		const own = usage?.[k];
+		return own === undefined || own === null || own === "" ? base?.[k] : own;
+	};
+	const rate = pick("cost_per_unit");
+	const measure = pick("units_measure");
+	const path = (pick("units_path") ?? "").toString().trim();
+	if (typeof rate === "number" && rate > 0 && measure !== "body_bytes" && measure !== "body_chars" && !path) {
+		return base ? i18n.t("validation.relays.unitsPathRequiredRoute") : i18n.t("validation.relays.unitsPathRequired");
+	}
+	return undefined;
+}
+
+export const relayUsageSchema = relayUsageBaseSchema.superRefine((usage, ctx) => {
+	const message = relayUsageUnitsPathError(usage);
+	if (message) ctx.addIssue({ code: "custom", message, path: ["units_path"] });
+});
+
+// The relay route import's URL source. The gateway fetches it, so only an absolute http(s) URL is sent;
+// anything else is refused on the field rather than as a fetch error.
+export const relayOpenAPISpecUrlSchema = z.string().trim().refine(isHttpUrl, msg("validation.relays.absoluteUrl"));
+
+// Mirrors the gateway's rule for a route or streaming path: rooted, and ** only as the last segment.
+const relayGlob = z
+	.string()
+	.trim()
+	.min(1, msg("validation.relays.pathRequired"))
+	.refine((p) => p.startsWith("/"), msg("validation.relays.pathMustStartWithSlash"))
+	.refine((p) => !p.slice(1).split("/").slice(0, -1).includes("**"), msg("validation.relays.doubleStarLast"));
+
+export const relayAuthSchema = z
+	.object({
+		type: z.enum(["bearer", "header", "query", "basic", "aws_sigv4", "none"]),
+		header_name: z.string().trim().optional(),
+		query_param: z.string().trim().optional(),
+		value_prefix: z.string().optional(),
+		aws: z.object({ service: z.string().trim().optional() }).optional(),
+	})
+	.superRefine((auth, ctx) => {
+		if (auth.type === "header" && !auth.header_name) {
+			ctx.addIssue({ code: "custom", message: i18n.t("validation.relays.headerNameRequired"), path: ["header_name"] });
+		}
+		if (auth.type === "query" && !auth.query_param) {
+			ctx.addIssue({ code: "custom", message: i18n.t("validation.relays.queryParamRequired"), path: ["query_param"] });
+		}
+		if (auth.type === "aws_sigv4") {
+			const service = auth.aws?.service ?? "";
+			if (!service) ctx.addIssue({ code: "custom", message: i18n.t("validation.relays.awsServiceRequired"), path: ["aws", "service"] });
+			else if (!/^[a-z0-9-]+$/.test(service))
+				ctx.addIssue({ code: "custom", message: i18n.t("validation.relays.awsServiceFormat"), path: ["aws", "service"] });
+		}
+	});
+
+// A route's header matchers are edited as name/value pairs; a fully blank row is dropped on save,
+// a half-filled one is an error so a strict route is never silently widened.
+export const relayHeaderPairSchema = z
+	.object({
+		name: z
+			.string()
+			.trim()
+			.refine((n) => !/[\s:/]/.test(n), msg("validation.relays.headerNameNoSpecial")),
+		value: z.string().trim(),
+	})
+	.superRefine((pair, ctx) => {
+		if (pair.name && !pair.value) ctx.addIssue({ code: "custom", message: i18n.t("validation.relays.matcherNeedsValue"), path: ["value"] });
+		if (!pair.name && pair.value) ctx.addIssue({ code: "custom", message: i18n.t("validation.relays.matcherNeedsName"), path: ["name"] });
+	});
+
+// A route's async job block is set through config.json or the API; the form carries it untouched.
+export const relayJobSchema = z.object({
+	id_path: z.string().trim().min(1, msg("validation.relays.jobIdPath")),
+	poll: z.object({
+		method: z.string().optional(),
+		path: z
+			.string()
+			.trim()
+			.min(1, msg("validation.relays.pollPathRequired"))
+			.refine((p) => p.startsWith("/"), { error: () => i18n.t("validation.relays.pollPathRooted", { example: "/jobs/{{job.id}}" }) }),
+		headers: z.record(z.string(), z.string()).optional(),
+		body: z.string().optional(),
+		content_type: z.string().optional(),
+	}),
+	status_path: z.string().trim().min(1, msg("validation.relays.statusPathRequired")),
+	succeeded: z.array(z.string()).min(1, msg("validation.relays.succeededRequired")),
+	failed: z.array(z.string()).optional(),
+	interval_seconds: z.number().int().min(1, msg("validation.relays.atLeastOneSecond")).optional(),
+	timeout_seconds: z.number().int().min(1, msg("validation.relays.atLeastOneSecond")).optional(),
+	usage: relayUsageBaseSchema.optional(),
+});
+
+export const relayRouteFormSchema = z.object({
+	method: z.enum(["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"]),
+	path: relayGlob,
+	headers: z.array(relayHeaderPairSchema).superRefine((pairs, ctx) => {
+		const seen = new Set<string>();
+		pairs.forEach((pair, i) => {
+			const name = pair.name.trim().toLowerCase();
+			if (!name) return;
+			if (seen.has(name)) ctx.addIssue({ code: "custom", message: i18n.t("validation.relays.headerMatchedDup"), path: [i, "name"] });
+			seen.add(name);
+		});
+	}),
+	enabled: z.boolean().optional(),
+	billable: z.boolean().optional(),
+	stream: z.boolean().optional(),
+	usage: relayUsageBaseSchema.optional(),
+	job: relayJobSchema.optional(),
+});
+
+// The endpoint editor form. Extra headers are edited as pairs; the credential is a SecretVar so env.
+// and vault references round-trip, and a redacted value sent back keeps the stored secret.
+export const relayNetworkFormSchema = z.object({
+	timeout_seconds: z.number().int().min(0).optional(),
+	stream_idle_timeout_in_seconds: z.number().int().min(0).optional(),
+	max_conns_per_host: z.number().int().min(0).optional(),
+	insecure_skip_verify: z.boolean().optional(),
+	ca_cert_pem: z.string().optional(),
+});
+
+export const relayFormSchema = z
+	.object({
+		name: z
+			.string()
+			.trim()
+			.regex(/^[A-Za-z0-9._-]{1,64}$/, msg("validation.relays.relayNameFormat"))
+			.refine((n) => n !== "." && n !== "..", msg("validation.relays.relayNameDots")),
+		description: z.string().optional(),
+		base_url: z
+			.string()
+			.trim()
+			.refine((u) => {
+				try {
+					const parsed = new URL(u);
+					return (
+						(parsed.protocol === "http:" || parsed.protocol === "https:") &&
+						!parsed.search &&
+						!parsed.hash &&
+						!parsed.username &&
+						!parsed.password
+					);
+				} catch {
+					return false;
+				}
+			}, msg("validation.relays.baseUrlFormat")),
+		auth: relayAuthSchema,
+		credential_value: _secretVarBase.optional(),
+		aws: z
+			.object({
+				access_key: _secretVarBase.optional(),
+				secret_key: _secretVarBase.optional(),
+				session_token: _secretVarBase.optional(),
+				region: _secretVarBase.optional(),
+				role_arn: _secretVarBase.optional(),
+				external_id: _secretVarBase.optional(),
+				session_name: _secretVarBase.optional(),
+			})
+			.optional(),
+		extra_headers: z.array(z.object({ name: z.string().trim(), value: _secretVarBase })).superRefine((pairs, ctx) => {
+			// One value per header: a second row with the same name (any case) would replace the first.
+			// A half-filled row is refused rather than silently dropped on save; a blank row is skipped.
+			const seen = new Set<string>();
+			pairs.forEach((pair, i) => {
+				const name = pair.name.trim().toLowerCase();
+				const hasValue = isSecretVarSet(pair.value);
+				if (name && !hasValue)
+					ctx.addIssue({ code: "custom", message: i18n.t("validation.relays.headerValueRequired"), path: [i, "value"] });
+				if (!name && hasValue) ctx.addIssue({ code: "custom", message: i18n.t("validation.relays.headerNameEnter"), path: [i, "name"] });
+				if (!name) return;
+				if (seen.has(name)) ctx.addIssue({ code: "custom", message: i18n.t("validation.relays.headerAlreadySet"), path: [i, "name"] });
+				seen.add(name);
+			});
+		}),
+		network: relayNetworkFormSchema,
+		// "inherit" sends no proxy config (the global proxy applies); "none" is an explicit direct connection.
+		proxy: z.object({
+			type: z.enum(["inherit", "none", "http", "socks5", "environment"]),
+			url: _secretVarBase.optional(),
+			username: _secretVarBase.optional(),
+			password: _secretVarBase.optional(),
+			ca_cert_pem: _secretVarBase.optional(),
+		}),
+		usage: relayUsageSchema,
+		streaming: z.object({
+			// Validated as a whole so the message lands on streaming.paths, where the form shows it.
+			// Blank lines are skipped: they are dropped on blur and on save.
+			paths: z.array(z.string()).superRefine((paths, ctx) => {
+				paths.forEach((p, i) => {
+					if (!p.trim()) return;
+					const parsed = relayGlob.safeParse(p);
+					if (!parsed.success)
+						ctx.addIssue({
+							code: "custom",
+							message: i18n.t("validation.relays.lineError", {
+								line: i + 1,
+								message: parsed.error.issues[0]?.message ?? i18n.t("validation.relays.invalidPath"),
+							}),
+						});
+				});
+			}),
+		}),
+		routes: z.array(relayRouteFormSchema),
+		skip_route_check: z.boolean(),
+		ignore_upstream_cost: z.boolean(),
+	})
+	.superRefine((form, ctx) => {
+		const type = form.auth.type;
+		if (type === "aws_sigv4") {
+			if (!isSecretVarSet(form.aws?.region))
+				ctx.addIssue({ code: "custom", message: i18n.t("validation.relays.regionSigV4"), path: ["aws", "region"] });
+		} else if (type !== "none" && !isSecretVarSet(form.credential_value)) {
+			ctx.addIssue({ code: "custom", message: i18n.t("validation.relays.credentialRequired"), path: ["credential_value"] });
+		}
+		if ((form.proxy.type === "http" || form.proxy.type === "socks5") && !isSecretVarSet(form.proxy.url)) {
+			ctx.addIssue({ code: "custom", message: i18n.t("validation.relays.proxyUrlRequired"), path: ["proxy", "url"] });
+		}
+		// The backend checks every route against the relay pricing it inherits, so a relay edit that
+		// leaves a per-unit route without a units path is refused; say which route on the relay field.
+		// A route that is not billed is never priced, and its hidden override is not saved.
+		const broken = form.routes.find(
+			(r) => (r.billable ?? routeBillableByDefault(r.method)) && r.usage && relayUsageUnitsPathError(r.usage, form.usage),
+		);
+		if (broken && !relayUsageUnitsPathError(form.usage)) {
+			ctx.addIssue({
+				code: "custom",
+				message: i18n.t("validation.relays.unitsPathRequiredInherited", { method: broken.method, path: broken.path }),
+				path: ["usage", "units_path"],
+			});
+		}
+	});
+
+export type RelayFormValues = z.infer<typeof relayFormSchema>;
+
+// The sample call the Test tab sends to the usage preview; the path mirrors the relay's own guard.
+export const relayPreviewSampleSchema = z.object({
+	method: z.enum(["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"]),
+	path: z
+		.string()
+		.trim()
+		.min(1, msg("validation.relays.pathRequired"))
+		.refine(
+			(p) => p.startsWith("/") && !p.startsWith("//") && !p.includes("://") && !p.includes("\\"),
+			msg("validation.relays.rootedPathSearch"),
+		),
+	status_code: z.number().int().min(100, msg("validation.relays.statusRange")).max(599, msg("validation.relays.statusRange")),
+});

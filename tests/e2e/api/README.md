@@ -116,6 +116,111 @@ make run-provider-harness-test PROVIDER=openai FEATURE="content-length truncatio
 
 Stop the fixture and isolated gateway with Ctrl+C after testing.
 
+## Sonnet 5.5 caller request surface
+
+These fourteen deterministic cases use a local synthetic Anthropic endpoint and an
+isolated gateway. They make no live provider calls, need no key, no quota and no
+subscription entitlement, and they assert **what Bifrost forwards** — a passing
+case is not evidence that the live Claude API accepts any of these request shapes.
+Run the following commands from the repository root.
+
+Start the fixture in one terminal:
+
+```bash
+node tests/e2e/api/runners/anthropic-request-surface-fixture.mjs
+```
+
+Start a separate gateway in another terminal:
+
+```bash
+surface_fixture_dir=$(mktemp -d)
+cp tests/e2e/api/provider_config/anthropic-request-surface.config.json "$surface_fixture_dir/config.json"
+go run ./transports/bifrost-http -app-dir "$surface_fixture_dir" -host 127.0.0.1 -port 8792
+```
+
+Run the cases in a third terminal:
+
+```bash
+newman run tests/e2e/api/collections/provider-harness.json \
+  --folder "288. Sonnet 5.5 caller request surface (sonnet-5-5-surface)" \
+  --env-var baseUrl=http://127.0.0.1:8792 \
+  --env-var anthropicRequestSurfaceFixture=1
+```
+
+Each request carries its case name in the user message. The fixture looks the case
+up in `runners/lib/anthropic-request-surface.mjs`, compares the reasoning and
+sampling surface it received — `thinking` and its `budget_tokens`,
+`output_config.effort`, `temperature`, `top_p`, `top_k`, and the
+`interleaved-thinking-2025-05-14` beta header — against the request the caller
+sent, and answers 200 only on an exact match. Otherwise it answers 400 naming
+every field that drifted, so a wrong forwarded request fails loudly instead of
+passing on an uninspected 200.
+
+Four cases are red before the caller-request-surface fix and green after:
+`between_tools` thinking carrying a sibling `thinking.display`; `enabled` +
+`budget_tokens` on both the typed path and the `claude-cli` raw path; and a
+caller-sent effort. Ten are invariance controls that must pass on both trees:
+bare `between_tools` on unary, streaming and `count_tokens`, the raw path's
+already-correct sampling tuple, the three typed sampling cases, and
+`claude-sonnet-5` keeping its adaptive rewrite, its raw-path asymmetry and its
+dropped count sampling. `count_tokens` still deletes `temperature` for every
+model on both paths; the count cases pin that deletion rather than change it.
+
+The three typed sampling cases are controls rather than fixes: this model family
+is adaptive-only, and the typed converter drops `temperature`/`top_p` and deletes
+`top_k` for it because the provider is recorded as rejecting the three. This
+change therefore leaves sampling stripped and expects the same wire stock
+produces. The `sampling-raw` control still forwards all three, so the typed/raw
+divergence stays visible in the table rather than being resolved in the direction
+that could only add provider rejections.
+
+The three bare `between_tools` cases are controls rather than fixes because
+upstream PR #7665 landed while this change was in review: it carries
+`thinking.type` through the neutral reasoning parameters, so that shape is
+already forwarded. What those parameters still cannot carry is a sibling
+`thinking.display`, which stock's typed path drops and its raw path forwards —
+that is the one `between_tools` case still counted as a fix above: red on the
+stock tree, green on this one. The `stock` column in
+`runners/lib/anthropic-request-surface.mjs` records both baselines so this
+distinction is checked rather than described.
+
+Folder `118. Claude Sonnet 5.5 between_tools thinking type (between-tools)`
+already covers bare `between_tools` against live providers through
+`x-bf-send-back-raw-request`, and this folder does not duplicate it: its three
+bare `between_tools` cases are the controls described above, and the eleven
+others pin shapes folder 118 does not send — a sibling `thinking.display`, the
+legacy `enabled` + `budget_tokens` form, a caller-sent effort beside a restored
+thinking, and the `temperature`/`top_p`/`top_k` tuple. The two folders also
+carry different feature keywords (`between-tools` and `sonnet-5-5-surface`), so
+a scoped run selects one or the other.
+
+The cases are skipped unless `anthropicRequestSurfaceFixture=1`.
+
+The fixture's verdict logic is pure and covered offline by
+`runners/lib/anthropic-request-surface.test.mjs` (`make test-harness-runner-lib`),
+which drives every case three ways: the request the caller sent is accepted, each
+single-field drift off it is rejected, and the body upstream forwards today is
+rejected for exactly the four cases above. The same file drives the fixture's
+HTTP handler directly, with no port bound, so an unknown or malformed request
+target is answered 404 rather than thrown on — a throw there rejects the async
+listener's promise, answers nothing, and takes the fixture down mid-folder.
+
+## Extra-content-only stream deltas
+
+Folder 266 pins that OpenAI-compatible chat streams forward chunks whose delta carries only
+`extra_content`. The fixture model `upstream-extra-content` streams `hello`, one
+`extra_content`-only delta before `finish_reason: "stop"`, and one after it. On the native and
+OpenAI SDK chat routes, both payloads must arrive in order and the stream must still end with
+`finish_reason` and `[DONE]`. These cases make no live provider calls and are skipped unless
+`providerErrorFixture=1`.
+
+Start the fixture and the isolated gateway as in
+[Fixed-length response truncation](#fixed-length-response-truncation), then run:
+
+```bash
+make run-provider-harness-test PROVIDER=openai FEATURE="extra content deltas" BASE_URL=http://localhost:8790 ENV_FILE=tmp/content-length-truncation.env.json COMPAT=off DB_VERIFY=0 SKIP_STREAM_CANCEL=1
+```
+
 ## Provider 5xx failover and 429 retry-hint propagation
 
 These deterministic cases use a local HTTP fixture and an isolated gateway. They make no live
@@ -277,6 +382,117 @@ InvokeAgent is streamed: the fixture's `AGENTSLOW001` agent sends five event-str
 The cases are skipped unless `bedrockEndpointFixture=1`.
 
 Stop the fixture and isolated gateway with Ctrl+C after testing.
+
+## Workload identity federation
+
+These deterministic cases run Anthropic Workload Identity Federation end to end against a local
+stand-in for the token endpoint and the Messages API. They make no live call and need no key and no
+federation rule. Folder 297 pins what real Anthropic answers to an unregistered federation; this
+folder pins the success path, the token lifecycle and the failure modes. Run the following commands
+from the repository root.
+
+The gateway reads identity token files only from `BIFROST_OIDC_ALLOWED_CREDENTIAL_DIRS`, an
+environment variable on purpose, so the cases run on their own gateway rather than on `make dev`.
+
+Start the fixture in one terminal. It writes the identity token files the config names under
+`tmp/wif-fixture`, so start it before the gateway:
+
+```bash
+node tests/e2e/api/runners/wif-fixture.mjs
+```
+
+Start a separate gateway in another terminal:
+
+```bash
+wif_dir=$(pwd)/tmp/wif-fixture
+wif_app_dir=$(mktemp -d)
+sed "s#__WIF_FIXTURE_DIR__#$wif_dir#g" tests/e2e/api/provider_config/workload-identity.config.json > "$wif_app_dir/config.json"
+BIFROST_OIDC_ALLOWED_CREDENTIAL_DIRS="$wif_dir/tokens" WIF_FIXTURE_TOKEN_FILE="$wif_dir/tokens/config-file.jwt" \
+  go run ./transports/bifrost-http -app-dir "$wif_app_dir" -host 127.0.0.1 -port 8801
+```
+
+Run the cases in a third terminal:
+
+```bash
+newman run tests/e2e/api/collections/provider-harness.json \
+  --folder "298. Workload identity federation against a local token endpoint (workload identity fixture)" \
+  --env-var baseUrl=http://127.0.0.1:8801 \
+  --env-var workloadIdentityFixture=1
+```
+
+Every provider in the config is an `anthropic`-based custom provider whose base URL is the fixture's
+`/anthropic` profile. The main key, `wif-config-file`, reads its token from a file named by an `env.`
+reference, the shape a Kubernetes deployment uses. The other keys each pin one behaviour, chosen by
+an `fx` claim inside their identity token: a denied or unavailable exchange, a 200 without a token,
+a redirect, a file outside the allowlist, a rotating file and a single-use (`jti`) file. Cases that
+need a cold credential add a run-scoped inline key and select it with `x-bf-api-key`.
+
+Assertions read what the fixture recorded for an identity (`GET /__wif/hits?sub=...`): exchanges,
+the assertion each one presented, the API routes it reached, and the credential and betas each call
+carried. Cases compare counts before and after, so they rerun against a warm gateway. Three cases
+wait for a short-lived token to reach its refresh window, so the folder takes about 30 seconds.
+
+The fixture's logic is in `runners/lib/wif-fixture.mjs` and is covered offline by
+`runners/lib/wif-fixture.test.mjs` (`make test-harness-runner-lib`): it refuses what Anthropic
+refuses (an exchange without both betas, a reused single-use token, a bearer without the OAuth beta
+or beside `x-api-key`), so a green case means the gateway sent what the real endpoint accepts.
+Another provider gaining workload identity adds a profile there, its providers to the config, and
+cases to the folder named after it.
+
+The cases are skipped unless `workloadIdentityFixture=1`.
+
+Stop the fixture and isolated gateway with Ctrl+C after testing.
+
+## Relay and log-store matrix
+
+`runners/run-log-store-matrix.mjs` checks that relays behave as documented and that relay rows
+follow every logging setting the way LLM rows do, on every log store. It is hermetic: every
+upstream is a local server (an echo LLM provider, a programmable relay upstream, an HTTPS twin,
+local HTTP and SOCKS5 proxies, and an S3-compatible bucket), so it needs no keys and makes no
+paid calls.
+
+```bash
+make run-log-store-matrix POSTGRES_URL=postgresql://bifrost:bifrost_password@localhost:5432/postgres PARALLEL=3
+make run-log-store-matrix BINARY=tmp/bifrost-http CELLS=sqlite SUITES=pricing,proxy SKIP_CONTENT_MATRIX=1
+```
+
+It boots one gateway per log-store cell, because the store is read at boot only:
+
+| Cell | Log store |
+|---|---|
+| `sqlite`, `postgres` | RDB store |
+| `sqlite+s3`, `postgres+s3` | Hybrid store over `lib/fake-s3.mjs` |
+| `sqlite+s3-exclude-types` | Hybrid, `relay` and `chat_completion` in `object_storage_exclude_request_types` |
+| `sqlite+s3-exclude-fields` | Hybrid, `request_body` in `object_storage_exclude_fields` |
+
+Postgres cells need `POSTGRES_URL` (an admin connection; each cell gets a fresh database) and are
+skipped without it. Against each cell it runs:
+
+- `run-content-logging-matrix.mjs`: every combination of client, virtual key, per-request
+  header and OTel connector content settings. Each case sends an LLM request and a relay request
+  on the same key and header, and the relay row must keep or drop content exactly as its LLM twin,
+  checked through the API and in the raw `logs` and `relay_logs` rows.
+- `run-relay-matrix.mjs`: the relay suites below. Run it alone against any gateway with
+  `BIFROST_E2E_BASE_URL` (and `--suites`).
+
+| Suite | Covers |
+|---|---|
+| `pricing` | Every usage mapping (source, measure, rate, fee, block, minimum, reported cost, `ignore_upstream_cost`) through an inherit, an override and a waive route, checked against an independent reference of the pricing rules (`lib/relay-matrix.mjs`) |
+| `streaming` | Route `stream` flag, `streaming.paths` and upstream content type, with SSE last-value usage and byte-priced bodies |
+| `billing` | Method, `billable` flag and upstream status |
+| `routes` | Path globs, header matchers, operator headers, route order, disabled routes, `skip_route_check` |
+| `auth` | `bearer`, `header`, `query`, `basic`, `none`, `aws_sigv4`, extra headers, credential stripping |
+| `governance` | Grants, inactive and unknown keys, inference auth, attribution parity with LLM rows, budgets and request limits at key, team and customer level, the request counter LLM and relay traffic share |
+| `settings` | `logging_headers`, `x-bf-lh-*`, `x-bf-dim-*`, key metadata, session ids, user agent and app, `hide_deleted_virtual_keys_in_filters`, query-string redaction, each compared with an LLM row |
+| `logsapi` | Shared filters, stats, histogram bucket sizes, sort, paging and delete on `/api/logs` and `/api/relay-logs` |
+| `network` | Timeouts, stream idle timeout, redirects, TLS with a private CA, unreachable upstreams, a reply past the old 64 MiB cap, a caller that hangs up mid-stream |
+| `proxy` | A relay's `proxy_config` (`http`, `socks5`, `none`, credentials, an HTTPS upstream through CONNECT) and the inherited global proxy |
+| `hybrid` | Offload, previews, hydration, hidden retention, exclusions and deletes, each compared with an LLM row (hybrid cells only) |
+
+A parity check that differs by design is listed in `KNOWN_GAPS` (`lib/relay-matrix.mjs`) and
+reports `GAP`; a listed gap that stops reproducing fails the run as `STALE`. The squid, stunnel
+and microsocks proxy matrix (`make run-e2e-api PROXY=1`) also sends the relays-e2e rows through
+every proxy cell, with the profile's relays given each cell's proxy.
 
 ## Contents
 
@@ -724,46 +940,6 @@ Run locally (from this directory):
 ```bash
 ./runners/individual/run-newman-auth-matrix-tests.sh --binary /path/to/bifrost-http
 # options: --port <port> (default 8090), --html, --json, --verbose, --bail
-```
-
-### MCP Auth Tests
-
-| Path | Description |
-|------|-------------|
-| `collections/bifrost-v1-mcp-auth.postman_collection.json` | Asserts inbound `/mcp` authentication across the three server auth modes (`headers` / `both` / `oauth`): discovery gating, the credential connect matrix, the full issuance flow, refresh rotation + family revocation, the revocation window, and the runtime `headers`→`both` upgrade. |
-| `runners/individual/run-newman-mcp-auth-tests.sh` | Builds + starts the upstream MCP server, then boots a fresh server per `client.mcp_server_auth_mode` and runs the collection against each. |
-
-Like the auth-matrix runner, this one **boots its own servers** — each mode needs a
-different boot config. It also builds and starts the upstream MCP server
-(`examples/mcps/http-no-ping-server`) so `/mcp` exposes real tools, and pre-seeds it
-as an MCP client plus two virtual keys (one active, one inactive). It requires a
-built `bifrost-http` binary.
-
-The collection's test scripts branch on the `auth_mode` env-var, so a single
-collection encodes the full matrix. Per mode it asserts:
-
-- **`headers` (default):** discovery endpoints 404; every virtual-key credential
-  (`x-bf-vk`, `Authorization: Bearer <vk>`, `x-api-key`) connects exactly as before;
-  anonymous connects when auth is not enforced; an inactive key never connects. The
-  OAuth surface is invisible.
-- **`both`:** every header-credential outcome is identical to `headers`, and only
-  *adds* JWT acceptance + live discovery; an invalid JWT is rejected with
-  `WWW-Authenticate`.
-- **`oauth`:** header credentials and anonymous are rejected (401 +
-  `WWW-Authenticate`); only issued JWTs connect.
-
-In `both`/`oauth` it also runs the end-to-end issuance flow (dynamic client
-registration, PKCE-S256 authorize, consent bound to a virtual key or to a
-server-minted session, token exchange, JWT connect), then refresh rotation with
-stolen-token family revocation, the revocation window (a revoked grant stops refresh
-while its already-issued access token keeps working until expiry), and — from the
-`headers` boot — the runtime `headers`→`both` upgrade.
-
-Run locally (from this directory):
-
-```bash
-./runners/individual/run-newman-mcp-auth-tests.sh --binary /path/to/bifrost-http
-# options: --port <port> (default 8090), --mcp-port <port> (default 3001), --html, --json, --verbose, --bail
 ```
 
 ### Warp Tests

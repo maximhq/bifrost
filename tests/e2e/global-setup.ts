@@ -213,7 +213,20 @@ async function runMCPSetup(): Promise<void> {
   );
   const httpServerBinary = join(httpServerDir, httpServerBinaryName);
 
-  if (!existsSync(httpServerBinary)) {
+  // Rebuild when main.go changed: specs read the tools it serves.
+  const httpServerOutdated =
+    existsSync(httpServerBinary) &&
+    statSync(join(httpServerDir, "main.go")).mtimeMs > statSync(httpServerBinary).mtimeMs;
+  const httpServerStale = !existsSync(httpServerBinary) || httpServerOutdated;
+  // A server started from a binary older than main.go still serves the old tools, and it may not be ours
+  // to stop. Checked before rebuilding, so a rerun keeps refusing it until it is stopped.
+  const httpServerListening = await checkServerReady(3001, 1);
+  if (httpServerOutdated && httpServerListening) {
+    throw new Error(
+      "Port 3001 is serving an http-no-ping-server older than examples/mcps/http-no-ping-server/main.go. Stop it and rerun so the rebuilt binary is started.",
+    );
+  }
+  if (httpServerStale) {
     console.log("Building HTTP/SSE server...");
     runCommand(goCommand, ["build", "-o", httpServerBinaryName, "main.go"], {
       cwd: httpServerDir,
@@ -223,7 +236,7 @@ async function runMCPSetup(): Promise<void> {
     console.log("✓ HTTP/SSE server binary already exists");
   }
 
-  if (await checkServerReady(3001, 1)) {
+  if (httpServerListening) {
     console.log("✓ HTTP/SSE server already listening on 3001, reusing it");
   } else {
     await startHttpServer(httpServerDir, httpServerBinary);

@@ -184,7 +184,7 @@ func TestLiveSessionsBindToTheVirtualKeyThatOpenedThem(t *testing.T) {
 	open := func(t *testing.T, vkID string) *liveAdmission {
 		t.Helper()
 		target := liveTarget{provider: &fakeLiveWebRTCProvider{}, providerKey: schemas.OpenAI, voiceModel: "gpt-live-1"}
-		admission, bifrostErr := g.admit(&authHeaders{}, liveCallerCtx(t, vkID), map[any]any{}, path, target, "bf-"+vkID)
+		admission, bifrostErr := g.admit(&sessionHeaders{}, liveCallerCtx(t, vkID), map[any]any{}, path, target, "bf-"+vkID)
 		if bifrostErr != nil {
 			t.Fatalf("admission refused: %d %s", *bifrostErr.StatusCode, bifrostErr.Error.Message)
 		}
@@ -211,7 +211,7 @@ func TestLiveSessionsBindToTheVirtualKeyThatOpenedThem(t *testing.T) {
 	resolve := func(t *testing.T, g *liveGateway, route, vkID, sessionID string) (*fasthttp.RequestCtx, bool) {
 		t.Helper()
 		preReqCtx := liveCallerCtx(t, vkID)
-		req := &liveRequest{path: path + "/" + sessionID + "/" + route, auth: &authHeaders{}, preReqCtx: preReqCtx, cancel: func() {}, middlewareValues: map[any]any{}}
+		req := &liveRequest{path: path + "/" + sessionID + "/" + route, setupHeaders: &sessionHeaders{}, preReqCtx: preReqCtx, cancel: func() {}, middlewareValues: map[any]any{}}
 		ctx := &fasthttp.RequestCtx{}
 		ctx.Request.SetRequestURI(req.path)
 		ctx.SetUserValue("session_id", sessionID)
@@ -267,7 +267,7 @@ func TestLiveSessionOwnershipFollowsTheClientSetting(t *testing.T) {
 	}
 	resolve := func(t *testing.T, g *liveGateway, vkID, sessionID string) (*fasthttp.RequestCtx, bool) {
 		t.Helper()
-		req := &liveRequest{path: path + "/" + sessionID + "/content", auth: &authHeaders{}, preReqCtx: liveCallerCtx(t, vkID), cancel: func() {}, middlewareValues: map[any]any{}}
+		req := &liveRequest{path: path + "/" + sessionID + "/content", setupHeaders: &sessionHeaders{}, preReqCtx: liveCallerCtx(t, vkID), cancel: func() {}, middlewareValues: map[any]any{}}
 		ctx := &fasthttp.RequestCtx{}
 		ctx.Request.SetRequestURI(req.path)
 		ctx.SetUserValue("session_id", sessionID)
@@ -276,7 +276,7 @@ func TestLiveSessionOwnershipFollowsTheClientSetting(t *testing.T) {
 
 	store := &liveOwnerStore{}
 	g := gatewayOff(t, store)
-	admission, bifrostErr := g.admit(&authHeaders{}, liveCallerCtx(t, "vk-a"), map[any]any{}, path, target, "bf-off")
+	admission, bifrostErr := g.admit(&sessionHeaders{}, liveCallerCtx(t, "vk-a"), map[any]any{}, path, target, "bf-off")
 	require.Nil(t, bifrostErr)
 	t.Cleanup(admission.cancel)
 	created, _, bifrostErr := createLiveWebRTCSession(admission, offer, "bifrost offer")
@@ -292,7 +292,7 @@ func TestLiveSessionOwnershipFollowsTheClientSetting(t *testing.T) {
 
 	// No config store: a virtual-key session is refused at admission while the setting is off.
 	noStore := gatewayOff(t, nil)
-	admission, bifrostErr = noStore.admit(&authHeaders{}, liveCallerCtx(t, "vk-a"), map[any]any{}, path, target, "bf-off-nostore")
+	admission, bifrostErr = noStore.admit(&sessionHeaders{}, liveCallerCtx(t, "vk-a"), map[any]any{}, path, target, "bf-off-nostore")
 	if admission != nil {
 		t.Cleanup(admission.cancel)
 	}
@@ -301,7 +301,7 @@ func TestLiveSessionOwnershipFollowsTheClientSetting(t *testing.T) {
 
 	// A failed owner write ends the session while the setting is off.
 	failing := gatewayOff(t, &liveOwnerStore{upsertErr: errors.New("db down")})
-	admission, bifrostErr = failing.admit(&authHeaders{}, liveCallerCtx(t, "vk-a"), map[any]any{}, path, target, "bf-off-failing")
+	admission, bifrostErr = failing.admit(&sessionHeaders{}, liveCallerCtx(t, "vk-a"), map[any]any{}, path, target, "bf-off-failing")
 	require.Nil(t, bifrostErr)
 	t.Cleanup(admission.cancel)
 	_, _, bifrostErr = createLiveWebRTCSession(admission, offer, "bifrost offer")
@@ -349,7 +349,7 @@ func TestLiveSessionOwnerIsFoundUnderEveryLiveProvider(t *testing.T) {
 	}))
 	resolve := func(t *testing.T, vkID string) (*fasthttp.RequestCtx, bool) {
 		t.Helper()
-		req := &liveRequest{path: "/v1/live/sessions/live_custom/content", auth: &authHeaders{}, preReqCtx: liveCallerCtx(t, vkID), cancel: func() {}, middlewareValues: map[any]any{}}
+		req := &liveRequest{path: "/v1/live/sessions/live_custom/content", setupHeaders: &sessionHeaders{}, preReqCtx: liveCallerCtx(t, vkID), cancel: func() {}, middlewareValues: map[any]any{}}
 		ctx := &fasthttp.RequestCtx{}
 		ctx.Request.SetRequestURI(req.path)
 		ctx.SetUserValue("session_id", "live_custom")
@@ -386,7 +386,7 @@ func TestLiveSessionOwnerSurvivesRemovalOfTheOpeningProvider(t *testing.T) {
 	}))
 	resolve := func(t *testing.T, vkID string) (*fasthttp.RequestCtx, bool) {
 		t.Helper()
-		req := &liveRequest{path: "/v1/live/sessions/live_orphaned/content", auth: &authHeaders{}, preReqCtx: liveCallerCtx(t, vkID), cancel: func() {}, middlewareValues: map[any]any{}}
+		req := &liveRequest{path: "/v1/live/sessions/live_orphaned/content", setupHeaders: &sessionHeaders{}, preReqCtx: liveCallerCtx(t, vkID), cancel: func() {}, middlewareValues: map[any]any{}}
 		ctx := &fasthttp.RequestCtx{}
 		ctx.Request.SetRequestURI(req.path)
 		ctx.SetUserValue("session_id", "live_orphaned")
@@ -413,7 +413,7 @@ func TestLiveSessionIsRefusedWhenItsOwnerCannotBeRecorded(t *testing.T) {
 	open := func(t *testing.T) *liveAdmission {
 		t.Helper()
 		target := liveTarget{provider: &fakeLiveWebRTCProvider{}, providerKey: schemas.OpenAI, voiceModel: "gpt-live-1"}
-		admission, bifrostErr := g.admit(&authHeaders{}, liveCallerCtx(t, "vk-a"), map[any]any{}, path, target, "bf-refused")
+		admission, bifrostErr := g.admit(&sessionHeaders{}, liveCallerCtx(t, "vk-a"), map[any]any{}, path, target, "bf-refused")
 		if bifrostErr != nil {
 			t.Fatalf("admission refused: %d %s", *bifrostErr.StatusCode, bifrostErr.Error.Message)
 		}
@@ -451,7 +451,7 @@ func TestLiveSessionWithAVirtualKeyIsRefusedWithoutAConfigStore(t *testing.T) {
 	provider := &fakeLiveWebRTCProvider{}
 	target := liveTarget{provider: provider, providerKey: schemas.OpenAI, voiceModel: "gpt-live-1"}
 
-	admission, bifrostErr := g.admit(&authHeaders{}, liveCallerCtx(t, "vk-a"), map[any]any{}, path, target, "bf-nostore-vk-a")
+	admission, bifrostErr := g.admit(&sessionHeaders{}, liveCallerCtx(t, "vk-a"), map[any]any{}, path, target, "bf-nostore-vk-a")
 	if admission != nil {
 		t.Cleanup(admission.cancel)
 	}
@@ -461,7 +461,7 @@ func TestLiveSessionWithAVirtualKeyIsRefusedWithoutAConfigStore(t *testing.T) {
 	assert.Contains(t, bifrostErr.Error.Message, "config store")
 	assert.Nil(t, provider.body, "the provider was never asked to open the session")
 
-	admission, bifrostErr = g.admit(&authHeaders{}, liveCallerCtx(t, ""), map[any]any{}, path, target, "bf-nostore-none")
+	admission, bifrostErr = g.admit(&sessionHeaders{}, liveCallerCtx(t, ""), map[any]any{}, path, target, "bf-nostore-none")
 	require.Nil(t, bifrostErr, "a session opened with no virtual key is admitted without a config store")
 	t.Cleanup(admission.cancel)
 	created, _, bifrostErr := createLiveWebRTCSession(admission, []byte(`{"session":{"model":"gpt-live-1"},"transport":{"type":"webrtc","sdp":"offer"}}`), "bifrost offer")
@@ -887,7 +887,9 @@ func TestLiveControlProviderHonoursTheNamedProvider(t *testing.T) {
 	for _, tc := range []struct{ name, path, named, want, wantErr string }{
 		{"bare route defaults to openai", "/v1/live/sessions/live_1/attach", "", "openai", ""},
 		{"named custom provider on the bare route", "/v1/live/sessions/live_1/attach", "openai-custom", "openai-custom", ""},
-		{"integration prefix wins over the name", "/openai/v1/live/sessions/live_1/content", "openai-custom", "openai", ""},
+		{"named provider on the integration route", "/openai/v1/live/sessions/live_1/attach", "openai-custom", "openai-custom", ""},
+		{"integration route defaults to openai", "/openai/v1/live/sessions/live_1/content", "", "openai", ""},
+		{"unknown provider on the integration route", "/openai/v1/live/sessions/live_1/attach", "nope", "", "not configured"},
 		{"named provider without live support", "/v1/live/sessions/live_1/content", "anthropic", "", "does not support live sessions: anthropic"},
 		{"unknown provider", "/v1/live/sessions/live_1/content", "nope", "", "not configured"},
 	} {
@@ -913,6 +915,15 @@ func TestLiveControlProviderNameReadsQueryThenHeader(t *testing.T) {
 	assert.Equal(t, "openai-custom", liveControlProviderName(ctx))
 	ctx.Request.SetRequestURI("/v1/live/sessions/live_1/content?provider=openai")
 	assert.Equal(t, "openai", liveControlProviderName(ctx), "the query parameter wins over the header")
+}
+
+func TestLiveControlProviderNameFallsBackToTheAzureSDK(t *testing.T) {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.SetRequestURI("/openai/v1/live/sessions/live_1/attach")
+	ctx.Request.Header.SetUserAgent("AzureOpenAI/Python 1.109.1")
+	assert.Equal(t, "azure", liveControlProviderName(ctx))
+	ctx.Request.Header.Set("x-model-provider", "openai")
+	assert.Equal(t, "openai", liveControlProviderName(ctx), "a named provider wins over the user agent")
 }
 
 // BenchmarkLiveSessionControlRoute measures resolving a control route on an existing live session
@@ -955,7 +966,7 @@ func BenchmarkLiveSessionControlRoute(b *testing.B) {
 				preReqCtx.SetGrant(grant.New())
 				preReqCtx.SetValue(schemas.BifrostContextKeyVirtualKey, "sk-bf-vk-a")
 				preReqCtx.Grant().SetIdentity(grant.NewIdentity(grant.NewCredential(grant.CredentialVirtualKey, "sk-bf-vk-a"), nil, &schemas.EntityRef{ID: "vk-a", Name: "vk-a"}, nil, nil, nil, nil))
-				req := &liveRequest{path: path, auth: &authHeaders{}, preReqCtx: preReqCtx, cancel: func() {}, middlewareValues: map[any]any{}}
+				req := &liveRequest{path: path, setupHeaders: &sessionHeaders{}, preReqCtx: preReqCtx, cancel: func() {}, middlewareValues: map[any]any{}}
 				ctx := &fasthttp.RequestCtx{}
 				ctx.Request.SetRequestURI(path)
 				ctx.SetUserValue("session_id", "live_bench")

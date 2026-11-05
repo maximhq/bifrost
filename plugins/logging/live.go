@@ -319,6 +319,7 @@ func (p *LoggerPlugin) applyLiveContextFields(ctx *schemas.BifrostContext, entry
 		get(schemas.BifrostContextKeyGovernanceBusinessUnitID), get(schemas.BifrostContextKeyGovernanceBusinessUnitName),
 		get(schemas.BifrostContextKeyGovernanceProjectID), get(schemas.BifrostContextKeyGovernanceProjectName),
 		0, latency, nil, nil, nil)
+	applyUserEmail(ctx, entry)
 	if sessionID := get(schemas.BifrostContextKeySessionID); sessionID != "" {
 		entry.SessionID = &sessionID
 	}

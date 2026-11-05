@@ -8,7 +8,7 @@ description: "Configure Zitadel (cloud or self-hosted) as your identity provider
 - A Zitadel instance (cloud at `*.zitadel.cloud` or self-hosted) with admin access
 - An existing Zitadel **Project** in the organization you want to connect
 - Bifrost Enterprise deployed and accessible
-- Your Bifrost callback URL: `https://<your-bifrost-domain>/login`
+- Your Bifrost callback URL: `https://<your-bifrost-domain>/login` (under a `server.base_path` prefix: `https://<your-bifrost-domain>/<prefix>/login`; the SSO wizard shows the exact value)
 - Bifrost [roles](../rbac) created for the roles you plan to map
 
 ---
@@ -37,11 +37,15 @@ On the **Redirect URIs** step, add your login callback to **Redirect URIs**:
 https://<your-bifrost-domain>/login
 ```
 
+Under a `server.base_path` prefix, insert it before the path: `https://<your-bifrost-domain>/<prefix>/login`.
+
 Optionally, to use the **Discover Claims** feature during Bifrost setup, also add:
 
 ```
 https://<your-bifrost-domain>/workspace/scim/oauth-discover-callback
 ```
+
+Under a `server.base_path` prefix, insert it before the path: `https://<your-bifrost-domain>/<prefix>/workspace/scim/oauth-discover-callback`.
 
 Discover Claims opens a one-time sign-in popup during configuration so Bifrost can inspect the exact JWT your Zitadel tenant sends - useful for verifying role claims are present before you build your attribute mappings. You can skip it and add the URL later if needed.
 

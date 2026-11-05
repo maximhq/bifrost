@@ -728,7 +728,7 @@ func TestListSidekiqJobs(t *testing.T) {
 	mk("old-done", tables.SidekiqStatusCompleted, 72*time.Hour, &old)
 
 	t.Run("active jobs always listed, finished jobs only inside the window, newest first", func(t *testing.T) {
-		jobs, err := store.ListSidekiqJobs(ctx, now.Add(-24*time.Hour), 50)
+		jobs, err := store.ListSidekiqJobs(ctx, now.Add(-24*time.Hour), 50, nil)
 		require.NoError(t, err)
 		ids := make([]string, 0, len(jobs))
 		for _, j := range jobs {
@@ -738,8 +738,45 @@ func TestListSidekiqJobs(t *testing.T) {
 	})
 
 	t.Run("limit caps the result", func(t *testing.T) {
-		jobs, err := store.ListSidekiqJobs(ctx, now.Add(-24*time.Hour), 2)
+		jobs, err := store.ListSidekiqJobs(ctx, now.Add(-24*time.Hour), 2, nil)
 		require.NoError(t, err)
 		assert.Len(t, jobs, 2)
+	})
+
+	// A routine kind's completed runs are left out in the query, so they never
+	// take the places the limit leaves; its failures and active jobs still show.
+	t.Run("quiet kinds hide only their completed jobs", func(t *testing.T) {
+		quiet := func(id, status string, completedAgo *time.Duration) {
+			t.Helper()
+			require.NoError(t, store.CreateSidekiqJob(ctx, &tables.TableSidekiqJob{ID: id, Kind: "routine"}))
+			setCreatedAt(t, store, id, now.Add(-30*time.Minute))
+			updates := map[string]any{"status": status}
+			if completedAgo != nil {
+				updates["completed_at"] = now.Add(-*completedAgo)
+			}
+			require.NoError(t, store.DB().Model(&tables.TableSidekiqJob{}).Where("id = ?", id).Updates(updates).Error)
+		}
+		quiet("routine-done", tables.SidekiqStatusCompleted, &recent)
+		quiet("routine-failed", tables.SidekiqStatusFailed, &recent)
+		quiet("routine-pending", tables.SidekiqStatusPending, nil)
+
+		jobs, err := store.ListSidekiqJobs(ctx, now.Add(-24*time.Hour), 50, []string{"routine"})
+		require.NoError(t, err)
+		ids := make([]string, 0, len(jobs))
+		for _, j := range jobs {
+			ids = append(ids, j.ID)
+		}
+		assert.NotContains(t, ids, "routine-done")
+		assert.Contains(t, ids, "routine-failed")
+		assert.Contains(t, ids, "routine-pending")
+		assert.Contains(t, ids, "recent-done", "another kind's completed job is still listed")
+
+		jobs, err = store.ListSidekiqJobs(ctx, now.Add(-24*time.Hour), 50, nil)
+		require.NoError(t, err)
+		ids = ids[:0]
+		for _, j := range jobs {
+			ids = append(ids, j.ID)
+		}
+		assert.Contains(t, ids, "routine-done", "nothing is quiet unless asked")
 	})
 }

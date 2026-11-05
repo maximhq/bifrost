@@ -425,6 +425,12 @@ func recoverFlattenedDecisionArguments(argumentsJSON []byte, names []string) (ma
 				current = nil
 				continue
 			}
+			if fields, ok := parseStringifiedAnswerObject(value); ok {
+				// Same as a well-formed object: complete on its own.
+				fieldsByQuestion[key] = fields
+				current = nil
+				continue
+			}
 			field, fieldValue, ok := parseLeakedParameterTag(value)
 			if !ok {
 				return nil, false
@@ -461,6 +467,30 @@ func recoverFlattenedDecisionArguments(argumentsJSON []byte, names []string) (ma
 		recovered[name] = answer
 	}
 	return recovered, true
+}
+
+// parseStringifiedAnswerObject reads an answer object the model JSON-encoded
+// as a string, e.g. "{\n  \"choice\": \"email\", ...}" (seen on
+// openrouter/anthropic/claude-opus-4.1). Only a string whose trimmed text
+// decodes to a JSON object qualifies; the decoded fields still go through the
+// full answer validation.
+func parseStringifiedAnswerObject(value json.RawMessage) (map[string]json.RawMessage, bool) {
+	if len(value) == 0 || value[0] != '"' {
+		return nil, false
+	}
+	var s string
+	if err := sonic.Unmarshal(value, &s); err != nil {
+		return nil, false
+	}
+	s = strings.TrimSpace(s)
+	if !strings.HasPrefix(s, "{") {
+		return nil, false
+	}
+	var fields map[string]json.RawMessage
+	if err := sonic.Unmarshal([]byte(s), &fields); err != nil {
+		return nil, false
+	}
+	return fields, true
 }
 
 // parseLeakedParameterTag reads a `<parameter name="field">value` string (the

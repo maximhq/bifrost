@@ -138,6 +138,43 @@ func TestGenerateKeyHash_OAuthSecretsHashByReference(t *testing.T) {
 	require.NotEqual(t, viaRef, viaLiteral, "switching between a reference and a literal is an edit")
 }
 
+// TestGenerateKeyHash_AnthropicWorkloadIdentityHashesByReference pins that a rotated env-backed
+// identity token, which short-lived OIDC tokens always are, leaves an unchanged config.json key's
+// hash alone, while a real edit to the block still moves it.
+func TestGenerateKeyHash_AnthropicWorkloadIdentityHashesByReference(t *testing.T) {
+	build := func(token, workspace string) schemas.Key {
+		wif := &schemas.AnthropicWorkloadIdentityConfig{
+			FederationRuleID: *schemas.NewSecretVar("fdrl_01abc"),
+			OrganizationID:   *schemas.NewSecretVar("org-uuid"),
+			ServiceAccountID: *schemas.NewSecretVar("svac_01def"),
+			IdentitySource:   &schemas.IdentitySource{Type: schemas.IdentitySourceInline, Token: schemas.NewSecretVar(token)},
+		}
+		if workspace != "" {
+			wif.WorkspaceID = schemas.NewSecretVar(workspace)
+		}
+		return schemas.Key{ID: "k1", Name: "anthropic-wif", AnthropicKeyConfig: &schemas.AnthropicKeyConfig{WorkloadIdentity: wif}}
+	}
+	t.Setenv("HASH_TEST_ANTHROPIC_IDENTITY_TOKEN", "jwt-v1")
+	before, err := GenerateKeyHash(build("env.HASH_TEST_ANTHROPIC_IDENTITY_TOKEN", ""))
+	require.NoError(t, err)
+	t.Setenv("HASH_TEST_ANTHROPIC_IDENTITY_TOKEN", "jwt-v2")
+	after, err := GenerateKeyHash(build("env.HASH_TEST_ANTHROPIC_IDENTITY_TOKEN", ""))
+	require.NoError(t, err)
+	require.Equal(t, before, after, "rotating the env-backed identity token changed the hash of an unchanged file")
+
+	withWorkspace, err := GenerateKeyHash(build("env.HASH_TEST_ANTHROPIC_IDENTITY_TOKEN", "wrkspc_01ghi"))
+	require.NoError(t, err)
+	require.NotEqual(t, before, withWorkspace, "adding a workspace is an edit")
+
+	literal, err := GenerateKeyHash(build("jwt-v2", ""))
+	require.NoError(t, err)
+	require.NotEqual(t, after, literal, "switching between a reference and a literal is an edit")
+
+	plain, err := GenerateKeyHash(schemas.Key{ID: "k1", Name: "anthropic-wif"})
+	require.NoError(t, err)
+	require.NotEqual(t, plain, before, "adding the block is an edit")
+}
+
 // TestGenerateKeyHash_AliasesIsOrderIndependent pins the same property for aliases, which is
 // also a map: a key whose only change is the encoder's walk order must not be treated as edited.
 func TestGenerateKeyHash_AliasesIsOrderIndependent(t *testing.T) {
@@ -434,4 +471,62 @@ func TestGenerateMCPClientHash_OpenAPIConfig(t *testing.T) {
 	after, err := GenerateMCPClientHash(plain)
 	require.NoError(t, err)
 	assert.Equal(t, before, after)
+}
+
+// TestGenerateMCPClientHash_MaxProtocolVersion: an omitted cap leaves stored hashes as they were,
+// a declared one drifts the hash so a config.json edit is synced.
+func TestGenerateMCPClientHash_MaxProtocolVersion(t *testing.T) {
+	hash := func(version string) string {
+		h, err := GenerateMCPClientHash(tables.TableMCPClient{Name: "client", ConnectionType: "http", AuthType: "headers", MaxProtocolVersion: version})
+		require.NoError(t, err)
+		return h
+	}
+	before, err := GenerateMCPClientHash(tables.TableMCPClient{Name: "client", ConnectionType: "http", AuthType: "headers"})
+	require.NoError(t, err)
+	assert.Equal(t, before, hash(""))
+	assert.NotEqual(t, before, hash(schemas.MCPProtocolVersion20250618))
+	assert.NotEqual(t, hash(schemas.MCPProtocolVersion20250618), hash(schemas.MCPMaxProtocolVersionAuto))
+}
+
+// Unset allow-lists leave the hash as it was; [] and a list each drift it, so editing them in
+// config.json is reconciled.
+func TestGenerateMCPClientHash_ExposeLists(t *testing.T) {
+	hash := func(prompts, resources schemas.WhiteList) string {
+		h, err := GenerateMCPClientHash(tables.TableMCPClient{Name: "client", ConnectionType: "http", AuthType: "headers", PromptsToExpose: prompts, ResourcesToExpose: resources})
+		require.NoError(t, err)
+		return h
+	}
+	before, err := GenerateMCPClientHash(tables.TableMCPClient{Name: "client", ConnectionType: "http", AuthType: "headers"})
+	require.NoError(t, err)
+	assert.Equal(t, before, hash(nil, nil))
+	assert.NotEqual(t, before, hash(schemas.WhiteList{}, nil))
+	assert.NotEqual(t, hash(schemas.WhiteList{}, nil), hash(schemas.WhiteList{"review"}, nil))
+	assert.NotEqual(t, hash(schemas.WhiteList{"review"}, nil), hash(nil, schemas.WhiteList{"review"}), "the two lists hash apart")
+	assert.NotEqual(t, hash(schemas.WhiteList{"review,approve"}, nil), hash(schemas.WhiteList{"review", "approve"}, nil), "entry boundaries count")
+}
+
+// TestGenerateMCPClientHash_PerUserDiscovery pins the flag's hash contract:
+// unset and false contribute nothing (a stored hash from before the field
+// existed must keep matching a file entry that still omits it), and true
+// drifts the hash so flipping per_user_discovery in config.json triggers
+// reconciliation.
+func TestGenerateMCPClientHash_PerUserDiscovery(t *testing.T) {
+	base := func(perUserDiscovery *bool) tables.TableMCPClient {
+		return tables.TableMCPClient{
+			Name:             "client",
+			ConnectionType:   "http",
+			AuthType:         "per_user_headers",
+			PerUserDiscovery: perUserDiscovery,
+		}
+	}
+
+	unsetHash, err := GenerateMCPClientHash(base(nil))
+	require.NoError(t, err)
+	offHash, err := GenerateMCPClientHash(base(schemas.Ptr(false)))
+	require.NoError(t, err)
+	onHash, err := GenerateMCPClientHash(base(schemas.Ptr(true)))
+	require.NoError(t, err)
+
+	assert.Equal(t, unsetHash, offHash, "an omitted per_user_discovery must hash like false")
+	assert.NotEqual(t, offHash, onHash, "flipping per_user_discovery must drift the hash")
 }

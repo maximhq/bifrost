@@ -59,6 +59,8 @@ export interface WarpConfig {
 	log_vector_store_namespace: string;
 	semantic_search_threshold: number;
 	semantic_search_limit: number;
+	/** How many requests that matched no topic start a discovery of new topics. */
+	topic_discovery_min_requests: number;
 	vector_store_connected: boolean;
 }
 
@@ -84,6 +86,8 @@ export interface WarpConfigInput {
 	log_vector_store_namespace: string;
 	semantic_search_threshold?: number;
 	semantic_search_limit?: number;
+	/** 10 to 20000. Zero means "use the default"; omitted keeps the stored value. */
+	topic_discovery_min_requests?: number;
 }
 
 /**
@@ -127,6 +131,8 @@ export interface WarpBackfillJob {
 	indexed: number;
 	skipped: number;
 	failed: number;
+	/** Topic runs only: how many themes the topics were grouped into once written. */
+	themes?: number;
 	/** Tokens the job's embedding calls have consumed so far, across resumes. */
 	embedding_tokens?: number;
 	/** USD cost of those calls. Absent when the deployment cannot price them - unknown, not free. */
@@ -206,9 +212,28 @@ export interface WarpConversationDetail extends WarpConversation {
  */
 export type WarpLogIndexState = "unavailable" | "not_configured" | "indexing" | "failed" | "ready";
 
+/** How live topic filing is doing, from GET /api/warp/log-index/status. */
+export interface WarpTopicHealth {
+	active_topics: number;
+	themes: number;
+	/** Requests waiting in the pool for a topic to be discovered. */
+	pooled: number;
+	requests_24h: number;
+	unmatched_24h: number;
+	/** unmatched_24h over requests_24h; 0 when nothing was filed. */
+	unmatched_share_24h: number;
+}
+
 export interface WarpLogIndexStatus {
 	state: WarpLogIndexState;
 	vector_store_connected: boolean;
 	embedding_configured: boolean;
 	backfill?: WarpBackfillStatus;
+	/** Present when the index is usable and the log store keeps topics. */
+	topics?: WarpTopicHealth;
+	/**
+	 * Whether anything is indexed to seed topics from. Only while the embedding
+	 * model has no topics; absent when the vector store cannot say.
+	 */
+	has_indexed_requests?: boolean;
 }

@@ -158,6 +158,14 @@ type Agent struct {
 // rather than re-validating, since Turn is the one place a raw client value
 // exists.
 func NewAgent(chat ChatFunc, cost CostFunc, logs LogReader, governance GovernanceReader, scope Scope, config *schemas.WarpConfig, utcOffsetMinutes int, timezone string, semantic ...*SemanticSearcher) *Agent {
+	return NewAgentWithTopics(chat, cost, logs, governance, scope, config, utcOffsetMinutes, timezone, nil, semantic...)
+}
+
+// NewAgentWithTopics is NewAgent for a caller that has computed topics to
+// offer: list_topics answers from topics, and reports itself unavailable when
+// it is nil. A separate constructor so NewAgent's signature stays what
+// released callers compile against.
+func NewAgentWithTopics(chat ChatFunc, cost CostFunc, logs LogReader, governance GovernanceReader, scope Scope, config *schemas.WarpConfig, utcOffsetMinutes int, timezone string, topics TopicLister, semantic ...*SemanticSearcher) *Agent {
 	var searcher *SemanticSearcher
 	if len(semantic) > 0 {
 		searcher = semantic[0]
@@ -166,7 +174,7 @@ func NewAgent(chat ChatFunc, cost CostFunc, logs LogReader, governance Governanc
 		chat:             chat,
 		cost:             cost,
 		tools:            buildToolsFor(searcher, false),
-		deps:             &ToolDeps{logManager: logs, semantic: searcher, scope: scope, governance: governance, charts: newChartRegistry()},
+		deps:             &ToolDeps{logManager: logs, semantic: searcher, scope: scope, governance: governance, charts: newChartRegistry(), topics: topics},
 		config:           config,
 		maxIterations:    config.EffectiveMaxIterations(),
 		utcOffsetMinutes: utcOffsetMinutes,

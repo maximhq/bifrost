@@ -26,9 +26,11 @@ func TestRedactMCPClientConfig_SurfacesLiteralConnectionString(t *testing.T) {
 			"Authorization": *schemas.NewSecretVar("Bearer super-secret-token"),
 		},
 		TokenExchange: &schemas.MCPTokenExchangeConfig{
-			Audience:     "api://example",
-			ClientID:     schemas.NewSecretVar("exchange-client-id-value"),
-			ClientSecret: schemas.NewSecretVar("exchange-client-secret-value"),
+			Audience:           "api://example",
+			ClientID:           schemas.NewSecretVar("exchange-client-id-value"),
+			ClientSecret:       schemas.NewSecretVar("exchange-client-secret-value"),
+			Profile:            schemas.TokenExchangeProfileIDJAG,
+			ResourcePrivateKey: schemas.NewSecretVar("-----BEGIN PRIVATE KEY-----resource-key-body-----END PRIVATE KEY-----"),
 		},
 		TLSConfig: &schemas.MCPTLSConfig{
 			CACertPEM: schemas.NewSecretVar("-----BEGIN CERTIFICATE-----secret-pem-body-----END CERTIFICATE-----"),
@@ -48,6 +50,8 @@ func TestRedactMCPClientConfig_SurfacesLiteralConnectionString(t *testing.T) {
 	assert.NotContains(t, redactedHeader.GetValue(), "super-secret-token", "header value leaked")
 	assert.True(t, redacted.TokenExchange.ClientID.IsRedacted(), "token_exchange.client_id leaked")
 	assert.True(t, redacted.TokenExchange.ClientSecret.IsRedacted(), "token_exchange.client_secret leaked")
+	assert.NotContains(t, redacted.TokenExchange.ResourcePrivateKey.GetValue(), "resource-key-body",
+		"token_exchange.resource_private_key leaked")
 	assert.NotContains(t, redacted.TLSConfig.CACertPEM.GetValue(), "secret-pem-body",
 		"tls_config.ca_cert_pem leaked")
 

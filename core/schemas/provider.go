@@ -636,14 +636,6 @@ func (cpc *CustomProviderConfig) IsOperationAllowed(operation RequestType) bool 
 	return cpc.AllowedRequests.IsOperationAllowed(operation)
 }
 
-// IsOperationExplicitlyAllowed reports whether this custom provider's allowed
-// requests are set and turn the operation on. Unlike IsOperationAllowed, unset
-// allowed requests do not count: they grant every operation without saying the
-// upstream serves any particular one.
-func (cpc *CustomProviderConfig) IsOperationExplicitlyAllowed(operation RequestType) bool {
-	return cpc != nil && cpc.AllowedRequests != nil && cpc.AllowedRequests.IsOperationAllowed(operation)
-}
-
 // ProviderConfig represents the complete configuration for a provider.
 // An array of ProviderConfig needs to be provided in GetConfigForProvider
 // in your account interface implementation.
@@ -661,6 +653,7 @@ type ProviderConfig struct {
 	OpenAIConfig            *OpenAIConfig         `json:"openai_config,omitempty"`
 	PromptCache             *PromptCacheConfig    `json:"prompt_cache,omitempty"`
 	InjectedTools           []InjectedTool        `json:"injected_tools,omitempty"`
+	Passthrough             *PassthroughPolicy    `json:"passthrough,omitempty"` // Routes the HTTP passthrough endpoints may forward; nil forwards every route
 }
 
 // PromptCacheConfig opts a provider into synthesizing prompt-cache breakpoints for
@@ -725,9 +718,9 @@ type InjectedTool struct {
 // InjectedToolNameWebSearch is the injected tool name that replaces native web search.
 const InjectedToolNameWebSearch = "web_search"
 
-// OpenAIConfig holds OpenAI-specific provider configuration.
+// OpenAIConfig holds OpenAI Responses API configuration, honoured by the OpenAI and Fireworks providers.
 type OpenAIConfig struct {
-	DisableStore bool `json:"disable_store"` // When true, forces store=false on all outgoing OpenAI requests (default: false)
+	DisableStore bool `json:"disable_store"` // When true, forces store=false on outgoing OpenAI and Fireworks Responses requests (default: false)
 }
 
 func (config *ProviderConfig) CheckAndSetDefaults() {

@@ -6,6 +6,7 @@ import (
 	"os"
 
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/storehooks"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
@@ -43,6 +44,7 @@ func newSqliteConfigStore(ctx context.Context, config *SQLiteConfig, logger sche
 	// fields are rewritten to vault refs before persistence and owned vault
 	// secrets are cleaned up on delete.
 	RegisterVaultCallbacks(db)
+	storehooks.PoolOpened(storehooks.RoleConfig, db)
 	s := &RDBConfigStore{logger: logger}
 	s.db.Store(db)
 	// SQLite has no server-side prepared-plan cache, and opening a second

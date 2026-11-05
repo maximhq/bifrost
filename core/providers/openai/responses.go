@@ -2,6 +2,7 @@ package openai
 
 import (
 	"encoding/json"
+	"maps"
 	"slices"
 	"strings"
 
@@ -50,16 +51,20 @@ type ResponsesFeatureSupport struct {
 	// WebSearchContentTypes reports whether the backend accepts search_content_types
 	// on web_search tools.
 	WebSearchContentTypes bool
+	// ConfigurationUpdateItem reports whether the backend accepts
+	// `configuration_update` input items; when false they are dropped.
+	ConfigurationUpdateItem bool
 }
 
 // ProviderFeatures maps each OpenAI-compatible provider to its supported
 // Responses wire extensions. Only providers with a known deviation are listed.
 var ProviderFeatures = map[schemas.ModelProvider]ResponsesFeatureSupport{
-	schemas.OpenAI: {AdditionalToolsItem: true, ContextManagement: true, WebSearchContentTypes: true},
+	schemas.OpenAI: {AdditionalToolsItem: true, ContextManagement: true, WebSearchContentTypes: true, ConfigurationUpdateItem: true},
 	// Bedrock Mantle validates `input` against the standard union and rejects
 	// additional_tools with "Invalid 'input': value did not match any expected
 	// variant", but accepts the same tools at the top level. It also rejects
-	// context_management outright as an unknown parameter.
+	// context_management outright as an unknown parameter, and configuration_update
+	// items with "The 'configuration_update' item type is not supported with this model."
 	schemas.Bedrock:       {AdditionalToolsItem: false, ContextManagement: false},
 	schemas.BedrockMantle: {AdditionalToolsItem: false, ContextManagement: false},
 }
@@ -137,6 +142,17 @@ func supportsAdditionalToolsItem(provider schemas.ModelProvider) bool {
 		return true
 	}
 	return features.AdditionalToolsItem
+}
+
+// supportsConfigurationUpdateItem reports whether provider accepts OpenAI's
+// `configuration_update` input item. The base provider is consulted so a custom
+// provider wrapping Bedrock drops the item too; unlisted providers keep it.
+func supportsConfigurationUpdateItem(ctx *schemas.BifrostContext, provider schemas.ModelProvider) bool {
+	features, ok := ProviderFeatures[schemas.ResolveBaseProvider(ctx, provider)]
+	if !ok {
+		return true
+	}
+	return features.ConfigurationUpdateItem
 }
 
 // supportsWebSearchContentTypes reports whether a model accepts
@@ -538,6 +554,27 @@ func applyResponsesCacheBreakpoints(messages []schemas.ResponsesMessage, openAIF
 // retags it by role.
 const bareTextContentBlockType schemas.ResponsesMessageContentBlockType = "text"
 
+// isNativeWebSearchCall reports whether message is a web_search_call that OpenAI itself
+// produced: its id has OpenAI's "ws_" prefix and its status is one OpenAI defines.
+// "ws_<n>" is excluded because Gemini synthesizes it for ID-less search calls
+// (convertGeminiCandidatesToResponsesOutput, generateItemID), and OpenAI rejects an id
+// it never issued.
+func isNativeWebSearchCall(message schemas.ResponsesMessage) bool {
+	if message.Type == nil || *message.Type != schemas.ResponsesMessageTypeWebSearchCall ||
+		message.ID == nil || message.Status == nil {
+		return false
+	}
+	suffix, ok := strings.CutPrefix(*message.ID, "ws_")
+	if !ok || suffix == "" || strings.Trim(suffix, "0123456789") == "" {
+		return false
+	}
+	switch *message.Status {
+	case "in_progress", "searching", "completed", "failed", "incomplete":
+		return true
+	}
+	return false
+}
+
 func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.BifrostResponsesRequest) *OpenAIResponsesRequest {
 	if bifrostReq == nil || bifrostReq.Input == nil {
 		return nil
@@ -545,7 +582,7 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 
 	// Canonical model for capability gating only; wire model is untouched.
 	capModel := schemas.ResolveCanonicalModel(ctx, bifrostReq.Model)
-	caps := schemas.ResolveModelCaps(bifrostReq.Provider, capModel)
+	caps := schemas.ResolveModelCaps(schemas.ResolveBaseProvider(ctx, bifrostReq.Provider), capModel)
 
 	var messages []schemas.ResponsesMessage
 	// OpenAI models (except for gpt-oss) do not support reasoning content blocks, so we need to convert them to summaries, if there are any
@@ -559,7 +596,9 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 	// additional_tools items are lifted to the top level so the tools inside them get
 	// the same rewrite; the item's tools live in raw bytes that are not rewritten in place.
 	customToolsAsFunctions := customToolsUnsupported(ctx, bifrostReq.Provider, bifrostReq.Model)
+	developerAsSystem := !caps.SupportsDeveloperRole(true)
 	keepAdditionalTools := supportsAdditionalToolsItem(bifrostReq.Provider) && !customToolsAsFunctions
+	keepConfigurationUpdate := supportsConfigurationUpdateItem(ctx, bifrostReq.Provider)
 	replayAssistantTextAsInput := isMantleGPTOSSResponses(ctx, bifrostReq.Provider, capModel)
 	replayComputerActions := bifrostReq.Params != nil && slices.ContainsFunc(bifrostReq.Params.Tools, func(t schemas.ResponsesTool) bool {
 		return t.Type == schemas.ResponsesToolTypeComputer
@@ -568,6 +607,10 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 		if !keepAdditionalTools && message.Type != nil &&
 			*message.Type == schemas.ResponsesMessageTypeAdditionalTools {
 			hoistedTools = append(hoistedTools, hoistAdditionalTools(message)...)
+			continue
+		}
+		if !keepConfigurationUpdate && message.Type != nil &&
+			*message.Type == schemas.ResponsesMessageTypeConfigurationUpdate {
 			continue
 		}
 		// Anthropic's per-message effort override (a system item with empty content and
@@ -579,6 +622,11 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 				continue
 			}
 			message.OutputConfig = nil
+		}
+		// Role is swapped for a new pointer, so the caller's message keeps "developer".
+		if developerAsSystem && (message.Type == nil || *message.Type == schemas.ResponsesMessageTypeMessage) &&
+			message.Role != nil && *message.Role == schemas.ResponsesInputMessageRoleDeveloper {
+			message.Role = new(schemas.ResponsesInputMessageRoleSystem)
 		}
 		// First, check if message has compaction/fallback content blocks and rewrite them
 		if message.Content != nil && len(message.Content.ContentBlocks) > 0 {
@@ -707,7 +755,7 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 		}
 
 		// Gemini streaming sets status on all item types, but OpenAI rejects status on input.
-		// Strip it, with three exceptions. message is a value copy, so the caller's input is
+		// Strip it, with four exceptions. message is a value copy, so the caller's input is
 		// untouched.
 		switch {
 		case message.Type != nil && (*message.Type == schemas.ResponsesMessageTypeApplyPatchCall ||
@@ -720,6 +768,10 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 			// OpenAI wire, and `error` on an input item is rejected outright. Dropping
 			// it too would make a failed tool call indistinguishable from a successful
 			// one. Only this value is kept; any other status is still stripped.
+		case isNativeWebSearchCall(message):
+			// A web_search_call that keeps its native "ws_" id is OpenAI's own item, where
+			// id and status are both required on replay ("Missing required parameter:
+			// input[N].status" otherwise). Foreign ids and statuses (Gemini) are still stripped.
 		case message.Type != nil && *message.Type == schemas.ResponsesMessageTypeMessage &&
 			message.Role != nil && *message.Role == schemas.ResponsesInputMessageRoleAssistant &&
 			message.ID != nil && *message.ID != "" && message.Status != nil &&
@@ -739,14 +791,17 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 			*message.Type == schemas.ResponsesMessageTypeFunctionCallOutput ||
 			*message.Type == schemas.ResponsesMessageTypeWebSearchCall) &&
 			message.ID != nil && *message.ID != "" &&
-			!(*message.Type == schemas.ResponsesMessageTypeReasoning && strings.HasPrefix(*message.ID, "rs_")) {
+			!(*message.Type == schemas.ResponsesMessageTypeReasoning && strings.HasPrefix(*message.ID, "rs_")) &&
+			!isNativeWebSearchCall(message) {
 			message.ID = nil
 		}
 
-		// Gemini sets Name on function_call_output items (the tool name), but OpenAI's
-		// function_call_output does not accept this field. Strip it. message is a value copy.
+		// Preserve the name on unsolicited outputs: OpenAI requires it when there is
+		// no call_id. Keep stripping Gemini's redundant name on paired outputs for
+		// compatibility with backends that reject it. message is a value copy.
 		if message.Type != nil && *message.Type == schemas.ResponsesMessageTypeFunctionCallOutput &&
-			message.ResponsesToolMessage != nil && message.ResponsesToolMessage.Name != nil {
+			message.ResponsesToolMessage != nil && message.ResponsesToolMessage.Name != nil &&
+			message.ResponsesToolMessage.CallID != nil && *message.ResponsesToolMessage.CallID != "" {
 			// Clone to avoid mutating the caller's input
 			toolMsgCopy := *message.ResponsesToolMessage
 			toolMsgCopy.Name = nil
@@ -903,6 +958,9 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 		} else {
 			messages = append(messages, message)
 		}
+	}
+	if !caps.SupportsMidConversationSystem(true) {
+		messages = inlineResponsesMidConversationSystem(messages)
 	}
 	// Targets that speak prompt_cache_breakpoint need the caching intent translated
 	// out of cache_control, which their serializer would otherwise strip.
@@ -1144,6 +1202,14 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 		req.ExtraParams = bifrostReq.Params.ExtraParams
 	}
 
+	if ctx != nil && ctx.Value(schemas.BifrostContextKeyDisableStore) == true {
+		req.Store = new(false)
+		if _, ok := req.ExtraParams["store"]; ok {
+			req.ExtraParams = maps.Clone(req.ExtraParams)
+			req.ExtraParams["store"] = false
+		}
+	}
+
 	if features, ok := ProviderFeatures[bifrostReq.Provider]; ok && !features.ContextManagement {
 		req.ContextManagement = nil
 		delete(req.ExtraParams, "context_management")
@@ -1191,32 +1257,42 @@ func samplingParamUnsupported(caps schemas.ModelCaps, field, model, effort strin
 
 // filterUnsupportedTools removes tool types that OpenAI doesn't support
 // defaultImageDetail fills "auto" into any input_image content block missing the
-// detail field. Clones content on write — the Content pointer and the image block
-// pointers inside it are shared with the caller's input.
+// detail field, in the message's own content and in a tool output's blocks (an
+// image returned by a tool). Clones on write — the Content and Output pointers and
+// the image block pointers inside them are shared with the caller's input.
 func defaultImageDetail(message schemas.ResponsesMessage) schemas.ResponsesMessage {
-	if message.Content == nil || len(message.Content.ContentBlocks) == 0 {
-		return message
+	if message.Content != nil {
+		if blocks, changed := withDefaultImageDetail(message.Content.ContentBlocks); changed {
+			contentCopy := *message.Content
+			contentCopy.ContentBlocks = blocks
+			message.Content = &contentCopy
+		}
 	}
+	if message.ResponsesToolMessage != nil && message.ResponsesToolMessage.Output != nil {
+		if blocks, changed := withDefaultImageDetail(message.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks); changed {
+			outputCopy := *message.ResponsesToolMessage.Output
+			outputCopy.ResponsesFunctionToolCallOutputBlocks = blocks
+			toolMsgCopy := *message.ResponsesToolMessage
+			toolMsgCopy.Output = &outputCopy
+			message.ResponsesToolMessage = &toolMsgCopy
+		}
+	}
+	return message
+}
 
+// withDefaultImageDetail returns a copy of blocks with detail "auto" on every
+// input_image that lacks one, or blocks itself and false when none does.
+func withDefaultImageDetail(blocks []schemas.ResponsesMessageContentBlock) ([]schemas.ResponsesMessageContentBlock, bool) {
 	needsDetail := func(block schemas.ResponsesMessageContentBlock) bool {
 		return block.Type == schemas.ResponsesInputMessageContentBlockTypeImage &&
 			block.ResponsesInputMessageContentBlockImage != nil &&
 			block.ResponsesInputMessageContentBlockImage.Detail == nil
 	}
-
-	fixNeeded := false
-	for _, block := range message.Content.ContentBlocks {
-		if needsDetail(block) {
-			fixNeeded = true
-			break
-		}
-	}
-	if !fixNeeded {
-		return message
+	if !slices.ContainsFunc(blocks, needsDetail) {
+		return blocks, false
 	}
 
-	newBlocks := make([]schemas.ResponsesMessageContentBlock, len(message.Content.ContentBlocks))
-	copy(newBlocks, message.Content.ContentBlocks)
+	newBlocks := slices.Clone(blocks)
 	for i, block := range newBlocks {
 		if needsDetail(block) {
 			imageCopy := *block.ResponsesInputMessageContentBlockImage
@@ -1224,11 +1300,7 @@ func defaultImageDetail(message schemas.ResponsesMessage) schemas.ResponsesMessa
 			newBlocks[i].ResponsesInputMessageContentBlockImage = &imageCopy
 		}
 	}
-
-	contentCopy := *message.Content
-	contentCopy.ContentBlocks = newBlocks
-	message.Content = &contentCopy
-	return message
+	return newBlocks, true
 }
 
 // isMantleGPTOSSResponses reports whether the request is gpt-oss served by Bedrock Mantle's

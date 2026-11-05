@@ -1471,3 +1471,214 @@ func BenchmarkConverseParallelToolCalls(b *testing.B) {
 		})
 	}
 }
+
+// converseToolStrict returns toolConfig.tools[i].toolSpec.strict as it goes on
+// the Converse wire, so a field the struct cannot carry fails the assertion.
+func converseToolStrict(t *testing.T, out *BedrockConverseRequest, i int) (value, present bool) {
+	t.Helper()
+	if out == nil || out.ToolConfig == nil {
+		t.Fatalf("expected a toolConfig, got %+v", out)
+	}
+	raw, err := json.Marshal(out.ToolConfig)
+	if err != nil {
+		t.Fatalf("marshal toolConfig: %v", err)
+	}
+	res := providerUtils.GetJSONField(raw, fmt.Sprintf("tools.%d.toolSpec.strict", i))
+	return res.Bool(), res.Exists()
+}
+
+// strictWeatherSchema is a schema Bedrock accepts under strict tool use:
+// every property required and additionalProperties false.
+func strictWeatherSchema() *schemas.ToolFunctionParameters {
+	return &schemas.ToolFunctionParameters{
+		Type: "object",
+		Properties: schemas.NewOrderedMapFromPairs(
+			schemas.KV("city", schemas.NewOrderedMapFromPairs(schemas.KV("type", "string"))),
+		),
+		Required:             []string{"city"},
+		AdditionalProperties: &schemas.AdditionalPropertiesStruct{AdditionalPropertiesBool: schemas.Ptr(false)},
+	}
+}
+
+// TestToBedrockChatCompletionRequest_ForwardsToolStrict covers /v1/chat/completions
+// to Claude on Bedrock: Converse ToolSpecification has a strict member ("Flag to
+// enable structured output enforcement on a tool usage response",
+// https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_ToolSpecification.html),
+// so function.strict must reach toolSpec.strict instead of being dropped.
+// strict:false is the default and stays off the wire, so a client that never
+// asked for enforcement (Codex flags every tool false) sends the pre-strict
+// bytes even to a profile without structured outputs, such as in.anthropic
+// Claude Haiku 4.5; an explicit true is forwarded for Bedrock to accept or 400.
+func TestToBedrockChatCompletionRequest_ForwardsToolStrict(t *testing.T) {
+	tests := []struct {
+		name        string
+		model       string
+		strict      *bool
+		wantPresent bool
+		wantValue   bool
+	}{
+		{"claude strict true", "global.anthropic.claude-sonnet-4-6", schemas.Ptr(true), true, true},
+		{"claude strict false omitted", "global.anthropic.claude-sonnet-4-6", schemas.Ptr(false), false, false},
+		{"claude strict unset", "global.anthropic.claude-sonnet-4-6", nil, false, false},
+		{"in.anthropic haiku 4.5 strict false omitted", "in.anthropic.claude-haiku-4-5-20251001-v1:0", schemas.Ptr(false), false, false},
+		{"in.anthropic haiku 4.5 strict true forwarded", "in.anthropic.claude-haiku-4-5-20251001-v1:0", schemas.Ptr(true), true, true},
+		{"non-Anthropic model drops strict", "meta.llama3-3-70b-instruct-v1:0", schemas.Ptr(true), false, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			req := &schemas.BifrostChatRequest{
+				Provider: schemas.Bedrock,
+				Model:    tt.model,
+				Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Weather in Paris?")}}},
+				Params: &schemas.ChatParameters{Tools: []schemas.ChatTool{{
+					Type: schemas.ChatToolTypeFunction,
+					Function: &schemas.ChatToolFunction{
+						Name:       "get_weather",
+						Parameters: strictWeatherSchema(),
+						Strict:     tt.strict,
+					},
+				}}},
+			}
+			out, err := ToBedrockChatCompletionRequest(ctx, req)
+			if err != nil {
+				t.Fatalf("ToBedrockChatCompletionRequest failed: %v", err)
+			}
+			got, present := converseToolStrict(t, out, 0)
+			if present != tt.wantPresent || got != tt.wantValue {
+				t.Errorf("toolSpec.strict = (present=%v, value=%v), want (present=%v, value=%v)", present, got, tt.wantPresent, tt.wantValue)
+			}
+		})
+	}
+}
+
+// TestToBedrockResponsesRequest_ForwardsToolStrict is the /v1/responses (and Go
+// SDK) twin of TestToBedrockChatCompletionRequest_ForwardsToolStrict.
+func TestToBedrockResponsesRequest_ForwardsToolStrict(t *testing.T) {
+	tests := []struct {
+		name        string
+		model       string
+		strict      *bool
+		wantPresent bool
+		wantValue   bool
+	}{
+		{"claude strict true", "global.anthropic.claude-sonnet-4-6", schemas.Ptr(true), true, true},
+		{"claude strict false omitted", "global.anthropic.claude-sonnet-4-6", schemas.Ptr(false), false, false},
+		{"claude strict unset", "global.anthropic.claude-sonnet-4-6", nil, false, false},
+		{"in.anthropic haiku 4.5 strict false omitted", "in.anthropic.claude-haiku-4-5-20251001-v1:0", schemas.Ptr(false), false, false},
+		{"in.anthropic haiku 4.5 strict true forwarded", "in.anthropic.claude-haiku-4-5-20251001-v1:0", schemas.Ptr(true), true, true},
+		{"non-Anthropic model drops strict", "meta.llama3-3-70b-instruct-v1:0", schemas.Ptr(true), false, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			req := &schemas.BifrostResponsesRequest{
+				Provider: schemas.Bedrock,
+				Model:    tt.model,
+				Input: []schemas.ResponsesMessage{{
+					Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+					Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("Weather in Paris?")},
+				}},
+				Params: &schemas.ResponsesParameters{Tools: []schemas.ResponsesTool{{
+					Type: schemas.ResponsesToolTypeFunction,
+					Name: schemas.Ptr("get_weather"),
+					ResponsesToolFunction: &schemas.ResponsesToolFunction{
+						Parameters: strictWeatherSchema(),
+						Strict:     tt.strict,
+					},
+				}}},
+			}
+			out, err := ToBedrockResponsesRequest(ctx, req)
+			if err != nil {
+				t.Fatalf("ToBedrockResponsesRequest failed: %v", err)
+			}
+			got, present := converseToolStrict(t, out, 0)
+			if present != tt.wantPresent || got != tt.wantValue {
+				t.Errorf("toolSpec.strict = (present=%v, value=%v), want (present=%v, value=%v)", present, got, tt.wantPresent, tt.wantValue)
+			}
+		})
+	}
+}
+
+// TestBedrockConverseIngress_ToolStrictRoundTrip covers the native
+// /bedrock/model/{modelId}/converse route: AWS's own strict tool example must
+// keep toolSpec.strict through ingress decode, the neutral request, and egress.
+func TestBedrockConverseIngress_ToolStrictRoundTrip(t *testing.T) {
+	body := `{
+		"messages": [{"role": "user", "content": [{"text": "What's the weather like in New York?"}]}],
+		"toolConfig": {
+			"tools": [{"toolSpec": {
+				"name": "get_weather",
+				"description": "Get the current weather for a specified location",
+				"strict": true,
+				"inputSchema": {"json": {"type": "object", "properties": {"location": {"type": "string"}}, "required": ["location"], "additionalProperties": false}}
+			}}]
+		}
+	}`
+	var converseReq BedrockConverseRequest
+	if err := json.Unmarshal([]byte(body), &converseReq); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	converseReq.ModelID = "bedrock/global.anthropic.claude-sonnet-4-6"
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bifrostReq, err := converseReq.ToBifrostResponsesRequest(ctx)
+	if err != nil {
+		t.Fatalf("ingress: %v", err)
+	}
+	if len(bifrostReq.Params.Tools) != 1 || bifrostReq.Params.Tools[0].ResponsesToolFunction == nil {
+		t.Fatalf("expected one function tool, got %+v", bifrostReq.Params.Tools)
+	}
+	if s := bifrostReq.Params.Tools[0].ResponsesToolFunction.Strict; s == nil || !*s {
+		t.Errorf("ingress ResponsesToolFunction.Strict = %v, want true", s)
+	}
+
+	bifrostReq.Provider = schemas.Bedrock
+	out, err := ToBedrockResponsesRequest(ctx, bifrostReq)
+	if err != nil {
+		t.Fatalf("egress: %v", err)
+	}
+	if got, present := converseToolStrict(t, out, 0); !present || !got {
+		t.Errorf("egress toolSpec.strict = (present=%v, value=%v), want (present=true, value=true)", present, got)
+	}
+}
+
+// BenchmarkConverseToolStrict measures the chat egress with and without tool
+// strict flags. Forwarding reuses the inbound pointer and resolves the model
+// family once per request, so a flagged request costs at most one extra
+// allocation however many tools carry the flag.
+func BenchmarkConverseToolStrict(b *testing.B) {
+	for _, bc := range []struct {
+		name   string
+		strict *bool
+		tools  int
+	}{
+		{"strict_unset", nil, 1},
+		{"strict_true", schemas.Ptr(true), 1},
+		{"strict_unset_30_tools", nil, 30},
+		{"strict_false_30_tools", schemas.Ptr(false), 30},
+	} {
+		b.Run(bc.name, func(b *testing.B) {
+			params := &schemas.ChatParameters{}
+			for i := range bc.tools {
+				params.Tools = append(params.Tools, schemas.ChatTool{
+					Type:     schemas.ChatToolTypeFunction,
+					Function: &schemas.ChatToolFunction{Name: fmt.Sprintf("tool_%d", i), Parameters: strictWeatherSchema(), Strict: bc.strict},
+				})
+			}
+			b.ReportAllocs()
+			for b.Loop() {
+				ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+				req := &schemas.BifrostChatRequest{
+					Provider: schemas.Bedrock,
+					Model:    "global.anthropic.claude-sonnet-4-6",
+					Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Weather in Paris?")}}},
+					Params:   params,
+				}
+				if _, err := ToBedrockChatCompletionRequest(ctx, req); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}

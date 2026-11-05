@@ -1,7 +1,7 @@
 import { describe, expect, test } from "vitest";
 
 import type { MCPToolLogEntry } from "@/lib/types/logs";
-import { getMCPLogPillTone, getMCPLogPresentation, getMCPLogTimeline } from "./mcpLogPresentation";
+import { getMCPLogPillTone, getMCPLogPresentation, getMCPLogTimeline, getMCPReadKind } from "./mcpLogPresentation";
 
 const TIMESTAMP = "2026-09-14T10:00:00.000Z";
 
@@ -52,6 +52,22 @@ describe("getMCPLogPillTone", () => {
 	test("non-policy entries follow their execution status", () => {
 		expect(getMCPLogPillTone(entry({ status: "success" }), getMCPLogPresentation(entry({ status: "success" })))).toBe("success");
 		expect(getMCPLogPillTone(entry({ status: "cancelled" }), getMCPLogPresentation(entry({ status: "cancelled" })))).toBe("neutral");
+	});
+
+	test("a round that asked the caller for input has its own label, description and tone", () => {
+		const log = entry({ status: "input_required" });
+		const presentation = getMCPLogPresentation(log);
+		expect(presentation.label).toBe("Needs input");
+		expect(presentation.description).toContain("asked the caller for input");
+		expect(getMCPLogPillTone(log, presentation)).toBe("input");
+	});
+
+	test("a retry-later round says it asked for no input", () => {
+		const log = entry({ status: "input_required", metadata: { retry_later: true } });
+		const presentation = getMCPLogPresentation(log);
+		expect(presentation.label).toBe("Retry later");
+		expect(presentation.description).toContain("without asking for input");
+		expect(getMCPLogPillTone(log, presentation)).toBe("input");
 	});
 });
 
@@ -118,5 +134,13 @@ describe("observed tool timing", () => {
 				pendingPolicyEntry({ source: "native", metadata: { inspection_phase: "pre_execution", observed_latency_ms: "20" } }),
 			).observedDuration,
 		).toBeUndefined();
+	});
+});
+
+describe("read kind", () => {
+	test("prompt and resource reads are named; tool calls are not", () => {
+		expect(getMCPReadKind({ method: "prompts/get" })).toBe("Prompt");
+		expect(getMCPReadKind({ method: "resources/read" })).toBe("Resource");
+		expect(getMCPReadKind({})).toBeUndefined();
 	});
 });

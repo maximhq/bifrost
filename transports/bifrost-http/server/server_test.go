@@ -25,6 +25,7 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/logstore"
+	"github.com/maximhq/bifrost/framework/mcpdiscovery"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/framework/vectorstore"
 	"github.com/prometheus/client_golang/prometheus"
@@ -170,6 +171,46 @@ func TestReloadVirtualKeyAvoidsGovernanceSnapshot(t *testing.T) {
 	}
 }
 
+// perCallerNamesConfigStore counts the reads of the names in per-user discoveries.
+type perCallerNamesConfigStore struct {
+	configstore.ConfigStore
+	reads atomic.Int32
+}
+
+// GetMCPPerUserDiscoveryNames counts the read and answers that no caller holds a discovery.
+func (s *perCallerNamesConfigStore) GetMCPPerUserDiscoveryNames(context.Context, []string) (map[string]configstore.MCPPerUserDiscoveryNames, error) {
+	s.reads.Add(1)
+	return nil, nil
+}
+
+// Every per-user discovery eviction (this process's own write, a delete from the sessions page,
+// another process's write) brings /mcp's per-caller entries up to date, off the caller's path.
+func TestEvictMCPPerUserDiscoveryCache_ResyncsTheMCPGateway(t *testing.T) {
+	handlers.SetLogger(noopTestLogger{})
+	ctx := context.Background()
+	store := &perCallerNamesConfigStore{}
+	config := &lib.Config{
+		ConfigStore:  store,
+		ClientConfig: &configstore.ClientConfig{},
+		MCPConfig: &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{
+			{ID: "notes-id", Name: "notes", PerUserDiscovery: schemas.Ptr(true)},
+		}},
+	}
+	config.MCPPerUserDiscoveryStore = mcpdiscovery.NewPerUserStore(store, noopTestLogger{})
+	mcpHandler, err := handlers.NewMCPServerHandler(ctx, config, reloadVirtualKeyToolManager{}, nil, nil, nil)
+	require.NoError(t, err)
+	server := &BifrostHTTPServer{Config: config, MCPServerHandler: mcpHandler}
+
+	for name, evict := range map[string]func(){
+		"one binding": func() { server.EvictMCPPerUserDiscoveryCache(ctx, schemas.MCPAuthModeUser, "alice", "notes-id") },
+		"one client":  func() { server.EvictMCPPerUserDiscoveryCacheByMCPClient(ctx, "notes-id") },
+	} {
+		before := store.reads.Load()
+		evict()
+		assert.Eventually(t, func() bool { return store.reads.Load() > before }, 5*time.Second, 10*time.Millisecond, name)
+	}
+}
+
 // batchReloadConfigStore serves the batched reads ReloadVirtualKeys makes and
 // records the id lists it was asked for.
 type batchReloadConfigStore struct {
@@ -312,8 +353,9 @@ func TestAgentGatewayRoutesRegisteredAfterStartupInitialization(t *testing.T) {
 	store := &agentGatewayRouteStore{}
 	s := &BifrostHTTPServer{
 		Config: &lib.Config{
-			ConfigStore:  store,
-			ClientConfig: &configstore.ClientConfig{},
+			ConfigStore: store,
+			// Protocol routes answer 503 until a public A2A URL is configured.
+			ClientConfig: &configstore.ClientConfig{A2AExternalClientURL: schemas.NewSecretVar("https://bifrost.example.com")},
 		},
 		Router: router.New(),
 	}
@@ -1123,6 +1165,33 @@ func TestReloadProvider_KeylessProviderRetainsSentinelEntry(t *testing.T) {
 
 	if got := catalog.GetModelsForProvider("keyless-provider"); !slices.Equal(got, []string{"keyless-model"}) {
 		t.Errorf("keyless catalog after failed refetch = %v, want [keyless-model] retained", got)
+	}
+}
+
+// TestReloadProvider_ZeroKeyProviderClaimsModelsOnlyWhenKeyless pins that a
+// custom provider reloaded with zero keys is a catalog candidate for a bare
+// model name only when it is keyless. One that needs keys (its only key was
+// rejected at save) used to claim every model and win the resolver's
+// alphabetical pick, so POST /openai/v1/embeddings {"model":"text-embedding-005"}
+// failed with no_key_supports_model instead of reaching vertex.
+func TestReloadProvider_ZeroKeyProviderClaimsModelsOnlyWhenKeyless(t *testing.T) {
+	prevLogger := logger
+	logger = noopTestLogger{}
+	defer func() { logger = prevLogger }()
+
+	const provider schemas.ModelProvider = "harness-oauthkey-run"
+	for _, keyless := range []bool{false, true} {
+		t.Run(fmt.Sprintf("keyless=%v", keyless), func(t *testing.T) {
+			catalog := modelcatalog.NewTestCatalog(nil)
+			server := newReloadProviderServer(catalog, provider, nil, keyless)
+			if _, err := server.ReloadProvider(context.Background(), provider, false); err != nil {
+				t.Fatalf("ReloadProvider returned unexpected error: %v", err)
+			}
+			got := slices.Contains(catalog.GetProvidersForModel("text-embedding-005"), provider)
+			if got != keyless {
+				t.Fatalf("zero-key provider (keyless=%v) is a candidate for text-embedding-005: %v, want %v", keyless, got, keyless)
+			}
+		})
 	}
 }
 
@@ -2238,4 +2307,32 @@ func TestGovernanceInMemoryStoreProvidersSurviveEdits(t *testing.T) {
 	config.Mu.Unlock()
 	_, leaked := providers[schemas.Gemini]
 	assert.False(t, leaked, "the returned map is a snapshot, not the live map")
+}
+
+// TestApplyBasePath pins the resolve-and-store step that Bootstrap runs, and
+// that builds with their own bootstrap (enterprise) call: the flag value wins
+// over server.base_path, the normalized result lands on the server, on its
+// ServerConfig (created when absent) and in lib.BasePath, and an invalid value
+// is an error.
+func TestApplyBasePath(t *testing.T) {
+	t.Cleanup(func() { lib.SetBasePath("") })
+
+	s := &BifrostHTTPServer{BasePath: "/from-flag/", Config: &lib.Config{ServerConfig: &lib.ServerConfig{BasePath: "/from-config"}}}
+	require.NoError(t, s.ApplyBasePath())
+	assert.Equal(t, "/from-flag", s.BasePath)
+	assert.Equal(t, "/from-flag", s.Config.ServerConfig.BasePath)
+	assert.Equal(t, "/from-flag", lib.BasePath())
+
+	s = &BifrostHTTPServer{Config: &lib.Config{ServerConfig: &lib.ServerConfig{BasePath: "/from-config/"}}}
+	require.NoError(t, s.ApplyBasePath())
+	assert.Equal(t, "/from-config", s.BasePath)
+	assert.Equal(t, "/from-config", lib.BasePath())
+
+	s = &BifrostHTTPServer{BasePath: "/bifrost", Config: &lib.Config{}}
+	require.NoError(t, s.ApplyBasePath())
+	require.NotNil(t, s.Config.ServerConfig)
+	assert.Equal(t, "/bifrost", s.Config.ServerConfig.BasePath)
+
+	s = &BifrostHTTPServer{BasePath: "no-slash", Config: &lib.Config{}}
+	assert.Error(t, s.ApplyBasePath())
 }

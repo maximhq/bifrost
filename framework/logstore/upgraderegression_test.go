@@ -114,11 +114,11 @@ func startOldReplicaLogsRefresh(t *testing.T, db *gorm.DB, sleepSecs int) <-chan
 		done <- err
 	}()
 	t.Cleanup(func() {
-		_ = db.Exec(`SELECT pg_cancel_backend(pid) FROM pg_stat_activity WHERE query LIKE 'REFRESH MATERIALIZED VIEW CONCURRENTLY mv_old_replica_hourly%' AND pid <> pg_backend_pid()`).Error
+		_ = db.Exec(`SELECT pg_cancel_backend(pid) FROM pg_stat_activity WHERE datname = current_database() AND query LIKE 'REFRESH MATERIALIZED VIEW CONCURRENTLY mv_old_replica_hourly%' AND pid <> pg_backend_pid()`).Error
 	})
 	require.Eventually(t, func() bool {
 		var n int64
-		return db.Raw(`SELECT count(*) FROM pg_stat_activity WHERE state = 'active' AND query LIKE 'REFRESH MATERIALIZED VIEW CONCURRENTLY mv_old_replica_hourly%'`).Scan(&n).Error == nil && n == 1
+		return db.Raw(`SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() AND state = 'active' AND query LIKE 'REFRESH MATERIALIZED VIEW CONCURRENTLY mv_old_replica_hourly%'`).Scan(&n).Error == nil && n == 1
 	}, 10*time.Second, 50*time.Millisecond, "old replica refresh must be running")
 	return done
 }

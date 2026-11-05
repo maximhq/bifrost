@@ -1,21 +1,9 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { getSupportedTimezones } from "../timezones";
+import { getLocalTimezone, getPreferredTimezone, getSupportedTimezones, TIMEZONE_STORAGE_KEY } from "../timezones";
 
 export { getSupportedTimezones };
-
-const STORAGE_KEY = "bifrost.timezone";
-
-/** Returns the browser's local IANA timezone (e.g. "America/New_York"). */
-function getLocalTimezone(): string {
-	return Intl.DateTimeFormat().resolvedOptions().timeZone;
-}
-
-/** Validates an IANA timezone string against the supported list. */
-function isValidTimezone(tz: string): boolean {
-	return getSupportedTimezones().includes(tz);
-}
 
 /**
  * Hook that persists the user's preferred timezone in localStorage.
@@ -31,20 +19,13 @@ export function useTimezonePreference(): [string, (tz: string) => void] {
 
 	// Hydrate from localStorage after mount (client-only).
 	useEffect(() => {
-		try {
-			const stored = localStorage.getItem(STORAGE_KEY);
-			if (stored && isValidTimezone(stored)) {
-				setTimezoneState(stored);
-			}
-		} catch {
-			// localStorage unavailable (e.g. SSR, privacy mode) — keep default.
-		}
+		setTimezoneState(getPreferredTimezone());
 	}, []);
 
 	const setTimezone = useCallback((tz: string) => {
 		setTimezoneState(tz);
 		try {
-			localStorage.setItem(STORAGE_KEY, tz);
+			localStorage.setItem(TIMEZONE_STORAGE_KEY, tz);
 		} catch {
 			// localStorage unavailable — preference won't persist.
 		}

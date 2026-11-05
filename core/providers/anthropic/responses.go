@@ -437,6 +437,20 @@ func attemptModel(extra schemas.BifrostResponseExtraFields) string {
 	return extra.OriginalModelRequested //nolint:staticcheck // SA1019
 }
 
+// streamEmbedsReasoningItemID reports whether a streamed reasoning item's id is
+// smuggled into its signature/data (see providerUtils.ShouldEmbedReasoningItemID).
+// Every stream call site goes through here so the halves of one item agree (see
+// attemptProvider).
+//
+// A stream bridged from Chat Completions (ConvertedRequestType) is excluded: Chat
+// Completions has no reasoning item, so the chat-to-responses stream converter mints
+// the id itself and never carries an encrypted token, and embedding it would hand the
+// client a signature no upstream issued.
+func streamEmbedsReasoningItemID(ctx *schemas.BifrostContext, extra schemas.BifrostResponseExtraFields) bool {
+	return extra.ConvertedRequestType != schemas.ChatCompletionRequest &&
+		providerUtils.ShouldEmbedReasoningItemID(ctx, attemptProvider(extra), extra.RoutingInfo.Model)
+}
+
 // markReasoningPayloadSent records that key's encrypted reasoning payload already
 // reached the client, so output_item.done does not emit it a second time.
 func (s *anthropicToResponsesStreamState) markReasoningPayloadSent(key string) {
@@ -502,7 +516,7 @@ func upgradeLateSummaryToThinkingBlock(
 	// client replaying this turn folds the thinking half back together with the
 	// redacted half (see reasoningIndexByID in the ingress converter).
 	signature := ""
-	if providerUtils.ShouldEmbedReasoningItemID(ctx, attemptProvider(bifrostResp.ExtraFields), bifrostResp.ExtraFields.RoutingInfo.Model) {
+	if streamEmbedsReasoningItemID(ctx, bifrostResp.ExtraFields) {
 		signature = providerUtils.EmbedReasoningItemID(bifrostResp.ItemID, "")
 	}
 	events = append(events, &AnthropicStreamEvent{
@@ -685,6 +699,321 @@ func anthropicNativeEffortFrom(ctx *schemas.BifrostContext) (anthropicNativeEffo
 	}
 	native, ok := ctx.Value(anthropicNativeEffortKey).(anthropicNativeEffort)
 	return native, ok
+}
+
+// anthropicNativeRequestSurface is the part of an inbound Anthropic Messages
+// body that the neutral ResponsesParameters cannot carry to the Anthropic
+// egress intact.
+//
+// ResponsesParametersReasoning carries a thinking.type, an effort scalar and a
+// summary. It has no room for a budget alongside the caller's own choice of
+// thinking.type, so the Anthropic -> Responses converter rewrites the legacy
+// thinking:{"type":"enabled","budget_tokens":N} shape into an effort and the
+// Anthropic egress rebuilds it as adaptive with the budget discarded. It also
+// has no field for thinking.display, which a caller may send beside
+// thinking.type "between_tools" and which the raw/passthrough path forwards.
+//
+// The sampling scalars are not recorded: they cross the neutral shape
+// unchanged, and the egress deliberately does not restore them (see the note at
+// the end of restoreNativeAnthropicRequestSurface).
+//
+// The PRESENCE of this witness is itself the signal that the request arrived as
+// a native Anthropic Messages body. Every OpenAI-shaped inbound dialect reaches
+// the same egress converter with no witness at all, and so keeps upstream's
+// behaviour exactly -- which is what makes the preservation below narrow rather
+// than a general change to this provider.
+type anthropicNativeRequestSurface struct {
+	// Thinking is set only for the closed preservable set; nil otherwise.
+	Thinking *AnthropicThinking
+	// MaxTokens is the caller's own max_tokens, kept only so the restore can
+	// tell whether a later pass LOWERED it (clampToModelOutputCeiling) -- the
+	// one case where the caller's budget_tokens has to be refitted rather than
+	// forwarded verbatim. Zero when the caller sent none.
+	MaxTokens int
+	// NeutralReasoning is the reasoning projection the ingress conversion
+	// produced from Thinking -- what the rest of the pipeline was handed.
+	//
+	// It is what lets the egress tell a parameter somebody DROPPED (recover it;
+	// that is the whole point of the witness) from one somebody deliberately
+	// CHANGED (obey it). The two are different instructions, and for the
+	// reasoning half they cannot be told apart by looking at the neutral
+	// request alone: the projection is lossy by construction, so Reasoning
+	// already differs from the caller's own thinking before any plugin runs.
+	// Comparing against what the conversion itself produced is the only reading
+	// that isolates a later edit.
+	NeutralReasoning *schemas.ResponsesParametersReasoning
+}
+
+// The key is schemas.BifrostContextKeyAnthropicNativeRequestSurface rather than
+// a package-private one so that core's ClearContextForInternalRequest can shed
+// it: BifrostContext.Value reads through to its parent, so a plugin-owned
+// sub-request built on a context derived from the caller's would otherwise
+// inherit this caller's thinking mode and be answered with
+// parameters it never carried. Exporting the KEY costs nothing: the value type
+// below is unexported, so no package outside this one can construct a witness,
+// and the type assertion in anthropicNativeRequestSurfaceFrom rejects anything
+// else parked on the key.
+const anthropicNativeRequestSurfaceKey = schemas.BifrostContextKeyAnthropicNativeRequestSurface
+
+// isPreservableAnthropicThinkingType is the ingress half of a set CLOSED at two
+// values, so an unknown or mistyped thinking.type is never carried and keeps
+// resolving exactly as it does today. It is model-independent on purpose: the
+// witness is cheap, and the model gate lives at egress where the capability
+// model is resolved.
+func isPreservableAnthropicThinkingType(thinkingType string) bool {
+	return thinkingType == "between_tools" || thinkingType == "enabled"
+}
+
+// preserveNativeThinking is the egress half of that closed set: it reports
+// whether a recorded caller thinking object must be restored verbatim for this
+// model. "between_tools" rides on the same capability upstream already uses to
+// decide whether the model accepts it at all, so the restore cannot widen past
+// BetweenToolsThinking; "enabled" is gated on PreservesCallerRequestSurface.
+func preserveNativeThinking(caps schemas.ModelCaps, thinkingType string) bool {
+	switch thinkingType {
+	case "between_tools":
+		return caps.SupportsBetweenToolsThinking(DefaultSupportsBetweenToolsThinking(caps.Model()))
+	case "enabled":
+		return PreservesCallerRequestSurface(caps.Model())
+	}
+	return false
+}
+
+// setAnthropicNativeRequestSurface records an inbound Anthropic Messages
+// request's own reasoning surface so the Anthropic egress can rebuild it
+// verbatim.
+//
+// It is called for EVERY native Anthropic Messages request, including ones with
+// no thinking parameters: the witness's presence is what tells the egress that
+// this request came in as a native Anthropic body.
+//
+// It rides on the context rather than ExtraParams because ExtraParams is
+// serialized onto the wire when the passthrough header is set: a
+// Bifrost-internal marker there would reach the upstream as an unknown field.
+func setAnthropicNativeRequestSurface(ctx *schemas.BifrostContext, req *AnthropicMessageRequest, neutralReasoning *schemas.ResponsesParametersReasoning) {
+	if ctx == nil || req == nil {
+		return
+	}
+	// Store copies, never the caller's pointers: the inbound request may be
+	// pooled and reused after conversion.
+	surface := anthropicNativeRequestSurface{}
+	if req.Thinking != nil && isPreservableAnthropicThinkingType(req.Thinking.Type) {
+		recorded := *req.Thinking
+		if req.Thinking.BudgetTokens != nil {
+			recorded.BudgetTokens = schemas.Ptr(*req.Thinking.BudgetTokens)
+		}
+		if req.Thinking.Display != nil {
+			recorded.Display = schemas.Ptr(*req.Thinking.Display)
+		}
+		surface.Thinking = &recorded
+	}
+	surface.MaxTokens = req.MaxTokens
+	// Deep copy: the projection's pointer fields alias the inbound request
+	// (MaxTokens is literally req.Thinking.BudgetTokens), which may be pooled
+	// and reused after conversion.
+	surface.NeutralReasoning = copyResponsesReasoning(neutralReasoning)
+	ctx.SetValue(anthropicNativeRequestSurfaceKey, surface)
+}
+
+// copyResponsesReasoning deep-copies a reasoning projection so the recorded
+// witness shares no pointer with the request it was taken from.
+func copyResponsesReasoning(in *schemas.ResponsesParametersReasoning) *schemas.ResponsesParametersReasoning {
+	if in == nil {
+		return nil
+	}
+	out := schemas.ResponsesParametersReasoning{}
+	copyStr := func(p *string) *string {
+		if p == nil {
+			return nil
+		}
+		return schemas.Ptr(*p)
+	}
+	out.Context = copyStr(in.Context)
+	out.Effort = copyStr(in.Effort)
+	out.GenerateSummary = copyStr(in.GenerateSummary)
+	out.Mode = copyStr(in.Mode)
+	out.Summary = copyStr(in.Summary)
+	out.Type = copyStr(in.Type)
+	if in.MaxTokens != nil {
+		out.MaxTokens = schemas.Ptr(*in.MaxTokens)
+	}
+	return &out
+}
+
+// neutralReasoningUnchanged reports whether the neutral request still carries
+// the reasoning configuration the ingress conversion produced -- i.e. whether
+// the restore is recovering what the neutral shape could not express, or would
+// be overwriting a decision some layer in between deliberately made.
+//
+// An ABSENT reasoning is a loss, not a decision: a layer that cleared it (or a
+// shape that never carried it, like the "enabled"+budget rewrite whose whole
+// problem is that it lands somewhere else) leaves the caller's own thinking
+// still the last word on what this request asks for. Anything else present and
+// different is an instruction, and it wins.
+func neutralReasoningUnchanged(recorded, current *schemas.ResponsesParametersReasoning) bool {
+	if current == nil {
+		return true
+	}
+	if recorded == nil {
+		return false
+	}
+	return eqPtr(recorded.Context, current.Context) &&
+		eqPtr(recorded.Effort, current.Effort) &&
+		eqPtr(recorded.GenerateSummary, current.GenerateSummary) &&
+		eqPtr(recorded.Mode, current.Mode) &&
+		eqPtr(recorded.Summary, current.Summary) &&
+		eqPtr(recorded.Type, current.Type) &&
+		eqPtr(recorded.MaxTokens, current.MaxTokens)
+}
+
+// eqPtr compares two optional values: equal when both are absent, or both are
+// present and hold the same value.
+func eqPtr[T comparable](a, b *T) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return *a == *b
+}
+
+// anthropicNativeRequestSurfaceFrom recovers a recorded native Anthropic
+// Messages request surface. ok is false for every route that did not come in as
+// an Anthropic Messages request -- every OpenAI-shaped inbound dialect included
+// -- so those keep the existing behaviour exactly.
+func anthropicNativeRequestSurfaceFrom(ctx *schemas.BifrostContext) (anthropicNativeRequestSurface, bool) {
+	if ctx == nil {
+		return anthropicNativeRequestSurface{}, false
+	}
+	surface, ok := ctx.Value(anthropicNativeRequestSurfaceKey).(anthropicNativeRequestSurface)
+	return surface, ok
+}
+
+// compatDroppedParams reports which parameters the built-in compat plugin
+// removed because the model catalog did not allowlist them.
+//
+// That distinction is what keeps the restore honest. An absent neutral value can
+// mean two different things: the conversion could not carry it (the loss this
+// witness exists to recover), or a layer removed it ON PURPOSE because the model
+// does not accept it. Restoring the second kind would hand the provider back
+// exactly the parameter the plugin removed to make the request servable. The
+// plugin publishes what it dropped on the context, so the two are separable
+// rather than guessed at.
+func compatDroppedParams(ctx *schemas.BifrostContext) map[string]bool {
+	if ctx == nil {
+		return nil
+	}
+	dropped, ok := ctx.Value(schemas.BifrostContextKeyCompatDroppedParams).([]string)
+	if !ok || len(dropped) == 0 {
+		return nil
+	}
+	set := make(map[string]bool, len(dropped))
+	for _, name := range dropped {
+		set[name] = true
+	}
+	return set
+}
+
+// restoreNativeAnthropicRequestSurface puts back the parts of the caller's own
+// Anthropic Messages request that the round trip through the neutral shape
+// could not carry. It is a no-op unless this request arrived as a native
+// Anthropic Messages body AND the target model is one whose surface this build
+// forwards rather than guesses at, so it cannot change any other inbound
+// dialect or any other model.
+//
+// It is called from BuildAnthropicResponsesRequestBody rather than from
+// ToAnthropicResponsesRequest, and deliberately AFTER the shared
+// stripUnsupportedAnthropicFields pass: that pass rewrites thinking for the
+// whole adaptive-only family one step later, so a restore inside the converter
+// would be silently undone (the lesson the DeepSeek effort refresh in this same
+// builder already carries). Restoring after it also means the shared strip needs
+// no exemption of its own, so its other caller -- the OpenAI-shaped chat path,
+// which promotes thinking out of ExtraParams -- keeps its behaviour untouched.
+// The builder is the single call site of the converter, so nothing loses the
+// restore by it living here.
+func restoreNativeAnthropicRequestSurface(ctx *schemas.BifrostContext, req *AnthropicMessageRequest, params *schemas.ResponsesParameters, provider schemas.ModelProvider, capModel string) {
+	if req == nil {
+		return
+	}
+	surface, ok := anthropicNativeRequestSurfaceFrom(ctx)
+	if !ok {
+		// Not a native Anthropic Messages ingress: keep upstream's behaviour.
+		return
+	}
+	caps := schemas.ResolveModelCaps(provider, capModel)
+
+	// The neutral request as it stands at egress: what the caller's own values
+	// are checked against below. A request built without parameters at all
+	// reads as one carrying none, so every check below is a plain field read.
+	neutral := params
+	if neutral == nil {
+		neutral = &schemas.ResponsesParameters{}
+	}
+
+	dropped := compatDroppedParams(ctx)
+
+	if surface.Thinking != nil && preserveNativeThinking(caps, surface.Thinking.Type) &&
+		!dropped["reasoning"] &&
+		neutralReasoningUnchanged(surface.NeutralReasoning, neutral.Reasoning) {
+		restored := *surface.Thinking
+		req.Thinking = &restored
+		// An effort the caller did not send is also a substitution. The
+		// "enabled" branch in ToBifrostResponsesRequest derives an effort from
+		// budget_tokens; with the caller's budget restored, that derived effort
+		// is this converter's invention, so it is cleared unless the caller sent
+		// one themselves (anthropicNativeEffort is recorded only when they did).
+		// An effort the caller DID send is left exactly as the conversion
+		// produced it: Anthropic documents effort as independent of thinking.
+		if _, callerSentEffort := anthropicNativeEffortFrom(ctx); !callerSentEffort &&
+			req.OutputConfig != nil && req.OutputConfig.Effort != nil {
+			req.OutputConfig.Effort = nil
+			if req.OutputConfig.Format == nil && req.OutputConfig.TaskBudget == nil {
+				req.OutputConfig = nil
+			}
+		}
+		// The caller's budget_tokens is restored against a max_tokens that may
+		// have been lowered since they sent it -- clampToModelOutputCeiling runs
+		// in the strip pass this restore deliberately follows -- so a budget that
+		// was valid on the way in can exceed the ceiling on the way out. The raw
+		// path refits it (fitRawThinkingBudget); the typed path has to do the same
+		// or it sends a request the provider rejects. Only "enabled" carries a
+		// budget; the adaptive family does not.
+		if restored.Type == "enabled" && restored.BudgetTokens != nil &&
+			surface.MaxTokens > 0 && req.MaxTokens < surface.MaxTokens {
+			// Only a max_tokens that was LOWERED after the caller sent it is
+			// refitted. A budget that never fitted the caller's OWN max_tokens
+			// is their request as written, and forwarding it verbatim -- letting
+			// the provider answer for it -- is exactly what this restore is for;
+			// silently rewriting it would be the substitution being fixed.
+			var effort *string
+			if req.OutputConfig != nil {
+				effort = req.OutputConfig.Effort
+			}
+			if fitted, ok := fitThinkingBudget(restored.BudgetTokens, effort, req.MaxTokens); ok {
+				req.Thinking.BudgetTokens = schemas.Ptr(fitted)
+			} else {
+				// The lowered max_tokens leaves no room for any budget, which is
+				// how the strip pass and the raw path both resolve this.
+				req.Thinking = nil
+			}
+		}
+	}
+
+	// Sampling is deliberately NOT restored, and the reason is worth keeping
+	// here: this family is adaptive-only, and ToAnthropicResponsesRequest skips
+	// temperature/top_p and deletes top_k for exactly that reason -- upstream
+	// records those as a 400 from the provider for the adaptive-only models,
+	// Sonnet 5.5 among them (DefaultAdaptiveOnlyThinking covers IsSonnet5Plus).
+	//
+	// The raw/passthrough path does forward all three, so the two paths answer
+	// the same body differently, and that divergence is real. But restoring the
+	// three here resolves it in the direction that can only ADD provider
+	// rejections to requests which work today, on an assumption about Sonnet
+	// 5.5's surface this change has never verified against a live provider. If
+	// the 400 is real the fix belongs on the passthrough side instead, which is
+	// a behaviour change for byte-faithful forwarding and the maintainers' call.
+	//
+	// thinking and output_config.effort are restored above on a different
+	// footing: between_tools is documented as Sonnet 5.5's lowest accepted
+	// setting, and effort is documented as independent of thinking.
 }
 
 // SetResponsesStreamPassthrough marks this request's Anthropic reverse stream
@@ -2786,27 +3115,38 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 		}
 
 	case AnthropicStreamEventTypeMessageDelta:
-		// The sandbox container is delivered here, after all content blocks; fold
-		// it onto the code_interpreter_call(s) at message_stop.
-		if chunk.Delta.Container != nil {
-			state.Container = chunk.Delta.Container
-		}
-		if chunk.Delta.StopReason != nil {
-			mapped := ConvertAnthropicFinishReasonToBifrost(*chunk.Delta.StopReason)
-			if state.UsedStructuredOutputTool && !state.SeenRealToolCall &&
-				mapped == string(schemas.BifrostFinishReasonToolCalls) {
-				mapped = string(schemas.BifrostFinishReasonStop)
+		// The delta object is REQUIRED on this event, and a well-formed upstream
+		// always sends it -- but reading it unconditionally made a malformed one
+		// fatal rather than merely wrong: this streaming goroutine has no
+		// recover(), so an upstream `message_delta` carrying usage and no delta
+		// object took the whole process down on a nil dereference (reproduced
+		// against a running gateway, and covered by
+		// TestMessageDeltaWithoutAnUpstreamDeltaObjectIsServed). The event
+		// still carries usage worth relaying, and the egress supplies the stop
+		// fields the client requires, so the turn is served instead.
+		if chunk.Delta != nil {
+			// The sandbox container is delivered here, after all content blocks; fold
+			// it onto the code_interpreter_call(s) at message_stop.
+			if chunk.Delta.Container != nil {
+				state.Container = chunk.Delta.Container
 			}
-			state.StopReason = &mapped
-			if *chunk.Delta.StopReason == AnthropicStopReasonStopSequence {
-				state.StopSequence = chunk.Delta.StopSequence
+			if chunk.Delta.StopReason != nil {
+				mapped := ConvertAnthropicFinishReasonToBifrost(*chunk.Delta.StopReason)
+				if state.UsedStructuredOutputTool && !state.SeenRealToolCall &&
+					mapped == string(schemas.BifrostFinishReasonToolCalls) {
+					mapped = string(schemas.BifrostFinishReasonStop)
+				}
+				state.StopReason = &mapped
+				if *chunk.Delta.StopReason == AnthropicStopReasonStopSequence {
+					state.StopSequence = chunk.Delta.StopSequence
+				}
 			}
-		}
-		if chunk.Delta.StopDetails != nil {
-			state.StopDetails = stopDetailsToBifrost(chunk.Delta.StopDetails)
-		}
-		if len(chunk.Delta.SafeguardResults) > 0 {
-			state.SafeguardResults = chunk.Delta.SafeguardResults
+			if chunk.Delta.StopDetails != nil {
+				state.StopDetails = stopDetailsToBifrost(chunk.Delta.StopDetails)
+			}
+			if len(chunk.Delta.SafeguardResults) > 0 {
+				state.SafeguardResults = chunk.Delta.SafeguardResults
+			}
 		}
 		// Check if integration type in ctx is anthropic
 		if ctx.Value(schemas.BifrostContextKeyIntegrationType) == "anthropic" {
@@ -2992,6 +3332,16 @@ func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp
 	state := getOrCreateAnthropicToResponsesStreamState(ctx)
 	events = enforceStreamBlockTypes(state, events)
 	state.recordEmittedTextEvents(events)
+	// The terminal frame is the last one that can carry usage worth reshaping, so
+	// the prompt-usage readings are released once it has been rendered -- here,
+	// rather than when the reader goroutine returned, because this frame is
+	// marshalled from the chunk channel after that goroutine has already exited.
+	for _, event := range events {
+		if event != nil && event.Type == AnthropicStreamEventTypeMessageStop {
+			closeAnthropicStreamDeltaPromptUsageLedger(ctx)
+			break
+		}
+	}
 	return events
 }
 
@@ -3171,17 +3521,10 @@ func toAnthropicResponsesStreamEvents(ctx *schemas.BifrostContext, bifrostResp *
 				Name: schemas.Ptr(string(AnthropicToolNameWebSearch)),                  // "web_search"
 			}
 
-			// Deliver the query whole in content_block_start (no input_json_delta),
-			// matching native: a web_search is spawned atomically (in PTC, by the
-			// sandbox), so Anthropic never streams its input. Fall back to empty.
+			// Direct searches stream their query after this event; programmatic
+			// searches may already have it. Emit both at output_item.done so the
+			// client receives the complete input exactly once, before block stop.
 			contentBlock.Input = json.RawMessage("{}")
-			if tm := bifrostResp.Item.ResponsesToolMessage; tm != nil && tm.Action != nil &&
-				tm.Action.ResponsesWebSearchToolCallAction != nil &&
-				tm.Action.ResponsesWebSearchToolCallAction.Query != nil {
-				if inputBytes, err := providerUtils.MarshalSorted(map[string]interface{}{"query": *tm.Action.ResponsesWebSearchToolCallAction.Query}); err == nil {
-					contentBlock.Input = json.RawMessage(inputBytes)
-				}
-			}
 
 			// Preserve the caller (set when this search was spawned from inside the
 			// code execution sandbox — programmatic tool calling).
@@ -3293,7 +3636,7 @@ func toAnthropicResponsesStreamEvents(ctx *schemas.BifrostContext, bifrostResp *
 						// embedID gates smuggling the real OpenAI reasoning item id into
 						// signature/data (see providerUtils.ShouldEmbedReasoningItemID and
 						// convertBifrostReasoningToAnthropicThinking for why).
-						embedID := providerUtils.ShouldEmbedReasoningItemID(ctx, attemptProvider(bifrostResp.ExtraFields), bifrostResp.ExtraFields.RoutingInfo.Model)
+						embedID := streamEmbedsReasoningItemID(ctx, bifrostResp.ExtraFields)
 						encrypted, hasSummary := reasoningPayloadAndSummary(bifrostResp.Item)
 						// Redacted-only reasoning (encrypted payload, nothing visible) is an
 						// atomic block: the payload rides in `data` on this very frame and no
@@ -3339,7 +3682,7 @@ func toAnthropicResponsesStreamEvents(ctx *schemas.BifrostContext, bifrostResp *
 							// not dropped -- output_item.done splits it into its own
 							// redacted_thinking block, which is why isReasoningItem has to route
 							// this shape there as well.
-							embedID := providerUtils.ShouldEmbedReasoningItemID(ctx, attemptProvider(bifrostResp.ExtraFields), bifrostResp.ExtraFields.RoutingInfo.Model)
+							embedID := streamEmbedsReasoningItemID(ctx, bifrostResp.ExtraFields)
 							encrypted, hasSummary := reasoningPayloadAndSummary(bifrostResp.Item)
 							if encrypted != "" && !hasSummary {
 								contentBlock.Type = AnthropicContentBlockTypeRedactedThinking
@@ -3661,8 +4004,25 @@ func toAnthropicResponsesStreamEvents(ctx *schemas.BifrostContext, bifrostResp *
 				wsAction = tm.Action.ResponsesWebSearchToolCallAction
 			}
 
-			// 1. Stop the server_tool_use. The query was already delivered whole in
-			// content_block_start (no input_json_delta), matching native.
+			// Deliver the completed query before closing the server_tool_use.
+			// It may not have been available on output_item.added.
+			if wsAction != nil && wsAction.Query != nil {
+				input := struct {
+					Query string `json:"query"`
+				}{Query: *wsAction.Query}
+				if inputBytes, err := providerUtils.MarshalSorted(input); err == nil {
+					events = append(events, &AnthropicStreamEvent{
+						Type:  AnthropicStreamEventTypeContentBlockDelta,
+						Index: serverIdx,
+						Delta: &AnthropicStreamDelta{
+							Type:        AnthropicStreamDeltaTypeInputJSON,
+							PartialJSON: schemas.Ptr(string(inputBytes)),
+						},
+					})
+				}
+			}
+
+			// 1. Stop the server_tool_use after its input has been delivered.
 			events = append(events, &AnthropicStreamEvent{
 				Type:  AnthropicStreamEventTypeContentBlockStop,
 				Index: serverIdx,
@@ -3875,7 +4235,7 @@ func toAnthropicResponsesStreamEvents(ctx *schemas.BifrostContext, bifrostResp *
 			// that was closed. Emitting it again would duplicate the reasoning state.
 			if encrypted != "" && encrypted != signatureSent && openedAsThinking && !state.reasoningPayloadSent(key) {
 				data := encrypted
-				if providerUtils.ShouldEmbedReasoningItemID(ctx, attemptProvider(bifrostResp.ExtraFields), bifrostResp.ExtraFields.RoutingInfo.Model) {
+				if streamEmbedsReasoningItemID(ctx, bifrostResp.ExtraFields) {
 					data = providerUtils.EmbedReasoningItemID(bifrostResp.Item.ID, data)
 				}
 				redactedIdx := state.allocBlockIndex("")
@@ -4067,6 +4427,14 @@ func toAnthropicResponsesStreamEvents(ctx *schemas.BifrostContext, bifrostResp *
 			// Convert usage from Bifrost format to Anthropic format using common converter
 			if bifrostResp.Response != nil {
 				streamResp.Usage = ConvertBifrostUsageToAnthropicUsage(bifrostResp.Response.Usage)
+				// Report no prompt-side counter the upstream event behind this chunk
+				// did not report. The neutral usage cannot tell an omitted counter
+				// from a zero one, and `input_tokens: 0` on a terminal frame erases
+				// the message_start figure in every accumulating client, while
+				// Bifrost's own accumulated usage stays correct -- so the client's
+				// final prompt count disagreed with the one Bifrost billed. A real
+				// reported zero is still reported. See streamdeltausage.go.
+				applyAnthropicStreamDeltaPromptUsage(ctx, bifrostResp.SequenceNumber, streamResp.Usage)
 			}
 
 			// Convert stop reason from Bifrost format to Anthropic format
@@ -4108,6 +4476,37 @@ func toAnthropicResponsesStreamEvents(ctx *schemas.BifrostContext, bifrostResp *
 					streamResp.Delta = &AnthropicStreamDelta{}
 				}
 				streamResp.Delta.SafeguardResults = bifrostResp.Response.SafeguardResults
+			}
+
+			// A `message_delta` ALWAYS carries a delta object WITH the two
+			// message-level stop fields: the event declares `stop_reason` and
+			// `stop_sequence` as required-and-nullable and the supported clients
+			// read `event.delta.stop_reason` unguarded. An ABSENT object throws
+			// there and aborts the stream; an object that merely omits the key
+			// reads as `undefined` and is ASSIGNED: that read is unconditional on
+			// every message_delta, so the LAST one decides the turn's stop state
+			// and an earlier frame's reported reason does not survive a later
+			// omission. Both are required-field omissions, measured, and only the
+			// first is the exception. An upstream reporting its running usage on several
+			// message_delta frames sets no stop reason on the non-final ones, so
+			// every branch above left Delta nil and `delta,omitempty` dropped the
+			// key: a correctly relayed, correctly billed turn a supported client
+			// could not consume. This reports the stop state the upstream actually
+			// reported -- a null stop_reason, never a fabricated end_turn. See
+			// streamdeltaframe.go.
+			//
+			// The null is set on an object the branches above ALREADY built, not
+			// only on one supplied here: `stop_details`, `container` and a text
+			// delta each allocate one, so such a frame with no stop reason rendered
+			// without `stop_reason` -- the same omission. An empty reason renders
+			// as JSON null (AnthropicStopReason.MarshalJSON) and only frames that
+			// set it pay for that, so content_block_delta keeps stock encoding and
+			// a terminal frame with its own reason is byte-unchanged.
+			if streamResp.Delta == nil {
+				streamResp.Delta = &AnthropicStreamDelta{}
+			}
+			if streamResp.Delta.StopReason == nil {
+				streamResp.Delta.StopReason = new(AnthropicStopReason(""))
 			}
 		}
 
@@ -4297,6 +4696,18 @@ func (req *AnthropicMessageRequest) ToBifrostResponsesRequest(ctx *schemas.Bifro
 			Effort: schemas.Ptr(*req.OutputConfig.Effort),
 		}
 	}
+	// Record the caller's own reasoning surface, so the Anthropic egress can
+	// rebuild it verbatim instead of collapsing thinking into "disabled" or
+	// rewriting it to adaptive. Recorded for EVERY native
+	// Anthropic Messages request: the witness's presence is also what
+	// distinguishes this ingress from an OpenAI-shaped one at egress.
+	//
+	// It runs AFTER the thinking branch above, not before it, because the
+	// witness carries the reasoning projection that branch produces as well as
+	// the caller's own surface. That projection is what lets the egress tell a
+	// parameter a later layer dropped from one it deliberately changed; taken
+	// any earlier it would not exist yet.
+	setAnthropicNativeRequestSurface(ctx, req, params.Reasoning)
 	if include, ok := schemas.SafeExtractStringSlice(req.ExtraParams["include"]); ok {
 		params.Include = include
 	}
@@ -4430,12 +4841,14 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 	// capModel is the canonical model string used only for capability/version
 	// lookups; the wire Model below stays exactly as the caller sent it.
 	capModel := schemas.ResolveCanonicalModel(ctx, bifrostReq.Model)
-	caps := schemas.ResolveModelCaps(bifrostReq.Provider, capModel)
+	// A custom provider resolves to the built-in provider it wraps, so its datasheet row
+	// applies here as it already does in the request builder's re-strip.
+	caps := schemas.ResolveModelCaps(schemas.ResolveBaseProvider(ctx, bifrostReq.Provider), capModel)
 	var requestTools []schemas.ResponsesTool
 	if bifrostReq.Params != nil {
 		requestTools = bifrostReq.Params.Tools
 	}
-	input, err := prepareInlineToolDefinitions(bifrostReq.Input, requestTools)
+	input, err := prepareInlineToolDefinitions(bifrostReq.Input, requestTools, caps, bifrostReq.Provider)
 	if err != nil {
 		return nil, err
 	}
@@ -5235,8 +5648,9 @@ func ToAnthropicResponsesResponse(ctx *schemas.BifrostContext, bifrostResp *sche
 	// Convert output messages to Anthropic content blocks using the new conversion method
 	var contentBlocks []AnthropicContentBlock
 	if bifrostResp.Output != nil {
-		anthropicMessages, _ := ConvertBifrostMessagesToAnthropicMessages(ctx, bifrostResp.Output, false,
-			schemas.ResolveModelCaps(attemptProvider(bifrostResp.ExtraFields), bifrostResp.Model))
+		anthropicMessages, _ := convertBifrostMessagesToAnthropicMessages(ctx, bifrostResp.Output, false,
+			schemas.ResolveModelCaps(attemptProvider(bifrostResp.ExtraFields), bifrostResp.Model),
+			bifrostResp.ExtraFields.ConvertedRequestType == schemas.ChatCompletionRequest)
 		// Extract content blocks from the converted messages
 		for _, msg := range anthropicMessages {
 			if msg.Content.ContentBlocks != nil {
@@ -5367,6 +5781,13 @@ func convertAnthropicMessagesToBifrostMessages(ctx *schemas.BifrostContext, anth
 // This is the main conversion method from Bifrost to Anthropic - handles all message types and returns messages + system content.
 // provider and model are used to gate mid-conversation system message support (Anthropic + Opus 4.8+ only).
 func ConvertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifrostMessages []schemas.ResponsesMessage, isRequestMessage bool, caps schemas.ModelCaps) ([]AnthropicMessage, *AnthropicContent) {
+	return convertBifrostMessagesToAnthropicMessages(ctx, bifrostMessages, isRequestMessage, caps, false)
+}
+
+// convertBifrostMessagesToAnthropicMessages is ConvertBifrostMessagesToAnthropicMessages
+// for a response render: bridgedFromChat marks output converted from a Chat Completions
+// response (see convertBifrostReasoningToAnthropicThinking).
+func convertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifrostMessages []schemas.ResponsesMessage, isRequestMessage bool, caps schemas.ModelCaps, bridgedFromChat bool) ([]AnthropicMessage, *AnthropicContent) {
 	bifrostMessages = normalizeOpenAIToolSearchItems(ctx, bifrostMessages, isRequestMessage)
 	// If only a single system message is present, convert it user message (since openai allows it)
 	if len(bifrostMessages) == 1 && bifrostMessages[0].Role != nil && (*bifrostMessages[0].Role == schemas.ResponsesInputMessageRoleSystem || *bifrostMessages[0].Role == schemas.ResponsesInputMessageRoleDeveloper) {
@@ -5452,6 +5873,38 @@ func ConvertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifr
 	// already-emitted role:"system" messages (an effort-only override, an earlier reminder) is
 	// skipped before requiring the user turn; without that, the second member of a system
 	// group would be judged against its sibling and inlined, dropping its override.
+	// droppedAsEmpty reports whether a user/assistant input item leaves no message on the
+	// wire because all of its text is empty (convertBifrostMessageToAnthropicMessage returns
+	// nil for it). Turn-shape checks below must not count it. Pending thinking flushes at a
+	// system message, so it cannot attach to the item a lookahead skips.
+	droppedAsEmpty := func(m *schemas.ResponsesMessage) bool {
+		if m.Type != nil && *m.Type != schemas.ResponsesMessageTypeMessage {
+			return false
+		}
+		if m.Role != nil && (*m.Role == schemas.ResponsesInputMessageRoleSystem || *m.Role == schemas.ResponsesInputMessageRoleDeveloper) {
+			return false
+		}
+		if m.Content == nil {
+			return true
+		}
+		if m.Content.ContentStr != nil {
+			return *m.Content.ContentStr == ""
+		}
+		for _, block := range m.Content.ContentBlocks {
+			// Text decides without converting, so the common prefill-trim check allocates nothing.
+			if block.Type == schemas.ResponsesInputMessageContentBlockTypeText || block.Type == schemas.ResponsesOutputMessageContentTypeText {
+				if block.Text != nil && *block.Text != "" {
+					return false
+				}
+				continue
+			}
+			if convertContentBlockToAnthropicWithCaps(caps, block) != nil {
+				return false
+			}
+		}
+		return true
+	}
+
 	midConvPlacementOK := func(i int) bool {
 		prev := len(anthropicMessages) - 1
 		for prev >= 0 && anthropicMessages[prev].Role == AnthropicMessageRoleSystem {
@@ -5477,9 +5930,10 @@ func ConvertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifr
 		// that will join this system section, then require end-of-messages or an assistant
 		// turn. Judging the first member by its system sibling would inline it.
 		next := i + 1
-		for next < len(bifrostMessages) && bifrostMessages[next].Role != nil &&
+		for next < len(bifrostMessages) && ((bifrostMessages[next].Role != nil &&
 			(*bifrostMessages[next].Role == schemas.ResponsesInputMessageRoleSystem ||
-				*bifrostMessages[next].Role == schemas.ResponsesInputMessageRoleDeveloper) {
+				*bifrostMessages[next].Role == schemas.ResponsesInputMessageRoleDeveloper)) ||
+			droppedAsEmpty(&bifrostMessages[next])) {
 			next++
 		}
 		if next == len(bifrostMessages) {
@@ -5633,7 +6087,7 @@ func ConvertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifr
 	if isRequestMessage && ctx.Value(schemas.BifrostContextKeySupportsAssistantPrefill) == false {
 		for trimIndex > 0 {
 			m := bifrostMessages[trimIndex-1]
-			if m.Role != nil && *m.Role == schemas.ResponsesInputMessageRoleAssistant {
+			if (m.Role != nil && *m.Role == schemas.ResponsesInputMessageRoleAssistant) || droppedAsEmpty(&m) {
 				trimIndex--
 			} else {
 				break
@@ -5773,7 +6227,7 @@ func ConvertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifr
 			flushPendingToolResults()
 
 			// Handle reasoning as thinking content
-			reasoningBlocks := convertBifrostReasoningToAnthropicThinking(ctx, &msg, caps.Provider(), caps.Model())
+			reasoningBlocks := convertBifrostReasoningToAnthropicThinking(ctx, &msg, caps.Provider(), caps.Model(), bridgedFromChat)
 			pendingReasoningContentBlocks = append(pendingReasoningContentBlocks, reasoningBlocks...)
 
 		case schemas.ResponsesMessageTypeFunctionCall:
@@ -6274,10 +6728,46 @@ func convertSingleAnthropicMessageToBifrostMessages(ctx *schemas.BifrostContext,
 	// Handle content blocks
 	if msg.Content.ContentBlocks != nil {
 		roleVal := schemas.ResponsesMessageRoleType(msg.Role)
-		return attachPerMessageEffort(msg, convertAnthropicContentBlocksToResponsesMessagesOrdered(ctx, msg.Content.ContentBlocks, &roleVal, isOutput, structuredOutputToolName, preserveThinkingOrder))
+		converted := convertAnthropicContentBlocksToResponsesMessagesOrdered(ctx, msg.Content.ContentBlocks, &roleVal, isOutput, structuredOutputToolName, preserveThinkingOrder)
+		if !isOutput {
+			converted = mergeAdjacentUserInputMessages(converted)
+		}
+		return attachPerMessageEffort(msg, converted)
 	}
 
 	return attachPerMessageEffort(msg, nil)
+}
+
+// mergeAdjacentUserInputMessages folds consecutive input message items converted from one
+// Anthropic user turn back into a single item. The block converters emit one item per text,
+// image or document block, and egress maps items to messages one to one, so without this a
+// three-block user turn went upstream as three user messages: the provider indexed its errors
+// against messages the client never sent, and OpenAI-shaped egresses saw the same split.
+// Only items from the same turn are merged; tool results, compaction and fallback items
+// (which carry a type other than message, or an ID) stay where they are, so block order holds.
+func mergeAdjacentUserInputMessages(msgs []schemas.ResponsesMessage) []schemas.ResponsesMessage {
+	if len(msgs) < 2 {
+		return msgs
+	}
+	merged := msgs[:1]
+	for i := 1; i < len(msgs); i++ {
+		last := &merged[len(merged)-1]
+		if isMergeableUserInputMessage(last) && isMergeableUserInputMessage(&msgs[i]) {
+			last.Content.ContentBlocks = append(last.Content.ContentBlocks, msgs[i].Content.ContentBlocks...)
+			continue
+		}
+		merged = append(merged, msgs[i])
+	}
+	return merged
+}
+
+// isMergeableUserInputMessage reports whether an item is a plain user message holding content
+// blocks, the only shape mergeAdjacentUserInputMessages folds together.
+func isMergeableUserInputMessage(msg *schemas.ResponsesMessage) bool {
+	return msg.Type != nil && *msg.Type == schemas.ResponsesMessageTypeMessage &&
+		msg.Role != nil && *msg.Role == schemas.ResponsesInputMessageRoleUser &&
+		msg.ID == nil && msg.Status == nil && msg.OutputConfig == nil &&
+		msg.Content != nil && msg.Content.ContentStr == nil && len(msg.Content.ContentBlocks) > 0
 }
 
 // attachPerMessageEffort carries an Anthropic per-message output_config (beta
@@ -6328,7 +6818,11 @@ func convertSingleAnthropicMessageToBifrostMessagesGrouped(msg *AnthropicMessage
 	// Handle content blocks with grouping for text and tool calls
 	if msg.Content.ContentBlocks != nil {
 		roleVal := schemas.ResponsesMessageRoleType(msg.Role)
-		return attachPerMessageEffort(msg, convertAnthropicContentBlocksToResponsesMessagesGrouped(msg.Content.ContentBlocks, &roleVal, isOutput))
+		converted := convertAnthropicContentBlocksToResponsesMessagesGrouped(msg.Content.ContentBlocks, &roleVal, isOutput)
+		if !isOutput {
+			converted = mergeAdjacentUserInputMessages(converted)
+		}
+		return attachPerMessageEffort(msg, converted)
 	}
 
 	return attachPerMessageEffort(msg, nil)
@@ -7016,7 +7510,7 @@ func normalizeInlineFunctionTool(tool *schemas.ResponsesTool) (*schemas.Response
 //     caller value the request fails, exactly as it does for a tools[] entry.
 //
 // The returned input is the caller's slice unless a rewrite was needed.
-func prepareInlineToolDefinitions(input []schemas.ResponsesMessage, tools []schemas.ResponsesTool) ([]schemas.ResponsesMessage, error) {
+func prepareInlineToolDefinitions(input []schemas.ResponsesMessage, tools []schemas.ResponsesTool, caps schemas.ModelCaps, provider schemas.ModelProvider) ([]schemas.ResponsesMessage, error) {
 	needsCaller := false
 	var validate func(blocks []schemas.ResponsesMessageContentBlock) error
 	validate = func(blocks []schemas.ResponsesMessageContentBlock) error {
@@ -7050,16 +7544,13 @@ func prepareInlineToolDefinitions(input []schemas.ResponsesMessage, tools []sche
 		return input, nil
 	}
 
-	// Same resolution as convertBifrostToolsToAnthropic: beside web search / fetch a
-	// code_interpreter is not sent, so it must not count as the declared version.
+	// Same resolution as convertBifrostToolsToAnthropic: beside an auto-injecting web
+	// tool a code_interpreter is not sent, so it must not count as the declared version.
 	sentTools := tools
-	for _, tool := range tools {
-		if tool.Type == schemas.ResponsesToolTypeWebSearch || tool.Type == schemas.ResponsesToolTypeWebFetch {
-			sentTools = slices.DeleteFunc(slices.Clone(tools), func(t schemas.ResponsesTool) bool {
-				return t.Type == schemas.ResponsesToolTypeCodeInterpreter
-			})
-			break
-		}
+	if webToolsSupplyCodeExecution(caps, tools, provider) {
+		sentTools = slices.DeleteFunc(slices.Clone(tools), func(t schemas.ResponsesTool) bool {
+			return t.Type == schemas.ResponsesToolTypeCodeInterpreter
+		})
 	}
 	declaredVersion, hasCodeExecution := declaredCodeExecutionVersion(sentTools)
 	caller, emitVersion := resolveAnthropicProgrammaticCaller(declaredVersion, hasCodeExecution)
@@ -7789,6 +8280,9 @@ func convertAnthropicContentBlocksToResponsesMessagesOrdered(ctx *schemas.Bifros
 func convertBifrostMessageToAnthropicSystemContent(caps schemas.ModelCaps, msg *schemas.ResponsesMessage) *AnthropicContent {
 	if msg.Content != nil {
 		if msg.Content.ContentStr != nil {
+			if *msg.Content.ContentStr == "" {
+				return nil
+			}
 			return &AnthropicContent{
 				ContentStr: msg.Content.ContentStr,
 			}
@@ -7849,10 +8343,12 @@ func convertBifrostMessageToAnthropicMessage(caps schemas.ModelCaps, msg *schema
 		// Add content blocks after pending reasoning content blocks are added
 		if msg.Content != nil {
 			if msg.Content.ContentStr != nil {
-				contentBlocks = append(contentBlocks, AnthropicContentBlock{
-					Type: AnthropicContentBlockTypeText,
-					Text: msg.Content.ContentStr,
-				})
+				if *msg.Content.ContentStr != "" {
+					contentBlocks = append(contentBlocks, AnthropicContentBlock{
+						Type: AnthropicContentBlockTypeText,
+						Text: msg.Content.ContentStr,
+					})
+				}
 			} else if msg.Content.ContentBlocks != nil {
 				contentBlocks = append(contentBlocks, convertBifrostContentBlocksToAnthropic(caps, msg.Content.ContentBlocks)...)
 			}
@@ -7863,7 +8359,7 @@ func convertBifrostMessageToAnthropicMessage(caps schemas.ModelCaps, msg *schema
 	} else {
 		// Convert content
 		if msg.Content != nil {
-			if msg.Content.ContentStr != nil {
+			if msg.Content.ContentStr != nil && *msg.Content.ContentStr != "" {
 				anthropicMsg.Content = AnthropicContent{
 					ContentBlocks: []AnthropicContentBlock{{
 						Type: AnthropicContentBlockTypeText,
@@ -7881,6 +8377,12 @@ func convertBifrostMessageToAnthropicMessage(caps schemas.ModelCaps, msg *schema
 		}
 	}
 
+	// Every block was empty: an Anthropic message with no content is rejected, so the
+	// caller skips it.
+	if len(anthropicMsg.Content.ContentBlocks) == 0 && anthropicMsg.Content.ContentStr == nil {
+		return nil
+	}
+
 	return &anthropicMsg
 }
 
@@ -7896,9 +8398,16 @@ func convertBifrostMessageToAnthropicMessage(caps schemas.ModelCaps, msg *schema
 // echoes the block back on a later turn, a fresh random id gets minted and paired
 // with the original (still real) encrypted_content -- a mismatch OpenAI rejects
 // with "Encrypted content item_id did not match the target item id."
-func convertBifrostReasoningToAnthropicThinking(ctx *schemas.BifrostContext, msg *schemas.ResponsesMessage, sourceProvider schemas.ModelProvider, model string) []AnthropicContentBlock {
+//
+// bridgedFromChat marks reasoning converted from a Chat Completions response. Chat
+// Completions has no reasoning item, so its id is one the chat-to-responses converter
+// minted and is embedded only when the item also carries an encrypted token, whose id
+// came from the upstream's reasoning_details. Otherwise the client would get a
+// signature no upstream issued.
+func convertBifrostReasoningToAnthropicThinking(ctx *schemas.BifrostContext, msg *schemas.ResponsesMessage, sourceProvider schemas.ModelProvider, model string, bridgedFromChat bool) []AnthropicContentBlock {
 	var thinkingBlocks []AnthropicContentBlock
-	embedID := providerUtils.ShouldEmbedReasoningItemID(ctx, sourceProvider, model)
+	embedID := providerUtils.ShouldEmbedReasoningItemID(ctx, sourceProvider, model) &&
+		(!bridgedFromChat || (msg.ResponsesReasoning != nil && msg.ResponsesReasoning.EncryptedContent != nil && *msg.ResponsesReasoning.EncryptedContent != ""))
 
 	// Track whether the content blocks actually yielded reasoning rather than
 	// branching on Content being non-nil. `ContentBlocks != nil` is true for an
@@ -9378,20 +9887,18 @@ func convertAnthropicToolToBifrost(tool *AnthropicTool) *schemas.ResponsesTool {
 		// Version-dated server search tools ship new versions regularly; match them by
 		// prefix so a newer version (e.g. web_fetch_20260318) is recognized as a server
 		// tool instead of falling through to the client-function default at the end of
-		// this function. Mirrors applySharedServerToolFields and the chat path. Tools
-		// that must round-trip their exact version (code_execution, text_editor) stay in
-		// the exact switch below.
+		// this function. Preserve the requested version through the neutral schema,
+		// as the code_execution and text_editor branches below already do.
 		switch typeStr := string(*tool.Type); {
 		case strings.HasPrefix(typeStr, "web_search_"):
 			bifrostTool := &schemas.ResponsesTool{
-				Type: schemas.ResponsesToolTypeWebSearch,
+				Type:                   schemas.ResponsesToolTypeWebSearch,
+				ResponsesToolWebSearch: &schemas.ResponsesToolWebSearch{Version: (*string)(tool.Type)},
 			}
 			if tool.AnthropicToolWebSearch != nil {
-				bifrostTool.ResponsesToolWebSearch = &schemas.ResponsesToolWebSearch{
-					Filters: &schemas.ResponsesToolWebSearchFilters{
-						AllowedDomains: tool.AnthropicToolWebSearch.AllowedDomains,
-						BlockedDomains: tool.AnthropicToolWebSearch.BlockedDomains,
-					},
+				bifrostTool.ResponsesToolWebSearch.Filters = &schemas.ResponsesToolWebSearchFilters{
+					AllowedDomains: tool.AnthropicToolWebSearch.AllowedDomains,
+					BlockedDomains: tool.AnthropicToolWebSearch.BlockedDomains,
 				}
 				if tool.AnthropicToolWebSearch.MaxUses != nil {
 					bifrostTool.ResponsesToolWebSearch.MaxUses = tool.AnthropicToolWebSearch.MaxUses
@@ -9410,19 +9917,20 @@ func convertAnthropicToolToBifrost(tool *AnthropicTool) *schemas.ResponsesTool {
 
 		case strings.HasPrefix(typeStr, "web_fetch_"):
 			bifrostTool := &schemas.ResponsesTool{
-				Type: schemas.ResponsesToolTypeWebFetch,
+				Type:                  schemas.ResponsesToolTypeWebFetch,
+				ResponsesToolWebFetch: &schemas.ResponsesToolWebFetch{Version: (*string)(tool.Type)},
 			}
 			if tool.AnthropicToolWebFetch != nil {
-				bifrostTool.ResponsesToolWebFetch = &schemas.ResponsesToolWebFetch{
-					MaxUses:           tool.AnthropicToolWebFetch.MaxUses,
-					MaxContentTokens:  tool.AnthropicToolWebFetch.MaxContentTokens,
-					UseCache:          tool.AnthropicToolWebFetch.UseCache,
-					ResponseInclusion: tool.AnthropicToolWebFetch.ResponseInclusion,
-				}
-				if len(tool.AnthropicToolWebFetch.AllowedDomains) > 0 || len(tool.AnthropicToolWebFetch.BlockedDomains) > 0 {
-					bifrostTool.ResponsesToolWebFetch.Filters = &schemas.ResponsesToolWebSearchFilters{
-						AllowedDomains: tool.AnthropicToolWebFetch.AllowedDomains,
-						BlockedDomains: tool.AnthropicToolWebFetch.BlockedDomains,
+				webFetch := bifrostTool.ResponsesToolWebFetch
+				source := tool.AnthropicToolWebFetch
+				webFetch.MaxUses = source.MaxUses
+				webFetch.MaxContentTokens = source.MaxContentTokens
+				webFetch.UseCache = source.UseCache
+				webFetch.ResponseInclusion = source.ResponseInclusion
+				if len(source.AllowedDomains) > 0 || len(source.BlockedDomains) > 0 {
+					webFetch.Filters = &schemas.ResponsesToolWebSearchFilters{
+						AllowedDomains: source.AllowedDomains,
+						BlockedDomains: source.BlockedDomains,
 					}
 				}
 			}
@@ -9624,21 +10132,16 @@ func convertToolOutputToAnthropicContent(output *schemas.ResponsesToolMessageOut
 
 // convertBifrostToolsToAnthropic converts all Bifrost tools to Anthropic tools and MCP servers.
 // It handles context-dependent conversions like code_interpreter, which must be skipped when
-// web_search or web_fetch is present (Anthropic auto-injects code_execution in that case).
+// a web_search or web_fetch version that auto-injects code_execution is sent.
 func convertBifrostToolsToAnthropic(caps schemas.ModelCaps, tools []schemas.ResponsesTool, provider schemas.ModelProvider) ([]AnthropicTool, []AnthropicMCPServerV2, error) {
-	// Check if web search or web fetch is present — when they are, Anthropic
-	// auto-injects code_execution so we must skip it to avoid conflicts.
-	hasWebSearchOrFetch := false
-	for _, tool := range tools {
-		if tool.Type == schemas.ResponsesToolTypeWebSearch || tool.Type == schemas.ResponsesToolTypeWebFetch {
-			hasWebSearchOrFetch = true
-			break
-		}
-	}
+	// Anthropic auto-injects code_execution beside the 2026 web tool versions, so an
+	// explicit one conflicts there. Older versions inject nothing and keep the declared tool.
+	hasWebSearchOrFetch := webToolsSupplyCodeExecution(caps, tools, provider)
 
 	// An OpenAI-origin "programmatic" caller has to be renamed to the code execution
 	// version this request runs on, and that version may have to be raised to reach it.
-	// Resolve against the tools actually sent: beside web search a code_interpreter is dropped.
+	// Resolve against the tools actually sent: beside an auto-injecting web tool a
+	// code_interpreter is dropped.
 	sentTools := tools
 	if hasWebSearchOrFetch {
 		sentTools = slices.DeleteFunc(slices.Clone(tools), func(t schemas.ResponsesTool) bool {
@@ -9797,6 +10300,92 @@ func declaredCodeExecutionVersion(tools []schemas.ResponsesTool) (string, bool) 
 	return "", false
 }
 
+// requestedServerToolVersion preserves client intent while retaining host-specific downgrades.
+func requestedServerToolVersion(version *string, fallback AnthropicToolType, provider schemas.ModelProvider) AnthropicToolType {
+	if version == nil || *version == "" {
+		return fallback
+	}
+	for _, remap := range providerToolVersionRemaps[provider] {
+		if *version == remap.From {
+			return AnthropicToolType(remap.To)
+		}
+	}
+	return AnthropicToolType(*version)
+}
+
+// resolveWebSearchToolType returns the web_search version sent for tool.
+func resolveWebSearchToolType(caps schemas.ModelCaps, tool *schemas.ResponsesTool, provider schemas.ModelProvider) AnthropicToolType {
+	webSearchType := AnthropicToolTypeWebSearch20250305
+	// Prefer the datasheet's pinned version; otherwise dynamic filtering
+	// (web_search_20260209) is available on Anthropic + Azure for Opus 4.6+, Sonnet 4.6+.
+	features, ok := ProviderFeatures[provider]
+	model := caps.Model()
+	if version, pinned := caps.ServerTool(ServerToolWebSearch); pinned {
+		webSearchType = AnthropicToolType(version)
+	} else if ok && features.WebSearchDynamic &&
+		(strings.Contains(model, "4.6") || strings.Contains(model, "4-6") || IsOpus47Plus(model) || IsSonnet5Plus(model) || IsFableFamily(model)) {
+		webSearchType = AnthropicToolTypeWebSearch20260209
+	}
+	// A client-selected version takes precedence over model defaults.
+	if tool.ResponsesToolWebSearch != nil {
+		webSearchType = requestedServerToolVersion(tool.ResponsesToolWebSearch.Version, webSearchType, provider)
+	}
+	return webSearchType
+}
+
+// resolveWebFetchToolType returns the web_fetch version sent for tool.
+func resolveWebFetchToolType(caps schemas.ModelCaps, tool *schemas.ResponsesTool, provider schemas.ModelProvider) AnthropicToolType {
+	webFetchType := AnthropicToolTypeWebFetch20250910
+	// Prefer the datasheet's pinned version; otherwise the dynamic-filtering
+	// versions are only available on Anthropic + Azure.
+	features, ok := ProviderFeatures[provider]
+	model := caps.Model()
+	if version, pinned := caps.ServerTool(ServerToolWebFetch); pinned {
+		webFetchType = AnthropicToolType(version)
+	} else if ok && features.WebSearchDynamic &&
+		(strings.Contains(model, "4.6") || strings.Contains(model, "4-6")) {
+		webFetchType = AnthropicToolTypeWebFetch20260309
+	}
+	if tool.ResponsesToolWebFetch != nil && tool.ResponsesToolWebFetch.ResponseInclusion != nil {
+		webFetchType = AnthropicToolTypeWebFetch20260318
+	} else if tool.ResponsesToolWebFetch != nil && tool.ResponsesToolWebFetch.UseCache != nil &&
+		webFetchType == AnthropicToolTypeWebFetch20250910 {
+		webFetchType = AnthropicToolTypeWebFetch20260309
+	}
+	// A client-selected version takes precedence over model defaults and option upgrades.
+	if tool.ResponsesToolWebFetch != nil {
+		webFetchType = requestedServerToolVersion(tool.ResponsesToolWebFetch.Version, webFetchType, provider)
+	}
+	return webFetchType
+}
+
+// webToolsSupplyCodeExecution reports whether a declared code_interpreter must be omitted
+// because a web search or web fetch tool already supplies code execution. Only the
+// 2026 web tool versions auto-inject it, so the decision uses the version actually sent.
+// Hosts without code execution keep the earlier omission instead of failing the request.
+func webToolsSupplyCodeExecution(caps schemas.ModelCaps, tools []schemas.ResponsesTool, provider schemas.ModelProvider) bool {
+	for i := range tools {
+		var toolType AnthropicToolType
+		switch tools[i].Type {
+		case schemas.ResponsesToolTypeWebSearch:
+			toolType = resolveWebSearchToolType(caps, &tools[i], provider)
+		case schemas.ResponsesToolTypeWebFetch:
+			toolType = resolveWebFetchToolType(caps, &tools[i], provider)
+		default:
+			continue
+		}
+		if !providerSupportsCodeExecution(provider) || doesWebSearchOrFetchAutoInjectCodeExecution(string(toolType)) {
+			return true
+		}
+	}
+	return false
+}
+
+// providerSupportsCodeExecution reports whether the host accepts a code_execution tool.
+func providerSupportsCodeExecution(provider schemas.ModelProvider) bool {
+	return !slices.Contains(unsupportedRawToolTypes[provider], "code_execution")
+}
+
 // Helper function to convert Tool back to AnthropicTool
 func convertBifrostToolToAnthropic(caps schemas.ModelCaps, tool *schemas.ResponsesTool, provider schemas.ModelProvider, hasWebSearchOrFetch bool) *AnthropicTool {
 	if tool == nil {
@@ -9846,17 +10435,7 @@ func convertBifrostToolToAnthropic(caps schemas.ModelCaps, tool *schemas.Respons
 	case schemas.ResponsesToolTypeComputerUsePreview, schemas.ResponsesToolTypeComputer:
 		return convertResponsesToAnthropicComputerTool(caps, tool)
 	case schemas.ResponsesToolTypeWebSearch:
-		webSearchType := AnthropicToolTypeWebSearch20250305
-		// Prefer the datasheet's pinned version; otherwise dynamic filtering
-		// (web_search_20260209) is available on Anthropic + Azure for Opus 4.6+, Sonnet 4.6+.
-		features, ok := ProviderFeatures[provider]
-		model := caps.Model()
-		if version, pinned := caps.ServerTool(ServerToolWebSearch); pinned {
-			webSearchType = AnthropicToolType(version)
-		} else if ok && features.WebSearchDynamic &&
-			(strings.Contains(model, "4.6") || strings.Contains(model, "4-6") || IsOpus47Plus(model) || IsSonnet5Plus(model) || IsFableFamily(model)) {
-			webSearchType = AnthropicToolTypeWebSearch20260209
-		}
+		webSearchType := resolveWebSearchToolType(caps, tool, provider)
 		anthropicTool := &AnthropicTool{
 			Type:                   schemas.Ptr(webSearchType),
 			Name:                   string(AnthropicToolNameWebSearch),
@@ -9882,23 +10461,7 @@ func convertBifrostToolToAnthropic(caps schemas.ModelCaps, tool *schemas.Respons
 
 		return anthropicTool
 	case schemas.ResponsesToolTypeWebFetch:
-		webFetchType := AnthropicToolTypeWebFetch20250910
-		// Prefer the datasheet's pinned version; otherwise the dynamic-filtering
-		// versions are only available on Anthropic + Azure.
-		features, ok := ProviderFeatures[provider]
-		model := caps.Model()
-		if version, pinned := caps.ServerTool(ServerToolWebFetch); pinned {
-			webFetchType = AnthropicToolType(version)
-		} else if ok && features.WebSearchDynamic &&
-			(strings.Contains(model, "4.6") || strings.Contains(model, "4-6")) {
-			webFetchType = AnthropicToolTypeWebFetch20260309
-		}
-		if tool.ResponsesToolWebFetch != nil && tool.ResponsesToolWebFetch.ResponseInclusion != nil {
-			webFetchType = AnthropicToolTypeWebFetch20260318
-		} else if tool.ResponsesToolWebFetch != nil && tool.ResponsesToolWebFetch.UseCache != nil &&
-			webFetchType == AnthropicToolTypeWebFetch20250910 {
-			webFetchType = AnthropicToolTypeWebFetch20260309
-		}
+		webFetchType := resolveWebFetchToolType(caps, tool, provider)
 		anthropicTool := &AnthropicTool{
 			Type:                  schemas.Ptr(webFetchType),
 			Name:                  string(AnthropicToolNameWebFetch),
@@ -10095,7 +10658,9 @@ func convertContentBlockToAnthropicWithCaps(caps schemas.ModelCaps, block schema
 		}
 	case schemas.ResponsesInputMessageContentBlockTypeText, schemas.ResponsesOutputMessageContentTypeText:
 		anthropicBlock := AnthropicContentBlock{}
-		if block.Text != nil {
+		// Anthropic rejects an empty text block with a 400, so it is skipped like the
+		// Chat Completions converter does.
+		if block.Text != nil && *block.Text != "" {
 			anthropicBlock = AnthropicContentBlock{
 				Type:         AnthropicContentBlockTypeText,
 				Text:         block.Text,
@@ -10278,47 +10843,10 @@ func (block AnthropicContentBlock) toBifrostResponsesDocumentBlock() schemas.Res
 		}
 	}
 
-	// Anthropic's document block has an optional `title`; OpenAI's Responses
-	// API rejects an input_file that carries inline file_data without a
-	// filename. Synthesize one so a title-less document (the common case when
-	// a tool returns a PDF) still converts into an acceptable request.
-	file := resultBlock.ResponsesInputMessageContentBlockFile
-	if file.FileData != nil && (file.Filename == nil || *file.Filename == "") {
-		file.Filename = schemas.Ptr(defaultDocumentFilename(src))
-	}
-
+	// A title-less document stays title-less here: a synthesized filename would
+	// come back to Anthropic as a title the client never sent. Egresses that
+	// require a filename beside inline file_data (OpenAI) default it themselves.
 	return resultBlock
-}
-
-// defaultDocumentFilename builds a filename for a document block that has no
-// title, picking the extension from the source's media type. Anthropic
-// defaults document blocks to PDF, so that's the fallback.
-func defaultDocumentFilename(src *AnthropicSource) string {
-	mediaType := ""
-	if src != nil && src.MediaType != nil {
-		mediaType = *src.MediaType
-	}
-	if src != nil && src.Type == "text" {
-		mediaType = "text/plain"
-	}
-
-	ext := ".pdf"
-	switch mediaType {
-	case "", "application/pdf":
-		ext = ".pdf"
-	case "text/plain":
-		ext = ".txt"
-	default:
-		// "application/json" -> ".json", "text/markdown" -> ".markdown".
-		if _, subtype, found := strings.Cut(mediaType, "/"); found && subtype != "" {
-			// Strip vendor/suffix decorations: "vnd.ms-excel+xml" -> "xml".
-			if _, suffix, hasSuffix := strings.Cut(subtype, "+"); hasSuffix && suffix != "" {
-				subtype = suffix
-			}
-			ext = "." + subtype
-		}
-	}
-	return "document" + ext
 }
 
 // Helper functions for MCP tool/server conversion

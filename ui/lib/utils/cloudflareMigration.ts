@@ -1,7 +1,14 @@
 import { ModelProvider, ModelProviderKey, ModelProviderName, NetworkConfig, UpdateProviderRequest } from "@/lib/types/config";
 import { DefaultNetworkConfig, DefaultPerformanceConfig } from "@/lib/constants/config";
 import { SecretVar } from "@/lib/types/schemas";
-import { extractAuthFromHeaders, isSecretVarSet, MigrationApi, MigrationResult, MigrationStep } from "@/lib/utils/databricksMigration";
+import {
+	extractAuthFromHeaders,
+	isSecretVarSet,
+	MigrationApi,
+	MigrationMessage,
+	MigrationResult,
+	MigrationStep,
+} from "@/lib/utils/databricksMigration";
 
 /**
  * Frontend migration of a custom provider named "cloudflare" that points at Workers AI (created
@@ -20,6 +27,24 @@ export const CLOUDFLARE_PROVIDER: ModelProviderName = "cloudflare";
 const WORKERS_AI_HOST = "api.cloudflare.com";
 // Workers AI's OpenAI-compatible base: /client/v4/accounts/{account_id}/ai, optionally with /v1.
 const WORKERS_AI_PATH = /^\/client\/v4\/accounts\/([^/]+)\/ai(?:\/v1)?$/;
+
+/** Display copy stays structured (see databricksMigration.ts) so a completed operation can be rendered in any locale. */
+const message = (key: string, values?: MigrationMessage["values"]): MigrationMessage => ({
+	key: `providers.cloudflareMigration.messages.${key}`,
+	...(values ? { values } : {}),
+});
+
+// Copy that reads the same for both migrations lives in the Databricks catalog.
+const sharedMessage = (key: string, values?: MigrationMessage["values"]): MigrationMessage => ({
+	key: `providers.databricksMigration.messages.${key}`,
+	...(values ? { values } : {}),
+});
+
+class MigrationMessageError extends Error {
+	constructor(readonly detail: MigrationMessage) {
+		super(detail.key);
+	}
+}
 
 // ---------------------------------------------------------------------------
 // Detection
@@ -82,7 +107,7 @@ export interface MigrationPlan {
 	keys: ModelProviderKey[];
 	/** For a keyless source, the API token read from the Authorization header, created as a key after conversion. */
 	headerToken?: { name: string; value?: SecretVar; needsValue: boolean };
-	warnings: string[];
+	warnings: MigrationMessage[];
 }
 
 /**
@@ -116,10 +141,10 @@ const hasRestrictedRequests = (source: ModelProvider): boolean => {
 
 /** Builds the migration plan from the custom provider and its (redacted) keys. */
 export const buildCloudflareMigrationPlan = (source: ModelProvider, sourceKeys: ModelProviderKey[]): MigrationPlan => {
-	const warnings: string[] = [];
+	const warnings: MigrationMessage[] = [];
 	const { accountId } = deriveCloudflareAccount(source.network_config?.base_url);
 	if (!accountId) {
-		warnings.push("The account ID could not be read from the base URL; enter it below.");
+		warnings.push(message("accountIdUnreadable"));
 	}
 
 	const isKeyless = Boolean(source.custom_provider_config?.is_key_less) || sourceKeys.length === 0;
@@ -127,25 +152,23 @@ export const buildCloudflareMigrationPlan = (source: ModelProvider, sourceKeys: 
 	if (isKeyless) {
 		const auth = extractAuthFromHeaders(source.network_config?.extra_headers);
 		if (auth.problem === "missing") {
-			warnings.push("No Authorization header was found on the custom provider; enter the API token below.");
+			warnings.push(message("missingAuth"));
 		} else if (auth.problem === "not_bearer") {
-			warnings.push("The Authorization header is not a Bearer token; enter the API token below.");
+			warnings.push(message("notBearer"));
 		} else if (auth.problem === "masked") {
-			warnings.push("The Authorization header is stored as a literal value and cannot be read; enter the API token below.");
+			warnings.push(message("masked"));
 		}
 		headerToken = { name: `${source.name}-token`, value: auth.token, needsValue: !auth.token };
 	}
 
 	if (hasRestrictedRequests(source)) {
-		warnings.push("Allowed request restrictions are specific to custom providers and will not be carried over.");
+		warnings.push(sharedMessage("restrictionsDropped"));
 	}
 	if (Object.keys(source.custom_provider_config?.request_path_overrides ?? {}).length > 0) {
-		warnings.push("Request path overrides are specific to custom providers and will not be carried over.");
+		warnings.push(sharedMessage("pathsDropped"));
 	}
 	if (source.config_hash) {
-		warnings.push(
-			"This provider is synced from config.json. Update it there as well, or the custom provider may be restored on the next restart.",
-		);
+		warnings.push(message("configFileWarning"));
 	}
 
 	return {
@@ -182,10 +205,11 @@ export type CloudflareMigrationApi = Pick<
 	updateProvider(name: string, body: ConvertProviderRequest): Promise<ModelProvider>;
 };
 
-const errorText = (err: unknown): string => {
-	if (err instanceof Error) return err.message;
-	if (typeof err === "string") return err;
-	return "Unknown error";
+const errorText = (err: unknown): MigrationMessage => {
+	if (err instanceof MigrationMessageError) return err.detail;
+	if (err instanceof Error) return sharedMessage("errorDetail", { error: err.message });
+	if (typeof err === "string") return sharedMessage("errorDetail", { error: err });
+	return sharedMessage("unknownError");
 };
 
 const STEP_IDS = {
@@ -200,14 +224,14 @@ export const buildMigrationSteps = (plan: MigrationPlan): MigrationStep[] => {
 	const steps: MigrationStep[] = [];
 	if (plan.keys.length > 0) {
 		const count = plan.keys.length;
-		steps.push({ id: STEP_IDS.updateKeys, label: `Add the account ID to ${count} key${count === 1 ? "" : "s"}`, status: "pending" });
+		steps.push({ id: STEP_IDS.updateKeys, label: message("updateKeys", { count }), status: "pending" });
 	}
-	steps.push({ id: STEP_IDS.convert, label: "Convert to the official Cloudflare provider", status: "pending" });
+	steps.push({ id: STEP_IDS.convert, label: message("convert"), status: "pending" });
 	if (plan.headerToken) {
-		steps.push({ id: STEP_IDS.createKey, label: `Create key "${plan.headerToken.name}" from the Authorization header`, status: "pending" });
+		steps.push({ id: STEP_IDS.createKey, label: message("createKey", { name: plan.headerToken.name }), status: "pending" });
 	}
-	steps.push({ id: STEP_IDS.verify, label: "Verify the Cloudflare provider", status: "pending" });
-	steps.push({ id: STEP_IDS.refreshModels, label: "Refresh models", status: "pending" });
+	steps.push({ id: STEP_IDS.verify, label: message("verifyProvider"), status: "pending" });
+	steps.push({ id: STEP_IDS.refreshModels, label: sharedMessage("refreshModels"), status: "pending" });
 	return steps;
 };
 
@@ -223,7 +247,7 @@ export const runCloudflareMigration = async (
 ): Promise<MigrationResult> => {
 	const steps = buildMigrationSteps(plan);
 	const emit = () => onProgress(steps.map((s) => ({ ...s })));
-	const set = (id: string, status: MigrationStep["status"], detail?: string) => {
+	const set = (id: string, status: MigrationStep["status"], detail?: MigrationMessage) => {
 		const s = steps.find((x) => x.id === id)!;
 		s.status = status;
 		if (detail) s.detail = detail;
@@ -232,7 +256,7 @@ export const runCloudflareMigration = async (
 	const name = plan.providerName;
 	let converted = false;
 
-	const run = async (id: string, fn: () => Promise<string | void>) => {
+	const run = async (id: string, fn: () => Promise<MigrationMessage | void>) => {
 		set(id, "running");
 		try {
 			set(id, "done", (await fn()) ?? undefined);
@@ -249,7 +273,7 @@ export const runCloudflareMigration = async (
 					try {
 						await api.updateProviderKey(name, key.id, toCloudflareKeyUpdate(plan, key));
 					} catch (err) {
-						throw new Error(`Failed to update key "${key.name}": ${errorText(err)}`);
+						throw new MigrationMessageError(message("updateKeyFailed", { name: key.name, error: errorText(err) }));
 					}
 				}
 			});
@@ -278,18 +302,19 @@ export const runCloudflareMigration = async (
 
 		await run(STEP_IDS.verify, async () => {
 			const provider = await api.getProvider(name);
-			if (provider.custom_provider_config) throw new Error("The provider is still a custom provider");
-			if (provider.provider_status !== "active") throw new Error(`Provider status is "${provider.provider_status}"`);
+			if (provider.custom_provider_config) throw new MigrationMessageError(message("stillCustom"));
+			if (provider.provider_status !== "active")
+				throw new MigrationMessageError(sharedMessage("providerStatus", { status: provider.provider_status }));
 			const keys = await api.getProviderKeys(name);
-			return `Provider active with ${keys.length} key(s)`;
+			return sharedMessage("providerActive", { count: keys.length });
 		});
 	} catch (err) {
 		return {
 			ok: false,
 			partial: converted,
 			message: converted
-				? `"${name}" was converted to the official Cloudflare provider, but a later step failed: ${errorText(err)}. Nothing was deleted; finish the setup on the provider page.`
-				: `Migration failed: ${errorText(err)}. Nothing was deleted, and "${name}" still works as a custom provider.`,
+				? message("convertedThenFailed", { name, error: errorText(err) })
+				: message("failedUnchanged", { name, error: errorText(err) }),
 		};
 	}
 
@@ -298,12 +323,12 @@ export const runCloudflareMigration = async (
 		await api.refreshModels(name);
 		set(STEP_IDS.refreshModels, "done");
 	} catch (err) {
-		set(STEP_IDS.refreshModels, "done", `Skipped: ${errorText(err)}`);
+		set(STEP_IDS.refreshModels, "done", sharedMessage("refreshSkipped", { error: errorText(err) }));
 	}
 
 	return {
 		ok: true,
 		partial: false,
-		message: `Converted "${name}" to the official Cloudflare provider. Its keys, access settings, budgets and limits were kept.`,
+		message: message("success", { name }),
 	};
 };
