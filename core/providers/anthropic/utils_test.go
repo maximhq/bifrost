@@ -4349,7 +4349,7 @@ func TestStripEmptyThinkingBlocks(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			out, err := StripEmptyThinkingBlocks([]byte(tt.input))
+			out, err := StripEmptyThinkingBlocks([]byte(tt.input), false)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -4417,7 +4417,7 @@ func TestStripEmptyThinkingBlocks_AllocationScaling(t *testing.T) {
 		b.WriteString(`]}`)
 		return b.Bytes()
 	}, func(body []byte) {
-		if _, err := StripEmptyThinkingBlocks(body); err != nil {
+		if _, err := StripEmptyThinkingBlocks(body, false); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 	})
