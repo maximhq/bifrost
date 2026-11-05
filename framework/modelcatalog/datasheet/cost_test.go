@@ -1625,6 +1625,74 @@ func TestComputeEmbeddingCost_NilUsage(t *testing.T) {
 	assert.Equal(t, 0.0, computeEmbeddingCostTotal(&p, nil, serviceTier{}))
 }
 
+func TestComputeEmbeddingCost_TotalTokensFallback(t *testing.T) {
+	// Upstreams that omit prompt_tokens on embeddings (e.g. Voyage's
+	// OpenAI-compatible endpoint, which reports usage.total_tokens only) must
+	// still be priced: embeddings are input-only, so total == input.
+	p := configstoreTables.TableModelPricing{
+		InputCostPerToken:  bifrost.Ptr(0.0000001),
+		OutputCostPerToken: bifrost.Ptr(0.0),
+	}
+	usage := &schemas.BifrostLLMUsage{PromptTokens: 0, TotalTokens: 764}
+	cost := computeEmbeddingCostTotal(&p, usage, serviceTier{})
+	assert.InDelta(t, 764*0.0000001, cost, 1e-12)
+}
+
+func TestCalculateCost_EmbeddingTotalTokensFallbackWithOverride(t *testing.T) {
+	// End-to-end through CalculateCost: the provider-scoped override must
+	// resolve AND the embedding response must dispatch into the total_tokens
+	// fallback — a regression in override resolution or response dispatch
+	// returns an unpriced (or base-priced) embedding cost while the unit tests
+	// above keep passing.
+	model := "text-embedding-override"
+	pricing := configstoreTables.TableModelPricing{
+		Model:             model,
+		Provider:          "openai",
+		Mode:              "embedding",
+		InputCostPerToken: bifrost.Ptr(0.00000001),
+	}
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey(pricing.Model, pricing.Provider, pricing.Mode): pricing,
+	})
+	providerID := "openai"
+	require.NoError(t, s.SetOverrides([]configstoreTables.TablePricingOverride{{
+		ID:               "embedding-total-fallback-override",
+		ScopeKind:        string(ScopeKindProvider),
+		ProviderID:       &providerID,
+		MatchType:        string(MatchTypeExact),
+		Pattern:          model,
+		RequestTypes:     []schemas.RequestType{schemas.EmbeddingRequest},
+		PricingPatchJSON: `{"input_cost_per_token":0.00000002}`,
+	}}))
+	resp := makeEmbeddingResponse(schemas.OpenAI, model, &schemas.BifrostLLMUsage{TotalTokens: 764})
+	breakdown := s.CalculateCostBreakdown(resp, nil)
+	require.NotNil(t, breakdown)
+	assert.InDelta(t, 764*0.00000002, breakdown.TotalCost, 1e-12)
+}
+
+func TestComputeEmbeddingCost_PromptTokensWinOverTotal(t *testing.T) {
+	// When both fields are present the explicit prompt count stays authoritative.
+	p := configstoreTables.TableModelPricing{
+		InputCostPerToken:  bifrost.Ptr(0.0000001),
+		OutputCostPerToken: bifrost.Ptr(0.0),
+	}
+	usage := &schemas.BifrostLLMUsage{PromptTokens: 100, TotalTokens: 500}
+	cost := computeEmbeddingCostTotal(&p, usage, serviceTier{})
+	assert.InDelta(t, 100*0.0000001, cost, 1e-12)
+}
+
+func TestComputeEmbeddingCost_ZeroUsageStaysUnpriced(t *testing.T) {
+	p := configstoreTables.TableModelPricing{
+		InputCostPerToken:  bifrost.Ptr(0.0000001),
+		OutputCostPerToken: bifrost.Ptr(0.0),
+	}
+	// The dispatcher uses a nil cost to distinguish "no token pricing applied"
+	// (absent usage) from a real zero — assert the nil path directly rather than
+	// the flattened total, which would also pass on a wrong non-nil cost object.
+	cost := computeEmbeddingCost(&p, &schemas.BifrostLLMUsage{}, serviceTier{})
+	assert.Nil(t, cost)
+}
+
 // =========================================================================
 // 3. computeRerankCost — unit tests
 // =========================================================================
