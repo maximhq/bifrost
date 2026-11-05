@@ -974,7 +974,6 @@
 			"toolName": "Nom de l’outil",
 			"server": "Serveur",
 			"virtualKey": "Clé virtuelle",
-			"llmRequestId": "ID de la requête LLM",
 			"metadata": "Métadonnées",
 			"deleteFailed": "Échec de la suppression du journal",
 			"invalidDate": "Date invalide",

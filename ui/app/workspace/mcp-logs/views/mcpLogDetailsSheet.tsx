@@ -730,13 +730,6 @@ export function MCPLogDetailSheet({
 											}
 										/>
 									)}
-									{displayLog.llm_request_id && (
-										<LogEntryDetailsView
-											className="col-span-3 w-full"
-											label={t("mcpLogs.detail.llmRequestId")}
-											value={<span className="font-mono text-xs">{displayLog.llm_request_id}</span>}
-										/>
-									)}
 								</div>
 							</div>
 							{metadataEntries.length > 0 && (

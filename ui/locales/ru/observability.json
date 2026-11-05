@@ -1024,7 +1024,6 @@
 			"toolName": "Имя инструмента",
 			"server": "Сервер",
 			"virtualKey": "Виртуальный ключ",
-			"llmRequestId": "ID запроса LLM",
 			"metadata": "Метаданные",
 			"deleteFailed": "Не удалось удалить журнал",
 			"invalidDate": "Недействительная дата",

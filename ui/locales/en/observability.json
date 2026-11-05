@@ -974,7 +974,6 @@
 			"toolName": "Tool Name",
 			"server": "Server",
 			"virtualKey": "Virtual Key",
-			"llmRequestId": "LLM Request ID",
 			"metadata": "Metadata",
 			"deleteFailed": "Failed to delete log",
 			"invalidDate": "Invalid date",

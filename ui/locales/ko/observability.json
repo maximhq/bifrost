@@ -969,7 +969,6 @@
 			"toolName": "도구 이름",
 			"server": "서버",
 			"virtualKey": "가상 키",
-			"llmRequestId": "LLM 요청 ID",
 			"metadata": "메타데이터",
 			"deleteFailed": "로그를 삭제하지 못했어요.",
 			"invalidDate": "잘못된 날짜",

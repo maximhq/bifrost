@@ -974,7 +974,6 @@
 			"toolName": "Nome strumento",
 			"server": "Server",
 			"virtualKey": "Chiave virtuale",
-			"llmRequestId": "ID richiesta LLM",
 			"metadata": "Metadati",
 			"deleteFailed": "Eliminazione log non riuscita",
 			"invalidDate": "Data non valida",

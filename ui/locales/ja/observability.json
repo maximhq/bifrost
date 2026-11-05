@@ -968,7 +968,6 @@
 			"toolName": "ツール名",
 			"server": "サーバー",
 			"virtualKey": "仮想キー",
-			"llmRequestId": "LLM リクエスト ID",
 			"metadata": "メタデータ",
 			"deleteFailed": "ログの削除に失敗しました",
 			"invalidDate": "無効な日付",
