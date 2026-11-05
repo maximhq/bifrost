@@ -16,10 +16,33 @@ type responseHandler[T any] func(responseBody []byte, response *T, requestBody [
 // Used when the datasheet publishes no row for a (provider, model) pair. Caps
 // gates in this package pass one of these as their fallback.
 
-// defaultSupportsReasoningContentBlocks: gpt-oss carries replayed reasoning as
-// content blocks; the o-series and GPT-5 carry it as summary[] entries.
-func defaultSupportsReasoningContentBlocks(model string) bool {
-	return strings.Contains(strings.ToLower(model), "gpt-oss")
+// defaultSupportsReasoningContentBlocks: gpt-oss and every vLLM-served model carry
+// replayed reasoning as content blocks; the o-series and GPT-5 carry it as summary[] entries.
+func defaultSupportsReasoningContentBlocks(provider schemas.ModelProvider, model string) bool {
+	return provider == schemas.VLLM || strings.Contains(strings.ToLower(model), "gpt-oss")
+}
+
+// joinReasoningBlocks collapses reasoning text blocks into one, in order, joined by "\n" as
+// vLLM's harmony reader does; vLLM's general reader keeps only content[0]. Blocks holding
+// anything but reasoning text are returned unchanged.
+func joinReasoningBlocks(blocks []schemas.ResponsesMessageContentBlock) []schemas.ResponsesMessageContentBlock {
+	if len(blocks) < 2 {
+		return blocks
+	}
+	var b strings.Builder
+	for _, block := range blocks {
+		if block.Type != schemas.ResponsesOutputMessageContentTypeReasoning || block.Text == nil {
+			return blocks
+		}
+		if *block.Text == "" {
+			continue
+		}
+		if b.Len() > 0 {
+			b.WriteByte('\n')
+		}
+		b.WriteString(*block.Text)
+	}
+	return []schemas.ResponsesMessageContentBlock{{Type: schemas.ResponsesOutputMessageContentTypeReasoning, Text: schemas.Ptr(b.String())}}
 }
 
 // IsOpenAIReasoningModel matches OpenAI-family models that accept

@@ -2475,7 +2475,7 @@ func appendAnthropicToolBetaHeaders(headers []string, tool *AnthropicTool, caps 
 	// current docs — it's no longer part of the AdvancedToolUse bundle.
 	// allowed_callers is still bundle-only.
 	if tool.DeferLoading != nil && *tool.DeferLoading {
-		if !hasProvider || caps.SupportsToolSearch(features.ToolSearch) {
+		if !hasProvider || (caps.SupportsToolSearch(features.ToolSearch) && !features.ToolSearchHeaderless) {
 			headers = appendUniqueHeader(headers, AnthropicToolSearchBetaHeader)
 		}
 	}
@@ -2995,7 +2995,8 @@ func hasProgrammaticCaller(callers []string) bool {
 // rejected by Anthropic: those with an empty "thinking" field, or those
 // with an empty "signature" field. An empty signature means the block came
 // from a non-Anthropic upstream (OpenAI never emits signatures; Anthropic
-// always does), so it is unsafe to replay to Anthropic.
+// always does), so it is unsafe to replay to Anthropic. keepUnsigned keeps the
+// latter for upstreams that never sign their own thinking (vLLM, SGLang).
 //
 // The predicate must stay scoped to "thinking" blocks: "redacted_thinking"
 // blocks carry only an encrypted "data" payload (no thinking or signature
@@ -3007,7 +3008,7 @@ func hasProgrammaticCaller(callers []string) bool {
 // (23.7% of all bytes allocated, measured in production). Instead: scan once, then
 // rewrite each affected message once and the messages array once.
 // Pinned by TestStripEmptyThinkingBlocks_AllocationScaling.
-func StripEmptyThinkingBlocks(jsonBody []byte) ([]byte, error) {
+func StripEmptyThinkingBlocks(jsonBody []byte, keepUnsigned bool) ([]byte, error) {
 	messagesResult := providerUtils.GetJSONField(jsonBody, "messages")
 	if !messagesResult.Exists() || !messagesResult.IsArray() {
 		return jsonBody, nil
@@ -3028,7 +3029,7 @@ func StripEmptyThinkingBlocks(jsonBody []byte) ([]byte, error) {
 		kept := make([]gjson.Result, 0, len(blocks))
 		for _, block := range blocks {
 			if block.Get("type").String() == "thinking" &&
-				(block.Get("thinking").String() == "" || block.Get("signature").String() == "") {
+				(block.Get("thinking").String() == "" || (!keepUnsigned && block.Get("signature").String() == "")) {
 				stripped = true
 				continue
 			}
@@ -3355,7 +3356,7 @@ var betaHeaderPrefixToFeature = map[string]func(ProviderFeatureSupport) bool{
 	"context-management-":                        func(f ProviderFeatureSupport) bool { return f.ContextEditing },
 	"files-api-":                                 func(f ProviderFeatureSupport) bool { return f.FilesAPI },
 	AnthropicAdvancedToolUseBetaHeaderPrefix:     func(f ProviderFeatureSupport) bool { return f.AdvancedToolUse },
-	AnthropicToolSearchBetaHeaderPrefix:          func(f ProviderFeatureSupport) bool { return f.ToolSearch },
+	AnthropicToolSearchBetaHeaderPrefix:          func(f ProviderFeatureSupport) bool { return f.ToolSearch && !f.ToolSearchHeaderless },
 	AnthropicToolExamplesBetaHeaderPrefix:        func(f ProviderFeatureSupport) bool { return f.InputExamples },
 	AnthropicInterleavedThinkingBetaHeaderPrefix: func(f ProviderFeatureSupport) bool { return f.InterleavedThinking },
 	AnthropicSkillsBetaHeaderPrefix:              func(f ProviderFeatureSupport) bool { return f.Skills },

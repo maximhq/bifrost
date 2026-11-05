@@ -1270,25 +1270,25 @@ func (cm *ChatMessage) UnmarshalJSON(data []byte) error {
 // object (the shape OpenAI-compatible SDKs emit) where every provider converter
 // reads it: the last content block, promoting string content to a single text
 // block, or the last tool call when the message has no content. A block or tool
-// call that already carries its own marker keeps it. Empty content ("" or []) is
-// left as sent and counts as no content, since providers reject a breakpoint on an
-// empty text block and the AI SDK sends a tool-call-only assistant turn with
-// content "". Content and tool calls are copied before they are changed, so values
-// shared with the caller are never modified.
+// call that already carries its own marker keeps it. Empty string content is left
+// alone, since providers reject a breakpoint on an empty text block, and the marker
+// falls through to the tool calls. Content and tool calls are copied before they
+// are changed, so values shared with the caller are never modified.
 func (cm *ChatMessage) AttachMessageCacheControl(marker *CacheControl) {
 	if marker == nil {
 		return
 	}
 	if cm.Content != nil {
-		if cm.Content.ContentStr != nil && *cm.Content.ContentStr != "" {
-			cm.Content = &ChatMessageContent{ContentBlocks: []ChatContentBlock{{
-				Type:         ChatContentBlockTypeText,
-				Text:         cm.Content.ContentStr,
-				CacheControl: marker,
-			}}}
-			return
-		}
-		if n := len(cm.Content.ContentBlocks); n > 0 {
+		if s := cm.Content.ContentStr; s != nil {
+			if *s != "" {
+				cm.Content = &ChatMessageContent{ContentBlocks: []ChatContentBlock{{
+					Type:         ChatContentBlockTypeText,
+					Text:         s,
+					CacheControl: marker,
+				}}}
+				return
+			}
+		} else if n := len(cm.Content.ContentBlocks); n > 0 {
 			if cm.Content.ContentBlocks[n-1].CacheControl == nil {
 				blocks := slices.Clone(cm.Content.ContentBlocks)
 				blocks[n-1].CacheControl = marker

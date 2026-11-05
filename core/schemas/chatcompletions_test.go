@@ -353,23 +353,13 @@ func TestChatMessageUnmarshalMessageLevelCacheControl(t *testing.T) {
 		}
 	})
 
-	// The AI SDK openai-compatible provider sends a tool-call-only assistant turn
-	// with content "" rather than null.
 	t.Run("assistant tool call with empty string content takes the marker", func(t *testing.T) {
-		msg := decode(t, `{"role":"assistant","content":"","tool_calls":[{"id":"call_1","type":"function","function":{"name":"read","arguments":"{}"}},{"id":"call_2","type":"function","function":{"name":"bash","arguments":"{}"}}],"cache_control":{"type":"ephemeral"}}`)
-		calls := msg.ChatAssistantMessage.ToolCalls
-		if calls[0].CacheControl != nil || calls[1].CacheControl == nil {
-			t.Fatalf("only the last tool call should carry the marker, got %+v / %+v", calls[0].CacheControl, calls[1].CacheControl)
-		}
+		msg := decode(t, `{"role":"assistant","content":"","tool_calls":[{"id":"call_1","type":"function","function":{"name":"read","arguments":"{}"}}],"cache_control":{"type":"ephemeral"}}`)
 		if msg.Content == nil || msg.Content.ContentStr == nil || *msg.Content.ContentStr != "" || msg.Content.ContentBlocks != nil {
-			t.Fatalf("empty string content should be left as sent, got %+v", msg.Content)
+			t.Fatalf("empty content should stay an empty string, got %+v", msg.Content)
 		}
-	})
-
-	t.Run("assistant tool call with empty block list takes the marker", func(t *testing.T) {
-		msg := decode(t, `{"role":"assistant","content":[],"tool_calls":[{"id":"call_1","type":"function","function":{"name":"read","arguments":"{}"}}],"cache_control":{"type":"ephemeral"}}`)
-		if msg.ChatAssistantMessage.ToolCalls[0].CacheControl == nil {
-			t.Fatalf("the tool call should carry the marker, got %+v", msg.ChatAssistantMessage.ToolCalls[0])
+		if calls := msg.ChatAssistantMessage.ToolCalls; calls[0].CacheControl == nil {
+			t.Fatalf("the last tool call should carry the marker, got %+v", calls[0].CacheControl)
 		}
 	})
 

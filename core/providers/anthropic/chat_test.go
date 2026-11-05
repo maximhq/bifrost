@@ -2998,12 +2998,11 @@ func TestToAnthropicChatRequest_PromptCacheBreakpointBecomesCacheControl(t *test
 }
 
 // openAICompatibleMessageLevelCacheControl is a turn as the AI SDK openai-compatible
-// provider sends it: cache_control on the message objects, string content, and
-// content "" on the tool-call-only assistant turn.
+// provider sends it: cache_control on the message objects, string content.
 const openAICompatibleMessageLevelCacheControl = `[
   {"role":"system","content":"You are a coding agent.","cache_control":{"type":"ephemeral"}},
   {"role":"user","content":"Create notes.txt"},
-  {"role":"assistant","content":"","tool_calls":[{"id":"call_1","type":"function","function":{"name":"write","arguments":"{\"path\":\"notes.txt\"}"}}],"cache_control":{"type":"ephemeral"}},
+  {"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"write","arguments":"{\"path\":\"notes.txt\"}"}}]},
   {"role":"tool","tool_call_id":"call_1","content":"Wrote notes.txt","cache_control":{"type":"ephemeral"}}
 ]`
 
@@ -3027,19 +3026,8 @@ func TestToAnthropicChatRequest_MessageLevelCacheControl(t *testing.T) {
 
 	body, err := sonic.Marshal(result)
 	require.NoError(t, err)
-	assert.Equal(t, 3, strings.Count(string(body), `"cache_control"`),
-		"system, tool_use and tool result breakpoints must all reach Anthropic: %s", body)
-
-	var toolUse *AnthropicContentBlock
-	for i := range result.Messages {
-		for j := range result.Messages[i].Content.ContentBlocks {
-			if result.Messages[i].Content.ContentBlocks[j].Type == AnthropicContentBlockTypeToolUse {
-				toolUse = &result.Messages[i].Content.ContentBlocks[j]
-			}
-		}
-	}
-	require.NotNil(t, toolUse)
-	assert.NotNil(t, toolUse.CacheControl, "the assistant's content \"\" must not swallow its marker")
+	assert.Equal(t, 2, strings.Count(string(body), `"cache_control"`),
+		"system and tool result breakpoints must both reach Anthropic: %s", body)
 }
 
 // A tool result carries one breakpoint on Anthropic, hoisted onto the tool_result

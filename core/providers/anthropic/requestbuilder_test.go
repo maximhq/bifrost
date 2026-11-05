@@ -3657,3 +3657,56 @@ func TestSearchToolVersionKeepsDeclaredCodeExecution(t *testing.T) {
 		}
 	}
 }
+
+// TestBuildAnthropicResponsesRequestBody_UnsignedThinkingReplay pins that a thinking
+// block with an empty signature is replayed verbatim to Anthropic-compatible
+// self-hosted servers (vLLM, SGLang), which never sign their own thinking, while
+// native Anthropic still has it stripped (it rejects an unsigned block).
+func TestBuildAnthropicResponsesRequestBody_UnsignedThinkingReplay(t *testing.T) {
+	const thinking = "I privately choose the code word PAMPLEMOUSSE-47."
+	body := []byte(`{"model":"deepseek-v4.1-flash","max_tokens":3000,"thinking":{"type":"enabled","budget_tokens":2000},` +
+		`"tools":[{"name":"ping","description":"ping","input_schema":{"type":"object","properties":{}}}],` +
+		`"messages":[{"role":"user","content":"Pick a code word, then call ping."},` +
+		`{"role":"assistant","content":[{"type":"thinking","thinking":"` + thinking + `","signature":""},{"type":"tool_use","id":"t1","name":"ping","input":{}}]},` +
+		`{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"pong"}]}]}`)
+
+	build := func(t *testing.T, provider schemas.ModelProvider, raw bool) []byte {
+		t.Helper()
+		ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+		var req AnthropicMessageRequest
+		if err := json.Unmarshal(body, &req); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		request := req.ToBifrostResponsesRequest(ctx)
+		request.Provider = provider
+		if raw {
+			ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+			request.RawRequestBody = body
+		}
+		out, bifrostErr := BuildAnthropicResponsesRequestBody(ctx, request, AnthropicRequestBuildConfig{Provider: provider, ValidateTools: true})
+		if bifrostErr != nil {
+			t.Fatalf("build: %v", bifrostErr.Error)
+		}
+		return out
+	}
+	thinkingOf := func(out []byte) string {
+		return gjson.GetBytes(out, `messages.1.content.#(type=="thinking").thinking`).String()
+	}
+
+	for _, provider := range []schemas.ModelProvider{schemas.VLLM, schemas.SGL} {
+		for _, raw := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s_raw=%v_keeps", provider, raw), func(t *testing.T) {
+				if got := thinkingOf(build(t, provider, raw)); got != thinking {
+					t.Fatalf("unsigned thinking not replayed, got %q", got)
+				}
+			})
+		}
+	}
+	for _, raw := range []bool{false, true} {
+		t.Run(fmt.Sprintf("anthropic_raw=%v_strips", raw), func(t *testing.T) {
+			if got := thinkingOf(build(t, schemas.Anthropic, raw)); got != "" {
+				t.Fatalf("unsigned thinking must be stripped for native Anthropic, got %q", got)
+			}
+		})
+	}
+}
