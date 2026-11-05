@@ -3,6 +3,7 @@ import { LoadErrorView } from "@/components/loadErrorView";
 import { Button } from "@/components/ui/button";
 import { TruncatedLabel } from "@/components/ui/truncatedLabel";
 import { useIsMobile } from "@/hooks/use-mobile";
+import { useActionParam } from "@/hooks/useActionParam";
 import { useGetRelaysQuery } from "@/lib/store";
 import { cn } from "@/lib/utils";
 import { showLoadError } from "@/lib/utils/loadError";
@@ -15,7 +16,6 @@ import { DeleteEndpointDialog } from "./dialogs/deleteEndpointDialog";
 import { AddEndpointSheet } from "./sheets/addEndpointSheet";
 import { EndpointsEmptyState } from "./views/endpointsEmptyState";
 import { EndpointView } from "./views/endpointView";
-import { useActionParam } from "@/hooks/useActionParam";
 
 /** Relays, laid out like the providers page: the endpoints on the left, the selected one on the right. */
 export default function RelaysPage() {
@@ -77,7 +77,6 @@ export default function RelaysPage() {
 				)}
 			>
 				<div className="flex min-h-0 flex-1 flex-col rounded-md bg-zinc-50/50 md:p-4 md:pb-0 dark:bg-zinc-800/20">
-					<div className="text-muted-foreground mb-2 shrink-0 text-xs font-medium">{t("relays.page.title")}</div>
 					<div className="custom-scrollbar min-h-0 flex-1 overflow-y-auto">
 						{endpoints?.map((endpoint) => (
 							<div
@@ -122,8 +121,8 @@ export default function RelaysPage() {
 					</div>
 				</div>
 			</div>
-			{/* Scrolls on its own so the relay list stays in view beside a long route table. */}
-			<div className={cn("custom-scrollbar min-w-0 w-full md:h-full", mobileDetailOpen ? "block" : "hidden md:block")}>
+			{/* Fixed height on desktop: the route table scrolls first, and the pane scrolls once the header leaves it too little room. */}
+			<div className={cn("custom-scrollbar min-w-0 w-full flex-col md:flex md:h-full", mobileDetailOpen ? "flex" : "hidden")}>
 				<Button variant="ghost" size="sm" className="mb-3 -ml-2 md:hidden" onClick={() => setMobileDetailOpen(false)}>
 					<ArrowLeft className="size-4" />
 					{t("relays.page.back")}

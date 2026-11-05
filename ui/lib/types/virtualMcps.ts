@@ -41,6 +41,8 @@ export interface GetVirtualMCPsParams {
 	search?: string;
 	limit?: number;
 	offset?: number;
+	// Only Virtual MCPs that bundle this source server (exact client_id).
+	mcp_client_id?: string;
 }
 
 export interface GetVirtualMCPsResponse {

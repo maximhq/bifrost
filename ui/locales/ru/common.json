@@ -444,6 +444,8 @@
 		"bufferSizeMustBeLessThanOrEqualTo1000": "Размер буфера должен быть не больше 1000",
 		"proxyUrlIsRequiredWhenUsingHttpOrSocks5Proxy": "При использовании прокси HTTP или SOCKS5 необходимо указать URL прокси",
 		"mustBeAValidUrlEGHttpProxyExample": "Укажите корректный URL (например, http://proxy.example.com:8080)",
+		"socks5ProxyUrlMustStartWithSocks5Scheme": "URL прокси SOCKS5 должен начинаться с socks5:// или socks5h://",
+		"httpProxyUrlMustStartWithHttpScheme": "URL HTTP-прокси должен начинаться с http:// или https://",
 		"setARoleAnIndexOrBothAPointWith": "Укажите роль, индекс или оба значения: запись без них не соответствует ни одному элементу",
 		"use164LettersDigitsOr": "Используйте от 1 до 64 букв, цифр, _ или -",
 		"pickAnMcpServer": "Выберите MCP-сервер",

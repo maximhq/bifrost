@@ -426,6 +426,8 @@
 		"bufferSizeMustBeLessThanOrEqualTo1000": "O tamanho do buffer tem de ser inferior ou igual a 1000",
 		"proxyUrlIsRequiredWhenUsingHttpOrSocks5Proxy": "O URL do proxy é obrigatório ao usar um proxy HTTP ou SOCKS5",
 		"mustBeAValidUrlEGHttpProxyExample": "Tem de ser um URL válido (ex.: http://proxy.example.com:8080)",
+		"socks5ProxyUrlMustStartWithSocks5Scheme": "Um URL de proxy SOCKS5 tem de começar por socks5:// ou socks5h://",
+		"httpProxyUrlMustStartWithHttpScheme": "Um URL de proxy HTTP tem de começar por http:// ou https://",
 		"setARoleAnIndexOrBothAPointWith": "Defina uma função, um índice, ou ambos - um ponto sem nenhum deles não corresponde a nada",
 		"use164LettersDigitsOr": "Use 1-64 letras, dígitos, _ ou -",
 		"pickAnMcpServer": "Escolha um servidor MCP",

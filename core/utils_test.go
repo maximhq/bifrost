@@ -1214,3 +1214,15 @@ func TestClearContextForInternalRequestKeepsTheAnthropicStreamPromptUsageWitness
 		})
 	}
 }
+
+// Only a video edit that names an existing video is walked across keys; one that uploads content keeps normal key selection.
+func TestIsKeyScopedLookupRequest_VideoEdit(t *testing.T) {
+	byID := &schemas.BifrostRequest{RequestType: schemas.VideoEditRequest, VideoEditRequest: &schemas.BifrostVideoEditRequest{Input: &schemas.VideoEditInput{Video: schemas.VideoInput{ID: "video_1"}}}}
+	byBytes := &schemas.BifrostRequest{RequestType: schemas.VideoEditRequest, VideoEditRequest: &schemas.BifrostVideoEditRequest{Input: &schemas.VideoEditInput{Video: schemas.VideoInput{Video: []byte("x")}}}}
+	if !isKeyScopedLookupRequest(byID) {
+		t.Fatal("edit by id should be walked across keys")
+	}
+	if isKeyScopedLookupRequest(byBytes) {
+		t.Fatal("edit with uploaded content should keep normal key selection")
+	}
+}

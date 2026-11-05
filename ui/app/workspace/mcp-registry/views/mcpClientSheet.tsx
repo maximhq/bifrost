@@ -1214,11 +1214,7 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 													<p>
 														{perUserDiscovery
 															? t("registry.sheet.perUserDiscoveryOnWarning")
-															: mcpClient.config.auth_type === "per_user_oauth"
-																? t("registry.sheet.perUserDiscoveryOffWarningSignIn", {
-																		action: t("registry.actions.refreshAdminCredential"),
-																	})
-																: t("registry.sheet.perUserDiscoveryOffWarningPending")}
+															: t("registry.sheet.perUserDiscoveryOffWarningPending")}
 													</p>
 												</div>
 											)}

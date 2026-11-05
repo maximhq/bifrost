@@ -42,3 +42,17 @@ type AsyncJobResponse struct {
 	Result      interface{}    `json:"result,omitempty"`
 	Error       *BifrostError  `json:"error,omitempty"`
 }
+
+// MarshalJSON keeps Result's Go type intact for callers and applies the
+// explicit-zero usage view to Chat/Text results only when serializing.
+func (r AsyncJobResponse) MarshalJSON() ([]byte, error) {
+	type wire AsyncJobResponse
+	out := wire(r)
+	switch result := r.Result.(type) {
+	case *BifrostChatResponse:
+		out.Result = result.WithPreservedUsage()
+	case *BifrostTextCompletionResponse:
+		out.Result = result.WithPreservedUsage()
+	}
+	return MarshalSorted(out)
+}

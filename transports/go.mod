@@ -15,7 +15,7 @@ require (
 	github.com/google/pprof v0.0.0-20260802141513-ef3492d7dac3
 	github.com/google/uuid v1.6.0
 	github.com/klauspost/compress v1.20.0
-	github.com/mark3labs/mcp-go v1.3.0
+	github.com/mark3labs/mcp-go v1.5.0
 	github.com/maximhq/bifrost/core v1.14.1
 	github.com/maximhq/bifrost/framework v1.11.1
 	github.com/maximhq/bifrost/plugins/compat v0.5.3
@@ -239,3 +239,5 @@ require (
 	gorm.io/driver/clickhouse v0.7.0 // indirect
 	gorm.io/driver/postgres v1.6.0 // indirect
 )
+
+replace github.com/mark3labs/mcp-go => github.com/maximhq/mcp-go v0.0.0-20261102181017-b7da3bc145a1

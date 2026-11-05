@@ -2721,8 +2721,13 @@ func TestSupportsAdaptiveThinking(t *testing.T) {
 		{"claude-mythos-5", true},
 		{"claude-mythos-preview", true},
 		{"global.anthropic.claude-fable-5", true},
+		// Haiku 5+: adaptive is the only thinking-on mode.
+		{"claude-haiku-5-5", true},
+		{"anthropic.claude-haiku-5-5", true},
+		{"claude-haiku-5-5@default", true},
 		{"claude-opus-4-5-20241022", false},
 		{"claude-sonnet-4-5-20241022", false},
+		{"claude-haiku-4-5-20251001", false},
 		{"claude-haiku-4-6-20250514", false}, // haiku does not support adaptive
 		{"claude-haiku-4-7-20260401", false}, // haiku, not opus
 		{"claude-haiku-4-8-20260601", false}, // haiku, not opus
@@ -2805,6 +2810,41 @@ func TestIsSonnet5Plus(t *testing.T) {
 	}
 }
 
+// TestIsHaiku5Plus pins the Haiku 5 predicate. Haiku 5.5 shares the Sonnet 5+
+// request surface (adaptive-only thinking, temperature/top_p/top_k removed). The
+// "haiku-5" substring must NOT match "haiku-4-5" or "3-5-haiku".
+func TestIsHaiku5Plus(t *testing.T) {
+	tests := []struct {
+		model    string
+		expected bool
+	}{
+		{"claude-haiku-5-5", true},
+		{"Claude-Haiku-5-5", true},
+		{"claude-haiku-5.5", true},
+		{"anthropic.claude-haiku-5-5", true},
+		{"global.anthropic.claude-haiku-5-5", true},
+		{"claude-haiku-5-5@default", true},
+		{"databricks-claude-haiku-5-5", true},
+		// Must NOT match older Haikus or other families.
+		{"claude-haiku-4-5", false},
+		{"claude-haiku-4-5-20251001", false},
+		{"anthropic.claude-haiku-4-5-20251001-v1:0", false},
+		{"claude-3-5-haiku-20241022", false},
+		{"claude-sonnet-5-5", false},
+		{"claude-opus-5", false},
+		{"", false},
+		{"some-non-claude-model", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.model, func(t *testing.T) {
+			if got := IsHaiku5Plus(tt.model); got != tt.expected {
+				t.Errorf("IsHaiku5Plus(%q) = %v, want %v", tt.model, got, tt.expected)
+			}
+		})
+	}
+}
+
 // TestIsOpus5Plus pins the Opus 5 predicate. Opus 5 shares Opus 4.8's request
 // surface (adaptive-only thinking, temperature/top_p/top_k removed, fast mode,
 // effort, mid-conversation system). The "opus-5" substring must NOT match
@@ -2863,6 +2903,9 @@ func TestIsAdaptiveOnlyThinkingModel(t *testing.T) {
 		{"claude-fable-5", true},
 		{"claude-mythos-5", true},
 		{"claude-mythos-preview", true},
+		// Haiku 5+.
+		{"claude-haiku-5-5", true},
+		{"global.anthropic.claude-haiku-5-5", true},
 		// Adaptive-capable but NOT adaptive-only (budget_tokens still accepted).
 		{"claude-opus-4-6", false},
 		{"claude-sonnet-4-6", false},
@@ -3008,6 +3051,9 @@ func TestSupportsEffortParameter(t *testing.T) {
 		{"claude-opus-4-5", true},
 		{"claude-opus-4.5-20251101", true},
 		{"claude-opus-4-5-20251101", true},
+		{"claude-haiku-5-5", true},
+		{"anthropic.claude-haiku-5-5", true},
+		{"claude-haiku-5-5@default", true},
 		// Bedrock + Vertex IDs for supported models keep the substring shape.
 		{"anthropic.claude-opus-4-8-v1", true},
 		{"anthropic.claude-opus-4-7-v1", true},
@@ -3248,6 +3294,9 @@ func TestStripUnsupportedFields_EffortLevelClamp(t *testing.T) {
 		{"claude-sonnet-4-6", "max", "max"},
 		{"claude-opus-4-7", "xhigh", "xhigh"},
 		{"claude-opus-5-5", "max", "max"},
+		{"claude-haiku-5-5", "low", "low"},
+		{"claude-haiku-5-5", "xhigh", "xhigh"},
+		{"claude-haiku-5-5", "max", "max"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.model+"/"+tt.effort+"/raw", func(t *testing.T) {

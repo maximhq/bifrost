@@ -4064,14 +4064,14 @@
         },
         "object_storage_exclude_request_types": {
           "type": "array",
-          "description": "Request types (log object type, e.g. list_models, embedding) whose logs are not offloaded to object storage. These logs are written to the logs database in full instead. Hidden logs (content logging disabled with client.retain_content_in_object_storage on) are still offloaded, so their content never lands in the database.",
+          "description": "Request types (log object type, e.g. list_models, embedding; relay for Relay Logs rows) whose logs are not offloaded to object storage. These logs are written to the logs database in full instead. Hidden logs (content logging disabled with client.retain_content_in_object_storage on) are still offloaded, so their content never lands in the database.",
           "items": {
             "type": "string"
           }
         },
         "object_storage_exclude_fields": {
           "type": "array",
-          "description": "LLM log payload field DB column names that should NOT be offloaded to object storage and must remain in the database (e.g. output_message, input_history, raw_request, raw_response). Unknown names are ignored. error_details always remains in the database (except on content-hidden logs), since the error type, error code and status code breakdowns query it; any raw provider bodies inside it are offloaded unless error_details is listed here. MCP logs always offload the full log and keep dashboard/table fields plus a 200-character input preview in the database.",
+          "description": "LLM log payload field DB column names that should NOT be offloaded to object storage and must remain in the database (e.g. output_message, input_history, raw_request, raw_response; request_body and response_body for Relay Logs rows). Unknown names are ignored. error_details always remains in the database (except on content-hidden logs), since the error type, error code and status code breakdowns query it; any raw provider bodies inside it are offloaded unless error_details is listed here. MCP logs always offload the full log and keep dashboard/table fields plus a 200-character input preview in the database.",
           "items": {
             "type": "string"
           }
@@ -4080,6 +4080,11 @@
           "type": "integer",
           "minimum": 0,
           "description": "Days to retain log entries. 0 disables retention-based cleanup."
+        },
+        "capture_client_ip": {
+          "type": "boolean",
+          "default": false,
+          "description": "Record the caller's IP as client_ip on LLM, MCP and relay logs, in the order enterprise audit logs use: leftmost X-Forwarded-For, else X-Real-IP, else the TCP peer. The headers are caller-supplied and not verified; to trust the value, run behind a proxy that overwrites them and block direct access to Bifrost. Off by default. When off, new logs leave client_ip empty in the logs database and in object storage; turning it off does not clear values already recorded. Takes effect on restart."
         }
       },
       "additionalProperties": false
@@ -6579,7 +6584,7 @@
       "properties": {
         "id": {
           "type": "string",
-          "description": "Unique routing rule ID"
+          "description": "Unique routing rule ID. Optional: a rule without an id is matched to the stored rule with the same name, scope and scope_id, and gets a generated ID the first time it is stored, so name must be unique within the scope. A rule with an id is matched by id, so changing the id creates a new rule; with source_of_truth split the old rule stays in the database."
         },
         "name": {
           "type": "string",
@@ -6640,7 +6645,7 @@
         },
         "priority": {
           "type": "integer",
-          "description": "Evaluation order within the rule's scope (scope plus scope_id); lower runs first. Must be unique within that scope, counting disabled rules and rules created in the UI or API. Defaults to 0, so two rules in one scope that both omit priority collide, and Bifrost exits at startup with 'routing rule with priority 0 already exists for scope ...'. Give every rule that shares a scope its own priority.",
+          "description": "Evaluation order within the rule's scope (scope plus scope_id); lower runs first. Must be unique within that scope, counting disabled rules and rules created in the UI or API. Defaults to 0, so two rules in one scope that both omit priority collide, and at startup Bifrost keeps the first and skips the other with a warning. A rule whose priority is held by a stored rule that config.json does not declare (for example the old row left behind by changing a rule's id) is also skipped with a warning. Give every rule that shares a scope its own priority.",
           "default": 0
         },
         "query": {
@@ -6677,7 +6682,6 @@
         }
       },
       "required": [
-        "id",
         "name",
         "targets"
       ],
@@ -10002,7 +10006,7 @@
         },
         "per_user_discovery": {
           "type": "boolean",
-          "description": "Only valid for per-user auth types (per_user_oauth, per_user_headers, token_exchange), and not for openapi clients: when true, each caller's discovery (its tools, prompts, resources and the server's instructions) is made with its own credential and kept per (auth mode, identity, client), and the client stores no admin credential and does no admin discovery. When false, every caller is served the discovery made with the admin credential. Turning it on deletes the stored admin credential and discovery; turning it off deletes every caller's discovery, and the client needs an admin credential again.",
+          "description": "Only valid for per-user auth types (per_user_oauth, per_user_headers, token_exchange), and not for openapi clients: when true, each caller's discovery (its tools, prompts, resources and the server's instructions) is made with its own credential and kept per (auth mode, identity, client), and the client stores no admin credential and does no admin discovery. When false, every caller is served the discovery made with the admin credential. Turning it on deletes the stored admin credential and discovery; turning it off deletes every caller's discovery, and the client goes back to pending verification until an admin verifies it again.",
           "default": false
         },
         "tool_pricing": {
@@ -11395,6 +11399,9 @@
         "crossAppAccess": {
           "$ref": "#/$defs/scim_cross_app_access"
         },
+        "workloadIdentity": {
+          "$ref": "#/$defs/scim_workload_identity"
+        },
         "attributeTeamMappings": {
           "$ref": "#/$defs/scim_attribute_team_mappings"
         },
@@ -11500,6 +11507,9 @@
         "crossAppAccess": {
           "$ref": "#/$defs/scim_cross_app_access"
         },
+        "workloadIdentity": {
+          "$ref": "#/$defs/scim_workload_identity"
+        },
         "attributeTeamMappings": {
           "$ref": "#/$defs/scim_attribute_team_mappings"
         },
@@ -11588,6 +11598,9 @@
         },
         "crossAppAccess": {
           "$ref": "#/$defs/scim_cross_app_access"
+        },
+        "workloadIdentity": {
+          "$ref": "#/$defs/scim_workload_identity"
         },
         "attributeTeamMappings": {
           "$ref": "#/$defs/scim_attribute_team_mappings"
@@ -11690,6 +11703,9 @@
         "crossAppAccess": {
           "$ref": "#/$defs/scim_cross_app_access"
         },
+        "workloadIdentity": {
+          "$ref": "#/$defs/scim_workload_identity"
+        },
         "attributeTeamMappings": {
           "$ref": "#/$defs/scim_attribute_team_mappings"
         },
@@ -11777,6 +11793,9 @@
         },
         "crossAppAccess": {
           "$ref": "#/$defs/scim_cross_app_access"
+        },
+        "workloadIdentity": {
+          "$ref": "#/$defs/scim_workload_identity"
         },
         "attributeTeamMappings": {
           "$ref": "#/$defs/scim_attribute_team_mappings"
@@ -11882,6 +11901,9 @@
         },
         "crossAppAccess": {
           "$ref": "#/$defs/scim_cross_app_access"
+        },
+        "workloadIdentity": {
+          "$ref": "#/$defs/scim_workload_identity"
         },
         "attributeTeamMappings": {
           "$ref": "#/$defs/scim_attribute_team_mappings"
@@ -12026,6 +12048,9 @@
         },
         "crossAppAccess": {
           "$ref": "#/$defs/scim_cross_app_access"
+        },
+        "workloadIdentity": {
+          "$ref": "#/$defs/scim_workload_identity"
         },
         "attributeTeamMappings": {
           "$ref": "#/$defs/scim_attribute_team_mappings"
@@ -12527,6 +12552,171 @@
             "additionalProperties": false
           }
         }
+      },
+      "additionalProperties": false
+    },
+    "scim_workload_identity": {
+      "type": "object",
+      "description": "Workload identity on this SSO provider: token issuers, besides the provider itself, whose workload tokens can be mapped to service accounts.",
+      "properties": {
+        "additionalTrustedIssuers": {
+          "type": "array",
+          "maxItems": 20,
+          "items": {
+            "$ref": "#/$defs/scim_trusted_issuer"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "scim_trusted_issuer": {
+      "type": "object",
+      "description": "A token issuer whose workload tokens, addressed to one of its audiences, can authenticate the service accounts they are mapped to. Workloads are mapped to service accounts in the dashboard or through the API, not in this file.",
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255,
+          "pattern": "\\S",
+          "description": "Name of the issuer, unique among the provider's issuers ignoring case, e.g. 'AWS prod'. Mappings refer to the issuer by this name: renaming or removing it leaves them without an issuer until one with the name is back."
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "aws",
+            "generic"
+          ],
+          "description": "'aws' trusts AWS STS outbound identity federation tokens, named by IAM role ARN. 'generic' trusts any OIDC issuer and takes identityClaim and machineCheck from this entry; with machineCheck 'any' it takes only tokens whose identity claim is mapped; a rule is required to map the SSO app's own client ID, which people's tokens also carry."
+        },
+        "issuerUrl": {
+          "type": "string",
+          "maxLength": 1024,
+          "pattern": "^(https://[^/?#@\\s]+|http://(localhost|127\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}|\\[::1\\])(:\\d+)?)(/[^?#\\s]*)?$",
+          "description": "The issuer exactly as tokens carry it in iss: https, or http only on localhost for local testing, with no user info, query or fragment. Signing keys are found through its OIDC discovery document. A mapping made on this issuer stops working if the URL changes."
+        },
+        "audiences": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 10,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512,
+            "pattern": "\\S"
+          },
+          "description": "Audiences a workload token must be addressed to, typically this Bifrost's URL."
+        },
+        "identityClaim": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512,
+          "pattern": "\\S",
+          "description": "For 'generic', required: the claim whose value names the workload, e.g. client_id or sub. Values are matched exactly. A mapping made on this issuer stops working if the claim changes."
+        },
+        "machineCheck": {
+          "type": "object",
+          "description": "For 'generic', required: how a workload's token is told from a person's. 'any' when the issuer only issues to workloads, or when only mapped workload IDs should be taken; otherwise a rule only workload tokens pass, e.g. Okta sub_equals_claim cid, Auth0 claim_equals gty client-credentials, Keycloak claim_prefix preferred_username service-account-.",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "any",
+                "sub_equals_claim",
+                "claim_equals",
+                "claim_prefix"
+              ]
+            },
+            "claim": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "\\S",
+              "description": "The claim the rule reads. Required for every kind but 'any'."
+            },
+            "value": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "\\S",
+              "description": "The value, or prefix, the claim must have. Required for claim_equals and claim_prefix; an empty one would match every token."
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "kind": {
+                    "const": "sub_equals_claim"
+                  }
+                },
+                "required": [
+                  "kind"
+                ]
+              },
+              "then": {
+                "required": [
+                  "claim"
+                ]
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "kind": {
+                    "enum": [
+                      "claim_equals",
+                      "claim_prefix"
+                    ]
+                  }
+                },
+                "required": [
+                  "kind"
+                ]
+              },
+              "then": {
+                "required": [
+                  "claim",
+                  "value"
+                ]
+              }
+            }
+          ],
+          "additionalProperties": false
+        },
+        "maxLifetimeSeconds": {
+          "type": "integer",
+          "minimum": 300,
+          "maximum": 172800,
+          "description": "Longest total token lifetime accepted. Defaults to 24 hours."
+        },
+        "disabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Set to true to keep the issuer and its mappings but refuse its tokens."
+        }
+      },
+      "required": [
+        "name",
+        "kind",
+        "issuerUrl",
+        "audiences"
+      ],
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "generic"
+          }
+        },
+        "required": [
+          "kind"
+        ]
+      },
+      "then": {
+        "required": [
+          "identityClaim",
+          "machineCheck"
+        ]
       },
       "additionalProperties": false
     },

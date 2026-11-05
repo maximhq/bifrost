@@ -360,11 +360,13 @@ func TestTagPassthroughEntry(t *testing.T) {
 	require.Empty(t, off.PassthroughParseFormat, "rows without stored content are never parsed")
 	require.True(t, off.IsPassthrough)
 	require.Equal(t, string(schemas.ChatCompletionRequest), off.Object, "the route types the row whatever the content policy")
+	require.Empty(t, off.PassthroughStreamFormat, "a non-streamed row has no stream format")
 
 	stream := &logstore.Log{Object: string(schemas.PassthroughStreamRequest), Provider: "openai", Model: "gpt-4o"}
 	tagPassthroughEntry(ctx, stream, chatRoute, true)
 	require.Equal(t, schemas.OpenAI, stream.PassthroughParseFormat, "without a stamped base type the row's provider is the format")
 	require.Equal(t, string(schemas.ChatCompletionStreamRequest), stream.Object)
+	require.Equal(t, schemas.RawResponseFormatOpenAIChatCompletionChunk, stream.PassthroughStreamFormat)
 
 	// A GET on a generation route (listing stored chat completions) is not that request.
 	list := &logstore.Log{Object: string(schemas.PassthroughRequest), Provider: "openai", Model: "gpt-4o"}
