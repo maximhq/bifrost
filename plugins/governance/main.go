@@ -1044,11 +1044,11 @@ func (p *GovernancePlugin) ResolveAccess(ctx *schemas.BifrostContext) (schemas.A
 	if access := g.Access(); access != nil {
 		return access, nil
 	}
-	bases, scoping, mode := p.store.ResolvePermits(ctx)
+	bases, ceilings, scoping, mode := p.store.ResolvePermits(ctx)
 	if len(bases) == 0 && scoping == nil {
 		return nil, nil
 	}
-	access := grant.NewAccess(bases, scoping, mode, p.modelMatcher())
+	access := grant.NewAccess(bases, scoping, mode, p.modelMatcher(), grant.WithCeilings(ceilings...))
 	g.SetAccess(access)
 	return access, nil
 }
@@ -1972,14 +1972,20 @@ func (p *GovernancePlugin) PreA2AHook(ctx *schemas.BifrostContext, req *schemas.
 	}
 	if defaultPermit := p.defaultAgentPermit(ctx.Grant().Identity()); defaultPermit != nil {
 		bases := []schemas.Permit{defaultPermit}
+		var ceilings [][]schemas.Permit
 		var scoping schemas.Permit
 		var mode grant.CompositionMode
 		if access != nil {
 			bases = append(access.Bases(), defaultPermit)
+			// Agents allowed by default are allowed to everyone, so no ceiling takes them away: each
+			// layer carries the default permit as well.
+			for _, layer := range access.Ceilings() {
+				ceilings = append(ceilings, append(layer, defaultPermit))
+			}
 			scoping = access.Scoping()
 			mode = grant.CompositionMode(access.Mode())
 		}
-		access = grant.NewAccess(bases, scoping, mode, p.modelMatcher())
+		access = grant.NewAccess(bases, scoping, mode, p.modelMatcher(), grant.WithCeilings(ceilings...))
 	}
 	if refusal := unusablePermit(access); refusal != nil {
 		return deny(refusal.Decision, refusal.Reason)

@@ -157,7 +157,11 @@ type GovernanceStore interface {
 	// may not. Which of those happened is not this store's to report: the funnel refuses a request
 	// that named a project and carries no scoping permit, exactly as it refuses one that presented a
 	// credential nothing granted.
-	ResolvePermits(ctx *schemas.BifrostContext) (bases []schemas.Permit, scoping schemas.Permit, mode grant.CompositionMode)
+	//
+	// A store may also answer with ceilings: layers of permits that cap what the caller's permits
+	// reach without granting anything of their own (see grant.WithCeilings). Ceilings never stand in
+	// for bases: a caller with no permits of their own is answered with no bases whatever caps them.
+	ResolvePermits(ctx *schemas.BifrostContext) (bases []schemas.Permit, ceilings [][]schemas.Permit, scoping schemas.Permit, mode grant.CompositionMode)
 	// GatherLimits assembles every limit an attempt answers to, once its provider and model are
 	// known: the deployment's own for the pair, what funds each holder the request carries, and what
 	// funds their use of the provider. Which holders pay is the store's to say: a store that composes
@@ -1267,24 +1271,24 @@ func (gs *LocalGovernanceStore) GetVirtualKeyByID(ctx context.Context, vkID stri
 }
 
 // ResolvePermits reports the permits a request carries. This store knows only about virtual keys,
-// so the presented key's permit is the whole answer and nothing scopes it.
-func (gs *LocalGovernanceStore) ResolvePermits(ctx *schemas.BifrostContext) ([]schemas.Permit, schemas.Permit, grant.CompositionMode) {
+// so the presented key's permit is the whole answer: nothing caps it and nothing scopes it.
+func (gs *LocalGovernanceStore) ResolvePermits(ctx *schemas.BifrostContext) ([]schemas.Permit, [][]schemas.Permit, schemas.Permit, grant.CompositionMode) {
 	virtualKeyValue := PresentedVirtualKey(ctx)
 	if virtualKeyValue == "" {
 		// A key is the only thing this store resolves permits from, so no key means nothing granted
 		// this request anything. It carries no access, which is what a request with no credential has
 		// always been: unrestricted, and still bound by the deployment's own limits, which are gathered
 		// for it whether or not it carries a permit.
-		return nil, nil, ""
+		return nil, nil, nil, ""
 	}
 	virtualKey, ok := gs.GetVirtualKey(ctx, virtualKeyValue)
 	if !ok || virtualKey == nil {
 		// A credential was presented and resolves to nothing. That is refused, not widened: the
 		// funnel's identity step tells the two apart by what was presented.
-		return nil, nil, ""
+		return nil, nil, nil, ""
 	}
 	StampVirtualKeyScope(ctx, virtualKey)
-	return []schemas.Permit{gs.permitForVirtualKey(ctx, virtualKey)}, nil, ""
+	return []schemas.Permit{gs.permitForVirtualKey(ctx, virtualKey)}, nil, nil, ""
 }
 
 // PresentedVirtualKey is the virtual key the request presented, read off the identity the

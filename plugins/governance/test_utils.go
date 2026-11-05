@@ -236,9 +236,9 @@ func buildProviderConfigWithRateLimit(provider string, allowedModels []string, r
 func resolverCtx(store GovernanceStore, virtualKeyValue string) *schemas.BifrostContext {
 	ctx := presentCtx(virtualKeyValue)
 	if store != nil {
-		bases, scoping, mode := store.ResolvePermits(ctx)
+		bases, ceilings, scoping, mode := store.ResolvePermits(ctx)
 		if len(bases) > 0 || scoping != nil {
-			ctx.Grant().SetAccess(grant.NewAccess(bases, scoping, mode, nil))
+			ctx.Grant().SetAccess(grant.NewAccess(bases, scoping, mode, nil, grant.WithCeilings(ceilings...)))
 		}
 	}
 	return ctx
