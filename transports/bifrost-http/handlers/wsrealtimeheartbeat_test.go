@@ -853,25 +853,25 @@ func readRealtimeTestFrame(t *testing.T, conn *ws.Conn) string {
 // speaks OpenAI Realtime whatever the provider is, and a provider that asks for a translator must give one.
 func TestRealtimeClientProtocolAndTranslatorFactory(t *testing.T) {
 	plain := &azure.AzureProvider{}
-	require.Same(t, plain, realtimeClientProtocol(plain))
-	translator, bifrostErr := newRealtimeTranslator(plain, schemas.Key{}, "model")
+	require.Same(t, plain, realtimeClientProtocol(plain, "model", ""))
+	translator, bifrostErr := newRealtimeTranslator(plain, schemas.Key{}, "model", "")
 	require.Nil(t, translator)
 	require.Nil(t, bifrostErr)
 
 	scripted := &scriptedRealtimeTranslator{}
 	translating := &translatingRealtimeProvider{OpenAIProvider: &openaiProvider.OpenAIProvider{}, translator: scripted}
-	require.Same(t, openAIRealtimeWire, realtimeClientProtocol(translating))
-	require.Equal(t, "realtime", realtimeClientProtocol(translating).RealtimeWebSocketSubprotocol())
-	translator, bifrostErr = newRealtimeTranslator(translating, schemas.Key{}, "model")
+	require.Same(t, openAIRealtimeWire, realtimeClientProtocol(translating, "model", ""))
+	require.Equal(t, "realtime", realtimeClientProtocol(translating, "model", "").RealtimeWebSocketSubprotocol())
+	translator, bifrostErr = newRealtimeTranslator(translating, schemas.Key{}, "model", "")
 	require.Nil(t, bifrostErr)
 	require.Same(t, scripted, translator)
 
 	translating.translator = nil
-	_, bifrostErr = newRealtimeTranslator(translating, schemas.Key{}, "model")
+	_, bifrostErr = newRealtimeTranslator(translating, schemas.Key{}, "model", "")
 	require.NotNil(t, bifrostErr, "a provider that asks for a translator and returns none must fail the connection, not fall back to relaying its native frames")
 
 	translating.err = newRealtimeWireBifrostError(400, "invalid_request_error", "unsupported model")
-	_, bifrostErr = newRealtimeTranslator(translating, schemas.Key{}, "model")
+	_, bifrostErr = newRealtimeTranslator(translating, schemas.Key{}, "model", "")
 	require.Same(t, translating.err, bifrostErr)
 }
 
@@ -1563,4 +1563,124 @@ func TestNativeCloseFrame(t *testing.T) {
 	require.ErrorAs(t, err, &closed)
 	require.Equal(t, ws.CloseTryAgainLater, closed.Code)
 	require.Equal(t, "slow down", closed.Text)
+}
+
+// selectingRealtimeProvider translates only the sessions its selector picks, as a provider with an agent
+// protocol and a transcription protocol does.
+type selectingRealtimeProvider struct {
+	*translatingRealtimeProvider
+	translates func(model, intent string) bool
+}
+
+func (p *selectingRealtimeProvider) TranslatesRealtime(model, intent string) bool {
+	return p.translates(model, intent)
+}
+
+// TestRealtimeTranslationSelectorPicksPerModelAndIntent pins that a translator provider with a selector is
+// translated only where the selector says so: the other sessions keep the provider's own protocol and get
+// no translator, while a translator provider without a selector is translated whatever the session.
+func TestRealtimeTranslationSelectorPicksPerModelAndIntent(t *testing.T) {
+	scripted := &scriptedRealtimeTranslator{}
+	provider := &selectingRealtimeProvider{
+		translatingRealtimeProvider: &translatingRealtimeProvider{OpenAIProvider: &openaiProvider.OpenAIProvider{}, translator: scripted},
+		translates:                  func(model, intent string) bool { return model == "scribe" && intent == "transcription" },
+	}
+
+	for _, session := range []struct{ model, intent string }{{"agent", ""}, {"agent", "transcription"}, {"scribe", ""}} {
+		require.Same(t, provider, realtimeClientProtocol(provider, session.model, session.intent), "%+v keeps the provider's protocol", session)
+		translator, bifrostErr := newRealtimeTranslator(provider, schemas.Key{}, session.model, session.intent)
+		require.Nil(t, bifrostErr)
+		require.Nil(t, translator, "%+v is relayed as it is", session)
+	}
+
+	require.Same(t, openAIRealtimeWire, realtimeClientProtocol(provider, "scribe", "transcription"))
+	translator, bifrostErr := newRealtimeTranslator(provider, schemas.Key{}, "scribe", "transcription")
+	require.Nil(t, bifrostErr)
+	require.Same(t, scripted, translator)
+
+	unselective := &translatingRealtimeProvider{OpenAIProvider: &openaiProvider.OpenAIProvider{}, translator: scripted}
+	require.Same(t, openAIRealtimeWire, realtimeClientProtocol(unselective, "agent", ""))
+}
+
+// bootstrapRealtimeProvider builds its upstream URL from the client's first frames.
+type bootstrapRealtimeProvider struct {
+	*openaiProvider.OpenAIProvider
+	url    string
+	frames [][]byte
+}
+
+func (p *bootstrapRealtimeProvider) RealtimeWebSocketURLForBootstrap(_ *schemas.BifrostContext, _ schemas.Key, _, _ string, frames [][]byte) (string, *schemas.BifrostError) {
+	p.frames = frames
+	return p.url, nil
+}
+
+func (p *bootstrapRealtimeProvider) RealtimeWebSocketURL(*schemas.BifrostContext, schemas.Key, string, string) (string, *schemas.BifrostError) {
+	return "", newRealtimeWireBifrostError(500, "server_error", "the plain URL must not be used when the provider dials from the bootstrap")
+}
+
+func (p *bootstrapRealtimeProvider) RealtimeHeaders(*schemas.BifrostContext, schemas.Key) (map[string]string, *schemas.BifrostError) {
+	return map[string]string{}, nil
+}
+
+// urlRealtimeProvider has one upstream URL and no use for the client's first frames.
+type urlRealtimeProvider struct {
+	*openaiProvider.OpenAIProvider
+	url string
+}
+
+func (p *urlRealtimeProvider) RealtimeWebSocketURL(*schemas.BifrostContext, schemas.Key, string, string) (string, *schemas.BifrostError) {
+	return p.url, nil
+}
+
+func (p *urlRealtimeProvider) RealtimeHeaders(*schemas.BifrostContext, schemas.Key) (map[string]string, *schemas.BifrostError) {
+	return map[string]string{}, nil
+}
+
+// TestOpenRealtimeUpstreamDialsFromTheBootstrapFrames pins that a provider that builds its URL from the
+// client's first frames is given the text frames the client sent before admission, in order, and dials
+// the URL it returns; and that a provider without that interface keeps the URL it always had.
+func TestOpenRealtimeUpstreamDialsFromTheBootstrapFrames(t *testing.T) {
+	upgrader := ws.FastHTTPUpgrader{CheckOrigin: func(*fasthttp.RequestCtx) bool { return true }}
+	requests := make(chan string, 2)
+	r := router.New()
+	r.GET("/speech/realtime", func(ctx *fasthttp.RequestCtx) {
+		requests <- string(ctx.RequestURI())
+		_ = upgrader.Upgrade(ctx, func(conn *ws.Conn) {
+			for {
+				if _, _, err := conn.ReadMessage(); err != nil {
+					return
+				}
+			}
+		})
+	})
+	ln, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	srv := &fasthttp.Server{Handler: r.Handler, KeepHijackedConns: true}
+	go func() { _ = srv.Serve(ln) }()
+	t.Cleanup(func() { _ = srv.Shutdown() })
+
+	gateway := newLiveOwnerTestGateway(t, nil)
+	pool := bfws.NewPool(nil)
+	t.Cleanup(pool.Close)
+	handler := &WSRealtimeHandler{client: gateway.client, config: gateway.config, pool: pool}
+	ctx := liveCallerCtx(t, "")
+	buffered := []realtimeWebSocketFrame{
+		{messageType: ws.TextMessage, data: []byte(`{"type":"input_audio_buffer.append"}`)},
+		{messageType: ws.BinaryMessage, data: []byte("binary")},
+		{messageType: ws.TextMessage, data: []byte(`{"type":"session.update"}`)},
+	}
+
+	provider := &bootstrapRealtimeProvider{OpenAIProvider: &openaiProvider.OpenAIProvider{}, url: "ws://" + ln.Addr().String() + "/speech/realtime?commit_strategy=vad"}
+	upstream, release, bifrostErr := handler.openRealtimeUpstream(ctx, provider, schemas.OpenAI, schemas.Key{ID: "key-1"}, "model", "transcription", buffered)
+	require.Nil(t, bifrostErr)
+	defer release()
+	require.NotNil(t, upstream)
+	require.Equal(t, [][]byte{[]byte(`{"type":"input_audio_buffer.append"}`), []byte(`{"type":"session.update"}`)}, provider.frames)
+	require.Equal(t, "/speech/realtime?commit_strategy=vad", <-requests)
+
+	plain := &urlRealtimeProvider{OpenAIProvider: &openaiProvider.OpenAIProvider{}, url: "ws://" + ln.Addr().String() + "/speech/realtime?plain=1"}
+	_, releasePlain, bifrostErr := handler.openRealtimeUpstream(ctx, plain, schemas.OpenAI, schemas.Key{ID: "key-1"}, "model", "transcription", buffered)
+	require.Nil(t, bifrostErr)
+	defer releasePlain()
+	require.Equal(t, "/speech/realtime?plain=1", <-requests)
 }
