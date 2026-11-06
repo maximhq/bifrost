@@ -20,29 +20,29 @@ func ToElevenlabsSpeechRequest(bifrostReq *schemas.BifrostSpeechRequest) *Eleven
 		hasVoiceSettings := false
 
 		if bifrostReq.Params.Speed != nil {
-			voiceSettings.Speed = *bifrostReq.Params.Speed
+			voiceSettings.Speed = bifrostReq.Params.Speed
 			hasVoiceSettings = true
 		}
 
 		if bifrostReq.Params.ExtraParams != nil {
 			if stability, ok := schemas.SafeExtractFloat64Pointer(bifrostReq.Params.ExtraParams["stability"]); ok {
 				delete(elevenlabsReq.ExtraParams, "stability")
-				voiceSettings.Stability = *stability
+				voiceSettings.Stability = stability
 				hasVoiceSettings = true
 			}
 			if useSpeakerBoost, ok := schemas.SafeExtractBoolPointer(bifrostReq.Params.ExtraParams["use_speaker_boost"]); ok {
 				delete(elevenlabsReq.ExtraParams, "use_speaker_boost")
-				voiceSettings.UseSpeakerBoost = *useSpeakerBoost
+				voiceSettings.UseSpeakerBoost = useSpeakerBoost
 				hasVoiceSettings = true
 			}
 			if similarityBoost, ok := schemas.SafeExtractFloat64Pointer(bifrostReq.Params.ExtraParams["similarity_boost"]); ok {
 				delete(elevenlabsReq.ExtraParams, "similarity_boost")
-				voiceSettings.SimilarityBoost = *similarityBoost
+				voiceSettings.SimilarityBoost = similarityBoost
 				hasVoiceSettings = true
 			}
 			if style, ok := schemas.SafeExtractFloat64Pointer(bifrostReq.Params.ExtraParams["style"]); ok {
 				delete(elevenlabsReq.ExtraParams, "style")
-				voiceSettings.Style = *style
+				voiceSettings.Style = style
 				hasVoiceSettings = true
 			}
 			if seed, ok := schemas.SafeExtractIntPointer(bifrostReq.Params.ExtraParams["seed"]); ok {
