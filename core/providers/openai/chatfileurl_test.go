@@ -404,3 +404,124 @@ func TestResponsesMarshalFoldsFileTypeIntoFileData(t *testing.T) {
 	assert.False(t, wire.Get("file_type").Exists())
 	assert.Equal(t, barePDFBase64, *file.FileData, "the caller's request must not change")
 }
+
+// An empty text document beside other content is dropped on OpenAI-shaped chat egress:
+// "data:text/plain;base64," is rejected upstream and the document carries no bytes. Alone in
+// its message it stays, so the message never goes out empty.
+func TestChatMarshalDropsEmptyTextDocumentBesideContent(t *testing.T) {
+	req := &OpenAIChatRequest{Model: "gpt-4o", Messages: []OpenAIMessage{{
+		Role: schemas.ChatMessageRoleUser,
+		Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{
+			{Type: schemas.ChatContentBlockTypeFile, File: &schemas.ChatInputFile{FileData: schemas.Ptr(""), FileType: schemas.Ptr("text/plain")}},
+			{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr("Say ok.")},
+		}},
+	}}}
+
+	body, err := req.MarshalJSON()
+	require.NoError(t, err)
+
+	content := gjson.GetBytes(body, "messages.0.content").Array()
+	require.Len(t, content, 1, "the empty document must be dropped: %s", body)
+	assert.Equal(t, "Say ok.", content[0].Get("text").String())
+	assert.Len(t, req.Messages[0].Content.ContentBlocks, 2, "the caller's request is reused by fallbacks and must not change")
+}
+
+// The empty-document drop must fire for a block that needs no other rewrite (the empty data URL
+// with a filename and no file_type), must never take a file reference with it, and must leave a
+// message whose only block is the empty document unchanged.
+func TestMarshalEmptyTextDocumentShapes(t *testing.T) {
+	emptyURL := "data:text/plain;base64,"
+	cases := []struct {
+		name     string
+		chat     schemas.ChatInputFile
+		resp     *schemas.ResponsesInputMessageContentBlockFile // nil: no Responses equivalent
+		alone    bool
+		wantKept bool
+	}{
+		{name: "formed empty data url with a filename is dropped beside text",
+			chat: schemas.ChatInputFile{FileData: &emptyURL, Filename: schemas.Ptr("empty.txt")},
+			resp: &schemas.ResponsesInputMessageContentBlockFile{FileData: &emptyURL, Filename: schemas.Ptr("empty.txt")}},
+		{name: "formed empty data url alone stays", alone: true, wantKept: true,
+			chat: schemas.ChatInputFile{FileData: &emptyURL, Filename: schemas.Ptr("empty.txt")},
+			resp: &schemas.ResponsesInputMessageContentBlockFile{FileData: &emptyURL, Filename: schemas.Ptr("empty.txt")}},
+		{name: "empty file_data beside a file_id keeps the reference", wantKept: true,
+			chat: schemas.ChatInputFile{FileData: schemas.Ptr(""), FileType: schemas.Ptr("text/plain"), FileID: schemas.Ptr("file-abc")}},
+		{name: "empty file_data beside a file_url keeps the reference", wantKept: true,
+			chat: schemas.ChatInputFile{FileData: schemas.Ptr(""), FileType: schemas.Ptr("text/plain"), FileURL: schemas.Ptr("https://example.org/a.txt")},
+			resp: &schemas.ResponsesInputMessageContentBlockFile{FileData: schemas.Ptr(""), FileType: schemas.Ptr("text/plain"), FileURL: schemas.Ptr("https://example.org/a.txt")}},
+	}
+	for _, tc := range cases {
+		t.Run("chat/"+tc.name, func(t *testing.T) {
+			file := tc.chat
+			blocks := []schemas.ChatContentBlock{{Type: schemas.ChatContentBlockTypeFile, File: &file}}
+			if !tc.alone {
+				blocks = append(blocks, schemas.ChatContentBlock{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr("Say ok.")})
+			}
+			req := &OpenAIChatRequest{Model: "gpt-4o", Messages: []OpenAIMessage{{
+				Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentBlocks: blocks},
+			}}}
+			body, err := req.MarshalJSON()
+			require.NoError(t, err)
+			kept := false
+			for _, b := range gjson.GetBytes(body, "messages.0.content").Array() {
+				kept = kept || b.Get("type").String() == "file"
+			}
+			assert.Equal(t, tc.wantKept, kept, "file block kept: %s", body)
+		})
+		if tc.resp == nil {
+			continue
+		}
+		t.Run("responses/"+tc.name, func(t *testing.T) {
+			file := *tc.resp
+			blocks := []schemas.ResponsesMessageContentBlock{{Type: schemas.ResponsesInputMessageContentBlockTypeFile, ResponsesInputMessageContentBlockFile: &file}}
+			if !tc.alone {
+				blocks = append(blocks, schemas.ResponsesMessageContentBlock{Type: schemas.ResponsesInputMessageContentBlockTypeText, Text: schemas.Ptr("Say ok.")})
+			}
+			input := OpenAIResponsesRequestInput{OpenAIResponsesRequestInputArray: []schemas.ResponsesMessage{{
+				Type:    schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+				Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{ContentBlocks: blocks},
+			}}}
+			body, err := input.MarshalJSON()
+			require.NoError(t, err)
+			kept := false
+			for _, b := range gjson.GetBytes(body, "0.content").Array() {
+				kept = kept || b.Get("type").String() == "input_file"
+			}
+			assert.Equal(t, tc.wantKept, kept, "file block kept: %s", body)
+		})
+	}
+
+	// Responses carries file_id on the block, not inside the file object.
+	t.Run("responses/empty file_data beside a block file_id keeps the reference", func(t *testing.T) {
+		input := OpenAIResponsesRequestInput{OpenAIResponsesRequestInputArray: []schemas.ResponsesMessage{{
+			Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+			Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+			Content: &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{
+				{Type: schemas.ResponsesInputMessageContentBlockTypeFile, FileID: schemas.Ptr("file-abc"),
+					ResponsesInputMessageContentBlockFile: &schemas.ResponsesInputMessageContentBlockFile{FileData: schemas.Ptr(""), FileType: schemas.Ptr("text/plain")}},
+				{Type: schemas.ResponsesInputMessageContentBlockTypeText, Text: schemas.Ptr("Say ok.")},
+			}},
+		}}}
+		body, err := input.MarshalJSON()
+		require.NoError(t, err)
+		assert.Equal(t, "file-abc", gjson.GetBytes(body, `0.content.#(type=="input_file").file_id`).String(), "file reference dropped: %s", body)
+	})
+
+	// rendered_content is always removed, so it is not content the empty document can be dropped beside.
+	t.Run("responses/empty document beside only rendered_content stays", func(t *testing.T) {
+		input := OpenAIResponsesRequestInput{OpenAIResponsesRequestInputArray: []schemas.ResponsesMessage{{
+			Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+			Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+			Content: &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{
+				{Type: schemas.ResponsesInputMessageContentBlockTypeFile, ResponsesInputMessageContentBlockFile: &schemas.ResponsesInputMessageContentBlockFile{FileData: &emptyURL, Filename: schemas.Ptr("empty.txt")}},
+				{Type: schemas.ResponsesOutputMessageContentTypeRenderedContent},
+			}},
+		}}}
+		body, err := input.MarshalJSON()
+		require.NoError(t, err)
+		content := gjson.GetBytes(body, "0.content").Array()
+		require.Len(t, content, 1, "the message must not go out empty: %s", body)
+		assert.Equal(t, "input_file", content[0].Get("type").String())
+	})
+}

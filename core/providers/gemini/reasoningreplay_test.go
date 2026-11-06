@@ -108,6 +108,9 @@ func TestNonStreamReasoningItemHasID(t *testing.T) {
 			require.NotEmpty(t, *reasoning[0].ID)
 			require.False(t, strings.HasPrefix(*reasoning[0].ID, "rs_"), "id %q mimics an OpenAI id", *reasoning[0].ID)
 			require.Regexp(t, `^msg_\w+_reasoning_\d+$`, *reasoning[0].ID, "not the streaming path's generateItemID form")
+			wire, err := json.Marshal(reasoning[0])
+			require.NoError(t, err)
+			require.True(t, gjson.GetBytes(wire, "summary").IsArray(), "reasoning item has no summary array: %s", wire)
 		})
 	}
 
@@ -133,6 +136,7 @@ func TestNonStreamReasoningItemHasID(t *testing.T) {
 		wire, err := json.Marshal(contents)
 		require.NoError(t, err)
 		require.Contains(t, string(wire), `"thought":true,"text":"thinking"`)
+		require.Equal(t, 1, strings.Count(string(wire), `"text":"thinking"`), "thought text must replay exactly once: %s", wire)
 	})
 }
 
@@ -394,5 +398,33 @@ func BenchmarkNonStreamReasoningOutput(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		_ = convertGeminiCandidatesToResponsesOutput(candidates, "msg_test")
+	}
+}
+
+// TestNonStreamThoughtTextRendersOnceInGenAIOutput pins that a non-streamed thought keeps
+// its text exactly once when the Responses output is rendered back as a GenAI response. The
+// renderer converts every message's content blocks, so reading the reasoning_text block a
+// second time from the reasoning branch would send the thought twice.
+func TestNonStreamThoughtTextRendersOnceInGenAIOutput(t *testing.T) {
+	for name, part := range map[string]*Part{
+		"thought text only":          {Thought: true, Text: "thinking"},
+		"thought text and signature": {Thought: true, Text: "thinking", ThoughtSignature: []byte{0x01, 0x02}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			bifrostResp := (&GenerateContentResponse{Candidates: []*Candidate{{Content: &Content{Role: "model", Parts: []*Part{
+				part, {Text: "OK"},
+			}}}}}).ToResponsesBifrostResponsesResponse()
+			genai := ToGeminiResponsesResponse(bifrostResp)
+			require.NotEmpty(t, genai.Candidates)
+			var thoughts int
+			for _, p := range genai.Candidates[0].Content.Parts {
+				if p.Thought && p.Text == "thinking" {
+					thoughts++
+				}
+			}
+			wire, err := json.Marshal(genai.Candidates[0].Content.Parts)
+			require.NoError(t, err)
+			require.Equal(t, 1, thoughts, "thought text must render exactly once: %s", wire)
+		})
 	}
 }
