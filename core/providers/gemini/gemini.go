@@ -3372,6 +3372,31 @@ func extractSSEJSONData(line []byte) ([]byte, bool) {
 	return data, true
 }
 
+var inlineDataMarker = []byte(`"inlineData"`)
+
+// appendInlineDataTail appends to dst the last len(inlineDataMarker)-1 bytes of
+// fragment, enough to detect the marker split across the next fragment boundary.
+func appendInlineDataTail(dst, fragment []byte) []byte {
+	if n := len(inlineDataMarker) - 1; len(fragment) > n {
+		fragment = fragment[len(fragment)-n:]
+	}
+	return append(dst, fragment...)
+}
+
+// markerSpansBoundary reports whether inlineDataMarker starts in tail and ends in head.
+func markerSpansBoundary(tail, head []byte) bool {
+	if len(tail) == 0 {
+		return false
+	}
+	if n := len(inlineDataMarker) - 1; len(head) > n {
+		head = head[:n]
+	}
+	joined := make([]byte, 0, len(tail)+len(head))
+	joined = append(joined, tail...)
+	joined = append(joined, head...)
+	return bytes.Contains(joined, inlineDataMarker)
+}
+
 // readNextSSEDataLine reads the next SSE `data:` line from a streaming response.
 // It avoids scanner growth on oversized lines by reading fragments and discarding
 // inlineData lines when skipInlineData is enabled.
@@ -3412,7 +3437,7 @@ func readNextSSEDataLine(reader *bufio.Reader, skipInlineData bool) ([]byte, err
 		}
 
 		// Large mocked stream chunks encode binary inlineData; skip those lines entirely.
-		if skipInlineData && bytes.Contains(data, []byte(`"inlineData"`)) {
+		if skipInlineData && bytes.Contains(data, inlineDataMarker) {
 			for isPrefix {
 				_, isPrefix, err = reader.ReadLine()
 				if err != nil {
@@ -3431,15 +3456,24 @@ func readNextSSEDataLine(reader *bufio.Reader, skipInlineData bool) ([]byte, err
 		collected := make([]byte, 0, len(data)+1024)
 		collected = append(collected, data...)
 		dropLine := false
+		// The marker can straddle a fragment boundary, so keep the last few bytes of
+		// the previous fragment and check them together with the next one.
+		var tail []byte
+		if skipInlineData {
+			tail = appendInlineDataTail(nil, data)
+		}
 
 		for isPrefix {
 			fragment, isPrefix, err = reader.ReadLine()
 			if err != nil {
 				return nil, err
 			}
-			if skipInlineData && bytes.Contains(fragment, []byte(`"inlineData"`)) {
-				dropLine = true
-				continue
+			if skipInlineData && !dropLine {
+				if bytes.Contains(fragment, inlineDataMarker) || markerSpansBoundary(tail, fragment) {
+					dropLine = true
+					continue
+				}
+				tail = appendInlineDataTail(tail[:0], fragment)
 			}
 			if dropLine || len(collected)+len(fragment) > maxJSONLineBytes {
 				dropLine = true

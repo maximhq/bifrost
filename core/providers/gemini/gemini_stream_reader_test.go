@@ -167,3 +167,30 @@ func TestReadNextSSEDataLine_FragmentBoundaries(t *testing.T) {
 		})
 	}
 }
+
+// With a small reader buffer, "inlineData" can be split across two fragments of
+// one line. The line must still be skipped at every split point.
+func TestReadNextSSEDataLine_SkipsInlineDataSplitAcrossFragments(t *testing.T) {
+	const bufSize = 1024
+	const next = `{"text":"next"}`
+	const marker = `"inlineData"`
+	const prefix = "data: "
+
+	for _, boundary := range []int{bufSize, 2 * bufSize} {
+		for split := 1; split < len(marker); split++ {
+			// Place the marker so its first split bytes end the fragment at boundary.
+			head := `{"text":"`
+			fill := boundary - split - len(prefix) - len(head) - len(`",`)
+			payload := head + strings.Repeat("a", fill) + `",` + marker + `:{"data":"abc"}}`
+			stream := prefix + payload + "\n" + prefix + next + "\n"
+
+			line, err := readNextSSEDataLine(bufio.NewReaderSize(strings.NewReader(stream), bufSize), true)
+			if err != nil {
+				t.Fatalf("boundary %d split %d: unexpected error: %v", boundary, split, err)
+			}
+			if string(line) != next {
+				t.Fatalf("boundary %d split %d: inlineData line was not skipped, got %d bytes", boundary, split, len(line))
+			}
+		}
+	}
+}
