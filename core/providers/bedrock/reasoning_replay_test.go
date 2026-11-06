@@ -483,6 +483,31 @@ func TestConvertBifrostReasoningToBedrockReasoningRedactedShape(t *testing.T) {
 		require.Empty(t, blocks, "an unreplayable block must be dropped, not reshaped")
 	})
 
+	t.Run("a token that is not a Converse blob is dropped, not sent", func(t *testing.T) {
+		// Pair A2 of the provider-switch harness: Mantle mints the bare token Bedrock
+		// would have base64-wrapped. redactedContent is a blob, so Bedrock answered
+		// 400 SerializationException with an empty message, which no reasoning fail-soft
+		// can recognise, and the turn failed instead of continuing without the token.
+		// Driven through the upstream request converter: the Converse response renderer
+		// shares the block builder and wraps foreign tokens for its client instead.
+		foreign := "rsn_eyJhbGciOiJFUzI1NiIsInR5cCI6ImFyY2grandzIn0.e30.c2ln"
+		messages, _, err := ConvertBifrostMessagesToBedrockMessages(context.Background(), "us.openai.gpt-5.6-luna", []schemas.ResponsesMessage{
+			{Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage), Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")}},
+			{Type: schemas.Ptr(schemas.ResponsesMessageTypeReasoning), ResponsesReasoning: &schemas.ResponsesReasoning{
+				Summary: []schemas.ResponsesReasoningSummary{}, EncryptedContent: &foreign}},
+			{Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage), Role: schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+				Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("Hello!")}},
+			{Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage), Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("again")}},
+		}, false)
+		require.NoError(t, err)
+		raw, err := sonic.Marshal(messages)
+		require.NoError(t, err)
+		require.NotContains(t, string(raw), "redactedContent", "a non-base64 token cannot deserialize as redactedContent: %s", raw)
+		require.Contains(t, string(raw), "Hello!", "the assistant turn itself must survive: %s", raw)
+	})
+
 	t.Run("summary text is dropped too", func(t *testing.T) {
 		blocks := convertBifrostReasoningToBedrockReasoning(&schemas.ResponsesMessage{
 			Type: schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
@@ -533,4 +558,25 @@ func TestRedactedReasoningSurvivesTheReplayLoop(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, blob, gjson.GetBytes(raw, "content.0.reasoningContent.redactedContent").String())
 	require.False(t, gjson.GetBytes(raw, "content.0.reasoningContent.reasoningText").Exists())
+}
+
+// TestChatReplayDropsForeignRedactedToken is the Chat-path mirror of the Responses
+// case above: an encrypted reasoning detail minted by another host is not a Converse
+// blob, so it is dropped instead of failing the whole turn with SerializationException.
+func TestChatReplayDropsForeignRedactedToken(t *testing.T) {
+	foreign := "rsn_eyJhbGciOiJFUzI1NiIsInR5cCI6ImFyY2grandzIn0.e30.c2ln"
+	msg := schemas.ChatMessage{
+		Role:    schemas.ChatMessageRoleAssistant,
+		Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Hello!")},
+		ChatAssistantMessage: &schemas.ChatAssistantMessage{
+			ReasoningDetails: []schemas.ChatReasoningDetails{{Type: schemas.BifrostReasoningDetailsTypeEncrypted, Data: &foreign}},
+		},
+	}
+	replayed, err := convertMessage(context.Background(), "openai.gpt-5.6-luna", msg, newBedrockDocNamer())
+	require.NoError(t, err)
+	raw, err := sonic.Marshal(replayed)
+	require.NoError(t, err)
+	require.False(t, gjson.GetBytes(raw, "content.#.reasoningContent").Exists() && len(gjson.GetBytes(raw, "content.#.reasoningContent").Array()) > 0,
+		"a foreign token reached redactedContent: %s", raw)
+	require.Equal(t, "Hello!", gjson.GetBytes(raw, "content.#.text").Array()[0].String())
 }
