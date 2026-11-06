@@ -151047,7 +151047,9 @@
                 "exec": [
                   "pm.test('chat over Responses: no zero image_gen block on usage', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
-                  "  pm.expect(pm.response.headers.get('x-bifrost-converted-request-type'), 'not served through Responses: ' + pm.response.text()).to.equal('responses');",
+                  "  // Body mode carries the conversion in extra_fields; the x-bifrost-converted-request-type header exists only in headers mode (#8477).",
+                  "  var converted = (pm.response.json().extra_fields || {}).converted_request_type || pm.response.headers.get('x-bifrost-converted-request-type');",
+                  "  pm.expect(converted, 'not served through Responses: ' + pm.response.text()).to.equal('responses');",
                   "  var toolUsage = pm.response.json().usage.tool_usage || {};",
                   "  pm.expect(toolUsage.image_gen, 'zero image_gen reached chat: ' + pm.response.text()).to.equal(undefined);",
                   "});"
@@ -180585,6 +180587,64 @@
               "path": [
                 "v1",
                 "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock/us.openai.gpt-5.6-luna /v1/chat/completions replay of a Mantle rsn_ token (pair A2 chat, GPT consumer) - encrypted reasoning provider switch",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('a Mantle rsn_ token replayed over chat completions is dropped, and the turn completes', function () {",
+                  "  var body = pm.response.text();",
+                  "  // On the old code the bare rsn_ token went out as Converse redactedContent, which is not base64, and Bedrock answered 400 SerializationException.",
+                  "  pm.expect(pm.response.code, 'chat replay of a foreign encrypted token failed: ' + body).to.equal(200);",
+                  "  var scanned = body;",
+                  "  try { var scanObj = JSON.parse(body); delete scanObj.extra_fields; scanned = JSON.stringify(scanObj); } catch (e) { scanned = body; }",
+                  "  var lower = scanned.toLowerCase();",
+                  "  [\"serializationexception\",\"redactedcontent\",\"reasoningcontent\",\"invalid_request_error\"].forEach(function (marker) {",
+                  "    pm.expect(lower, 'an upstream token refusal reached the client: ' + body).to.not.include(marker);",
+                  "  });",
+                  "  var response = pm.response.json();",
+                  "  pm.expect(response.error, 'response error: ' + body).to.not.be.ok;",
+                  "  var choice = (response.choices || [])[0] || {};",
+                  "  var content = choice.message && choice.message.content;",
+                  "  pm.expect(content, 'no assistant text: ' + body).to.be.a('string').and.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/us.openai.gpt-5.6-luna\",\"max_completion_tokens\":2048,\"reasoning_effort\":\"low\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with one short greeting.\"},{\"role\":\"assistant\",\"content\":\"Hello!\",\"reasoning_details\":[{\"index\":0,\"type\":\"reasoning.encrypted\",\"data\":\"rsn_eyJhbGciOiJFUzI1NiIsInR5cCI6ImFyY2grandzIn0.e30.c2ln\"}]},{\"role\":\"user\",\"content\":\"Now reply with one word that means goodbye.\"}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
               ]
             }
           }
@@ -307714,7 +307774,7 @@
           }
         },
         {
-          "name": "openrouter/anthropic/claude-sonnet-5 anthropic messages: empty text document goes out as a data URL in one input item - empty text document - #8849",
+          "name": "openrouter/anthropic/claude-sonnet-5 anthropic messages: empty text document is dropped and the rest stays in one input item - empty text document - #8849",
           "event": [
             {
               "listen": "test",
@@ -307729,16 +307789,20 @@
                   "  pm.expect(raw, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + text.slice(0, 300)).to.be.an('object');",
                   "  return raw;",
                   "}",
-                  "pm.test('user turn is one input item with every block', function () {",
+                  "pm.test('user turn is one input item: both non-empty documents and the text', function () {",
                   "  var raw = rawRequest();",
                   "  pm.expect(raw.input.length, 'user turn was split: ' + JSON.stringify(raw.input).slice(0, 600)).to.equal(1);",
-                  "  pm.expect(raw.input[0].content.length).to.equal(4);",
+                  "  pm.expect(raw.input[0].content.length, JSON.stringify(raw.input[0].content).slice(0, 600)).to.equal(3);",
+                  "  pm.expect(raw.input[0].content[2].type).to.equal('input_text');",
                   "});",
-                  "pm.test('empty document is a parseable data URL with a filename', function () {",
-                  "  var file = rawRequest().input[0].content[1];",
-                  "  pm.expect(file.type).to.equal('input_file');",
-                  "  pm.expect(file.file_data, 'file_data must be a data URL, not \"\": ' + JSON.stringify(file)).to.equal('data:text/plain;base64,');",
-                  "  pm.expect(file.filename, 'OpenAI-shaped surfaces need a filename beside file_data').to.equal('document.txt');",
+                  "pm.test('the empty document is not sent: OpenRouter rejects the empty data URL', function () {",
+                  "  var files = rawRequest().input[0].content.filter(function (b) { return b.type === 'input_file'; });",
+                  "  pm.expect(files.length, JSON.stringify(files)).to.equal(2);",
+                  "  files.forEach(function (file) {",
+                  "    pm.expect(file.file_data, 'empty data URL reached OpenRouter: ' + JSON.stringify(file)).to.not.equal('data:text/plain;base64,');",
+                  "    pm.expect(file.file_data, JSON.stringify(file)).to.match(/^data:text\\/plain;base64,.+/);",
+                  "    pm.expect(file.filename, 'OpenAI-shaped surfaces need a filename beside file_data').to.equal('document.txt');",
+                  "  });",
                   "});"
                 ]
               }
@@ -307774,6 +307838,127 @@
                 "anthropic",
                 "v1",
                 "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai/gpt-4o-mini chat completions: a formed empty text data URL with a filename is dropped beside text - empty text document",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text() || '';",
+                  "pm.test('status 200: the empty data URL is not forwarded, so OpenAI does not reject the request', function () { pm.expect(pm.response.code, 'failed: ' + text.slice(0, 600)).to.equal(200); });",
+                  "function rawRequest() {",
+                  "  var raw = ((pm.response.json() || {}).extra_fields || {}).raw_request;",
+                  "  if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+                  "  pm.expect(raw, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + text.slice(0, 300)).to.be.an('object');",
+                  "  return raw;",
+                  "}",
+                  "pm.test('the formed empty data URL is dropped and the text stays', function () {",
+                  "  var raw = rawRequest();",
+                  "  pm.expect(JSON.stringify(raw), 'empty data URL reached OpenAI').to.not.include('data:text/plain;base64,\"');",
+                  "  var content = raw.messages[0].content;",
+                  "  pm.expect(content.length, JSON.stringify(content)).to.equal(1);",
+                  "  pm.expect(content[0].type).to.equal('text');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"max_tokens\":16,\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"file\",\"file\":{\"file_data\":\"data:text/plain;base64,\",\"filename\":\"empty.txt\"}},{\"type\":\"text\",\"text\":\"Say ok.\"}]}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai/gpt-4o-mini responses: a formed empty text data URL with a filename is dropped beside text - empty text document",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text() || '';",
+                  "pm.test('status 200: the empty data URL is not forwarded, so OpenAI does not reject the request', function () { pm.expect(pm.response.code, 'failed: ' + text.slice(0, 600)).to.equal(200); });",
+                  "function rawRequest() {",
+                  "  var raw = ((pm.response.json() || {}).extra_fields || {}).raw_request;",
+                  "  if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+                  "  pm.expect(raw, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + text.slice(0, 300)).to.be.an('object');",
+                  "  return raw;",
+                  "}",
+                  "pm.test('the formed empty data URL is dropped and the text stays', function () {",
+                  "  var raw = rawRequest();",
+                  "  pm.expect(JSON.stringify(raw), 'empty data URL reached OpenAI').to.not.include('data:text/plain;base64,\"');",
+                  "  var content = raw.input[0].content;",
+                  "  pm.expect(content.length, JSON.stringify(content)).to.equal(1);",
+                  "  pm.expect(content[0].type).to.equal('input_text');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"max_output_tokens\":16,\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_file\",\"file_data\":\"data:text/plain;base64,\",\"filename\":\"empty.txt\"},{\"type\":\"input_text\",\"text\":\"Say ok.\"}]}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
               ]
             }
           }
@@ -307949,6 +308134,68 @@
                   "pm.test('codex web search Bedrock code_interpreter: no code_execution_* tool sent to Claude on Bedrock', function () {",
                   "  var code = tools.filter(function (t) { return /^code_execution/.test(String(t.type || '')); });",
                   "  pm.expect(code, 'Bedrock Claude has no code execution; it must be dropped: ' + types).to.be.empty;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "bedrock_mantle/anthropic.claude-fable-5-1 /v1/responses codex web search with tool search: web_search and code_interpreter are dropped, not rejected",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock_mantle/anthropic.claude-fable-5-1\",\"max_output_tokens\":128,\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":\"Say hello in one word.\"}],\"tools\":[{\"type\":\"tool_search\"},{\"type\":\"web_search\",\"external_web_access\":false},{\"type\":\"code_interpreter\",\"container\":{\"type\":\"auto\"}},{\"type\":\"function\",\"name\":\"get_weather\",\"description\":\"Get the current weather for a city\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]},\"defer_loading\":true}]}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "pm.test('codex web search Mantle: 200 (web_search and code_interpreter did not reach Mantle)', function () {",
+                  "  pm.expect(txt, 'Mantle rejected a server tool: ' + txt.slice(0, 600)).to.not.include('is not supported for this model');",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var tools = (rr && rr.tools) || [];",
+                  "var types = JSON.stringify(tools.map(function (t) { return t.type || ('fn:' + t.name); }));",
+                  "pm.test('codex web search Mantle: raw_request captured', function () {",
+                  "  pm.expect(rr, 'extra_fields.raw_request missing: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "});",
+                  "pm.test('codex web search Mantle: get_weather reached the provider', function () {",
+                  "  var weather = tools.filter(function (t) { return t.name === 'get_weather'; })[0];",
+                  "  pm.expect(weather, 'get_weather missing upstream: ' + types).to.be.an('object');",
+                  "});",
+                  "pm.test('codex web search Mantle: no web_search_* or code_execution_* tool sent, although the catalog marks the model supports_web_search', function () {",
+                  "  var server = tools.filter(function (t) { return /^(web_search|code_execution)/.test(String(t.type || '')); });",
+                  "  pm.expect(server, 'Mantle Claude serves neither server tool; both must be dropped: ' + types).to.be.empty;",
                   "});"
                 ]
               }
@@ -309036,7 +309283,14 @@
                   "  pm.expect(stop, 'stop_reason').to.eql('tool_use');",
                   "});",
                   "pm.test('no leaked DSML tag anywhere in the stream', function () {",
-                  "  pm.expect(txt, 'leaked tag reached the client; streamed text: ' + JSON.stringify(text)).to.not.include('DSML');",
+                  "  // Scan each event without extra_fields: raw_response echoes the upstream wire, which carries the DSML markup by design.",
+                  "  var scanned = txt.split('\\n').map(function (line) {",
+                  "    if (line.indexOf('data: {') !== 0) { return line; }",
+                  "    try { var ev = JSON.parse(line.slice(6)); delete ev.extra_fields; return JSON.stringify(ev); } catch (e) { return line; }",
+                  "  }).join('\\n');",
+                  "  pm.expect(scanned, 'leaked tag reached the client; streamed text: ' + JSON.stringify(text)).to.not.include('DSML');",
+                  "  // A marker split across text deltas is in no single event, so check the accumulated text too.",
+                  "  pm.expect(text, 'leaked tag in the accumulated streamed text').to.not.include('DSML');",
                   "});"
                 ]
               }
@@ -309097,7 +309351,14 @@
                   "  pm.expect(finish, 'finish_reason').to.eql('tool_calls');",
                   "});",
                   "pm.test('no leaked DSML tag anywhere in the stream', function () {",
-                  "  pm.expect(txt, 'leaked tag reached the client; streamed text: ' + JSON.stringify(text)).to.not.include('DSML');",
+                  "  // Scan each event without extra_fields: raw_response echoes the upstream wire, which carries the DSML markup by design.",
+                  "  var scanned = txt.split('\\n').map(function (line) {",
+                  "    if (line.indexOf('data: {') !== 0) { return line; }",
+                  "    try { var ev = JSON.parse(line.slice(6)); delete ev.extra_fields; return JSON.stringify(ev); } catch (e) { return line; }",
+                  "  }).join('\\n');",
+                  "  pm.expect(scanned, 'leaked tag reached the client; streamed text: ' + JSON.stringify(text)).to.not.include('DSML');",
+                  "  // A marker split across text deltas is in no single event, so check the accumulated text too.",
+                  "  pm.expect(text, 'leaked tag in the accumulated streamed text').to.not.include('DSML');",
                   "});"
                 ]
               }
@@ -309207,7 +309468,14 @@
                   "  pm.expect(stop, 'stop_reason').to.eql('tool_use');",
                   "});",
                   "pm.test('no leaked DSML tag anywhere in the stream', function () {",
-                  "  pm.expect(txt, 'leaked tag reached the client; streamed text: ' + JSON.stringify(text)).to.not.include('DSML');",
+                  "  // Scan each event without extra_fields: raw_response echoes the upstream wire, which carries the DSML markup by design.",
+                  "  var scanned = txt.split('\\n').map(function (line) {",
+                  "    if (line.indexOf('data: {') !== 0) { return line; }",
+                  "    try { var ev = JSON.parse(line.slice(6)); delete ev.extra_fields; return JSON.stringify(ev); } catch (e) { return line; }",
+                  "  }).join('\\n');",
+                  "  pm.expect(scanned, 'leaked tag reached the client; streamed text: ' + JSON.stringify(text)).to.not.include('DSML');",
+                  "  // A marker split across text deltas is in no single event, so check the accumulated text too.",
+                  "  pm.expect(text, 'leaked tag in the accumulated streamed text').to.not.include('DSML');",
                   "});"
                 ]
               }
@@ -310018,6 +310286,2547 @@
               ]
             }
           }
+        }
+      ]
+    },
+    {
+      "name": "317. Message-level cache_control reaches the provider (message-level cache_control) (#8712 / PR #8713)",
+      "description": "OpenAI-compatible clients (LiteLLM, the AI SDK openai-compatible provider used by opencode) put cache_control on the message object instead of a content block, most often on tool messages. schemas.ChatMessage and openai.OpenAIMessage had no such field, so the marker was dropped when the request was decoded and Claude only ever cached what a block-level marker covered.\n\nChatMessage.AttachMessageCacheControl (core/schemas/chatcompletions.go) now moves the marker onto the last content block (string content becomes one text block), or onto the last tool call when there is no content, so every provider converter handles it like a block marker. A tool result carries one marker on Anthropic, hoisted onto tool_result; the last nested marker is the one kept.\n\nEvery row asserts the OUTBOUND payload via x-bf-send-back-raw-request. Rows: (1) Anthropic /v1/chat/completions, (2) the same streaming, (3) Anthropic through the /openai drop-in, which decodes into OpenAIMessage, (4) Vertex Claude, (5) Bedrock Claude Converse: a system cachePoint and one for the toolResult, (6) Bedrock Nova: the system cachePoint only, since Nova 400s on a cachePoint after a toolResult, (7) OpenRouter Claude keeps both markers, (8-10) OpenAI, Azure and xAI accept the promoted text-block tool content and get no cache_control. Rows 1-7 are red before the fix (no marker reaches the provider); 8-10 guard the string to text-block promotion.",
+      "item": [
+        {
+          "name": "anthropic claude-sonnet-4-6 /v1/chat/completions message-level cache_control non-streaming",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('317.1 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var rr = null;",
+                  "rr = ((pm.response.json() || {}).extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var rawStr = rr ? JSON.stringify(rr) : '';",
+                  "pm.test('317.1 raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "var sys = Array.isArray(rr.system) ? rr.system : [];",
+                  "pm.test('317.1 system message marker became system cache_control', function () {",
+                  "  var last = sys.length ? sys[sys.length - 1] : null;",
+                  "  pm.expect(last && last.cache_control, 'system: ' + JSON.stringify(rr.system)).to.be.an('object');",
+                  "});",
+                  "var toolResult = null;",
+                  "(rr.messages || []).forEach(function (m) {",
+                  "  (Array.isArray(m.content) ? m.content : []).forEach(function (b) { if (b && b.type === 'tool_result') { toolResult = b; } });",
+                  "});",
+                  "pm.test('317.1 tool message marker became tool_result.cache_control', function () {",
+                  "  pm.expect(toolResult, 'messages: ' + JSON.stringify(rr.messages)).to.be.an('object');",
+                  "  pm.expect(toolResult.cache_control, 'tool_result: ' + JSON.stringify(toolResult)).to.be.an('object');",
+                  "});",
+                  "pm.test('317.1 no cache_control nested inside tool_result.content (Anthropic rejects it)', function () {",
+                  "  var nested = JSON.stringify((toolResult && toolResult.content) || '');",
+                  "  pm.expect(nested, nested).to.not.include('cache_control');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-4-6\",\n  \"max_tokens\": 16,\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"[bf-317 system] You are a coding agent. Reply with OK.\",\n      \"cache_control\": {\n        \"type\": \"ephemeral\"\n      }\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Create notes.txt\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": null,\n      \"tool_calls\": [\n        {\n          \"id\": \"call_bf317\",\n          \"type\": \"function\",\n          \"function\": {\n            \"name\": \"write_file\",\n            \"arguments\": \"{\\\"path\\\":\\\"notes.txt\\\"}\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"tool\",\n      \"tool_call_id\": \"call_bf317\",\n      \"content\": \"Wrote notes.txt\",\n      \"cache_control\": {\n        \"type\": \"ephemeral\"\n      }\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"write_file\",\n        \"description\": \"Write a file.\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"path\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"path\"\n          ]\n        }\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "anthropic claude-sonnet-4-6 /v1/chat/completions message-level cache_control streaming",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('317.2 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var rr = null;",
+                  "pm.response.text().split('\\n').forEach(function (line) {",
+                  "  if (line.indexOf('data:') !== 0) { return; }",
+                  "  var chunk; try { chunk = JSON.parse(line.slice(5)); } catch (e) { return; }",
+                  "  if (chunk && chunk.extra_fields && chunk.extra_fields.raw_request) { rr = chunk.extra_fields.raw_request; }",
+                  "});",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var rawStr = rr ? JSON.stringify(rr) : '';",
+                  "pm.test('317.2 raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "var sys = Array.isArray(rr.system) ? rr.system : [];",
+                  "pm.test('317.2 system message marker became system cache_control', function () {",
+                  "  var last = sys.length ? sys[sys.length - 1] : null;",
+                  "  pm.expect(last && last.cache_control, 'system: ' + JSON.stringify(rr.system)).to.be.an('object');",
+                  "});",
+                  "var toolResult = null;",
+                  "(rr.messages || []).forEach(function (m) {",
+                  "  (Array.isArray(m.content) ? m.content : []).forEach(function (b) { if (b && b.type === 'tool_result') { toolResult = b; } });",
+                  "});",
+                  "pm.test('317.2 tool message marker became tool_result.cache_control', function () {",
+                  "  pm.expect(toolResult, 'messages: ' + JSON.stringify(rr.messages)).to.be.an('object');",
+                  "  pm.expect(toolResult.cache_control, 'tool_result: ' + JSON.stringify(toolResult)).to.be.an('object');",
+                  "});",
+                  "pm.test('317.2 no cache_control nested inside tool_result.content (Anthropic rejects it)', function () {",
+                  "  var nested = JSON.stringify((toolResult && toolResult.content) || '');",
+                  "  pm.expect(nested, nested).to.not.include('cache_control');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-4-6\",\n  \"max_tokens\": 16,\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"[bf-317 system] You are a coding agent. Reply with OK.\",\n      \"cache_control\": {\n        \"type\": \"ephemeral\"\n      }\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Create notes.txt\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": null,\n      \"tool_calls\": [\n        {\n          \"id\": \"call_bf317\",\n          \"type\": \"function\",\n          \"function\": {\n            \"name\": \"write_file\",\n            \"arguments\": \"{\\\"path\\\":\\\"notes.txt\\\"}\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"tool\",\n      \"tool_call_id\": \"call_bf317\",\n      \"content\": \"Wrote notes.txt\",\n      \"cache_control\": {\n        \"type\": \"ephemeral\"\n      }\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"write_file\",\n        \"description\": \"Write a file.\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"path\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"path\"\n          ]\n        }\n      }\n    }\n  ],\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "anthropic claude-sonnet-4-6 /openai/v1/chat/completions message-level cache_control non-streaming",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('317.3 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var rr = null;",
+                  "rr = ((pm.response.json() || {}).extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var rawStr = rr ? JSON.stringify(rr) : '';",
+                  "pm.test('317.3 raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "var sys = Array.isArray(rr.system) ? rr.system : [];",
+                  "pm.test('317.3 system message marker became system cache_control', function () {",
+                  "  var last = sys.length ? sys[sys.length - 1] : null;",
+                  "  pm.expect(last && last.cache_control, 'system: ' + JSON.stringify(rr.system)).to.be.an('object');",
+                  "});",
+                  "var toolResult = null;",
+                  "(rr.messages || []).forEach(function (m) {",
+                  "  (Array.isArray(m.content) ? m.content : []).forEach(function (b) { if (b && b.type === 'tool_result') { toolResult = b; } });",
+                  "});",
+                  "pm.test('317.3 tool message marker became tool_result.cache_control', function () {",
+                  "  pm.expect(toolResult, 'messages: ' + JSON.stringify(rr.messages)).to.be.an('object');",
+                  "  pm.expect(toolResult.cache_control, 'tool_result: ' + JSON.stringify(toolResult)).to.be.an('object');",
+                  "});",
+                  "pm.test('317.3 no cache_control nested inside tool_result.content (Anthropic rejects it)', function () {",
+                  "  var nested = JSON.stringify((toolResult && toolResult.content) || '');",
+                  "  pm.expect(nested, nested).to.not.include('cache_control');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-4-6\",\n  \"max_tokens\": 16,\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"[bf-317 system] You are a coding agent. Reply with OK.\",\n      \"cache_control\": {\n        \"type\": \"ephemeral\"\n      }\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Create notes.txt\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": null,\n      \"tool_calls\": [\n        {\n          \"id\": \"call_bf317\",\n          \"type\": \"function\",\n          \"function\": {\n            \"name\": \"write_file\",\n            \"arguments\": \"{\\\"path\\\":\\\"notes.txt\\\"}\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"tool\",\n      \"tool_call_id\": \"call_bf317\",\n      \"content\": \"Wrote notes.txt\",\n      \"cache_control\": {\n        \"type\": \"ephemeral\"\n      }\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"write_file\",\n        \"description\": \"Write a file.\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"path\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"path\"\n          ]\n        }\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "vertex claude-sonnet-4-6 /v1/chat/completions message-level cache_control non-streaming",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('317.4 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var rr = null;",
+                  "rr = ((pm.response.json() || {}).extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var rawStr = rr ? JSON.stringify(rr) : '';",
+                  "pm.test('317.4 raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "var sys = Array.isArray(rr.system) ? rr.system : [];",
+                  "pm.test('317.4 system message marker became system cache_control', function () {",
+                  "  var last = sys.length ? sys[sys.length - 1] : null;",
+                  "  pm.expect(last && last.cache_control, 'system: ' + JSON.stringify(rr.system)).to.be.an('object');",
+                  "});",
+                  "var toolResult = null;",
+                  "(rr.messages || []).forEach(function (m) {",
+                  "  (Array.isArray(m.content) ? m.content : []).forEach(function (b) { if (b && b.type === 'tool_result') { toolResult = b; } });",
+                  "});",
+                  "pm.test('317.4 tool message marker became tool_result.cache_control', function () {",
+                  "  pm.expect(toolResult, 'messages: ' + JSON.stringify(rr.messages)).to.be.an('object');",
+                  "  pm.expect(toolResult.cache_control, 'tool_result: ' + JSON.stringify(toolResult)).to.be.an('object');",
+                  "});",
+                  "pm.test('317.4 no cache_control nested inside tool_result.content (Anthropic rejects it)', function () {",
+                  "  var nested = JSON.stringify((toolResult && toolResult.content) || '');",
+                  "  pm.expect(nested, nested).to.not.include('cache_control');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/claude-sonnet-4-6\",\n  \"max_tokens\": 16,\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"[bf-317 system] You are a coding agent. Reply with OK.\",\n      \"cache_control\": {\n        \"type\": \"ephemeral\"\n      }\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Create notes.txt\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": null,\n      \"tool_calls\": [\n        {\n          \"id\": \"call_bf317\",\n          \"type\": \"function\",\n          \"function\": {\n            \"name\": \"write_file\",\n            \"arguments\": \"{\\\"path\\\":\\\"notes.txt\\\"}\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"tool\",\n      \"tool_call_id\": \"call_bf317\",\n      \"content\": \"Wrote notes.txt\",\n      \"cache_control\": {\n        \"type\": \"ephemeral\"\n      }\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"write_file\",\n        \"description\": \"Write a file.\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"path\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"path\"\n          ]\n        }\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock claude-haiku-4-5 /v1/chat/completions message-level cache_control non-streaming",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('317.5 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var rr = null;",
+                  "rr = ((pm.response.json() || {}).extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var rawStr = rr ? JSON.stringify(rr) : '';",
+                  "pm.test('317.5 raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "var sysPoints = (rr.system || []).filter(function (s) { return s && s.cachePoint; }).length;",
+                  "pm.test('317.5 system message marker became a system cachePoint', function () {",
+                  "  pm.expect(sysPoints, 'system: ' + JSON.stringify(rr.system)).to.equal(1);",
+                  "});",
+                  "var afterToolResult = 0;",
+                  "(rr.messages || []).forEach(function (m) {",
+                  "  var c = Array.isArray(m.content) ? m.content : [];",
+                  "  c.forEach(function (b, j) {",
+                  "    if (b && b.cachePoint && j > 0 && c[j - 1] && c[j - 1].toolResult) { afterToolResult++; }",
+                  "    if (b && b.toolResult && JSON.stringify(b.toolResult).indexOf('cachePoint') !== -1) { afterToolResult++; }",
+                  "  });",
+                  "});",
+                  "pm.test('317.5 tool message marker became a cachePoint for the toolResult', function () {",
+                  "  pm.expect(afterToolResult, 'messages: ' + JSON.stringify(rr.messages).slice(0, 1500)).to.equal(1);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0\",\n  \"max_tokens\": 16,\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"[bf-317 system] You are a coding agent. Reply with OK.\",\n      \"cache_control\": {\n        \"type\": \"ephemeral\"\n      }\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Create notes.txt\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": null,\n      \"tool_calls\": [\n        {\n          \"id\": \"call_bf317\",\n          \"type\": \"function\",\n          \"function\": {\n            \"name\": \"write_file\",\n            \"arguments\": \"{\\\"path\\\":\\\"notes.txt\\\"}\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"tool\",\n      \"tool_call_id\": \"call_bf317\",\n      \"content\": \"Wrote notes.txt\",\n      \"cache_control\": {\n        \"type\": \"ephemeral\"\n      }\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"write_file\",\n        \"description\": \"Write a file.\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"path\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"path\"\n          ]\n        }\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock nova-lite /v1/chat/completions message-level cache_control non-streaming",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('317.6 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var rr = null;",
+                  "rr = ((pm.response.json() || {}).extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var rawStr = rr ? JSON.stringify(rr) : '';",
+                  "pm.test('317.6 raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "var sysPoints = (rr.system || []).filter(function (s) { return s && s.cachePoint; }).length;",
+                  "pm.test('317.6 system message marker became a system cachePoint', function () {",
+                  "  pm.expect(sysPoints, 'system: ' + JSON.stringify(rr.system)).to.equal(1);",
+                  "});",
+                  "var afterToolResult = 0;",
+                  "(rr.messages || []).forEach(function (m) {",
+                  "  var c = Array.isArray(m.content) ? m.content : [];",
+                  "  c.forEach(function (b, j) {",
+                  "    if (b && b.cachePoint && j > 0 && c[j - 1] && c[j - 1].toolResult) { afterToolResult++; }",
+                  "    if (b && b.toolResult && JSON.stringify(b.toolResult).indexOf('cachePoint') !== -1) { afterToolResult++; }",
+                  "  });",
+                  "});",
+                  "pm.test('317.6 no cachePoint after the toolResult (Nova rejects it)', function () {",
+                  "  pm.expect(afterToolResult, 'messages: ' + JSON.stringify(rr.messages).slice(0, 1500)).to.equal(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/us.amazon.nova-lite-v1:0\",\n  \"max_tokens\": 16,\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"[bf-317 system] You are a coding agent. Reply with OK.\",\n      \"cache_control\": {\n        \"type\": \"ephemeral\"\n      }\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Create notes.txt\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": null,\n      \"tool_calls\": [\n        {\n          \"id\": \"call_bf317\",\n          \"type\": \"function\",\n          \"function\": {\n            \"name\": \"write_file\",\n            \"arguments\": \"{\\\"path\\\":\\\"notes.txt\\\"}\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"tool\",\n      \"tool_call_id\": \"call_bf317\",\n      \"content\": \"Wrote notes.txt\",\n      \"cache_control\": {\n        \"type\": \"ephemeral\"\n      }\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"write_file\",\n        \"description\": \"Write a file.\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"path\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"path\"\n          ]\n        }\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openrouter claude-sonnet-5 /v1/chat/completions message-level cache_control non-streaming",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('317.7 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var rr = null;",
+                  "rr = ((pm.response.json() || {}).extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var rawStr = rr ? JSON.stringify(rr) : '';",
+                  "pm.test('317.7 raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "pm.test('317.7 both message markers reach OpenRouter as block cache_control', function () {",
+                  "  pm.expect(rawStr.split('\"cache_control\"').length - 1, rawStr.slice(0, 1500)).to.equal(2);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openrouter/anthropic/claude-sonnet-5\",\n  \"max_tokens\": 16,\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"[bf-317 system] You are a coding agent. Reply with OK.\",\n      \"cache_control\": {\n        \"type\": \"ephemeral\"\n      }\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Create notes.txt\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": null,\n      \"tool_calls\": [\n        {\n          \"id\": \"call_bf317\",\n          \"type\": \"function\",\n          \"function\": {\n            \"name\": \"write_file\",\n            \"arguments\": \"{\\\"path\\\":\\\"notes.txt\\\"}\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"tool\",\n      \"tool_call_id\": \"call_bf317\",\n      \"content\": \"Wrote notes.txt\",\n      \"cache_control\": {\n        \"type\": \"ephemeral\"\n      }\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"write_file\",\n        \"description\": \"Write a file.\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"path\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"path\"\n          ]\n        }\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai gpt-4o-mini /v1/chat/completions message-level cache_control non-streaming",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('317.8 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var rr = null;",
+                  "rr = ((pm.response.json() || {}).extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var rawStr = rr ? JSON.stringify(rr) : '';",
+                  "pm.test('317.8 raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "pm.test('317.8 cache_control is not forwarded to an OpenAI-family provider', function () {",
+                  "  pm.expect(rawStr, rawStr.slice(0, 1500)).to.not.include('cache_control');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"max_tokens\": 16,\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"[bf-317 system] You are a coding agent. Reply with OK.\",\n      \"cache_control\": {\n        \"type\": \"ephemeral\"\n      }\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Create notes.txt\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": null,\n      \"tool_calls\": [\n        {\n          \"id\": \"call_bf317\",\n          \"type\": \"function\",\n          \"function\": {\n            \"name\": \"write_file\",\n            \"arguments\": \"{\\\"path\\\":\\\"notes.txt\\\"}\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"tool\",\n      \"tool_call_id\": \"call_bf317\",\n      \"content\": \"Wrote notes.txt\",\n      \"cache_control\": {\n        \"type\": \"ephemeral\"\n      }\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"write_file\",\n        \"description\": \"Write a file.\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"path\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"path\"\n          ]\n        }\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "azure gpt-4o-mini /v1/chat/completions message-level cache_control non-streaming",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('317.9 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var rr = null;",
+                  "rr = ((pm.response.json() || {}).extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var rawStr = rr ? JSON.stringify(rr) : '';",
+                  "pm.test('317.9 raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "pm.test('317.9 cache_control is not forwarded to an OpenAI-family provider', function () {",
+                  "  pm.expect(rawStr, rawStr.slice(0, 1500)).to.not.include('cache_control');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"azure/gpt-4o-mini\",\n  \"max_tokens\": 16,\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"[bf-317 system] You are a coding agent. Reply with OK.\",\n      \"cache_control\": {\n        \"type\": \"ephemeral\"\n      }\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Create notes.txt\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": null,\n      \"tool_calls\": [\n        {\n          \"id\": \"call_bf317\",\n          \"type\": \"function\",\n          \"function\": {\n            \"name\": \"write_file\",\n            \"arguments\": \"{\\\"path\\\":\\\"notes.txt\\\"}\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"tool\",\n      \"tool_call_id\": \"call_bf317\",\n      \"content\": \"Wrote notes.txt\",\n      \"cache_control\": {\n        \"type\": \"ephemeral\"\n      }\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"write_file\",\n        \"description\": \"Write a file.\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"path\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"path\"\n          ]\n        }\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "xai grok-4-0709 /v1/chat/completions message-level cache_control non-streaming",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('317.10 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var rr = null;",
+                  "rr = ((pm.response.json() || {}).extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var rawStr = rr ? JSON.stringify(rr) : '';",
+                  "pm.test('317.10 raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "pm.test('317.10 cache_control is not forwarded to an OpenAI-family provider', function () {",
+                  "  pm.expect(rawStr, rawStr.slice(0, 1500)).to.not.include('cache_control');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"xai/grok-4-0709\",\n  \"max_tokens\": 16,\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"[bf-317 system] You are a coding agent. Reply with OK.\",\n      \"cache_control\": {\n        \"type\": \"ephemeral\"\n      }\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Create notes.txt\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": null,\n      \"tool_calls\": [\n        {\n          \"id\": \"call_bf317\",\n          \"type\": \"function\",\n          \"function\": {\n            \"name\": \"write_file\",\n            \"arguments\": \"{\\\"path\\\":\\\"notes.txt\\\"}\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"tool\",\n      \"tool_call_id\": \"call_bf317\",\n      \"content\": \"Wrote notes.txt\",\n      \"cache_control\": {\n        \"type\": \"ephemeral\"\n      }\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"write_file\",\n        \"description\": \"Write a file.\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"path\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"path\"\n          ]\n        }\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "310. Reasoning item ids on non-streamed output and on replay (reasoning item id)",
+      "description": "Two bugs around reasoning item ids on /v1/responses.\n\n1. Gemini non-streamed output: convertGeminiCandidatesToResponsesOutput built reasoning items with no id and, for text-only thoughts, no summary, so clients got \"id\": null and \"summary\": null (opentelemetry-instrumentation-openai drops the span on a null id). The streaming path already minted msg_<id>_reasoning. The fix mints the same form; never rs_, which ToOpenAIResponsesRequest keeps on replay and OpenAI rejects as foreign.\n\n2. Mantle replay: ToOpenAIResponsesRequest stripped every non-rs_ reasoning id (meant for Gemini residue sent to OpenAI). Mantle requires an id on a replayed reasoning item and mints msg_ ids itself, so any second turn with reasoning on Mantle's Responses models failed with 400 \"Invalid 'input': value did not match any expected variant\". The fix keeps reasoning ids for bedrock_mantle and bedrock; OpenAI and Azure still strip.\n\nRed before the fix: the Gemini cases see a null id; the Mantle cases get 400.",
+      "item": [
+        {
+          "name": "Gemini non-stream reasoning item has an id (gemini/gemini-2.5-flash, /v1/responses)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('status is 200', function () { pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 500)).to.eql(200); });",
+                  "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var out = body.output || [];",
+                  "var reasoning = out.filter(function (o) { return o.type === 'reasoning'; });",
+                  "pm.test('a reasoning item is returned', function () { pm.expect(reasoning.length, 'no reasoning item: ' + txt.slice(0, 500)).to.be.above(0); });",
+                  "pm.test('every output item has a non-empty id', function () {",
+                  "  out.forEach(function (o) { pm.expect(o.id, o.type + ' item without an id: ' + JSON.stringify(o).slice(0, 300)).to.be.a('string').and.not.empty; });",
+                  "});",
+                  "pm.test('reasoning items carry a summary array and a non-OpenAI id', function () {",
+                  "  reasoning.forEach(function (o) {",
+                  "    pm.expect(o.summary, 'summary is not an array: ' + JSON.stringify(o).slice(0, 300)).to.be.an('array');",
+                  "    pm.expect(o.id.indexOf('rs_'), 'minted id mimics an OpenAI rs_ id: ' + o.id).to.not.eql(0);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash\",\n  \"input\": \"Is 9973 prime? Answer yes or no.\",\n  \"max_output_tokens\": 4096,\n  \"reasoning\": {\n    \"effort\": \"high\",\n    \"summary\": \"auto\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Vertex Gemini non-stream reasoning item has an id (vertex/gemini-2.5-flash, /v1/responses)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('status is 200', function () { pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 500)).to.eql(200); });",
+                  "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var out = body.output || [];",
+                  "var reasoning = out.filter(function (o) { return o.type === 'reasoning'; });",
+                  "pm.test('a reasoning item is returned', function () { pm.expect(reasoning.length, 'no reasoning item: ' + txt.slice(0, 500)).to.be.above(0); });",
+                  "pm.test('every output item has a non-empty id', function () {",
+                  "  out.forEach(function (o) { pm.expect(o.id, o.type + ' item without an id: ' + JSON.stringify(o).slice(0, 300)).to.be.a('string').and.not.empty; });",
+                  "});",
+                  "pm.test('reasoning items carry a summary array and a non-OpenAI id', function () {",
+                  "  reasoning.forEach(function (o) {",
+                  "    pm.expect(o.summary, 'summary is not an array: ' + JSON.stringify(o).slice(0, 300)).to.be.an('array');",
+                  "    pm.expect(o.id.indexOf('rs_'), 'minted id mimics an OpenAI rs_ id: ' + o.id).to.not.eql(0);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/gemini-2.5-flash\",\n  \"input\": \"Is 9973 prime? Answer yes or no.\",\n  \"max_output_tokens\": 4096,\n  \"reasoning\": {\n    \"effort\": \"high\",\n    \"summary\": \"auto\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Mantle replay keeps the reasoning item id (bedrock_mantle/openai.gpt-oss-120b, /v1/responses)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('status is 200', function () { pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 500)).to.eql(200); });",
+                  "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var out = body.output || [];",
+                  "pm.test('the replay is answered', function () { pm.expect(out.length, 'empty output: ' + txt.slice(0, 500)).to.be.above(0); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock_mantle/openai.gpt-oss-120b\",\n  \"max_output_tokens\": 400,\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"Bash\",\n      \"description\": \"Run a shell command\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"command\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"command\"\n        ]\n      }\n    }\n  ],\n  \"input\": [\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"List the files in the current directory.\"\n        }\n      ]\n    },\n    {\n      \"type\": \"reasoning\",\n      \"id\": \"msg_harness_replayed_reasoning\",\n      \"summary\": [],\n      \"content\": [\n        {\n          \"type\": \"reasoning_text\",\n          \"text\": \"The user wants a listing, so run ls.\"\n        }\n      ]\n    },\n    {\n      \"type\": \"function_call\",\n      \"call_id\": \"call_harness_1\",\n      \"name\": \"Bash\",\n      \"arguments\": \"{\\\"command\\\":\\\"ls -la\\\"}\"\n    },\n    {\n      \"type\": \"function_call_output\",\n      \"call_id\": \"call_harness_1\",\n      \"output\": \"README.md\\nmain.go\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Bedrock gpt-oss replay keeps the reasoning item id (bedrock/openai.gpt-oss-120b, /v1/responses)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('status is 200', function () { pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 500)).to.eql(200); });",
+                  "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var out = body.output || [];",
+                  "pm.test('the replay is answered', function () { pm.expect(out.length, 'empty output: ' + txt.slice(0, 500)).to.be.above(0); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/openai.gpt-oss-120b\",\n  \"max_output_tokens\": 400,\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"Bash\",\n      \"description\": \"Run a shell command\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"command\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"command\"\n        ]\n      }\n    }\n  ],\n  \"input\": [\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"List the files in the current directory.\"\n        }\n      ]\n    },\n    {\n      \"type\": \"reasoning\",\n      \"id\": \"msg_harness_replayed_reasoning\",\n      \"summary\": [],\n      \"content\": [\n        {\n          \"type\": \"reasoning_text\",\n          \"text\": \"The user wants a listing, so run ls.\"\n        }\n      ]\n    },\n    {\n      \"type\": \"function_call\",\n      \"call_id\": \"call_harness_1\",\n      \"name\": \"Bash\",\n      \"arguments\": \"{\\\"command\\\":\\\"ls -la\\\"}\"\n    },\n    {\n      \"type\": \"function_call_output\",\n      \"call_id\": \"call_harness_1\",\n      \"output\": \"README.md\\nmain.go\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Mantle two-turn replay turn 1 (bedrock_mantle/openai.gpt-oss-120b, /v1/responses)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('status is 200', function () { pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 500)).to.eql(200); });",
+                  "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var out = body.output || [];",
+                  "var reasoning = out.filter(function (o) { return o.type === 'reasoning'; });",
+                  "var calls = out.filter(function (o) { return o.type === 'function_call'; });",
+                  "pm.test('turn 1 returns reasoning and a tool call', function () {",
+                  "  pm.expect(reasoning.length, 'no reasoning item: ' + txt.slice(0, 500)).to.be.above(0);",
+                  "  pm.expect(reasoning[0].id, 'reasoning item without an id').to.be.a('string').and.not.empty;",
+                  "  pm.expect(calls.length, 'no function_call: ' + txt.slice(0, 500)).to.be.above(0);",
+                  "});",
+                  "var outputs = calls.map(function (c) { return { type: 'function_call_output', call_id: c.call_id, output: 'README.md\\nmain.go' }; });",
+                  "pm.collectionVariables.set('reasoningIdReplayInput', JSON.stringify(out.concat(outputs)));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock_mantle/openai.gpt-oss-120b\",\n  \"max_output_tokens\": 2000,\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"Bash\",\n      \"description\": \"Run a shell command\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"command\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"command\"\n        ]\n      }\n    }\n  ],\n  \"input\": [\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"List the files in the current directory.\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Mantle two-turn replay turn 2 replays turn 1 verbatim (bedrock_mantle/openai.gpt-oss-120b, /v1/responses)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var raw = pm.collectionVariables.get('reasoningIdReplayInput');",
+                  "var replay = null; try { replay = JSON.parse(raw); } catch (e) { replay = null; }",
+                  "var hasReasoning = Array.isArray(replay) && replay.some(function (i) { return i && i.type === 'reasoning'; });",
+                  "if (!hasReasoning) {",
+                  "  pm.test('turn 1 left a reasoning item to replay', function () {",
+                  "    pm.expect(hasReasoning, 'reasoningIdReplayInput missing or holds no reasoning item (run turn 1 first): ' + String(raw).slice(0, 300)).to.eql(true);",
+                  "  });",
+                  "  if (pm.execution && typeof pm.execution.skipRequest === 'function') pm.execution.skipRequest();",
+                  "} else {",
+                  "  var body = JSON.parse(pm.request.body.raw);",
+                  "  body.input = [body.input[0]].concat(replay);",
+                  "  pm.request.body.raw = JSON.stringify(body);",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('status is 200', function () { pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 500)).to.eql(200); });",
+                  "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var out = body.output || [];",
+                  "pm.test('the replay is answered', function () { pm.expect(out.length, 'empty output: ' + txt.slice(0, 500)).to.be.above(0); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock_mantle/openai.gpt-oss-120b\",\n  \"max_output_tokens\": 400,\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"Bash\",\n      \"description\": \"Run a shell command\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"command\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"command\"\n        ]\n      }\n    }\n  ],\n  \"input\": [\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"List the files in the current directory.\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "311. Assistant message items carrying encrypted_content (codex message replay)",
+      "description": "Codex replays its own assistant turns as `type:\"message\"` items that also carry `summary: null` and `encrypted_content`.\nThose fields decode into the embedded ResponsesReasoning, so ToOpenAIResponsesRequest treated the message as a reasoning item:\nfor reasoning models it nulled `content` (OpenAI 400 \"Missing required parameter: 'input[N].content'\") and forwarded `summary`\n(OpenAI rejects it on a message item); for non-reasoning models it silently dropped the whole assistant turn.\n\nThe token here is deliberately foreign. OpenAI never mints encrypted_content on a message item and rejects any it receives, so\nBifrost drops it from every message item before forwarding; the message content must survive. Each case asks the model to repeat a codeword that\nonly exists in the replayed assistant turn, which pins that the turn was forwarded rather than dropped.\n\n- gpt-5-mini non-stream: content kept, summary omitted, encrypted_content dropped before forwarding.\n- gpt-5-mini stream: same invariant on the streaming path.\n- gpt-4o-mini non-stream: non-reasoning model keeps the turn and drops only the token.",
+      "item": [
+        {
+          "name": "openai/gpt-5-mini responses replays assistant message with encrypted_content (codex message replay)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('status is 200', function () { pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 800)).to.eql(200); });",
+                  "pm.test('assistant message content reached the provider', function () {",
+                  "  pm.expect(txt, 'content was stripped from the replayed assistant message').to.not.include(\"Missing required parameter\");",
+                  "  pm.expect(txt, 'summary was forwarded on a message item').to.not.include(\"Unknown parameter\");",
+                  "});",
+                  "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var text = (body.output || []).filter(function (o) { return o.type === 'message'; }).map(function (o) { return (o.content || []).map(function (c) { return c.text || ''; }).join(''); }).join('');",
+                  "pm.test('model saw the replayed assistant turn (recalls the codeword)', function () { pm.expect(text, 'assistant turn was dropped from history: ' + txt.slice(0, 800)).to.include('ZEBRA-42'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-5-mini\",\n  \"input\": [\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Remember the codeword.\"\n        }\n      ]\n    },\n    {\n      \"type\": \"message\",\n      \"role\": \"assistant\",\n      \"status\": \"completed\",\n      \"phase\": \"final_answer\",\n      \"content\": [\n        {\n          \"type\": \"output_text\",\n          \"text\": \"The codeword is ZEBRA-42.\",\n          \"annotations\": []\n        }\n      ],\n      \"summary\": null,\n      \"encrypted_content\": \"gAAAAB-harness-foreign-token\"\n    },\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Reply with only the codeword you told me.\"\n        }\n      ]\n    }\n  ],\n  \"max_output_tokens\": 2048\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai/gpt-5-mini responses stream replays assistant message with encrypted_content (codex message replay)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('status is 200', function () { pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 800)).to.eql(200); });",
+                  "pm.test('assistant message content reached the provider', function () {",
+                  "  pm.expect(txt, 'content was stripped from the replayed assistant message').to.not.include(\"Missing required parameter\");",
+                  "  pm.expect(txt, 'summary was forwarded on a message item').to.not.include(\"Unknown parameter\");",
+                  "});",
+                  "pm.test('stream completed', function () { pm.expect(txt, 'stream did not complete: ' + txt.slice(-800)).to.include('response.completed'); });",
+                  "pm.test('model saw the replayed assistant turn (recalls the codeword)', function () { pm.expect(txt, 'assistant turn was dropped from history: ' + txt.slice(-800)).to.include('ZEBRA-42'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-5-mini\",\n  \"input\": [\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Remember the codeword.\"\n        }\n      ]\n    },\n    {\n      \"type\": \"message\",\n      \"role\": \"assistant\",\n      \"status\": \"completed\",\n      \"phase\": \"final_answer\",\n      \"content\": [\n        {\n          \"type\": \"output_text\",\n          \"text\": \"The codeword is ZEBRA-42.\",\n          \"annotations\": []\n        }\n      ],\n      \"summary\": null,\n      \"encrypted_content\": \"gAAAAB-harness-foreign-token\"\n    },\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Reply with only the codeword you told me.\"\n        }\n      ]\n    }\n  ],\n  \"max_output_tokens\": 2048,\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai/gpt-4o-mini responses keeps assistant message carrying encrypted_content (codex message replay)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('status is 200', function () { pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 800)).to.eql(200); });",
+                  "pm.test('assistant message content reached the provider', function () {",
+                  "  pm.expect(txt, 'content was stripped from the replayed assistant message').to.not.include(\"Missing required parameter\");",
+                  "  pm.expect(txt, 'summary was forwarded on a message item').to.not.include(\"Unknown parameter\");",
+                  "});",
+                  "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var text = (body.output || []).filter(function (o) { return o.type === 'message'; }).map(function (o) { return (o.content || []).map(function (c) { return c.text || ''; }).join(''); }).join('');",
+                  "pm.test('model saw the replayed assistant turn (recalls the codeword)', function () { pm.expect(text, 'assistant turn was dropped from history: ' + txt.slice(0, 800)).to.include('ZEBRA-42'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"input\": [\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Remember the codeword.\"\n        }\n      ]\n    },\n    {\n      \"type\": \"message\",\n      \"role\": \"assistant\",\n      \"status\": \"completed\",\n      \"phase\": \"final_answer\",\n      \"content\": [\n        {\n          \"type\": \"output_text\",\n          \"text\": \"The codeword is ZEBRA-42.\",\n          \"annotations\": []\n        }\n      ],\n      \"summary\": null,\n      \"encrypted_content\": \"gAAAAB-harness-foreign-token\"\n    },\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Reply with only the codeword you told me.\"\n        }\n      ]\n    }\n  ],\n  \"max_output_tokens\": 2048\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "312. Summary-only reasoning replayed as content keeps summary (reasoning summary content replay)",
+      "description": "A summary-only reasoning item (history from an OpenAI-style model) is rewritten as reasoning_text content blocks for models that read replayed reasoning from content: gpt-oss on any host, and every vLLM model. ToOpenAIResponsesRequest built the rewritten item without a summary field. OpenAI's ResponseReasoningItem requires summary, so Bedrock Mantle answered 400 and vLLM 400 \"203 validation errors\"; Fireworks and OpenRouter accepted it. The fix sends summary: [] alongside the content.\n\nRed before the fix: the Mantle and Bedrock gpt-oss cases get 400. The OpenAI case is a control on the summary path, which the rewrite never touches. vLLM is covered by unit tests (no vLLM provider in the harness profile).",
+      "item": [
+        {
+          "name": "Mantle summary-only reasoning replay (bedrock_mantle/openai.gpt-oss-120b, /v1/responses)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('status is 200 (content-only reasoning item without summary is rejected as a validation error)', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 500)).to.eql(200);",
+                  "});",
+                  "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "pm.test('the replay is answered', function () { pm.expect((body.output || []).length, 'empty output: ' + txt.slice(0, 500)).to.be.above(0); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock_mantle/openai.gpt-oss-120b\",\n  \"max_output_tokens\": 600,\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"ping\",\n      \"description\": \"ping\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {}\n      }\n    }\n  ],\n  \"input\": [\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Call ping, then tell me the code word you chose.\"\n        }\n      ]\n    },\n    {\n      \"type\": \"reasoning\",\n      \"id\": \"msg_harness_summary_only\",\n      \"summary\": [\n        {\n          \"type\": \"summary_text\",\n          \"text\": \"I choose the code word ZUCCHINI-9.\"\n        }\n      ]\n    },\n    {\n      \"type\": \"function_call\",\n      \"call_id\": \"call_harness_summary\",\n      \"name\": \"ping\",\n      \"arguments\": \"{}\"\n    },\n    {\n      \"type\": \"function_call_output\",\n      \"call_id\": \"call_harness_summary\",\n      \"output\": \"pong\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Mantle summary-only reasoning replay streamed (bedrock_mantle/openai.gpt-oss-120b, /v1/responses stream)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('status is 200', function () { pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 500)).to.eql(200); });",
+                  "pm.test('stream completes without an error event', function () {",
+                  "  pm.expect(txt, 'no response.completed: ' + txt.slice(0, 600)).to.include('response.completed');",
+                  "  pm.expect(txt.indexOf('\"type\":\"error\"'), 'error event: ' + txt.slice(0, 600)).to.eql(-1);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock_mantle/openai.gpt-oss-120b\",\n  \"max_output_tokens\": 600,\n  \"stream\": true,\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"ping\",\n      \"description\": \"ping\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {}\n      }\n    }\n  ],\n  \"input\": [\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Call ping, then tell me the code word you chose.\"\n        }\n      ]\n    },\n    {\n      \"type\": \"reasoning\",\n      \"id\": \"msg_harness_summary_only\",\n      \"summary\": [\n        {\n          \"type\": \"summary_text\",\n          \"text\": \"I choose the code word ZUCCHINI-9.\"\n        }\n      ]\n    },\n    {\n      \"type\": \"function_call\",\n      \"call_id\": \"call_harness_summary\",\n      \"name\": \"ping\",\n      \"arguments\": \"{}\"\n    },\n    {\n      \"type\": \"function_call_output\",\n      \"call_id\": \"call_harness_summary\",\n      \"output\": \"pong\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Bedrock gpt-oss summary-only reasoning replay (bedrock/openai.gpt-oss-120b, /v1/responses)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('status is 200 (content-only reasoning item without summary is rejected as a validation error)', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 500)).to.eql(200);",
+                  "});",
+                  "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "pm.test('the replay is answered', function () { pm.expect((body.output || []).length, 'empty output: ' + txt.slice(0, 500)).to.be.above(0); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/openai.gpt-oss-120b\",\n  \"max_output_tokens\": 600,\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"ping\",\n      \"description\": \"ping\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {}\n      }\n    }\n  ],\n  \"input\": [\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Call ping, then tell me the code word you chose.\"\n        }\n      ]\n    },\n    {\n      \"type\": \"reasoning\",\n      \"id\": \"msg_harness_summary_only\",\n      \"summary\": [\n        {\n          \"type\": \"summary_text\",\n          \"text\": \"I choose the code word ZUCCHINI-9.\"\n        }\n      ]\n    },\n    {\n      \"type\": \"function_call\",\n      \"call_id\": \"call_harness_summary\",\n      \"name\": \"ping\",\n      \"arguments\": \"{}\"\n    },\n    {\n      \"type\": \"function_call_output\",\n      \"call_id\": \"call_harness_summary\",\n      \"output\": \"pong\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "OpenAI summary-only reasoning replay control (openai/gpt-5-mini, /v1/responses)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('status is 200 (content-only reasoning item without summary is rejected as a validation error)', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 500)).to.eql(200);",
+                  "});",
+                  "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "pm.test('the replay is answered', function () { pm.expect((body.output || []).length, 'empty output: ' + txt.slice(0, 500)).to.be.above(0); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-5-mini\",\n  \"max_output_tokens\": 600,\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"ping\",\n      \"description\": \"ping\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {}\n      }\n    }\n  ],\n  \"input\": [\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Call ping, then tell me the code word you chose.\"\n        }\n      ]\n    },\n    {\n      \"type\": \"reasoning\",\n      \"id\": \"msg_harness_summary_only\",\n      \"summary\": [\n        {\n          \"type\": \"summary_text\",\n          \"text\": \"I choose the code word ZUCCHINI-9.\"\n        }\n      ]\n    },\n    {\n      \"type\": \"function_call\",\n      \"call_id\": \"call_harness_summary\",\n      \"name\": \"ping\",\n      \"arguments\": \"{}\"\n    },\n    {\n      \"type\": \"function_call_output\",\n      \"call_id\": \"call_harness_summary\",\n      \"output\": \"pong\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "313. Raw reasoning_text.delta streams as Anthropic thinking_delta (raw reasoning thinking delta)",
+      "description": "Open-weight reasoning models (gpt-oss on Bedrock Mantle and Bedrock, every reasoning model on vLLM) stream their raw chain of thought as response.reasoning_text.delta, not response.reasoning_summary_text.delta. toAnthropicResponsesStreamEvents handled only the summary event, so /anthropic/v1/messages streams opened a thinking content block and never sent a thinking_delta: the reasoning tokens were billed but never delivered. The fix maps reasoning_text.delta to thinking_delta in the same case.\n\nRed before the fix: one thinking block, zero thinking_delta characters. vLLM is covered by unit tests and the live repro (no vLLM provider in the harness profile).",
+      "item": [
+        {
+          "name": "Bedrock Mantle gpt-oss raw reasoning streams thinking_delta (bedrock_mantle/openai.gpt-oss-120b, /anthropic/v1/messages stream)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('status is 200', function () { pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 500)).to.eql(200); });",
+                  "var thinkingBlocks = {}, thinking = '', text = '', errors = [];",
+                  "txt.split('\\n').forEach(function (line) {",
+                  "  if (line.indexOf('data:') !== 0) { return; }",
+                  "  var ev; try { ev = JSON.parse(line.slice(5)); } catch (e) { return; }",
+                  "  if (ev.type === 'error') { errors.push(JSON.stringify(ev).slice(0, 300)); }",
+                  "  if (ev.type === 'content_block_start' && ev.content_block && ev.content_block.type === 'thinking') { thinkingBlocks[ev.index] = true; }",
+                  "  if (ev.type === 'content_block_delta' && ev.delta && ev.delta.type === 'thinking_delta') {",
+                  "    pm.expect(thinkingBlocks[ev.index], 'thinking_delta at index ' + ev.index + ' without an open thinking block').to.eql(true);",
+                  "    thinking += ev.delta.thinking || '';",
+                  "  }",
+                  "  if (ev.type === 'content_block_delta' && ev.delta && ev.delta.type === 'text_delta') { text += ev.delta.text || ''; }",
+                  "});",
+                  "pm.test('stream has no error event', function () { pm.expect(errors, errors.join(' | ')).to.be.empty; });",
+                  "pm.test('a thinking block is opened', function () { pm.expect(Object.keys(thinkingBlocks).length, 'no thinking content_block_start: ' + txt.slice(0, 600)).to.be.above(0); });",
+                  "pm.test('raw reasoning arrives as thinking_delta (was an empty thinking block)', function () {",
+                  "  pm.expect(thinking.trim().length, 'thinking block opened but no thinking_delta text: ' + txt.slice(0, 800)).to.be.above(0);",
+                  "});",
+                  "pm.test('the answer still streams as text', function () { pm.expect(text.trim().length, 'no text_delta: ' + txt.slice(0, 600)).to.be.above(0); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock_mantle/openai.gpt-oss-120b\",\n  \"max_tokens\": 3000,\n  \"stream\": true,\n  \"thinking\": {\n    \"type\": \"enabled\",\n    \"budget_tokens\": 2000\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Is 391 prime? Think step by step, then answer in one word.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Bedrock gpt-oss raw reasoning streams thinking_delta (bedrock/openai.gpt-oss-120b, /anthropic/v1/messages stream)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('status is 200', function () { pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 500)).to.eql(200); });",
+                  "var thinkingBlocks = {}, thinking = '', text = '', errors = [];",
+                  "txt.split('\\n').forEach(function (line) {",
+                  "  if (line.indexOf('data:') !== 0) { return; }",
+                  "  var ev; try { ev = JSON.parse(line.slice(5)); } catch (e) { return; }",
+                  "  if (ev.type === 'error') { errors.push(JSON.stringify(ev).slice(0, 300)); }",
+                  "  if (ev.type === 'content_block_start' && ev.content_block && ev.content_block.type === 'thinking') { thinkingBlocks[ev.index] = true; }",
+                  "  if (ev.type === 'content_block_delta' && ev.delta && ev.delta.type === 'thinking_delta') {",
+                  "    pm.expect(thinkingBlocks[ev.index], 'thinking_delta at index ' + ev.index + ' without an open thinking block').to.eql(true);",
+                  "    thinking += ev.delta.thinking || '';",
+                  "  }",
+                  "  if (ev.type === 'content_block_delta' && ev.delta && ev.delta.type === 'text_delta') { text += ev.delta.text || ''; }",
+                  "});",
+                  "pm.test('stream has no error event', function () { pm.expect(errors, errors.join(' | ')).to.be.empty; });",
+                  "pm.test('a thinking block is opened', function () { pm.expect(Object.keys(thinkingBlocks).length, 'no thinking content_block_start: ' + txt.slice(0, 600)).to.be.above(0); });",
+                  "pm.test('raw reasoning arrives as thinking_delta (was an empty thinking block)', function () {",
+                  "  pm.expect(thinking.trim().length, 'thinking block opened but no thinking_delta text: ' + txt.slice(0, 800)).to.be.above(0);",
+                  "});",
+                  "pm.test('the answer still streams as text', function () { pm.expect(text.trim().length, 'no text_delta: ' + txt.slice(0, 600)).to.be.above(0); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/openai.gpt-oss-120b\",\n  \"max_tokens\": 3000,\n  \"stream\": true,\n  \"thinking\": {\n    \"type\": \"enabled\",\n    \"budget_tokens\": 2000\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Is 391 prime? Think step by step, then answer in one word.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "317. Claude Code fields on fallback providers: Databricks safeguards, Copilot tool search (claude code fallback fields)",
+      "description": "Claude Code requests that fall back to other providers carried Anthropic-only extras those providers reject. Databricks: the /anthropic/v1/messages route stores the auto-mode classifier payload `safeguards` in ExtraParams, and Databricks always forwards ExtraParams, so the endpoint answered 400 \"safeguards: Extra inputs are not permitted\". stripUnsupportedResponsesFields and stripUnsupportedChatFields (core/providers/databricks/inference.go) now drop it next to context_management. GitHub Copilot: Copilot serves tool search (tool_search tool + defer_loading) with no beta header or advanced-tool-use-2025-11-20, but answers 400 \"unsupported beta header(s): tool-search-tool-2025-10-19\" to that header. Bifrost added it from defer_loading and forwarded the client's copy; the ToolSearchHeaderless provider flag (core/providers/anthropic) now suppresses both. Every case is red before the fix (400) and green after. Copilot cases also assert tool search actually ran, so a fix that dropped the tools instead of the header would fail. 317.6 and 317.7 send safeguards as a caller-supplied field on the neutral Chat and Responses routes (Bifrost collects unknown fields into ExtraParams, which Databricks forwards) and assert the exposed raw_request omits it; the neutral streaming routes call the same strip functions and are covered by 317.2 and the unit tests.",
+      "item": [
+        {
+          "name": "317.1 databricks/databricks-claude-opus-5-5 /anthropic/v1/messages Claude Code safeguards is not forwarded (claude code fallback fields)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"databricks/databricks-claude-opus-5-5\",\n  \"max_tokens\": 40,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say hi in three words.\"\n    }\n  ],\n  \"safeguards\": {\n    \"z\": 1,\n    \"a\": {\n      \"b\": true\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 500)).to.equal(200); });",
+                  "pm.test('safeguards not rejected', function () { pm.expect(pm.response.text()).to.not.include('safeguards'); });",
+                  "var j = pm.response.json();",
+                  "pm.test('Anthropic-shaped message with text', function () { var t = (j.content || []).filter(function (b) { return b.type === 'text' && b.text; }); pm.expect(t.length, pm.response.text().slice(0, 500)).to.be.above(0); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "317.2 databricks/databricks-claude-opus-5-5 /anthropic/v1/messages stream Claude Code safeguards is not forwarded (claude code fallback fields)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"databricks/databricks-claude-opus-5-5\",\n  \"max_tokens\": 40,\n  \"stream\": true,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say hi in three words.\"\n    }\n  ],\n  \"safeguards\": {\n    \"z\": 1,\n    \"a\": {\n      \"b\": true\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 500)).to.equal(200); });",
+                  "var body = pm.response.text() || '';",
+                  "pm.test('safeguards not rejected', function () { pm.expect(body).to.not.include('safeguards'); pm.expect(body).to.not.include('event: error'); });",
+                  "pm.test('stream finished', function () { pm.expect(body, body.slice(0, 500)).to.include('message_stop'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "317.3 github-copilot/claude-opus-5.5 /anthropic/v1/messages tool search without the tool-search beta header (claude code fallback fields)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"github-copilot/claude-opus-5.5\",\n  \"max_tokens\": 300,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Use tool search to find the tool that reads files, then tell me its name.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"tool_search_tool_regex_20251119\",\n      \"name\": \"tool_search_tool_regex\"\n    },\n    {\n      \"name\": \"read_file\",\n      \"description\": \"Read a file from disk\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"path\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"path\"\n        ]\n      },\n      \"defer_loading\": true\n    },\n    {\n      \"name\": \"say\",\n      \"description\": \"Say something to the user\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"text\": {\n            \"type\": \"string\"\n          }\n        }\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 500)).to.equal(200); });",
+                  "pm.test('no unsupported beta header rejection', function () { pm.expect(pm.response.text()).to.not.include('unsupported beta header'); });",
+                  "var j = pm.response.json();",
+                  "var types = (j.content || []).map(function (b) { return b.type; });",
+                  "pm.test('tool search ran on Copilot', function () { pm.expect(types, pm.response.text().slice(0, 800)).to.include('server_tool_use'); pm.expect(types, pm.response.text().slice(0, 800)).to.include('tool_search_tool_result'); });",
+                  "var refs = (j.content || []).filter(function (b) { return b.type === 'tool_search_tool_result'; }).map(function (b) { return JSON.stringify(b.content || {}); }).join('');",
+                  "pm.test('tool search found the deferred read_file tool', function () { pm.expect(refs, pm.response.text().slice(0, 800)).to.include('read_file'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "317.4 github-copilot/claude-opus-5.5 /anthropic/v1/messages tool search drops the client tool-search beta header (claude code fallback fields)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "anthropic-beta",
+                "value": "tool-search-tool-2025-10-19"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"github-copilot/claude-opus-5.5\",\n  \"max_tokens\": 300,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Use tool search to find the tool that reads files, then tell me its name.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"tool_search_tool_regex_20251119\",\n      \"name\": \"tool_search_tool_regex\"\n    },\n    {\n      \"name\": \"read_file\",\n      \"description\": \"Read a file from disk\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"path\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"path\"\n        ]\n      },\n      \"defer_loading\": true\n    },\n    {\n      \"name\": \"say\",\n      \"description\": \"Say something to the user\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"text\": {\n            \"type\": \"string\"\n          }\n        }\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 500)).to.equal(200); });",
+                  "pm.test('no unsupported beta header rejection', function () { pm.expect(pm.response.text()).to.not.include('unsupported beta header'); });",
+                  "var j = pm.response.json();",
+                  "var types = (j.content || []).map(function (b) { return b.type; });",
+                  "pm.test('tool search ran on Copilot', function () { pm.expect(types, pm.response.text().slice(0, 800)).to.include('server_tool_use'); pm.expect(types, pm.response.text().slice(0, 800)).to.include('tool_search_tool_result'); });",
+                  "var refs = (j.content || []).filter(function (b) { return b.type === 'tool_search_tool_result'; }).map(function (b) { return JSON.stringify(b.content || {}); }).join('');",
+                  "pm.test('tool search found the deferred read_file tool', function () { pm.expect(refs, pm.response.text().slice(0, 800)).to.include('read_file'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "317.5 github-copilot/claude-opus-5.5 /v1/responses tool search without the tool-search beta header (claude code fallback fields)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"github-copilot/claude-opus-5.5\",\n  \"input\": \"Use tool search to find the tool that reads files, then tell me its name.\",\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"read_file\",\n      \"description\": \"Read a file from disk\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"path\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"path\"\n        ]\n      },\n      \"defer_loading\": true\n    },\n    {\n      \"type\": \"function\",\n      \"name\": \"say\",\n      \"description\": \"Say something to the user\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"text\": {\n            \"type\": \"string\"\n          }\n        }\n      }\n    },\n    {\n      \"type\": \"tool_search\"\n    }\n  ],\n  \"max_output_tokens\": 300\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 500)).to.equal(200); });",
+                  "pm.test('no unsupported beta header rejection', function () { pm.expect(pm.response.text()).to.not.include('unsupported beta header'); });",
+                  "var j = pm.response.json();",
+                  "pm.test('tool search ran on Copilot', function () { var types = (j.output || []).map(function (o) { return o.type; }); pm.expect(types, pm.response.text().slice(0, 800)).to.include('tool_search_call'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "317.6 databricks/databricks-claude-opus-5-5 /v1/chat/completions caller-sent safeguards is not forwarded (claude code fallback fields)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"databricks/databricks-claude-opus-5-5\",\n  \"max_tokens\": 40,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say hi in three words.\"\n    }\n  ],\n  \"safeguards\": {\n    \"z\": 1,\n    \"a\": {\n      \"b\": true\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 500)).to.equal(200); });",
+                  "pm.test('safeguards not rejected', function () { pm.expect(pm.response.text()).to.not.include('Extra inputs are not permitted'); });",
+                  "var j = pm.response.json();",
+                  "var rawReq = (j.extra_fields || {}).raw_request;",
+                  "pm.test('outbound request is exposed and omits safeguards', function () { pm.expect(rawReq, 'no extra_fields.raw_request: ' + pm.response.text().slice(0, 400)).to.be.an('object'); pm.expect(rawReq).to.not.have.property('safeguards'); });",
+                  "pm.test('chat completion with text', function () { var m = ((j.choices || [])[0] || {}).message || {}; pm.expect(m.content, pm.response.text().slice(0, 400)).to.be.a('string').and.not.empty; });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "317.7 databricks/databricks-claude-opus-5-5 /v1/responses caller-sent safeguards is not forwarded (claude code fallback fields)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"databricks/databricks-claude-opus-5-5\",\n  \"input\": \"Say hi in three words.\",\n  \"max_output_tokens\": 40,\n  \"safeguards\": {\n    \"z\": 1,\n    \"a\": {\n      \"b\": true\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 500)).to.equal(200); });",
+                  "pm.test('safeguards not rejected', function () { pm.expect(pm.response.text()).to.not.include('Extra inputs are not permitted'); });",
+                  "var j = pm.response.json();",
+                  "var rawReq = (j.extra_fields || {}).raw_request;",
+                  "pm.test('outbound request is exposed and omits safeguards', function () { pm.expect(rawReq, 'no extra_fields.raw_request: ' + pm.response.text().slice(0, 400)).to.be.an('object'); pm.expect(rawReq).to.not.have.property('safeguards'); });",
+                  "pm.test('response completed', function () { pm.expect(j.status, pm.response.text().slice(0, 400)).to.equal('completed'); });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "318. Codex message replay keeps genuine reasoning tokens (codex message replay)",
+      "description": "OpenAI never mints encrypted_content on a message item and rejects any it receives (\"Encrypted content could not be decrypted or parsed\"), even its own reasoning token. Bifrost used to forward a Codex message item's token to reasoning models; the 400 triggered the fail-soft retry, which strips encrypted_content from EVERY item, so the conversation's genuine reasoning tokens were lost too (and in large-payload or raw-body mode no retry ran at all). The message-item branch of ToOpenAIResponsesRequest now drops the token for every model.\n\nTurn 1 obtains a genuine reasoning token from openai/gpt-5-mini; turn 2 replays it next to a Codex-style message carrying a foreign token and inspects extra_fields.raw_request. Red before the fix: the reasoning item reaches OpenAI without encrypted_content (stripped by the retry). Green after: the message has no encrypted_content or summary, and the reasoning item keeps its token.",
+      "item": [
+        {
+          "name": "openai/gpt-5-mini codex replay turn 1 mints a genuine reasoning token (codex message replay)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('status is 200', function () { pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 600)).to.eql(200); });",
+                  "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var reasoning = (body.output || []).filter(function (o) { return o.type === 'reasoning' && o.encrypted_content; });",
+                  "pm.test('turn 1 returns a reasoning item with encrypted_content', function () { pm.expect(reasoning.length, 'no reasoning token to replay: ' + txt.slice(0, 600)).to.be.above(0); });",
+                  "pm.collectionVariables.set('codexReplayGenuineReasoning', JSON.stringify(reasoning));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-5-mini\",\n  \"store\": false,\n  \"include\": [\n    \"reasoning.encrypted_content\"\n  ],\n  \"max_output_tokens\": 1500,\n  \"input\": [\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"The codeword is FALCON-12. Acknowledge briefly.\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai/gpt-5-mini codex replay turn 2 keeps the genuine reasoning token next to a Codex message (codex message replay)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var raw = pm.collectionVariables.get('codexReplayGenuineReasoning');",
+                  "var reasoning = null; try { reasoning = JSON.parse(raw); } catch (e) { reasoning = null; }",
+                  "var ok = Array.isArray(reasoning) && reasoning.some(function (i) { return i && i.type === 'reasoning' && i.encrypted_content; });",
+                  "if (!ok) {",
+                  "  pm.test('turn 1 left a genuine reasoning token to replay', function () {",
+                  "    pm.expect(ok, 'codexReplayGenuineReasoning missing or holds no encrypted reasoning item (run turn 1 first): ' + String(raw).slice(0, 300)).to.eql(true);",
+                  "  });",
+                  "  if (pm.execution && typeof pm.execution.skipRequest === 'function') pm.execution.skipRequest();",
+                  "} else {",
+                  "  var body = JSON.parse(pm.request.body.raw);",
+                  "  var codex = {type: 'message', role: 'assistant', status: 'completed', phase: 'final_answer',",
+                  "    content: [{type: 'output_text', text: 'Noted: the codeword is FALCON-12.', annotations: []}],",
+                  "    summary: null, encrypted_content: 'gAAAAB-harness-foreign-token'};",
+                  "  var ask = {type: 'message', role: 'user', content: [{type: 'input_text', text: 'What is the codeword? Reply with only the codeword.'}]};",
+                  "  body.input = [body.input[0]].concat(reasoning, [codex, ask]);",
+                  "  pm.request.body.raw = JSON.stringify(body);",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('status is 200', function () { pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 800)).to.eql(200); });",
+                  "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var sent = (body.extra_fields || {}).raw_request; if (typeof sent === 'string') { try { sent = JSON.parse(sent); } catch (e) { sent = null; } }",
+                  "var input = (sent && sent.input) || [];",
+                  "var msg = input.filter(function (i) { return i.type === 'message' && i.role === 'assistant'; })[0];",
+                  "var rs = input.filter(function (i) { return i.type === 'reasoning'; });",
+                  "pm.test('raw_request was returned', function () { pm.expect(input.length, 'no extra_fields.raw_request.input (send_back_raw_request off?): ' + txt.slice(0, 400)).to.be.above(0); });",
+                  "pm.test('assistant message keeps content and phase, drops summary and encrypted_content', function () {",
+                  "  pm.expect(msg, 'assistant message missing upstream: ' + JSON.stringify(input).slice(0, 600)).to.be.an('object');",
+                  "  pm.expect(msg.content, 'content stripped').to.be.an('array').that.is.not.empty;",
+                  "  pm.expect(msg.phase, 'phase dropped').to.eql('final_answer');",
+                  "  pm.expect(msg, 'summary forwarded on a message item').to.not.have.property('summary');",
+                  "  pm.expect(msg, 'encrypted_content forwarded on a message item').to.not.have.property('encrypted_content');",
+                  "});",
+                  "pm.test('genuine reasoning token reached the provider (no strip-and-retry)', function () {",
+                  "  pm.expect(rs.length, 'reasoning item missing upstream').to.be.above(0);",
+                  "  pm.expect(rs[0].encrypted_content, 'reasoning encrypted_content was stripped: a foreign message token forced the fail-soft retry').to.be.a('string').and.not.empty;",
+                  "});",
+                  "var text = (body.output || []).filter(function (o) { return o.type === 'message'; }).map(function (o) { return (o.content || []).map(function (c) { return c.text || ''; }).join(''); }).join('');",
+                  "pm.test('model saw the replayed assistant turn (recalls the codeword)', function () { pm.expect(text, 'assistant turn was dropped: ' + txt.slice(0, 600)).to.include('FALCON-12'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-5-mini\",\n  \"store\": false,\n  \"include\": [\n    \"reasoning.encrypted_content\"\n  ],\n  \"max_output_tokens\": 800,\n  \"input\": [\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"The codeword is FALCON-12. Acknowledge briefly.\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "319. Codex re-declared additional_tools merge on flattening wires (additional tools redeclaration)",
+      "description": "Codex declares its tools in additional_tools input items. When a tool's definition changes mid-thread (a Codex upgrade or a plugin update on a resumed session), a later item re-declares it, e.g. functions[exec] alone after an earlier functions[exec, wait]. Wires without a namespace container (Bedrock Converse, the Anthropic Messages API, Gemini/Vertex, Claude on Azure or Mantle) hoist those items into the top-level tools; the hoist used to append every item, so after UnwrapDefaultNamespaceTools the request carried exec twice and Bifrost rejected it with 400 \"tool name \\\"exec\\\" is not unique after flattening namespace tools\", on every turn of that thread. hoistResponsesAdditionalTools now merges declarations by namespace and name, later wins, keeping the first position and the namespace's other members.\n\n319.1 and 319.2 echo the provider request and pin that exec is sent once, with the later definition, and that wait survives. 319.3 pins the streaming path Codex actually uses. Red before the fix: 400 with the not-unique message. Green after: 200.",
+      "item": [
+        {
+          "name": "319.1 bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0 /v1/responses re-declared exec sent once (additional tools redeclaration)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('bedrock converse: re-declared exec is not rejected as a duplicate', function () { pm.expect(txt, 'duplicate-tool 400 - additional_tools re-declarations were appended instead of merged: ' + txt.slice(0, 600)).to.not.include('is not unique after flattening namespace tools'); });",
+                  "pm.test('bedrock converse: status is 200', function () { pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 600)).to.eql(200); });",
+                  "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var sent = (body.extra_fields || {}).raw_request;",
+                  "var sentText = typeof sent === 'string' ? sent : JSON.stringify(sent || {});",
+                  "pm.test('bedrock converse: raw_request is echoed', function () { pm.expect(sentText.length, 'no extra_fields.raw_request: ' + txt.slice(0, 600)).to.be.above(2); });",
+                  "var execCount = (sentText.match(/\\\\?\"name\\\\?\"\\s*:\\s*\\\\?\"exec\\\\?\"/g) || []).length;",
+                  "pm.test('bedrock converse: exec is declared to the provider exactly once', function () { pm.expect(execCount, 'exec declarations on the wire: ' + sentText.slice(0, 1500)).to.eql(1); });",
+                  "pm.test('bedrock converse: the later exec definition wins', function () { pm.expect(sentText, 'want definition v2: ' + sentText.slice(0, 1500)).to.include('definition v2'); pm.expect(sentText, 'stale definition v1 still sent: ' + sentText.slice(0, 1500)).to.not.include('definition v1'); });",
+                  "pm.test('bedrock converse: sibling wait survives the partial re-declaration', function () { pm.expect(sentText, 'wait was dropped: ' + sentText.slice(0, 1500)).to.include('Wait for a background job.'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0\",\n  \"input\": [\n    {\n      \"type\": \"additional_tools\",\n      \"role\": \"developer\",\n      \"tools\": [\n        {\n          \"type\": \"namespace\",\n          \"name\": \"functions\",\n          \"tools\": [\n            {\n              \"type\": \"function\",\n              \"name\": \"exec\",\n              \"description\": \"Run a shell command (definition v1).\",\n              \"strict\": false,\n              \"parameters\": {\n                \"type\": \"object\",\n                \"properties\": {\n                  \"cmd\": {\n                    \"type\": \"string\"\n                  }\n                },\n                \"required\": [\n                  \"cmd\"\n                ],\n                \"additionalProperties\": false\n              }\n            },\n            {\n              \"type\": \"function\",\n              \"name\": \"wait\",\n              \"description\": \"Wait for a background job.\",\n              \"strict\": false,\n              \"parameters\": {\n                \"type\": \"object\",\n                \"properties\": {},\n                \"additionalProperties\": false\n              }\n            }\n          ]\n        }\n      ]\n    },\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Say hi.\"\n        }\n      ]\n    },\n    {\n      \"type\": \"message\",\n      \"role\": \"assistant\",\n      \"content\": [\n        {\n          \"type\": \"output_text\",\n          \"text\": \"Hi.\"\n        }\n      ]\n    },\n    {\n      \"type\": \"additional_tools\",\n      \"role\": \"developer\",\n      \"tools\": [\n        {\n          \"type\": \"namespace\",\n          \"name\": \"functions\",\n          \"tools\": [\n            {\n              \"type\": \"function\",\n              \"name\": \"exec\",\n              \"description\": \"Run a shell command (definition v2).\",\n              \"strict\": false,\n              \"parameters\": {\n                \"type\": \"object\",\n                \"properties\": {\n                  \"cmd\": {\n                    \"type\": \"string\"\n                  }\n                },\n                \"required\": [\n                  \"cmd\"\n                ],\n                \"additionalProperties\": false\n              }\n            }\n          ]\n        }\n      ]\n    },\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Reply with exactly: OK\"\n        }\n      ]\n    }\n  ],\n  \"max_output_tokens\": 64\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "319.2 anthropic/claude-haiku-4-5 /v1/responses re-declared exec sent once (additional tools redeclaration)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('anthropic: re-declared exec is not rejected as a duplicate', function () { pm.expect(txt, 'duplicate-tool 400 - additional_tools re-declarations were appended instead of merged: ' + txt.slice(0, 600)).to.not.include('is not unique after flattening namespace tools'); });",
+                  "pm.test('anthropic: status is 200', function () { pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 600)).to.eql(200); });",
+                  "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var sent = (body.extra_fields || {}).raw_request;",
+                  "var sentText = typeof sent === 'string' ? sent : JSON.stringify(sent || {});",
+                  "pm.test('anthropic: raw_request is echoed', function () { pm.expect(sentText.length, 'no extra_fields.raw_request: ' + txt.slice(0, 600)).to.be.above(2); });",
+                  "var execCount = (sentText.match(/\\\\?\"name\\\\?\"\\s*:\\s*\\\\?\"exec\\\\?\"/g) || []).length;",
+                  "pm.test('anthropic: exec is declared to the provider exactly once', function () { pm.expect(execCount, 'exec declarations on the wire: ' + sentText.slice(0, 1500)).to.eql(1); });",
+                  "pm.test('anthropic: the later exec definition wins', function () { pm.expect(sentText, 'want definition v2: ' + sentText.slice(0, 1500)).to.include('definition v2'); pm.expect(sentText, 'stale definition v1 still sent: ' + sentText.slice(0, 1500)).to.not.include('definition v1'); });",
+                  "pm.test('anthropic: sibling wait survives the partial re-declaration', function () { pm.expect(sentText, 'wait was dropped: ' + sentText.slice(0, 1500)).to.include('Wait for a background job.'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-haiku-4-5\",\n  \"input\": [\n    {\n      \"type\": \"additional_tools\",\n      \"role\": \"developer\",\n      \"tools\": [\n        {\n          \"type\": \"namespace\",\n          \"name\": \"functions\",\n          \"tools\": [\n            {\n              \"type\": \"function\",\n              \"name\": \"exec\",\n              \"description\": \"Run a shell command (definition v1).\",\n              \"strict\": false,\n              \"parameters\": {\n                \"type\": \"object\",\n                \"properties\": {\n                  \"cmd\": {\n                    \"type\": \"string\"\n                  }\n                },\n                \"required\": [\n                  \"cmd\"\n                ],\n                \"additionalProperties\": false\n              }\n            },\n            {\n              \"type\": \"function\",\n              \"name\": \"wait\",\n              \"description\": \"Wait for a background job.\",\n              \"strict\": false,\n              \"parameters\": {\n                \"type\": \"object\",\n                \"properties\": {},\n                \"additionalProperties\": false\n              }\n            }\n          ]\n        }\n      ]\n    },\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Say hi.\"\n        }\n      ]\n    },\n    {\n      \"type\": \"message\",\n      \"role\": \"assistant\",\n      \"content\": [\n        {\n          \"type\": \"output_text\",\n          \"text\": \"Hi.\"\n        }\n      ]\n    },\n    {\n      \"type\": \"additional_tools\",\n      \"role\": \"developer\",\n      \"tools\": [\n        {\n          \"type\": \"namespace\",\n          \"name\": \"functions\",\n          \"tools\": [\n            {\n              \"type\": \"function\",\n              \"name\": \"exec\",\n              \"description\": \"Run a shell command (definition v2).\",\n              \"strict\": false,\n              \"parameters\": {\n                \"type\": \"object\",\n                \"properties\": {\n                  \"cmd\": {\n                    \"type\": \"string\"\n                  }\n                },\n                \"required\": [\n                  \"cmd\"\n                ],\n                \"additionalProperties\": false\n              }\n            }\n          ]\n        }\n      ]\n    },\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Reply with exactly: OK\"\n        }\n      ]\n    }\n  ],\n  \"max_output_tokens\": 64\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "319.3 bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0 /v1/responses streaming re-declared exec (additional tools redeclaration)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('bedrock converse streaming: re-declared exec is not rejected as a duplicate', function () { pm.expect(txt, 'duplicate-tool 400 - additional_tools re-declarations were appended instead of merged: ' + txt.slice(0, 600)).to.not.include('is not unique after flattening namespace tools'); });",
+                  "pm.test('bedrock converse streaming: status is 200', function () { pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 600)).to.eql(200); });",
+                  "pm.test('bedrock converse streaming: SSE stream completed', function () { pm.expect(txt, 'no response.completed event: ' + txt.slice(0, 600)).to.include('response.completed'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0\",\n  \"stream\": true,\n  \"input\": [\n    {\n      \"type\": \"additional_tools\",\n      \"role\": \"developer\",\n      \"tools\": [\n        {\n          \"type\": \"namespace\",\n          \"name\": \"functions\",\n          \"tools\": [\n            {\n              \"type\": \"function\",\n              \"name\": \"exec\",\n              \"description\": \"Run a shell command (definition v1).\",\n              \"strict\": false,\n              \"parameters\": {\n                \"type\": \"object\",\n                \"properties\": {\n                  \"cmd\": {\n                    \"type\": \"string\"\n                  }\n                },\n                \"required\": [\n                  \"cmd\"\n                ],\n                \"additionalProperties\": false\n              }\n            },\n            {\n              \"type\": \"function\",\n              \"name\": \"wait\",\n              \"description\": \"Wait for a background job.\",\n              \"strict\": false,\n              \"parameters\": {\n                \"type\": \"object\",\n                \"properties\": {},\n                \"additionalProperties\": false\n              }\n            }\n          ]\n        }\n      ]\n    },\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Say hi.\"\n        }\n      ]\n    },\n    {\n      \"type\": \"message\",\n      \"role\": \"assistant\",\n      \"content\": [\n        {\n          \"type\": \"output_text\",\n          \"text\": \"Hi.\"\n        }\n      ]\n    },\n    {\n      \"type\": \"additional_tools\",\n      \"role\": \"developer\",\n      \"tools\": [\n        {\n          \"type\": \"namespace\",\n          \"name\": \"functions\",\n          \"tools\": [\n            {\n              \"type\": \"function\",\n              \"name\": \"exec\",\n              \"description\": \"Run a shell command (definition v2).\",\n              \"strict\": false,\n              \"parameters\": {\n                \"type\": \"object\",\n                \"properties\": {\n                  \"cmd\": {\n                    \"type\": \"string\"\n                  }\n                },\n                \"required\": [\n                  \"cmd\"\n                ],\n                \"additionalProperties\": false\n              }\n            }\n          ]\n        }\n      ]\n    },\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Reply with exactly: OK\"\n        }\n      ]\n    }\n  ],\n  \"max_output_tokens\": 64\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "320. Gemini non-streamed item ids fit OpenAI and grounding web_search_call ids (gemini non-stream item ids)",
+      "description": "Two defects in convertGeminiCandidatesToResponsesOutput (core/providers/gemini/responses.go), the non-streamed Gemini -> Responses output converter. 1. Item ids were scoped by the 55-character response id, so a message item was msg_resp_<50>_item_1 (66 characters) and a reasoning item 71. OpenAI and Azure cap input item ids at 64, so replaying a non-streamed Gemini history to them failed with 400 \"Invalid 'input[1].id': string too long\". The non-streamed path now scopes ids by msg_ + 24 random characters, the streaming path's form. 2. The web_search_call built from groundingMetadata had no id (\"id\": null). It now gets msg_<id>_ws_<index>, the streaming path's fallback form. 320.1 produces the history (and asserts every id fits); 320.2 and 320.3 replay it to OpenAI and Azure. 320.4 and 320.5 assert the grounding web_search_call id. All five are red before the fix.",
+      "item": [
+        {
+          "name": "320.1 Gemini non-stream item ids fit 64 characters (gemini/gemini-2.5-flash, /v1/responses) (gemini non-stream item ids)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash\",\n  \"input\": [\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"What is 17*23? Think it through, then answer with just the number.\"\n        }\n      ]\n    }\n  ],\n  \"max_output_tokens\": 2000,\n  \"reasoning\": {\n    \"effort\": \"medium\",\n    \"summary\": \"auto\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('status is 200', function () { pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 500)).to.eql(200); });",
+                  "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var out = body.output || [];",
+                  "pm.test('a reasoning item and a message are returned', function () {",
+                  "  pm.expect(out.filter(function (o) { return o.type === 'reasoning'; }).length, 'no reasoning item: ' + txt.slice(0, 500)).to.be.above(0);",
+                  "  pm.expect(out.filter(function (o) { return o.type === 'message'; }).length, 'no message item: ' + txt.slice(0, 500)).to.be.above(0);",
+                  "});",
+                  "pm.test('every item id is set, at most 64 characters, in the streaming form', function () {",
+                  "  out.forEach(function (o) {",
+                  "    pm.expect(o.id, o.type + ' item without an id').to.be.a('string').and.not.empty;",
+                  "    pm.expect(o.id.length, o.type + ' id ' + o.id + ' is over OpenAI\\'s 64-character limit').to.be.at.most(64);",
+                  "    pm.expect(o.id, 'not msg_<id>_<kind>_<index>').to.match(/^msg_.+_(reasoning|item)_\\d+$/);",
+                  "  });",
+                  "});",
+                  "pm.collectionVariables.set('geminiNonStreamItemIdReplay', JSON.stringify(out));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "320.2 non-stream Gemini history replays to openai (openai/gpt-5-mini, /v1/responses) (gemini non-stream item ids)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-5-mini\",\n  \"input\": [\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"What is 17*23? Think it through, then answer with just the number.\"\n        }\n      ]\n    },\n    \"__GEMINI_HISTORY__\",\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Now add 9 to that. Just the number.\"\n        }\n      ]\n    }\n  ],\n  \"max_output_tokens\": 600,\n  \"reasoning\": {\n    \"effort\": \"low\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var raw = pm.collectionVariables.get('geminiNonStreamItemIdReplay');",
+                  "var replay = null; try { replay = JSON.parse(raw); } catch (e) { replay = null; }",
+                  "var hasMessage = Array.isArray(replay) && replay.some(function (i) { return i && i.type === 'message'; });",
+                  "var placeholder = '\"__GEMINI_HISTORY__\"';",
+                  "var bodyRaw = pm.request.body.raw || '';",
+                  "if (!hasMessage || bodyRaw.indexOf(placeholder) === -1) {",
+                  "  pm.test('turn 1 left a Gemini history to replay', function () {",
+                  "    pm.expect(hasMessage, 'geminiNonStreamItemIdReplay missing or holds no message item (run 320.1 first): ' + String(raw).slice(0, 300)).to.eql(true);",
+                  "    pm.expect(bodyRaw.indexOf(placeholder), 'request body has no ' + placeholder + ' placeholder').to.not.eql(-1);",
+                  "  });",
+                  "  if (pm.execution && typeof pm.execution.skipRequest === 'function') pm.execution.skipRequest();",
+                  "} else {",
+                  "  // Splice the history in at the placeholder; the authored payload around it is sent as written.",
+                  "  var items = replay.map(function (i) { return JSON.stringify(i); }).join(',\\n');",
+                  "  pm.request.body.raw = bodyRaw.replace(placeholder, function () { return items; });",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('status is 200', function () { pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 500)).to.eql(200); });",
+                  "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var out = body.output || [];",
+                  "pm.test('no item id rejected as too long', function () { pm.expect(txt, txt.slice(0, 500)).to.not.include('string too long'); });",
+                  "pm.test('the replay is answered', function () { pm.expect(out.filter(function (o) { return o.type === 'message'; }).length, 'no message: ' + txt.slice(0, 500)).to.be.above(0); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "320.3 non-stream Gemini history replays to azure (azure/gpt-5.4-mini, /v1/responses) (gemini non-stream item ids)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"azure/gpt-5.4-mini\",\n  \"input\": [\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"What is 17*23? Think it through, then answer with just the number.\"\n        }\n      ]\n    },\n    \"__GEMINI_HISTORY__\",\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Now add 9 to that. Just the number.\"\n        }\n      ]\n    }\n  ],\n  \"max_output_tokens\": 600,\n  \"reasoning\": {\n    \"effort\": \"low\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var raw = pm.collectionVariables.get('geminiNonStreamItemIdReplay');",
+                  "var replay = null; try { replay = JSON.parse(raw); } catch (e) { replay = null; }",
+                  "var hasMessage = Array.isArray(replay) && replay.some(function (i) { return i && i.type === 'message'; });",
+                  "var placeholder = '\"__GEMINI_HISTORY__\"';",
+                  "var bodyRaw = pm.request.body.raw || '';",
+                  "if (!hasMessage || bodyRaw.indexOf(placeholder) === -1) {",
+                  "  pm.test('turn 1 left a Gemini history to replay', function () {",
+                  "    pm.expect(hasMessage, 'geminiNonStreamItemIdReplay missing or holds no message item (run 320.1 first): ' + String(raw).slice(0, 300)).to.eql(true);",
+                  "    pm.expect(bodyRaw.indexOf(placeholder), 'request body has no ' + placeholder + ' placeholder').to.not.eql(-1);",
+                  "  });",
+                  "  if (pm.execution && typeof pm.execution.skipRequest === 'function') pm.execution.skipRequest();",
+                  "} else {",
+                  "  // Splice the history in at the placeholder; the authored payload around it is sent as written.",
+                  "  var items = replay.map(function (i) { return JSON.stringify(i); }).join(',\\n');",
+                  "  pm.request.body.raw = bodyRaw.replace(placeholder, function () { return items; });",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('status is 200', function () { pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 500)).to.eql(200); });",
+                  "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var out = body.output || [];",
+                  "pm.test('no item id rejected as too long', function () { pm.expect(txt, txt.slice(0, 500)).to.not.include('string too long'); });",
+                  "pm.test('the replay is answered', function () { pm.expect(out.filter(function (o) { return o.type === 'message'; }).length, 'no message: ' + txt.slice(0, 500)).to.be.above(0); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "320.4 grounding web_search_call has an id (gemini/gemini-2.5-flash, /v1/responses) (gemini non-stream item ids)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash\",\n  \"input\": \"Search the web: who won the most recent Formula 1 race? Answer in one sentence.\",\n  \"tools\": [\n    {\n      \"type\": \"web_search\"\n    }\n  ],\n  \"max_output_tokens\": 2000\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('status is 200', function () { pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 500)).to.eql(200); });",
+                  "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var out = body.output || [];",
+                  "var calls = out.filter(function (o) { return o.type === 'web_search_call'; });",
+                  "pm.test('a web_search_call is returned', function () { pm.expect(calls.length, 'no web_search_call (the model did not search): ' + txt.slice(0, 500)).to.be.above(0); });",
+                  "pm.test('every web_search_call has an id', function () {",
+                  "  calls.forEach(function (c) {",
+                  "    pm.expect(c.id, 'web_search_call id is null').to.be.a('string').and.not.empty;",
+                  "    pm.expect(c.id.length, 'id ' + c.id + ' is over 64 characters').to.be.at.most(64);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "320.5 grounding web_search_call has an id (vertex/gemini-2.5-flash, /v1/responses) (gemini non-stream item ids)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/gemini-2.5-flash\",\n  \"input\": \"Search the web: who won the most recent Formula 1 race? Answer in one sentence.\",\n  \"tools\": [\n    {\n      \"type\": \"web_search\"\n    }\n  ],\n  \"max_output_tokens\": 2000\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('status is 200', function () { pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 500)).to.eql(200); });",
+                  "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var out = body.output || [];",
+                  "var calls = out.filter(function (o) { return o.type === 'web_search_call'; });",
+                  "pm.test('a web_search_call is returned', function () { pm.expect(calls.length, 'no web_search_call (the model did not search): ' + txt.slice(0, 500)).to.be.above(0); });",
+                  "pm.test('every web_search_call has an id', function () {",
+                  "  calls.forEach(function (c) {",
+                  "    pm.expect(c.id, 'web_search_call id is null').to.be.a('string').and.not.empty;",
+                  "    pm.expect(c.id.length, 'id ' + c.id + ' is over 64 characters').to.be.at.most(64);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "321. Invalid tool_calls arguments replay as {} (invalid tool arguments)",
+      "description": "T1 Agent stage report 2026-11-05, defect 2. An assistant turn whose tool_calls[].function.arguments is not valid JSON (concatenated objects here; truncated-at-max_tokens arguments are the other real-world source) used to fail with HTTP 500 \"failed to marshal request body to JSON\" in ~10ms, before any provider call. The Anthropic converters put the raw bytes into json.RawMessage (core/providers/anthropic/chat.go ToAnthropicChatRequest for chat, parseJSONInput for /v1/responses) and the request marshal rejected them. OpenAI SDKs retry a 5xx twice, so each turn became three 500s. Fix: replay invalid arguments as tool_use.input {} (the Gemini and Bedrock Converse converters already do this). Anthropic does not check history tool_use inputs against the tool schema, so the turn succeeds. On Bedrock only the InvokeModel path uses the Anthropic converter; plain chat goes through Converse. The Bedrock cases carry the regex tool_search tool, which forces InvokeModel (bedrock.go toolNeedsAnthropicInvokePath), as stage traffic did. 321.1 Anthropic direct chat; 321.2 Bedrock InvokeModel chat; 321.3 same, streaming (the stage shape; the bug failed before the stream opened); 321.4 Bedrock InvokeModel /v1/responses function_call input item.",
+      "item": [
+        {
+          "name": "anthropic claude-sonnet-4-6 /v1/chat/completions invalid tool arguments non-streaming",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-4-6\",\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"[bf-321 321.1] find my notes about the morning brief\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": \"\",\n      \"tool_calls\": [\n        {\n          \"id\": \"toolu_bf321_1\",\n          \"type\": \"function\",\n          \"function\": {\n            \"name\": \"memory_search\",\n            \"arguments\": \"{\\\"query\\\": \\\"a\\\"}{\\\"pattern\\\": \\\"b\\\"}\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"tool\",\n      \"tool_call_id\": \"toolu_bf321_1\",\n      \"content\": \"Error: arguments were not valid JSON, tool not called.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"memory_search\",\n        \"description\": \"Search the user notes\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"query\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"query\"\n          ]\n        }\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('321.1 status 200 (was 500 failed to marshal request body to JSON)', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('321.1 no request marshal failure', function () {",
+                  "  pm.expect(pm.response.text()).to.not.include('failed to marshal request body');",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var rr = ((pm.response.json() || {}).extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('321.1 raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + pm.response.text()).to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "var toolUses = [];",
+                  "(rr.messages || []).forEach(function (m) {",
+                  "  (Array.isArray(m.content) ? m.content : []).forEach(function (b) { if (b && b.type === 'tool_use') { toolUses.push(b); } });",
+                  "});",
+                  "pm.test('321.1 invalid arguments replayed as tool_use.input {}', function () {",
+                  "  pm.expect(toolUses.length, 'messages: ' + JSON.stringify(rr.messages)).to.equal(1);",
+                  "  pm.expect(toolUses[0].input, 'tool_use: ' + JSON.stringify(toolUses[0])).to.deep.equal({});",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "bedrock/global.anthropic.claude-sonnet-4-6 /v1/chat/completions tool_search invalid tool arguments non-streaming",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-sonnet-4-6\",\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"[bf-321 321.2] find my notes about the morning brief\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": \"\",\n      \"tool_calls\": [\n        {\n          \"id\": \"toolu_bf321_1\",\n          \"type\": \"function\",\n          \"function\": {\n            \"name\": \"memory_search\",\n            \"arguments\": \"{\\\"query\\\": \\\"a\\\"}{\\\"pattern\\\": \\\"b\\\"}\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"tool\",\n      \"tool_call_id\": \"toolu_bf321_1\",\n      \"content\": \"Error: arguments were not valid JSON, tool not called.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"memory_search\",\n        \"description\": \"Search the user notes\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"query\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"query\"\n          ]\n        }\n      }\n    },\n    {\n      \"type\": \"tool_search_tool_regex_20251119\",\n      \"name\": \"tool_search_tool_regex\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('321.2 status 200 (was 500 failed to marshal request body to JSON)', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('321.2 no request marshal failure', function () {",
+                  "  pm.expect(pm.response.text()).to.not.include('failed to marshal request body');",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var rr = ((pm.response.json() || {}).extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('321.2 raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + pm.response.text()).to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "var toolUses = [];",
+                  "(rr.messages || []).forEach(function (m) {",
+                  "  (Array.isArray(m.content) ? m.content : []).forEach(function (b) { if (b && b.type === 'tool_use') { toolUses.push(b); } });",
+                  "});",
+                  "pm.test('321.2 invalid arguments replayed as tool_use.input {}', function () {",
+                  "  pm.expect(toolUses.length, 'messages: ' + JSON.stringify(rr.messages)).to.equal(1);",
+                  "  pm.expect(toolUses[0].input, 'tool_use: ' + JSON.stringify(toolUses[0])).to.deep.equal({});",
+                  "});",
+                  "pm.test('321.2 request took the InvokeModel path (tool_search tool in body)', function () {",
+                  "  var found = (rr.tools || []).some(function (t) { return t && typeof t.type === 'string' && t.type.indexOf('tool_search_tool_regex') === 0; });",
+                  "  pm.expect(found, 'tools: ' + JSON.stringify(rr.tools)).to.equal(true);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "bedrock/global.anthropic.claude-sonnet-4-6 /v1/chat/completions tool_search invalid tool arguments streaming",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-sonnet-4-6\",\n  \"max_tokens\": 64,\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"[bf-321 321.3] find my notes about the morning brief\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": \"\",\n      \"tool_calls\": [\n        {\n          \"id\": \"toolu_bf321_1\",\n          \"type\": \"function\",\n          \"function\": {\n            \"name\": \"memory_search\",\n            \"arguments\": \"{\\\"query\\\": \\\"a\\\"}{\\\"pattern\\\": \\\"b\\\"}\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"tool\",\n      \"tool_call_id\": \"toolu_bf321_1\",\n      \"content\": \"Error: arguments were not valid JSON, tool not called.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"memory_search\",\n        \"description\": \"Search the user notes\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"query\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"query\"\n          ]\n        }\n      }\n    },\n    {\n      \"type\": \"tool_search_tool_regex_20251119\",\n      \"name\": \"tool_search_tool_regex\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('321.3 status 200 (was 500 failed to marshal request body to JSON)', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('321.3 no request marshal failure', function () {",
+                  "  pm.expect(pm.response.text()).to.not.include('failed to marshal request body');",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var text = pm.response.text() || '';",
+                  "pm.test('321.3 stream completed with [DONE]', function () {",
+                  "  pm.expect(text, 'stream: ' + text.slice(0, 2000)).to.include('[DONE]');",
+                  "});",
+                  "pm.test('321.3 stream carried no error event', function () {",
+                  "  pm.expect(/\"error\"\\s*:\\s*\\{/.test(text), 'stream: ' + text.slice(0, 2000)).to.equal(false);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "bedrock/global.anthropic.claude-sonnet-4-6 /v1/responses tool_search invalid function_call arguments non-streaming",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-sonnet-4-6\",\n  \"max_output_tokens\": 64,\n  \"input\": [\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": \"[bf-321 321.4] find my notes about the morning brief\"\n    },\n    {\n      \"type\": \"function_call\",\n      \"call_id\": \"toolu_bf321_4\",\n      \"name\": \"memory_search\",\n      \"arguments\": \"{\\\"query\\\": \\\"a\\\"}{\\\"pattern\\\": \\\"b\\\"}\"\n    },\n    {\n      \"type\": \"function_call_output\",\n      \"call_id\": \"toolu_bf321_4\",\n      \"output\": \"Error: arguments were not valid JSON, tool not called.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"memory_search\",\n      \"description\": \"Search the user notes\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"query\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"query\"\n        ]\n      }\n    },\n    {\n      \"type\": \"tool_search\",\n      \"name\": \"tool_search_tool_regex\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('321.4 status 200 (was 500 failed to marshal request body to JSON)', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('321.4 no request marshal failure', function () {",
+                  "  pm.expect(pm.response.text()).to.not.include('failed to marshal request body');",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var rr = ((pm.response.json() || {}).extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('321.4 raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + pm.response.text()).to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "var toolUses = [];",
+                  "(rr.messages || []).forEach(function (m) {",
+                  "  (Array.isArray(m.content) ? m.content : []).forEach(function (b) { if (b && b.type === 'tool_use') { toolUses.push(b); } });",
+                  "});",
+                  "pm.test('321.4 invalid arguments replayed as tool_use.input {}', function () {",
+                  "  pm.expect(toolUses.length, 'messages: ' + JSON.stringify(rr.messages)).to.equal(1);",
+                  "  pm.expect(toolUses[0].input, 'tool_use: ' + JSON.stringify(toolUses[0])).to.deep.equal({});",
+                  "});",
+                  "pm.test('321.4 request took the InvokeModel path (tool_search tool in body)', function () {",
+                  "  var found = (rr.tools || []).some(function (t) { return t && typeof t.type === 'string' && t.type.indexOf('tool_search_tool_regex') === 0; });",
+                  "  pm.expect(found, 'tools: ' + JSON.stringify(rr.tools)).to.equal(true);",
+                  "});"
+                ]
+              }
+            }
+          ]
         }
       ]
     }
