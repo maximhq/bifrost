@@ -1431,8 +1431,10 @@ func TestToOpenAIResponsesRequest_AnthropicIngressToolResultImageDetail(t *testi
 }
 
 // The #8849 request through Anthropic ingress to an OpenAI-shaped fallback (OpenRouter): the
-// user turn stays one message, the empty text document leaves as a parseable data URL instead
-// of file_data "", and each untitled document gets a filename here, at the egress that needs it.
+// user turn stays one message, the empty text document is dropped (OpenRouter rejects the empty
+// data URL with "Invalid base64 data URL: missing mime type or base64 content", and an empty
+// document carries nothing to lose), and the untitled document gets a filename here, at the
+// egress that needs it.
 func TestToOpenAIResponsesRequest_AnthropicIngressEmptyTextDocument(t *testing.T) {
 	var anthropicReq anthropic.AnthropicMessageRequest
 	if err := sonic.Unmarshal([]byte(`{"model":"claude-haiku-4-5","max_tokens":16,"messages":[{"role":"user","content":[
@@ -1454,14 +1456,15 @@ func TestToOpenAIResponsesRequest_AnthropicIngressEmptyTextDocument(t *testing.T
 		t.Fatalf("want the user turn as one input item, got %d: %s", len(input), data)
 	}
 	content := input[0].Get("content").Array()
-	if len(content) != 3 {
-		t.Fatalf("want 3 content blocks, got %d: %s", len(content), input[0].Raw)
+	if len(content) != 2 {
+		t.Fatalf("want the document and the text, the empty document dropped; got %d: %s", len(content), input[0].Raw)
 	}
-	for i, want := range []string{"data:text/plain;base64,U29tZSB0ZXh0Lg==", "data:text/plain;base64,"} {
-		if content[i].Get("type").String() != "input_file" || content[i].Get("file_data").String() != want ||
-			content[i].Get("filename").String() != "document.txt" {
-			t.Fatalf("document %d: want input_file %q named document.txt, got %s", i, want, content[i].Raw)
-		}
+	if content[0].Get("type").String() != "input_file" || content[0].Get("file_data").String() != "data:text/plain;base64,U29tZSB0ZXh0Lg==" ||
+		content[0].Get("filename").String() != "document.txt" {
+		t.Fatalf("want input_file named document.txt, got %s", content[0].Raw)
+	}
+	if content[1].Get("type").String() != "input_text" || content[1].Get("text").String() != "Say ok." {
+		t.Fatalf("want the text block, got %s", content[1].Raw)
 	}
 }
 

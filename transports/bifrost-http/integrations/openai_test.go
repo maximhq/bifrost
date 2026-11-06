@@ -580,15 +580,16 @@ const azureDataSourcesJSON = `[{"type":"azure_search","parameters":{"endpoint":"
 // chatUpstream records the last chat body the provider sent and answers it,
 // as SSE when the body asked to stream.
 type chatUpstream struct {
-	mu   sync.Mutex
-	path string
-	body []byte
+	mu    sync.Mutex
+	path  string
+	query string
+	body  []byte
 }
 
 func (u *chatUpstream) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	body, _ := io.ReadAll(r.Body)
 	u.mu.Lock()
-	u.path, u.body = r.URL.Path, body
+	u.path, u.query, u.body = r.URL.Path, r.URL.RawQuery, body
 	u.mu.Unlock()
 	var probe struct {
 		Stream bool `json:"stream"`
@@ -638,6 +639,7 @@ func TestAzureDeploymentChatForwardsUnknownTopLevelFields(t *testing.T) {
 		body        string
 		headers     map[string]string
 		wantPath    string
+		wantQuery   string
 		wantFields  map[string]string
 		wantMissing []string
 	}{
@@ -645,14 +647,16 @@ func TestAzureDeploymentChatForwardsUnknownTopLevelFields(t *testing.T) {
 			name:       "azure deployment unary",
 			uri:        deploymentURI,
 			body:       `{"messages":[{"role":"user","content":"hi"}],"temperature":0.2,"data_sources":` + azureDataSourcesJSON + `,"x_future_field":{"a":1}}`,
-			wantPath:   "/openai/v1/chat/completions",
+			wantPath:   "/openai/deployments/gpt-4o/chat/completions",
+			wantQuery:  "api-version=2024-10-21", // the caller's version, not Bifrost's default
 			wantFields: map[string]string{"data_sources": azureDataSourcesJSON, "x_future_field": `{"a":1}`, "temperature": "0.2"},
 		},
 		{
 			name:       "azure deployment stream",
 			uri:        deploymentURI,
 			body:       `{"messages":[{"role":"user","content":"hi"}],"stream":true,"data_sources":` + azureDataSourcesJSON + `}`,
-			wantPath:   "/openai/v1/chat/completions",
+			wantPath:   "/openai/deployments/gpt-4o/chat/completions",
+			wantQuery:  "api-version=2024-10-21", // the caller's version, not Bifrost's default
 			wantFields: map[string]string{"data_sources": azureDataSourcesJSON, "stream": "true"},
 		},
 		{
@@ -660,7 +664,8 @@ func TestAzureDeploymentChatForwardsUnknownTopLevelFields(t *testing.T) {
 			uri:         deploymentURI,
 			body:        `{"messages":[{"role":"user","content":"hi"}],"data_sources":` + azureDataSourcesJSON + `,"x_dup":"top","extra_params":{"x_dup":"nested"}}`,
 			headers:     map[string]string{"x-bf-passthrough-extra-params": "true"},
-			wantPath:    "/openai/v1/chat/completions",
+			wantPath:    "/openai/deployments/gpt-4o/chat/completions",
+			wantQuery:   "api-version=2024-10-21", // the caller's version, not Bifrost's default
 			wantFields:  map[string]string{"data_sources": azureDataSourcesJSON, "x_dup": `"nested"`},
 			wantMissing: []string{"extra_params"},
 		},
@@ -703,6 +708,12 @@ func TestAzureDeploymentChatForwardsUnknownTopLevelFields(t *testing.T) {
 
 			path, sent := upstream.last()
 			require.Equal(t, tc.wantPath, path, "upstream body: %s", sent)
+			if tc.wantQuery != "" {
+				upstream.mu.Lock()
+				query := upstream.query
+				upstream.mu.Unlock()
+				require.Equal(t, tc.wantQuery, query, "upstream query for %s", tc.uri)
+			}
 			for field, want := range tc.wantFields {
 				got := gjson.GetBytes(sent, field)
 				require.True(t, got.Exists(), "%s missing from the provider body: %s", field, sent)
@@ -727,6 +738,8 @@ func BenchmarkAzureEndpointPreHookChat(b *testing.B) {
 		body := []byte(bodies[name])
 		b.Run(name, func(b *testing.B) {
 			var ctx fasthttp.RequestCtx
+			// The Azure SDK always sends api-version on this route.
+			ctx.Request.SetRequestURI("/openai/deployments/gpt-4o/chat/completions?api-version=2024-10-21")
 			ctx.Request.SetBody(body)
 			ctx.SetUserValue("deploymentPath", "gpt-4o/chat/completions")
 			b.ReportAllocs()

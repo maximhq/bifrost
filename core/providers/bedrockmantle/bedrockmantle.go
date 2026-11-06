@@ -210,7 +210,7 @@ func (provider *BedrockMantleProvider) ChatCompletion(ctx *schemas.BifrostContex
 
 	url := mantleOpenAIURL(mantleEndpoints(key.BedrockMantleKeyConfig), region, schemas.ResolveCanonicalModel(ctx, request.Model), "chat/completions")
 	_, request.Model = parseBedrockRegionAndModel(request.Model)
-	return openai.HandleOpenAIChatCompletionRequest(
+	resp, bifrostErr := openai.HandleOpenAIChatCompletionRequest(
 		ctx,
 		provider.mantleClient,
 		url,
@@ -225,6 +225,10 @@ func (provider *BedrockMantleProvider) ChatCompletion(ctx *schemas.BifrostContex
 		provider.mantleSigner(ctx, key, url, "application/json", region),
 		provider.logger,
 	)
+	if bifrostErr == nil && bedrock.IsDSMLLeakModel(ctx, request.Model) {
+		bedrock.StripDSMLLeakChat(resp)
+	}
+	return resp, bifrostErr
 }
 
 // ChatCompletionStream performs a streaming chat completion request to the Bedrock Mantle
@@ -279,7 +283,7 @@ func (provider *BedrockMantleProvider) ChatCompletionStream(ctx *schemas.Bifrost
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(), postHookRunner,
-		nil, nil, nil, nil, nil,
+		nil, dsmlChunkDecoder(bedrock.NewDSMLStreamFilter(ctx, request.Model)), nil, nil, nil,
 		provider.mantleSigner(ctx, key, url, "text/event-stream", region),
 		provider.logger, postHookSpanFinalizer,
 	)

@@ -1865,6 +1865,16 @@ func (m ResponsesMessage) MarshalJSON() ([]byte, error) {
 		return MarshalSorted(aux)
 	}
 
+	// summary is a reasoning-item field; OpenAI rejects it on a message item.
+	if m.ResponsesReasoning != nil && len(m.ResponsesReasoning.Summary) == 0 && m.Type != nil && *m.Type == ResponsesMessageTypeMessage {
+		return MarshalSorted(&struct {
+			Summary json.RawMessage `json:"summary,omitempty"`
+			*Alias
+		}{
+			Alias: (*Alias)(&m),
+		})
+	}
+
 	aux := &struct {
 		Arguments json.RawMessage `json:"arguments,omitempty"`
 		*Alias
@@ -4564,6 +4574,8 @@ const (
 	ResponsesStreamResponseTypeReasoningSummaryPartDone  ResponsesStreamResponseType = "response.reasoning_summary_part.done"
 	ResponsesStreamResponseTypeReasoningSummaryTextDelta ResponsesStreamResponseType = "response.reasoning_summary_text.delta"
 	ResponsesStreamResponseTypeReasoningSummaryTextDone  ResponsesStreamResponseType = "response.reasoning_summary_text.done"
+	ResponsesStreamResponseTypeReasoningTextDelta        ResponsesStreamResponseType = "response.reasoning_text.delta"
+	ResponsesStreamResponseTypeReasoningTextDone         ResponsesStreamResponseType = "response.reasoning_text.done"
 
 	ResponsesStreamResponseTypeImageGenerationCallCompleted    ResponsesStreamResponseType = "response.image_generation_call.completed"
 	ResponsesStreamResponseTypeImageGenerationCallGenerating   ResponsesStreamResponseType = "response.image_generation_call.generating"

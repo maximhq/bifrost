@@ -859,6 +859,7 @@ append_dynamic_mcp_clients_insert() {
     append_v220_fixtures "$db_type" "$faker_sql"
     append_v230_fixtures "$db_type" "$faker_sql" "$now"
     append_v231_fixtures "$db_type" "$faker_sql" "$now"
+    append_v240_fixtures "$db_type" "$faker_sql" "$now"
   else
     now="datetime('now')"
     future="datetime('now', '+1 hour')"
@@ -886,6 +887,7 @@ append_dynamic_mcp_clients_insert() {
     append_v220_fixtures "$db_type" "$faker_sql" "$config_db" "$logs_db"
     append_v230_fixtures "$db_type" "$faker_sql" "$now" "$config_db" "$logs_db"
     append_v231_fixtures "$db_type" "$faker_sql" "$now" "$config_db" "$logs_db"
+    append_v240_fixtures "$db_type" "$faker_sql" "$now" "$config_db" "$logs_db"
   fi
 }
 
@@ -898,7 +900,7 @@ v200_column_exists() {
     column_exists_postgres "$table" "$column"
   else
     local db="$fixture_config_db"
-    case "$table" in logs|mcp_tool_logs|user_agent_mappings|agent_logs|warp_conversations|warp_messages|matview_refresh_state) db="$fixture_logs_db" ;; esac
+    case "$table" in logs|mcp_tool_logs|user_agent_mappings|agent_logs|warp_conversations|warp_messages|matview_refresh_state|relay_logs|warp_topics|warp_topic_assignments|warp_topic_unmatched|warp_vector_deletes) db="$fixture_logs_db" ;; esac
     column_exists_sqlite "$db" "$table" "$column"
   fi
 }
@@ -1481,6 +1483,225 @@ last_error|NULL
 last_duration_ms|1500
 last_node|'migration-test-node'
 V231_ROW
+}
+
+# v2.4.0 introduced these columns plus the Relay and Warp topic tables. Same
+# probing scheme as append_v231_fixtures.
+# - config_keys columns stay NULL (config sync rewrites config_keys on startup)
+# - governance_model_pricing columns stay NULL (datasheet-sync-managed)
+# - the MCP client's discovered_* columns stay empty: they mirror what the
+#   server reported, and the test MCP client never connects
+# - the relay uses auth none and no secrets, and config.json declares no relays
+#   section, so loadRelaysConfig neither rewrites nor prunes it
+# - centroid / vector are blobs, so their literal is dialect-specific
+# - warp topic upkeep runs hourly and the test has no vector store, so the
+#   topic rows and the pending vector delete survive the upgrade untouched
+append_v240_fixtures() {
+  local fixture_db_type="$1" fixture_output="$2" now="$3"
+  local fixture_config_db="${4:-}" fixture_logs_db="${5:-}"
+  local table column value predicate blob
+  if [ "$fixture_db_type" = "postgres" ]; then
+    blob="'\\x0000803f0000003f'"
+  else
+    blob="X'0000803F0000003F'"
+  fi
+  while IFS='|' read -r table column value predicate; do
+    if v200_column_exists "$table" "$column"; then
+      echo "UPDATE $table SET $column = $value WHERE $predicate;" >> "$fixture_output"
+    fi
+  done <<'V240_COLUMNS'
+config_client|mcp_max_protocol_version|'2025-06-18'|id = 1
+config_client|skip_access_profile_user_virtual_key_creation|true|id = 1
+config_client|skip_access_profile_user_virtual_key_deletion|true|id = 1
+config_keys|azure_use_speech_endpoints|NULL|name = 'migration-test-key-anthropic'
+config_keys|azure_use_voice_live_endpoints|NULL|name = 'migration-test-key-anthropic'
+config_keys|sagemaker_access_key|NULL|name = 'migration-test-key-anthropic'
+config_keys|sagemaker_secret_key|NULL|name = 'migration-test-key-anthropic'
+config_keys|sagemaker_session_token|NULL|name = 'migration-test-key-anthropic'
+config_keys|sagemaker_region|NULL|name = 'migration-test-key-anthropic'
+config_keys|sagemaker_role_arn|NULL|name = 'migration-test-key-anthropic'
+config_keys|sagemaker_external_id|NULL|name = 'migration-test-key-anthropic'
+config_keys|sagemaker_role_session_name|NULL|name = 'migration-test-key-anthropic'
+config_keys|sagemaker_endpoints_json|NULL|name = 'migration-test-key-anthropic'
+config_mcp_clients|prompts_to_expose_json|'["prompt1"]'|client_id = 'mcp-migration-test-001'
+config_mcp_clients|resources_to_expose_json|'["resource1"]'|client_id = 'mcp-migration-test-001'
+config_mcp_clients|max_protocol_version|'2025-06-18'|client_id = 'mcp-migration-test-001'
+config_mcp_clients|discovered_tool_details_json|''|client_id = 'mcp-migration-test-001'
+config_mcp_clients|discovered_resources_json|''|client_id = 'mcp-migration-test-001'
+config_mcp_clients|discovered_resource_templates_json|''|client_id = 'mcp-migration-test-001'
+config_mcp_clients|discovered_prompts_json|''|client_id = 'mcp-migration-test-001'
+config_providers|passthrough_json|''|name = 'anthropic'
+governance_model_pricing|input_cost_per_token_voice_live|NULL|id = 1
+governance_model_pricing|output_cost_per_token_voice_live|NULL|id = 1
+governance_model_pricing|cache_read_input_token_cost_voice_live|NULL|id = 1
+governance_model_pricing|input_cost_per_audio_token_voice_live|NULL|id = 1
+governance_model_pricing|output_cost_per_audio_token_voice_live|NULL|id = 1
+governance_model_pricing|input_cost_per_standard_speech_audio_token_voice_live|NULL|id = 1
+governance_model_pricing|output_cost_per_standard_speech_audio_token_voice_live|NULL|id = 1
+governance_model_pricing|input_cost_per_custom_speech_audio_token_voice_live|NULL|id = 1
+governance_model_pricing|output_cost_per_custom_speech_audio_token_voice_live|NULL|id = 1
+governance_model_pricing|output_cost_per_video_token|NULL|id = 1
+mcp_oauth_flows|issuer|'https://auth.example.com'|id = 'mcp-flow-migration-001'
+mcp_oauth_flows|iss_parameter_supported|true|id = 'mcp-flow-migration-001'
+mcp_tool_logs|method|'tools/call'|id = 'mcp-log-migration-001'
+oauth2_refresh_tokens|client_display_name|'Migration Test Client'|id LIKE 'oauth2-%'
+oauth_configs|issuer|'https://auth.example.com'|id = 'oauth-config-migration-test-001'
+oauth_configs|iss_parameter_supported|true|id = 'oauth-config-migration-test-001'
+oauth_configs|dynamically_registered|false|id = 'oauth-config-migration-test-001'
+warp_config|topic_discovery_min_requests|25|id = 1
+V240_COLUMNS
+
+  v200_insert config_relays name <<V240_ROW
+name|'migration-test-relay'
+description|'Migration test relay'
+config_json|'{"name":"migration-test-relay","base_url":"https://relay.example.com/v1","auth":{"type":"none"}}'
+credential_value|NULL
+aws_access_key|NULL
+aws_secret_key|NULL
+aws_session_token|NULL
+aws_region|NULL
+aws_role_arn|NULL
+aws_external_id|NULL
+aws_session_name|NULL
+has_aws_credential|false
+extra_headers_json|'{}'
+proxy_type|''
+proxy_url|NULL
+proxy_username|NULL
+proxy_password|NULL
+proxy_ca_cert_pem|NULL
+encryption_status|'plain_text'
+config_hash|'migration-test-relay-hash'
+created_at|$now
+updated_at|$now
+V240_ROW
+
+  v200_insert governance_virtual_key_relay_grants virtual_key_id <<V240_ROW
+virtual_key_id|'vk-migration-test-1'
+relay_name|'migration-test-relay'
+created_at|$now
+V240_ROW
+
+  v200_insert relay_logs <<V240_ROW
+id|'relay-log-migration-001'
+timestamp|$now
+created_at|$now
+relay_name|'migration-test-relay'
+kind|'call'
+method|'POST'
+path|'/v1/chat/completions'
+route_path|''
+status|'success'
+status_code|200
+streamed|false
+billable|true
+model|'gpt-4'
+latency|120
+upstream_latency|100
+overhead_latency|20
+overhead_breakdown|'[]'
+bytes_out|512
+cost|0.001
+cost_per_request|0.001
+cost_per_unit|NULL
+extracted_cost|NULL
+units|NULL
+billed_units|NULL
+input_tokens|10
+output_tokens|20
+total_tokens|30
+job_id|NULL
+job_status|NULL
+parent_log_id|NULL
+user_id|NULL
+user_name|NULL
+virtual_key_id|'vk-migration-test-1'
+virtual_key_name|'Migration Test Virtual Key 1'
+team_id|NULL
+team_name|NULL
+customer_id|NULL
+customer_name|NULL
+business_unit_id|NULL
+business_unit_name|NULL
+project_id|NULL
+project_name|NULL
+user_agent|'migration-test/2.4'
+app|'migration-test'
+team_ids|NULL
+team_names|NULL
+customer_ids|NULL
+customer_names|NULL
+business_unit_ids|NULL
+business_unit_names|NULL
+budget_ids|NULL
+rate_limit_ids|NULL
+request_id|'req-relay-migration-001'
+metadata|NULL
+request_headers|NULL
+response_headers|NULL
+request_body|NULL
+response_body|NULL
+error_details|''
+content_hidden|false
+payload_reference|NULL
+has_object|false
+plugin_logs|''
+V240_ROW
+
+  v200_insert warp_topics <<V240_ROW
+id|'3b8f1d2c-6a4e-4f7b-9c10-2e5d8a7f4b61'
+kind|'topic'
+parent_id|''
+label|'Migration test topic'
+centroid|$blob
+assign_floor|0.8
+cohesion|0.9
+example_log_ids|'["log-migration-test-001"]'
+embedding_signature|'openai/text-embedding-3-small/2'
+status|'active'
+merged_into|''
+created_at|$now
+updated_at|$now
+V240_ROW
+
+  v200_insert warp_topic_assignments log_id <<V240_ROW
+log_id|'log-migration-test-001'
+timestamp|$now
+topic_id|'3b8f1d2c-6a4e-4f7b-9c10-2e5d8a7f4b61'
+similarity|0.91
+session_id|''
+user_id|''
+team_id|''
+virtual_key_id|'vk-migration-test-1'
+customer_id|''
+business_unit_id|''
+team_ids|NULL
+customer_ids|NULL
+business_unit_ids|NULL
+provider|'openai'
+model|'gpt-4'
+app|''
+status|'success'
+cost|0.001
+latency|120
+total_tokens|30
+created_at|$now
+assigned_at|$now
+V240_ROW
+
+  v200_insert warp_topic_unmatched log_id <<V240_ROW
+log_id|'log-migration-unmatched-001'
+timestamp|$now
+vector|$blob
+embedding_signature|'openai/text-embedding-3-small/2'
+created_at|$now
+V240_ROW
+
+  v200_insert warp_vector_deletes log_id <<V240_ROW
+log_id|'log-migration-deleted-001'
+namespace|''
+created_at|$now
+V240_ROW
 }
 
 # Append dynamic column UPDATEs for columns that may not exist in older schemas (PostgreSQL)
@@ -2774,7 +2995,16 @@ append_dynamic_columns_postgres() {
     cache_read_input_token_cost_flex_above_272k_tokens cache_creation_input_token_cost_above_272k_tokens \
     cache_creation_input_token_cost_flex cache_creation_input_token_cost_flex_above_272k_tokens \
     cache_creation_input_token_cost_priority cache_creation_input_token_cost_fast \
-    cache_creation_input_token_cost_above_1hr_fast cache_read_input_token_cost_fast inference_geo_us_multiplier; do
+    cache_creation_input_token_cost_above_1hr_fast \
+    cache_creation_input_token_cost_above_12hr \
+    cache_creation_input_token_cost_above_12hr_above_272k_tokens \
+    cache_creation_input_token_cost_above_12hr_priority \
+    cache_creation_input_token_cost_above_12hr_above_272k_priority \
+    cache_creation_input_token_cost_above_12hr_flex \
+    cache_creation_input_token_cost_above_12hr_above_272k_flex \
+    cache_creation_input_token_cost_above_12hr_ultrafast \
+    cache_creation_input_token_cost_above_12hr_above_272k_ultrafast \
+    cache_read_input_token_cost_fast inference_geo_us_multiplier; do
     if column_exists_postgres "governance_model_pricing" "$col"; then
       echo "UPDATE governance_model_pricing SET $col = NULL WHERE id = 1;" >> "$output_file"
       echo "UPDATE governance_model_pricing SET $col = NULL WHERE id = 2;" >> "$output_file"
@@ -2968,6 +3198,14 @@ append_dynamic_columns_postgres() {
     cache_creation_input_token_cost_above_272k_tokens_priority \
     cache_creation_input_token_cost_fast \
     cache_creation_input_token_cost_above_1hr_fast \
+    cache_creation_input_token_cost_above_12hr \
+    cache_creation_input_token_cost_above_12hr_above_272k_tokens \
+    cache_creation_input_token_cost_above_12hr_priority \
+    cache_creation_input_token_cost_above_12hr_above_272k_priority \
+    cache_creation_input_token_cost_above_12hr_flex \
+    cache_creation_input_token_cost_above_12hr_above_272k_flex \
+    cache_creation_input_token_cost_above_12hr_ultrafast \
+    cache_creation_input_token_cost_above_12hr_above_272k_ultrafast \
     cache_read_input_token_cost_fast \
     inference_geo_us_multiplier; do
     if column_exists_postgres "governance_model_pricing" "$pricing_col"; then
@@ -3017,6 +3255,14 @@ append_dynamic_columns_postgres() {
     cache_creation_input_token_cost_above_272k_tokens_priority \
     cache_creation_input_token_cost_fast \
     cache_creation_input_token_cost_above_1hr_fast \
+    cache_creation_input_token_cost_above_12hr \
+    cache_creation_input_token_cost_above_12hr_above_272k_tokens \
+    cache_creation_input_token_cost_above_12hr_priority \
+    cache_creation_input_token_cost_above_12hr_above_272k_priority \
+    cache_creation_input_token_cost_above_12hr_flex \
+    cache_creation_input_token_cost_above_12hr_above_272k_flex \
+    cache_creation_input_token_cost_above_12hr_ultrafast \
+    cache_creation_input_token_cost_above_12hr_above_272k_ultrafast \
     cache_read_input_token_cost_fast \
     inference_geo_us_multiplier; do
     if column_exists_postgres "governance_model_pricing" "$pricing_col"; then
@@ -4303,6 +4549,14 @@ append_dynamic_columns_sqlite() {
       cache_creation_input_token_cost_above_272k_tokens_priority \
       cache_creation_input_token_cost_fast \
       cache_creation_input_token_cost_above_1hr_fast \
+      cache_creation_input_token_cost_above_12hr \
+      cache_creation_input_token_cost_above_12hr_above_272k_tokens \
+      cache_creation_input_token_cost_above_12hr_priority \
+      cache_creation_input_token_cost_above_12hr_above_272k_priority \
+      cache_creation_input_token_cost_above_12hr_flex \
+      cache_creation_input_token_cost_above_12hr_above_272k_flex \
+      cache_creation_input_token_cost_above_12hr_ultrafast \
+      cache_creation_input_token_cost_above_12hr_above_272k_ultrafast \
       cache_read_input_token_cost_fast \
       inference_geo_us_multiplier; do
       if column_exists_sqlite "$config_db" "governance_model_pricing" "$pricing_col"; then
@@ -4361,7 +4615,16 @@ append_dynamic_columns_sqlite() {
       cache_read_input_token_cost_flex_above_272k_tokens cache_creation_input_token_cost_above_272k_tokens \
       cache_creation_input_token_cost_flex cache_creation_input_token_cost_flex_above_272k_tokens \
       cache_creation_input_token_cost_priority cache_creation_input_token_cost_fast \
-      cache_creation_input_token_cost_above_1hr_fast cache_read_input_token_cost_fast inference_geo_us_multiplier; do
+      cache_creation_input_token_cost_above_1hr_fast \
+      cache_creation_input_token_cost_above_12hr \
+      cache_creation_input_token_cost_above_12hr_above_272k_tokens \
+      cache_creation_input_token_cost_above_12hr_priority \
+      cache_creation_input_token_cost_above_12hr_above_272k_priority \
+      cache_creation_input_token_cost_above_12hr_flex \
+      cache_creation_input_token_cost_above_12hr_above_272k_flex \
+      cache_creation_input_token_cost_above_12hr_ultrafast \
+      cache_creation_input_token_cost_above_12hr_above_272k_ultrafast \
+      cache_read_input_token_cost_fast inference_geo_us_multiplier; do
       if column_exists_sqlite "$config_db" "governance_model_pricing" "$col"; then
         echo "UPDATE governance_model_pricing SET $col = NULL WHERE id = 1;" >> "$output_file"
         echo "UPDATE governance_model_pricing SET $col = NULL WHERE id = 2;" >> "$output_file"
