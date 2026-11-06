@@ -3079,3 +3079,90 @@ func TestToAnthropicChatRequest_ToolResultHoistsLastCacheControl(t *testing.T) {
 		assert.Nil(t, nested.CacheControl, "Anthropic rejects cache_control inside tool_result.content")
 	}
 }
+
+// invalidToolArgumentCases are function.arguments strings a client can replay
+// in an OpenAI-shaped history. OpenAI documents that the model "does not always
+// generate valid JSON", and a max_tokens cutoff leaves arguments truncated, so
+// these show up in real traffic. Anthropic needs tool_use.input to be an object.
+var invalidToolArgumentCases = map[string]string{
+	"concatenated objects": `{"query": "morning brief"}{"pattern": "brief|morning"}`,
+	"truncated at cutoff":  `{"query": "mor`,
+	"plain text":           `not json`,
+}
+
+// toolUseInputsFromBody returns the raw input of every tool_use block in an
+// Anthropic request body, in order.
+func toolUseInputsFromBody(t *testing.T, body []byte) []string {
+	t.Helper()
+	var parsed struct {
+		Messages []struct {
+			Content json.RawMessage `json:"content"`
+		} `json:"messages"`
+	}
+	require.NoError(t, json.Unmarshal(body, &parsed))
+	var inputs []string
+	for _, msg := range parsed.Messages {
+		var blocks []struct {
+			Type  string          `json:"type"`
+			Input json.RawMessage `json:"input"`
+		}
+		if json.Unmarshal(msg.Content, &blocks) != nil {
+			continue // string content
+		}
+		for _, block := range blocks {
+			if block.Type == string(AnthropicContentBlockTypeToolUse) {
+				inputs = append(inputs, string(block.Input))
+			}
+		}
+	}
+	return inputs
+}
+
+// Invalid function.arguments in a replayed assistant turn used to reach the
+// request marshal as raw bytes and fail it with a 500 ("failed to marshal request
+// body to JSON") before any provider call. They replay as {} instead: Anthropic
+// does not check history tool_use inputs against the tool schema, so the turn
+// succeeds and the model re-calls the tool after the error tool_result.
+func TestBuildAnthropicChatRequestBody_InvalidToolArgumentsReplayAsEmptyObject(t *testing.T) {
+	cases := map[string]struct{ arguments, wantInput string }{
+		"empty":            {``, `{}`},
+		"valid keeps keys": {`{"z": 1, "a": {"b": true}}`, `{"z":1,"a":{"b":true}}`},
+	}
+	for name, arguments := range invalidToolArgumentCases {
+		cases[name] = struct{ arguments, wantInput string }{arguments, `{}`}
+	}
+
+	for _, provider := range []schemas.ModelProvider{schemas.Anthropic, schemas.Bedrock} {
+		for name, tc := range cases {
+			t.Run(string(provider)+"/"+name, func(t *testing.T) {
+				req := &schemas.BifrostChatRequest{
+					Provider: provider,
+					Model:    "claude-sonnet-4-6",
+					Input: []schemas.ChatMessage{
+						{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("find my notes")}},
+						{Role: schemas.ChatMessageRoleAssistant, ChatAssistantMessage: &schemas.ChatAssistantMessage{
+							ToolCalls: []schemas.ChatAssistantMessageToolCall{{
+								ID:   schemas.Ptr("toolu_test_1"),
+								Type: schemas.Ptr(string(schemas.ChatToolTypeFunction)),
+								Function: schemas.ChatAssistantMessageToolCallFunction{
+									Name:      schemas.Ptr("memory_search"),
+									Arguments: tc.arguments,
+								},
+							}},
+						}},
+						{
+							Role:            schemas.ChatMessageRoleTool,
+							ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: schemas.Ptr("toolu_test_1")},
+							Content:         &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Error: arguments were not valid JSON, tool not called.")},
+						},
+					},
+					Params: &schemas.ChatParameters{MaxCompletionTokens: schemas.Ptr(1024)},
+				}
+				ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+				body, bifrostErr := BuildAnthropicChatRequestBody(ctx, req, AnthropicRequestBuildConfig{Provider: provider, Model: req.Model})
+				require.Nil(t, bifrostErr, "build failed: %+v", bifrostErr)
+				assert.Equal(t, []string{tc.wantInput}, toolUseInputsFromBody(t, body))
+			})
+		}
+	}
+}
