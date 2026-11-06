@@ -2196,9 +2196,10 @@ jobs:
           echo "$PWD/node_modules/.bin" >> "$GITHUB_PATH"
         working-directory: .github/workflows/tools
 
-      # The content-logging matrix reads raw log rows from the Postgres logs store through `pg`,
-      # pinned in tests/e2e/api/package-lock.json. --ignore-scripts skips better-sqlite3's native
-      # build: this job's logs store is Postgres, so the SQLite reader is never loaded.
+      # The content-logging and relay matrices read raw log rows through `pg`, pinned in
+      # tests/e2e/api/package-lock.json, and through Node's built-in node:sqlite for the SQLite
+      # cells (tests/e2e/api/lib/sqlite-readonly.js). --ignore-scripts skips better-sqlite3's
+      # native build, which that reader only falls back to on a Node without node:sqlite.
       - name: Install e2e API test deps (lockfile)
         run: npm ci --ignore-scripts --no-audit --no-fund
         working-directory: tests/e2e/api
