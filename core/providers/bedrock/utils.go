@@ -614,7 +614,7 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 		bedrockReq.InferenceConfig = inferenceConfig
 	}
 
-	// Claude 4.5+ takes structured output natively as output_config.format in
+	// Verified Claude models take structured output natively as output_config.format in
 	// additionalModelRequestFields: the model's decoding is constrained, and no
 	// synthetic tool competes with the caller's tools or needs a forced
 	// tool_choice. Other models go through the synthetic `bf_so_*` tool, a

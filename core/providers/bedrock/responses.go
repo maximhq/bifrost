@@ -2843,7 +2843,7 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 		if bifrostReq.Params.Text != nil {
 			if bifrostReq.Params.Text.Format != nil && schemas.IsAnthropicModelFamily(ctx, bifrostReq.Model) &&
 				anthropic.DefaultSupportsNativeStructuredOutput(caps.Model()) {
-				// Claude 4.5+ takes structured output natively as
+				// Verified Claude models take structured output natively as
 				// output_config.format in additionalModelRequestFields: the
 				// model's decoding is constrained, and no synthetic tool competes
 				// with the caller's tools or needs a forced tool_choice.

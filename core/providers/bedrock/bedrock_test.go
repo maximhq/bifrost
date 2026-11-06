@@ -4090,7 +4090,7 @@ func classificationResponsesRequest(model string) *schemas.BifrostResponsesReque
 }
 
 // TestBedrockAnthropicChatStructuredOutputUsesNativeOutputConfig: a json_schema
-// response_format on Claude 4.5+ reaches Converse as output_config.format in
+// response_format on a verified Claude model reaches Converse as output_config.format in
 // additionalModelRequestFields, with no synthetic bf_so_* tool, no forced
 // tool_choice and no structured-outputs beta. Opus 4.7 is the model the
 // synthetic tool was introduced for (#3184).

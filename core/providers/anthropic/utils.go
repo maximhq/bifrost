@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"slices"
 	"sort"
 	"strings"
@@ -1745,30 +1746,31 @@ func DefaultSupportsNativeEffort(model string) bool {
 	return false
 }
 
-// DefaultSupportsNativeStructuredOutput reports whether the model accepts
-// output_config.format natively: Claude Fable / Mythos, the 5.x families, Opus
-// 4.5 to 4.8, Sonnet 4.5 and 4.6, and Haiku 4.5. Claude 3.x, Opus 4, Opus 4.1 and
-// Sonnet 4 do not, so providers that serve them keep a synthetic structured-output
-// tool.
+// nativeStructuredOutputGen5Pattern matches exactly Claude Opus 5, Opus 5.5 and
+// Sonnet 5 in their bare, Bedrock, Vertex and date-suffixed forms, and no later
+// 5.x release: the version is followed by the end of the id, a date, a Bedrock
+// "-v" suffix or a separator such as "@" or ":".
+var nativeStructuredOutputGen5Pattern = regexp.MustCompile(`(?:opus-5(?:[-.]5)?|sonnet-5)(?:$|[^-.0-9]|-[0-9]{8}|-v[0-9])`)
+
+// DefaultSupportsNativeStructuredOutput reports whether a structured-output
+// schema goes to the model natively as output_config.format. It covers the
+// Claude models this has been verified on through Bedrock Converse: Opus 4.6,
+// Opus 4.7, Opus 5, Opus 5.5, Sonnet 4.6 and Sonnet 5. Every other model keeps a
+// synthetic structured-output tool until it is verified, including models
+// Anthropic documents as supporting structured outputs.
 //
 // Source: https://platform.claude.com/docs/en/build-with-claude/structured-outputs
 func DefaultSupportsNativeStructuredOutput(model string) bool {
 	m := strings.ToLower(model)
-	if IsFableFamily(m) || IsOpus5Plus(m) || IsSonnet5Plus(m) || IsHaiku5Plus(m) {
+	if nativeStructuredOutputGen5Pattern.MatchString(m) {
 		return true
 	}
 	if strings.Contains(m, "opus") {
-		return strings.Contains(m, "4-5") || strings.Contains(m, "4.5") ||
-			strings.Contains(m, "4-6") || strings.Contains(m, "4.6") ||
-			strings.Contains(m, "4-7") || strings.Contains(m, "4.7") ||
-			strings.Contains(m, "4-8") || strings.Contains(m, "4.8")
+		return strings.Contains(m, "4-6") || strings.Contains(m, "4.6") ||
+			strings.Contains(m, "4-7") || strings.Contains(m, "4.7")
 	}
 	if strings.Contains(m, "sonnet") {
-		return strings.Contains(m, "4-5") || strings.Contains(m, "4.5") ||
-			strings.Contains(m, "4-6") || strings.Contains(m, "4.6")
-	}
-	if strings.Contains(m, "haiku") {
-		return strings.Contains(m, "4-5") || strings.Contains(m, "4.5")
+		return strings.Contains(m, "4-6") || strings.Contains(m, "4.6")
 	}
 	return false
 }
