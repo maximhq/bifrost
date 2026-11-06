@@ -81061,6 +81061,14 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "mcp_client_id",
+            "in": "query",
+            "description": "Only Virtual MCPs with a tool spec for this MCP client (exact `client_id` match). `total_count` counts only the matches, so this answers which Virtual MCPs bundle a server without paging through every Virtual MCP.",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "security": [
@@ -117065,6 +117073,34 @@
               }
             }
           },
+          "fallback_attempts": {
+            "type": "array",
+            "description": "Set when the primary and every fallback failed and the primary's error was returned: what became of each fallback, in chain order. A fallback refused before reaching its provider (for example by a virtual key that does not allow it) is only visible here.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "provider": {
+                  "$ref": "#/components/schemas/ModelProvider"
+                },
+                "model": {
+                  "type": "string"
+                },
+                "status_code": {
+                  "type": "integer"
+                },
+                "type": {
+                  "type": "string"
+                },
+                "message": {
+                  "type": "string"
+                },
+                "skipped": {
+                  "type": "boolean",
+                  "description": "The fallback was never attempted (no provider config, or the request type has no fallback support)"
+                }
+              }
+            }
+          },
           "mcp_auth_required": {
             "type": "object",
             "description": "Set when a per-user MCP tool needs the caller to complete an inline auth flow",
@@ -140215,6 +140251,46 @@
             "type": "number",
             "minimum": 0,
             "description": "Fast mode (Anthropic) cache rate - flat across the full context window, no tiering."
+          },
+          "cache_creation_input_token_cost_above_12hr": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Cache creation cost for OpenAI 12h TTL entries."
+          },
+          "cache_creation_input_token_cost_above_12hr_above_272k_tokens": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Cache creation above 272k context for OpenAI 12h TTL entries."
+          },
+          "cache_creation_input_token_cost_above_12hr_priority": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Priority cache creation cost for OpenAI 12h TTL entries."
+          },
+          "cache_creation_input_token_cost_above_12hr_above_272k_tokens_priority": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Cache creation above 272k context for priority requests with OpenAI 12h TTL entries."
+          },
+          "cache_creation_input_token_cost_above_12hr_flex": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Flex cache creation cost for OpenAI 12h TTL entries."
+          },
+          "cache_creation_input_token_cost_above_12hr_above_272k_tokens_flex": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Cache creation above 272k context for flex requests with OpenAI 12h TTL entries."
+          },
+          "cache_creation_input_token_cost_above_12hr_ultrafast": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Ultrafast cache creation cost for OpenAI 12h TTL entries."
+          },
+          "cache_creation_input_token_cost_above_12hr_above_272k_tokens_ultrafast": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Cache creation above 272k context for ultrafast requests with OpenAI 12h TTL entries."
           },
           "cache_read_input_token_cost_fast": {
             "type": "number",

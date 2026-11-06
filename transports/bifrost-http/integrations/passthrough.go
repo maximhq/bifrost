@@ -223,10 +223,6 @@ func registerPassthroughTextRewriters(ctx *schemas.BifrostContext, route passthr
 	switch route.Wire {
 	case schemas.Anthropic:
 		rewriter = rewriteAnthropicRawRequestBody
-		if route.RequestType == schemas.ResponsesRequest {
-			ctx.SetValue(schemas.BifrostContextKeyRawRequestBodyTextTransformer, schemas.RawRequestBodyTextTransformer(rewriteAnthropicRawRequestBodyTransforms))
-			ctx.SetValue(schemas.BifrostContextKeyRawResponseTextTransformer, schemas.RawResponseTextTransformer(rewriteAnthropicRawResponseTransforms))
-		}
 	case schemas.Gemini:
 		rewriter = rewriteGenAIRawRequestBody
 	case schemas.OpenAI:

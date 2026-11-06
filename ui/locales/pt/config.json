@@ -350,6 +350,7 @@
 		"disableAutoToolInjection": "Desativar injeção automática de ferramentas",
 		"allowTempToken": "Permitir ligações de autenticação com token temporário",
 		"codeModeBinding": "Nível de associação do Code Mode",
+		"codeModeSettings": "Definições do Code Mode",
 		"selectBindingLevel": "Selecionar nível de associação",
 		"serverLevel": "Ao nível do servidor",
 		"toolLevel": "Ao nível da ferramenta",
@@ -1230,7 +1231,15 @@
 			"editConfigAria": "Editar a configuração do relay",
 			"viewConfigAria": "Ver a configuração do relay",
 			"testSheetTitle": "Testar preços",
-			"testSheetDescription": "Executa uma chamada de exemplo pelas rotas e preços guardados de {{name}}. Nada é enviado a montante."
+			"testSheetDescription": "Executa uma chamada de exemplo pelas rotas e preços guardados de {{name}}. Nada é enviado a montante.",
+			"gatewayPath": "Caminho do gateway",
+			"upstream": "Upstream",
+			"auth": "Autenticação",
+			"pricing": "Preço padrão",
+			"anyPath": "Qualquer caminho",
+			"moreActionsAria": "Mais ações do relay",
+			"deleteRelay": "Excluir relay",
+			"copyPathAria": "Copiar caminho do gateway"
 		},
 		"deleteDialog": {
 			"title": "Eliminar relay",
@@ -1258,6 +1267,7 @@
 			"title": "Rotas",
 			"importOpenapi": "Importar OpenAPI",
 			"addRoute": "Adicionar rota",
+			"description": "Uma requisição usa a primeira rota compatível; as rotas mais específicas aparecem primeiro.",
 			"columns": {
 				"method": "Método",
 				"route": "Rota",

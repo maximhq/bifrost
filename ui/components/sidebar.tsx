@@ -21,6 +21,7 @@ import { useWebSocket } from "@/hooks/useWebSocket";
 import { IS_ENTERPRISE } from "@/lib/constants/config";
 import { useBranding } from "@/lib/hooks/useBranding";
 import { useGetCoreConfigQuery, useGetLatestReleaseQuery, useGetVersionQuery, useIsAuthEnabledQuery } from "@/lib/store";
+import { withBasePath } from "@/lib/utils/basePath";
 import PoweredByBifrost from "@enterprise/components/branding/poweredByBifrost";
 import { Link, useLocation, useNavigate } from "@tanstack/react-router";
 import { ChevronRight } from "lucide-react";
@@ -28,13 +29,10 @@ import { useTheme } from "next-themes";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useCookies } from "react-cookie";
 import { Trans, useTranslation } from "react-i18next";
-import { modKeyLabel } from "./commandPalette/commandPalette.utils";
-import { useCommandPalette } from "./commandPalette/commandPaletteProvider";
 import { preserveTimeFilters } from "./navigation/navItem";
 import { getNavItemHref, type NavItem, useNavItems } from "./navigation/navItems";
 import { Badge } from "./ui/badge";
 import { PromoCardStack } from "./ui/promoCardStack";
-import { withBasePath } from "@/lib/utils/basePath";
 
 // Cookie name for dismissing production setup card
 const PRODUCTION_SETUP_DISMISSED_COOKIE = "bifrost_production_setup_dismissed";
@@ -416,7 +414,6 @@ export default function AppSidebar() {
 	const [searchQuery, setSearchQuery] = useState("");
 	const [focusedIndex, setFocusedIndex] = useState(-1);
 	const searchInputRef = useRef<HTMLInputElement>(null);
-	const { setOpen: setCommandPaletteOpen } = useCommandPalette();
 	const [cookies, setCookie, removeCookie] = useCookies([
 		PRODUCTION_SETUP_DISMISSED_COOKIE,
 		HIDDEN_UNTIL_NAV_COOKIE,
@@ -894,20 +891,8 @@ export default function AppSidebar() {
 							setFocusedIndex(-1);
 						}}
 						onKeyDown={handleSearchKeyDown}
-						className="border-input text-foreground placeholder:text-shadow-muted-foreground focus:ring-ring h-8 w-full rounded-sm border bg-transparent pr-14 pl-8 text-sm outline-none focus:bg-transparent"
+						className="border-input text-foreground placeholder:text-shadow-muted-foreground focus:ring-ring h-8 w-full rounded-sm border bg-transparent pr-2 pl-8 text-sm outline-none focus:bg-transparent"
 					/>
-					{/* ⌘K belongs to the command palette now; the chip opens it so the shortcut stays discoverable. */}
-					<button
-						type="button"
-						data-testid="sidebar-command-palette-trigger"
-						aria-label={t("commandPalette.openHint")}
-						title={t("commandPalette.openHint")}
-						onClick={() => setCommandPaletteOpen(true)}
-						className="text-muted-foreground hover:text-foreground absolute top-1/2 right-2 flex -translate-y-1/2 cursor-pointer gap-0.5 text-[10px]"
-					>
-						<kbd className="border-border bg-muted rounded-sm px-1 font-mono shadow-sm">{modKeyLabel()}</kbd>
-						<kbd className="border-border bg-muted rounded-sm px-1 font-mono shadow-sm">K</kbd>
-					</button>
 				</div>
 			</div>
 			<SidebarContent className="overflow-hidden">

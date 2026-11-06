@@ -227,6 +227,10 @@ func (h *MCPServerHandler) resolveCallToolName(ctx context.Context, _ any, reque
 		return
 	}
 	if target, err := h.resolveToolAlias(ctx, request.Params.Name); err == nil {
+		// Kept for the MCP log: a server-given name is how an MCP App's own code calls a tool.
+		if bc, ok := schemas.BifrostContextFromContext(ctx); ok {
+			bc.SetValue(schemas.BifrostContextKeyMCPRequestedToolName, request.Params.Name)
+		}
 		request.Params.Name = target.name
 	}
 }

@@ -356,6 +356,7 @@
 		"disableAutoToolInjection": "Отключить автодобавление инструментов",
 		"allowTempToken": "Разрешить ссылки аутентификации с временным токеном",
 		"codeModeBinding": "Уровень привязки Code Mode",
+		"codeModeSettings": "Настройки Code Mode",
 		"selectBindingLevel": "Выберите уровень привязки",
 		"serverLevel": "На уровне сервера",
 		"toolLevel": "На уровне инструмента",
@@ -1289,7 +1290,15 @@
 			"editConfigAria": "Изменить конфигурацию ретранслятора",
 			"viewConfigAria": "Просмотреть конфигурацию ретранслятора",
 			"testSheetTitle": "Проверка тарифов",
-			"testSheetDescription": "Выполняет пробный вызов по сохранённым маршрутам и тарифам {{name}}. Ничего не отправляется upstream."
+			"testSheetDescription": "Выполняет пробный вызов по сохранённым маршрутам и тарифам {{name}}. Ничего не отправляется upstream.",
+			"gatewayPath": "Путь шлюза",
+			"upstream": "Upstream",
+			"auth": "Аутентификация",
+			"pricing": "Цена по умолчанию",
+			"anyPath": "Любой путь",
+			"moreActionsAria": "Другие действия с релеем",
+			"deleteRelay": "Удалить релей",
+			"copyPathAria": "Копировать путь шлюза"
 		},
 		"deleteDialog": {
 			"title": "Удалить ретранслятор",
@@ -1317,6 +1326,7 @@
 			"title": "Маршруты",
 			"importOpenapi": "Импорт OpenAPI",
 			"addRoute": "Добавить маршрут",
+			"description": "Запрос использует первый подходящий маршрут; более конкретные маршруты идут первыми.",
 			"columns": {
 				"method": "Метод",
 				"route": "Маршрут",

@@ -475,7 +475,13 @@
           "name": "BytePlus API Key",
           "value": "env.BYTEPLUS_API_KEY",
           "weight": 1,
-          "models": ["deepseek-v4-flash-260425", "skylark-embedding-vision-251215", "dola-seedream-5-0-pro-260628", "seedream-4-5-251128", "dreamina-seedance-2-5-260628"]
+          "models": [
+            "deepseek-v4-flash-260425",
+            "skylark-embedding-vision-251215",
+            "dola-seedream-5-0-pro-260628",
+            "seedream-4-5-251128",
+            "dreamina-seedance-2-5-260628"
+          ]
         }
       ],
       "network_config": {
@@ -514,10 +520,19 @@
             "Microsoft-Decision-1": "Decision-1",
             "speech-neural": { "model_id": "neural", "use_speech_endpoints": true },
             "speech-mai-voice": { "model_id": "MAI-Voice-2.1-Flash", "use_speech_endpoints": true },
-            "speech-fast-transcription": { "model_id": "fast-transcription", "use_speech_endpoints": true },
+            "speech-fast-transcription": {
+              "model_id": "fast-transcription",
+              "use_speech_endpoints": true
+            },
             "neural": { "model_id": "neural", "use_speech_endpoints": true },
-            "DragonHDLatestNeural": { "model_id": "DragonHDLatestNeural", "use_speech_endpoints": true },
-            "fast-transcription": { "model_id": "fast-transcription", "use_speech_endpoints": true },
+            "DragonHDLatestNeural": {
+              "model_id": "DragonHDLatestNeural",
+              "use_speech_endpoints": true
+            },
+            "fast-transcription": {
+              "model_id": "fast-transcription",
+              "use_speech_endpoints": true
+            },
             "short-audio": { "model_id": "short-audio", "use_speech_endpoints": true },
             "gpt-realtime-vl": { "model_id": "gpt-realtime", "use_voice_live_endpoints": true }
           },
@@ -572,7 +587,9 @@
             "use_speech_endpoints": true
           },
           "weight": 1,
-          "models": ["regex:neural|Dragon.*Neural|MAI-Voice-.+|fast-transcription|llm-speech|short-audio|MAI-Transcribe-2"]
+          "models": [
+            "regex:neural|Dragon.*Neural|MAI-Voice-.+|fast-transcription|llm-speech|short-audio|MAI-Transcribe-2"
+          ]
         }
       ],
       "network_config": {
@@ -724,9 +741,7 @@
           "name": "GitHub Copilot",
           "value": "env.GITHUB_COPILOT_API_KEY",
           "weight": 1,
-          "models": [
-            "*"
-          ]
+          "models": ["*"]
         }
       ],
       "network_config": {
@@ -1520,9 +1535,7 @@
             "weight": 1
           }
         ],
-        "fallbacks": [
-          "openai_pc_auto/"
-        ]
+        "fallbacks": ["openai_pc_auto/"]
       },
       {
         "id": "harness-requested-route-rewrite",
@@ -1935,8 +1948,7 @@
     }
   ],
   "server": {
-    "read_buffer_size": 65536,
-    "base_path":"/testing-path"
+    "read_buffer_size": 65536
   },
   "client": {
     "allow_per_request_raw_override": true,

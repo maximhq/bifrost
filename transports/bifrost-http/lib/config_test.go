@@ -24812,6 +24812,245 @@ func TestResolveGovernanceKeyReferences_RoutingFallbacks(t *testing.T) {
 	})
 }
 
+// configRoutingRule builds a config.json routing rule with one target. Every call returns fresh
+// slices, so a rule reused across simulated boots never shares state the merge wrote into.
+func configRoutingRule(id, name string, priority int, model string) tables.TableRoutingRule {
+	return tables.TableRoutingRule{
+		ID:            id,
+		Name:          name,
+		CelExpression: "true",
+		Scope:         "global",
+		Priority:      priority,
+		Targets:       []tables.TableRoutingTarget{{Provider: schemas.Ptr("openai"), Model: schemas.Ptr(model), Weight: 1}},
+	}
+}
+
+// bootRoutingRules runs the startup governance merge, as loadGovernanceConfig does, for a
+// config.json that declares only the given routing rules, and returns the stored rules by ID.
+func bootRoutingRules(t *testing.T, store configstore.ConfigStore, sourceOfTruth string, rules ...tables.TableRoutingRule) map[string]tables.TableRoutingRule {
+	t.Helper()
+	ctx := context.Background()
+	governanceConfig, err := store.GetGovernanceConfig(ctx)
+	require.NoError(t, err)
+	if governanceConfig == nil {
+		governanceConfig = &configstore.GovernanceConfig{}
+	}
+	config := &Config{ConfigStore: store, GovernanceConfig: governanceConfig}
+	configData := &ConfigData{
+		SourceOfTruth: sourceOfTruth,
+		Governance:    &configstore.GovernanceConfig{RoutingRules: append([]tables.TableRoutingRule{}, rules...)},
+	}
+	mergeGovernanceConfig(ctx, config, configData, governanceConfig)
+	return storedRoutingRules(t, store)
+}
+
+func storedRoutingRules(t *testing.T, store configstore.ConfigStore) map[string]tables.TableRoutingRule {
+	t.Helper()
+	stored, err := store.GetRoutingRules(context.Background())
+	require.NoError(t, err)
+	byID := make(map[string]tables.TableRoutingRule, len(stored))
+	for _, rule := range stored {
+		byID[rule.ID] = rule
+	}
+	return byID
+}
+
+func storedRoutingRuleByName(t *testing.T, rules map[string]tables.TableRoutingRule, name string) tables.TableRoutingRule {
+	t.Helper()
+	var found []tables.TableRoutingRule
+	for _, rule := range rules {
+		if rule.Name == name {
+			found = append(found, rule)
+		}
+	}
+	require.Len(t, found, 1, "expected exactly one stored rule named %q", name)
+	return found[0]
+}
+
+func routingRuleModel(rule tables.TableRoutingRule) string {
+	if len(rule.Targets) == 0 || rule.Targets[0].Model == nil {
+		return ""
+	}
+	return *rule.Targets[0].Model
+}
+
+// Changing a rule's id in split mode leaves the old row in place at the same priority. That
+// used to fail the whole governance sync (and stop startup with "routing rule with priority 7
+// already exists for scope 'global'"); now only the conflicting rule is skipped.
+func TestMergeGovernanceConfig_RoutingRuleIDChangeSkipsPriorityConflict(t *testing.T) {
+	initTestLogger()
+	store := createTestSQLiteConfigStore(t, t.TempDir())
+
+	bootRoutingRules(t, store, "", configRoutingRule("rule-a", "primary", 7, "gpt-4o"))
+
+	rules := bootRoutingRules(t, store, "",
+		configRoutingRule("rule-b", "primary-renamed", 7, "gpt-4.1"),
+		configRoutingRule("rule-c", "secondary", 8, "gpt-4o-mini"),
+	)
+
+	require.Contains(t, rules, "rule-a", "the stored rule keeps its priority")
+	assert.Equal(t, "gpt-4o", routingRuleModel(rules["rule-a"]))
+	assert.NotContains(t, rules, "rule-b", "the rule whose priority is taken is skipped")
+	require.Contains(t, rules, "rule-c", "the rest of the sync still applies")
+	assert.Len(t, rules, 2)
+}
+
+// A rule without an id is inserted once and then matched by name on every later boot: same
+// ID, same config hash, no rewrite. Editing it updates the row in place.
+func TestMergeGovernanceConfig_IDLessRoutingRuleIsStableAcrossBoots(t *testing.T) {
+	initTestLogger()
+	store := createTestSQLiteConfigStore(t, t.TempDir())
+
+	rules := bootRoutingRules(t, store, "", configRoutingRule("", "primary", 7, "gpt-4o"))
+	first := storedRoutingRuleByName(t, rules, "primary")
+	require.NotEmpty(t, first.ID, "a rule without an id gets one")
+	wantHash, err := configstore.GenerateRoutingRuleHash(configRoutingRule("", "primary", 7, "gpt-4o"))
+	require.NoError(t, err)
+	assert.Equal(t, wantHash, first.ConfigHash, "the hash is taken over the rule as written, without the generated ID")
+
+	rules = bootRoutingRules(t, store, "", configRoutingRule("", "primary", 7, "gpt-4o"))
+	require.Len(t, rules, 1)
+	second := rules[first.ID]
+	assert.Equal(t, first.ConfigHash, second.ConfigHash)
+	assert.True(t, first.UpdatedAt.Equal(second.UpdatedAt), "an unchanged rule is not rewritten")
+
+	rules = bootRoutingRules(t, store, "", configRoutingRule("", "primary", 7, "gpt-4.1"))
+	require.Len(t, rules, 1, "editing a rule without an id must not add a second row")
+	assert.Equal(t, "gpt-4.1", routingRuleModel(rules[first.ID]))
+}
+
+// The match key is (name, scope, scope_id): the same name in another scope is another rule, and
+// a rule created outside config.json is adopted when the key matches.
+func TestMergeGovernanceConfig_IDLessRoutingRuleMatchesByNameAndScope(t *testing.T) {
+	initTestLogger()
+	ctx := context.Background()
+	store := createTestSQLiteConfigStore(t, t.TempDir())
+	require.NoError(t, store.CreateTeam(ctx, &tables.TableTeam{ID: "team-1", Name: "Team 1"}))
+
+	teamRule := configRoutingRule("ui-team-rule", "shared", 1, "gpt-4o")
+	teamRule.Scope = "team"
+	teamRule.ScopeID = schemas.Ptr("team-1")
+	require.NoError(t, store.SyncRoutingRules(ctx, []tables.TableRoutingRule{
+		configRoutingRule("ui-global-rule", "shared", 1, "gpt-4o"),
+		teamRule,
+	}, nil))
+
+	fileTeamRule := configRoutingRule("", "shared", 1, "gpt-4.1")
+	fileTeamRule.Scope = "team"
+	fileTeamRule.ScopeID = schemas.Ptr("team-1")
+	rules := bootRoutingRules(t, store, "", fileTeamRule)
+
+	require.Len(t, rules, 2)
+	assert.Equal(t, "gpt-4.1", routingRuleModel(rules["ui-team-rule"]), "the team rule with the same name is updated")
+	assert.Equal(t, "gpt-4o", routingRuleModel(rules["ui-global-rule"]), "the global rule with the same name is untouched")
+}
+
+// A rule without an id is skipped when its name does not identify one rule: two stored global
+// rules share it (NULL scope_id is not covered by the unique index), or the file repeats it.
+func TestMergeGovernanceConfig_IDLessRoutingRuleSkippedWhenNameIsAmbiguous(t *testing.T) {
+	initTestLogger()
+	ctx := context.Background()
+	store := createTestSQLiteConfigStore(t, t.TempDir())
+	require.NoError(t, store.SyncRoutingRules(ctx, []tables.TableRoutingRule{
+		configRoutingRule("dup-1", "dup", 1, "gpt-4o"),
+		configRoutingRule("dup-2", "dup", 2, "gpt-4o"),
+	}, nil))
+
+	rules := bootRoutingRules(t, store, "",
+		configRoutingRule("", "dup", 3, "gpt-4.1"),
+		configRoutingRule("", "repeated", 4, "gpt-4o"),
+		configRoutingRule("", "repeated", 5, "gpt-4.1"),
+	)
+
+	require.Len(t, rules, 3)
+	assert.Equal(t, "gpt-4o", routingRuleModel(rules["dup-1"]))
+	assert.Equal(t, "gpt-4o", routingRuleModel(rules["dup-2"]))
+	repeated := storedRoutingRuleByName(t, rules, "repeated")
+	assert.Equal(t, 4, repeated.Priority, "the first declaration of a repeated name wins")
+}
+
+// Priority conflicts among the rules config.json writes: the first declared wins. Rules that
+// swap priorities do not conflict, because the check runs on the state after the sync.
+func TestMergeGovernanceConfig_RoutingRulePriorityConflictsWithinFile(t *testing.T) {
+	initTestLogger()
+
+	t.Run("same priority keeps the first rule", func(t *testing.T) {
+		store := createTestSQLiteConfigStore(t, t.TempDir())
+		rules := bootRoutingRules(t, store, "",
+			configRoutingRule("first", "first", 1, "gpt-4o"),
+			configRoutingRule("second", "second", 1, "gpt-4o"),
+		)
+		require.Len(t, rules, 1)
+		assert.Contains(t, rules, "first")
+	})
+
+	t.Run("swapped priorities both apply", func(t *testing.T) {
+		store := createTestSQLiteConfigStore(t, t.TempDir())
+		bootRoutingRules(t, store, "",
+			configRoutingRule("x", "x", 1, "gpt-4o"),
+			configRoutingRule("y", "y", 2, "gpt-4o"),
+		)
+		rules := bootRoutingRules(t, store, "",
+			configRoutingRule("x", "x", 2, "gpt-4o"),
+			configRoutingRule("y", "y", 1, "gpt-4o"),
+		)
+		assert.Equal(t, 2, rules["x"].Priority)
+		assert.Equal(t, 1, rules["y"].Priority)
+	})
+
+	t.Run("skipped update keeps the stored version", func(t *testing.T) {
+		store := createTestSQLiteConfigStore(t, t.TempDir())
+		bootRoutingRules(t, store, "", configRoutingRule("x", "x", 1, "gpt-4o"))
+		require.NoError(t, store.SyncRoutingRules(context.Background(), []tables.TableRoutingRule{
+			configRoutingRule("ui-rule", "ui", 2, "gpt-4o"),
+		}, nil))
+		rules := bootRoutingRules(t, store, "", configRoutingRule("x", "x", 2, "gpt-4.1"))
+		require.Len(t, rules, 2)
+		assert.Equal(t, 1, rules["x"].Priority)
+		assert.Equal(t, "gpt-4o", routingRuleModel(rules["x"]))
+	})
+}
+
+// With source_of_truth=config.json the rule with the old id is pruned in the same transaction,
+// so changing an id needs no skip, and a rule without an id is never pruned as undeclared.
+func TestMergeGovernanceConfig_ConfigJSONModeRoutingRuleIDs(t *testing.T) {
+	initTestLogger()
+	store := createTestSQLiteConfigStore(t, t.TempDir())
+
+	bootRoutingRules(t, store, SourceOfTruthConfigJSON, configRoutingRule("rule-a", "primary", 7, "gpt-4o"))
+	rules := bootRoutingRules(t, store, SourceOfTruthConfigJSON, configRoutingRule("rule-b", "primary", 7, "gpt-4.1"))
+	require.Len(t, rules, 1)
+	assert.Contains(t, rules, "rule-b")
+
+	rules = bootRoutingRules(t, store, SourceOfTruthConfigJSON, configRoutingRule("", "primary", 7, "gpt-4.1"))
+	require.Len(t, rules, 1)
+	assert.Contains(t, rules, "rule-b", "a rule without an id adopts the stored rule with its name")
+
+	rules = bootRoutingRules(t, store, SourceOfTruthConfigJSON, configRoutingRule("", "primary", 7, "gpt-4.1"))
+	require.Len(t, rules, 1)
+	assert.Contains(t, rules, "rule-b")
+}
+
+// A row an earlier release stored with an empty primary key (a rule without an id, before ids
+// were resolved) is matched by name and, since its hash still matches, left alone.
+func TestMergeGovernanceConfig_LegacyEmptyIDRoutingRuleIsUntouched(t *testing.T) {
+	initTestLogger()
+	store := createTestSQLiteConfigStore(t, t.TempDir())
+
+	legacy := configRoutingRule("", "primary", 7, "gpt-4o")
+	hash, err := configstore.GenerateRoutingRuleHash(legacy)
+	require.NoError(t, err)
+	legacy.ConfigHash = hash
+	require.NoError(t, store.SyncRoutingRules(context.Background(), []tables.TableRoutingRule{legacy}, nil))
+	before := storedRoutingRules(t, store)
+	require.Contains(t, before, "")
+
+	rules := bootRoutingRules(t, store, "", configRoutingRule("", "primary", 7, "gpt-4o"))
+	require.Len(t, rules, 1)
+	require.Contains(t, rules, "")
+	assert.True(t, before[""].UpdatedAt.Equal(rules[""].UpdatedAt), "the legacy row is not rewritten")
+}
+
 // Reconciliation writes carry metadata_json forward inside UpdateClientConfig's transaction, so UI
 // flags survive a restart that re-syncs the client section without any restore step afterwards.
 func TestLoadConfig_ClientConfigSyncPreservesClientMetadata(t *testing.T) {

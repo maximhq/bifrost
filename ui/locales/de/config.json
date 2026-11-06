@@ -350,6 +350,7 @@
 		"disableAutoToolInjection": "Automatische Tool-Injektion deaktivieren",
 		"allowTempToken": "Temporäre Token-Authentifizierungs-Links erlauben",
 		"codeModeBinding": "Code-Modus-Bindungsebene",
+		"codeModeSettings": "Code-Modus-Einstellungen",
 		"selectBindingLevel": "Bindungsebene auswählen",
 		"serverLevel": "Server-Ebene",
 		"toolLevel": "Tool-Ebene",
@@ -1259,7 +1260,15 @@
 			"editConfigAria": "Relay-Konfiguration bearbeiten",
 			"viewConfigAria": "Relay-Konfiguration anzeigen",
 			"testSheetTitle": "Preise testen",
-			"testSheetDescription": "Führt einen Beispielaufruf über die gespeicherten Routen und Preise von {{name}} aus. Es wird nichts an den Upstream gesendet."
+			"testSheetDescription": "Führt einen Beispielaufruf über die gespeicherten Routen und Preise von {{name}} aus. Es wird nichts an den Upstream gesendet.",
+			"gatewayPath": "Gateway-Pfad",
+			"upstream": "Upstream",
+			"auth": "Authentifizierung",
+			"pricing": "Standardpreise",
+			"anyPath": "Beliebiger Pfad",
+			"moreActionsAria": "Weitere Relay-Aktionen",
+			"deleteRelay": "Relay löschen",
+			"copyPathAria": "Gateway-Pfad kopieren"
 		},
 		"deleteDialog": {
 			"title": "Relay löschen",
@@ -1287,6 +1296,7 @@
 			"title": "Routen",
 			"importOpenapi": "OpenAPI importieren",
 			"addRoute": "Route hinzufügen",
+			"description": "Eine Anfrage nutzt die erste passende Route; spezifischere Routen stehen weiter oben.",
 			"columns": {
 				"method": "Methode",
 				"route": "Route",

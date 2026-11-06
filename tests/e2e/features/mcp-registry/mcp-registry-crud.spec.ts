@@ -133,6 +133,66 @@ test.describe("MCP Registry", () => {
       await mcpRegistryPage.page.unroute(virtualMcpsRoute);
     });
 
+    test("should ask the server which Virtual MCPs bundle a client and say when it lists only some", async ({ mcpRegistryPage }) => {
+      const clientData = createHTTPClientData();
+      expect(await mcpRegistryPage.createClient(clientData)).toBe(true);
+      createdClients.push(clientData.name);
+
+      // Past the 100-row page cap only the first page is listed, while the count stays exact.
+      const virtualMcpsRoute = "**/api/mcp/virtual-mcps**";
+      const lookups: URL[] = [];
+      await mcpRegistryPage.page.route(virtualMcpsRoute, async (route) => {
+        const url = new URL(route.request().url());
+        lookups.push(url);
+        const clientId = url.searchParams.get("mcp_client_id") ?? "";
+        await route.fulfill({
+          json: {
+            virtual_mcps: [
+              { id: 1, name: "Bundles it", endpoint_slug: "bundles-it", enabled: true, tools: [{ mcp_client_id: clientId, tool_names: ["*"] }], virtual_key_ids: [] },
+            ],
+            count: 1,
+            total_count: 120,
+            limit: 100,
+            offset: 0,
+          },
+        });
+      });
+      await mcpRegistryPage.viewClientDetails(clientData.name);
+      await expect(mcpRegistryPage.viewSheet.getByTestId("mcpclient-view-stat-access")).toContainText("120");
+      expect(lookups.some((url) => url.searchParams.get("mcp_client_id"))).toBe(true);
+
+      await mcpRegistryPage.viewSheet.getByTestId("mcpclient-view-tab-access").click();
+      await expect(mcpRegistryPage.viewSheet.getByTestId("mcp-client-virtual-mcps-truncated")).toContainText("120");
+      await mcpRegistryPage.page.unroute(virtualMcpsRoute);
+    });
+
+    test("should filter Virtual MCPs by exact client id on the real store", async ({ mcpRegistryPage, request }) => {
+      const clientData = createHTTPClientData();
+      expect(await mcpRegistryPage.createClient(clientData)).toBe(true);
+      createdClients.push(clientData.name);
+      const clients = await request.get(`/api/mcp/clients?search=${encodeURIComponent(clientData.name)}`);
+      expect(clients.status(), await clients.text()).toBe(200);
+      const clientId: string = (await clients.json()).clients[0].config.client_id;
+
+      const created = await request.post("/api/mcp/virtual-mcps", {
+        data: { name: `e2e_vmcp_filter_${Date.now()}`, tools: [{ mcp_client_id: clientId, tool_names: ["*"] }] },
+      });
+      expect(created.status(), await created.text()).toBe(201);
+      const vmcpId: number = (await created.json()).virtual_mcp.id;
+      try {
+        const totalFor = async (id: string) => {
+          const res = await request.get(`/api/mcp/virtual-mcps?mcp_client_id=${encodeURIComponent(id)}`);
+          expect(res.status(), await res.text()).toBe(200);
+          return (await res.json()).total_count;
+        };
+        expect(await totalFor(clientId)).toBe(1);
+        expect(await totalFor(clientId.toUpperCase())).toBe(0);
+        expect(await totalFor(clientId.slice(0, -1))).toBe(0);
+      } finally {
+        await request.delete(`/api/mcp/virtual-mcps/${vmcpId}`);
+      }
+    });
+
     test("should keep each stat's full text on hover when a narrow cell truncates it", async ({ mcpRegistryPage }) => {
       const clientData = createHTTPClientData();
       expect(await mcpRegistryPage.createClient(clientData)).toBe(true);
@@ -857,6 +917,37 @@ test.describe("MCP Registry", () => {
       const promptRow = view.getByTestId("mcp-expose-prompts-row-summarize");
       await promptRow.getByRole("button", { name: "View more" }).click();
       await expect(promptRow.getByRole("button", { name: "View less" })).toBeVisible();
+    });
+
+    test("does not show the previous server's Virtual MCP count while the next one loads", async ({ mcpRegistryPage }) => {
+      const second = failingServer();
+      second.config = { ...second.config, client_id: "vd-2", name: "view_details_server_2" };
+      await mcpRegistryPage.page.route("**/api/mcp/clients?**", (route) =>
+        route.fulfill({ json: { clients: [failingServer(), second], count: 2, total_count: 2, limit: 25, offset: 0 } }),
+      );
+      let release = () => {};
+      const held = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      await mcpRegistryPage.page.route("**/api/mcp/virtual-mcps**", async (route) => {
+        const clientId = new URL(route.request().url()).searchParams.get("mcp_client_id");
+        if (clientId === "vd-2") await held;
+        await route.fulfill({
+          json: { virtual_mcps: [], count: 0, total_count: clientId === "vd-2" ? 7 : 120, limit: 100, offset: 0 },
+        });
+      });
+      await mcpRegistryPage.goto();
+      await mcpRegistryPage.viewClientDetails("view_details_server");
+      const view = mcpRegistryPage.viewSheet;
+      const stat = view.getByTestId("mcpclient-view-stat-access");
+      await expect(stat).toContainText("120");
+
+      await view.getByRole("button", { name: "Next server" }).click();
+      await expect(view.getByTestId("mcpclient-view-title")).toContainText("view_details_server_2");
+      await expect(stat).toContainText("Loading virtual MCPs…");
+      await expect(stat).not.toContainText("120");
+      release();
+      await expect(stat).toContainText("7");
     });
 
     test("starts each server's failure details collapsed", async ({ mcpRegistryPage }) => {

@@ -2388,6 +2388,38 @@ PricingPatch:
       type: number
       minimum: 0
       description: Fast mode (Anthropic) cache rate - flat across the full context window, no tiering.
+    cache_creation_input_token_cost_above_12hr:
+      type: number
+      minimum: 0
+      description: Cache creation cost for OpenAI 12h TTL entries.
+    cache_creation_input_token_cost_above_12hr_above_272k_tokens:
+      type: number
+      minimum: 0
+      description: Cache creation above 272k context for OpenAI 12h TTL entries.
+    cache_creation_input_token_cost_above_12hr_priority:
+      type: number
+      minimum: 0
+      description: Priority cache creation cost for OpenAI 12h TTL entries.
+    cache_creation_input_token_cost_above_12hr_above_272k_tokens_priority:
+      type: number
+      minimum: 0
+      description: Cache creation above 272k context for priority requests with OpenAI 12h TTL entries.
+    cache_creation_input_token_cost_above_12hr_flex:
+      type: number
+      minimum: 0
+      description: Flex cache creation cost for OpenAI 12h TTL entries.
+    cache_creation_input_token_cost_above_12hr_above_272k_tokens_flex:
+      type: number
+      minimum: 0
+      description: Cache creation above 272k context for flex requests with OpenAI 12h TTL entries.
+    cache_creation_input_token_cost_above_12hr_ultrafast:
+      type: number
+      minimum: 0
+      description: Ultrafast cache creation cost for OpenAI 12h TTL entries.
+    cache_creation_input_token_cost_above_12hr_above_272k_tokens_ultrafast:
+      type: number
+      minimum: 0
+      description: Cache creation above 272k context for ultrafast requests with OpenAI 12h TTL entries.
     cache_read_input_token_cost_fast:
       type: number
       minimum: 0

@@ -350,6 +350,7 @@
 		"disableAutoToolInjection": "Désactiver l’injection automatique d’outils",
 		"allowTempToken": "Autoriser les liens d’auth. avec jeton temporaire",
 		"codeModeBinding": "Niveau de liaison du mode code",
+		"codeModeSettings": "Paramètres du mode code",
 		"selectBindingLevel": "Sélectionner le niveau de liaison",
 		"serverLevel": "Niveau serveur",
 		"toolLevel": "Niveau outil",
@@ -1259,7 +1260,15 @@
 			"editConfigAria": "Modifier la configuration du relais",
 			"viewConfigAria": "Afficher la configuration du relais",
 			"testSheetTitle": "Tester la tarification",
-			"testSheetDescription": "Exécute un appel d’exemple via les routes et la tarification enregistrées de {{name}}. Rien n’est envoyé en amont."
+			"testSheetDescription": "Exécute un appel d’exemple via les routes et la tarification enregistrées de {{name}}. Rien n’est envoyé en amont.",
+			"gatewayPath": "Chemin de la passerelle",
+			"upstream": "Upstream",
+			"auth": "Authentification",
+			"pricing": "Tarif par défaut",
+			"anyPath": "Tout chemin",
+			"moreActionsAria": "Autres actions du relais",
+			"deleteRelay": "Supprimer le relais",
+			"copyPathAria": "Copier le chemin de la passerelle"
 		},
 		"deleteDialog": {
 			"title": "Supprimer le relais",
@@ -1287,6 +1296,7 @@
 			"title": "Routes",
 			"importOpenapi": "Importer OpenAPI",
 			"addRoute": "Ajouter une route",
+			"description": "Une requête utilise la première route qui lui correspond ; les routes les plus spécifiques sont listées en premier.",
 			"columns": {
 				"method": "Méthode",
 				"route": "Route",
