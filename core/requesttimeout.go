@@ -241,7 +241,7 @@ func wrapStreamWithDrainBounds(ctx *schemas.BifrostContext, ch chan *schemas.Bif
 			select {
 			case <-ctx.Done():
 				drainAfterCancel(ch, bounds)
-				forwardTimeoutChunkIfFired(ctx, out)
+				forwardTimeoutChunkIfFired(ctx, out, bounds.send)
 				return
 			case chunk, ok = <-ch:
 			}
@@ -250,13 +250,13 @@ func wrapStreamWithDrainBounds(ctx *schemas.BifrostContext, ch chan *schemas.Bif
 				// ctx.Done(): the deadline can still have fired in the same
 				// instant the producer finished, or the caller sees a
 				// truncated response close like any successful stream.
-				forwardTimeoutChunkIfFired(ctx, out)
+				forwardTimeoutChunkIfFired(ctx, out, bounds.send)
 				return
 			}
 			select {
 			case <-ctx.Done():
 				drainAfterCancel(ch, bounds)
-				forwardTimeoutChunkIfFired(ctx, out)
+				forwardTimeoutChunkIfFired(ctx, out, bounds.send)
 				return
 			default:
 			}
@@ -264,7 +264,7 @@ func wrapStreamWithDrainBounds(ctx *schemas.BifrostContext, ch chan *schemas.Bif
 			case out <- chunk:
 			case <-ctx.Done():
 				drainAfterCancel(ch, bounds)
-				forwardTimeoutChunkIfFired(ctx, out)
+				forwardTimeoutChunkIfFired(ctx, out, bounds.send)
 				return
 			}
 		}
@@ -272,16 +272,19 @@ func wrapStreamWithDrainBounds(ctx *schemas.BifrostContext, ch chan *schemas.Bif
 	return out
 }
 
-// drainBounds bounds drainAfterCancel. grace is how long the drain holds the
-// wrapped stream open waiting for the producer to close ch. background is how
-// much longer a detached goroutine keeps draining after that, so a producer
-// that sends late is not left blocked.
+// drainBounds bounds the wrapper's work after cancellation. grace is how long
+// drainAfterCancel holds the wrapped stream open waiting for the producer to
+// close ch. background is how much longer a detached goroutine keeps draining
+// after that, so a producer that sends late is not left blocked. send is how
+// long forwardTimeoutChunkIfFired waits for the consumer to take the terminal
+// chunk.
 type drainBounds struct {
 	grace      time.Duration
 	background time.Duration
+	send       time.Duration
 }
 
-var defaultDrainBounds = drainBounds{grace: 5 * time.Second, background: time.Minute}
+var defaultDrainBounds = drainBounds{grace: 5 * time.Second, background: time.Minute, send: time.Minute}
 
 // drainAfterCancel discards what is left on ch after cancellation so the
 // producer is never left blocked writing into it. A provider closes ch
@@ -346,35 +349,25 @@ func requestTimeoutStreamChunk() *schemas.BifrostStreamChunk {
 	}
 }
 
-// forwardTimeoutChunkSendGrace bounds how long forwardTimeoutChunkIfFired
-// blocks trying to deliver the terminal chunk. out is unbuffered, so a plain
-// non-blocking send only succeeds if the consumer happens to already be
-// waiting on a receive -- the common HTTP transport consumer is instead
-// mid-write to the client socket for the previous chunk at the exact moment
-// the deadline fires, so a bare `select { default: }` would drop the error
-// almost every time. The grace period gives a merely-busy consumer -- which
-// always loops back to receive again, see handleStreaming's `for chunk :=
-// range streamChan` -- time to come back, while still bounding how long this
-// goroutine waits for a consumer that is never coming back (the SDK-caller
-// abandonment case). 5s comfortably covers one slow chunk write without
-// meaningfully extending how long a truly abandoned goroutine lingers.
-const forwardTimeoutChunkSendGrace = 5 * time.Second
-
-// forwardTimeoutChunkIfFired makes a best-effort, bounded-blocking send of
-// requestTimeoutStreamChunk on out, but only when ctx was cancelled because
-// the request-timeout deadline actually fired (BifrostContextKeyRequestTimeoutFired) --
-// never for an arbitrary cancellation such as a client disconnect, where there
-// is no caller left to report the error to and no declared deadline to blame.
-// Bounded: an abandoned consumer (nobody reading out any more, see
-// TestWrapStreamForRequestTimeout_CancelUnblocksAbandonedConsumer) must not
-// re-block this goroutine on out <- chunk forever, just long enough to give a
-// merely-busy consumer a real chance to receive it.
-func forwardTimeoutChunkIfFired(ctx *schemas.BifrostContext, out chan<- *schemas.BifrostStreamChunk) {
+// forwardTimeoutChunkIfFired sends requestTimeoutStreamChunk on out, but only
+// when ctx was cancelled because the request-timeout deadline actually fired
+// (BifrostContextKeyRequestTimeoutFired), never for an arbitrary cancellation
+// such as a client disconnect, where there is no caller left to report to.
+//
+// out is unbuffered, so the send waits for the consumer. The HTTP handlers
+// always come back to receive until out closes, but one can be mid-write to a
+// slow client for a long time, and giving up early lets it see out close and
+// send [DONE] for a truncated response. The wait is bounded only for a
+// consumer that never comes back (an SDK caller that abandons the stream), so
+// the bound is long: the same minute the background drain uses.
+func forwardTimeoutChunkIfFired(ctx *schemas.BifrostContext, out chan<- *schemas.BifrostStreamChunk, wait time.Duration) {
 	if !requestTimeoutFired(ctx) {
 		return
 	}
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
 	select {
 	case out <- requestTimeoutStreamChunk():
-	case <-time.After(forwardTimeoutChunkSendGrace):
+	case <-timer.C:
 	}
 }

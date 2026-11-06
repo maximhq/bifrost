@@ -647,7 +647,7 @@ func TestWrapStreamForRequestTimeout_SilentSourceStillReportsTimeout(t *testing.
 
 	in := make(chan *schemas.BifrostStreamChunk)
 	var stopped atomicBool
-	out := wrapStreamWithDrainBounds(ctx, in, func() { stopped.set(true) }, true, drainBounds{grace: 50 * time.Millisecond, background: time.Second})
+	out := wrapStreamWithDrainBounds(ctx, in, func() { stopped.set(true) }, true, drainBounds{grace: 50 * time.Millisecond, background: time.Second, send: time.Second})
 
 	time.Sleep(20 * time.Millisecond) // wrapper is now parked on the receive
 	ctx.SetValue(schemas.BifrostContextKeyRequestTimeoutFired, true)
@@ -1065,7 +1065,7 @@ func TestWrapStreamForRequestTimeout_TimeoutChunkWaitsForProducer(t *testing.T) 
 	defer cancel()
 
 	in := make(chan *schemas.BifrostStreamChunk)
-	out := wrapStreamWithDrainBounds(ctx, in, func() {}, true, drainBounds{grace: time.Second, background: time.Second})
+	out := wrapStreamWithDrainBounds(ctx, in, func() {}, true, drainBounds{grace: time.Second, background: time.Second, send: time.Second})
 
 	var producerDone atomicBool
 	ctx.SetValue(schemas.BifrostContextKeyRequestTimeoutFired, true)
@@ -1162,5 +1162,65 @@ func TestArmRequestTimeout_NoCancelAfterLastStop(t *testing.T) {
 	}
 	if late > 0 {
 		t.Fatalf("ctx was cancelled after its last stop returned in %d of %d iterations", late, iterations)
+	}
+}
+
+// TestWrapStreamForRequestTimeout_SlowConsumerStillGetsTimeout covers a
+// consumer that is mid-write to a slow client for longer than the old 5s send
+// bound. The send must keep waiting for it: giving up lets it see out close and
+// send [DONE] for a truncated response. Bounds are scaled down so the test
+// stays fast; the consumer resumes after 300ms, well inside the 2s send bound.
+func TestWrapStreamForRequestTimeout_SlowConsumerStillGetsTimeout(t *testing.T) {
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+
+	in := make(chan *schemas.BifrostStreamChunk)
+	out := wrapStreamWithDrainBounds(ctx, in, func() {}, true, drainBounds{grace: 50 * time.Millisecond, background: time.Second, send: 2 * time.Second})
+
+	ctx.SetValue(schemas.BifrostContextKeyRequestTimeoutFired, true)
+	cancel()
+	close(in)
+
+	time.Sleep(300 * time.Millisecond) // the consumer is busy writing the previous chunk
+	select {
+	case chunk, ok := <-out:
+		if !ok || chunk.BifrostError == nil || chunk.BifrostError.Error == nil || chunk.BifrostError.Error.Type == nil || *chunk.BifrostError.Error.Type != schemas.RequestTimedOut {
+			t.Fatalf("a slow consumer must still get the timeout chunk, got %+v (open=%v)", chunk, ok)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout chunk never arrived for the slow consumer")
+	}
+}
+
+// TestWrapStreamForRequestTimeout_AbandonedConsumerIsStillBounded covers the
+// other side: a consumer that never reads again must not hold the wrapper
+// goroutine forever. After the send bound it gives up, runs stop and closes
+// out.
+func TestWrapStreamForRequestTimeout_AbandonedConsumerIsStillBounded(t *testing.T) {
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+
+	in := make(chan *schemas.BifrostStreamChunk)
+	var stopped atomicBool
+	out := wrapStreamWithDrainBounds(ctx, in, func() { stopped.set(true) }, true, drainBounds{grace: 20 * time.Millisecond, background: time.Second, send: 100 * time.Millisecond})
+
+	ctx.SetValue(schemas.BifrostContextKeyRequestTimeoutFired, true)
+	cancel()
+	close(in)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for !stopped.get() {
+		if time.Now().After(deadline) {
+			t.Fatal("wrapper goroutine never finished for an abandoned consumer")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	select {
+	case chunk, ok := <-out:
+		if ok {
+			t.Fatalf("expected out closed after the send bound, got %+v", chunk)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("out was not closed after the send bound")
 	}
 }
