@@ -312829,6 +312829,342 @@
           ]
         }
       ]
+    },
+    {
+      "name": "322. Vertex Cloud Text-to-Speech: Chirp 3 HD on the native, OpenAI drop-in and GenAI routes (vertex chirp speech)",
+      "description": "Vertex speech is served by Cloud Text-to-Speech (texttospeech.googleapis.com), authenticated with the key's Google service account. The model chirp-3-hd only selects pricing; the voice name (hi-IN-Chirp3-HD-Erinome) carries the model and the locale, and the language code is derived from it. The first three cases send the same voice through /v1/audio/speech (MP3), the OpenAI drop-in /openai/v1/audio/speech (WAV, with speed) and the GenAI /genai generateContent route (inlineData), and require real audio in the container the route promises. Gemini TTS models on Vertex take the other Google API: generateContent, which reports the token usage billing reads. The next three cases send gemini-2.5-flash-tts through /v1/audio/speech (WAV), its SSE stream (the done event must carry output_tokens) and /genai (inlineData). The last case is refused before reaching Google: a Chirp voice with no locale and no language_code.",
+      "item": [
+        {
+          "name": "vertex/chirp-3-hd native /v1/audio/speech returns MP3 audio - vertex chirp speech",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function head(audio, n) { var s = \"\"; for (var i = 0; i < n && i < audio.length; i++) { s += String.fromCharCode(audio[i]); } return s; }",
+                  "pm.test('Chirp 3 HD returned MP3 audio through /v1/audio/speech', function () {",
+                  "  var ct = pm.response.headers.get('content-type') || '';",
+                  "  pm.expect(pm.response.code, 'speech failed: ' + pm.response.text().slice(0, 300)).to.equal(200);",
+                  "  pm.expect(ct, 'unexpected content-type: ' + ct).to.match(/audio\\//i);",
+                  "  var audio = pm.response.stream;",
+                  "  pm.expect(audio.length, 'empty audio body').to.be.above(1000);",
+                  "  var frameSync = audio[0] === 0xFF && (audio[1] & 0xE0) === 0xE0;",
+                  "  pm.expect(frameSync || head(audio, 3) === 'ID3', 'body is not MP3 audio, it starts with: ' + head(audio, 4)).to.equal(true);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/chirp-3-hd\",\n  \"input\": \"नमस्ते, आप कैसे हैं?\",\n  \"voice\": \"hi-IN-Chirp3-HD-Erinome\",\n  \"response_format\": \"mp3\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/speech",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "speech"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "vertex/chirp-3-hd /openai/v1/audio/speech returns WAV audio - vertex chirp speech",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function head(audio, n) { var s = \"\"; for (var i = 0; i < n && i < audio.length; i++) { s += String.fromCharCode(audio[i]); } return s; }",
+                  "pm.test('Chirp 3 HD returned WAV audio through the OpenAI drop-in', function () {",
+                  "  var ct = pm.response.headers.get('content-type') || '';",
+                  "  pm.expect(pm.response.code, 'speech failed: ' + pm.response.text().slice(0, 300)).to.equal(200);",
+                  "  pm.expect(ct, 'unexpected content-type: ' + ct).to.match(/audio\\//i);",
+                  "  var audio = pm.response.stream;",
+                  "  pm.expect(audio.length, 'empty audio body').to.be.above(5000);",
+                  "  pm.expect(head(audio, 4), 'body is not a WAV file').to.equal('RIFF');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/chirp-3-hd\",\n  \"input\": \"नमस्ते, आप कैसे हैं?\",\n  \"voice\": \"hi-IN-Chirp3-HD-Erinome\",\n  \"response_format\": \"wav\",\n  \"speed\": 1.2\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/audio/speech",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "audio",
+                "speech"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "vertex/chirp-3-hd /genai speech returns MP3 inlineData - vertex chirp speech",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Chirp 3 HD returned MP3 inlineData through /genai', function () {",
+                  "  pm.expect(pm.response.code, 'genai speech failed: ' + pm.response.text().slice(0, 300)).to.equal(200);",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.candidates, 'no candidates: ' + pm.response.text().slice(0, 300)).to.be.an('array').that.is.not.empty;",
+                  "  var inline = body.candidates[0].content.parts[0].inlineData;",
+                  "  pm.expect(inline, 'no inlineData: ' + pm.response.text().slice(0, 300)).to.be.an('object');",
+                  "  pm.expect(inline.mimeType).to.equal('audio/mp3');",
+                  "  pm.expect(inline.data.length, 'empty audio').to.be.above(1000);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"नमस्ते, आप कैसे हैं?\"\n        }\n      ]\n    }\n  ],\n  \"generationConfig\": {\n    \"responseModalities\": [\n      \"AUDIO\"\n    ],\n    \"speechConfig\": {\n      \"voiceConfig\": {\n        \"prebuiltVoiceConfig\": {\n          \"voiceName\": \"hi-IN-Chirp3-HD-Erinome\"\n        }\n      },\n      \"languageCode\": \"hi-IN\"\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/vertex/chirp-3-hd:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "vertex",
+                "chirp-3-hd:generateContent"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "vertex/gemini-2.5-flash-tts native /v1/audio/speech returns WAV audio through generateContent - vertex chirp speech",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function head(audio, n) { var s = \"\"; for (var i = 0; i < n && i < audio.length; i++) { s += String.fromCharCode(audio[i]); } return s; }",
+                  "pm.test('Gemini TTS on Vertex returned WAV audio through /v1/audio/speech', function () {",
+                  "  var ct = pm.response.headers.get('content-type') || '';",
+                  "  pm.expect(pm.response.code, 'speech failed: ' + pm.response.text().slice(0, 300)).to.equal(200);",
+                  "  pm.expect(ct, 'unexpected content-type: ' + ct).to.match(/audio\\//i);",
+                  "  var audio = pm.response.stream;",
+                  "  pm.expect(audio.length, 'empty audio body').to.be.above(5000);",
+                  "  pm.expect(head(audio, 4), 'body is not a WAV file').to.equal('RIFF');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/gemini-2.5-flash-tts\",\n  \"input\": \"Hello there, this is a short test.\",\n  \"voice\": \"Kore\",\n  \"response_format\": \"wav\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/speech",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "speech"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "vertex/gemini-2.5-flash-tts native /v1/audio/speech stream_format sse streams audio and reports output tokens - vertex chirp speech",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('Gemini TTS SSE stream carries deltas and a done event with token usage', function () {",
+                  "  pm.expect(pm.response.code, 'stream failed: ' + body.slice(0, 300)).to.equal(200);",
+                  "  pm.expect(pm.response.headers.get('content-type') || '', 'not an SSE stream').to.include('text/event-stream');",
+                  "  pm.expect(body, 'no audio delta: ' + body.slice(0, 300)).to.include('speech.audio.delta');",
+                  "  pm.expect(body, 'no done event: ' + body.slice(-300)).to.include('speech.audio.done');",
+                  "  pm.expect(body, 'done event lacks output tokens, so the stream cannot be billed: ' + body.slice(-300)).to.match(/\"output_tokens\":\\s*[1-9]/);",
+                  "  pm.expect(body, 'stream carried an error: ' + body.slice(0, 300)).to.not.include('\"error\"');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/gemini-2.5-flash-tts\",\n  \"input\": \"This is a streaming speech test for Gemini TTS on Vertex.\",\n  \"voice\": \"Kore\",\n  \"stream_format\": \"sse\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/speech",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "speech"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "vertex/gemini-2.5-flash-tts /genai speech returns inlineData audio - vertex chirp speech",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Gemini TTS on Vertex returned inlineData audio through /genai', function () {",
+                  "  pm.expect(pm.response.code, 'genai speech failed: ' + pm.response.text().slice(0, 300)).to.equal(200);",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.candidates, 'no candidates: ' + pm.response.text().slice(0, 300)).to.be.an('array').that.is.not.empty;",
+                  "  var inline = body.candidates[0].content.parts[0].inlineData;",
+                  "  pm.expect(inline, 'no inlineData: ' + pm.response.text().slice(0, 300)).to.be.an('object');",
+                  "  pm.expect(inline.mimeType).to.match(/^audio\\//);",
+                  "  pm.expect(inline.data.length, 'empty audio').to.be.above(1000);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Hello there, this is a short test.\"\n        }\n      ]\n    }\n  ],\n  \"generationConfig\": {\n    \"responseModalities\": [\n      \"AUDIO\"\n    ],\n    \"speechConfig\": {\n      \"voiceConfig\": {\n        \"prebuiltVoiceConfig\": {\n          \"voiceName\": \"Kore\"\n        }\n      }\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/vertex/gemini-2.5-flash-tts:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "vertex",
+                "gemini-2.5-flash-tts:generateContent"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "[EXPECT-400] vertex/chirp-3-hd native /v1/audio/speech needs a locale in the voice or a language_code - vertex chirp speech",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('A voice with no locale and no language_code is refused', function () {",
+                  "  pm.expect(pm.response.code, 'expected 400: ' + pm.response.text().slice(0, 300)).to.equal(400);",
+                  "  pm.expect(pm.response.text(), 'refusal should name language_code').to.include('language_code is required');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/chirp-3-hd\",\n  \"input\": \"Hello, world.\",\n  \"voice\": \"alloy\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/speech",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "speech"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
     }
   ]
 }
