@@ -3524,7 +3524,7 @@ const LOG20 = folder("LOG-20 VK attribution", `Setup: ${ALPHA_TOOLS_TEXT}; a VK 
   request("LOG-20", "?virtual_key_ids= finds the log entry", "GET", "/api/mcp-logs?virtual_key_ids={{log20_vk_id}}", { asserts: [A.status(200), A.custom("exactly one log entry, log20-r, and it carries the VK id", [
     "var b = pm.response.json();",
     "pm.expect(b.pagination.total_count, 'body: ' + pm.response.text()).to.equal(1);",
-    "pm.expect(b.logs.map(function (l) { return l.id; })).to.eql(['log20-r']);",
+    "pm.expect(b.logs.map(function (l) { return l.id; })).to.eql([pm.collectionVariables.get('logid_log20-r')]);",
     "b.logs.forEach(function (l) { pm.expect(l.virtual_key_id).to.equal(pm.collectionVariables.get('log20_vk_id')); });",
   ])] }),
   vkDelete("LOG-20", "teardown: delete the VK", "log20_vk"), deleteClient("LOG-20", "log-20-a"),
@@ -7399,7 +7399,7 @@ const GOV22 = folder("GOV-22 Tool price recorded and charged", `Setup: ${ALPHA_E
   execR2("GOV-22", "execute alpha-echo with the VK", "alpha-echo", "gov22-r", [A.status(200)], vkUse("gov22_vk")),
   logOf("GOV-22", "its log entry", "gov22-r", [entryCost(0.001), A.custom("virtual_key_id is the VK's", ["pm.expect(pm.response.json().virtual_key_id, 'body: ' + pm.response.text()).to.equal(pm.collectionVariables.get('gov22_vk_id'));"])]),
   vkMemory("GOV-22", "the budget rose by 0.001", "gov22_vk", [budgetPlus("gov22_b0", 0.001)]),
-  deleteLogs("GOV-22", ["gov22-r"]),
+  deleteLogs("GOV-22", ["{{logid_gov22-r}}"]),
   vkDelete("GOV-22", "teardown: delete the VK", "gov22_vk"),
   agentTeardown("GOV-22"),
 ]);
@@ -7651,12 +7651,12 @@ const LOG26 = folder("LOG-26 Pagination and sort", `Setup: ${LOG_CLIENT_TEXT("lo
     "pm.expect(b.pagination.offset).to.equal(2);",
   ])] }),
   request("LOG-26", "latency ascending", "GET", "/api/mcp-logs?server_labels=log26&sort_by=latency&order=asc", { asserts: [A.status(200), A.custom("ids by latency 4, 2, 3, 1, then the entry with no latency", [logsBody,
-    "pm.expect(b.logs.map(function (l) { return l.id; }), 'body: ' + pm.response.text()).to.eql(['log26-4', 'log26-2', 'log26-3', 'log26-1', 'log26-5']);",
+    "pm.expect(b.logs.map(function (l) { return l.id; }), 'body: ' + pm.response.text()).to.eql(['log26-4', 'log26-2', 'log26-3', 'log26-1', 'log26-5'].map(function (id) { return pm.collectionVariables.get('logid_' + id); }));",
     "for (var i = 1; i < 4; i++) { pm.expect(b.logs[i].latency).to.be.above(b.logs[i - 1].latency); }",
     "pm.expect(b.logs[4].latency == null).to.equal(true);",
   ])] }),
   mockPost("LOG-26", "alpha", "faults/clear", "teardown: clear alpha's faults", {}),
-  deleteLogs("LOG-26", ["log26-1", "log26-2", "log26-3", "log26-4", "log26-5"]),
+  deleteLogs("LOG-26", ["{{logid_log26-1}}", "{{logid_log26-2}}", "{{logid_log26-3}}", "{{logid_log26-4}}", "{{logid_log26-5}}"]),
   deleteClient("LOG-26", "log26-c"),
 ]);
 
@@ -11421,7 +11421,7 @@ const EP77 = folder("EP-77 MCP logs record MCP Apps use", `Setup: ${APPS_TEXT}. 
     "var logged = ((pm.response.json().result || [])[0] || {}).text;",
     "pm.expect(logged, 'body: ' + pm.response.text()).to.equal(want);",
   ])]),
-  request("EP-77", "teardown: delete the log entries", "DELETE", "/api/mcp-logs", { body: { ids: ["ep77-app", "ep77-read"] }, asserts: [A.status(200)] }),
+  request("EP-77", "teardown: delete the log entries", "DELETE", "/api/mcp-logs", { body: { ids: ["{{logid_ep77-app}}", "{{logid_ep77-read}}"] }, asserts: [A.status(200)] }),
   ...appsTeardown("EP-77"),
 ]);
 
