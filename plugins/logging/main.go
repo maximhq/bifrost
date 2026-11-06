@@ -1932,7 +1932,7 @@ func optionalString(v string) *string {
 	return &v
 }
 
-// captureLoggingHeaders extracts configured logging headers and x-bf-lh-* prefixed headers
+// captureLoggingHeaders extracts configured headers, x-bf-lh-* headers and the client request ID
 // from the request context, dropping any key under schemas.LoadBalancerMetadataPrefix.
 // Returns a new metadata map, or nil if no headers were captured.
 // System entries (e.g. isAsyncRequest) and the virtual key's metadata (mergeVirtualKeyMetadata)
@@ -1980,6 +1980,14 @@ func (p *LoggerPlugin) captureLoggingHeaders(ctx *schemas.BifrostContext) map[st
 				metadata[k] = v
 			}
 		}
+	}
+
+	// Preserve the client's correlation ID separately from the generated log ID.
+	if clientRequestID := allHeaders["x-request-id"]; clientRequestID != "" && clientRequestID != bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyRequestID) {
+		if metadata == nil {
+			metadata = make(map[string]any)
+		}
+		metadata["x-request-id"] = clientRequestID
 	}
 
 	// The load balancer's prefix is reserved for the routing decision mergeLoadBalancerMetadata

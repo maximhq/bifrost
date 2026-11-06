@@ -22,7 +22,6 @@ import (
 	"time"
 
 	ws "github.com/fasthttp/websocket"
-	"github.com/google/uuid"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
@@ -114,9 +113,9 @@ func restoreCorrelationHeaders(ctx *fasthttp.RequestCtx) {
 	if !ok || exportTraceID == "" {
 		return
 	}
-	requestID := ctx.Request.Header.Peek("x-request-id")
-	ctx.Response.Header.SetBytesV(lib.HeaderBifrostRequestID, requestID)
-	ctx.Response.Header.SetBytesV(lib.HeaderRequestID, requestID)
+	requestID, _ := ctx.UserValue(schemas.BifrostContextKeyRequestID).(string)
+	ctx.Response.Header.Set(lib.HeaderBifrostRequestID, requestID)
+	ctx.Response.Header.SetBytesV(lib.HeaderRequestID, ctx.Request.Header.Peek("x-request-id"))
 	ctx.Response.Header.Set(lib.HeaderBifrostTraceID, exportTraceID)
 }
 
@@ -420,7 +419,11 @@ func (c *CorsMiddleware) Middleware() schemas.BifrostHTTPMiddleware {
 						logBuilder = logBuilder.Str("trace_id", traceID)
 					}
 					// Emit the request ID alongside trace_id
-					if requestID := string(ctx.Request.Header.Peek("x-request-id")); requestID != "" {
+					requestID, _ := ctx.UserValue(schemas.BifrostContextKeyRequestID).(string)
+					if requestID == "" {
+						requestID = string(ctx.Request.Header.Peek("x-request-id"))
+					}
+					if requestID != "" {
 						logBuilder = logBuilder.Str("request_id", requestID)
 					}
 					if cfg.dumpErrorsInConsoleLogs {
@@ -2335,10 +2338,9 @@ func (m *TracingMiddleware) Middleware() schemas.BifrostHTTPMiddleware {
 				next(ctx)
 				return
 			}
-			requestID := string(ctx.Request.Header.Peek("x-request-id"))
-			if requestID == "" {
-				requestID = uuid.New().String()
-				// Injecting this back to be picked up by the next middleware
+			requestID := lib.GetOrCreateRequestID(ctx)
+			if len(ctx.Request.Header.Peek("x-request-id")) == 0 {
+				// Preserve the legacy header when no client correlation ID was sent.
 				ctx.Request.Header.Set("x-request-id", requestID)
 			}
 			// Extract trace ID from W3C traceparent header (if present)
@@ -2359,7 +2361,7 @@ func (m *TracingMiddleware) Middleware() schemas.BifrostHTTPMiddleware {
 			// x-bifrost-request-id is the one to read: a provider that answers with its own
 			// x-request-id replaces the deprecated header, which is kept for compatibility.
 			ctx.Response.Header.Set(lib.HeaderBifrostRequestID, requestID)
-			ctx.Response.Header.Set(lib.HeaderRequestID, requestID)
+			ctx.Response.Header.SetBytesV(lib.HeaderRequestID, ctx.Request.Header.Peek("x-request-id"))
 			ctx.Response.Header.Set(lib.HeaderBifrostTraceID, headerTraceID)
 			// Store dimensions and session ID at the trace level (not as span
 			// attributes) so connectors like BigQuery can export them without

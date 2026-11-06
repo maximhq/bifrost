@@ -312,6 +312,17 @@ func ClientForwardedIP(ctx *fasthttp.RequestCtx) string {
 	return strings.TrimSpace(string(ctx.Request.Header.Peek("X-Real-IP")))
 }
 
+// GetOrCreateRequestID returns the gateway ID for this physical HTTP request.
+// The client header is correlation data, not an identity for logs or pending state.
+func GetOrCreateRequestID(ctx *fasthttp.RequestCtx) string {
+	if requestID, ok := ctx.UserValue(schemas.BifrostContextKeyRequestID).(string); ok && requestID != "" {
+		return requestID
+	}
+	requestID := uuid.New().String()
+	ctx.SetUserValue(schemas.BifrostContextKeyRequestID, requestID)
+	return requestID
+}
+
 func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*schemas.BifrostContext, context.CancelFunc) {
 	// "transport-context" overhead phase: building the request-scoped BifrostContext —
 	// child-context alloc, request-id resolution, and the full request-header iteration
@@ -376,22 +387,9 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 		ctx.SetUserValue(FastHTTPUserValueBifrostCancel, cancel)
 	}
 
-	// Preserve existing request-id if already present on the shared context.
-	if existingRequestID, ok := bifrostCtx.Value(schemas.BifrostContextKeyRequestID).(string); !ok || existingRequestID == "" {
-		// First, check if x-request-id header exists
-		requestID := string(ctx.Request.Header.Peek("x-request-id"))
-		if requestID == "" {
-			requestID = uuid.New().String()
-		}
-		bifrostCtx.SetValue(schemas.BifrostContextKeyRequestID, requestID)
-	}
-	// The request-id above may be caller-supplied (x-request-id), so it cannot be
-	// trusted as a billing-idempotency identity: two unrelated requests sharing a
-	// chosen ID would collide on the billing key and the second would settle for
-	// free. The nonce is minted here, never read from any header, and mixed into
-	// the governance billing key so that key is unforgeable. Preserved when
-	// already present so both terminal paths of one physical call (success vs
-	// cancellation) read the same value and still dedupe against each other.
+	bifrostCtx.SetValue(schemas.BifrostContextKeyRequestID, GetOrCreateRequestID(ctx))
+	// Keep the existing billing nonce stable across success/cancellation paths
+	// and repeated conversions of this physical request.
 	if existingNonce, ok := bifrostCtx.Value(schemas.BifrostContextKeyBillingNonce).(string); !ok || existingNonce == "" {
 		bifrostCtx.SetValue(schemas.BifrostContextKeyBillingNonce, uuid.New().String())
 	}

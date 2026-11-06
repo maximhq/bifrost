@@ -372,3 +372,21 @@ func TestVirtualKeyMetadataContextKeyValue(t *testing.T) {
 		t.Fatalf("virtualKeyMetadataContextKey = %q, must match the governance plugin's key", virtualKeyMetadataContextKey)
 	}
 }
+
+func BenchmarkMergeVirtualKeyMetadata(b *testing.B) {
+	for _, key := range []string{"", "cost_center", "x-request-id"} {
+		b.Run("key="+key, func(b *testing.B) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			ctx.SetValue(schemas.BifrostContextKeyRequestID, "gateway-id")
+			ctx.SetValue(schemas.BifrostContextKeyRequestHeaders, map[string]string{"x-request-id": "client-id"})
+			if key != "" {
+				ctx.SetValue(virtualKeyMetadataContextKey, map[string]string{key: "operator-tag"})
+			}
+			metadata := map[string]interface{}{"x-request-id": "client-id"}
+			b.ReportAllocs()
+			for b.Loop() {
+				mergeVirtualKeyMetadata(metadata, ctx)
+			}
+		})
+	}
+}

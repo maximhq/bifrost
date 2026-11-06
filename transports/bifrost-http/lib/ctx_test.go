@@ -92,6 +92,7 @@ func TestConvertToBifrostContext_ReusesSharedContext(t *testing.T) {
 	ctx := &fasthttp.RequestCtx{}
 	base := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	base.SetValue(schemas.BifrostContextKeyRequestID, "req-shared")
+	base.SetValue(schemas.BifrostContextKeySessionID, "session-shared")
 	ctx.SetUserValue(FastHTTPUserValueBifrostContext, base)
 
 	converted, cancel := ConvertToBifrostContext(ctx, testHandlerStore{})
@@ -100,8 +101,11 @@ func TestConvertToBifrostContext_ReusesSharedContext(t *testing.T) {
 	if converted == nil {
 		t.Fatal("expected non-nil converted context")
 	}
-	if got, _ := converted.Value(schemas.BifrostContextKeyRequestID).(string); got != "req-shared" {
-		t.Fatalf("expected converted context to preserve parent values, got request-id=%q", got)
+	if got, _ := converted.Value(schemas.BifrostContextKeySessionID).(string); got != "session-shared" {
+		t.Fatalf("expected converted context to preserve parent values, got session-id=%q", got)
+	}
+	if got, _ := converted.Value(schemas.BifrostContextKeyRequestID).(string); got == "" || got == "req-shared" || got != ctx.UserValue(schemas.BifrostContextKeyRequestID) {
+		t.Fatalf("request-id must belong to this HTTP request, got %q", got)
 	}
 	if stored, ok := ctx.UserValue(FastHTTPUserValueBifrostContext).(*schemas.BifrostContext); !ok || stored == nil {
 		t.Fatal("expected shared context pointer to be stored on fasthttp user values")
@@ -595,9 +599,9 @@ func TestConvertToBifrostContext_BillingNonceIsMintedInternally(t *testing.T) {
 	if nonce1 == nonce2 {
 		t.Fatalf("two independent requests sharing an x-request-id must get distinct billing nonces, both got %q", nonce1)
 	}
-	// The request-id itself keeps its correlation semantics.
-	if got, _ := bifrostCtx1.Value(schemas.BifrostContextKeyRequestID).(string); got != "attacker-chosen-id" {
-		t.Fatalf("request-id = %q, want the inbound x-request-id", got)
+	// The caller's correlation header is still available to downstream plugins.
+	if got := bifrostCtx1.Value(schemas.BifrostContextKeyRequestHeaders).(map[string]string)["x-request-id"]; got != "attacker-chosen-id" {
+		t.Fatalf("client request-id = %q, want the inbound x-request-id", got)
 	}
 }
 
@@ -634,9 +638,9 @@ func TestConvertToBifrostContext_DimHeadersDoNotOverrideReservedContextKeys(t *t
 	bifrostCtx, cancel := ConvertToBifrostContext(ctx, testHandlerStore{})
 	defer cancel()
 
-	// request-id must remain from trusted source, not from x-bf-dim-request-id.
-	if got, _ := bifrostCtx.Value(schemas.BifrostContextKeyRequestID).(string); got != "trusted-request-id" {
-		t.Fatalf("request-id = %q, want %q", got, "trusted-request-id")
+	// Dimensions cannot replace the gateway's generated ID.
+	if got, _ := bifrostCtx.Value(schemas.BifrostContextKeyRequestID).(string); got == "" || got != ctx.UserValue(schemas.BifrostContextKeyRequestID) {
+		t.Fatalf("request-id = %q, want the gateway ID", got)
 	}
 	// Virtual key must not be set through x-bf-dim-x-bf-vk.
 	if got := bifrostCtx.Value(schemas.BifrostContextKeyVirtualKey); got != nil {
@@ -665,17 +669,17 @@ func TestConvertToBifrostContext_PromHeadersDoNotOverrideReservedContextKeys(t *
 	bifrostCtx, cancel := ConvertToBifrostContext(ctx, testHandlerStore{})
 	defer cancel()
 
-	// request-id must remain from trusted source, not from x-bf-prom-request-id.
-	if got, _ := bifrostCtx.Value(schemas.BifrostContextKeyRequestID).(string); got != "trusted-request-id" {
-		t.Fatalf("request-id = %q, want %q", got, "trusted-request-id")
+	// Prometheus dimensions cannot replace the gateway's generated ID.
+	if got, _ := bifrostCtx.Value(schemas.BifrostContextKeyRequestID).(string); got == "" || got != ctx.UserValue(schemas.BifrostContextKeyRequestID) {
+		t.Fatalf("request-id = %q, want the gateway ID", got)
 	}
 	// Virtual key must not be set through x-bf-prom-x-bf-vk.
 	if got := bifrostCtx.Value(schemas.BifrostContextKeyVirtualKey); got != nil {
 		t.Fatalf("virtual key should not be set via x-bf-prom-*, got %#v", got)
 	}
 	// Legacy x-bf-prom-* headers are not mirrored into global context keyspace.
-	if got := bifrostCtx.Value(schemas.BifrostContextKey("request-id")); got != "trusted-request-id" {
-		t.Fatalf("global request-id key should remain trusted value, got %#v", got)
+	if got := bifrostCtx.Value(schemas.BifrostContextKey("request-id")); got != ctx.UserValue(schemas.BifrostContextKeyRequestID) {
+		t.Fatalf("global request-id key should remain the gateway ID, got %#v", got)
 	}
 
 	// Legacy x-bf-prom-* must not be included in unified dimensions.
@@ -1025,6 +1029,50 @@ func BenchmarkConvertToBifrostContextVirtualKeyHeader(b *testing.B) {
 	for b.Loop() {
 		_, cancel := ConvertToBifrostContext(ctx, testHandlerStore{})
 		cancel()
+	}
+}
+
+func TestConvertToBifrostContext_RequestIDIsPerHTTPRequest(t *testing.T) {
+	for _, header := range []string{"", "fixed-id-001"} {
+		t.Run("header="+header, func(t *testing.T) {
+			var previousID string
+			for range 2 {
+				ctx := &fasthttp.RequestCtx{}
+				ctx.Request.Header.Set("x-request-id", header)
+				converted, cancel := ConvertToBifrostContext(ctx, testHandlerStore{})
+				defer cancel()
+				id, _ := converted.Value(schemas.BifrostContextKeyRequestID).(string)
+				if id == "" || id == header || id == previousID {
+					t.Fatalf("request ID %q must be generated and unique; header=%q previous=%q", id, header, previousID)
+				}
+				again, cancelAgain := ConvertToBifrostContext(ctx, testHandlerStore{})
+				defer cancelAgain()
+				if again != converted || again.Value(schemas.BifrostContextKeyRequestID) != id {
+					t.Fatal("conversion of the same HTTP request changed its context or ID")
+				}
+				if string(ctx.Request.Header.Peek("x-request-id")) != header {
+					t.Fatal("conversion changed the client correlation header")
+				}
+				previousID = id
+			}
+		})
+	}
+}
+
+func BenchmarkConvertToBifrostContextRequestID(b *testing.B) {
+	for _, supplied := range []bool{false, true} {
+		b.Run(fmt.Sprintf("supplied=%t", supplied), func(b *testing.B) {
+			ctx := &fasthttp.RequestCtx{}
+			if supplied {
+				ctx.Request.Header.Set("x-request-id", "benchmark-client-id")
+			}
+			b.ReportAllocs()
+			for b.Loop() {
+				_, cancel := ConvertToBifrostContext(ctx, testHandlerStore{})
+				cancel()
+				ctx.ResetUserValues()
+			}
+		})
 	}
 }
 

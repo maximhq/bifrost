@@ -32,6 +32,22 @@ import (
 
 type testLogger struct{}
 
+func TestCaptureLoggingHeadersClientRequestID(t *testing.T) {
+	for _, header := range []string{"", "gateway-id", "client-id"} {
+		t.Run("header="+header, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			ctx.SetValue(schemas.BifrostContextKeyRequestID, "gateway-id")
+			ctx.SetValue(schemas.BifrostContextKeyRequestHeaders, map[string]string{"x-request-id": header})
+			metadata := (&LoggerPlugin{}).captureLoggingHeaders(ctx)
+			if header == "client-id" {
+				require.Equal(t, header, metadata["x-request-id"])
+			} else {
+				require.Nil(t, metadata, "no extra metadata for an absent or generated header")
+			}
+		})
+	}
+}
+
 func (testLogger) Debug(string, ...any)                   {}
 func (testLogger) Info(string, ...any)                    {}
 func (testLogger) Warn(string, ...any)                    {}
@@ -6935,4 +6951,23 @@ func TestRelayReconcileCarriesRetainedContent(t *testing.T) {
 
 	visible := relayLogUpdateColumns(&logstore.RelayLog{ID: "row", Path: "/search?q=1"}, false)
 	require.NotContains(t, visible, logstore.RelayRetainedPathUpdate, "a visible row carries nothing extra")
+}
+
+func BenchmarkCaptureLoggingHeadersRequestID(b *testing.B) {
+	for _, supplied := range []bool{false, true} {
+		b.Run(fmt.Sprintf("supplied=%t", supplied), func(b *testing.B) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			ctx.SetValue(schemas.BifrostContextKeyRequestID, "gateway-id")
+			header := "gateway-id"
+			if supplied {
+				header = "client-id"
+			}
+			ctx.SetValue(schemas.BifrostContextKeyRequestHeaders, map[string]string{"x-request-id": header})
+			plugin := &LoggerPlugin{}
+			b.ReportAllocs()
+			for b.Loop() {
+				plugin.captureLoggingHeaders(ctx)
+			}
+		})
+	}
 }
