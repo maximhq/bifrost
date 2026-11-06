@@ -303821,6 +303821,20 @@
           "name": "[EXPECT-400] gemini deep-research-preview-04-2026 interactions create via /genai_passthrough/v1beta: an agent the key allows is forwarded to Google - interactions agent governance",
           "event": [
             {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Snapshot the key's request count from memory (the DB copy lags up to 10s): a create Google refuses must not consume one (passthrough upstream refusal).",
+                  "pm.collectionVariables.unset('iagRefusedBaseRequests');",
+                  "pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/governance/virtual-keys/' + encodeURIComponent(pm.collectionVariables.get('iagVKID')) + '?from_memory=true', method: 'GET' }, function (err, res) {",
+                  "  var rl = (!err && res.code === 200) ? ((res.json().virtual_key || {}).rate_limit || null) : null;",
+                  "  if (rl) { pm.collectionVariables.set('iagRefusedBaseRequests', String(rl.request_current_usage || 0)); }",
+                  "});"
+                ]
+              }
+            },
+            {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
@@ -303846,6 +303860,19 @@
                   "      pm.test('gemini interactions allowlisted agent: the log row names the agent', function () {",
                   "        pm.expect(row.model, JSON.stringify(row).slice(0, 600)).to.eql('deep-research-preview-04-2026');",
                   "      });",
+                  "      // A passthrough call relays Google's 400 as a response, which governance counted as a successful",
+                  "      // request: the run the next case makes then read two requests on this key. A refused call is no request.",
+                  "      var base = Number(pm.collectionVariables.get('iagRefusedBaseRequests'));",
+                  "      setTimeout(function () {",
+                  "        pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/governance/virtual-keys/' + encodeURIComponent(pm.collectionVariables.get('iagVKID')) + '?from_memory=true', method: 'GET' }, function (err2, res2) {",
+                  "          var rl = (!err2 && res2.code === 200) ? ((res2.json().virtual_key || {}).rate_limit || {}) : null;",
+                  "          pm.test('gemini interactions allowlisted agent: the refused create counts no request (passthrough upstream refusal)', function () {",
+                  "            pm.expect(isNaN(base), 'no baseline: ' + pm.collectionVariables.get('iagRefusedBaseRequests')).to.eql(false);",
+                  "            pm.expect(rl, 'virtual key read failed: ' + (err2 ? String(err2) : (res2.code + ' ' + res2.text().slice(0, 300)))).to.be.an('object');",
+                  "            pm.expect((rl.request_current_usage || 0) - base, 'rate limit: ' + JSON.stringify(rl)).to.eql(0);",
+                  "          });",
+                  "        });",
+                  "      }, 1500);",
                   "      return;",
                   "    }",
                   "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
