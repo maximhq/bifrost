@@ -1421,6 +1421,13 @@ func applyBedrockExtraParams(extraParams map[string]interface{}, bedrockReq *Bed
 	}
 
 	if reqMetadata, exists := extraParams["requestMetadata"]; exists {
+		// Passthrough ingress keeps unknown fields as json.RawMessage.
+		if raw, ok := reqMetadata.(json.RawMessage); ok {
+			var decoded map[string]interface{}
+			if sonic.Unmarshal(raw, &decoded) == nil && decoded != nil {
+				reqMetadata = decoded
+			}
+		}
 		if metadata, ok := schemas.SafeExtractStringMap(reqMetadata); ok {
 			delete(extraParams, "requestMetadata")
 			bedrockReq.RequestMetadata = metadata
