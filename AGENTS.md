@@ -120,7 +120,7 @@ bifrost/
 │   └── (architecture|features|providers|mcp|plugins|enterprise|...)
 │
 ├── .claude/skills/                # Claude Code skill definitions (4 skills)
-├── go.work                        # Go workspace — requires Go 1.27.0
+├── go.work                        # Go workspace — requires Go 1.27.3
 ├── Makefile                       # Build, test, dev commands (1300+ lines)
 └── terraform/                     # Infrastructure as Code
 ```
@@ -135,14 +135,14 @@ Bifrost is a **multi-module Go workspace**. Each module has its own `go.mod`:
 go.work
 ├── core/go.mod              # github.com/maximhq/bifrost/core
 ├── framework/go.mod         # github.com/maximhq/bifrost/framework
-├── transports/go.mod        # github.com/maximhq/bifrost/transports
+├── transports/go.mod        # github.com/maximhq/bifrost/transports/v2
 └── plugins/*/go.mod         # 9 plugin modules (governance, telemetry, logging, etc.)
 ```
 
 **Rules:**
 - Run `go mod tidy` in the **specific module directory**, not the root
 - Cross-module imports resolve via workspace locally, but need explicit `require` in `go.mod` for releases
-- The workspace requires **Go 1.27.0** (`go.work` directive)
+- The workspace requires **Go 1.27.3** (`go.work` directive)
 
 ---
 
@@ -219,6 +219,17 @@ Client HTTP Request
 - **Object pooling everywhere**: `sync.Pool` wrappers reduce GC pressure. Pools exist for: channel messages, response channels, error channels, stream channels, plugin pipelines, MCP requests, HTTP request/response objects, scanner buffers.
 - **Plugin pipeline symmetry**: Pre-hooks execute in registration order, post-hooks in **reverse** order (LIFO). For every pre-hook executed, the corresponding post-hook is guaranteed to run.
 - **Streaming**: SSE chunks flow through `chan chan *schemas.BifrostStreamChunk`. Accumulated into full response for post-hooks via `framework/streaming/accumulator.go`.
+
+### Every change states its cost on the request flow
+
+Bifrost's value is ~11µs of overhead at 5,000 RPS, so every change is evaluated for the memory allocations and processing time it adds to the end-to-end flow, not only for correctness. Before a PR is opened:
+
+- **Measure, do not assert.** Code on the request path (handlers, plugins, providers, streaming, key selection, auth) ships with a `Benchmark*` in the existing `_test.go` file, run with `-benchmem`, and the PR body records allocs/op and ns/op before and after. A change that cannot be benchmarked states plainly why ("config load only", "runs once per provider rebuild").
+- **The common case must not regress.** A feature that is off by default, or only applies to some keys/providers, adds zero allocations and at most a nil/empty check to requests that do not use it. Put the work behind that check, not in front of it.
+- **Per-credential or per-stream state lives in a manager, not per request.** Caches keyed by credential or `RequestID` are built once and reused (see the token cache in `core/providers/utils/tokencache` and the streaming accumulator); the per-request cost is a map load, never a rebuild.
+- **Name the memory that is retained.** Anything cached for longer than a request (tokens, connections, slots, buffers) states its bound in the PR body: what it is keyed by, how large an entry is, and when it is freed.
+
+Reviewers treat a missing cost statement the same way as missing tests.
 
 ### BifrostContext — Custom Context
 
@@ -533,6 +544,29 @@ Note that `qdrant` and `pinecone` report `(unhealthy)` in `docker compose ps` un
 
 Only `framework/vectorstore` needs any of this. Every other framework package passes with nothing running.
 
+### 20. Every URL Bifrost Emits About Itself Carries `server.base_path`
+
+Bifrost can be mounted under a URL prefix (`server.base_path`, e.g. `/bifrost` for `https://host/bifrost`). Routing, the UI shell, assets, API calls and WebSockets already handle it; the recurring regression is a **self-referencing URL or path built by hand** that assumes the domain root. Any place that prints, returns, redirects to, copies, or navigates to a Bifrost URL must go through the helpers, never string-concatenate from `/`:
+
+| Layer | Use | Never |
+|---|---|---|
+| Go, absolute URL | `lib.BuildBaseURL(ctx, override)` (scheme + host + prefix; a valid explicit override is used instead, trimmed of surrounding whitespace and a trailing `/`, and never gets `BasePath()` appended; an invalid one falls back to the inferred URL) | `"https://" + host + "/..."` |
+| Go, root-relative path in a response body, `Location`, or `Link` header | `lib.WithBasePath("/api/...")` | `fmt.Sprintf("/api/...")` |
+| Go, scheme decisions (HSTS, cookie `Secure`, trace attributes) | `lib.RequestIsHTTPS(ctx)` | reading `X-Forwarded-Proto` yourself |
+| UI, copyable or displayed URL | `getExampleBaseUrl()` / `getEndpointUrl()` (`ui/lib/utils/port.ts`), `getExternalBaseUrl()` for MCP and A2A surfaces | `window.location.origin + "/mcp"` |
+| UI, path label, `window.open`, `router.history.push` | `withBasePath()` (`ui/lib/utils/basePath.ts`), or `router.navigate({ href })` which applies the router basepath | a literal `/workspace/...` outside the router |
+| Docs, Helm `NOTES.txt`, Terraform, Makefile | state the prefix form next to every self URL a client or browser reaches through the proxy (`https://host/<prefix>/login`); probes and health checks that hit the service directly, bypassing the ingress, may stay on `/health` because requests are accepted without the prefix | a root-only example for a proxied URL |
+
+Rules that follow from the implementation:
+
+- **Requests are accepted with or without the prefix.** `basePathMiddleware` strips it, so route handlers and the `whitelisted_routes` allowlist always see root-relative paths. A base path whose first segment matches a route (`api`, `v1`, ...) or a dashboard page root (`workspace`, `login`, `oauth`, `agent`, `pprof`, compared case-insensitively because the TanStack basepath rewrite is) is rejected at startup by `lib.CheckBasePathCollision`.
+- **Admin-supplied public URLs are used verbatim.** `mcp_external_client_url`, `a2a_external_client_url` and the OAuth `issuer_url` must already include the prefix; the code never appends it. Say so in any help text or doc that introduces such a setting.
+- **`.well-known` discovery lives at the origin root** (RFC 8414, RFC 9728 §3.1): an issuer of `https://host/bifrost` advertises `https://host/.well-known/oauth-protected-resource/bifrost/mcp`, built by `oauth2ResourceMetadataURL`, and the proxy must forward `/.well-known/`.
+- **Session cookies stay `Path=/`** on purpose: a `/bifrost/`-scoped cookie would not ride the unprefixed `/api` calls the contract allows, and fasthttp's `SetCookie` keys by name so logout could not expire both paths.
+- **A redirect to a third party is marked external** with `markLocationExternal(ctx)` so `prefixLocation` leaves it alone. Otherwise, on a prefixed request, `prefixLocation` re-prefixes a root-relative `Location` and an absolute one whose authority is the request host; protocol-relative (`//host/...`) and other-host URLs are left as they are.
+
+Tests to extend, never duplicate: Go sets the prefix with `lib.SetBasePath("/bifrost")` plus `t.Cleanup(func() { lib.SetBasePath("") })` (`lib/basepath_test.go`, `handlers/middlewares_test.go`, `handlers/mcp_test.go`); UI vitest stubs `window.__BIFROST_BASE_PATH__` (`ui/lib/utils/basePath.test.ts`, `port.test.ts`); E2E has its own worker started with `--base-path` under `tests/e2e/features/base-path/`, where every self URL the dashboard shows is asserted against `basePathOf(testInfo)`. A new self URL ships with a case in each layer it touches.
+
 ---
 
 ## Adding a New Provider — Full Checklist
@@ -555,15 +589,31 @@ Only `framework/vectorstore` needs any of this. Every other framework package pa
 
 ## Testing
 
+### Every fix and every change ships with regression tests
+
+Any issue fix or code change lands together with regression tests that pin the new behavior. This applies to every issue type (bug, feature, refactor) and every layer, not only bug fixes in `core/`:
+
+- **Unit tests wherever possible**, added to the existing test file per the convention below.
+- **A provider-harness case for every wire-visible change** (next sections).
+- **E2E coverage for `ui/` changes** (`tests/e2e/`) - the harness cannot see the UI.
+
+The only exemptions: no wire-visible effect AND no testable behavior change (comments, internal renames, log lines). An exempt change must say so explicitly in the PR.
+
 ### Bug fixes: red before green
 
 Before writing a fix, add (or extend) a test that reproduces the bug and confirm it fails for the expected reason — a wrong assertion, not a compile error or an unrelated panic. Only then implement the fix, and confirm the same test now passes. For bugs reachable through `make run-provider-harness-test`, add the harness regression case (see `.claude/skills/harness-test-writer/SKILL.md`) alongside Go-level tests: Go tests give a fast, free red/green loop while coding; the harness case is the live end-to-end pin, expected red pre-fix and green post-fix, validated structurally (`augment-provider-harness.mjs` / `filter-collection.mjs`) without needing a live paid run during development.
 
-### Every `core/` change ships with a provider-harness case
+### Add tests to existing test files, never new ones
 
-Any change under `core/` that a client can observe on the wire must land together with a case in `tests/e2e/api/collections/provider-harness.json` (see `.claude/skills/harness-test-writer/SKILL.md`). This covers new features and refactors, not only bug fixes — the rule in the previous section is the narrower instance of this one.
+Do not create a new `_test.go` file for a package that already has one. Put the test in the existing file that covers the same code: `<name>_test.go` next to `<name>.go`, or the topical file that already exists (`chat_test.go`, `counttokens_test.go`). One test file per bug or feature scatters a package's tests across many small files and makes it hard to find what already covers a source file. Create a new test file only for a source file that has no test file yet, and name it after that source file.
 
-`core/` is the only layer every transport, integration and provider funnels through, so its behaviour is what the harness exists to pin. A Go unit test proves the function does what you meant; only the harness proves the bytes a real client sends still come back correct through the whole stack. The gap between those two is where regressions live: a fail-soft that fires on one request shape and silently skips a sibling shape passes every unit test it has.
+### Every wire-visible change ships with a provider-harness case
+
+Any change under `core/`, `framework/`, `transports/bifrost-http/`, or `plugins/` that a client can observe on the wire must land together with a case in `tests/e2e/api/collections/provider-harness.json` (see `.claude/skills/harness-test-writer/SKILL.md`). This covers new features and refactors, not only bug fixes - the rule in the previous section is the narrower instance of this one.
+
+These layers all sit on the request path, so any of them can change the bytes a client sees - and that end-to-end behaviour is what the harness exists to pin. A Go unit test proves the function does what you meant; only the harness proves the bytes a real client sends still come back correct through the whole stack. The gap between those two is where regressions live: a fail-soft that fires on one request shape and silently skips a sibling shape passes every unit test it has.
+
+**Never skip any error status code in a harness test script.** Do not open a test with an early-return guard like `if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }` — every unexpected status, including auth failures, rate limits, and 5xx, must fail the assertion loudly rather than silently passing the case. Assert the exact status (or bound) the case expects and include `pm.response.text()` in the failure message.
 
 Write the case so it is **red before the change and green after**, and validate it structurally while developing — no live paid run needed:
 
@@ -575,6 +625,62 @@ node tests/e2e/api/runners/filter-collection.mjs --source tmp/harness-augmented.
 Insert into the collection surgically (a script that splices the new object in, never a whole-file reserialize) — the file is ~50k lines and a reformat buries the actual change.
 
 The narrow exemptions: changes with no wire-visible effect (comments, internal renames, log lines) and behaviour no HTTP request can reach. If a change is exempt, say so explicitly in the PR rather than leaving the omission unexplained.
+
+### Provider-native features are tested on every route that reaches the provider
+
+A provider is reachable through more than its own SDK endpoint, and a fix that only looks at the route named in the issue is incomplete. Before calling a provider-native feature (a content block type, a beta header, a request parameter) fixed or added, enumerate every inbound route that can carry it to that provider and cover each one:
+
+- **The provider's native surface**: `/anthropic/v1/messages`, `/genai/...`, `/bedrock/...` and the matching SDK integration under `transports/bifrost-http/integrations/`.
+- **The neutral OpenAI-shaped surfaces**: `/v1/responses` and `/v1/chat/completions`, routed by the `provider/model` prefix. The payload arrives in neutral shape (for example a Responses `function` tool, not an Anthropic `input_schema` tool), and the client cannot set provider headers such as `anthropic-beta`, so any header the feature needs must be derived from the body by the gateway.
+- **The Go SDK**, which enters at the same neutral types as `/v1/responses`.
+- **Other hosts of the same model family** that reuse the provider's converters: Bedrock, Bedrock Mantle, Vertex, Azure, OpenRouter. Find them with `grep -rl "providers/<provider>\"" core/providers transports/bifrost-http` and check the per-host gates (`ProviderFeatures`, placement gates like `DefaultSupportsMidConversationSystem`) rather than assuming the converter change reaches them.
+
+For each route the change reaches: a unit test that drives that route's ingress type into the provider egress, and a provider-harness case in the same folder with the route in the case name, using the shape and headers a real client on that route would send (so a `/v1/responses` case must not carry `anthropic-beta`). Routes the change does not reach are not silently skipped: the PR states each one and why (no equivalent construct on that wire, gated off by the feature table, dropped by a placement fallback), so the gap is a recorded decision and not an omission. If the fix leaves a host with the beta header on but the body construct dropped, say so explicitly; that mismatch is itself a bug to track.
+
+### Every non-exempt wire-visible fix ends with unit tests, then a harness command handed to the user
+
+Unit tests and `make test-core` are the finish line for the agent. Run the Go-level red/green loop and the regression reruns, and report what passed and what failed.
+
+The live provider harness is the user's to run, not the agent's. Do not launch it. Instead, end the report with both final commands in a plain code block, ready to paste: the `make dev` line that starts Bifrost from the code under test, and the single-line `make run-provider-harness-test` line that runs against it. No box drawing around them, since border characters make the commands impossible to select. Naming the scope is the agent's job; spending the money is the user's call.
+
+**RUN THE PROVIDER HARNESS.** Unit tests are green. The live run is yours to trigger.
+
+```bash
+# 1. backing services: start Weaviate (idempotent)
+docker compose -f tests/docker-compose.yml up -d weaviate
+
+# 2. wait until Weaviate HTTP is ready (-f fails on 503) AND gRPC answers (the client does not check it at startup)
+until curl -sf http://localhost:9000/v1/.well-known/ready >/dev/null && nc -z localhost 50051; do sleep 2; done
+
+# 3. pick a free port (worktrees run side by side, so never assume 8080)
+lsof -nP -iTCP:<port> -sTCP:LISTEN
+
+# 4. start Bifrost from the code under test on that port, then wait for /health
+make dev PORT=<port> APP_DIR=$(pwd)/tests/integrations/python
+
+# 5. run the harness against that server
+make run-provider-harness-test PROVIDER=<provider> FEATURE="<keyword>" BASE_URL=http://localhost:<port>
+```
+
+Do not pass `APP_DIR` or `CI=1` to `run-provider-harness-test`. `APP_DIR` already defaults to `tests/integrations/python` (Makefile:2255), the same profile `make dev` is pointed at, and `CI=1` suppresses the interactive HTML viewer that makes a live run readable. `make dev` is the one that needs `APP_DIR` spelled out, because it is what decides which code and config the server runs. Always pass `PORT` to `make dev` and the matching `BASE_URL` to the harness: several worktrees may be running at once, and the harness viewer itself listens on 8090, so pick a port that is neither 8080 nor 8090 unless `lsof` shows both free.
+
+Never print that block with a placeholder still in it. `<provider>`, `<keyword>`, and `<port>` belong to the template; substitute the real values for the change so every line pastes straight into a shell. The keyword is descriptive text from the case or folder names (for example `"sdk fidelity"`), never an issue or PR number.
+
+The exemptions are the ones in the previous section: a change with no wire-visible effect (comments, internal renames, log lines, test-only or guidance-only edits) or behaviour no HTTP request can reach is exempt. For an exempt change, say so explicitly instead of printing the block.
+
+```bash
+# Scoped to the change (preferred): the provider and a keyword from the affected cases
+make run-provider-harness-test PROVIDER=<provider> FEATURE="<keyword>"
+
+# Curated ~100-request smoke set across all providers, when the change is cross-cutting
+make run-provider-harness-test SMOKE=1
+```
+
+The profile is the shared provider config at `tests/integrations/python/config.json` that every live check uses. Pass it to `make dev` as `APP_DIR=$(pwd)/tests/integrations/python` so a stale server or another config never answers for the code under test; the harness target already defaults to it and does not need it repeated.
+
+`HARNESS_MAX_REQUESTS=<n>` is an optional enforced spend bound: the recipe checks every newman launch against its exact filtered request count before it starts and refuses any launch that would cross the cap (exit 3), so the live total never exceeds the approved number. Add it when a run is broad enough that the cost is worth capping; a `PROVIDER=` + `FEATURE=` scoped run is usually small enough not to need it. The preflight count from `filter-collection.mjs` is only an estimate because shared producers repeat per provider fork. Stream-cancellation probes are never sent under a cap.
+
+The gateway port is a blocking precondition worth restating in the block: the recipe reuses any server whose `/health` answers at `BASE_URL` and never starts the `APP_DIR` one, so a stale listener silently tests old code. `lsof -nP -iTCP:<port> -sTCP:LISTEN` must come back empty, or show only a Bifrost started from the code under test. Starting it first with `make dev PORT=<port> APP_DIR=$(pwd)/tests/integrations/python` and waiting for `/health` is the reliable pattern, since a cold start can outlast the recipe's 60s health wait. Weaviate must be up before that `make dev`: the profile enables a `weaviate` vector store on `localhost:9000`, so bring it up with `docker compose -f tests/docker-compose.yml up -d weaviate` first or the server fails to bootstrap. `up -d` returns before Weaviate is ready, so retry until `curl -sf http://localhost:9000/v1/.well-known/ready` passes (`-f` makes a 503 fail) and `nc -z localhost 50051` succeeds: the profile sets `grpc_config` to `localhost:50051`, and the client does not check gRPC reachability at startup, so a missing gRPC port only fails on the first gRPC-backed call.
 
 ### Always prefer `make test-core` over raw `go test` for provider-level tests
 
@@ -639,7 +745,7 @@ Run: `make run-e2e FLOW=<feature>`
 
 ## Claude Code Skills
 
-Four skills are available via `/skill-name`:
+Skills are available via `/skill-name`:
 
 ### `/docs-writer <feature-name>`
 Write, update, or review Mintlify MDX documentation. Researches UI code, Go handlers, and config schema. Validates `config.json` examples against `transports/config.schema.json`. Outputs docs with Web UI / API / config.json tabs.
@@ -654,8 +760,11 @@ Variants:
 - `/e2e-test sync` — Detect UI changes, update affected tests automatically
 - `/e2e-test audit` — Scan specs for incorrect/weak assertions (P0-P6 severity scale)
 
+### `/harness-test-writer <PR# | issue# | URL>`
+Add regression test cases to the provider harness (`tests/e2e/api/collections/provider-harness.json`) from a merged PR or GitHub issue. Traces the affected wire path, checks existing coverage, designs cases per harness conventions, inserts them surgically without reformatting the file, and validates via the augment and filter scripts. This is the skill the Testing section's harness-case rule points at.
+
 ### `/investigate-issue <issue-id>`
-Investigate a GitHub issue from `maximhq/bifrost`. Fetches issue details, classifies by type/area, searches codebase, traces dependencies, analyzes side effects, suggests tests (LLM/MCP/E2E), and presents an implementation plan with per-change approval gates.
+Investigate a GitHub issue from `maximhq/bifrost`. Fetches issue details, classifies by type/area, searches codebase, traces dependencies, analyzes side effects, plans the required regression tests (unit/harness/LLM/MCP/E2E), and presents an implementation plan with per-change approval gates.
 
 ### `/resolve-pr-comments <pr-number>`
 Systematically address unresolved PR review comments. Uses GraphQL to get unresolved threads, presents each with FIX/REPLY/SKIP options, collects fixes locally, and only posts replies **after code is pushed** to remote.
@@ -669,6 +778,7 @@ Systematically address unresolved PR review comments. Uses GraphQL to get unreso
 2. Update converter functions in each provider's `chat.go`
 3. If streaming affected, update `framework/streaming/` (accumulator, delta copy)
 4. Run `make test-core` (all providers)
+5. Add/extend unit tests and a provider-harness regression case (see Testing section)
 
 ### Add a new field to API responses
 1. Add to schema type in `core/schemas/`
@@ -676,6 +786,7 @@ Systematically address unresolved PR review comments. Uses GraphQL to get unreso
 3. Handle in streaming accumulator if applicable
 4. Update HTTP handler if field needs special serialization
 5. Update `transports/config.schema.json` if configurable
+6. Add/extend unit tests and a provider-harness regression case (see Testing section)
 
 ### Add a new plugin
 1. Create `plugins/<name>/` with its own `go.mod`
@@ -683,13 +794,15 @@ Systematically address unresolved PR review comments. Uses GraphQL to get unreso
 3. Add to `go.work`
 4. Register in transport layer or Bifrost config
 5. Add test targets to `Makefile`
+6. Add unit tests; add a provider-harness regression case if the plugin's behavior is wire-visible
 
 ### Modify a UI feature
 1. Find workspace page: `ui/app/workspace/<feature>/`
 2. Check existing `data-testid` attributes — E2E tests depend on them
 3. Add `data-testid` to new interactive elements
-4. Run `make run-e2e FLOW=<feature>` to verify
-5. If E2E tests break, use `/e2e-test sync` to update them
+4. Put every user-visible string through i18n (see [UI i18n](#ui-i18n)) and run `cd ui && npm run i18n:check`
+5. Run `make run-e2e FLOW=<feature>` to verify
+6. If E2E tests break, use `/e2e-test sync` to update them
 
 ---
 
@@ -730,6 +843,7 @@ Systematically address unresolved PR review comments. Uses GraphQL to get unreso
 - **Converter functions**: Pure — no side effects, no logging, no HTTP.
 - **Pool names**: Descriptive string passed to `pool.New()` (e.g., `"channel-message"`, `"response-stream"`).
 - **Context keys**: Use `BifrostContextKey` type. Custom plugins should define their own key types to avoid collisions.
+- **Struct comments**: Keep struct field comments to a short trailing one-liner (or none). Long multi-line explanations do not belong inside struct definitions; put the rationale in the doc comment of the function that uses the field, or in the package doc.
 - **Go filenames**: No underscores. The only permitted underscore is the `_test.go` suffix. Examples: `pluginpipeline.go`, `pluginpipeline_test.go` — never `plugin_pipeline.go` or `plugin_pipeline_race_test.go`. Concatenate words (lowercase, no separators) for multi-word filenames.
 
 # Frontend Code Guidelines & Patterns
@@ -874,6 +988,26 @@ Do not edit `entitySelector.tsx` to accommodate one surface. It only carries beh
 
 ---
 
+### Provider and model pickers — always `ProviderSelector` / `ModelSelector`
+
+Every provider or model picker goes through `ui/components/ui/providerSelector.tsx` or `modelSelector.tsx`. Never hand-roll a `Select` over `VisibleProviderNames`, a `Combobox` over `useGetProvidersQuery`, or a search box over `useGetModelsQuery`: these already carry provider icons and labels, server-side model search with paging, deprecated demotion, a pinned "Selected" row for a value no longer in the list, and multi-mode chips.
+
+```tsx
+<ProviderSelector value={p} onChange={setP} />                              // single
+<ProviderSelector multiple value={ps} onChange={setPs} />                   // multi
+<ProviderSelector mode="add" onSelect={add} trigger={<Button>Add</Button>} /> // fire-and-forget
+<ModelSelector provider={p} value={m} onChange={setM} allowCustomModel />
+```
+
+- `source` on `ProviderSelector`: `"configured"` (default, what the user set up), `"catalog"` (everything Bifrost supports, for add flows), `"values"` (a list from elsewhere, e.g. analytics labels that may name a deleted provider).
+- Scope models with `provider` / `keys` / `vks`; `baseModelsWithoutProvider` collapses duplicates when no provider is picked, `allowCustomModel` accepts a name off-catalog, `unfiltered` bypasses the provider's model pool.
+- Rows outside the source list go in `extraOptions` (above), `footerOptions` (below), or `allOption` for an "All Providers" sentinel. `ALL_MODELS_OPTION` is exported for the `*` row. Never merge them into the fetched array yourself.
+- They own fetch, search, paging and reset. No parent `useState` mirror, debounce, or refetch-on-open.
+- Per-surface differences are props, not forks: `size="sm"`, `contentWidth`, `noPortal` (inside a sheet), `className`, `inputId` / `ariaDescribedBy` / `ariaInvalid`, `data-testid`, `optionTestId`, `contentTestId`. For selectability use `getOptionState` (model) or `disabled` + `disabledReason` on an option (provider). Anything new is a prop defaulting to today's behaviour.
+- Pure helpers live in `providerSelector.utils.ts` with a case in `providerSelector.test.ts`, since the components pull in the store.
+
+---
+
 ### JSX & Rendering
 
 - Avoid deeply nested conditional rendering
@@ -976,6 +1110,36 @@ We use:
 
 ---
 
+## UI i18n
+
+Every user-visible string in `ui/` goes through i18next. That covers JSX text, text props (`label`, `placeholder`, `title`, `description`, `tooltip`, `aria-label`, `alt`), toasts, zod validation messages, and `label`/`title`/`description` fields in option, tab and column arrays.
+
+- In components: `const { t } = useTranslation("<ns>")`. Outside React: `i18n.t("key", { ns: "<ns>" })` from `@/lib/i18n`. Never write `"ns:key"`; `nsSeparator` is off.
+- Keys are typed against `ui/locales/en`, so an unknown key fails `npm run typecheck`. Do not cast `t` to get around it.
+- Namespaces: `common` (shared verbs, entity names, `validation.*`, `apiErrors.*`), `shell` (nav and layout), `login`, `observability` (logs, metrics, traces), `models` (providers, routing, pricing), `mcp`, `governance` (virtual keys, budgets, teams), `config` (settings). Reuse an existing `common` key before adding a new one.
+- Adding a key: add it to `locales/en/<ns>.json` and to every other locale directory (de, es, fr, it, ja, ko, pt, ru, zh-CN, zh-TW) with a real translation, not the English text. Keep the same `{{placeholders}}`, the same `<Trans>` tags (`<b0>`, `<code1>`) and the same array lengths. Edit catalogs surgically; never re-serialize a whole file by hand.
+- One whole sentence per key. Interpolate values (`t("deleted", { name })`); never concatenate translated fragments or build sentences with `+`.
+- Plurals: `key` plus `key_other` in English, and pass `count`. Russian also needs `_few` and `_many`.
+- Inline markup goes through `<Trans>` with indexed components rather than splitting a sentence into several keys.
+- Static config arrays store a `labelKey` and translate at render time. Template keys (`` t(`x.${v}`) ``) are fine only when `v` is a typed union.
+- Zod messages must stay lazy so they follow a language switch: `.min(1, msg("validation.nameIsRequired"))` with `msg` from `@/lib/i18n/validationMessage`, and `message: i18n.t("validation.…")` inside `superRefine`/`addIssue`. A string literal is resolved once, in English.
+- Dates and numbers follow the UI language: pass `getLocale()` to `toLocaleString`, `toLocaleDateString`, `toLocaleTimeString` and `Intl.*`, and `dateFnsLocale(getLocale())` to date-fns calls that print words or AM/PM. Never hardcode `"en-US"`.
+- Do not translate provider or model names, API field names, code samples, log payloads, or the dev-only pages (`app/pprof`, `components/devProfiler.tsx`). Mark an intentional literal with `// i18n-ignore` (or `{/* i18n-ignore */}`) on the same line or the line above, with a short reason.
+- New namespace: create the JSON file in every locale directory, then import the English file and add the name to `NAMESPACES` in `ui/lib/i18n/resources.ts`. Other languages load lazily through `import.meta.glob`, so they need no registration.
+- New language: add the folder under `ui/locales/` (and `enterprise-ui/app/locales/` in the enterprise repo), an entry in `SUPPORTED_LOCALES` in `ui/lib/i18n/index.ts`, and a date-fns locale in `ui/lib/i18n/dateLocale.ts`.
+
+Before finishing UI work, run from `ui/`:
+
+```bash
+npm run i18n:check                 # hardcoded strings, validation messages, catalog parity; CI runs this
+npm run i18n:check -- app/workspace/logs   # limit the literal scan to the paths you touched
+npm run i18n:check -- --unused     # optional: English keys nothing references
+```
+
+It must exit 0. The `ui-i18n` workflow fails a pull request otherwise.
+
+---
+
 ## TypeScript Guidelines
 
 - Avoid using `any` unless absolutely unavoidable
@@ -986,19 +1150,23 @@ We use:
 
 ## Code Quality & Formatting
 
-After writing code:
+After writing code, format only the files you changed:
 
 ```bash
-cd ui && npm run format
-````
+cd ui && npm run format:changed          # oxfmt on files changed against HEAD, plus untracked ones
+cd ui && npm run format:changed:check    # same set, check only
+```
 
-Then verify build:
+Do not run `npm run format` or `npm run format:check` across the tree. The committed files were not all formatted with the same oxfmt version, so a repo-wide run rewrites unrelated files that then have to be reverted. If a formatter run touched files outside your change, restore them with `git checkout -- <file>` before committing.
+
+Then verify the build and the i18n check:
 
 ```bash
 cd ui && npm run build
+cd ui && npm run i18n:check
 ```
 
-* Code must pass formatting and build checks
+* Code must pass formatting, build and i18n checks
 * Follow consistent naming and structure conventions
 
 ---

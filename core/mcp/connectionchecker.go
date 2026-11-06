@@ -2,10 +2,13 @@ package mcp
 
 import (
 	"context"
+	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/mark3labs/mcp-go/client"
+	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -63,17 +66,24 @@ type ClientConnectionChecker struct {
 	healthyInterval time.Duration
 	timeout         time.Duration
 	logger          schemas.Logger
-	isPingAvailable bool
+	// isPingAvailable is read by every live check and replaced by an
+	// is_ping_available edit, so it is atomic rather than guarded by mu.
+	isPingAvailable atomic.Bool
 
 	mu        sync.Mutex
 	timer     *time.Timer
 	ctx       context.Context
 	cancel    context.CancelFunc
 	isRunning bool
+	// stopped is set by Stop and never cleared: a Stop that lands before Start
+	// takes c.mu leaves the checker stopped rather than started behind the
+	// registry's back.
+	stopped bool
 	// onSteadyCadence records whether the armed timer was set with the
 	// steady-state cadence (healthyInterval) rather than the tight Unstable
 	// one, so a runtime healthyInterval change knows whether to re-arm it.
 	onSteadyCadence bool
+	kick            chan struct{} // Kick's request for a check now; one slot, so a burst queues a single check
 }
 
 // NewClientConnectionChecker creates a new connection checker for a client.
@@ -93,14 +103,22 @@ func NewClientConnectionChecker(
 	if logger == nil {
 		logger = defaultLogger
 	}
-	return &ClientConnectionChecker{
+	c := &ClientConnectionChecker{
 		manager:         manager,
 		clientID:        clientID,
 		healthyInterval: healthyInterval,
 		timeout:         ConnectionCheckTimeout,
 		logger:          logger,
-		isPingAvailable: isPingAvailable,
+		kick:            make(chan struct{}, 1),
 	}
+	c.isPingAvailable.Store(isPingAvailable)
+	return c
+}
+
+// SetPingAvailable replaces whether the live check pings before listing
+// tools, for an is_ping_available edit. The next check uses it.
+func (c *ClientConnectionChecker) SetPingAvailable(available bool) {
+	c.isPingAvailable.Store(available)
 }
 
 // Start begins the periodic check in a background goroutine. First tick
@@ -112,22 +130,30 @@ func NewClientConnectionChecker(
 // waiting a full healthyInterval — potentially 10 minutes — before the
 // first recovery attempt would defeat that).
 func (c *ClientConnectionChecker) Start() {
+	// Read the client before taking c.mu: RemoveClient and DisableClient hold
+	// MCPManager.mu while StopChecking waits for c.mu, so waiting for
+	// MCPManager.mu while holding c.mu would deadlock against them.
+	c.manager.mu.RLock()
+	clientState, exists := c.manager.clientMap[c.clientID]
+	var onSteady bool
+	var name string
+	if exists {
+		onSteady = clientState.State == schemas.MCPConnectionStateHealthy
+		name = clientState.ExecutionConfig.Name
+	}
+	c.manager.mu.RUnlock()
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if c.isRunning {
+	if c.isRunning || c.stopped {
 		return
 	}
-
-	c.manager.mu.RLock()
-	clientState, exists := c.manager.clientMap[c.clientID]
-	c.manager.mu.RUnlock()
 	if !exists {
 		c.logger.Error("%s Connection checker failed to start for client %s, client not found in manager", MCPLogPrefix, c.clientID)
 		return
 	}
 
-	onSteady := clientState.State == schemas.MCPConnectionStateHealthy
 	firstInterval := c.healthyInterval
 	if !onSteady {
 		firstInterval = UnstableConnectionCheckInterval
@@ -139,7 +165,7 @@ func (c *ClientConnectionChecker) Start() {
 	c.onSteadyCadence = onSteady
 
 	go c.checkLoop()
-	c.logger.Debug("%s Connection checker started for client %s", MCPLogPrefix, clientState.ExecutionConfig.Name)
+	c.logger.Debug("%s Connection checker started for client %s", MCPLogPrefix, name)
 }
 
 // Stop stops the periodic check.
@@ -147,6 +173,7 @@ func (c *ClientConnectionChecker) Stop() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	c.stopped = true
 	if !c.isRunning {
 		return
 	}
@@ -201,22 +228,58 @@ func (c *ClientConnectionChecker) checkLoop() {
 		select {
 		case <-c.ctx.Done():
 			return
-		case <-c.timer.C:
-			next, onSteady := c.performCheck()
+		case <-c.kick:
+			// The scheduled check is replaced, not added to; re-armed below as after a tick.
 			c.mu.Lock()
-			if c.isRunning {
-				if onSteady {
-					// Re-read rather than trusting the value the check
-					// started with: a SetHealthyInterval that landed while
-					// the check was in flight must win.
-					next = c.healthyInterval
-				}
-				c.timer.Reset(next)
-				c.onSteadyCadence = onSteady
-			}
+			c.timer.Stop()
 			c.mu.Unlock()
+			c.runCheck()
+		case <-c.timer.C:
+			c.runCheck()
 		}
 	}
+}
+
+// Hasten moves a timer armed on the steady cadence onto the unstable one, for a
+// client something other than this checker just marked unstable: a failed
+// reconnect, or a dropped SSE stream. The next check otherwise waited out the
+// full steady interval, the tool sync interval, with the client showing a
+// failure nothing was checking. A timer already on the unstable cadence is
+// left alone.
+func (c *ClientConnectionChecker) Hasten() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.isRunning || c.timer == nil || !c.onSteadyCadence {
+		return
+	}
+	c.timer.Reset(UnstableConnectionCheckInterval)
+	c.onSteadyCadence = false
+}
+
+// Kick asks for a check now, ahead of the timer. Kicks that arrive while one is pending collapse
+// into it, and a kick during a running check queues exactly one more.
+func (c *ClientConnectionChecker) Kick() {
+	select {
+	case c.kick <- struct{}{}:
+	default:
+	}
+}
+
+// runCheck performs one check and re-arms the timer from its result.
+func (c *ClientConnectionChecker) runCheck() {
+	next, onSteady := c.performCheck()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.isRunning {
+		return
+	}
+	if onSteady {
+		// Re-read rather than trusting the value the check started with: a
+		// SetHealthyInterval that landed while the check was in flight must win.
+		next = c.healthyInterval
+	}
+	c.timer.Reset(next)
+	c.onSteadyCadence = onSteady
 }
 
 // performCheck runs one check cycle and returns the interval the next one
@@ -226,7 +289,7 @@ func (c *ClientConnectionChecker) performCheck() (time.Duration, bool) {
 	steady := c.steadyInterval()
 	c.manager.mu.RLock()
 	clientState, exists := c.manager.clientMap[c.clientID]
-	var isDisabled, needsReauth bool
+	var isDisabled, needsReauth, pendingVerification bool
 	var conn *client.Client
 	var config *schemas.MCPClientConfig
 	var connGeneration uint64
@@ -234,6 +297,7 @@ func (c *ClientConnectionChecker) performCheck() (time.Duration, bool) {
 		conn = clientState.Conn
 		isDisabled = clientState.State == schemas.MCPConnectionStateDisabled
 		needsReauth = clientState.State == schemas.MCPConnectionStateNeedsReauth
+		pendingVerification = clientState.State == schemas.MCPConnectionStatePendingVerification
 		config = clientState.ExecutionConfig
 		connGeneration = clientState.ConnGeneration
 	}
@@ -249,7 +313,7 @@ func (c *ClientConnectionChecker) performCheck() (time.Duration, bool) {
 		c.Stop()
 		return steady, true
 	}
-	if needsReauth {
+	if needsReauth || pendingVerification {
 		// Stay quiet: the credential is confirmed permanently dead (typed
 		// classification, see connectToMCPClient), so a check here would
 		// just rediscover what's already known and burn a reconnect
@@ -257,6 +321,12 @@ func (c *ClientConnectionChecker) performCheck() (time.Duration, bool) {
 		// interval so a stalled reauthorize eventually gets picked up by
 		// something, but do no work — only an explicit reauthorize (or a
 		// direct UpdateClientCredentials success) moves this out.
+		//
+		// pending_verification is the same shape for the opposite reason:
+		// the one-time admin flow has not run yet, so there is no credential
+		// to check with at all. A check could only fail, and replace an
+		// actionable "an admin must authorize this" (which the UI surfaces
+		// as a Verify CTA) with a generic Unstable.
 		return steady, true
 	}
 	if config == nil {
@@ -267,9 +337,29 @@ func (c *ClientConnectionChecker) performCheck() (time.Duration, bool) {
 
 	switch {
 	case conn != nil:
+		// A connection above the cap (its renegotiation failed) keeps serving but is not healthy, and is
+		// retried until a connection within the cap replaces it.
+		if maxVersion := c.manager.maxProtocolVersionFor(config); maxVersion != "" && conn.ProtocolVersion() > maxVersion {
+			c.recordFailure(clientName, schemas.MCPConnectionFailureStageConnect,
+				fmt.Errorf("negotiated protocol version %s, newer than this client's max protocol version %s", conn.ProtocolVersion(), maxVersion), connGeneration)
+			c.reconnectAfterFailedCheck(clientName, connGeneration)
+			return UnstableConnectionCheckInterval, false
+		}
+		// A protocol version change whose reconnect failed: the old connection serves meanwhile.
+		if _, pending := c.manager.pendingRenegotiation.Load(c.clientID); pending {
+			c.recordFailure(clientName, schemas.MCPConnectionFailureStageConnect,
+				fmt.Errorf("negotiated protocol version %s; reconnecting for the changed max protocol version", conn.ProtocolVersion()), connGeneration)
+			c.reconnectAfterFailedCheck(clientName, connGeneration)
+			return UnstableConnectionCheckInterval, false
+		}
 		if c.checkLiveConnection(conn, clientName, connGeneration) {
 			return steady, true
 		}
+		// The connection that just failed is still installed on the entry, so
+		// this is the only place that can repair it: every later tick would
+		// otherwise re-probe the same dead session, and the Conn == nil
+		// branch below is unreachable while a connection is installed.
+		c.reconnectAfterFailedCheck(clientName, connGeneration)
 		return UnstableConnectionCheckInterval, false
 	case c.manager.credStore.RequiresPerCallConnection(config):
 		if c.checkPerCall(config, connGeneration) {
@@ -284,12 +374,44 @@ func (c *ClientConnectionChecker) performCheck() (time.Duration, bool) {
 		// reactive per-request path, beat this tick to it) is expected and
 		// fine to ignore; whichever attempt finishes is authoritative.
 		go func() {
-			if err := c.manager.ReconnectClient(c.clientID); err != nil {
+			if err := c.manager.reconnectFromChecker(c.clientID); err != nil {
 				c.logger.Debug("%s Connection checker's reconnect attempt for %s did not complete: %v", MCPLogPrefix, clientName, err)
 			}
 		}()
 		return UnstableConnectionCheckInterval, false
 	}
+}
+
+// reconnectAfterFailedCheck starts the background reconnect a failed live
+// check owes, under the same staleness guard setState and writeBackTools
+// apply: a check that began before a reconnect swapped in a fresh connection
+// can only have proved the replaced one dead, and must not tear down its
+// successor. Disabled and NeedsReauth are authoritative here for the same
+// reason setState refuses to overwrite them, and are checked separately from
+// the generation because neither DisableClient nor CloseAndMarkNeedsReauth
+// bumps ConnGeneration when it clears the connection.
+//
+// "Already in progress" (another trigger, e.g. the reactive per-request path,
+// beat this tick to it) is expected and fine to ignore: ReconnectClient
+// dedupes concurrent attempts per client through its own exclusive-op guard,
+// and whichever attempt finishes is authoritative.
+func (c *ClientConnectionChecker) reconnectAfterFailedCheck(clientName string, connGeneration uint64) {
+	c.manager.mu.RLock()
+	clientState, exists := c.manager.clientMap[c.clientID]
+	stale := !exists ||
+		clientState.ConnGeneration != connGeneration ||
+		clientState.State == schemas.MCPConnectionStateDisabled ||
+		clientState.State == schemas.MCPConnectionStateNeedsReauth
+	c.manager.mu.RUnlock()
+	if stale {
+		c.logger.Debug("%s Skipping reconnect for %s: the connection was replaced during the check, or the client is no longer reconnectable", MCPLogPrefix, clientName)
+		return
+	}
+	go func() {
+		if err := c.manager.reconnectFromChecker(c.clientID); err != nil {
+			c.logger.Debug("%s Connection checker's reconnect attempt for %s did not complete: %v", MCPLogPrefix, clientName, err)
+		}
+	}()
 }
 
 // checkLiveConnection runs ping (if supported) + list_tools over an
@@ -306,7 +428,8 @@ func (c *ClientConnectionChecker) performCheck() (time.Duration, bool) {
 // own wall-clock time) off before it ever got to retry — defeating the
 // entire point of adding retry coverage here.
 func (c *ClientConnectionChecker) checkLiveConnection(conn *client.Client, clientName string, connGeneration uint64) bool {
-	if c.isPingAvailable {
+	// 2026-07-28 removed ping; list_tools below is the liveness check there.
+	if c.isPingAvailable.Load() && !mcp.IsModernProtocol(conn.ProtocolVersion()) {
 		pingErr := ExecuteWithRetry(context.Background(), func() error {
 			attemptCtx, cancel := context.WithTimeout(context.Background(), c.timeout)
 			defer cancel()
@@ -319,12 +442,11 @@ func (c *ClientConnectionChecker) checkLiveConnection(conn *client.Client, clien
 	}
 
 	var newTools map[string]schemas.ChatTool
-	var newMapping map[string]string
 	listErr := ExecuteWithRetry(context.Background(), func() error {
 		attemptCtx, cancel := context.WithTimeout(context.Background(), c.timeout)
 		defer cancel()
 		var err error
-		newTools, newMapping, err = c.manager.runListToolsWithHooks(c.markAsCheck(attemptCtx), conn, clientName)
+		newTools, err = c.manager.runListToolsWithHooks(c.markAsCheck(attemptCtx), conn, clientName)
 		return err
 	}, ProbeRetryConfig, c.logger)
 	if listErr != nil {
@@ -332,7 +454,15 @@ func (c *ClientConnectionChecker) checkLiveConnection(conn *client.Client, clien
 		return false
 	}
 
-	c.writeBackTools(connGeneration, newTools, newMapping)
+	discovery := &schemas.MCPDiscovery{Tools: newTools}
+	caps := conn.GetServerCapabilities()
+	listErr = c.manager.listResourcesAndPrompts(c.markAsCheck(context.Background()), c.timeout, conn, clientName, caps, discovery, c.manager.installedDiscoveryByID(c.clientID))
+	// Without tools, list_tools above never reached the server; its resources and prompts lists did.
+	if listErr != nil && caps.Tools == nil {
+		c.recordFailure(clientName, schemas.MCPConnectionFailureStageListTools, listErr, connGeneration)
+		return false
+	}
+	c.manager.writeBackDiscovery(c.clientID, connGeneration, discovery, false)
 	c.recordSuccess(clientName, connGeneration)
 	return true
 }
@@ -341,13 +471,12 @@ func (c *ClientConnectionChecker) checkLiveConnection(conn *client.Client, clien
 // with no persistent connection to ping or reconnect. Same
 // per-attempt-timeout reasoning as checkLiveConnection above.
 func (c *ClientConnectionChecker) checkPerCall(config *schemas.MCPClientConfig, connGeneration uint64) bool {
-	var newTools map[string]schemas.ChatTool
-	var newMapping map[string]string
+	var discovery *schemas.MCPDiscovery
 	err := ExecuteWithRetry(context.Background(), func() error {
 		attemptCtx, cancel := context.WithTimeout(context.Background(), c.timeout)
 		defer cancel()
 		var innerErr error
-		newTools, newMapping, innerErr = c.manager.performAdminToolDiscovery(attemptCtx, config)
+		discovery, innerErr = c.manager.performAdminToolDiscovery(attemptCtx, config, c.timeout)
 		return innerErr
 	}, ProbeRetryConfig, c.logger)
 	if err != nil {
@@ -355,7 +484,7 @@ func (c *ClientConnectionChecker) checkPerCall(config *schemas.MCPClientConfig, 
 		return false
 	}
 
-	c.writeBackTools(connGeneration, newTools, newMapping)
+	c.manager.writeBackDiscovery(c.clientID, connGeneration, discovery, true)
 	c.recordSuccess(config.Name, connGeneration)
 	return true
 }
@@ -368,46 +497,6 @@ func (c *ClientConnectionChecker) markAsCheck(ctx context.Context) *schemas.Bifr
 	bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
 	bfCtx.SetValue(schemas.BifrostContextKeyMCPHealthCheckRequest, true)
 	return bfCtx
-}
-
-// writeBackTools mirrors the old tool-syncer's generation-guarded
-// write-back: if a reconnect swapped in a fresh connection while this check
-// was in flight, the fresh generation no longer matches what was captured
-// before the check ran, and these (now stale) results are dropped silently
-// — the next tick syncs against whatever is current.
-func (c *ClientConnectionChecker) writeBackTools(connGeneration uint64, newTools map[string]schemas.ChatTool, newMapping map[string]string) {
-	// Precompute serialized JSON before the lock (see precomputeToolSerialization),
-	// so per-request logging/marshal reuse the bytes and the manager mutex isn't
-	// held across N marshals.
-	precomputeToolSerialization(newTools)
-
-	c.manager.mu.Lock()
-
-	clientState, exists := c.manager.clientMap[c.clientID]
-	if !exists {
-		c.manager.mu.Unlock()
-		return
-	}
-	if clientState.ConnGeneration != connGeneration {
-		c.manager.mu.Unlock()
-		c.logger.Debug("%s Skipping tool write-back for %s: connection was replaced during check", MCPLogPrefix, c.clientID)
-		return
-	}
-	clientState.ToolMap = newTools
-	clientState.ToolNameMapping = newMapping
-	fire := c.manager.toolsChangedCallback(clientState, c.clientID, newTools, newMapping)
-	c.manager.mu.Unlock()
-
-	// Fired outside the lock — see toolsChangeCallback's field doc. Covers
-	// the periodic checker's own refresh for both sticky (checkLiveConnection)
-	// and per-call (checkPerCall) clients — previously the one path where a
-	// client's tools could drift out of sync with the DB indefinitely, since
-	// nothing else revisits a per-call client after its first discovery.
-	// Gated on genuine content change: this is the highest-frequency firing
-	// point (every checker tick), and most ticks rediscover identical tools.
-	if fire != nil {
-		fire()
-	}
 }
 
 // recordFailure marks the client Unstable — a single transient-classified
@@ -438,9 +527,10 @@ func (c *ClientConnectionChecker) recordSuccess(clientName string, connGeneratio
 }
 
 // setState is the guarded writer every transition in this file funnels
-// through — Disabled and NeedsReauth are authoritative and never silently
-// overwritten by a check result racing against a DisableClient call or a
-// credential already confirmed dead.
+// through — Disabled, NeedsReauth and PendingVerification are authoritative
+// and never silently overwritten by a check result racing against a
+// DisableClient call, a credential already confirmed dead, or a client parked
+// awaiting its one-time admin verification.
 //
 // connGeneration is dropped if it no longer matches the client's current
 // ConnGeneration, mirroring writeBackTools' own guard: StopChecking does not
@@ -468,7 +558,9 @@ func (c *ClientConnectionChecker) setState(state schemas.MCPConnectionState, con
 		c.logger.Debug("%s Skipping state write for %s: connection was replaced during check", MCPLogPrefix, c.clientID)
 		return
 	}
-	if clientState.State == schemas.MCPConnectionStateDisabled || clientState.State == schemas.MCPConnectionStateNeedsReauth {
+	if clientState.State == schemas.MCPConnectionStateDisabled ||
+		clientState.State == schemas.MCPConnectionStateNeedsReauth ||
+		clientState.State == schemas.MCPConnectionStatePendingVerification {
 		c.manager.mu.Unlock()
 		return
 	}
@@ -559,7 +651,7 @@ type ClientIntervalSource struct {
 }
 
 // ApplyGlobalInterval replaces the global steady-state interval and re-times
-// every listed client against it, atomically with respect to RetimeClient.
+// every listed client against it, atomically with respect to ApplyClientConfig.
 // Clients with an explicit per-client override resolve to the same cadence
 // as before, so their checker's no-op check leaves them untouched.
 func (m *ConnectionCheckerManager) ApplyGlobalInterval(interval time.Duration, clients []ClientIntervalSource) {
@@ -572,14 +664,21 @@ func (m *ConnectionCheckerManager) ApplyGlobalInterval(interval time.Duration, c
 	}
 }
 
-// RetimeClient re-times a running checker's steady-state cadence from the
-// client's current config and the current global, serialized against
-// ApplyGlobalInterval. A no-op for a client with no checker registered
-// (disabled, or never started) and for an unchanged cadence.
-func (m *ConnectionCheckerManager) RetimeClient(clientID string, config *schemas.MCPClientConfig) {
+// ApplyClientConfig re-applies the settings a running checker took from the
+// client's config when it was built: its steady-state cadence, resolved
+// against the current global and serialized against ApplyGlobalInterval, and
+// whether its live check pings first. A no-op for a client with no checker
+// registered (disabled, or never started).
+func (m *ConnectionCheckerManager) ApplyClientConfig(clientID string, config *schemas.MCPClientConfig) {
 	m.retimeMu.Lock()
 	defer m.retimeMu.Unlock()
 	m.updateInterval(clientID, ResolveToolSyncInterval(config, m.GetGlobalInterval()))
+	m.mu.RLock()
+	checker, ok := m.checkers[clientID]
+	m.mu.RUnlock()
+	if ok {
+		checker.SetPingAvailable(config.IsPingAvailable == nil || *config.IsPingAvailable)
+	}
 }
 
 func (m *ConnectionCheckerManager) updateInterval(clientID string, interval time.Duration) {
@@ -611,6 +710,27 @@ func (m *ConnectionCheckerManager) StartChecking(checker *ClientConnectionChecke
 	m.mu.Unlock()
 
 	checker.Start()
+}
+
+// Hasten moves clientID's running checker onto the unstable cadence (see
+// ClientConnectionChecker.Hasten). A client without a running checker is left alone.
+func (m *ConnectionCheckerManager) Hasten(clientID string) {
+	m.mu.RLock()
+	checker, ok := m.checkers[clientID]
+	m.mu.RUnlock()
+	if ok {
+		checker.Hasten()
+	}
+}
+
+// Kick asks clientID's checker for a check now. A client without a running checker is left alone.
+func (m *ConnectionCheckerManager) Kick(clientID string) {
+	m.mu.RLock()
+	checker, ok := m.checkers[clientID]
+	m.mu.RUnlock()
+	if ok {
+		checker.Kick()
+	}
 }
 
 // StopChecking stops checking a specific client.

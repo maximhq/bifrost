@@ -7,11 +7,188 @@
 		<title>Bifrost</title>
 		<link rel="dns-prefetch" href="https://getbifrost.ai" />
 		<link rel="preconnect" href="https://getbifrost.ai" />
-		<script>!function(){var k="bifrost:skew-reloads",s=0;function m(){try{var n=Date.now(),e=JSON.parse(sessionStorage.getItem(k)||"null");if(!e||n-e.firstAt>6e4)e={count:1,firstAt:n};else{if(e.count>=2)return!1;e.count++}return sessionStorage.setItem(k,JSON.stringify(e)),!0}catch(e){return!1}}function u(){if(s||window.__bifrostBooted)return;s=1;var e=m(),r=document.getElementById("root");r&&(r.innerHTML='<style>*{box-sizing:border-box}body{margin:0}#bu{min-height:100vh;min-height:100dvh;display:grid;place-items:center;padding:24px;background:#f4f4f5;color:#18181b;font-family:system-ui,sans-serif}.shell-dark #bu{background:#1a1a1e;color:#fafafa}#bc{width:min(512px,100%);overflow:hidden;border:1px solid #e4e4e7;border-radius:12px;background:#fff;box-shadow:0 24px 80px -36px #0006}.shell-dark #bc{border-color:#3f3f46;background:#27272a}#bh{padding:16px 24px;border-bottom:1px solid #e4e4e7}.shell-dark #bh{border-color:#3f3f46}#bh img{height:20px}.d{display:none}.shell-dark .l{display:none}.shell-dark .d{display:block}#bx{padding:36px 32px 32px}h1{margin:0;font-size:24px;line-height:32px;font-weight:650;letter-spacing:-.02em}p{margin:8px 0 0;color:#71717a;font-size:14px;line-height:22px}.shell-dark p,.shell-dark #bf span{color:#a1a1aa}#bp{height:6px;margin-top:28px;overflow:hidden;border-radius:9px;background:#f4f4f5}.shell-dark #bp{background:#3f3f46}#bp i{display:block;width:34%;height:100%;border-radius:9px;background:#3f9277;animation:p 1.8s ease-in-out infinite}#bp.x i{width:100%;opacity:.35;animation:none}#bf{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-top:16px}#bf span{color:#71717a;font-size:12px}#br{cursor:pointer;border:1px solid #e4e4e7;border-radius:6px;padding:7px 13px;background:#fff;color:#18181b;font-size:13px;font-weight:550}.shell-dark #br{border-color:#52525b;background:#27272a;color:#fafafa}@keyframes p{0%{transform:translateX(-110%)}50%{transform:translateX(110%)}to{transform:translateX(310%)}}@media(max-width:520px){#bu{padding:16px}#bh{padding:14px 18px}#bx{padding:28px 20px 24px}#bf{align-items:stretch;flex-direction:column}#br{width:100%}}@media(prefers-reduced-motion:reduce){#bp i{width:100%;animation:none}}</style><main id=bu><section id=bc role=status aria-live=polite><div id=bh><img alt=Bifrost class=l src=/bifrost-logo.webp><img alt=Bifrost class=d src=/bifrost-logo-dark.webp></div><div id=bx><h1>Bifrost is upgrading</h1><p>'+(e?"A new version of Bifrost is being rolled out. This page will retry automatically.":"Bifrost is still upgrading. If this is taking longer than expected, reach out to your administrator for more information.")+'</p><div id=bp'+(e?'':' class=x')+'><i></i></div><div id=bf><span>'+(e?'Waiting for the upgrade to complete&hellip;':'Automatic reload paused')+'</span><button id=br>Reload now</button></div></div></section></main>',document.getElementById("br").onclick=function(){location.reload()},e&&setTimeout(function(){location.reload()},4e3))}addEventListener("error",function(e){var r=e.target,t=r&&(r.src||r.href);t&&t.indexOf("/assets/")>-1&&u()},!0),setTimeout(function(){window.__bifrostBooted||u()},2e4)}()</script>
+		<script>
+			!(function () {
+				var k = "bifrost:skew-reloads",
+					s = 0;
+				function m() {
+					try {
+						var n = Date.now(),
+							e = JSON.parse(sessionStorage.getItem(k) || "null");
+						if (!e || n - e.firstAt > 6e4) e = { count: 1, firstAt: n };
+						else {
+							if (e.count >= 2) return !1;
+							e.count++;
+						}
+						return (sessionStorage.setItem(k, JSON.stringify(e)), !0);
+					} catch (e) {
+						return !1;
+					}
+				}
+				function u() {
+					if (s || window.__bifrostBooted) return;
+					s = 1;
+					var e = m(),
+						r = document.getElementById("root");
+					r &&
+						((r.innerHTML =
+							"<style>*{box-sizing:border-box}body{margin:0}#bu{min-height:100vh;min-height:100dvh;display:grid;place-items:center;padding:24px;background:#f4f4f5;color:#18181b;font-family:system-ui,sans-serif}.shell-dark #bu{background:#1a1a1e;color:#fafafa}#bc{width:min(512px,100%);overflow:hidden;border:1px solid #e4e4e7;border-radius:12px;background:#fff;box-shadow:0 24px 80px -36px #0006}.shell-dark #bc{border-color:#3f3f46;background:#27272a}#bh{padding:16px 24px;border-bottom:1px solid #e4e4e7}.shell-dark #bh{border-color:#3f3f46}#bh img{height:20px}.d{display:none}.shell-dark .l{display:none}.shell-dark .d{display:block}#bx{padding:36px 32px 32px}h1{margin:0;font-size:24px;line-height:32px;font-weight:650;letter-spacing:-.02em}p{margin:8px 0 0;color:#71717a;font-size:14px;line-height:22px}.shell-dark p,.shell-dark #bf span{color:#a1a1aa}#bp{height:6px;margin-top:28px;overflow:hidden;border-radius:9px;background:#f4f4f5}.shell-dark #bp{background:#3f3f46}#bp i{display:block;width:34%;height:100%;border-radius:9px;background:#3f9277;animation:p 1.8s ease-in-out infinite}#bp.x i{width:100%;opacity:.35;animation:none}#bf{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-top:16px}#bf span{color:#71717a;font-size:12px}#br{cursor:pointer;border:1px solid #e4e4e7;border-radius:6px;padding:7px 13px;background:#fff;color:#18181b;font-size:13px;font-weight:550}.shell-dark #br{border-color:#52525b;background:#27272a;color:#fafafa}@keyframes p{0%{transform:translateX(-110%)}50%{transform:translateX(110%)}to{transform:translateX(310%)}}@media(max-width:520px){#bu{padding:16px}#bh{padding:14px 18px}#bx{padding:28px 20px 24px}#bf{align-items:stretch;flex-direction:column}#br{width:100%}}@media(prefers-reduced-motion:reduce){#bp i{width:100%;animation:none}}</style><main id=bu><section id=bc role=status aria-live=polite><div id=bh><img alt=Bifrost class=l src=/bifrost-logo.webp><img alt=Bifrost class=d src=/bifrost-logo-dark.webp></div><div id=bx><h1>Bifrost is upgrading</h1><p>" +
+							(e
+								? "A new version of Bifrost is being rolled out. This page will retry automatically."
+								: "Bifrost is still upgrading. If this is taking longer than expected, reach out to your administrator for more information.") +
+							"</p><div id=bp" +
+							(e ? "" : " class=x") +
+							"><i></i></div><div id=bf><span>" +
+							(e ? "Waiting for the upgrade to complete&hellip;" : "Automatic reload paused") +
+							"</span><button id=br>Reload now</button></div></div></section></main>"),
+						(document.getElementById("br").onclick = function () {
+							location.reload();
+						}),
+						e &&
+							setTimeout(function () {
+								location.reload();
+							}, 4e3));
+				}
+				(addEventListener(
+					"error",
+					function (e) {
+						var r = e.target,
+							t = r && (r.src || r.href);
+						t && t.indexOf("/assets/") > -1 && u();
+					},
+					!0,
+				),
+					setTimeout(function () {
+						window.__bifrostBooted || u();
+					}, 2e4));
+			})();
+		</script>
 	</head>
 
 	<body class="font-sans antialiased">
-		<div id=root><script>!function(){try{var e=localStorage.getItem("theme"),e="dark"===e||"light"!==e&&matchMedia("(prefers-color-scheme:dark)").matches;document.getElementById("root").classList.toggle("shell-dark",e)}catch(t){try{document.getElementById("root").classList.toggle("shell-dark",matchMedia("(prefers-color-scheme:dark)").matches)}catch(t){}}}()</script><style>*{box-sizing:border-box;margin:0;padding:0;border:0 solid}#bifrost-shell{display:flex;height:100vh;background:#f4f4f5;color:#71717a;font-family:ui-sans-serif,system-ui,-apple-system,sans-serif}.shell-dark #bifrost-shell{background:#1a1a1e;color:#a1a1aa}#bifrost-shell .sidebar{width:240px;border-right:1px solid rgba(0,0,0,.08);padding:16px;display:flex;flex-direction:column;gap:24px}.shell-dark #bifrost-shell .sidebar{border-color:rgba(255,255,255,.1)}#bifrost-shell .logo{height:24px;opacity:.8;width:max-content}#bifrost-shell .logo-dark{display:none}.shell-dark #bifrost-shell .logo-light{display:none}.shell-dark #bifrost-shell .logo-dark{display:inline}#bifrost-shell .nav-item{height:12px;border-radius:6px;background:currentColor;opacity:.08}#bifrost-shell .main{flex:1;padding:32px;display:flex;flex-direction:column;gap:20px}#bifrost-shell .bar{border-radius:6px;background:currentColor;opacity:.06}@media(max-width:767px){#bifrost-shell .sidebar{display:none}#bifrost-shell .main{padding:16px}}@keyframes shell-fade{from{opacity:0}to{opacity:1}}#bifrost-shell{animation:shell-fade .2s ease-out}</style><div id=bifrost-shell aria-hidden=true><div class=sidebar><img alt="" class="logo logo-light" src="/bifrost-logo.webp"> <img alt="" class="logo logo-dark" src="/bifrost-logo-dark.webp"><div style=display:flex;flex-direction:column;gap:10px><div class=nav-item style=width:70%></div><div class=nav-item style=width:55%></div><div class=nav-item style=width:80%></div><div class=nav-item style=width:45%></div><div class=nav-item style=width:65%></div></div></div><div class=main><div class=bar style=height:32px;width:240px></div><div class=bar style=height:1px;width:100%></div><div style=display:flex;gap:16px><div class=bar style=height:80px;flex:1></div><div class=bar style=height:80px;flex:1></div><div class=bar style=height:80px;flex:1></div></div><div class=bar style=height:200px;width:100%></div></div></div></div>
+		<div id="root">
+			<script>
+				!(function () {
+					try {
+						var e = localStorage.getItem("theme"),
+							e = "dark" === e || ("light" !== e && matchMedia("(prefers-color-scheme:dark)").matches);
+						document.getElementById("root").classList.toggle("shell-dark", e);
+					} catch (t) {
+						try {
+							document.getElementById("root").classList.toggle("shell-dark", matchMedia("(prefers-color-scheme:dark)").matches);
+						} catch (t) {}
+					}
+				})();
+			</script>
+			<style>
+				* {
+					box-sizing: border-box;
+					margin: 0;
+					padding: 0;
+					border: 0 solid;
+				}
+				#bifrost-shell {
+					display: flex;
+					height: 100vh;
+					background: #f4f4f5;
+					color: #71717a;
+					font-family:
+						ui-sans-serif,
+						system-ui,
+						-apple-system,
+						sans-serif;
+				}
+				.shell-dark #bifrost-shell {
+					background: #1a1a1e;
+					color: #a1a1aa;
+				}
+				#bifrost-shell .sidebar {
+					width: 240px;
+					border-right: 1px solid rgba(0, 0, 0, 0.08);
+					padding: 16px;
+					display: flex;
+					flex-direction: column;
+					gap: 24px;
+				}
+				.shell-dark #bifrost-shell .sidebar {
+					border-color: rgba(255, 255, 255, 0.1);
+				}
+				#bifrost-shell .logo {
+					height: 24px;
+					opacity: 0.8;
+					width: max-content;
+				}
+				#bifrost-shell .logo-dark {
+					display: none;
+				}
+				.shell-dark #bifrost-shell .logo-light {
+					display: none;
+				}
+				.shell-dark #bifrost-shell .logo-dark {
+					display: inline;
+				}
+				#bifrost-shell .nav-item {
+					height: 12px;
+					border-radius: 6px;
+					background: currentColor;
+					opacity: 0.08;
+				}
+				#bifrost-shell .main {
+					flex: 1;
+					padding: 32px;
+					display: flex;
+					flex-direction: column;
+					gap: 20px;
+				}
+				#bifrost-shell .bar {
+					border-radius: 6px;
+					background: currentColor;
+					opacity: 0.06;
+				}
+				@media (max-width: 767px) {
+					#bifrost-shell .sidebar {
+						display: none;
+					}
+					#bifrost-shell .main {
+						padding: 16px;
+					}
+				}
+				@keyframes shell-fade {
+					from {
+						opacity: 0;
+					}
+					to {
+						opacity: 1;
+					}
+				}
+				#bifrost-shell {
+					animation: shell-fade 0.2s ease-out;
+				}
+			</style>
+			<div id="bifrost-shell" aria-hidden="true">
+				<div class="sidebar">
+					<img alt="" class="logo logo-light" src="/bifrost-logo.webp" />
+					<img alt="" class="logo logo-dark" src="/bifrost-logo-dark.webp" />
+					<div style="display: flex; flex-direction: column; gap: 10px">
+						<div class="nav-item" style="width: 70%"></div>
+						<div class="nav-item" style="width: 55%"></div>
+						<div class="nav-item" style="width: 80%"></div>
+						<div class="nav-item" style="width: 45%"></div>
+						<div class="nav-item" style="width: 65%"></div>
+					</div>
+				</div>
+				<div class="main">
+					<div class="bar" style="height: 32px; width: 240px"></div>
+					<div class="bar" style="height: 1px; width: 100%"></div>
+					<div style="display: flex; gap: 16px">
+						<div class="bar" style="height: 80px; flex: 1"></div>
+						<div class="bar" style="height: 80px; flex: 1"></div>
+						<div class="bar" style="height: 80px; flex: 1"></div>
+					</div>
+					<div class="bar" style="height: 200px; width: 100%"></div>
+				</div>
+			</div>
+		</div>
 		<script type="module" src="/app/main.tsx"></script>
 	</body>
 </html>

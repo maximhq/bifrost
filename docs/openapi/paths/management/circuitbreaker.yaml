@@ -10,8 +10,17 @@ circuit-breaker-policies:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `CircuitBreaker:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: List circuit breaker policies
-    description: Returns all circuit breaker policies defined in this workspace.
+    description: |
+      Returns all circuit breaker policies defined in this workspace.
     tags:
       - Circuit Breaker
     security:
@@ -36,6 +45,14 @@ circuit-breaker-policies:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `CircuitBreaker:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Create circuit breaker policy
     description: |
       Creates a new circuit breaker policy and immediately activates it in the running gateway.
@@ -75,6 +92,14 @@ circuit-breaker-policy-by-name:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `CircuitBreaker:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Update circuit breaker policy
     description: |
       Replaces a circuit breaker policy by name. The `name` field in the request body must match the URL parameter or be omitted.
@@ -120,6 +145,14 @@ circuit-breaker-policy-by-name:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `CircuitBreaker:Delete` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Delete circuit breaker policy
     description: |
       Deletes a circuit breaker policy by name and removes it from the running gateway.
@@ -158,6 +191,14 @@ circuit-breaker-state:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `CircuitBreaker:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get circuit breaker state
     description: |
       Returns a snapshot of all currently-open circuits.

@@ -84,6 +84,31 @@ func (provider *XAIProvider) ListModels(ctx *schemas.BifrostContext, keys []sche
 	)
 }
 
+// ModelRetrieve retrieves a single model's metadata from the xAI API.
+func (provider *XAIProvider) ModelRetrieve(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostModelRetrieveRequest) (*schemas.BifrostModelRetrieveResponse, *schemas.BifrostError) {
+	if provider.networkConfig.BaseURL == "" {
+		return nil, providerUtils.NewConfigurationError("base_url is not set")
+	}
+	if request == nil || request.Model == "" {
+		return nil, providerUtils.NewBifrostOperationError("model is required", nil)
+	}
+	escapedModel, idErr := providerUtils.EscapeResourceID(request.Model, "model")
+	if idErr != nil {
+		return nil, idErr
+	}
+
+	return openai.HandleOpenAIModelRetrieveRequest(
+		ctx,
+		provider.client,
+		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/models/"+escapedModel),
+		key,
+		provider.networkConfig.ExtraHeaders,
+		provider.GetProviderKey(),
+		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
+		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+	)
+}
+
 // TextCompletion performs a text completion request to the xAI API.
 func (provider *XAIProvider) TextCompletion(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostTextCompletionRequest) (*schemas.BifrostTextCompletionResponse, *schemas.BifrostError) {
 	return openai.HandleOpenAITextCompletionRequest(
@@ -146,7 +171,7 @@ func (provider *XAIProvider) ChatCompletion(ctx *schemas.BifrostContext, key sch
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
-	response.Usage.NormalizeProviderCost()
+	normalizeXAIChatUsage(response)
 	return response, nil
 }
 
@@ -171,11 +196,41 @@ func (provider *XAIProvider) ChatCompletionStream(ctx *schemas.BifrostContext, p
 		nil,
 		ParseXAIError,
 		nil,
-		nil,
+		normalizeXAIChatResponse,
 		nil,
 		provider.logger,
 		postHookSpanFinalizer,
 	)
+}
+
+// normalizeXAIChatResponse normalizes xAI's chat usage before the shared
+// OpenAI-compatible stream accumulator folds the terminal usage frame.
+func normalizeXAIChatResponse(response *schemas.BifrostChatResponse) *schemas.BifrostChatResponse {
+	normalizeXAIChatUsage(response)
+	return response
+}
+
+// normalizeXAIChatUsage converts xAI Chat Completions usage to OpenAI semantics.
+// xAI reports visible completion tokens separately from reasoning tokens, while
+// Bifrost's completion_tokens contract includes reasoning tokens. The total-token
+// identity makes the conversion idempotent and avoids double-counting payloads
+// that a provider or proxy has already normalized.
+//
+// The authoritative provider cost is normalized independently so it continues
+// to override catalog estimation when cost_in_usd_ticks is present.
+func normalizeXAIChatUsage(response *schemas.BifrostChatResponse) {
+	if response == nil || response.Usage == nil {
+		return
+	}
+
+	usage := response.Usage
+	if usage.CompletionTokensDetails != nil {
+		reasoningTokens := usage.CompletionTokensDetails.ReasoningTokens
+		if reasoningTokens > 0 && usage.TotalTokens == usage.PromptTokens+usage.CompletionTokens+reasoningTokens {
+			usage.CompletionTokens += reasoningTokens
+		}
+	}
+	usage.NormalizeProviderCost()
 }
 
 // Responses performs a responses request to the xAI API.
@@ -219,11 +274,23 @@ func (provider *XAIProvider) ResponsesStream(ctx *schemas.BifrostContext, postHo
 		nil,
 		ParseXAIError,
 		nil,
-		nil,
+		normalizeXAIResponsesProviderCost,
 		nil,
 		provider.logger,
 		postHookSpanFinalizer,
 	)
+}
+
+// normalizeXAIResponsesProviderCost converts the authoritative cost reported on
+// a terminal Responses stream event before pricing and stream accumulation read
+// it. Unlike chat completions, Responses output_tokens already includes reasoning
+// tokens, but using the provider cost also covers tools, discounts, and any other
+// provider-side billing adjustments.
+func normalizeXAIResponsesProviderCost(response *schemas.BifrostResponsesStreamResponse) *schemas.BifrostResponsesStreamResponse {
+	if response != nil && response.Response != nil {
+		response.Response.Usage.NormalizeProviderCost()
+	}
+	return response
 }
 
 // Embedding is not supported by the xAI provider.
@@ -239,6 +306,11 @@ func (provider *XAIProvider) Speech(ctx *schemas.BifrostContext, key schemas.Key
 // Rerank is not supported by the XAI provider.
 func (provider *XAIProvider) Rerank(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostRerankRequest) (*schemas.BifrostRerankResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.RerankRequest, provider.GetProviderKey())
+}
+
+// Decision is not supported by the XAI provider.
+func (provider *XAIProvider) Decision(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostDecisionRequest) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.DecisionRequest, provider.GetProviderKey())
 }
 
 // OCR is not supported by the Xai provider.

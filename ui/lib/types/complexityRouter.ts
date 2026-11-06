@@ -3,6 +3,14 @@
  * Mirrors the AnalyzerConfig shape exchanged with /governance/complexity-analyzer-config.
  */
 
+import i18n from "@/lib/i18n";
+import type { ParseKeys } from "i18next";
+
+// Display text below resolves through i18n when read (getters), so these shared constants
+// follow the active locale for every consumer.
+const tModels = (key: ParseKeys<"models">): string => i18n.t(key, { ns: "models" });
+const tObservability = (key: ParseKeys<"observability">): string => i18n.t(key, { ns: "observability" });
+
 export interface EditableKeywordConfig {
 	simple_keywords: string[];
 	medium_keywords: string[];
@@ -14,7 +22,35 @@ export type SemanticVectorStore = "embedded" | "vector_store";
 // Mirrors ComplexitySemanticFallback* in framework/configstore: what answers
 // when semantic classification produces no tier. An absent field on the wire
 // means "none".
-export type SemanticFallback = "none" | "llm";
+export type ClassifierMode = "semantic" | "decision";
+export type SemanticFallback = "none" | "llm" | "decision";
+
+export type DecisionTier = (typeof COMPLEXITY_TIER_VALUES)[number];
+
+// One tier's editable decision-model criteria. An omitted field means the gateway sends
+// its shipped default for that field.
+export interface DecisionTierCriteria {
+	definition?: string;
+	signals?: string[];
+	examples?: string[];
+}
+
+export interface DecisionConfig {
+	// The decision model to call. Both omitted selects the gateway default
+	// (DEFAULT_DECISION_PROVIDER/MODEL); otherwise both are set.
+	provider?: string;
+	model?: string;
+	previous_message_count: number;
+	timeout?: string;
+	// The confidence an answer must reach to publish its tier. 0 or omitted keeps every answer.
+	min_confidence?: number;
+	criteria?: Partial<Record<DecisionTier, DecisionTierCriteria>>;
+}
+
+// The shipped decision-model guidance, served by the status endpoint.
+export interface DecisionGuidanceDefaults {
+	criteria: Record<DecisionTier, Required<DecisionTierCriteria>>;
+}
 
 export interface LLMConfig {
 	provider: string;
@@ -91,10 +127,15 @@ export interface SemanticStatusInfo {
 	// seed itself and offer a reset without holding a copy that drifts from
 	// the gateway's. The fixed reinforcement is never exposed.
 	llm_default_prompt?: string;
+	// The shipped decision-model per-tier criteria, served for the same reason as
+	// llm_default_prompt.
+	decision_defaults?: DecisionGuidanceDefaults;
 }
 
 export interface AnalyzerConfig {
 	keywords: EditableKeywordConfig;
+	classifier?: ClassifierMode;
+	decision?: DecisionConfig;
 	semantic?: SemanticConfig;
 	// The fallback classifier, engaged only when semantic.fallback selects
 	// "llm". May be present while the fallback says "none": the block is
@@ -121,18 +162,31 @@ export const LEGACY_COMPLEXITY_TIER_VALUES = ["REASONING"] as const;
 // LEGACY_COMPLEXITY_TIER_VALUES): the complexity_mechanism column ships with the
 // semantic classifier, so no row was ever written with the retired "lexical"
 // mechanism and filtering on it could only ever return nothing.
-export const COMPLEXITY_MECHANISM_VALUES = ["semantic", "llm", "session", "skipped"] as const;
+export const COMPLEXITY_MECHANISM_VALUES = ["semantic", "decision", "llm", "session", "skipped"] as const;
 
 // Labels cover "lexical" even though nothing filters on it. Rows predating the
 // structured columns record their decision only in the prose routing log, and
 // deriveComplexityRouting (logs/sheets/logDetailView.tsx) reconstructs those as
 // "lexical" — the classifier that actually wrote them — for the detail view.
 export const COMPLEXITY_MECHANISM_LABELS: Record<string, string> = {
-	lexical: "Lexical",
-	semantic: "Semantic",
-	llm: "LLM",
-	session: "Session",
-	skipped: "Skipped",
+	get lexical() {
+		return tObservability("labels.complexityMechanism.lexical");
+	},
+	get semantic() {
+		return tObservability("labels.semantic");
+	},
+	get decision() {
+		return tObservability("labels.complexityMechanism.decision");
+	},
+	get llm() {
+		return tObservability("labels.complexityMechanism.llm");
+	},
+	get session() {
+		return tObservability("labels.session");
+	},
+	get skipped() {
+		return tObservability("labels.complexityMechanism.skipped");
+	},
 };
 
 // One card per tier in the Phrase to Tier Mapping section.
@@ -151,23 +205,44 @@ export const TIER_PHRASE_LIST_DEFINITIONS: Array<{
 }> = [
 	{
 		key: "simple_keywords",
-		label: "Simple",
-		description: "Requests to route to your cheapest, fastest model.",
+		get label() {
+			return tModels("routing.complexityUi.tierSimple");
+		},
+		get description() {
+			return tModels("routing.complexityUi.tierSimpleDesc");
+		},
 	},
 	{
 		key: "medium_keywords",
-		label: "Medium",
-		description: "Requests that need more capability than your cheapest model, but not your most capable.",
+		get label() {
+			return tModels("routing.complexityUi.tierMedium");
+		},
+		get description() {
+			return tModels("routing.complexityUi.tierMediumDesc");
+		},
 	},
 	{
 		key: "complex_keywords",
-		label: "Complex",
-		description: "Requests that justify your most capable model.",
+		get label() {
+			return tModels("routing.complexityUi.tierComplex");
+		},
+		get description() {
+			return tModels("routing.complexityUi.tierComplexDesc");
+		},
 	},
 ];
 
-// Mirrors DefaultComplexitySemanticTimeout in framework/configstore.
+// Mirrors classifier timeout and history defaults in framework/configstore.
 export const DEFAULT_SEMANTIC_TIMEOUT_MS = 1500;
+export const DEFAULT_DECISION_TIMEOUT_MS = 1500;
+export const DEFAULT_DECISION_PREVIOUS_MESSAGE_COUNT = 1;
+export const MAX_DECISION_PREVIOUS_MESSAGE_COUNT = 5;
+export const DEFAULT_DECISION_MIN_CONFIDENCE = 0;
+
+// Server-side bounds from validateComplexityDecisionGuidance in framework/configstore.
+export const MAX_DECISION_DEFINITION_CHARACTERS = 500;
+export const MAX_DECISION_CRITERIA_ITEMS = 12;
+export const MAX_DECISION_CRITERIA_ITEM_CHARACTERS = 300;
 
 // The timeout is stored as a Go time.Duration — int64 nanoseconds — so this is
 // the largest whole millisecond value time.ParseDuration accepts. One more and
@@ -181,6 +256,58 @@ export const MIN_SEMANTIC_MESSAGE_HISTORY = 1;
 export const MAX_SEMANTIC_MESSAGE_HISTORY = 10;
 export const MAX_SEMANTIC_PHRASE_CHARACTERS = 2000;
 export const MAX_SEMANTIC_PHRASES = 750;
+
+// DEFAULT_DECISION_PROVIDER and DEFAULT_DECISION_MODEL mirror the gateway's
+// default decision model (DefaultComplexityDecisionProvider/Model in framework/configstore).
+export const DEFAULT_DECISION_PROVIDER = "typesafe";
+export const DEFAULT_DECISION_MODEL = "jev-latest";
+
+// The checkpoints self-hosted decision models serve, grouped by model. Offered
+// when a custom provider cannot list its own models (Laya has no model listing,
+// and a Clef served by Ollama has no Cloudflare URL to read its model from), so
+// the operator picks a real checkpoint instead of typing its name. Clef starts on
+// the smaller Flash model, the one a typical self-hosted box actually has pulled.
+export const SELF_HOSTED_DECISION_MODELS = [
+	{ label: "Laya", models: ["english", "multilingual", "typed-decisions"] }, // i18n-ignore (model family name)
+	{ label: "Nimble", models: ["nimble-latest", "bespokelabs/Bespoke-Nimble-9B"] }, // i18n-ignore (model family name)
+	{ label: "Clef", models: ["clef-flash", "clef"] }, // i18n-ignore (model family name)
+] as const;
+
+// OPENROUTER_DECISION_MODEL is the model a newly selected OpenRouter provider starts on.
+// The picker lists every OpenRouter model the datasheet marks as serving decisions.
+export const OPENROUTER_DECISION_MODEL = "~typesafe/jev-latest";
+
+// OPENAI_DECISION_MODEL is the model a newly selected OpenAI provider starts on.
+// The picker lists every model the datasheet marks as serving decisions.
+export const OPENAI_DECISION_MODEL = "gpt-6-luna";
+
+// PERPLEXITY_DECISION_MODEL is the model a newly selected Perplexity provider starts on:
+// the alias that follows Perplexity's newest decider. The picker lists the decider
+// models Perplexity serves.
+export const PERPLEXITY_DECISION_MODEL = "pplx-decider-latest";
+
+// AZURE_DECISION_MODEL is the model a newly selected Azure provider starts on: the model
+// name a key alias maps to the user's deployment. The picker lists Microsoft's decision models.
+export const AZURE_DECISION_MODEL = "Microsoft-Decision-1";
+
+// DATABRICKS_DECISION_MODEL is the model a newly selected Databricks provider starts on:
+// the ai_decide AI Function. The picker also lists the System One models.
+export const DATABRICKS_DECISION_MODEL = "ai_decide";
+
+// CLOUDFLARE_DECISION_MODEL is the model a newly selected Cloudflare provider starts on.
+// The picker lists the Clef models Cloudflare Workers AI serves.
+export const CLOUDFLARE_DECISION_MODEL = "@cf/cloudflare/clef-flash";
+
+// DEFAULT_DECISION_CONFIG supplies the model, history window, timeout, and confidence floor for decision-model requests.
+export const DEFAULT_DECISION_CONFIG: Required<
+	Pick<DecisionConfig, "provider" | "model" | "previous_message_count" | "timeout" | "min_confidence">
+> = {
+	provider: DEFAULT_DECISION_PROVIDER,
+	model: DEFAULT_DECISION_MODEL,
+	previous_message_count: DEFAULT_DECISION_PREVIOUS_MESSAGE_COUNT,
+	timeout: `${DEFAULT_DECISION_TIMEOUT_MS}ms`,
+	min_confidence: DEFAULT_DECISION_MIN_CONFIDENCE,
+};
 
 // Seeded when a deployment has no semantic block saved yet. Provider and model
 // stay blank because only the operator knows them.
@@ -200,22 +327,37 @@ export const DEFAULT_SEMANTIC_CONFIG: SemanticConfig = {
 export const SEMANTIC_VECTOR_STORE_OPTIONS: Array<{ value: SemanticVectorStore; label: string; tooltip: string }> = [
 	{
 		value: "embedded",
-		label: "Embedded",
-		tooltip: "Keeps phrase vectors in Bifrost's own memory. No infrastructure to run, but every restart re-embeds them.",
+		get label() {
+			return tModels("routing.complexityUi.vectorStoreEmbedded");
+		},
+		get tooltip() {
+			return tModels("routing.complexityUi.vectorStoreEmbeddedTip");
+		},
 	},
 	{
 		value: "vector_store",
-		label: "Vector Store",
-		tooltip:
-			"Keeps phrase vectors in the vector store configured for Bifrost, so they survive restarts. Falls back to Embedded if no vector store is available.",
+		get label() {
+			return tModels("routing.complexityUi.vectorStoreExternal");
+		},
+		get tooltip() {
+			return tModels("routing.complexityUi.vectorStoreExternalTip");
+		},
 	},
 ];
 
 export const SEMANTIC_STATUS_LABELS: Record<SemanticStatusInfo["state"], string> = {
-	disabled: "Disabled",
-	warming: "Warming up",
-	ready: "Ready",
-	failed: "Failed",
+	get disabled() {
+		return tModels("routing.disabled");
+	},
+	get warming() {
+		return tModels("routing.complexityUi.statusWarming");
+	},
+	get ready() {
+		return tModels("routing.complexityUi.statusReady");
+	},
+	get failed() {
+		return tModels("routing.complexityUi.statusFailed");
+	},
 };
 
 // Duration strings round-trip through the API as Go durations ("500ms"), but the
@@ -275,19 +417,43 @@ export const DEFAULT_LLM_CONFIG: LLMConfig = {
 export const SEMANTIC_FALLBACK_OPTIONS: Array<{ value: SemanticFallback; label: string; description: string }> = [
 	{
 		value: "none",
-		label: "None",
-		description: "A request matching no phrase confidently carries no tier, and rules referencing complexity_tier do not match it.",
+		get label() {
+			return tModels("routing.complexityUi.fallbackNone");
+		},
+		get description() {
+			return tModels("routing.complexityUi.fallbackNoneDesc");
+		},
 	},
 	{
 		value: "llm",
-		label: "LLM classifier",
-		description: "A chat model names the tier instead. Slower and costlier than an embedding, but only unmatched requests pay for it.",
+		get label() {
+			return tModels("routing.complexityUi.fallbackLlm");
+		},
+		get description() {
+			return tModels("routing.complexityUi.fallbackLlmDesc");
+		},
+	},
+	{
+		value: "decision",
+		get label() {
+			return tModels("routing.complexityUi.classifierNameDecision");
+		},
+		get description() {
+			return tModels("routing.complexityUi.fallbackDecisionDesc");
+		},
 	},
 ];
 
 export const SEMANTIC_FALLBACK_LABELS: Record<SemanticFallback, string> = {
-	none: "None",
-	llm: "LLM classifier",
+	get none() {
+		return tModels("routing.complexityUi.fallbackNone");
+	},
+	get llm() {
+		return tModels("routing.complexityUi.fallbackLlm");
+	},
+	get decision() {
+		return tModels("routing.complexityUi.classifierNameDecision");
+	},
 };
 
 // Same duration round-trip as parseSemanticTimeoutMs, with the llm default.

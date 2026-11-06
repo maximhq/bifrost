@@ -236,6 +236,17 @@ func testRunnerWithID(store Store, runnerID string) *Runner {
 	return New(store, bifrost.NewDefaultLogger(schemas.LogLevelError), 4, runnerID)
 }
 
+// Kinds marked quiet are reported sorted and once, however often marked.
+func TestQuietOnSuccessKinds(t *testing.T) {
+	r := testRunner(newFakeStore())
+	defer r.Shutdown()
+	require.Empty(t, r.QuietOnSuccessKinds())
+	r.RegisterQuietOnSuccess("upkeep")
+	r.RegisterQuietOnSuccess("cleanup")
+	r.RegisterQuietOnSuccess("upkeep")
+	require.Equal(t, []string{"cleanup", "upkeep"}, r.QuietOnSuccessKinds())
+}
+
 func TestEnqueueRunsHandlerAndCompletes(t *testing.T) {
 	store := newFakeStore()
 	r := testRunner(store)
@@ -802,4 +813,19 @@ func TestDispatcherQueuesOverflowOnSubsequentTicks(t *testing.T) {
 		id := fmt.Sprintf("job-%d", i)
 		assert.Equal(t, 1, store.running[id], "job %s must be claimed exactly once", id)
 	}
+}
+
+func TestSummarizerRegistry(t *testing.T) {
+	r := testRunner(newFakeStore())
+	r.RegisterSummarizer("counted", func(metadata string) JobSummary {
+		return JobSummary{Done: 3, Total: 10, Message: metadata}
+	})
+
+	got, ok := r.Summarize("counted", "hello")
+	require.True(t, ok)
+	assert.Equal(t, JobSummary{Done: 3, Total: 10, Message: "hello"}, got)
+
+	got, ok = r.Summarize("no-summarizer", "{}")
+	assert.False(t, ok, "kinds without a summarizer report no progress")
+	assert.Equal(t, JobSummary{}, got)
 }

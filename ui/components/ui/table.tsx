@@ -7,8 +7,29 @@ interface TableProps extends React.ComponentProps<"table"> {
 }
 
 function Table({ className, containerClassName, ...props }: TableProps) {
+	const containerRef = React.useRef<HTMLDivElement>(null);
+	const [isScrollable, setIsScrollable] = React.useState(false);
+
+	// A horizontally scrolling region must be reachable by keyboard (WCAG 2.1.1), but only
+	// add the tab stop when the table actually overflows, so short tables stay out of tab order.
+	React.useEffect(() => {
+		const container = containerRef.current;
+		if (!container) return;
+		const update = () => setIsScrollable(container.scrollWidth > container.clientWidth);
+		update();
+		const observer = new ResizeObserver(update);
+		observer.observe(container);
+		if (container.firstElementChild) observer.observe(container.firstElementChild);
+		return () => observer.disconnect();
+	}, []);
+
 	return (
-		<div data-slot="table-container" className={cn("relative w-full overflow-x-auto", containerClassName)}>
+		<div
+			ref={containerRef}
+			data-slot="table-container"
+			className={cn("relative w-full overflow-x-auto", containerClassName)}
+			tabIndex={isScrollable ? 0 : undefined}
+		>
 			<table data-slot="table" className={cn("w-full caption-bottom text-sm", className)} {...props} />
 		</div>
 	);

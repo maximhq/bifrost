@@ -7,35 +7,48 @@ import { CustomerSelector } from "@/components/entitySelectors/customerSelector"
 import { TeamSelector } from "@/components/entitySelectors/teamSelector";
 import { VirtualKeySelector } from "@/components/entitySelectors/virtualKeySelector";
 import { Button } from "@/components/ui/button";
-import { ComboboxSelect } from "@/components/ui/combobox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { ModelMultiselect } from "@/components/ui/modelMultiselect";
+import { ModelSelector } from "@/components/ui/modelSelector";
+import { ProviderSelector, type ProviderSelectorOption } from "@/components/ui/providerSelector";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
-import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
+import { resolveProviderIconKey } from "@/lib/constants/icons";
 import { getProviderLabel } from "@/lib/constants/logs";
 import { getUserPicker } from "@/lib/registries/userPicker";
 import { getErrorMessage } from "@/lib/store";
 import { useGetAllKeysQuery, useGetProvidersQuery } from "@/lib/store/apis/providersApi";
 import { useCreateRoutingRuleMutation, useGetRoutingRulesQuery, useUpdateRoutingRuleMutation } from "@/lib/store/apis/routingRulesApi";
 import {
+	DEFAULT_ROUTING_FALLBACK,
 	DEFAULT_ROUTING_RULE_FORM_DATA,
 	DEFAULT_ROUTING_TARGET,
 	ROUTING_RULE_SCOPES,
+	RoutingFallbackFormData,
 	RoutingRule,
 	RoutingRuleFormData,
 	RoutingTargetFormData,
 } from "@/lib/types/routingRules";
+import {
+	denormalizeFallback,
+	MAX_TTFT_TIMEOUT_MS,
+	normalizeFallback,
+	parseTTFTTimeoutInput,
+	resolveTargetTTFTMs,
+	summarizeTargetsTTFT,
+	summarizeTTFTDisplay,
+} from "@/lib/utils/routingRules";
 import { validateRateLimitAndBudgetRules, validateRoutingRules } from "@/lib/utils/celConverterRouting";
 import { isValidRuleGroupType, normalizeRoutingRuleGroupQuery } from "@/lib/utils/routingRuleGroupQuery";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { Plus, Trash2, X } from "lucide-react";
-import { lazy, Suspense, useCallback, useEffect, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useForm } from "react-hook-form";
+import type { ParseKeys, TFunction } from "i18next";
+import { Trans, useTranslation } from "react-i18next";
 import { RuleGroupType } from "react-querybuilder";
 import { toast } from "sonner";
 // Side-effect import: registers the enterprise user picker (no-op in OSS builds).
@@ -77,13 +90,32 @@ const CELRuleBuilderLazy = lazy(() =>
 		default: mod.CELRuleBuilder,
 	})),
 );
-const CELRuleBuilder = (props: React.ComponentProps<typeof CELRuleBuilderLazy>) => (
-	<Suspense fallback={<div className="text-sm text-gray-500">Loading CEL builder...</div>}>
-		<CELRuleBuilderLazy {...props} />
-	</Suspense>
-);
+const CELRuleBuilder = (props: React.ComponentProps<typeof CELRuleBuilderLazy>) => {
+	const { t } = useTranslation("models");
+	return (
+		<Suspense fallback={<div className="text-sm text-gray-500">{t("routing.loadingCelBuilder")}</div>}>
+			<CELRuleBuilderLazy {...props} />
+		</Suspense>
+	);
+};
+
+function scopeNoun(scope: string, t: TFunction<"models">) {
+	if (scope === "team") return t("routing.team");
+	if (scope === "customer") return t("routing.customer");
+	if (scope === "user") return t("routing.user");
+	return t("routing.scopeVirtualKey");
+}
+
+const SCOPE_OPTION_KEYS: Partial<Record<string, ParseKeys<"models">>> = {
+	global: "routing.scopeGlobal",
+	team: "routing.scopeTeam",
+	customer: "routing.scopeCustomer",
+	virtual_key: "routing.scopeVirtualKey",
+};
 
 export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }: RoutingRuleDialogProps) {
+	const { t } = useTranslation("models");
+	const { t: tc } = useTranslation("common");
 	const { data: rulesData } = useGetRoutingRulesQuery();
 	const rules = rulesData?.rules || [];
 	const { data: providersData = [] } = useGetProvidersQuery();
@@ -110,6 +142,10 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 		defaultValues: DEFAULT_ROUTING_RULE_FORM_DATA,
 	});
 
+	// The TTFT input text as loaded from the rule; lets submit tell "untouched" from "edited".
+	const loadedTTFTInput = useRef("");
+	const [ttftEdited, setTtftEdited] = useState(false); // set once the user types in the field
+
 	const isEditing = !!editingRule;
 	const isLoading = isCreating || isUpdating;
 	const canCreate = useRbac(RbacResource.RoutingRules, RbacOperation.Create);
@@ -124,23 +160,37 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 	// without a user directory, which hides the "User" scope option.
 	const UserPicker = getUserPicker();
 	const fallbacks = watch("fallbacks");
+	const ttftTimeoutInput = watch("ttft_timeout_ms");
+	const ttftDisplay = summarizeTTFTDisplay(editingRule?.targets, ttftTimeoutInput, ttftEdited);
+	const hasCompleteFallback = (fallbacks || []).some((fb) => (fb.provider ?? "").trim().length > 0);
 
-	// Get available providers from configured providers, plus any provider already
-	// referenced by the current targets, existing rules' targets, or rules' fallbacks
-	// so edited/removed providers are still visible in the dropdown.
-	const availableProviders = Array.from(
-		new Set([
-			...providersData.map((p) => p.name),
-			...(targets.map((t) => t.provider).filter(Boolean) as string[]),
-			...(rules.flatMap((r) => r.targets?.map((t) => t.provider).filter(Boolean) ?? []) as string[]),
-			...rules.flatMap((r) => (r.fallbacks ?? []).map((f) => f.split("/")[0]?.trim()).filter(Boolean)),
-		]),
+	// The selector lists the configured providers on its own. These are the extras: a
+	// provider the current targets, another rule's targets, or a fallback still names after
+	// it was deleted, so an existing rule keeps rendering what it actually points at.
+	const configuredNames = useMemo(() => new Set<string>(providersData.map((p) => p.name)), [providersData]);
+	const referencedNames = useMemo(
+		() =>
+			new Set<string>([
+				...(targets.map((t) => t.provider).filter(Boolean) as string[]),
+				...(rules.flatMap((r) => r.targets?.map((t) => t.provider).filter(Boolean) ?? []) as string[]),
+				...rules.flatMap((r) => (r.fallbacks ?? []).map((f) => normalizeFallback(f).provider?.trim()).filter(Boolean) as string[]),
+			]),
+		[targets, rules],
 	);
-	const providerOptions = availableProviders.map((prov) => ({
-		label: getProviderLabel(prov),
-		value: prov,
-		icon: <RenderProviderIcon provider={prov as ProviderIconType} size="sm" className="h-4 w-4" />,
-	}));
+	const referencedProviderOptions = useMemo<ProviderSelectorOption[]>(
+		() =>
+			Array.from(referencedNames)
+				.filter((name) => !configuredNames.has(name))
+				.map((name) => ({ value: name, label: getProviderLabel(name), iconKey: resolveProviderIconKey(name) })),
+		[referencedNames, configuredNames],
+	);
+
+	// The CEL builder still needs the flat union: it offers providers as literal values in an
+	// expression, where one a rule already names has to stay offerable.
+	const availableProviders = useMemo(
+		() => Array.from(new Set<string>([...configuredNames, ...referencedNames])),
+		[configuredNames, referencedNames],
+	);
 
 	// Initialize form data when editing rule changes
 	useEffect(() => {
@@ -149,7 +199,10 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 			setValue("name", editingRule.name);
 			setValue("description", editingRule.description);
 			setValue("cel_expression", editingRule.cel_expression);
-			setValue("fallbacks", editingRule.fallbacks || []);
+			setValue("fallbacks", (editingRule.fallbacks || []).map(normalizeFallback));
+			loadedTTFTInput.current = summarizeTargetsTTFT(editingRule.targets).ms?.toString() ?? "";
+			setTtftEdited(false);
+			setValue("ttft_timeout_ms", loadedTTFTInput.current);
 			setValue("scope", editingRule.scope);
 			setValue("scope_id", editingRule.scope_id || "");
 			setValue("priority", editingRule.priority);
@@ -163,6 +216,7 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 						model: t.model || "",
 						key_id: t.key_id || "",
 						weight: t.weight,
+						ttft_timeout_ms: t.ttft_timeout_ms || undefined,
 					})),
 				);
 			} else {
@@ -174,6 +228,8 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 			setBuilderKey((prev) => prev + 1);
 			setCelError(null);
 		} else {
+			loadedTTFTInput.current = "";
+			setTtftEdited(false);
 			reset();
 			setTargets([{ ...DEFAULT_ROUTING_TARGET }]);
 			setQuery(defaultQuery);
@@ -200,7 +256,13 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 
 	const addTarget = () => {
 		const remaining = 1 - targets.reduce((sum, t) => sum + (t.weight || 0), 0);
-		setTargets((prev) => [...prev, { ...DEFAULT_ROUTING_TARGET, weight: Math.max(0, parseFloat(remaining.toFixed(4))) }]);
+		setTargets((prev) => [
+			...prev,
+			{
+				...DEFAULT_ROUTING_TARGET,
+				weight: Math.max(0, parseFloat(remaining.toFixed(4))),
+			},
+		]);
 	};
 
 	const removeTarget = (index: number) => {
@@ -211,6 +273,20 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 		setTargets((prev) => prev.map((t, i) => (i === index ? { ...t, [field]: value } : t)));
 	};
 
+	const updateFallback = (index: number, changes: Partial<RoutingFallbackFormData>) => {
+		setValue(
+			"fallbacks",
+			(fallbacks || []).map((fb, i) => (i === index ? { ...fb, ...changes } : fb)),
+		);
+	};
+
+	const removeFallback = (index: number) => {
+		setValue(
+			"fallbacks",
+			(fallbacks || []).filter((_, i) => i !== index),
+		);
+	};
+
 	const totalWeight = targets.reduce((sum, t) => sum + (t.weight || 0), 0);
 
 	const onSubmit = (data: RoutingRuleFormData) => {
@@ -218,25 +294,23 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 
 		// Validate scope_id is required when scope is not global
 		if (data.scope !== "global" && !data.scope_id?.trim()) {
-			toast.error(
-				`${data.scope === "team" ? "Team" : data.scope === "customer" ? "Customer" : data.scope === "user" ? "User" : "Virtual Key"} is required`,
-			);
+			toast.error(t("routing.scopeRequired", { scope: scopeNoun(data.scope, t) }));
 			return;
 		}
 
 		// Validate targets
 		if (targets.length === 0) {
-			toast.error("At least one routing target is required");
+			toast.error(t("routing.atLeastOneTarget"));
 			return;
 		}
-		for (const t of targets) {
-			if (t.weight <= 0) {
-				toast.error("Each target weight must be greater than 0");
+		for (const target of targets) {
+			if (target.weight <= 0) {
+				toast.error(t("routing.targetWeightGtZero"));
 				return;
 			}
 		}
 		if (Math.abs(totalWeight - 1) > 0.001) {
-			toast.error(`Target weights must sum to 1, current total: ${totalWeight.toFixed(4)}`);
+			toast.error(t("routing.weightsMustSum", { total: totalWeight.toFixed(4) }));
 			return;
 		}
 
@@ -246,33 +320,33 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 			// Validate regex patterns in routing rules
 			const regexErrors = validateRoutingRules(query);
 			if (regexErrors.length > 0) {
-				toast.error(`Invalid regex pattern:\n${regexErrors.join("\n")}`);
+				toast.error(t("routing.invalidRegex", { errors: regexErrors.join("\n") }));
 				return;
 			}
 
 			// Validate rate limit and budget rules
 			const rateLimitErrors = validateRateLimitAndBudgetRules(query);
 			if (rateLimitErrors.length > 0) {
-				toast.error(`Invalid rule configuration:\n${rateLimitErrors.join("\n")}`);
+				toast.error(t("routing.invalidRuleConfig", { errors: rateLimitErrors.join("\n") }));
 				return;
 			}
 		}
 
 		// Filter out incomplete fallbacks (empty provider)
-		const validFallbacks = (data.fallbacks || []).filter((fb) => {
-			const provider = fb.split("/")[0]?.trim();
-			return provider && provider.length > 0;
-		});
+		const validFallbacks = (data.fallbacks || []).filter((fb) => (fb.provider ?? "").trim().length > 0).map(denormalizeFallback);
 
 		const payload = {
 			name: data.name,
 			description: data.description,
 			cel_expression: data.cel_expression,
-			targets: targets.map(({ provider, model, key_id, weight }) => ({
+			targets: targets.map(({ provider, model, key_id, weight, ttft_timeout_ms }) => ({
 				provider: provider || undefined,
 				model: model || undefined,
 				key_id: key_id || undefined,
 				weight,
+				// The API stores the deadline per target. Untouched input keeps each target's own value;
+				// an edit applies to all of them. 0 turns it off, and clears a stored one on update.
+				ttft_timeout_ms: resolveTargetTTFTMs(data.ttft_timeout_ms, loadedTTFTInput.current, ttft_timeout_ms, ttftEdited),
 			})),
 			fallbacks: validFallbacks,
 			scope: data.scope,
@@ -293,7 +367,7 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 
 		submitPromise
 			.then(() => {
-				toast.success(isEditing ? "Routing rule updated successfully" : "Routing rule created successfully");
+				toast.success(isEditing ? t("routing.updatedSuccess") : t("routing.createdSuccess"));
 				reset();
 				setTargets([{ ...DEFAULT_ROUTING_TARGET }]);
 				setQuery(defaultQuery);
@@ -329,10 +403,8 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 		<Sheet open={open} onOpenChange={onOpenChange}>
 			<SheetContent className="flex w-full min-w-1/2 flex-col gap-4 overflow-x-hidden p-0 pt-4">
 				<SheetHeader className="flex flex-col items-start py-4" headerClassName="mb-0 sticky -top-4 bg-card z-10 px-4 md:px-8">
-					<SheetTitle>{isEditing ? "Edit Routing Rule" : "Create New Routing Rule"}</SheetTitle>
-					<SheetDescription>
-						{isEditing ? "Update the routing rule configuration" : "Create a new CEL-based routing rule for intelligent request routing"}
-					</SheetDescription>
+					<SheetTitle>{isEditing ? t("routing.editTitle") : t("routing.createTitle")}</SheetTitle>
+					<SheetDescription>{isEditing ? t("routing.editDescription") : t("routing.createDescription")}</SheetDescription>
 				</SheetHeader>
 
 				<form onSubmit={handleSubmit(onSubmit)} className="flex grow flex-col">
@@ -340,27 +412,30 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 						{/* Rule Name */}
 						<div className="space-y-3">
 							<Label htmlFor="name">
-								Rule Name <span className="text-red-500">*</span>
+								{t("routing.ruleName")} <span className="text-red-500">*</span>
 							</Label>
 							<Input
 								id="name"
-								placeholder="e.g., Route GPT-4 to Azure"
-								{...register("name", { required: "Rule name is required", maxLength: 255 })}
+								placeholder={t("routing.ruleNamePlaceholder")}
+								{...register("name", {
+									required: t("routing.ruleNameRequired"),
+									maxLength: 255,
+								})}
 							/>
 							{errors.name && <p className="text-destructive text-sm">{errors.name.message}</p>}
 						</div>
 
 						{/* Description */}
 						<div className="space-y-3">
-							<Label htmlFor="description">Description</Label>
-							<Textarea id="description" placeholder="Describe what this rule does..." rows={2} {...register("description")} />
+							<Label htmlFor="description">{t("virtualKeys.description")}</Label>
+							<Textarea id="description" placeholder={t("routing.descriptionPlaceholder")} rows={2} {...register("description")} />
 						</div>
 
 						{/* Enabled Switch */}
 						<div className="flex items-center justify-between rounded-lg border p-4">
 							<div className="space-y-0.5">
-								<Label htmlFor="enabled">Enable Rule</Label>
-								<p className="text-muted-foreground text-sm">Rule will be active and applied to matching requests</p>
+								<Label htmlFor="enabled">{t("routing.enableRule")}</Label>
+								<p className="text-muted-foreground text-sm">{t("routing.enableRuleHelp")}</p>
 							</div>
 							<Switch id="enabled" checked={enabled} onCheckedChange={(checked) => setValue("enabled", checked)} />
 						</div>
@@ -368,11 +443,8 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 						{/* Chain Rule Switch */}
 						<div className="flex items-center justify-between rounded-lg border p-4">
 							<div className="space-y-0.5">
-								<Label htmlFor="chain_rule">Chain Rule</Label>
-								<p className="text-muted-foreground text-sm">
-									After this rule matches, re-evaluate routing rules using the resolved provider/model as the new context. Useful for
-									composing rules, e.g. normalize a model alias first, then route based on the canonical name.
-								</p>
+								<Label htmlFor="chain_rule">{t("routing.chainRule")}</Label>
+								<p className="text-muted-foreground text-sm">{t("routing.chainRuleHelp")}</p>
 							</div>
 							<Switch
 								id="chain_rule"
@@ -385,7 +457,7 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 						{/* Scope and Priority - Side by Side */}
 						<div className="grid grid-cols-1 gap-4 md:grid-cols-2">
 							<div className="space-y-3">
-								<Label htmlFor="scope">Scope</Label>
+								<Label htmlFor="scope">{t("routing.scope")}</Label>
 								<Select
 									value={scope}
 									onValueChange={(value) => {
@@ -395,22 +467,25 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 									}}
 								>
 									<SelectTrigger className="w-full">
-										<SelectValue placeholder="Select scope..." />
+										<SelectValue placeholder={t("routing.selectScope")} />
 									</SelectTrigger>
 									<SelectContent>
-										{ROUTING_RULE_SCOPES.map((scopeOption) => (
-											<SelectItem key={scopeOption.value} value={scopeOption.value}>
-												{scopeOption.label}
-											</SelectItem>
-										))}
-										{(UserPicker || scope === "user") && <SelectItem value="user">User</SelectItem>}
+										{ROUTING_RULE_SCOPES.map((scopeOption) => {
+											const labelKey = SCOPE_OPTION_KEYS[scopeOption.value];
+											return (
+												<SelectItem key={scopeOption.value} value={scopeOption.value}>
+													{labelKey ? t(labelKey) : scopeOption.label}
+												</SelectItem>
+											);
+										})}
+										{(UserPicker || scope === "user") && <SelectItem value="user">{t("routing.user")}</SelectItem>}
 									</SelectContent>
 								</Select>
 							</div>
 
 							<div className="space-y-3">
 								<Label htmlFor="priority">
-									Priority <span className="text-red-500">*</span>
+									{t("routing.priority")} <span className="text-red-500">*</span>
 								</Label>
 								<Input
 									id="priority"
@@ -418,13 +493,13 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 									min={0}
 									max={1000}
 									{...register("priority", {
-										required: "Priority is required",
-										min: { value: 0, message: "Priority must be ≥ 0" },
-										max: { value: 1000, message: "Priority must be ≤ 1000" },
+										required: t("routing.priorityRequired"),
+										min: { value: 0, message: t("routing.priorityMin") },
+										max: { value: 1000, message: t("routing.priorityMax") },
 										valueAsNumber: true,
 									})}
 								/>
-								<p className="text-muted-foreground text-xs">Lower numbers = higher priority (0 is highest)</p>
+								<p className="text-muted-foreground text-xs">{t("routing.priorityHelp")}</p>
 								{errors.priority && <p className="text-destructive text-sm">{errors.priority.message}</p>}
 							</div>
 						</div>
@@ -432,8 +507,7 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 						{scope !== "global" && (
 							<div className="space-y-2">
 								<Label htmlFor="scope_id">
-									{scope === "team" ? "Team" : scope === "customer" ? "Customer" : scope === "user" ? "User" : "Virtual Key"}{" "}
-									<span className="text-red-500">*</span>
+									{scopeNoun(scope, t)} <span className="text-red-500">*</span>
 								</Label>
 								{/* A rule stores only its scope_id, so there is no name to seed
 								    these with — each selector resolves its own selection. */}
@@ -449,7 +523,7 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 										<Input
 											id="scope_id"
 											data-testid="routing-rule-scope-user-input"
-											placeholder="Governance user ID"
+											placeholder={t("routing.governanceUserId")}
 											value={scopeId || ""}
 											onChange={(e) => setValue("scope_id", e.target.value)}
 										/>
@@ -464,10 +538,8 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 
 						{/* CEL Rule Builder */}
 						<div className="space-y-3">
-							<Label>Rule Builder</Label>
-							<p className="text-muted-foreground text-sm">
-								Build conditions to determine when this rule should apply. Leave empty to apply this rule to all requests.
-							</p>
+							<Label>{t("routing.ruleBuilder")}</Label>
+							<p className="text-muted-foreground text-sm">{t("routing.ruleBuilderHelp")}</p>
 							<CELRuleBuilder
 								key={builderKey}
 								initialQuery={query}
@@ -485,9 +557,7 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 
 						{/* Note about Token/Request Limits and Budget Configuration */}
 						<p className="text-muted-foreground text-xs">
-							Note: Ensure token limits, request limits, and budget are configured in{" "}
-							<strong>Model Providers → Configurations → {"{provider}"} → Governance</strong> (provider-level) or{" "}
-							<strong>Model Providers → Budgets & Limits</strong> section (model-level) before using them in routing rules.
+							<Trans i18nKey="routing.governanceNote" ns="models" components={{ strong: <strong /> }} />
 						</p>
 
 						<Separator />
@@ -496,10 +566,8 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 						<div className="space-y-3">
 							<div className="flex items-center justify-between">
 								<div>
-									<Label>Routing Targets</Label>
-									<p className="text-muted-foreground mt-0.5 text-xs">
-										Weights must sum to 1. Leave provider or model empty to use the incoming request value.
-									</p>
+									<Label>{t("routing.routingTargets")}</Label>
+									<p className="text-muted-foreground mt-0.5 text-xs">{t("routing.routingTargetsHelp")}</p>
 								</div>
 								<Button
 									type="button"
@@ -510,7 +578,7 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 									data-testid="routing-rule-target-add"
 								>
 									<Plus className="h-4 w-4" />
-									Add Target
+									{t("routing.addTarget")}
 								</Button>
 							</div>
 
@@ -520,7 +588,7 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 										key={index}
 										target={target}
 										index={index}
-										providerOptions={providerOptions}
+										referencedProviderOptions={referencedProviderOptions}
 										allKeys={allKeysData}
 										showRemove={targets.length > 1}
 										onUpdate={updateTarget}
@@ -533,8 +601,8 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 							<div
 								className={`flex items-center justify-end gap-2 text-xs font-medium ${Math.abs(totalWeight - 1) > 0.001 ? "text-destructive" : "text-muted-foreground"}`}
 							>
-								Total weight: {totalWeight.toFixed(4)}
-								{Math.abs(totalWeight - 1) > 0.001 && <span className="text-destructive">(must equal 1)</span>}
+								{t("routing.totalWeight", { total: totalWeight.toFixed(4) })}
+								{Math.abs(totalWeight - 1) > 0.001 && <span className="text-destructive">{t("routing.mustEqualOne")}</span>}
 							</div>
 						</div>
 
@@ -542,101 +610,78 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 						<div className="space-y-3">
 							<div className="flex items-center justify-between">
 								<div>
-									<Label>Fallbacks</Label>{" "}
-									<p className="text-muted-foreground mt-0.5 text-xs">
-										Provider is required, but model is optional. Leave model empty to use the incoming request value.
-									</p>
+									<Label>{t("routing.fallbacks")}</Label>{" "}
+									<p className="text-muted-foreground mt-0.5 text-xs">{t("routing.fallbacksHelp")}</p>
 								</div>
 								<Button
 									type="button"
 									variant="outline"
 									size="sm"
-									onClick={() => setValue("fallbacks", [...(fallbacks || []), ""])}
+									onClick={() => setValue("fallbacks", [...(fallbacks || []), { ...DEFAULT_ROUTING_FALLBACK }])}
 									className="gap-2"
 								>
 									<Plus className="h-4 w-4" />
-									Add Fallback
+									{t("routing.addFallback")}
 								</Button>
 							</div>
 							<div className="space-y-2">
 								{(fallbacks || []).length === 0 ? (
-									<p className="text-muted-foreground text-sm">No fallbacks configured</p>
+									<p className="text-muted-foreground text-sm">{t("routing.noFallbacks")}</p>
 								) : (
-									(fallbacks || []).map((fallback, index) => {
-										// Parse provider/model from fallback string
-										const parts = fallback.split("/");
-										const fbProvider = parts[0] || "";
-										const fbModel = parts.slice(1).join("/");
-
-										const handleProviderChange = (newProvider: string) => {
-											const model = fbModel || "";
-											const newFallback = `${newProvider}/${model}`;
-											const newFallbacks = [...fallbacks];
-											newFallbacks[index] = newFallback;
-											setValue("fallbacks", newFallbacks);
-										};
-
-										const handleModelChange = (newModel: string) => {
-											const prov = fbProvider || "";
-											const newFallback = `${prov}/${newModel}`;
-											const newFallbacks = [...fallbacks];
-											newFallbacks[index] = newFallback;
-											setValue("fallbacks", newFallbacks);
-										};
-
-										const handleRemove = () => {
-											const newFallbacks = fallbacks.filter((_: string, i: number) => i !== index);
-											setValue("fallbacks", newFallbacks);
-										};
-
-										return (
-											<div key={index} className="flex items-center gap-2">
-												<div className="flex-1">
-													<ComboboxSelect
-														options={providerOptions}
-														value={fbProvider || null}
-														onValueChange={(value) => handleProviderChange(value ?? "")}
-														placeholder="Select provider..."
-														className="h-9"
-														noPortal
-													/>
-												</div>
-												<div className="flex-1">
-													<ModelMultiselect
-														provider={fbProvider || undefined}
-														value={fbModel}
-														onChange={handleModelChange}
-														placeholder="Incoming (optional)"
-														isSingleSelect
-														disabled={!fbProvider}
-														className="!h-9 !min-h-9 w-full"
-													/>
-												</div>
-												<Button
-													type="button"
-													variant="ghost"
-													size="sm"
-													onClick={handleRemove}
-													className="h-9 px-2"
-													aria-label={`Remove fallback ${index + 1}`}
-												>
-													<Trash2 className="h-4 w-4" />
-												</Button>
-											</div>
-										);
-									})
+									(fallbacks || []).map((fallback, index) => (
+										<FallbackRow
+											key={index}
+											fallback={fallback}
+											index={index}
+											referencedProviderOptions={referencedProviderOptions}
+											allKeys={allKeysData}
+											onUpdate={updateFallback}
+											onRemove={removeFallback}
+										/>
+									))
 								)}
 							</div>
-							<p className="text-muted-foreground text-xs">Fallbacks will be used in the order they are defined</p>
+							<p className="text-muted-foreground text-xs">{t("routing.fallbacksOrder")}</p>
+						</div>
+
+						{/* TTFT cutoff */}
+						<div className="space-y-3">
+							<Label htmlFor="ttft_timeout_ms">{t("routing.ttftCutoffMs")}</Label>
+							<Input
+								id="ttft_timeout_ms"
+								type="text"
+								inputMode="numeric"
+								placeholder={ttftDisplay.mixed ? t("routing.ttftMixed") : t("routing.off")}
+								aria-invalid={errors.ttft_timeout_ms ? true : undefined}
+								aria-describedby={errors.ttft_timeout_ms ? "ttft_timeout_ms-error" : undefined}
+								data-testid="routing-rule-ttft-timeout-input"
+								{...register("ttft_timeout_ms", {
+									onChange: () => {
+										setTtftEdited(true);
+									},
+									validate: (value) => parseTTFTTimeoutInput(value) !== null || t("routing.ttftInvalid", { max: MAX_TTFT_TIMEOUT_MS }),
+								})}
+							/>
+							<p className="text-muted-foreground text-xs">{t("routing.ttftHelp")}</p>
+							{errors.ttft_timeout_ms && (
+								<p id="ttft_timeout_ms-error" className="text-destructive text-sm" data-testid="routing-rule-ttft-timeout-error">
+									{errors.ttft_timeout_ms.message}
+								</p>
+							)}
+							{!errors.ttft_timeout_ms && ttftDisplay.active && !hasCompleteFallback && (
+								<p className="text-sm text-amber-600 dark:text-amber-500" data-testid="routing-rule-ttft-timeout-no-fallback-warning">
+									{t("routing.ttftNoFallbackWarning")}
+								</p>
+							)}
 						</div>
 					</div>
 					{/* Action Buttons */}
 					<div className="bg-card sticky bottom-0 flex justify-end gap-3 border-t px-4 py-4 md:px-8">
 						<Button type="button" variant="outline" onClick={handleCancel} disabled={isLoading}>
-							Cancel
+							{tc("cancel")}
 						</Button>
 						<Button type="submit" disabled={isLoading || !hasRequiredAccess}>
-							{isEditing ? "Update Rule" : "Save Rule"}
+							{isEditing ? t("routing.updateRule") : t("routing.saveRule")}
 						</Button>
 					</div>
 				</form>
@@ -645,29 +690,154 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 	);
 }
 
+interface ProviderKeySelectProps {
+	idPrefix: string;
+	clearLabel: string;
+	provider?: string;
+	keyId?: string;
+	allKeys: Array<{ key_id: string; name: string; provider: string }>;
+	onChange: (keyId: string) => void;
+}
+
+/** Renders nothing until a provider is chosen, since keys are scoped to one. */
+function ProviderKeySelect({ idPrefix, clearLabel, provider, keyId, allKeys, onChange }: ProviderKeySelectProps) {
+	const { t } = useTranslation("models");
+	const availableKeys = provider ? allKeys.filter((k) => k.provider === provider).map((k) => ({ id: k.key_id, name: k.name })) : [];
+	if (!provider || (availableKeys.length === 0 && !keyId)) {
+		return null;
+	}
+
+	return (
+		<div className="space-y-1.5">
+			<Label id={`${idPrefix}-apikey-label`} className="text-xs">
+				<Trans i18nKey="routing.apiKeyOptional" ns="models" components={{ muted: <span className="text-muted-foreground" /> }} />
+			</Label>
+			<div className="flex gap-1.5">
+				<Select value={keyId || ""} onValueChange={onChange}>
+					<SelectTrigger
+						id={`${idPrefix}-apikey-select`}
+						aria-labelledby={`${idPrefix}-apikey-label`}
+						className="h-9 flex-1 text-sm"
+						data-testid={`${idPrefix}-apikey-select`}
+					>
+						<SelectValue placeholder={t("routing.selectKeyOptional")} />
+					</SelectTrigger>
+					<SelectContent>
+						{availableKeys.map((key) => (
+							<SelectItem key={key.id} value={key.id}>
+								{key.name}
+							</SelectItem>
+						))}
+						{keyId && !availableKeys.some((k) => k.id === keyId) && (
+							<SelectItem key={`pinned-${keyId}`} value={keyId}>
+								{t("routing.pinnedKey", { id: keyId })}
+							</SelectItem>
+						)}
+					</SelectContent>
+				</Select>
+				{keyId && (
+					<Button
+						type="button"
+						variant="outline"
+						size="sm"
+						onClick={() => onChange("")}
+						className="h-9 w-9 p-0"
+						aria-label={clearLabel}
+						data-testid={`${idPrefix}-apikey-clear`}
+					>
+						<X className="h-3.5 w-3.5" />
+					</Button>
+				)}
+			</div>
+		</div>
+	);
+}
+
+interface FallbackRowProps {
+	fallback: RoutingFallbackFormData;
+	index: number;
+	referencedProviderOptions: ProviderSelectorOption[];
+	allKeys: Array<{ key_id: string; name: string; provider: string }>;
+	onUpdate: (index: number, changes: Partial<RoutingFallbackFormData>) => void;
+	onRemove: (index: number) => void;
+}
+
+function FallbackRow({ fallback, index, referencedProviderOptions, allKeys, onUpdate, onRemove }: FallbackRowProps) {
+	const { t } = useTranslation("models");
+	const provider = fallback.provider || "";
+
+	return (
+		<div className="space-y-2 rounded-lg border p-3" data-testid={`routing-fallback-${index}`}>
+			<div className="flex items-center gap-2">
+				<div className="flex-1">
+					<ProviderSelector
+						extraOptions={referencedProviderOptions}
+						value={provider}
+						// A key belongs to one provider, so switching providers invalidates the pin.
+						onChange={(value: string) => onUpdate(index, { provider: value, model: "", key_id: "" })}
+						placeholder={t("routing.selectProvider")}
+						className="!h-9 !min-h-9"
+						data-testid={`routing-fallback-${index}-provider-select`}
+						noPortal
+					/>
+				</div>
+				<div className="flex-1" data-testid={`routing-fallback-${index}-model-select`}>
+					<ModelSelector
+						provider={provider || undefined}
+						value={fallback.model || ""}
+						onChange={(value) => onUpdate(index, { model: value })}
+						placeholder={t("routing.incomingOptional")}
+						allowCustomModel
+						unfiltered={true}
+						disabled={!provider}
+						className="!h-9 !min-h-9 w-full"
+					/>
+				</div>
+				<Button
+					type="button"
+					variant="ghost"
+					size="sm"
+					onClick={() => onRemove(index)}
+					className="h-9 px-2"
+					aria-label={t("routing.removeFallback", { n: index + 1 })}
+					data-testid={`routing-fallback-${index}-remove-button`}
+				>
+					<Trash2 className="h-4 w-4" />
+				</Button>
+			</div>
+
+			<ProviderKeySelect
+				idPrefix={`routing-fallback-${index}`}
+				clearLabel={t("routing.clearFallbackApiKey", { n: index + 1 })}
+				provider={provider}
+				keyId={fallback.key_id}
+				allKeys={allKeys}
+				onChange={(value) => onUpdate(index, { key_id: value })}
+			/>
+		</div>
+	);
+}
+
 interface TargetRowProps {
 	target: RoutingTargetFormData;
 	index: number;
-	providerOptions: Array<{ label: string; value: string; icon: React.ReactNode }>;
+	referencedProviderOptions: ProviderSelectorOption[];
 	allKeys: Array<{ key_id: string; name: string; provider: string }>;
 	showRemove: boolean;
 	onUpdate: (index: number, field: keyof RoutingTargetFormData, value: string | number) => void;
 	onRemove: (index: number) => void;
 }
 
-function TargetRow({ target, index, providerOptions, allKeys, showRemove, onUpdate, onRemove }: TargetRowProps) {
-	const availableKeys = target.provider
-		? allKeys.filter((k) => k.provider === target.provider).map((k) => ({ id: k.key_id, name: k.name }))
-		: [];
-
+function TargetRow({ target, index, referencedProviderOptions, allKeys, showRemove, onUpdate, onRemove }: TargetRowProps) {
+	const { t } = useTranslation("models");
 	return (
 		<div className="space-y-3 rounded-lg border p-3" data-testid={`routing-target-${index}`}>
 			<div className="flex items-center justify-between">
-				<span className="text-muted-foreground text-sm font-medium">Target {index + 1}</span>
+				<span className="text-muted-foreground text-sm font-medium">{t("routing.targetN", { n: index + 1 })}</span>
 				<div className="flex items-center gap-2">
 					<div className="flex items-center gap-1.5">
 						<Label htmlFor={`routing-target-${index}-weight-input`} className="text-muted-foreground shrink-0 text-xs">
-							Weight
+							{t("providers.weight")}
 						</Label>
 						<Input
 							id={`routing-target-${index}-weight-input`}
@@ -688,7 +858,7 @@ function TargetRow({ target, index, providerOptions, allKeys, showRemove, onUpda
 							size="sm"
 							onClick={() => onRemove(index)}
 							className="h-8 w-8 p-0"
-							aria-label={`Remove target ${index + 1}`}
+							aria-label={t("routing.removeTarget", { n: index + 1 })}
 							data-testid={`routing-target-${index}-remove-button`}
 						>
 							<Trash2 className="h-3.5 w-3.5" />
@@ -700,19 +870,19 @@ function TargetRow({ target, index, providerOptions, allKeys, showRemove, onUpda
 			<div className="grid grid-cols-1 gap-3 md:grid-cols-2">
 				<div className="space-y-1.5">
 					<Label id={`routing-target-${index}-provider-label`} className="text-xs">
-						Provider
+						{t("modelCatalog.provider")}
 					</Label>
 					<div className="flex gap-1.5">
-						<ComboboxSelect
-							options={providerOptions}
-							value={target.provider || null}
-							onValueChange={(value) => {
-								onUpdate(index, "provider", value ?? "");
+						<ProviderSelector
+							extraOptions={referencedProviderOptions}
+							value={target.provider || ""}
+							onChange={(value: string) => {
+								onUpdate(index, "provider", value);
 								onUpdate(index, "model", "");
 								onUpdate(index, "key_id", "");
 							}}
-							placeholder="Incoming (optional)"
-							className="h-9 flex-1 text-sm"
+							placeholder={t("routing.incomingOptional")}
+							className="!h-9 !min-h-9 flex-1 text-sm"
 							data-testid={`routing-target-${index}-provider-select`}
 							noPortal
 						/>
@@ -727,7 +897,7 @@ function TargetRow({ target, index, providerOptions, allKeys, showRemove, onUpda
 									onUpdate(index, "key_id", "");
 								}}
 								className="h-9 w-9 p-0"
-								aria-label={`Clear provider for target ${index + 1}`}
+								aria-label={t("routing.clearProvider", { n: index + 1 })}
 								data-testid={`routing-target-${index}-provider-clear`}
 							>
 								<X className="h-3.5 w-3.5" />
@@ -738,17 +908,16 @@ function TargetRow({ target, index, providerOptions, allKeys, showRemove, onUpda
 
 				<div className="space-y-1.5">
 					<Label id={`routing-target-${index}-model-label`} className="text-xs">
-						Model
+						{t("modelCatalog.model")}
 					</Label>
 					<div className="flex gap-1.5">
 						<div className="flex-1" data-testid={`routing-target-${index}-model-select`}>
-							<ModelMultiselect
+							<ModelSelector
 								provider={target.provider || undefined}
 								value={target.model}
 								onChange={(value) => onUpdate(index, "model", value)}
-								placeholder="Incoming (optional)"
-								isSingleSelect
-								loadModelsOnEmptyProvider
+								placeholder={t("routing.incomingOptional")}
+								allowCustomModel
 								className="!h-9 !min-h-9"
 								inputId={`routing-target-${index}-model-input`}
 								ariaLabelledBy={`routing-target-${index}-model-label`}
@@ -761,7 +930,7 @@ function TargetRow({ target, index, providerOptions, allKeys, showRemove, onUpda
 								size="sm"
 								onClick={() => onUpdate(index, "model", "")}
 								className="h-9 w-9 p-0"
-								aria-label={`Clear model for target ${index + 1}`}
+								aria-label={t("routing.clearModel", { n: index + 1 })}
 								data-testid={`routing-target-${index}-model-clear`}
 							>
 								<X className="h-3.5 w-3.5" />
@@ -771,50 +940,14 @@ function TargetRow({ target, index, providerOptions, allKeys, showRemove, onUpda
 				</div>
 			</div>
 
-			{target.provider && (availableKeys.length > 0 || target.key_id) && (
-				<div className="space-y-1.5">
-					<Label id={`routing-target-${index}-apikey-label`} className="text-xs">
-						API Key <span className="text-muted-foreground">(optional; leave unset for load-balanced selection)</span>
-					</Label>
-					<div className="flex gap-1.5">
-						<Select value={target.key_id || ""} onValueChange={(value) => onUpdate(index, "key_id", value)}>
-							<SelectTrigger
-								id={`routing-target-${index}-apikey-select`}
-								aria-labelledby={`routing-target-${index}-apikey-label`}
-								className="h-9 flex-1 text-sm"
-								data-testid={`routing-target-${index}-apikey-select`}
-							>
-								<SelectValue placeholder="Select key (optional)" />
-							</SelectTrigger>
-							<SelectContent>
-								{availableKeys.map((key) => (
-									<SelectItem key={key.id} value={key.id}>
-										{key.name}
-									</SelectItem>
-								))}
-								{target.key_id && !availableKeys.some((k) => k.id === target.key_id) && (
-									<SelectItem key={`pinned-${target.key_id}`} value={target.key_id}>
-										(pinned) {target.key_id}
-									</SelectItem>
-								)}
-							</SelectContent>
-						</Select>
-						{target.key_id && (
-							<Button
-								type="button"
-								variant="outline"
-								size="sm"
-								onClick={() => onUpdate(index, "key_id", "")}
-								className="h-9 w-9 p-0"
-								aria-label={`Clear API key for target ${index + 1}`}
-								data-testid={`routing-target-${index}-apikey-clear`}
-							>
-								<X className="h-3.5 w-3.5" />
-							</Button>
-						)}
-					</div>
-				</div>
-			)}
+			<ProviderKeySelect
+				idPrefix={`routing-target-${index}`}
+				clearLabel={t("routing.clearApiKey", { n: index + 1 })}
+				provider={target.provider}
+				keyId={target.key_id}
+				allKeys={allKeys}
+				onChange={(value) => onUpdate(index, "key_id", value)}
+			/>
 		</div>
 	);
 }

@@ -2,8 +2,20 @@ package bifrost
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync"
 	"testing"
+	"time"
 
+	"github.com/maximhq/bifrost/core/providers/anthropic"
+	"github.com/maximhq/bifrost/core/providers/openai"
+
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -16,6 +28,534 @@ import (
 // The injector's own behaviour is covered in core/providers/utils/promptcache_test.go.
 // What can only be tested here is fallback isolation, because req.BifrostRequest
 // outlives a single attempt.
+
+// TestPrepareResponsesAdditionalTools preserves embedded local MCP declarations and their call identities across providers.
+func TestPrepareResponsesAdditionalTools(test *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	var incoming openai.OpenAIResponsesRequest
+	require.NoError(test, schemas.Unmarshal([]byte(`{
+		"model":"anthropic/claude-sonnet-4-5",
+		"input":[
+			{"type":"additional_tools","role":"developer","tools":[
+				{"type":"namespace","name":"functions","tools":[{"type":"function","name":"shell","parameters":{"type":"object","properties":{}}}]},
+				{"type":"namespace","name":"mcp__local","tools":[
+					{"type":"function","name":"read","description":"Read a local note","parameters":{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}},
+					{"type":"function","name":"search","parameters":{"type":"object","properties":{}}},
+					{"type":"function","name":"list","parameters":{"type":"object","properties":{}}},
+					{"type":"function","name":"write","parameters":{"type":"object","properties":{}}}
+				]}
+			]},
+			{"type":"message","role":"user","content":"Read the note"}
+		]
+	}`), &incoming))
+	request := incoming.ToBifrostResponsesRequest(ctx)
+	before, err := schemas.Marshal(request)
+	require.NoError(test, err)
+
+	prepared, bifrostErr := prepareResponsesRequest(ctx, &schemas.ProviderConfig{}, stubProvider{key: schemas.Anthropic}, schemas.Key{}, request)
+	require.Nil(test, bifrostErr)
+	require.NotNil(test, prepared.Params)
+	require.Len(test, prepared.Params.Tools, 5)
+	assert.Equal(test, "shell", *prepared.Params.Tools[0].Name)
+	assert.Equal(test, "mcp__local__read", *prepared.Params.Tools[1].Name)
+	require.Len(test, prepared.Input, 1)
+
+	wire, err := anthropic.ToAnthropicResponsesRequest(ctx, prepared)
+	require.NoError(test, err)
+	require.Len(test, wire.Tools, 5)
+	encoded, err := schemas.Marshal(wire)
+	require.NoError(test, err)
+	assert.Contains(test, string(encoded), "\"name\":\"mcp__local__read\"")
+	assert.Contains(test, string(encoded), "\"path\":{\"type\":\"string\"}")
+	assert.NotContains(test, string(encoded), "additional_tools")
+	assert.NotContains(test, string(encoded), "\"messages\":null")
+
+	for _, eventType := range []schemas.ResponsesStreamResponseType{
+		schemas.ResponsesStreamResponseTypeOutputItemAdded,
+		schemas.ResponsesStreamResponseTypeOutputItemDone,
+	} {
+		response := &schemas.BifrostResponse{ResponsesStreamResponse: &schemas.BifrostResponsesStreamResponse{
+			Type: eventType,
+			Item: &schemas.ResponsesMessage{
+				Type: new(schemas.ResponsesMessageTypeFunctionCall),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					Name: new("mcp__local__read"), CallID: new("call_local"), Arguments: new("{\"path\":\"note\"}"),
+				},
+			},
+		}}
+		providerUtils.RestoreResponsesNamespaceToolCalls(prepared.NamespaceToolAliases, response)
+		assert.Equal(test, "read", *response.ResponsesStreamResponse.Item.Name)
+		assert.Equal(test, "mcp__local", *response.ResponsesStreamResponse.Item.Namespace)
+		assert.Equal(test, "call_local", *response.ResponsesStreamResponse.Item.CallID)
+	}
+
+	after, err := schemas.Marshal(request)
+	require.NoError(test, err)
+	assert.JSONEq(test, string(before), string(after))
+	native, bifrostErr := prepareResponsesRequest(ctx, &schemas.ProviderConfig{}, stubProvider{key: schemas.OpenAI}, schemas.Key{}, request)
+	require.Nil(test, bifrostErr)
+	assert.Same(test, request, native)
+	assert.Nil(test, native.NamespaceToolAliases)
+}
+
+// codexClientToolSearchRequest is a Codex turn after one client-run tool search: the
+// search call, the tools Codex returned for it (an MCP namespace), and a call to one of
+// them. Codex keeps the deferred tools on its side, so they appear only in the output.
+const codexClientToolSearchRequest = `{
+	"model":"%s",
+	"input":[
+		{"type":"message","role":"user","content":"File a Linear issue for the flaky test"},
+		{"type":"tool_search_call","execution":"client","call_id":"call_ts_1","status":"completed","arguments":{"query":"linear issue"}},
+		{"type":"tool_search_output","execution":"client","call_id":"call_ts_1","status":"completed","tools":[
+			{"type":"namespace","name":"mcp__linear","description":"Linear MCP server","tools":[
+				{"type":"function","name":"create_issue","description":"Create an issue","parameters":{"type":"object","properties":{"title":{"type":"string"}},"required":["title"]},"defer_loading":true}
+			]}
+		]},
+		{"type":"function_call","namespace":"mcp__linear","name":"create_issue","call_id":"call_2","arguments":"{\"title\":\"flaky test\"}"},
+		{"type":"function_call_output","call_id":"call_2","output":"created LIN-1"}
+	],
+	"tools":[
+		{"type":"tool_search","execution":"client","description":"Search the deferred tools","parameters":{"type":"object","properties":{"query":{"type":"string"}},"required":["query"]}},
+		{"type":"function","name":"shell","parameters":{"type":"object","properties":{}}}
+	]
+}`
+
+// TestPrepareResponsesCodexClientToolSearchForClaude pins Codex's client-run tool search
+// on Claude (Anthropic and Bedrock InvokeModel). The search must stay the caller's: a
+// plain tool_search function, never Anthropic's server bm25 search, which can only see
+// tools already in the request. The search history becomes tool_use / tool_result with
+// tool_reference blocks, and the tools Codex returned are declared deferred under their
+// flattened names so the references and the later call resolve.
+func TestPrepareResponsesCodexClientToolSearchForClaude(test *testing.T) {
+	for _, testCase := range []struct {
+		provider schemas.ModelProvider
+		model    string
+	}{
+		{provider: schemas.Anthropic, model: "claude-sonnet-4-6"},
+		{provider: schemas.Bedrock, model: "global.anthropic.claude-sonnet-4-6"},
+	} {
+		test.Run(string(testCase.provider), func(test *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			var incoming openai.OpenAIResponsesRequest
+			require.NoError(test, schemas.Unmarshal([]byte(fmt.Sprintf(codexClientToolSearchRequest, testCase.model)), &incoming))
+			request := incoming.ToBifrostResponsesRequest(ctx)
+			request.Provider = testCase.provider
+			request.Model = testCase.model
+			before, err := schemas.Marshal(request)
+			require.NoError(test, err)
+
+			prepared, bifrostErr := prepareResponsesRequest(ctx, &schemas.ProviderConfig{}, stubProvider{key: testCase.provider}, schemas.Key{}, request)
+			require.Nil(test, bifrostErr)
+			body, bifrostErr := anthropic.BuildAnthropicResponsesRequestBody(ctx, prepared, anthropic.AnthropicRequestBuildConfig{
+				Provider: testCase.provider, Model: testCase.model, ValidateTools: true,
+			})
+			require.Nil(test, bifrostErr)
+			wire := string(body)
+
+			var search, loaded map[string]any
+			for _, tool := range providerUtils.GetJSONField(body, "tools").Array() {
+				assert.False(test, strings.HasPrefix(tool.Get("type").String(), "tool_search_tool_"),
+					"a client-run tool_search must not become Anthropic's server search: %s", wire)
+				switch tool.Get("name").String() {
+				case "tool_search":
+					search, _ = tool.Value().(map[string]any)
+				case "mcp__linear__create_issue":
+					loaded, _ = tool.Value().(map[string]any)
+				}
+			}
+			require.NotNil(test, search, "tool_search function missing: %s", wire)
+			assert.Equal(test, "Search the deferred tools", search["description"])
+			assert.Contains(test, providerUtils.GetJSONField(body, "tools.#(name==\"tool_search\").input_schema.properties").Raw, "query")
+			require.NotNil(test, loaded, "the tool Codex loaded must be declared: %s", wire)
+			assert.Equal(test, true, loaded["defer_loading"], wire)
+
+			messages := providerUtils.GetJSONField(body, "messages").Array()
+			use := providerUtils.GetJSONField(body, `messages.#.content.#(type=="tool_use")#`).Raw
+			assert.Contains(test, use, `"id":"call_ts_1"`, wire)
+			assert.Contains(test, use, `"name":"tool_search"`, wire)
+			assert.Contains(test, use, `"query":"linear issue"`, wire)
+			assert.Contains(test, use, `"name":"mcp__linear__create_issue"`, "the later call must use the flattened name: %s", wire)
+			var result string
+			for _, message := range messages {
+				for _, block := range message.Get("content").Array() {
+					if block.Get("type").String() == "tool_result" && block.Get("tool_use_id").String() == "call_ts_1" {
+						result = block.Raw
+					}
+				}
+			}
+			require.NotEmpty(test, result, "tool_search_output was dropped: %s", wire)
+			assert.Contains(test, result, `{"type":"tool_reference","tool_name":"mcp__linear__create_issue"}`, wire)
+			if testCase.provider == schemas.Bedrock {
+				// InvokeModel takes betas in the body; defer_loading and tool_reference need this one.
+				assert.Contains(test, providerUtils.GetJSONField(body, "anthropic_beta").Raw, anthropic.AnthropicToolSearchBetaHeader, wire)
+			}
+
+			after, err := schemas.Marshal(request)
+			require.NoError(test, err)
+			assert.JSONEq(test, string(before), string(after), "the shared request was mutated")
+		})
+	}
+}
+
+// A tool_choice that names a tool only a client tool search loaded resolves: the hoist
+// declares the tool before namespace flattening, so the bare name is re-aliased to the
+// flat name it goes upstream under. The provider harness forces turn 2 this way.
+func TestPrepareResponsesCodexClientToolSearchForcedLoadedTool(test *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	raw, err := providerUtils.SetRawJSONField([]byte(fmt.Sprintf(codexClientToolSearchRequest, "claude-sonnet-4-6")),
+		"tool_choice", []byte(`{"type":"function","name":"create_issue"}`))
+	require.NoError(test, err)
+	var incoming openai.OpenAIResponsesRequest
+	require.NoError(test, schemas.Unmarshal(raw, &incoming))
+	request := incoming.ToBifrostResponsesRequest(ctx)
+	request.Provider = schemas.Anthropic
+	request.Model = "claude-sonnet-4-6"
+
+	prepared, bifrostErr := prepareResponsesRequest(ctx, &schemas.ProviderConfig{}, stubProvider{key: schemas.Anthropic}, schemas.Key{}, request)
+	require.Nil(test, bifrostErr)
+	body, bifrostErr := anthropic.BuildAnthropicResponsesRequestBody(ctx, prepared, anthropic.AnthropicRequestBuildConfig{
+		Provider: schemas.Anthropic, Model: "claude-sonnet-4-6", ValidateTools: true,
+	})
+	require.Nil(test, bifrostErr)
+	assert.JSONEq(test, `{"type":"tool","name":"mcp__linear__create_issue"}`, providerUtils.GetJSONField(body, "tool_choice").Raw, string(body))
+}
+
+// TestHoistClientToolSearchOutputTools covers the declaration of tools a client-run
+// tool search loaded: deferred, declared once however many searches found them, merged
+// into a namespace the request already declares, and left alone off Claude or without
+// a client tool_search.
+func TestHoistClientToolSearchOutputTools(test *testing.T) {
+	const search = `{"type":"tool_search","execution":"client"}`
+	output := func(callID, tools string) string {
+		return `{"type":"tool_search_output","execution":"client","call_id":"` + callID + `","status":"completed","tools":` + tools + `}`
+	}
+	linear := `{"type":"namespace","name":"mcp__linear","tools":[{"type":"function","name":"create_issue","parameters":{"type":"object","properties":{}}}]}`
+	build := func(test *testing.T, model, tools string, items ...string) *schemas.BifrostResponsesRequest {
+		var request schemas.BifrostResponsesRequest
+		raw := `{"provider":"anthropic","model":"` + model + `","input":[` + strings.Join(items, ",") + `],"params":{"tools":[` + tools + `]}}`
+		require.NoError(test, schemas.Unmarshal([]byte(raw), &request))
+		return &request
+	}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	test.Run("repeated searches declare each tool once, deferred", func(test *testing.T) {
+		request := build(test, "claude-sonnet-4-6", search,
+			output("call_1", `[`+linear+`,{"type":"function","name":"lookup","parameters":{"type":"object","properties":{}}}]`),
+			output("call_2", `[`+linear+`,{"type":"function","name":"lookup","parameters":{"type":"object","properties":{}}}]`))
+		prepared, bifrostErr := hoistClientToolSearchOutputTools(ctx, request)
+		require.Nil(test, bifrostErr)
+		require.Len(test, prepared.Params.Tools, 3)
+		assert.Equal(test, "mcp__linear", *prepared.Params.Tools[1].Name)
+		require.Len(test, prepared.Params.Tools[1].ResponsesToolNamespace.Tools, 1)
+		assert.True(test, *prepared.Params.Tools[1].ResponsesToolNamespace.Tools[0].DeferLoading)
+		assert.Equal(test, "lookup", *prepared.Params.Tools[2].Name)
+		assert.True(test, *prepared.Params.Tools[2].DeferLoading)
+		assert.Len(test, prepared.Input, 2, "the outputs stay for the converter")
+		assert.Len(test, request.Params.Tools, 1, "the shared request was mutated")
+	})
+
+	test.Run("members merge into a declared namespace", func(test *testing.T) {
+		declared := `{"type":"namespace","name":"mcp__linear","tools":[{"type":"function","name":"list_issues","parameters":{"type":"object","properties":{}}}]}`
+		request := build(test, "claude-sonnet-4-6", search+","+declared, output("call_1", `[`+linear+`]`))
+		prepared, bifrostErr := hoistClientToolSearchOutputTools(ctx, request)
+		require.Nil(test, bifrostErr)
+		require.Len(test, prepared.Params.Tools, 2)
+		members := prepared.Params.Tools[1].ResponsesToolNamespace.Tools
+		require.Len(test, members, 2)
+		assert.Equal(test, "list_issues", *members[0].Name)
+		assert.Nil(test, members[0].DeferLoading, "a tool the caller declared keeps its own loading")
+		assert.Equal(test, "create_issue", *members[1].Name)
+		assert.True(test, *members[1].DeferLoading)
+		assert.Len(test, request.Params.Tools[1].ResponsesToolNamespace.Tools, 1, "the shared namespace was mutated")
+	})
+
+	for _, testCase := range []struct {
+		name, model, tools string
+	}{
+		{name: "non-Claude model", model: "gemini-2.5-flash", tools: search},
+		{name: "server-run tool_search", model: "claude-sonnet-4-6", tools: `{"type":"tool_search"}`},
+	} {
+		test.Run(testCase.name+" is left alone", func(test *testing.T) {
+			request := build(test, testCase.model, testCase.tools, output("call_1", `[`+linear+`]`))
+			prepared, bifrostErr := hoistClientToolSearchOutputTools(ctx, request)
+			require.Nil(test, bifrostErr)
+			assert.Same(test, request, prepared)
+		})
+	}
+
+	test.Run("a client search added by tool_addition declares the loaded tools", func(test *testing.T) {
+		var request schemas.BifrostResponsesRequest
+		raw := `{"provider":"anthropic","model":"claude-sonnet-4-6","input":[` +
+			`{"type":"message","role":"system","content":[{"type":"tool_addition","tool":{"type":"tool_definition","definition":` + search + `}}]},` +
+			output("call_1", `[`+linear+`]`) + `]}`
+		require.NoError(test, schemas.Unmarshal([]byte(raw), &request))
+		prepared, bifrostErr := hoistClientToolSearchOutputTools(ctx, &request)
+		require.Nil(test, bifrostErr)
+		require.NotNil(test, prepared.Params)
+		require.Len(test, prepared.Params.Tools, 1)
+		assert.Equal(test, "mcp__linear", *prepared.Params.Tools[0].Name)
+		assert.True(test, *prepared.Params.Tools[0].ResponsesToolNamespace.Tools[0].DeferLoading)
+		assert.Nil(test, request.Params, "the shared request was mutated")
+	})
+
+	test.Run("malformed tools are a 400", func(test *testing.T) {
+		request := build(test, "claude-sonnet-4-6", search, output("call_1", `[{"type":"namespace","name":"mcp__linear","tools":"oops"}]`))
+		_, bifrostErr := hoistClientToolSearchOutputTools(ctx, request)
+		require.NotNil(test, bifrostErr)
+		assert.Contains(test, bifrostErr.Error.Message, "tool_search_output")
+	})
+}
+
+// BenchmarkPrepareResponsesRequestClaudeWithoutToolSearch measures the dispatch prep for
+// an ordinary Claude request, which the client tool search hoist must leave untouched.
+func BenchmarkPrepareResponsesRequestClaudeWithoutToolSearch(b *testing.B) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	request := responsesReqWithText("hello")
+	request.Provider = schemas.Anthropic
+	request.Model = "claude-sonnet-4-6"
+	request.Params = &schemas.ResponsesParameters{Tools: []schemas.ResponsesTool{
+		{Type: schemas.ResponsesToolTypeFunction, Name: new("shell"), ResponsesToolFunction: &schemas.ResponsesToolFunction{}},
+		{Type: schemas.ResponsesToolTypeWebSearch},
+	}}
+	provider := stubProvider{key: schemas.Anthropic}
+	b.ReportAllocs()
+	for b.Loop() {
+		_, _ = prepareResponsesRequest(ctx, &schemas.ProviderConfig{}, provider, schemas.Key{}, request)
+	}
+}
+
+// TestPrepareResponsesClaudeLocalMCP verifies that Claude's local function declarations survive conversion to OpenAI.
+func TestPrepareResponsesClaudeLocalMCP(test *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	var incoming anthropic.AnthropicMessageRequest
+	require.NoError(test, schemas.Unmarshal([]byte(`{
+		"model":"openai/gpt-4o-mini","max_tokens":128,
+		"messages":[{"role":"user","content":"Read the note"}],
+		"tools":[{"name":"mcp__local__read","description":"Read a local note","input_schema":{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}}]
+	}`), &incoming))
+	request := incoming.ToBifrostResponsesRequest(ctx)
+	prepared, bifrostErr := prepareResponsesRequest(ctx, &schemas.ProviderConfig{}, stubProvider{key: schemas.OpenAI}, schemas.Key{}, request)
+	require.Nil(test, bifrostErr)
+	wire := openai.ToOpenAIResponsesRequest(ctx, prepared)
+	require.Len(test, wire.Tools, 1)
+	assert.Equal(test, "mcp__local__read", *wire.Tools[0].Name)
+	assert.Equal(test, schemas.ResponsesToolTypeFunction, wire.Tools[0].Type)
+}
+
+// TestPrepareResponsesAdditionalToolsHistory keeps forced calls and replay aligned with the promoted declarations.
+func TestPrepareResponsesAdditionalToolsHistory(test *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	var request schemas.BifrostResponsesRequest
+	require.NoError(test, schemas.Unmarshal([]byte(`{
+		"provider":"anthropic","model":"claude-sonnet-4-5",
+		"input":[
+			{"type":"additional_tools","role":"developer","tools":[{"type":"namespace","name":"mcp__local","tools":[{"type":"function","name":"read","parameters":{"type":"object","properties":{"path":{"type":"string"}}}}]}]},
+			{"type":"function_call","namespace":"mcp__local","name":"read","call_id":"call_1","arguments":"{\"path\":\"note\"}"},
+			{"type":"function_call_output","call_id":"call_1","output":"local note contents"}
+		],
+		"params":{
+			"tools":[{"type":"function","name":"shell","parameters":{"type":"object","properties":{}}}],
+			"tool_choice":{"type":"function","name":"read"}
+		}
+	}`), &request))
+	before, err := schemas.Marshal(request)
+	require.NoError(test, err)
+	prepared, bifrostErr := prepareResponsesRequest(ctx, &schemas.ProviderConfig{}, stubProvider{key: schemas.Anthropic}, schemas.Key{}, &request)
+	require.Nil(test, bifrostErr)
+	require.Len(test, prepared.Params.Tools, 2)
+	assert.Equal(test, "shell", *prepared.Params.Tools[0].Name)
+	require.Len(test, prepared.Input, 2)
+	assert.Equal(test, "mcp__local__read", *prepared.Input[0].Name)
+	assert.Nil(test, prepared.Input[0].Namespace)
+	assert.Equal(test, "call_1", *prepared.Input[1].CallID)
+	choice, err := schemas.Marshal(prepared.Params.ToolChoice)
+	require.NoError(test, err)
+	assert.Contains(test, string(choice), "mcp__local__read")
+	after, err := schemas.Marshal(request)
+	require.NoError(test, err)
+	assert.JSONEq(test, string(before), string(after))
+}
+
+// TestHoistResponsesAdditionalTools validates malformed declarations instead of silently losing tools.
+func TestHoistResponsesAdditionalTools(test *testing.T) {
+	for _, testCase := range []struct {
+		name      string
+		raw       string
+		wantError bool
+	}{
+		{name: "flat function with nil params", raw: `[{"type":"function","name":"mcp__local__read","parameters":{"type":"object","properties":{}}}]`},
+		{name: "empty list", raw: `[]`},
+		{name: "object instead of array", raw: `{"type":"function","name":"read"}`, wantError: true},
+		{name: "missing tools", wantError: true},
+	} {
+		test.Run(testCase.name, func(test *testing.T) {
+			request := &schemas.BifrostResponsesRequest{
+				Input: []schemas.ResponsesMessage{{
+					Type:            new(schemas.ResponsesMessageTypeAdditionalTools),
+					AdditionalTools: []byte(testCase.raw),
+				}},
+			}
+			prepared, bifrostErr := hoistResponsesAdditionalTools(request)
+			if testCase.wantError {
+				require.NotNil(test, bifrostErr)
+				assert.Nil(test, prepared)
+			} else {
+				require.Nil(test, bifrostErr)
+				require.NotNil(test, prepared.Params)
+				assert.Empty(test, prepared.Input)
+				if testCase.name == "flat function with nil params" {
+					require.Len(test, prepared.Params.Tools, 1)
+					assert.Equal(test, "mcp__local__read", *prepared.Params.Tools[0].Name)
+				}
+			}
+			assert.Nil(test, request.Params)
+			require.Len(test, request.Input, 1)
+			assert.Equal(test, testCase.raw, string(request.Input[0].AdditionalTools))
+		})
+	}
+}
+
+// Codex re-declares a tool in a later additional_tools item when its definition changes
+// mid-thread (a Codex upgrade or a plugin update on a resumed session). The later
+// declaration replaces the earlier one in the earlier one's position, so the hoisted
+// list never carries the same tool twice.
+func TestHoistResponsesAdditionalToolsRedeclaration(test *testing.T) {
+	type wantTool struct{ namespace, name, description string }
+	text := func(s *string) string {
+		if s == nil {
+			return ""
+		}
+		return *s
+	}
+	flatten := func(tools []schemas.ResponsesTool) []wantTool {
+		var out []wantTool
+		for _, tool := range tools {
+			if tool.Type != schemas.ResponsesToolTypeNamespace {
+				out = append(out, wantTool{"", *tool.Name, text(tool.Description)})
+				continue
+			}
+			for _, member := range tool.ResponsesToolNamespace.Tools {
+				out = append(out, wantTool{*tool.Name, *member.Name, text(member.Description)})
+			}
+		}
+		return out
+	}
+	for _, testCase := range []struct {
+		name  string
+		top   []schemas.ResponsesTool
+		items []string
+		want  []wantTool
+		count int
+	}{
+		{
+			name: "default namespace member re-declared alone keeps its siblings",
+			items: []string{
+				`[{"type":"namespace","name":"functions","tools":[{"type":"function","name":"exec","description":"v1"},{"type":"function","name":"wait","description":"w"}]}]`,
+				`[{"type":"namespace","name":"functions","tools":[{"type":"function","name":"exec","description":"v2"}]}]`,
+			},
+			want:  []wantTool{{"functions", "exec", "v2"}, {"functions", "wait", "w"}},
+			count: 1,
+		},
+		{
+			name: "top-level function re-declared",
+			items: []string{
+				`[{"type":"function","name":"exec","description":"v1"},{"type":"function","name":"wait","description":"w"}]`,
+				`[{"type":"function","name":"exec","description":"v2"}]`,
+			},
+			want:  []wantTool{{"", "exec", "v2"}, {"", "wait", "w"}},
+			count: 2,
+		},
+		{
+			name: "bare function re-declared under the default namespace",
+			items: []string{
+				`[{"type":"function","name":"exec","description":"v1"}]`,
+				`[{"type":"namespace","name":"functions","tools":[{"type":"function","name":"exec","description":"v2"},{"type":"function","name":"wait","description":"w"}]}]`,
+			},
+			want:  []wantTool{{"", "exec", "v2"}, {"functions", "wait", "w"}},
+			count: 2,
+		},
+		{
+			name: "default namespace member re-declared as a bare function",
+			items: []string{
+				`[{"type":"namespace","name":"functions","tools":[{"type":"function","name":"exec","description":"v1"}]}]`,
+				`[{"type":"function","name":"exec","description":"v2"}]`,
+			},
+			want:  []wantTool{{"functions", "exec", "v2"}},
+			count: 1,
+		},
+		{
+			name: "custom namespace member re-declared, same name elsewhere untouched",
+			items: []string{
+				`[{"type":"namespace","name":"mcp","tools":[{"type":"function","name":"read","description":"v1"}]},{"type":"function","name":"read","description":"top"}]`,
+				`[{"type":"namespace","name":"mcp","tools":[{"type":"function","name":"read","description":"v2"}]}]`,
+			},
+			want:  []wantTool{{"mcp", "read", "v2"}, {"", "read", "top"}},
+			count: 2,
+		},
+		{
+			name: "additional_tools item overrides a top-level tool",
+			top:  []schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeFunction, Name: new("exec"), Description: new("v1")}},
+			items: []string{
+				`[{"type":"function","name":"exec","description":"v2"}]`,
+			},
+			want:  []wantTool{{"", "exec", "v2"}},
+			count: 1,
+		},
+	} {
+		test.Run(testCase.name, func(test *testing.T) {
+			request := &schemas.BifrostResponsesRequest{}
+			if testCase.top != nil {
+				request.Params = &schemas.ResponsesParameters{Tools: testCase.top}
+			}
+			for _, raw := range testCase.items {
+				request.Input = append(request.Input, schemas.ResponsesMessage{
+					Type:            new(schemas.ResponsesMessageTypeAdditionalTools),
+					AdditionalTools: []byte(raw),
+				})
+			}
+			prepared, bifrostErr := hoistResponsesAdditionalTools(request)
+			require.Nil(test, bifrostErr)
+			require.Len(test, prepared.Params.Tools, testCase.count)
+			assert.Equal(test, testCase.want, flatten(prepared.Params.Tools))
+			if testCase.top != nil {
+				assert.Equal(test, "v1", *request.Params.Tools[0].Description, "caller's tools must not be mutated")
+			}
+
+			_, bifrostErr = providerUtils.UnwrapDefaultNamespaceTools(prepared)
+			assert.Nil(test, bifrostErr)
+		})
+	}
+}
+
+// BenchmarkHoistResponsesAdditionalTools measures the hoist for a Codex-shaped request:
+// one additional_tools item declaring a "functions" namespace of twelve tools, and the
+// same history with a second item re-declaring exec.
+func BenchmarkHoistResponsesAdditionalTools(b *testing.B) {
+	var members []string
+	for i := range 12 {
+		members = append(members, fmt.Sprintf(`{"type":"function","name":"tool_%d","description":"d","parameters":{"type":"object"}}`, i))
+	}
+	first := `[{"type":"namespace","name":"functions","tools":[` + strings.Join(members, ",") + `]}]`
+	second := `[{"type":"namespace","name":"functions","tools":[{"type":"function","name":"tool_0","description":"v2","parameters":{"type":"object"}}]}]`
+	item := func(raw string) schemas.ResponsesMessage {
+		return schemas.ResponsesMessage{Type: new(schemas.ResponsesMessageTypeAdditionalTools), AdditionalTools: []byte(raw)}
+	}
+	for _, bc := range []struct {
+		name  string
+		input []schemas.ResponsesMessage
+	}{
+		{"single declaration", []schemas.ResponsesMessage{item(first)}},
+		{"re-declaration", []schemas.ResponsesMessage{item(first), item(second)}},
+	} {
+		b.Run(bc.name, func(b *testing.B) {
+			request := &schemas.BifrostResponsesRequest{Input: bc.input}
+			b.ReportAllocs()
+			for b.Loop() {
+				_, _ = hoistResponsesAdditionalTools(request)
+			}
+		})
+	}
+}
 
 func promptCacheOn() *schemas.ProviderConfig {
 	return &schemas.ProviderConfig{PromptCache: &schemas.PromptCacheConfig{AutoInject: true}}
@@ -150,6 +690,140 @@ func TestPromptCacheChatRequest_PassesThroughWhenDisabled(t *testing.T) {
 	assert.Nil(t, promptCacheChatRequest(nil, promptCacheOn(), schemas.Anthropic, nil))
 }
 
+// mcpInstructionsChatRequest builds the chat request an MCP-bearing turn dispatches: the gateway
+// prepended its server-instructions system message ahead of the caller's transcript, and
+// recorded it on ctx the way the MCP tool manager does.
+func mcpInstructionsChatRequest() (*schemas.BifrostContext, *schemas.BifrostChatRequest) {
+	instructions := "<mcp_server name=\"sse_mcp\">\nUse the echo tool.\n</mcp_server>"
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyMCPInstructionsInjected, true)
+	ctx.SetValue(schemas.BifrostContextKeyMCPInstructionsText, &instructions)
+	return ctx, &schemas.BifrostChatRequest{
+		Provider: schemas.Anthropic,
+		Model:    "claude-sonnet-4",
+		Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleSystem, Content: &schemas.ChatMessageContent{ContentStr: &instructions}},
+			{Role: schemas.ChatMessageRoleSystem, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("caller system prompt")}},
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("caller question")}},
+		},
+	}
+}
+
+// chatMessageHasMarker reports whether any content block of msg carries cache_control.
+func chatMessageHasMarker(msg schemas.ChatMessage) bool {
+	if msg.Content == nil {
+		return false
+	}
+	for _, block := range msg.Content.ContentBlocks {
+		if block.CacheControl != nil {
+			return true
+		}
+	}
+	return false
+}
+
+// TestPromptCacheChatRequest_SkipsInjectedMCPInstructions pins #6180's cache points against the
+// caller's transcript when the gateway has prepended MCP server instructions: the auto marker
+// lands on the caller's first block, and positional and role points count only the caller's
+// messages, instead of everything shifting by the injected message.
+func TestPromptCacheChatRequest_SkipsInjectedMCPInstructions(t *testing.T) {
+	t.Run("auto marks the caller's first block", func(t *testing.T) {
+		ctx, req := mcpInstructionsChatRequest()
+		out := promptCacheChatRequest(ctx, promptCacheOn(), schemas.Anthropic, req)
+		assert.False(t, chatMessageHasMarker(out.Input[0]), "the auto marker landed on the gateway's MCP instructions")
+		assert.True(t, chatMessageHasMarker(out.Input[1]), "the auto marker did not land on the caller's first block")
+		assert.False(t, chatMessageHasMarker(out.Input[2]))
+		require.NotNil(t, out.Input[0].Content.ContentStr, "the injected instructions must be sent unchanged")
+	})
+
+	t.Run("index and role points count the caller's messages", func(t *testing.T) {
+		ctx, req := mcpInstructionsChatRequest()
+		config := &schemas.ProviderConfig{PromptCache: &schemas.PromptCacheConfig{InjectionPoints: []schemas.CacheControlInjectionPoint{
+			{Location: "message", Index: schemas.Ptr(1)},
+			{Location: "message", Role: schemas.Ptr("system"), Index: schemas.Ptr(0)},
+		}}}
+		out := promptCacheChatRequest(ctx, config, schemas.Anthropic, req)
+		assert.False(t, chatMessageHasMarker(out.Input[0]), "a point resolved against the gateway's MCP instructions")
+		assert.True(t, chatMessageHasMarker(out.Input[1]), "role system + index 0 should name the caller's system message")
+		assert.True(t, chatMessageHasMarker(out.Input[2]), "index 1 should name the caller's second message")
+	})
+
+	t.Run("a chat turn dispatched through the Responses API skips them too", func(t *testing.T) {
+		ctx, req := mcpInstructionsChatRequest()
+		responsesReq := req.ToResponsesRequest()
+		require.NotNil(t, responsesReq)
+		require.Len(t, responsesReq.Input, 3)
+		out := promptCacheResponsesRequest(ctx, promptCacheOn(), schemas.Anthropic, responsesReq)
+		hasMarker := func(msg schemas.ResponsesMessage) bool {
+			if msg.Content == nil {
+				return false
+			}
+			for _, block := range msg.Content.ContentBlocks {
+				if block.CacheControl != nil {
+					return true
+				}
+			}
+			return false
+		}
+		assert.False(t, hasMarker(out.Input[0]), "the auto marker landed on the gateway's MCP instructions")
+		assert.True(t, hasMarker(out.Input[1]), "the auto marker did not land on the caller's first block")
+	})
+
+	t.Run("without injected instructions placement is unchanged", func(t *testing.T) {
+		_, req := mcpInstructionsChatRequest()
+		out := promptCacheChatRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), promptCacheOn(), schemas.Anthropic, req)
+		assert.True(t, chatMessageHasMarker(out.Input[0]), "a caller's own leading system message keeps the auto marker")
+	})
+}
+
+// TestPromptCacheChatRequest_CachePointOnlyReachesBedrock covers a Bedrock -> OpenAI fallback on the same shared request.
+func TestPromptCacheChatRequest_CachePointOnlyReachesBedrock(t *testing.T) {
+	req := chatReqWithText("stable prefix")
+	req.Input[0].Content.ContentBlocks = append(req.Input[0].Content.ContentBlocks, schemas.ChatContentBlock{CachePoint: &schemas.CachePoint{Type: "default"}})
+
+	assert.Same(t, req, promptCacheChatRequest(nil, nil, schemas.Bedrock, req))
+
+	out := promptCacheChatRequest(nil, nil, schemas.OpenAI, req)
+	require.NotSame(t, req, out)
+	assert.Len(t, out.Input[0].Content.ContentBlocks, 1)
+	assert.Len(t, req.Input[0].Content.ContentBlocks, 2, "the shared request lost its cachePoint; a Bedrock fallback would not see it")
+}
+
+// TestPromptCacheChatRequest_CachePointGatedOnModel covers the second half of the gate:
+// Converse itself rejects a cachePoint on a model that does not publish support for one,
+// and the datasheet is what decides, with the model name only the fallback.
+func TestPromptCacheChatRequest_CachePointGatedOnModel(t *testing.T) {
+	withCachePoint := func(model string) *schemas.BifrostChatRequest {
+		req := chatReqWithText("stable prefix")
+		req.Provider = schemas.Bedrock
+		req.Model = model
+		req.Input[0].Content.ContentBlocks = append(req.Input[0].Content.ContentBlocks, schemas.ChatContentBlock{CachePoint: &schemas.CachePoint{Type: "default"}})
+		return req
+	}
+
+	llama := withCachePoint("meta.llama3-70b-instruct-v1:0")
+	out := promptCacheChatRequest(nil, nil, schemas.Bedrock, llama)
+	require.NotSame(t, llama, out)
+	assert.Len(t, out.Input[0].Content.ContentBlocks, 1, "Converse rejects a cachePoint on a model without support for one")
+	assert.Len(t, llama.Input[0].Content.ContentBlocks, 2, "the shared request was mutated")
+
+	schemas.SetCapabilityResolver(func(_ schemas.ModelProvider, model string) *schemas.ModelCapabilities {
+		if model == "meta.llama3-70b-instruct-v1:0" {
+			return &schemas.ModelCapabilities{SupportsCachePoint: schemas.Ptr(true)}
+		}
+		return &schemas.ModelCapabilities{SupportsCachePoint: schemas.Ptr(false)}
+	})
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+
+	assert.Same(t, llama, promptCacheChatRequest(nil, nil, schemas.Bedrock, llama),
+		"a datasheet row saying yes must win over the name-based fallback")
+
+	claude := withCachePoint("anthropic.claude-3-5-haiku-20241022-v1:0")
+	out = promptCacheChatRequest(nil, nil, schemas.Bedrock, claude)
+	require.NotSame(t, claude, out)
+	assert.Len(t, out.Input[0].Content.ContentBlocks, 1, "a datasheet row saying no must win too")
+}
+
 // TestPromptCacheDispatch_CallerMarkerSurvivesUnchanged proves the two guarantees
 // compose: a caller that set its own marker gets the request through untouched, and
 // nothing extra is added on top of it.
@@ -208,4 +882,748 @@ func TestPromptCacheDispatch_HonoursPerRequestOverride(t *testing.T) {
 		assert.Same(t, req, out, "a header must not manufacture operator opt-in")
 		assert.Nil(t, req.Input[0].Content.ContentBlocks[0].CacheControl)
 	})
+}
+
+// stubProvider satisfies schemas.Provider for the dispatch seam; only GetProviderKey is
+// ever called by prepareResponsesRequest. Everything else panics on the nil embed.
+type stubProvider struct {
+	schemas.Provider
+	key schemas.ModelProvider
+}
+
+func (s stubProvider) GetProviderKey() schemas.ModelProvider { return s.key }
+
+// namespaceCapableStub is a provider that answers the namespace question itself, the
+// way Bedrock does from its surface resolver.
+type namespaceCapableStub struct {
+	stubProvider
+	supported bool
+}
+
+func (s namespaceCapableStub) SupportsResponsesNamespaceTools(*schemas.BifrostContext, schemas.Key, string) bool {
+	return s.supported
+}
+
+func responsesReqWithNamespaces(provider schemas.ModelProvider) *schemas.BifrostResponsesRequest {
+	req := responsesReqWithText("Test the tools")
+	req.Provider = provider
+	nested := func(name string) schemas.ResponsesTool {
+		return schemas.ResponsesTool{Type: schemas.ResponsesToolTypeFunction, Name: new(name), ResponsesToolFunction: &schemas.ResponsesToolFunction{}}
+	}
+	req.Params = &schemas.ResponsesParameters{Tools: []schemas.ResponsesTool{
+		{Type: schemas.ResponsesToolTypeNamespace, Name: new("namespace_a"), ResponsesToolNamespace: &schemas.ResponsesToolNamespace{Tools: []schemas.ResponsesTool{nested("js")}}},
+		{Type: schemas.ResponsesToolTypeNamespace, Name: new("namespace_b"), ResponsesToolNamespace: &schemas.ResponsesToolNamespace{Tools: []schemas.ResponsesTool{nested("js")}}},
+	}}
+	return req
+}
+
+// TestPrepareResponsesRequest_FlattensForUnsupportedWireAndIsolatesSharedRequest is the
+// dispatch-seam half of issue #7048: an attempt against a wire without namespace support
+// gets flattened, prefixed tools, and the shared request keeps the caller's namespaces
+// for the next attempt.
+func TestPrepareResponsesRequest_FlattensForUnsupportedWireAndIsolatesSharedRequest(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	req := responsesReqWithNamespaces(schemas.Anthropic)
+
+	out, bifrostErr := prepareResponsesRequest(ctx, &schemas.ProviderConfig{}, stubProvider{key: schemas.Anthropic}, schemas.Key{}, req)
+
+	require.Nil(t, bifrostErr)
+	require.NotSame(t, req, out)
+	require.Len(t, out.Params.Tools, 2)
+	assert.Equal(t, "namespace_a__js", *out.Params.Tools[0].Name)
+	assert.Equal(t, "namespace_b__js", *out.Params.Tools[1].Name)
+	assert.Equal(t, schemas.ResponsesToolTypeNamespace, req.Params.Tools[0].Type, "the shared request was mutated")
+
+	// The chat fallback must see function tools, not an empty list.
+	chat := out.ToChatRequest()
+	require.NotNil(t, chat)
+	require.Len(t, chat.Params.Tools, 2)
+}
+
+func TestPrepareResponsesRequest_PassesThroughForOpenAI(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	req := responsesReqWithNamespaces(schemas.OpenAI)
+
+	out, bifrostErr := prepareResponsesRequest(ctx, &schemas.ProviderConfig{}, stubProvider{key: schemas.OpenAI}, schemas.Key{}, req)
+
+	require.Nil(t, bifrostErr)
+	assert.Same(t, req, out, "OpenAI understands namespace tools; the request must dispatch unchanged")
+}
+
+func TestPrepareResponsesRequest_ProviderAnswerWins(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	req := responsesReqWithNamespaces(schemas.Bedrock)
+
+	out, bifrostErr := prepareResponsesRequest(ctx, &schemas.ProviderConfig{},
+		namespaceCapableStub{stubProvider: stubProvider{key: schemas.Bedrock}, supported: true}, schemas.Key{}, req)
+
+	require.Nil(t, bifrostErr)
+	assert.Same(t, req, out, "a provider that reports namespace support must not be flattened")
+}
+
+// TestPrepareResponsesRequest_AliasesTravelWithThePreparedRequest pins the ownership
+// rule: the alias map is request state, carried on the prepared copy and applied to
+// that attempt's response. A later attempt on a wire that accepts namespaces gets the
+// shared request back with no map, so nothing from the earlier attempt can leak into
+// its response, without any context key or process-wide store.
+func TestPrepareResponsesRequest_AliasesTravelWithThePreparedRequest(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	req := responsesReqWithNamespaces(schemas.Anthropic)
+
+	// Attempt 1: unsupported wire, the prepared copy carries the map.
+	first, bifrostErr := prepareResponsesRequest(ctx, &schemas.ProviderConfig{}, stubProvider{key: schemas.Anthropic}, schemas.Key{}, req)
+	require.Nil(t, bifrostErr)
+	require.Len(t, first.NamespaceToolAliases, 2, "attempt 1 must carry the aliases it produced")
+	assert.Nil(t, req.NamespaceToolAliases, "the shared request never carries a map")
+
+	// Attempt 2: supported wire on the same request, nothing to restore.
+	req.Provider = schemas.OpenAI
+	second, bifrostErr := prepareResponsesRequest(ctx, &schemas.ProviderConfig{}, stubProvider{key: schemas.OpenAI}, schemas.Key{}, req)
+	require.Nil(t, bifrostErr)
+	assert.Same(t, req, second)
+	assert.Nil(t, second.NamespaceToolAliases)
+
+	// Restoring attempt 2's response with attempt 2's (empty) map leaves it untouched.
+	resp := &schemas.BifrostResponse{ResponsesResponse: &schemas.BifrostResponsesResponse{Output: []schemas.ResponsesMessage{{
+		Type:                 new(schemas.ResponsesMessageTypeFunctionCall),
+		ResponsesToolMessage: &schemas.ResponsesToolMessage{CallID: new("c"), Name: new("namespace_a__js"), Arguments: new("{}")},
+	}}}}
+	providerUtils.RestoreResponsesNamespaceToolCalls(second.NamespaceToolAliases, resp)
+	assert.Equal(t, "namespace_a__js", *resp.ResponsesResponse.Output[0].Name)
+	assert.Nil(t, resp.ResponsesResponse.Output[0].Namespace)
+}
+
+// The streaming path restores through a wrapped PostHookRunner built from the prepared
+// request's map, so every chunk reaches the post hooks with the caller's names.
+func TestWrapNamespaceRestorePostHookRunner(t *testing.T) {
+	aliases := map[string]schemas.NamespaceToolAlias{"namespace_a__js": {Namespace: "namespace_a", Name: "js"}}
+	var seen *schemas.BifrostResponse
+	inner := func(_ *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+		seen = result
+		return result, err
+	}
+	chunk := func() *schemas.BifrostResponse {
+		return &schemas.BifrostResponse{ResponsesStreamResponse: &schemas.BifrostResponsesStreamResponse{
+			Type: schemas.ResponsesStreamResponseTypeOutputItemAdded,
+			Item: &schemas.ResponsesMessage{Type: new(schemas.ResponsesMessageTypeFunctionCall), ResponsesToolMessage: &schemas.ResponsesToolMessage{CallID: new("c"), Name: new("namespace_a__js"), Arguments: new("{}")}},
+		}}
+	}
+
+	wrapped := providerUtils.WrapNamespaceRestorePostHookRunner(inner, aliases)
+	wrapped(nil, chunk(), nil)
+	require.NotNil(t, seen)
+	assert.Equal(t, "js", *seen.ResponsesStreamResponse.Item.Name)
+	assert.Equal(t, "namespace_a", *seen.ResponsesStreamResponse.Item.Namespace)
+
+	// No aliases: the runner is returned as is and chunks pass through untouched.
+	plain := providerUtils.WrapNamespaceRestorePostHookRunner(inner, nil)
+	plain(nil, chunk(), nil)
+	assert.Equal(t, "namespace_a__js", *seen.ResponsesStreamResponse.Item.Name)
+}
+
+// Codex >= 0.147 sends a "functions" namespace on every request. It is the default
+// namespace by definition, so it is unwrapped for EVERY provider, including ones
+// whose wire accepts namespaces: Bedrock Mantle reserves the name and 400s, and on
+// OpenAI the unwrap is a no-op semantically.
+func TestPrepareResponsesRequest_UnwrapsFunctionsNamespaceForEveryWire(t *testing.T) {
+	functionsNS := schemas.ResponsesTool{
+		Type: schemas.ResponsesToolTypeNamespace,
+		Name: new("functions"),
+		ResponsesToolNamespace: &schemas.ResponsesToolNamespace{Tools: []schemas.ResponsesTool{
+			{Type: schemas.ResponsesToolTypeFunction, Name: new("wait"), ResponsesToolFunction: &schemas.ResponsesToolFunction{}},
+		}},
+	}
+
+	t.Run("namespace-capable provider still gets it unwrapped", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		req := responsesReqWithNamespaces(schemas.Bedrock)
+		req.Params.Tools = []schemas.ResponsesTool{functionsNS, req.Params.Tools[0]}
+
+		out, bifrostErr := prepareResponsesRequest(ctx, &schemas.ProviderConfig{},
+			namespaceCapableStub{stubProvider: stubProvider{key: schemas.Bedrock}, supported: true}, schemas.Key{}, req)
+
+		require.Nil(t, bifrostErr)
+		require.NotSame(t, req, out)
+		require.Len(t, out.Params.Tools, 2)
+		assert.Equal(t, schemas.ResponsesToolTypeFunction, out.Params.Tools[0].Type)
+		assert.Equal(t, "wait", *out.Params.Tools[0].Name, "functions members are hoisted without a prefix")
+		assert.Equal(t, schemas.ResponsesToolTypeNamespace, out.Params.Tools[1].Type, "other namespaces pass through on a capable wire")
+		assert.Equal(t, schemas.ResponsesToolTypeNamespace, req.Params.Tools[0].Type, "the shared request was mutated")
+	})
+
+	t.Run("flattening wire hoists functions members without a prefix", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		req := responsesReqWithNamespaces(schemas.Anthropic)
+		req.Params.Tools = []schemas.ResponsesTool{functionsNS, req.Params.Tools[0]}
+
+		out, bifrostErr := prepareResponsesRequest(ctx, &schemas.ProviderConfig{}, stubProvider{key: schemas.Anthropic}, schemas.Key{}, req)
+
+		require.Nil(t, bifrostErr)
+		require.Len(t, out.Params.Tools, 2)
+		assert.Equal(t, "wait", *out.Params.Tools[0].Name)
+		assert.Equal(t, "namespace_a__js", *out.Params.Tools[1].Name)
+	})
+}
+
+// captureBody records each request body the server receives, then replies with status and body.
+func captureBody(mu *sync.Mutex, bodies *[]string, status int, reply string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		*bodies = append(*bodies, string(b))
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_, _ = io.WriteString(w, reply)
+	}
+}
+
+const billingHeaderFixture = "x-anthropic-billing-header: cc_version=2.1.270.42c; cc_entrypoint=cli; cc_is_subagent=true;"
+
+func billingHeaderRequest(t testing.TB, header ...string) (*schemas.BifrostContext, *schemas.BifrostResponsesRequest) {
+	t.Helper()
+	ctx := schemas.NewBifrostContextWithValue(context.Background(), schemas.NoDeadline, schemas.BifrostContextKeyIntegrationType, "anthropic")
+	var incoming anthropic.AnthropicMessageRequest
+	require.NoError(t, schemas.Unmarshal([]byte(`{
+		"model":"openai/gpt-4o-mini","max_tokens":64,
+		"system":[
+			{"type":"text","text":"`+billingHeaderFixture+`"},
+			{"type":"text","text":"Stable instructions","cache_control":{"type":"ephemeral"}}
+		],
+		"messages":[{"role":"user","content":"Hello"}]
+	}`), &incoming))
+	if len(header) > 0 {
+		incoming.System.ContentBlocks[0].Text = schemas.Ptr(header[0])
+	}
+	req := incoming.ToBifrostResponsesRequest(ctx)
+	req.ExtractAnthropicBillingHeader()
+	return ctx, req
+}
+
+func TestBillingHeaderNormalizedIngress(t *testing.T) {
+	_, req := billingHeaderRequest(t)
+	require.Len(t, req.Input[0].Content.ContentBlocks, 1)
+	assert.Equal(t, "Stable instructions", *req.Input[0].Content.ContentBlocks[0].Text)
+}
+
+func TestBillingHeaderNonAnthropicNoCopy(t *testing.T) {
+	ctx, req := billingHeaderRequest(t)
+	out, bifrostErr := prepareResponsesRequest(ctx, nil, stubProvider{key: schemas.OpenAI}, schemas.Key{}, req)
+	require.Nil(t, bifrostErr)
+	assert.Same(t, req, out, "non-Anthropic attempts must reuse the normalized input")
+}
+
+func TestBillingHeaderRawPassthrough(t *testing.T) {
+	ctx, req := billingHeaderRequest(t)
+	req.Model = "claude-sonnet-4"
+	req.RawRequestBody = []byte(`{"system":"` + billingHeaderFixture + `"}`)
+	ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+	out := restoreResponsesBillingHeader(ctx, schemas.Anthropic, req)
+	assert.Same(t, req, out, "raw passthrough does not need a normalized copy")
+	assert.Contains(t, string(out.RawRequestBody), billingHeaderFixture)
+	ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, false)
+	assert.Len(t, restoreResponsesBillingHeader(ctx, schemas.Anthropic, req).Input[0].Content.ContentBlocks, 2)
+}
+
+func BenchmarkBillingHeaderNonAnthropic100MB(b *testing.B) {
+	ctx, req := billingHeaderRequest(b)
+	// Allocate 100 distinct 1 MiB payloads before timing. Filtering should neither
+	// inspect them nor allocate a new message slice on subsequent GPT attempts.
+	for i := 0; i < 100; i++ {
+		req.Input = append(req.Input, schemas.ResponsesMessage{
+			Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+			Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr(strings.Repeat("x", 1<<20))},
+		})
+	}
+	b.ReportAllocs()
+	var out *schemas.BifrostResponsesRequest
+	for b.Loop() {
+		out = restoreResponsesBillingHeader(ctx, schemas.OpenAI, req)
+	}
+	if out != req {
+		b.Fatal("non-Anthropic attempt copied the request")
+	}
+}
+
+func TestPrepareResponsesBillingHeaderModelFamily(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		provider schemas.ModelProvider
+		model    string
+		base     schemas.ModelProvider
+		alias    *schemas.AliasConfig
+		keep     bool
+	}{
+		{name: "GPT", provider: schemas.OpenAI, model: "gpt-4o-mini"},
+		{name: "Gemini", provider: schemas.Gemini, model: "gemini-2.5-flash"},
+		{name: "self hosted opaque", provider: schemas.Ollama, model: "local-model"},
+		{name: "custom OpenAI", provider: customOpenAIProviderKey, base: schemas.OpenAI, model: "deployment"},
+		{name: "Anthropic opaque", provider: schemas.Anthropic, model: "deployment", keep: true},
+		{name: "custom Anthropic opaque", provider: customAnthropicProviderKey, base: schemas.Anthropic, model: "deployment", keep: true},
+		{name: "Anthropic", provider: schemas.Anthropic, model: "claude-sonnet-4", keep: true},
+		{name: "Bedrock Claude", provider: schemas.Bedrock, model: "anthropic.claude-sonnet-4", keep: true},
+		{name: "Vertex Claude", provider: schemas.Vertex, model: "claude-sonnet-4", keep: true},
+		{name: "Azure Claude", provider: schemas.Azure, model: "claude-sonnet-4", keep: true},
+		{name: "OpenRouter Claude", provider: schemas.OpenRouter, model: "anthropic/claude-sonnet-4", keep: true},
+		{name: "Claude named GPT alias", provider: schemas.OpenAI, model: "claude-alias", alias: &schemas.AliasConfig{ModelID: "opaque", ModelFamily: schemas.Ptr(schemas.ModelFamilyOpenAI)}},
+		{name: "opaque Claude alias", provider: schemas.Azure, model: "deployment", alias: &schemas.AliasConfig{ModelID: "opaque", ModelFamily: schemas.Ptr(schemas.ModelFamilyAnthropic)}, keep: true},
+		{name: "canonical Claude alias", provider: schemas.OpenRouter, model: "deployment", alias: &schemas.AliasConfig{ModelID: "opaque", ModelName: schemas.Ptr("claude-sonnet-4")}, keep: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, req := billingHeaderRequest(t)
+			req.Provider, req.Model = tc.provider, tc.model
+			if tc.base != "" {
+				ctx.SetValue(schemas.BifrostContextKeyBaseProviderType, tc.base)
+			}
+			if tc.alias != nil {
+				ctx.SetValue(schemas.BifrostContextKeyResolvedAlias, &schemas.ResolvedAlias{Key: tc.model, Config: tc.alias})
+			}
+			before, err := providerUtils.MarshalSorted(req)
+			require.NoError(t, err)
+			out, bifrostErr := prepareResponsesRequest(ctx, nil, stubProvider{key: tc.provider}, schemas.Key{}, req)
+			require.Nil(t, bifrostErr)
+			if tc.keep {
+				require.Len(t, out.Input[0].Content.ContentBlocks, 2)
+				assert.Equal(t, billingHeaderFixture, *out.Input[0].Content.ContentBlocks[0].Text)
+			} else {
+				assert.Same(t, req, out)
+				require.Len(t, out.Input[0].Content.ContentBlocks, 1)
+				assert.Equal(t, "Stable instructions", *out.Input[0].Content.ContentBlocks[0].Text)
+				assert.Equal(t, req.Input[0].Content.ContentBlocks[0].CacheControl, out.Input[0].Content.ContentBlocks[0].CacheControl)
+			}
+			after, err := providerUtils.MarshalSorted(req)
+			require.NoError(t, err)
+			assert.Equal(t, string(before), string(after), "preparation mutated the original request")
+		})
+	}
+}
+
+func TestPrepareResponsesBillingHeaderStableWireAndFallback(t *testing.T) {
+	var previous []byte
+	for _, header := range []string{billingHeaderFixture, "x-anthropic-billing-header: cc_version=2.1.270.abc; cch=fffff;"} {
+		ctx, req := billingHeaderRequest(t, header)
+		// Both directions: Claude -> GPT -> Claude, sharing the original input.
+		for _, family := range []schemas.ModelFamily{schemas.ModelFamilyAnthropic, schemas.ModelFamilyOpenAI, schemas.ModelFamilyAnthropic} {
+			ctx.SetValue(schemas.BifrostContextKeyResolvedAlias, &schemas.ResolvedAlias{Config: &schemas.AliasConfig{ModelID: "deployment", ModelFamily: &family}})
+			out, bifrostErr := prepareResponsesRequest(ctx, nil, stubProvider{key: schemas.OpenAI}, schemas.Key{}, req)
+			require.Nil(t, bifrostErr)
+			if family == schemas.ModelFamilyAnthropic {
+				require.Len(t, out.Input[0].Content.ContentBlocks, 2)
+				assert.Equal(t, header, *out.Input[0].Content.ContentBlocks[0].Text)
+				continue
+			}
+			wire, err := providerUtils.MarshalSorted(openai.ToOpenAIResponsesRequest(ctx, out))
+			require.NoError(t, err)
+			assert.NotContains(t, string(wire), "x-anthropic-billing-header:")
+			if previous != nil {
+				assert.Equal(t, string(previous), string(wire))
+			}
+			previous = wire
+		}
+	}
+}
+
+// Capture at the provider boundary so all four dispatch paths must prepare the
+// request, including Responses -> Chat conversion before streaming dispatch.
+type billingHeaderCaptureProvider struct {
+	stubProvider
+	responses *schemas.BifrostResponsesRequest
+	chat      *schemas.BifrostChatRequest
+}
+
+func (p *billingHeaderCaptureProvider) Responses(_ *schemas.BifrostContext, _ schemas.Key, r *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+	p.responses = r
+	return &schemas.BifrostResponsesResponse{}, nil
+}
+
+func (p *billingHeaderCaptureProvider) ChatCompletion(_ *schemas.BifrostContext, _ schemas.Key, r *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
+	p.chat = r
+	return &schemas.BifrostChatResponse{}, nil
+}
+
+func (p *billingHeaderCaptureProvider) ResponsesStream(_ *schemas.BifrostContext, _ schemas.PostHookRunner, _ func(context.Context), _ schemas.Key, r *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	p.responses = r
+	ch := make(chan *schemas.BifrostStreamChunk)
+	close(ch)
+	return ch, nil
+}
+
+func (p *billingHeaderCaptureProvider) ChatCompletionStream(_ *schemas.BifrostContext, _ schemas.PostHookRunner, _ func(context.Context), _ schemas.Key, r *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	p.chat = r
+	ch := make(chan *schemas.BifrostStreamChunk)
+	close(ch)
+	return ch, nil
+}
+
+func TestBillingHeaderDispatch(t *testing.T) {
+	for _, stream := range []bool{false, true} {
+		for _, chat := range []bool{false, true} {
+			t.Run(fmt.Sprintf("stream=%t/chat=%t", stream, chat), func(t *testing.T) {
+				ctx, req := billingHeaderRequest(t)
+				if chat {
+					ctx.SetValue(schemas.BifrostContextKeyChangeRequestType, schemas.ChatCompletionRequest)
+				}
+				message := &ChannelMessage{Context: ctx, BifrostRequest: schemas.BifrostRequest{RequestType: schemas.ResponsesRequest, ResponsesRequest: req}}
+				provider := &billingHeaderCaptureProvider{stubProvider: stubProvider{key: schemas.OpenAI}}
+				client := &Bifrost{}
+				if stream {
+					message.RequestType = schemas.ResponsesStreamRequest
+					_, bifrostErr := client.handleProviderStreamRequest(provider, nil, message, schemas.Key{}, nil, nil)
+					require.Nil(t, bifrostErr)
+				} else {
+					_, bifrostErr := client.handleProviderRequest(provider, nil, message, schemas.Key{}, nil)
+					require.Nil(t, bifrostErr)
+				}
+				var captured any
+				if chat {
+					require.NotNil(t, provider.chat)
+					captured = provider.chat
+				} else {
+					require.NotNil(t, provider.responses)
+					captured = provider.responses
+				}
+				body, err := providerUtils.MarshalSorted(captured)
+				require.NoError(t, err)
+				assert.NotContains(t, string(body), "x-anthropic-billing-header:")
+				assert.Contains(t, string(body), "Stable instructions")
+				require.Len(t, req.Input[0].Content.ContentBlocks, 1)
+				assert.Equal(t, "Stable instructions", *req.Input[0].Content.ContentBlocks[0].Text)
+			})
+		}
+	}
+}
+
+// TestChatCachePoint_StrippedForPrimaryKeptForBedrockFallback runs an OpenAI -> Bedrock fallback end to end.
+func TestChatCachePoint_StrippedForPrimaryKeptForBedrockFallback(t *testing.T) {
+	var mu sync.Mutex
+	var openaiBodies, bedrockBodies []string
+
+	primary := httptest.NewServer(captureBody(&mu, &openaiBodies, http.StatusInternalServerError,
+		`{"error":{"message":"boom","type":"server_error"}}`))
+	defer primary.Close()
+	fallback := httptest.NewTLSServer(captureBody(&mu, &bedrockBodies, http.StatusOK,
+		`{"output":{"message":{"role":"assistant","content":[{"text":"hello"}]}},"stopReason":"end_turn","usage":{"inputTokens":1,"outputTokens":1,"totalTokens":2}}`))
+	defer fallback.Close()
+
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL(schemas.OpenAI, 1, 1, primary.URL)
+	account.configs[schemas.OpenAI].NetworkConfig.MaxRetries = 0
+	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
+		{ID: "openai-key", Value: *schemas.NewSecretVar("sk-test"), Models: schemas.WhiteList{"*"}, Weight: 100},
+	})
+	account.AddProviderWithBaseURL(schemas.Bedrock, 1, 1, "")
+	account.configs[schemas.Bedrock].NetworkConfig.MaxRetries = 0
+	account.configs[schemas.Bedrock].NetworkConfig.InsecureSkipVerify = true
+	account.SetKeysForProvider(schemas.Bedrock, []schemas.Key{{
+		ID: "bedrock-key", Models: schemas.WhiteList{"*"}, Weight: 100,
+		BedrockKeyConfig: &schemas.BedrockKeyConfig{
+			AccessKey: *schemas.NewSecretVar("AKIATEST"),
+			SecretKey: *schemas.NewSecretVar("secret"),
+			Region:    schemas.NewSecretVar("us-east-1"),
+			Endpoints: &schemas.BedrockEndpoints{Runtime: schemas.NewSecretVar(strings.TrimPrefix(fallback.URL, "https://"))},
+		},
+	}})
+	client := newStreamTestClient(t, account)
+
+	req := &schemas.BifrostChatRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4o-mini",
+		Input: []schemas.ChatMessage{{
+			Role: schemas.ChatMessageRoleUser,
+			Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{
+				{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr("stable prefix")},
+				{CachePoint: &schemas.CachePoint{Type: "default"}},
+			}},
+		}},
+		Fallbacks: []schemas.Fallback{{Provider: schemas.Bedrock, Model: "anthropic.claude-3-5-haiku-20241022-v1:0"}},
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(10*time.Second))
+	resp, bifrostErr := client.ChatCompletionRequest(ctx, req)
+	if bifrostErr != nil && bifrostErr.Error != nil {
+		t.Fatalf("fallback failed: %s", bifrostErr.Error.Message)
+	}
+	require.NotNil(t, resp)
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.Len(t, openaiBodies, 1, "primary was not attempted")
+	require.Len(t, bedrockBodies, 1, "fallback was not attempted")
+	assert.NotContains(t, openaiBodies[0], "cachePoint", "primary wire body leaked the Bedrock marker")
+	assert.Contains(t, bedrockBodies[0], "cachePoint", "fallback lost the caller's cachePoint")
+	assert.Len(t, req.Input[0].Content.ContentBlocks, 2, "caller's request was mutated")
+}
+
+// TestChatReasoningModeDispatch: reasoning.mode only exists on the OpenAI Responses
+// API, so a chat request that sets it must reach Responses on OpenAI/Azure wires
+// (custom providers resolve through their base type) and stay on chat everywhere
+// else, where the drop is reported through the compat dropped-params list.
+func TestChatReasoningModeDispatch(t *testing.T) {
+	cases := []struct {
+		name          string
+		key           schemas.ModelProvider
+		base          schemas.ModelProvider
+		mode          *string
+		wantResponses bool
+		wantDropped   bool
+	}{
+		{name: "openai with mode", key: schemas.OpenAI, mode: new("pro"), wantResponses: true},
+		{name: "azure with mode", key: schemas.Azure, mode: new("pro"), wantResponses: true},
+		{name: "custom openai with mode", key: "my-openai", base: schemas.OpenAI, mode: new("pro"), wantResponses: true},
+		{name: "openai without mode", key: schemas.OpenAI},
+		{name: "anthropic with mode", key: schemas.Anthropic, mode: new("pro"), wantDropped: true},
+		{name: "anthropic without mode", key: schemas.Anthropic},
+	}
+	for _, tc := range cases {
+		for _, stream := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/stream=%t", tc.name, stream), func(t *testing.T) {
+				ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+				if tc.base != "" {
+					ctx.SetValue(schemas.BifrostContextKeyBaseProviderType, tc.base)
+				}
+				prior := []string{"service_tier"}
+				ctx.SetValue(schemas.BifrostContextKeyCompatDroppedParams, prior)
+				req := &schemas.BifrostChatRequest{
+					Provider: tc.key,
+					Model:    "gpt-6-luna",
+					Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: new("Reply with OK.")}}},
+					Params:   &schemas.ChatParameters{Reasoning: &schemas.ChatReasoning{Effort: new("low"), Mode: tc.mode}},
+				}
+				message := &ChannelMessage{Context: ctx, BifrostRequest: schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: req}}
+				provider := &billingHeaderCaptureProvider{stubProvider: stubProvider{key: tc.key}}
+				client := &Bifrost{}
+				if stream {
+					message.RequestType = schemas.ChatCompletionStreamRequest
+					_, bifrostErr := client.handleProviderStreamRequest(provider, nil, message, schemas.Key{}, nil, nil)
+					require.Nil(t, bifrostErr)
+				} else {
+					_, bifrostErr := client.handleProviderRequest(provider, nil, message, schemas.Key{}, nil)
+					require.Nil(t, bifrostErr)
+				}
+
+				changeType, _ := ctx.Value(schemas.BifrostContextKeyChangeRequestType).(schemas.RequestType)
+				if tc.wantResponses {
+					require.NotNil(t, provider.responses, "reasoning.mode must route the chat request to the Responses API")
+					assert.Nil(t, provider.chat)
+					require.NotNil(t, provider.responses.Params)
+					require.NotNil(t, provider.responses.Params.Reasoning)
+					require.NotNil(t, provider.responses.Params.Reasoning.Mode)
+					assert.Equal(t, "pro", *provider.responses.Params.Reasoning.Mode)
+					assert.Equal(t, schemas.ResponsesRequest, changeType)
+				} else {
+					require.NotNil(t, provider.chat)
+					assert.Nil(t, provider.responses)
+					assert.Empty(t, changeType)
+				}
+
+				dropped, _ := ctx.Value(schemas.BifrostContextKeyCompatDroppedParams).([]string)
+				if tc.wantDropped {
+					assert.Equal(t, []string{"service_tier", "reasoning.mode"}, dropped)
+				} else {
+					assert.Equal(t, []string{"service_tier"}, dropped)
+				}
+				assert.Equal(t, []string{"service_tier"}, prior, "the caller's dropped slice must not be mutated in place")
+			})
+		}
+	}
+
+	// The Responses API has no n, so a mode request asking for several choices on
+	// OpenAI/Azure is rejected instead of silently returning one.
+	for _, stream := range []bool{false, true} {
+		t.Run(fmt.Sprintf("openai with mode and n=2/stream=%t", stream), func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			req := &schemas.BifrostChatRequest{
+				Provider: schemas.OpenAI,
+				Model:    "gpt-6-luna",
+				Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: new("Reply with OK.")}}},
+				Params:   &schemas.ChatParameters{N: new(2), Reasoning: &schemas.ChatReasoning{Mode: new("pro")}},
+			}
+			message := &ChannelMessage{Context: ctx, BifrostRequest: schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: req}}
+			provider := &billingHeaderCaptureProvider{stubProvider: stubProvider{key: schemas.OpenAI}}
+			client := &Bifrost{}
+			var bifrostErr *schemas.BifrostError
+			if stream {
+				message.RequestType = schemas.ChatCompletionStreamRequest
+				_, bifrostErr = client.handleProviderStreamRequest(provider, nil, message, schemas.Key{}, nil, nil)
+			} else {
+				_, bifrostErr = client.handleProviderRequest(provider, nil, message, schemas.Key{}, nil)
+			}
+			require.NotNil(t, bifrostErr, "mode with n=2 must be rejected, not served as one choice")
+			require.NotNil(t, bifrostErr.StatusCode)
+			assert.Equal(t, 400, *bifrostErr.StatusCode)
+			assert.Contains(t, bifrostErr.Error.Message, "n > 1")
+			assert.Nil(t, provider.responses)
+			assert.Nil(t, provider.chat)
+		})
+	}
+
+	// Chat parameters with no Responses equivalent would be dropped silently by the
+	// conversion, so a mode request that sets any of them is rejected, naming each one.
+	unsupported := []struct {
+		name   string
+		want   []string
+		params schemas.ChatParameters
+	}{
+		{name: "stop", want: []string{"stop"}, params: schemas.ChatParameters{Stop: []string{"END"}}},
+		{name: "seed", want: []string{"seed"}, params: schemas.ChatParameters{Seed: new(7)}},
+		{name: "logit_bias", want: []string{"logit_bias"}, params: schemas.ChatParameters{LogitBias: &map[string]float64{"50256": -100}}},
+		{name: "presence_penalty", want: []string{"presence_penalty"}, params: schemas.ChatParameters{PresencePenalty: new(0.5)}},
+		{name: "frequency_penalty", want: []string{"frequency_penalty"}, params: schemas.ChatParameters{FrequencyPenalty: new(0.5)}},
+		{name: "logprobs", want: []string{"logprobs"}, params: schemas.ChatParameters{LogProbs: new(true)}},
+		{name: "audio modality", want: []string{"audio"}, params: schemas.ChatParameters{Modalities: []string{"text", "audio"}}},
+		{name: "prediction", want: []string{"prediction"}, params: schemas.ChatParameters{Prediction: &schemas.ChatPrediction{Type: "content", Content: "x"}}},
+		{name: "web_search_options", want: []string{"web_search_options"}, params: schemas.ChatParameters{WebSearchOptions: &schemas.ChatWebSearchOptions{}}},
+		{name: "several at once", want: []string{"n > 1", "stop", "seed"}, params: schemas.ChatParameters{N: new(3), Stop: []string{"END"}, Seed: new(1)}},
+	}
+	for _, tc := range unsupported {
+		t.Run("openai with mode and "+tc.name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			params := tc.params
+			params.Reasoning = &schemas.ChatReasoning{Mode: new("pro")}
+			req := &schemas.BifrostChatRequest{
+				Provider: schemas.OpenAI,
+				Model:    "gpt-6-luna",
+				Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: new("Reply with OK.")}}},
+				Params:   &params,
+			}
+			message := &ChannelMessage{Context: ctx, BifrostRequest: schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: req}}
+			provider := &billingHeaderCaptureProvider{stubProvider: stubProvider{key: schemas.OpenAI}}
+			_, bifrostErr := (&Bifrost{}).handleProviderRequest(provider, nil, message, schemas.Key{}, nil)
+			require.NotNil(t, bifrostErr, "%s must be rejected, not dropped by the Responses conversion", tc.name)
+			require.NotNil(t, bifrostErr.StatusCode)
+			assert.Equal(t, 400, *bifrostErr.StatusCode)
+			for _, field := range tc.want {
+				assert.Contains(t, bifrostErr.Error.Message, field)
+			}
+			assert.Nil(t, provider.responses)
+			assert.Nil(t, provider.chat)
+		})
+	}
+
+	// Values the conversion keeps or that ask for nothing must still route.
+	t.Run("openai with mode and harmless chat params", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		req := &schemas.BifrostChatRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-6-luna",
+			Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: new("Reply with OK.")}}},
+			Params: &schemas.ChatParameters{
+				N: new(1), LogProbs: new(false), Modalities: []string{"text"}, Stop: []string{},
+				Reasoning: &schemas.ChatReasoning{Mode: new("pro")},
+			},
+		}
+		message := &ChannelMessage{Context: ctx, BifrostRequest: schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: req}}
+		provider := &billingHeaderCaptureProvider{stubProvider: stubProvider{key: schemas.OpenAI}}
+		_, bifrostErr := (&Bifrost{}).handleProviderRequest(provider, nil, message, schemas.Key{}, nil)
+		require.Nil(t, bifrostErr)
+		require.NotNil(t, provider.responses)
+	})
+
+	// A raw-body request is sent upstream byte for byte, so it is never converted (the
+	// chat body would reach /responses), never rejected for n, and never reported as
+	// dropping a mode its body still carries.
+	for _, key := range []schemas.ModelProvider{schemas.OpenAI, schemas.Anthropic} {
+		for _, stream := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s raw body with mode and n=2/stream=%t", key, stream), func(t *testing.T) {
+				ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+				ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+				ctx.SetValue(schemas.BifrostContextKeyCompatDroppedParams, []string{"service_tier"})
+				req := &schemas.BifrostChatRequest{
+					Provider:       key,
+					Model:          "gpt-6-luna",
+					Input:          []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: new("Reply with OK.")}}},
+					Params:         &schemas.ChatParameters{N: new(2), Reasoning: &schemas.ChatReasoning{Mode: new("pro")}},
+					RawRequestBody: []byte(`{"model":"gpt-6-luna","n":2,"reasoning":{"mode":"pro"},"messages":[{"role":"user","content":"Reply with OK."}]}`),
+				}
+				message := &ChannelMessage{Context: ctx, BifrostRequest: schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: req}}
+				provider := &billingHeaderCaptureProvider{stubProvider: stubProvider{key: key}}
+				client := &Bifrost{}
+				var bifrostErr *schemas.BifrostError
+				if stream {
+					message.RequestType = schemas.ChatCompletionStreamRequest
+					_, bifrostErr = client.handleProviderStreamRequest(provider, nil, message, schemas.Key{}, nil, nil)
+				} else {
+					_, bifrostErr = client.handleProviderRequest(provider, nil, message, schemas.Key{}, nil)
+				}
+				require.Nil(t, bifrostErr, "a raw-body request must not be rejected or rewritten")
+				require.NotNil(t, provider.chat, "a raw-body chat request must stay on the chat endpoint")
+				assert.Nil(t, provider.responses)
+				changeType, _ := ctx.Value(schemas.BifrostContextKeyChangeRequestType).(schemas.RequestType)
+				assert.Empty(t, changeType)
+				dropped, _ := ctx.Value(schemas.BifrostContextKeyCompatDroppedParams).([]string)
+				assert.Equal(t, []string{"service_tier"}, dropped, "the raw body still carries reasoning.mode")
+			})
+		}
+	}
+}
+
+// Drive the real custom OpenAI decoder through reasoning.mode dispatch and back to Chat.
+func TestChatReasoningModePreservesZeroUsage(t *testing.T) {
+	for _, tc := range []struct{ usage, want string }{
+		{`{"input_tokens":0,"output_tokens":0,"total_tokens":0}`, `{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0}`},
+		{`{"input_tokens":12,"output_tokens":0,"total_tokens":12}`, `{"prompt_tokens":12,"completion_tokens":0,"total_tokens":12}`},
+		{`{"input_tokens":0,"total_tokens":12}`, `{"prompt_tokens":0,"total_tokens":12}`},
+		{`{"input_tokens":null,"output_tokens":null,"total_tokens":12}`, `{"total_tokens":12}`},
+		{`{"total_tokens":12}`, `{"total_tokens":12}`},
+	} {
+		for _, streaming := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/stream=%t", tc.usage, streaming), func(t *testing.T) {
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if r.URL.Path != "/v1/responses" {
+						t.Errorf("unexpected route: %s", r.URL.Path)
+						w.WriteHeader(404)
+						return
+					}
+					body := `{"id":"resp-usage","object":"response","model":"fixture","status":"completed","output":[],"usage":` + tc.usage + `}`
+					if streaming {
+						w.Header().Set("Content-Type", "text/event-stream")
+						_, _ = io.WriteString(w, `data: {"type":"response.completed","sequence_number":1,"response":`+body+"}\n\n")
+					} else {
+						w.Header().Set("Content-Type", "application/json")
+						_, _ = io.WriteString(w, body)
+					}
+				}))
+				defer server.Close()
+				config := &schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL, AllowPrivateNetwork: true}, CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI, CustomProviderKey: "zero-usage-fixture"}}
+				provider := openai.NewOpenAIProvider(config, NewNoOpLogger())
+				ctx, cancel := schemas.NewBifrostContextWithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+				ctx.SetValue(schemas.BifrostContextKeyBaseProviderType, schemas.OpenAI)
+				request := &ChannelMessage{Context: ctx, BifrostRequest: schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{Provider: "zero-usage-fixture", Model: "fixture", Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")}}}, Params: &schemas.ChatParameters{Reasoning: &schemas.ChatReasoning{Mode: schemas.Ptr("pro")}}}}}
+				check := func(response *schemas.BifrostChatResponse) {
+					t.Helper()
+					require.NotNil(t, response)
+					require.NotNil(t, response.Usage)
+					wire, err := schemas.MarshalSorted(response.WithPreservedUsage())
+					require.NoError(t, err)
+					var body struct{ Usage json.RawMessage }
+					require.NoError(t, json.Unmarshal(wire, &body))
+					require.JSONEq(t, tc.want, string(body.Usage))
+				}
+				client := &Bifrost{}
+				key := schemas.Key{Value: *schemas.NewSecretVar("fixture-only")}
+				if !streaming {
+					response, err := client.handleProviderRequest(provider, config, request, key, nil)
+					require.Nil(t, err)
+					check(response.ChatResponse)
+					return
+				}
+				request.RequestType = schemas.ChatCompletionStreamRequest
+				hook := func(_ *schemas.BifrostContext, r *schemas.BifrostResponse, e *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+					return r, e
+				}
+				ch, err := client.handleProviderStreamRequest(provider, config, request, key, hook, nil)
+				require.Nil(t, err)
+				var responses []*schemas.BifrostChatResponse
+				for chunk := range ch {
+					require.Nil(t, chunk.BifrostError)
+					if chunk.BifrostChatResponse != nil && chunk.BifrostChatResponse.Usage != nil {
+						responses = append(responses, chunk.BifrostChatResponse)
+					}
+				}
+				require.Len(t, responses, 1)
+				check(responses[0])
+			})
+		}
+	}
 }

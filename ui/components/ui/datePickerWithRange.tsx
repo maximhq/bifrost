@@ -1,5 +1,9 @@
+import type { ParseKeys } from "i18next";
+import { useTranslation } from "react-i18next";
+import { dateFnsLocale } from "@/lib/i18n/dateLocale";
 import { getSupportedTimezones } from "@/lib/timezones";
 import { cn } from "@/lib/utils";
+import { isCalendarPeriod } from "@/lib/utils/timeRange";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { TZDate, tz, tzName } from "@date-fns/tz";
 import { format } from "date-fns";
@@ -52,7 +56,7 @@ interface DateTimePickerWithRangeProps extends DatePickerWithRangeProps {
 	onDateTimeUpdate?: (date: DateRange) => void;
 	onPredefinedPeriodChange?: (period: string | undefined) => void;
 	dateTime?: DateRange;
-	preDefinedPeriods?: { label: string; value: string }[];
+	preDefinedPeriods?: { label: string; value: string; labelKey?: ParseKeys<"common"> }[];
 	predefinedPeriod?: string;
 	disabledBefore?: Date;
 	disabledAfter?: Date;
@@ -66,10 +70,15 @@ interface DateTimePickerWithRangeProps extends DatePickerWithRangeProps {
 	timezone?: string;
 	/** Fired when the user picks a new timezone from the dropdown. */
 	onTimezoneChange?: (timezone: string) => void;
+	/** Disables the trigger, so the range can be shown but not changed. */
+	disabled?: boolean;
 }
 
 export function DateTimePickerWithRange(props: DateTimePickerWithRangeProps) {
+	const { t, i18n } = useTranslation("common");
 	const isMobile = useIsMobile();
+	const periodLabel = (period?: { label: string; labelKey?: ParseKeys<"common"> }) =>
+		period?.labelKey ? t(period.labelKey) : period?.label;
 	const { className, buttonClassName, triggerLabel, onTrigger, dateTime } = props;
 	const activeTimezone = props.showTimezone ? props.timezone : undefined;
 
@@ -109,7 +118,7 @@ export function DateTimePickerWithRange(props: DateTimePickerWithRangeProps) {
 		}
 
 		let hour = ((timeObj.hour + 11) % 12) + 1; // Convert hour to 12-hour format
-		let period = timeObj.hour >= 12 ? "PM" : "AM"; // Determine AM/PM
+		let period = timeObj.hour >= 12 ? t("datePicker.pm") : t("datePicker.am"); // Determine AM/PM
 		let minute = timeObj.minute.toString().padStart(2, "0"); // Ensure the minute has two digits
 
 		return `${hour}:${minute} ${period}`;
@@ -137,8 +146,9 @@ export function DateTimePickerWithRange(props: DateTimePickerWithRangeProps) {
 
 	/** Format a date for the trigger button, respecting the active timezone. */
 	const formatDate = (d: Date, fmt: string): string => {
-		if (activeTimezone) return format(d, fmt, { in: tz(activeTimezone) });
-		return format(d, fmt);
+		const locale = dateFnsLocale(i18n.resolvedLanguage);
+		if (activeTimezone) return format(d, fmt, { in: tz(activeTimezone), locale });
+		return format(d, fmt, { locale });
 	};
 
 	/** Short timezone abbreviation for the trigger button label. */
@@ -177,6 +187,7 @@ export function DateTimePickerWithRange(props: DateTimePickerWithRangeProps) {
 					<Button
 						id="date"
 						variant="outline"
+						disabled={props.disabled}
 						data-testid={props.triggerTestId}
 						className={cn(
 							"justify-start text-left font-normal",
@@ -187,9 +198,13 @@ export function DateTimePickerWithRange(props: DateTimePickerWithRangeProps) {
 					>
 						<CalendarIcon className="h-4 w-4" strokeWidth={1.5} />
 						{predefinedPeriod ? (
-							// Relative periods are durations (last hour, last 7 days) and are
-							// timezone-independent, so we intentionally omit the timezone badge here.
-							<span>{props.preDefinedPeriods?.find((p) => p.value === predefinedPeriod)?.label}</span>
+							// Sliding periods (last hour, last 7 days) are durations and timezone-independent,
+							// so they carry no badge. Calendar periods (today, this week) start at local
+							// midnight, so the badge says whose midnight.
+							<span>
+								{periodLabel(props.preDefinedPeriods?.find((p) => p.value === predefinedPeriod))}
+								{props.showTimezone && tzAbbreviation && isCalendarPeriod(predefinedPeriod) ? ` · ${tzAbbreviation}` : ""}
+							</span>
 						) : (
 							<>
 								{dateTime?.from ? (
@@ -203,7 +218,7 @@ export function DateTimePickerWithRange(props: DateTimePickerWithRangeProps) {
 										formatDate(dateTime.from, "LLL dd, y")
 									)
 								) : (
-									<span>Pick a date</span>
+									<span>{t("datePicker.pickADate")}</span>
 								)}
 							</>
 						)}
@@ -218,6 +233,7 @@ export function DateTimePickerWithRange(props: DateTimePickerWithRangeProps) {
 							<Calendar
 								autoFocus
 								mode="range"
+								timeZone={activeTimezone}
 								disabled={disabledDateRange}
 								defaultMonth={date?.from}
 								selected={date}
@@ -247,9 +263,9 @@ export function DateTimePickerWithRange(props: DateTimePickerWithRangeProps) {
 							/>
 							<div className="-mt-1 flex flex-row items-center px-2 pb-1">
 								<div className="m-1 flex flex-1 flex-col gap-1">
-									<Label className="ml-0.5">From Time</Label>
+									<Label className="ml-0.5">{t("datePicker.fromTime")}</Label>
 									<TimePicker
-										aria-label="From Time"
+										aria-label={t("datePicker.fromTime")}
 										className=""
 										value={timeValue?.from}
 										onChange={(v) => {
@@ -268,9 +284,9 @@ export function DateTimePickerWithRange(props: DateTimePickerWithRangeProps) {
 									/>
 								</div>
 								<div className="m-1 flex flex-1 flex-col gap-1">
-									<Label className="ml-0.5">To Time</Label>
+									<Label className="ml-0.5">{t("datePicker.toTime")}</Label>
 									<TimePicker
-										aria-label="To Time"
+										aria-label={t("datePicker.toTime")}
 										className=""
 										value={timeValue?.to}
 										onChange={(v) => {
@@ -303,7 +319,7 @@ export function DateTimePickerWithRange(props: DateTimePickerWithRangeProps) {
 											props.onPredefinedPeriodChange && props.onPredefinedPeriodChange(period.value);
 										}}
 									>
-										{period.label}
+										{periodLabel(period)}
 									</Button>
 								))}
 							</div>
@@ -312,7 +328,7 @@ export function DateTimePickerWithRange(props: DateTimePickerWithRangeProps) {
 					{props.showTimezone && (
 						<div className="flex flex-wrap items-center gap-2 border-t px-3 py-2">
 							<Globe className="text-muted-foreground size-4 shrink-0" />
-							<Label className="text-muted-foreground shrink-0 text-xs">Timezone</Label>
+							<Label className="text-muted-foreground shrink-0 text-xs">{t("datePicker.timezone")}</Label>
 							<div className="w-full sm:ml-auto sm:w-[260px]">
 								<ComboboxSelect
 									options={timezoneOptions}
@@ -349,7 +365,7 @@ export function DateTimePickerWithRange(props: DateTimePickerWithRangeProps) {
 										}
 									}}
 									hideClear
-									placeholder="Select timezone"
+									placeholder={t("datePicker.selectTimezone")}
 									data-testid="datepicker-timezone-select"
 								/>
 							</div>
@@ -390,6 +406,7 @@ interface DateTimePickerProps extends React.HTMLAttributes<HTMLDivElement> {
 }
 
 export function DateTimePicker(props: DateTimePickerProps) {
+	const { t, i18n } = useTranslation("common");
 	const { className, buttonClassName, buttonVariant, triggerLabel, onTrigger, dateTime } = props;
 
 	const initialDate = dateTime ? new Date(dateTime) : new Date();
@@ -412,7 +429,7 @@ export function DateTimePicker(props: DateTimePickerProps) {
 		}
 
 		let hour = ((timeObj.hour + 11) % 12) + 1; // Convert hour to 12-hour format
-		let period = timeObj.hour >= 12 ? "PM" : "AM"; // Determine AM/PM
+		let period = timeObj.hour >= 12 ? t("datePicker.pm") : t("datePicker.am"); // Determine AM/PM
 		let minute = timeObj.minute.toString().padStart(2, "0"); // Ensure the minute has two digits
 
 		return `${hour}:${minute} ${period}`;
@@ -455,10 +472,10 @@ export function DateTimePicker(props: DateTimePickerProps) {
 						<CalendarIcon className="h-4 w-4" strokeWidth={1.5} />
 						{date ? (
 							<>
-								{format(date, "LLL dd, y")} {printTimeValue(timeValue)}
+								{format(date, "LLL dd, y", { locale: dateFnsLocale(i18n.resolvedLanguage) })} {printTimeValue(timeValue)}
 							</>
 						) : (
-							<span>Pick a date and time</span>
+							<span>{t("datePicker.pickADateTime")}</span>
 						)}
 					</Button>
 				</PopoverTrigger>
@@ -482,9 +499,9 @@ export function DateTimePicker(props: DateTimePickerProps) {
 							}}
 						/>
 						<div className="mt-3 flex flex-col gap-1 px-2 pb-2">
-							<Label className="ml-0.5">Time</Label>
+							<Label className="ml-0.5">{t("datePicker.time")}</Label>
 							<TimePicker
-								aria-label="Time"
+								aria-label={t("datePicker.time")}
 								className=""
 								value={timeValue}
 								onChange={(v) => {

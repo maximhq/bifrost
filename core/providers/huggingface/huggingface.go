@@ -800,6 +800,11 @@ func (provider *HuggingFaceProvider) Rerank(ctx *schemas.BifrostContext, key sch
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.RerankRequest, provider.GetProviderKey())
 }
 
+// Decision is not supported by the HuggingFace provider.
+func (provider *HuggingFaceProvider) Decision(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostDecisionRequest) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.DecisionRequest, provider.GetProviderKey())
+}
+
 // OCR is not supported by the Huggingface provider.
 func (provider *HuggingFaceProvider) OCR(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostOCRRequest) (*schemas.BifrostOCRResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.OCRRequest, provider.GetProviderKey())
@@ -1122,7 +1127,7 @@ func (provider *HuggingFaceProvider) ImageGenerationStream(ctx *schemas.BifrostC
 	go func() {
 		defer providerUtils.EnsureStreamFinalizerCalled(ctx, postHookSpanFinalizer)
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
-		defer close(responseChan)
+		defer providerUtils.CloseStream(ctx, responseChan)
 
 		if resp.BodyStream() == nil {
 			bifrostErr := providerUtils.NewBifrostOperationError(
@@ -1512,7 +1517,7 @@ func (provider *HuggingFaceProvider) ImageEditStream(ctx *schemas.BifrostContext
 	go func() {
 		defer providerUtils.EnsureStreamFinalizerCalled(ctx, postHookSpanFinalizer)
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
-		defer close(responseChan)
+		defer providerUtils.CloseStream(ctx, responseChan)
 
 		if resp.BodyStream() == nil {
 			bifrostErr := providerUtils.NewBifrostOperationError(
@@ -1782,6 +1787,11 @@ func (provider *HuggingFaceProvider) FileContent(_ *schemas.BifrostContext, _ []
 // CountTokens is not supported by the Hugging Face provider.
 func (provider *HuggingFaceProvider) CountTokens(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostResponsesRequest) (*schemas.BifrostCountTokensResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.CountTokensRequest, provider.GetProviderKey())
+}
+
+// ModelRetrieve is not supported by the Hugging Face provider.
+func (provider *HuggingFaceProvider) ModelRetrieve(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostModelRetrieveRequest) (*schemas.BifrostModelRetrieveResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.ModelRetrieveRequest, provider.GetProviderKey())
 }
 
 // Compaction is not supported by the Hugging Face provider.

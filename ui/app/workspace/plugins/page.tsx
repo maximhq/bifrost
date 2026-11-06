@@ -1,22 +1,27 @@
+import { LoadErrorView } from "@/components/loadErrorView";
 import { Button } from "@/components/ui/button";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { setSelectedPlugin, useAppDispatch, useAppSelector, useGetPluginsQuery } from "@/lib/store";
 import { cn } from "@/lib/utils";
+import { showLoadError } from "@/lib/utils/loadError";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { ArrowLeft, ListOrdered, PlusIcon, Puzzle } from "lucide-react";
 import { useQueryState } from "nuqs";
 import { useEffect, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import AddNewPluginSheet from "./sheets/addNewPluginSheet";
 import PluginSequenceSheet from "./sheets/pluginSequenceSheet";
 import { PluginsEmptyState } from "./views/pluginsEmptyState";
 import PluginsView from "./views/pluginsView";
+import { useActionParam } from "@/hooks/useActionParam";
 
 export default function PluginsPage() {
+	const { t } = useTranslation("governance");
 	const isMobile = useIsMobile();
 	const dispatch = useAppDispatch();
 	const hasCreatePluginAccess = useRbac(RbacResource.Plugins, RbacOperation.Create);
 	const hasUpdatePluginAccess = useRbac(RbacResource.Plugins, RbacOperation.Update);
-	const { data: plugins, isLoading } = useGetPluginsQuery();
+	const { data: plugins, isLoading, error, refetch } = useGetPluginsQuery();
 	const selectedPlugin = useAppSelector((state) => state.plugin.selectedPlugin);
 	const [selectedPluginId, setSelectedPluginId] = useQueryState("plugin");
 	const customPlugins = useMemo(() => plugins?.filter((plugin) => plugin.isCustom), [plugins]);
@@ -27,6 +32,7 @@ export default function PluginsPage() {
 	const handleAddNew = () => {
 		setIsSheetOpen(true);
 	};
+	useActionParam("create", handleAddNew, { isOpen: isSheetOpen, enabled: hasCreatePluginAccess });
 
 	const handleCloseSheet = () => {
 		setIsSheetOpen(false);
@@ -49,6 +55,14 @@ export default function PluginsPage() {
 		setSelectedPluginId(selectedPlugin?.name ?? "");
 	}, [customPlugins]);
 
+	if (showLoadError(error, plugins)) {
+		return (
+			<div className="mx-auto w-full max-w-7xl">
+				<LoadErrorView entity="plugins" error={error} onRetry={() => void refetch()} testId="plugins-load-error" />
+			</div>
+		);
+	}
+
 	if (customPlugins?.length === 0 && !isLoading) {
 		return (
 			<div className="mx-auto w-full max-w-7xl">
@@ -70,7 +84,7 @@ export default function PluginsPage() {
 				<div className={cn("w-full flex-col gap-2 pb-10 md:flex md:w-[250px] md:min-w-[250px]", mobileDetailOpen ? "hidden" : "flex")}>
 					<div className="rounded-md bg-zinc-50/50 p-4 dark:bg-zinc-800/20">
 						<div className="mb-4">
-							<div className="text-muted-foreground mb-2 text-xs font-medium">Plugins</div>
+							<div className="text-muted-foreground mb-2 text-xs font-medium">{t("plugins.title")}</div>
 							{customPlugins?.map((plugin) => (
 								<button
 									type="button"
@@ -103,7 +117,6 @@ export default function PluginsPage() {
 							<div className="my-4 flex flex-col gap-2">
 								<Button
 									data-testid="plugins-create-button"
-									variant="outline"
 									size="sm"
 									className="w-full justify-start"
 									disabled={!hasCreatePluginAccess}
@@ -114,7 +127,7 @@ export default function PluginsPage() {
 									}}
 								>
 									<PlusIcon className="h-4 w-4" />
-									<div className="text-xs">Install New Plugin</div>
+									<div className="text-xs">{t("plugins.addPlugin")}</div>
 								</Button>
 								{customPlugins && customPlugins.length > 0 && (
 									<Button
@@ -126,7 +139,7 @@ export default function PluginsPage() {
 										data-testid="plugins-sequence-button"
 									>
 										<ListOrdered className="h-4 w-4" />
-										<div className="text-xs">Edit Plugin Sequence</div>
+										<div className="text-xs">{t("plugins.editSequence")}</div>
 									</Button>
 								)}
 							</div>
@@ -136,7 +149,7 @@ export default function PluginsPage() {
 				<div className={cn("min-w-0 w-full", mobileDetailOpen ? "block" : "hidden md:block")}>
 					<Button variant="ghost" size="sm" className="mb-2 md:hidden" onClick={() => setMobileDetailOpen(false)}>
 						<ArrowLeft className="size-4" />
-						Plugins
+						{t("plugins.backToPlugins")}
 					</Button>
 					<PluginsView
 						onDelete={() => {

@@ -1,0 +1,816 @@
+package warp
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"math"
+	"regexp"
+	"slices"
+	"strings"
+	"sync"
+	"time"
+	"unicode/utf8"
+
+	bifrost "github.com/maximhq/bifrost/core"
+	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/configstore"
+	"github.com/maximhq/bifrost/framework/logstore"
+	"github.com/maximhq/bifrost/framework/vectorstore"
+)
+
+const (
+	warpIndexQueueSize    = 256
+	warpIndexWorkers      = 2
+	warpMaxEmbeddingBytes = 16 * 1024
+)
+
+// EmbeddingExecutor is the narrow part of the gateway client Warp needs.
+type EmbeddingExecutor func(*schemas.BifrostContext, *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError)
+
+// IndexOutcome distinguishes a privacy/shape skip from a successful upsert.
+type IndexOutcome string
+
+const (
+	IndexOutcomeIndexed IndexOutcome = "indexed"
+	IndexOutcomeSkipped IndexOutcome = "skipped"
+)
+
+type logIndexItem struct {
+	id       string
+	text     string
+	metadata map[string]interface{}
+	// assignment is the request as it is filed under a topic once it has
+	// been embedded: the log's columns, with the topic left to fill in.
+	assignment logstore.WarpTopicAssignment
+}
+
+// LogIndexer owns all stream-sized and queued indexing state outside request
+// contexts. Live notifications only enqueue small, owned snapshots.
+type LogIndexer struct {
+	store   configstore.WarpStore
+	vectors vectorstore.VectorStore
+	embed   EmbeddingExecutor
+	logger  schemas.Logger
+
+	queue chan logIndexItem
+	done  chan struct{}
+	once  sync.Once
+	wg    sync.WaitGroup
+	// closeMu serializes Enqueue against Close, and closed is what Enqueue
+	// checks. The done channel alone cannot do this: select picks at random
+	// among ready cases, so with a buffered queue it could take the send even
+	// with done already closed - handing the item to workers that have exited.
+	closeMu sync.RWMutex
+	closed  bool
+	// ctx scopes every background index to the indexer's own lifetime, and
+	// cancel interrupts whatever is in flight when Close runs. Workers used to
+	// pass context.Background(), which generateWarpEmbedding turns into a
+	// NoDeadline BifrostContext - so a provider that stopped answering held
+	// shutdown open with nothing able to interrupt it.
+	ctx    context.Context
+	cancel context.CancelFunc
+	// ensureMu guards the provisioning cache below. Provisioning is per
+	// configuration, not per log: ListNamespaces plus CreateNamespace on every
+	// indexed log is vector-store overhead on the hot path, and under load it
+	// turns into queue-full drops. A successful ensure records its pair here;
+	// a failed write clears it, because the failure may mean the namespace
+	// vanished underneath the cache.
+	ensureMu         sync.Mutex
+	ensuredNamespace string
+	ensuredDimension int
+	// drainBudget is how long Close lets accepted work finish before cancelling
+	// it. A field rather than a constant so a test can pick a short one without
+	// waiting out the production value.
+	drainBudget time.Duration
+	// centres and assigner are live topic assignment: the topics a request
+	// is measured against, and the batches its row is written in. See
+	// topicassign.go.
+	centres  *topicCentres
+	assigner *topicAssigner
+	// topicMu keeps a request's topic lookup and its filing on one store:
+	// assignTopic holds it shared, SetTopicStore exclusively.
+	topicMu sync.RWMutex
+	// beforeFile runs between a request's topic lookup and its filing, for a
+	// test to act in that gap. Nil outside tests.
+	beforeFile func()
+}
+
+// warpIndexItemTimeout bounds one background index. Long enough for a slow
+// embedding call, short enough that a wedged provider cannot pin a worker for
+// the life of the process.
+const warpIndexItemTimeout = 2 * time.Minute
+
+func NewLogIndexer(store configstore.WarpStore, vectors vectorstore.VectorStore, embed EmbeddingExecutor, logger schemas.Logger) *LogIndexer {
+	return newLogIndexer(store, vectors, embed, logger, topicsAssignFlushInterval)
+}
+
+// newLogIndexer is NewLogIndexer with the assignment flush interval chosen,
+// for tests that cannot wait out the production one.
+func newLogIndexer(store configstore.WarpStore, vectors vectorstore.VectorStore, embed EmbeddingExecutor, logger schemas.Logger, assignFlushInterval time.Duration) *LogIndexer {
+	ctx, cancel := context.WithCancel(context.Background())
+	indexer := &LogIndexer{
+		store: store, vectors: vectors, embed: embed, logger: logger,
+		queue: make(chan logIndexItem, warpIndexQueueSize), done: make(chan struct{}),
+		ctx: ctx, cancel: cancel, drainBudget: warpIndexDrainBudget,
+		centres: &topicCentres{ttl: topicCentresTTL}, assigner: newTopicAssigner(logger),
+	}
+	for range warpIndexWorkers {
+		indexer.wg.Add(1)
+		go indexer.worker()
+	}
+	// Started with the workers; it is the workers' writes it flushes, and it
+	// flushes them once more after the workers are done.
+	indexer.wg.Add(1)
+	go func() {
+		defer indexer.wg.Done()
+		indexer.assigner.run(ctx, indexer.done, assignFlushInterval)
+	}()
+	return indexer
+}
+
+// Enqueue never blocks the logging writer or the original inference request.
+//
+// The read lock is held across the send, so an entry is either accepted while
+// workers are still running or refused outright. notifyLogCallbacks invokes its
+// subscribers after releasing its own mutex, so a callback genuinely can arrive
+// after Shutdown unsubscribed it - and an item accepted then would sit in a
+// queue nobody reads, unindexed and unrecorded.
+func (i *LogIndexer) Enqueue(_ context.Context, entry *logstore.Log) {
+	item, ok := buildLogIndexItem(entry)
+	if !ok {
+		return
+	}
+	i.closeMu.RLock()
+	defer i.closeMu.RUnlock()
+	if i.closed {
+		i.warnf("warp log indexing has shut down; skipped log %s (manual backfill can repair it)", item.id)
+		return
+	}
+	select {
+	case i.queue <- item:
+	default:
+		i.warnf("warp log embedding queue is full; skipped log %s (manual backfill can repair it)", item.id)
+	}
+}
+
+// Index performs the same idempotent operation synchronously for Sidekiq.
+func (i *LogIndexer) Index(ctx context.Context, entry *logstore.Log) (IndexOutcome, error) {
+	outcome, _, err := i.IndexWithConfig(ctx, nil, entry)
+	return outcome, err
+}
+
+// IndexWithConfig indexes against a caller-pinned configuration.
+//
+// The backfill verifies the embedding configuration has not changed before each
+// batch, but re-reading it per entry reopened the window it just closed: a save
+// landing between the check and the write indexed logs under the new embedding
+// space while the job still believed it was on the frozen one. Passing the
+// verified config down means the check and the write agree by construction,
+// with no lock spanning the two.
+//
+// A nil config restores the live read, which is what the in-process queue wants.
+//
+// The returned usage is what the embedding call consumed, reported even when
+// the upsert after it failed: the provider billed the call either way, and the
+// backfill totals it so an operator can see what a window cost to index.
+func (i *LogIndexer) IndexWithConfig(ctx context.Context, config *schemas.WarpConfig, entry *logstore.Log) (IndexOutcome, *schemas.BifrostLLMUsage, error) {
+	item, ok := buildLogIndexItem(entry)
+	if !ok {
+		i.forget(ctx, config, entry)
+		return IndexOutcomeSkipped, nil, nil
+	}
+	indexed, usage, err := i.indexItemWithConfig(ctx, config, item)
+	if err != nil {
+		return "", usage, err
+	}
+	if !indexed {
+		// Nothing was written - Warp is not configured to embed. Reporting this
+		// as indexed tells the backfill it has covered a log it never touched, so
+		// the gap is never repaired.
+		return IndexOutcomeSkipped, usage, nil
+	}
+	return IndexOutcomeIndexed, usage, nil
+}
+
+// forget removes whatever vector an entry left behind when it was indexed
+// under rules it no longer passes: its content has since been hidden, or it
+// is recognised as Warp's own. Best effort - the entry is skipped either way,
+// and a store that cannot delete must not fail the page it is part of.
+func (i *LogIndexer) forget(ctx context.Context, config *schemas.WarpConfig, entry *logstore.Log) {
+	if entry == nil || entry.ID == "" || config == nil || !config.IsConfigured() {
+		return
+	}
+	if err := i.vectors.Delete(ctx, config.EffectiveLogVectorStoreNamespace(), entry.ID); err != nil && !errors.Is(err, vectorstore.ErrNotFound) {
+		i.warnf("failed to remove the stale vector of Warp log %s: %v", entry.ID, err)
+	}
+}
+
+func (i *LogIndexer) worker() {
+	defer i.wg.Done()
+	for {
+		select {
+		case <-i.done:
+			// Drain what was already accepted. Enqueue told its caller the item
+			// was taken, so dropping the rest on an orderly shutdown loses exactly
+			// the work the backfill would then have to redo. The item context is
+			// still bounded, so a wedged provider cannot stall shutdown forever.
+			for {
+				select {
+				case item := <-i.queue:
+					i.runItem(item)
+				default:
+					return
+				}
+			}
+		case item := <-i.queue:
+			i.runItem(item)
+		}
+	}
+}
+
+// runItem indexes one queued item under a bounded context.
+//
+// Derived from the indexer's own context so Close can interrupt it, and
+// deadlined so one unresponsive provider cannot hold a worker - or a shutdown -
+// open indefinitely.
+func (i *LogIndexer) runItem(item logIndexItem) {
+	itemCtx, cancelItem := context.WithTimeout(i.ctx, warpIndexItemTimeout)
+	defer cancelItem()
+	if _, err := i.indexItem(itemCtx, item); err != nil {
+		i.warnf("failed to index Warp log %s: %v", item.id, err)
+	}
+}
+
+func (i *LogIndexer) indexItem(ctx context.Context, item logIndexItem) (bool, error) {
+	indexed, _, err := i.indexItemWithConfig(ctx, nil, item)
+	return indexed, err
+}
+
+// indexItemWithConfig indexes against a caller-pinned configuration, and
+// reports whether anything was actually written so callers can tell "indexed"
+// apart from "there was nothing to index", along with the embedding call's
+// usage whenever one was made.
+func (i *LogIndexer) indexItemWithConfig(ctx context.Context, config *schemas.WarpConfig, item logIndexItem) (bool, *schemas.BifrostLLMUsage, error) {
+	if config == nil {
+		row, err := i.store.GetWarpConfig(ctx)
+		if err != nil {
+			return false, nil, fmt.Errorf("read Warp configuration: %w", err)
+		}
+		config = configFromRow(row)
+	}
+	if !config.IsConfigured() {
+		return false, nil, nil
+	}
+	namespace := config.EffectiveLogVectorStoreNamespace()
+	if err := i.ensureNamespaceOnce(ctx, namespace, config.EmbeddingDimension); err != nil {
+		return false, nil, err
+	}
+	embedding, usage, err := generateWarpEmbedding(ctx, i.embed, config, item.text)
+	if err != nil {
+		return false, usage, err
+	}
+	if err := i.vectors.Add(ctx, namespace, item.id, embedding, item.metadata); err != nil {
+		// The failure may mean the namespace vanished underneath the cache, so
+		// the next item re-provisions instead of writing into the void forever.
+		i.ensureMu.Lock()
+		i.ensuredNamespace, i.ensuredDimension = "", 0
+		i.ensureMu.Unlock()
+		return false, usage, err
+	}
+	i.assignTopic(ctx, config, item, embedding)
+	return true, usage, nil
+}
+
+// ensureNamespaceOnce provisions the namespace unless the last successful
+// ensure already covered this exact namespace/dimension pair.
+func (i *LogIndexer) ensureNamespaceOnce(ctx context.Context, namespace string, dimension int) error {
+	i.ensureMu.Lock()
+	defer i.ensureMu.Unlock()
+	if i.ensuredNamespace == namespace && i.ensuredDimension == dimension {
+		return nil
+	}
+	if _, err := ensureWarpNamespace(ctx, i.vectors, namespace, dimension); err != nil {
+		return err
+	}
+	i.ensuredNamespace, i.ensuredDimension = namespace, dimension
+	return nil
+}
+
+// warpIndexDrainBudget is how long Close lets workers finish accepted items
+// before it stops being polite about it.
+const warpIndexDrainBudget = 5 * time.Second
+
+func (i *LogIndexer) Close() {
+	// Marked closed under the write lock first, so any Enqueue already inside
+	// its read lock finishes before workers are told to stop, and any that
+	// arrives afterwards is refused rather than queued.
+	i.closeMu.Lock()
+	i.closed = true
+	i.closeMu.Unlock()
+
+	i.once.Do(func() { close(i.done) })
+
+	// Two requirements that pull against each other. Enqueue told its caller the
+	// item was taken, so an orderly shutdown has to drain what it accepted -
+	// dropping it loses exactly the work the backfill would then redo. But a
+	// provider that has stopped answering must not hold shutdown open forever.
+	//
+	// So: give the drain a budget, and only if it overruns cancel the context
+	// out from under whatever is still running. Closing done alone would do
+	// neither - it stops workers taking new items and leaves in-flight ones
+	// uninterruptible.
+	drained := make(chan struct{})
+	go func() {
+		i.wg.Wait()
+		close(drained)
+	}()
+
+	select {
+	case <-drained:
+	case <-time.After(i.drainBudget):
+		i.warnf("warp log indexing did not finish within %s; cancelling remaining work", i.drainBudget)
+		if i.cancel != nil {
+			i.cancel()
+		}
+		<-drained
+	}
+	// The workers drain the queue after done closes, so a request they file
+	// then can land after the assigner's last flush. One more, on a context
+	// of its own because the indexer's is about to go.
+	flushCtx, cancel := context.WithTimeout(context.Background(), topicsAssignFlushTimeout)
+	i.assigner.flush(flushCtx)
+	cancel()
+	if i.cancel != nil {
+		i.cancel()
+	}
+}
+
+func (i *LogIndexer) warnf(format string, args ...any) {
+	if i.logger != nil {
+		i.logger.Warn(format, args...)
+	}
+}
+
+// ensureWarpNamespace creates the namespace if it is not already there, and
+// reports whether this call is the one that created it.
+//
+// The caller needs that answer to clean up after a failed save: a namespace it
+// created is empty and referenced by nothing, so removing it is safe, while one
+// that already existed may hold vectors a previous configuration still indexes
+// and must be left alone.
+func ensureWarpNamespace(ctx context.Context, store vectorstore.VectorStore, namespace string, dimension int) (bool, error) {
+	if store == nil {
+		return false, ErrNoVectorStore
+	}
+	// Asked before creating, because CreateNamespace is idempotent and cannot
+	// tell the caller which of the two things it did.
+	existing, err := store.ListNamespaces(ctx, namespace)
+	if err != nil {
+		// Fatal, deliberately. Creating anyway would have to report
+		// created=false - ownership is unknowable - so a save that then failed
+		// would skip its compensation and orphan a namespace it made. Callers
+		// already propagate this error, and a store whose ListNamespaces fails
+		// is rarely one whose CreateNamespace was about to succeed.
+		return false, fmt.Errorf("could not check for existing vector namespace: %w", err)
+	}
+	created := !slices.Contains(existing, namespace)
+	return created, store.CreateNamespace(ctx, namespace, dimension, map[string]vectorstore.VectorStoreProperties{
+		"log_id":            {DataType: vectorstore.VectorStorePropertyTypeString, Description: "Bifrost log ID"},
+		"timestamp":         {DataType: vectorstore.VectorStorePropertyTypeInteger, Description: "Log timestamp in Unix seconds"},
+		"object":            {DataType: vectorstore.VectorStorePropertyTypeString, Description: "Bifrost request type"},
+		"provider":          {DataType: vectorstore.VectorStorePropertyTypeString, Description: "Serving provider"},
+		"model":             {DataType: vectorstore.VectorStorePropertyTypeString, Description: "Serving model"},
+		"status":            {DataType: vectorstore.VectorStorePropertyTypeString, Description: "Terminal log status"},
+		"latency_ms":        {DataType: vectorstore.VectorStorePropertyTypeInteger, Description: "End-to-end latency rounded to milliseconds"},
+		"cost_micro_usd":    {DataType: vectorstore.VectorStorePropertyTypeInteger, Description: "Request cost in millionths of a US dollar"},
+		"prompt_tokens":     {DataType: vectorstore.VectorStorePropertyTypeInteger, Description: "Input token count"},
+		"completion_tokens": {DataType: vectorstore.VectorStorePropertyTypeInteger, Description: "Output token count"},
+		"total_tokens":      {DataType: vectorstore.VectorStorePropertyTypeInteger, Description: "Total token count"},
+		"parent_request_id": {DataType: vectorstore.VectorStorePropertyTypeString, Description: "Fallback or session parent"},
+		"session_id":        {DataType: vectorstore.VectorStorePropertyTypeString, Description: "Bifrost session the request belongs to"},
+		"app":               {DataType: vectorstore.VectorStorePropertyTypeString, Description: "Detected client app"},
+		"virtual_key_id":    {DataType: vectorstore.VectorStorePropertyTypeString, Description: "Virtual key ID"},
+		"user_id":           {DataType: vectorstore.VectorStorePropertyTypeString, Description: "User ID"},
+		"team_ids":          {DataType: vectorstore.VectorStorePropertyTypeStringArray, Description: "Team IDs"},
+		"customer_ids":      {DataType: vectorstore.VectorStorePropertyTypeStringArray, Description: "Customer IDs"},
+		"business_unit_ids": {DataType: vectorstore.VectorStorePropertyTypeStringArray, Description: "Business unit IDs"},
+		"warp_log":          {DataType: vectorstore.VectorStorePropertyTypeBoolean, Description: "Owned by Warp log search"},
+	})
+}
+
+func generateWarpEmbedding(ctx context.Context, executor EmbeddingExecutor, config *schemas.WarpConfig, text string) ([]float32, *schemas.BifrostLLMUsage, error) {
+	if executor == nil {
+		return nil, nil, fmt.Errorf("embedding executor is not configured")
+	}
+	embeddingCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+	defer embeddingCtx.Cancel()
+	embeddingCtx.SetValue(schemas.BifrostContextKeySkipPluginPipeline, true)
+	bifrost.ClearContextForInternalRequest(embeddingCtx)
+	if config.EmbeddingAPIKeyID != "" {
+		embeddingCtx.SetValue(schemas.BifrostContextKeyAPIKeyID, config.EmbeddingAPIKeyID)
+	}
+	dimension := config.EmbeddingDimension
+	request := &schemas.BifrostEmbeddingRequest{
+		Provider: config.EmbeddingProvider,
+		Model:    config.EmbeddingModel,
+		Input:    []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: &text}}}},
+		Params:   &schemas.EmbeddingParameters{Dimensions: &dimension},
+	}
+	response, bifrostErr := executor(embeddingCtx, request)
+	if bifrostErr != nil {
+		message := "embedding request failed"
+		if bifrostErr.Error != nil && bifrostErr.Error.Message != "" {
+			message = bifrostErr.Error.Message
+		}
+		return nil, nil, fmt.Errorf("%s", message)
+	}
+	if response == nil {
+		return nil, nil, fmt.Errorf("embedding provider returned no vectors")
+	}
+	// Usage rides along on every failure after this point: the provider
+	// answered, so the call was billed whether or not its vector is usable.
+	if len(response.Data) == 0 {
+		return nil, response.Usage, fmt.Errorf("embedding provider returned no vectors")
+	}
+	vector, err := embeddingToFloat32(response.Data[0].Embedding)
+	if err != nil {
+		return nil, response.Usage, err
+	}
+	if len(vector) != config.EmbeddingDimension {
+		return nil, response.Usage, fmt.Errorf("embedding dimension mismatch: got %d, want %d", len(vector), config.EmbeddingDimension)
+	}
+	return vector, response.Usage, nil
+}
+
+func embeddingToFloat32(value schemas.EmbeddingStruct) ([]float32, error) {
+	switch {
+	case value.EmbeddingStr != nil:
+		var vector []float32
+		if err := json.Unmarshal([]byte(*value.EmbeddingStr), &vector); err != nil {
+			return nil, fmt.Errorf("parse string embedding: %w", err)
+		}
+		return vector, nil
+	case value.EmbeddingArray != nil:
+		vector := make([]float32, len(value.EmbeddingArray))
+		for index, item := range value.EmbeddingArray {
+			vector[index] = float32(item)
+		}
+		return vector, nil
+	case value.Embedding2DArray != nil:
+		var vector []float32
+		for _, row := range value.Embedding2DArray {
+			for _, item := range row {
+				vector = append(vector, float32(item))
+			}
+		}
+		return vector, nil
+	case value.EmbeddingInt8Array != nil:
+		vector := make([]float32, len(value.EmbeddingInt8Array))
+		for index, item := range value.EmbeddingInt8Array {
+			vector[index] = float32(item)
+		}
+		return vector, nil
+	case value.EmbeddingInt32Array != nil:
+		vector := make([]float32, len(value.EmbeddingInt32Array))
+		for index, item := range value.EmbeddingInt32Array {
+			vector[index] = float32(item)
+		}
+		return vector, nil
+	default:
+		return nil, fmt.Errorf("embedding data is empty")
+	}
+}
+
+func buildLogIndexItem(entry *logstore.Log) (logIndexItem, bool) {
+	if entry == nil || entry.ID == "" || entry.ContentHidden || !terminalWarpLogStatus(entry.Status) || !conversationalWarpObject(entry.Object) {
+		return logIndexItem{}, false
+	}
+	if entry.App != nil && strings.EqualFold(strings.TrimSpace(*entry.App), warpAppName) {
+		return logIndexItem{}, false
+	}
+	if entry.UserAgent != nil && strings.Contains(strings.ToLower(*entry.UserAgent), "bifrost-warp") {
+		return logIndexItem{}, false
+	}
+	// App and user agent come from headers, so a caller that reaches the model
+	// without them is not labelled as Warp. What it sent still is.
+	if strings.HasPrefix(strings.TrimSpace(logInstructions(entry)), warpPromptSignature) {
+		return logIndexItem{}, false
+	}
+	opening, user := conversationUserTexts(entry)
+	// Nothing the person wrote means nothing to file the request under: a
+	// reply alone would place it by what the model said, not what was asked.
+	if opening == "" && user == "" {
+		return logIndexItem{}, false
+	}
+	assistant := strings.Join(strings.Fields(logAssistantText(entry)), " ")
+	text := boundedConversationText(opening, user, assistant, warpMaxEmbeddingBytes)
+	if text == "" {
+		return logIndexItem{}, false
+	}
+	// The scalar filter fields are stored lowered, because the store-side
+	// prefilter compares exactly while the post-filter compares with EqualFold
+	// - appendScalarQuery lowers the filter values to meet these. Hydration
+	// reads the full row from the logstore, so nothing rendered loses casing.
+	// session_id is kept exactly: it is an opaque id, matched exactly by the
+	// log store and by the post-filter.
+	metadata := map[string]interface{}{
+		"log_id": entry.ID, "timestamp": entry.Timestamp.Unix(), "object": entry.Object,
+		"provider": strings.ToLower(entry.Provider), "model": strings.ToLower(entry.Model), "status": strings.ToLower(entry.Status), "warp_log": true,
+		"latency_ms": roundedMetric(entry.Latency, 1), "cost_micro_usd": roundedMetric(entry.Cost, 1_000_000),
+		"prompt_tokens": entry.PromptTokens, "completion_tokens": entry.CompletionTokens, "total_tokens": entry.TotalTokens,
+		"parent_request_id": stringValue(entry.ParentRequestID), "session_id": stringValue(entry.SessionID), "app": strings.ToLower(stringValue(entry.App)),
+		"virtual_key_id": strings.ToLower(stringValue(entry.VirtualKeyID)), "user_id": strings.ToLower(stringValue(entry.UserID)),
+		"team_ids": mergedIDs(entry.TeamID, entry.TeamIDs), "customer_ids": mergedIDs(entry.CustomerID, entry.CustomerIDs),
+		"business_unit_ids": mergedIDs(entry.BusinessUnitID, entry.BusinessUnitIDs),
+	}
+	return logIndexItem{id: entry.ID, text: text, metadata: metadata, assignment: logstore.WarpTopicAssignmentFromLog(entry)}, true
+}
+
+func roundedMetric(value *float64, multiplier float64) int64 {
+	if value == nil {
+		return 0
+	}
+	return int64(math.Round(*value * multiplier))
+}
+
+func terminalWarpLogStatus(status string) bool {
+	switch status {
+	case "success", "error", "cancelled":
+		return true
+	default:
+		return false
+	}
+}
+
+func conversationalWarpObject(object string) bool {
+	switch schemas.RequestType(object) {
+	case schemas.ChatCompletionRequest, schemas.ChatCompletionStreamRequest, schemas.ResponsesRequest, schemas.ResponsesStreamRequest:
+		return true
+	default:
+		return object == "chat.completion" || object == "chat.completion.chunk" || object == "response"
+	}
+}
+
+// warpPromptSignature is how Warp's own instructions begin.
+var warpPromptSignature = SystemPrompt[:strings.Index(SystemPrompt, ".")+1]
+
+// logInstructions is the system instruction a request was sent with: the
+// Responses instructions, else the first system message. Parameters are typed
+// on a live entry and a decoded map on one read back from the log store.
+func logInstructions(entry *logstore.Log) string {
+	switch params := entry.ParamsParsed.(type) {
+	case *schemas.ResponsesParameters:
+		if params != nil && params.Instructions != nil {
+			return *params.Instructions
+		}
+	case schemas.ResponsesParameters:
+		if params.Instructions != nil {
+			return *params.Instructions
+		}
+	case map[string]interface{}:
+		if instructions, ok := params["instructions"].(string); ok && instructions != "" {
+			return instructions
+		}
+	}
+	for index := range entry.InputHistoryParsed {
+		if entry.InputHistoryParsed[index].Role == schemas.ChatMessageRoleSystem {
+			return chatContentText(entry.InputHistoryParsed[index].Content)
+		}
+	}
+	for index := range entry.ResponsesInputHistoryParsed {
+		message := entry.ResponsesInputHistoryParsed[index]
+		if message.Role != nil && *message.Role == schemas.ResponsesInputMessageRoleSystem {
+			return responsesContentText(message.Content)
+		}
+	}
+	return ""
+}
+
+// agentReminder matches the envelope a coding agent wraps around the context
+// it adds to a user turn: the project's instructions file, the git status,
+// attribution rules. Claude Code sends several such turns before the first
+// thing the person typed, and the same ones in every request.
+var agentReminder = regexp.MustCompile(`(?is)<system-reminder>.*?</system-reminder>`)
+
+// codexEnvelope matches the context Codex sends as user turns of its own
+// before the person's task: the project's AGENTS.md, the environment, loaded
+// skills, and its notices about aborted turns and subagents. The pairs mirror
+// the complexity router's codexContextTags. Only Codex traffic is matched
+// against them, since a bare <skill> in anyone else's message is their text.
+var codexEnvelope = regexp.MustCompile(`(?s)# AGENTS\.md instructions.*?</INSTRUCTIONS>` +
+	`|<environment_context>.*?</environment_context>` +
+	`|<skill>.*?</skill>` +
+	`|<turn_aborted>.*?</turn_aborted>` +
+	`|<subagent_notification>.*?</subagent_notification>` +
+	`|<codex_internal_context.*?</codex_internal_context>` +
+	`|<goal_context>.*?</goal_context>` +
+	`|<recommended_plugins>.*?</recommended_plugins>`)
+
+// codexEnvelopeOpen matches the tags codexEnvelope opens with. One still in
+// the text once codexEnvelope has run has no closing tag after it.
+var codexEnvelopeOpen = regexp.MustCompile(`# AGENTS\.md instructions|<environment_context>|<skill>|<turn_aborted>` +
+	`|<subagent_notification>|<codex_internal_context|<goal_context>|<recommended_plugins>`)
+
+// isCodexLog reports whether a request came from Codex, by the same user
+// agents the complexity router recognises it by.
+func isCodexLog(entry *logstore.Log) bool {
+	userAgent := stringValue(entry.UserAgent)
+	return schemas.CodexCLI.Matches(userAgent) || schemas.CodexDesktop.Matches(userAgent)
+}
+
+// userTurnText is one user turn as it is read for embedding, naming and
+// previews: what the person wrote, on one line, with the agent's envelopes
+// taken out.
+//
+// Without this, every Claude Code request opened with the same contents of
+// AGENTS.md, so they embedded alike whatever was asked and clustered into one
+// topic about the project's instructions. Codex does the same with envelopes
+// of its own, which codexEnvelope takes out.
+func userTurnText(text string, codex bool) string {
+	text = agentReminder.ReplaceAllString(text, " ")
+	if codex {
+		text = codexEnvelope.ReplaceAllString(text, " ")
+	}
+	return strings.Join(strings.Fields(text), " ")
+}
+
+// summaryTurnText reads a stored ContentSummary as userTurnText reads a turn.
+//
+// The summary is capped at logstore.MaxContentSummaryBytes, so one the cap
+// shortened can end inside a Codex envelope, before its closing tag, and
+// everything from that tag on is the envelope. Only a summary long enough to
+// have been cut is read that way. In a whole message an unmatched tag is the
+// person's own text - a Codex user asking why <skill> shows up - and is kept.
+func summaryTurnText(summary string, codex bool) string {
+	text := userTurnText(summary, codex)
+	if codex && len(summary) > logstore.MaxContentSummaryBytes-utf8.UTFMax {
+		if cut := codexEnvelopeOpen.FindStringIndex(text); cut != nil {
+			text = strings.TrimSpace(text[:cut[0]])
+		}
+	}
+	return text
+}
+
+// conversationUserTexts returns what a conversation opened with and the
+// user's last message, each on one line.
+//
+// The last message alone is what the request answers, but it is often a reply
+// to a question - "all", "yes", "-7d" - and says nothing about the subject.
+// The opening is empty when the conversation has one user turn, or when the
+// history was not kept and only the last message is known. A turn that was
+// nothing but an agent's envelope is not a turn.
+func conversationUserTexts(entry *logstore.Log) (opening, last string) {
+	codex := isCodexLog(entry)
+	var turns []string
+	sawUser := false
+	for index := range entry.InputHistoryParsed {
+		if entry.InputHistoryParsed[index].Role != schemas.ChatMessageRoleUser {
+			continue
+		}
+		sawUser = true
+		if text := userTurnText(chatContentText(entry.InputHistoryParsed[index].Content), codex); text != "" {
+			turns = append(turns, text)
+		}
+	}
+	for index := range entry.ResponsesInputHistoryParsed {
+		message := entry.ResponsesInputHistoryParsed[index]
+		if message.Role == nil || *message.Role != schemas.ResponsesInputMessageRoleUser {
+			continue
+		}
+		sawUser = true
+		if text := userTurnText(responsesContentText(message.Content), codex); text != "" {
+			turns = append(turns, text)
+		}
+	}
+	if len(turns) == 0 {
+		// User turns that were all setup have nothing to give: the stored
+		// preview is that same setup, capped short enough to cut an envelope
+		// before it closes. Only when the history was not kept, or a list row
+		// kept just its last element and that was not a user turn, is the
+		// preview all there is.
+		if sawUser {
+			return "", ""
+		}
+		last = userTurnText(entry.BuildInputContentSummary(), codex)
+		if last == "" {
+			last = summaryTurnText(entry.ContentSummary, codex)
+		}
+		return "", last
+	}
+	last = turns[len(turns)-1]
+	if len(turns) > 1 && turns[0] != last {
+		opening = turns[0]
+	}
+	return opening, last
+}
+
+func logAssistantText(entry *logstore.Log) string {
+	if entry.OutputMessageParsed != nil {
+		return chatContentText(entry.OutputMessageParsed.Content)
+	}
+	for index := len(entry.ResponsesOutputParsed) - 1; index >= 0; index-- {
+		message := entry.ResponsesOutputParsed[index]
+		if message.Role == nil || *message.Role == schemas.ResponsesInputMessageRoleAssistant {
+			if text := responsesContentText(message.Content); text != "" {
+				return text
+			}
+		}
+	}
+	return ""
+}
+
+func chatContentText(content *schemas.ChatMessageContent) string {
+	if content == nil {
+		return ""
+	}
+	if content.ContentStr != nil {
+		return *content.ContentStr
+	}
+	parts := make([]string, 0, len(content.ContentBlocks))
+	for _, block := range content.ContentBlocks {
+		if block.Text != nil {
+			parts = append(parts, *block.Text)
+		}
+	}
+	return strings.Join(parts, " ")
+}
+
+func responsesContentText(content *schemas.ResponsesMessageContent) string {
+	if content == nil {
+		return ""
+	}
+	if content.ContentStr != nil {
+		return *content.ContentStr
+	}
+	parts := make([]string, 0, len(content.ContentBlocks))
+	for _, block := range content.ContentBlocks {
+		if block.Text != nil {
+			parts = append(parts, *block.Text)
+		}
+	}
+	return strings.Join(parts, " ")
+}
+
+// boundedConversationText lays a conversation out for embedding: what it
+// opened with, the user's last message, and the answer, within limit bytes.
+// The opening gets at most half, so a pasted file cannot push out the
+// exchange the request is about.
+func boundedConversationText(opening, user, assistant string, limit int) string {
+	var builder strings.Builder
+	appendBounded := func(label, value string, limit int) {
+		if value == "" || builder.Len() >= limit {
+			return
+		}
+		if builder.Len() > 0 {
+			builder.WriteByte('\n')
+		}
+		prefix := label + ": "
+		if builder.Len()+len(prefix) >= limit {
+			return
+		}
+		builder.WriteString(prefix)
+		remaining := limit - builder.Len()
+		for len(value) > 0 && remaining > 0 {
+			r, size := utf8.DecodeRuneInString(value)
+			if size > remaining {
+				break
+			}
+			builder.WriteRune(r)
+			value = value[size:]
+			remaining -= size
+		}
+	}
+	appendBounded("user", opening, limit/2)
+	appendBounded("user", user, limit)
+	appendBounded("assistant", assistant, limit)
+	return strings.TrimSpace(builder.String())
+}
+
+func stringValue(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
+}
+
+func mergedIDs(single, encoded *string) []string {
+	values := make([]string, 0, 2)
+	if encoded != nil && *encoded != "" {
+		_ = json.Unmarshal([]byte(*encoded), &values)
+	}
+	if single != nil && *single != "" {
+		found := false
+		for _, value := range values {
+			if value == *single {
+				found = true
+				break
+			}
+		}
+		if !found {
+			values = append(values, *single)
+		}
+	}
+	return values
+}

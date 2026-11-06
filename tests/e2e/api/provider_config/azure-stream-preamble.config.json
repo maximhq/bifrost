@@ -17,6 +17,22 @@
         "default_request_timeout_in_seconds": 10,
         "stream_idle_timeout_in_seconds": 5
       }
+    },
+    "openai": {
+      "keys": [
+        {
+          "name": "local-stream-fixture",
+          "value": "test-key",
+          "models": ["preamble-error", "preamble-success"],
+          "weight": 1
+        }
+      ],
+      "network_config": {
+        "base_url": "http://127.0.0.1:8789",
+        "max_retries": 0,
+        "default_request_timeout_in_seconds": 10,
+        "stream_idle_timeout_in_seconds": 5
+      }
     }
   }
 }

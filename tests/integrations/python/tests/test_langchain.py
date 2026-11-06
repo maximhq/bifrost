@@ -36,7 +36,6 @@ import asyncio
 import logging
 import os
 from typing import Any, Dict, List, Type
-from unittest.mock import patch
 
 import boto3
 import pytest
@@ -131,7 +130,7 @@ from .utils.common import (
     get_content_string_with_summary,
     mock_tool_response,
 )
-from .utils.config_loader import get_config, get_integration_url, get_model
+from .utils.config_loader import get_config, get_integration_url, get_model, get_provider_model
 from .utils.parametrize import format_provider_model, get_cross_provider_params_for_scenario
 
 
@@ -885,93 +884,94 @@ class TestLangChainIntegration:
         """Test Case 18: Compare responses across multiple LangChain providers"""
         providers_tested = []
         responses = {}
+        provider_errors = {}
+        base_url = get_integration_url("langchain")
+        message = [HumanMessage(content="What is the future of AI? Answer in one sentence.")]
 
         # Test OpenAI
         try:
             openai_chat = ChatOpenAI(
-                model="gpt-3.5-turbo",
+                model=format_provider_model("openai", get_provider_model("openai", "chat")),
                 temperature=0.5,
                 max_tokens=50,
-                base_url=(
-                    get_integration_url("langchain") if get_integration_url("langchain") else None
-                ),
+                base_url=base_url,
             )
 
-            message = [HumanMessage(content="What is the future of AI? Answer in one sentence.")]
             responses["openai"] = openai_chat.invoke(message)
+            print(f"OpenAI response: {responses['openai']}")
             providers_tested.append("OpenAI")
 
-        except Exception:
-            pass
+        except Exception as e:
+            provider_errors["OpenAI"] = str(e)
 
         # Test Anthropic
         try:
             anthropic_chat = ChatAnthropic(
-                model="claude-3-haiku-20240307",
+                model=format_provider_model(
+                    "anthropic", get_provider_model("anthropic", "chat")
+                ),
                 temperature=0.5,
                 max_tokens=50,
-                base_url=(
-                    get_integration_url("langchain") if get_integration_url("langchain") else None
-                ),
+                base_url=base_url,
             )
 
             responses["anthropic"] = anthropic_chat.invoke(message)
+            print(f"Anthropic response: {responses['anthropic']}")
             providers_tested.append("Anthropic")
 
-        except Exception:
-            pass
+        except Exception as e:
+            provider_errors["Anthropic"] = str(e)
 
         # Test Gemini (if available)
         try:
             gemini_chat = ChatGoogleGenerativeAI(
-                model="gemini-1.5-flash",
+                model=format_provider_model("gemini", get_provider_model("gemini", "chat")),
                 google_api_key="dummy-google-api-key-bifrost-handles-auth",
                 temperature=0.5,
                 max_tokens=50,
+                base_url=base_url,
             )
 
-            base_url = get_integration_url("langchain")
-            if base_url:
-                with patch.object(gemini_chat, "_client") as mock_client:
-                    mock_client.base_url = f"{base_url}/v1beta"
-                    responses["gemini"] = gemini_chat.invoke(message)
-                    providers_tested.append("Gemini")
+            responses["gemini"] = gemini_chat.invoke(message)
+            print(f"Gemini response: {responses['gemini']}")
+            providers_tested.append("Gemini")
 
-        except Exception:
-            pass
+        except Exception as e:
+            provider_errors["Gemini"] = str(e)
 
         # Test Mistral (if available)
         if MISTRAL_AI_AVAILABLE:
             try:
-                base_url = get_integration_url("langchain")
-                if base_url:
-                    mistral_chat = ChatMistralAI(
-                        model="mistral-7b-instruct",
-                        mistral_api_key="dummy-mistral-api-key-bifrost-handles-auth",
-                        endpoint=f"{base_url}/v1",
-                        temperature=0.5,
-                        max_tokens=50,
-                    )
+                mistral_chat = ChatMistralAI(
+                    model=format_provider_model("mistral", "mistral-medium-3-5"),
+                    mistral_api_key="dummy-mistral-api-key-bifrost-handles-auth",
+                    endpoint=f"{base_url}/v1",
+                    temperature=0.5,
+                    max_tokens=50,
+                )
 
-                    responses["mistral"] = mistral_chat.invoke(message)
-                    providers_tested.append("Mistral")
+                responses["mistral"] = mistral_chat.invoke(message)
+                print(f"Mistral response: {responses['mistral']}")
+                providers_tested.append("Mistral")
 
-            except Exception:
-                pass
+            except Exception as e:
+                provider_errors["Mistral"] = str(e)
 
         # Verify we tested at least 2 providers
         assert (
             len(providers_tested) >= 2
-        ), f"Should test at least 2 providers, got: {providers_tested}"
+        ), f"Should test at least 2 providers, got: {providers_tested}; errors: {provider_errors}"
 
         # Verify all responses are valid
+        response_contents = []
         for provider, response in responses.items():
             assert isinstance(response, AIMessage), f"{provider} should return AIMessage"
             assert response.content is not None, f"{provider} should have content"
-            assert len(response.content) > 0, f"{provider} should have non-empty content"
+            content = get_content_string(response.content)
+            assert content, f"{provider} should have non-empty content"
+            response_contents.append(content)
 
         # Verify responses are different (providers should give unique answers)
-        response_contents = [resp.content for resp in responses.values()]
         unique_responses = set(response_contents)
         assert len(unique_responses) > 1, "Different providers should give different responses"
 

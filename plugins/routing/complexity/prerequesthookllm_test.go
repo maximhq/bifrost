@@ -79,11 +79,13 @@ func installSemanticEmbeddingFake(t *testing.T, plugin *routing.RoutingPlugin) {
 		if req == nil || req.Input == nil {
 			return nil, &schemas.BifrostError{Error: &schemas.ErrorField{Message: "embedding request did not contain text"}}
 		}
-		var texts []string
-		if req.Input.Text != nil {
-			texts = []string{*req.Input.Text}
-		} else {
-			texts = req.Input.Texts
+		texts := make([]string, 0, len(req.Input))
+		for _, item := range req.Input {
+			for _, part := range item.Content {
+				if part.Text != nil {
+					texts = append(texts, *part.Text)
+				}
+			}
 		}
 		data := make([]schemas.EmbeddingData, len(texts))
 		for index, text := range texts {
@@ -195,7 +197,7 @@ func TestPreRequestHook_LLMFallbackClassifiesSemanticRejections(t *testing.T) {
 	}
 	joined := strings.Join(logMessages, "\n")
 	require.Contains(t, joined, "falling back to the LLM classifier")
-	require.Contains(t, joined, "LLM complexity: tier=COMPLEX")
+	require.Contains(t, joined, "LLM complexity: tier=COMPLEX model=openai/test-classifier-model")
 
 	executorMu.Lock()
 	defer executorMu.Unlock()
@@ -207,8 +209,7 @@ func TestPreRequestHook_LLMFallbackClassifiesSemanticRejections(t *testing.T) {
 	require.Equal(t, schemas.ChatMessageRoleUser, classifierReq.Input[1].Role)
 	require.Equal(t, "prove the scheduler is deadlock-free", *classifierReq.Input[1].Content.ContentStr)
 	require.NotNil(t, classifierReq.Params)
-	require.NotNil(t, classifierReq.Params.Temperature)
-	require.Zero(t, *classifierReq.Params.Temperature)
+	require.Nil(t, classifierReq.Params.Temperature, "reasoning models reject a temperature field")
 }
 
 // TestPreRequestHook_LLMFallbackCoversSemanticUnavailability pins that the

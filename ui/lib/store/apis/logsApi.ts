@@ -23,7 +23,10 @@ import {
 	ThroughputHistogramResponse,
 	TokenHistogramResponse,
 } from "@/lib/types/logs";
+import { metadataFilterQueryValue, normalizeMetadataFilters } from "@/lib/utils/metadataFilters";
+import { getPeriodTimezone, withPeriodTimezone } from "@/lib/utils/timeRange";
 import { baseApi } from "./baseApi";
+import { GetLogByIdArg, normalizeGetLogByIdArg } from "./logsApi.utils";
 import { RoutingRule } from "@/lib/types/routingRules";
 
 // Helper function to build filter params
@@ -66,23 +69,36 @@ function buildFilterParams(filters: LogFilters): Record<string, string | number>
 	if (filters.tool_call_names && filters.tool_call_names.length > 0) {
 		params.tool_call_names = filters.tool_call_names.join(",");
 	}
+	if (filters.guardrail_outcomes && filters.guardrail_outcomes.length > 0) {
+		params.guardrail_outcomes = filters.guardrail_outcomes.join(",");
+	}
 	if (filters.complexity_tiers && filters.complexity_tiers.length > 0) {
 		params.complexity_tiers = filters.complexity_tiers.join(",");
 	}
 	if (filters.complexity_mechanisms && filters.complexity_mechanisms.length > 0) {
 		params.complexity_mechanisms = filters.complexity_mechanisms.join(",");
 	}
+	if (filters.agent_names && filters.agent_names.length > 0) {
+		params.agent_names = filters.agent_names.join(",");
+	}
 	if (filters.session_id) {
 		params.session_id = filters.session_id;
 	}
+	if (filters.agent_correlation_id) {
+		params.agent_correlation_id = filters.agent_correlation_id;
+	}
 	if (filters.period) {
 		params.period = filters.period;
+		const timezone = getPeriodTimezone(filters.period);
+		if (timezone) params.timezone = timezone;
 	} else {
 		if (filters.start_time) params.start_time = filters.start_time;
 		if (filters.end_time) params.end_time = filters.end_time;
 	}
 	if (filters.min_latency !== undefined) params.min_latency = filters.min_latency;
 	if (filters.max_latency !== undefined) params.max_latency = filters.max_latency;
+	if (filters.min_cost !== undefined) params.min_cost = filters.min_cost;
+	if (filters.max_cost !== undefined) params.max_cost = filters.max_cost;
 	if (filters.min_tokens !== undefined) params.min_tokens = filters.min_tokens;
 	if (filters.max_tokens !== undefined) params.max_tokens = filters.max_tokens;
 	if (filters.missing_cost_only) params.missing_cost_only = "true";
@@ -106,16 +122,18 @@ function buildFilterParams(filters: LogFilters): Record<string, string | number>
 	if (filters.project_ids && filters.project_ids.length > 0) {
 		params.project_ids = filters.project_ids.join(",");
 	}
+	if (filters.topic_ids && filters.topic_ids.length > 0) {
+		params.topic_ids = filters.topic_ids.join(",");
+	}
 	if (filters.apps && filters.apps.length > 0) {
 		params.apps = JSON.stringify(filters.apps);
 	}
 	if (filters.user_agents && filters.user_agents.length > 0) {
 		params.user_agents = JSON.stringify(filters.user_agents);
 	}
-	if (filters.metadata_filters) {
-		for (const [key, value] of Object.entries(filters.metadata_filters)) {
-			params[`metadata_${key}`] = value;
-		}
+	// Normalized because links written before multiple selection hold one string per key.
+	for (const [key, values] of Object.entries(normalizeMetadataFilters(filters.metadata_filters) ?? {})) {
+		params[`metadata_${key}`] = metadataFilterQueryValue(values);
 	}
 
 	return params;
@@ -146,9 +164,11 @@ export const logsApi = baseApi.injectEndpoints({
 				pagination: Pagination;
 				/** Grouped view: hide fallback-child rows so each chain lists as its root */
 				rootsOnly?: boolean;
+				/** Grouped view: collapse each session onto its earliest root row. Needs rootsOnly. */
+				groupSessions?: boolean;
 			}
 		>({
-			query: ({ filters, pagination, rootsOnly }) => ({
+			query: ({ filters, pagination, rootsOnly, groupSessions }) => ({
 				url: "/logs",
 				params: {
 					limit: pagination.limit,
@@ -156,6 +176,7 @@ export const logsApi = baseApi.injectEndpoints({
 					sort_by: pagination.sort_by,
 					order: pagination.order,
 					...(rootsOnly ? { roots_only: "true" } : {}),
+					...(groupSessions ? { group_sessions: "true" } : {}),
 					...buildFilterParams(filters),
 				},
 			}),
@@ -241,11 +262,13 @@ export const logsApi = baseApi.injectEndpoints({
 			CostHistogramResponse,
 			{
 				filters: LogFilters;
+				// Overrides the bucket width the server derives from the time range.
+				bucketSizeSeconds?: number;
 			}
 		>({
-			query: ({ filters }) => ({
+			query: ({ filters, bucketSizeSeconds }) => ({
 				url: "/logs/histogram/cost",
-				params: buildFilterParams(filters),
+				params: { ...buildFilterParams(filters), ...(bucketSizeSeconds ? { bucket_size: bucketSizeSeconds } : {}) },
 			}),
 			providesTags: ["Logs"],
 		}),
@@ -409,6 +432,7 @@ export const logsApi = baseApi.injectEndpoints({
 				users?: { id: string; name: string }[];
 				business_units?: { id: string; name: string }[];
 				projects?: { id: string; name: string }[];
+				topics?: { id: string; name: string }[];
 				metadata_keys?: Record<string, string[]>;
 			},
 			{ dimensions?: string[]; q?: string } | void
@@ -443,7 +467,7 @@ export const logsApi = baseApi.injectEndpoints({
 			query: ({ filters, limit }) => ({
 				url: "/logs/recalculate-cost",
 				method: "POST",
-				body: { filters, limit },
+				body: { filters: withPeriodTimezone(filters), limit },
 			}),
 			invalidatesTags: ["Logs"],
 		}),
@@ -472,10 +496,17 @@ export const logsApi = baseApi.injectEndpoints({
 			invalidatesTags: ["Logs"],
 		}),
 
-		// Get a single log entry by ID (includes raw_request and raw_response)
-		getLogById: builder.query<LogEntry, string>({
-			query: (id) => `/logs/${encodeURIComponent(id)}`,
-			providesTags: (result, error, id) => [{ type: "Logs", id }],
+		// Get a single log entry by ID (includes raw_request and raw_response).
+		// Pass the row's timestamp when known: a ClickHouse log store uses it to
+		// prune the lookup instead of scanning the whole logs table.
+		getLogById: builder.query<LogEntry, GetLogByIdArg>({
+			query: (arg) => {
+				const { id, timestamp } = normalizeGetLogByIdArg(arg);
+				return { url: `/logs/${encodeURIComponent(id)}`, params: timestamp ? { timestamp } : undefined };
+			},
+			// The timestamp only narrows the lookup, so callers with and without it share one cache entry per log.
+			serializeQueryArgs: ({ queryArgs }) => ({ id: normalizeGetLogByIdArg(queryArgs).id }),
+			providesTags: (result, error, arg) => [{ type: "Logs", id: normalizeGetLogByIdArg(arg).id }],
 		}),
 	}),
 });

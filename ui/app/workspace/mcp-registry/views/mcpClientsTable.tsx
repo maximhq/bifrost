@@ -27,14 +27,18 @@ import {
 	useGetCoreConfigQuery,
 	useInitiateMCPClientVerificationMutation,
 	useReauthorizeMCPClientMutation,
+	useReregisterMCPClientMutation,
 	useReconnectMCPClientMutation,
+	useRefreshMCPClientToolsMutation,
 	useUpdateMCPClientMutation,
 	useVerifyMCPClientExchangeMutation,
 	useVerifyMCPClientHeadersMutation,
 } from "@/lib/store";
 import { getExternalBaseUrl } from "@/app/workspace/mcp-registry/views/mcpUsageGuide/utils";
 import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
-import { MCPAuthType, MCPClient } from "@/lib/types/mcp";
+import { MCPClient } from "@/lib/types/mcp";
+import { supportsClientReregistration } from "@/lib/utils/mcpCredential";
+import { perUserDiscoveryOn } from "@/lib/utils/mcpPerUserDiscovery";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { Link } from "@tanstack/react-router";
 import {
@@ -45,39 +49,51 @@ import {
 	Copy,
 	Info,
 	KeyRound,
+	ListRestart,
 	Loader2,
 	MoreHorizontal,
 	PencilIcon,
 	Plus,
 	RefreshCcw,
+	RotateCcwKey,
 	Search,
 	Trash2,
 	X,
 } from "lucide-react";
 import { ReactNode, useEffect, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { IconWrap, InfoBox } from "./authorizerUi";
+import MCPClientDetailsSheet from "./mcpClientDetailsSheet";
+import type { MCPClientAlertActionKind } from "./mcpClientDetailsSheet.utils";
 import MCPClientSheet from "./mcpClientSheet";
-import { authScopeOf } from "./mcpClientFormFields";
-import { canReconnectMCPClient } from "./mcpClientsTable.utils";
+import { authScopeLabel } from "./mcpClientFormFields";
+import { authTypeLabel, canReconnectMCPClient, connectionTypeLabel, exchangeVerifyCopy } from "./mcpClientsTable.utils";
 import { StateBadge } from "./mcpConnectionFailure";
 import { MCPHeadersAuthorizer } from "./mcpHeadersAuthorizer";
 import { MCPServersEmptyState } from "./mcpServersEmptyState";
 import { MCPUsageGuideSheet } from "./mcpUsageGuide";
 import { OAuth2Authorizer } from "./oauth2Authorizer";
+import { useActionParam } from "@/hooks/useActionParam";
+import { getLocale } from "@/lib/i18n";
+import { withBasePath } from "@/lib/utils/basePath";
 
 function MCPClientActionsMenu({
 	client,
 	hasUpdateAccess,
 	hasDeleteAccess,
 	isReconnecting,
+	isRefreshingTools,
 	isAuthorizing,
 	isReauthorizing,
 	isVerifyingExchange,
 	canReconnect,
+	triggerTestId,
 	onEdit,
 	onReconnect,
+	onRefreshTools,
 	onAuthorize,
 	onReauthorize,
+	onReregister,
 	onRefreshHeaders,
 	onVerifyExchange,
 	onDelete,
@@ -86,19 +102,29 @@ function MCPClientActionsMenu({
 	hasUpdateAccess: boolean;
 	hasDeleteAccess: boolean;
 	isReconnecting: boolean;
+	isRefreshingTools: boolean;
 	isAuthorizing: boolean;
 	isReauthorizing: boolean;
 	isVerifyingExchange: boolean;
 	canReconnect: boolean;
-	onEdit: (client: MCPClient) => void;
+	triggerTestId?: string;
+	onEdit?: (client: MCPClient) => void; // Omitted on the server's view sheet, which has no Edit entry
 	onReconnect: (client: MCPClient) => void;
+	onRefreshTools: (client: MCPClient) => void;
 	onAuthorize: (client: MCPClient) => void;
 	onReauthorize: (client: MCPClient) => void;
+	onReregister: (client: MCPClient) => void;
 	onRefreshHeaders: (client: MCPClient) => void;
 	onVerifyExchange: (client: MCPClient) => void;
 	onDelete: (client: MCPClient) => void;
 }) {
+	const { t } = useTranslation("mcp");
+	const { t: tCommon } = useTranslation("common");
 	const [isOpen, setIsOpen] = useState(false);
+	// A server with per_user_discovery on keeps no admin credential and no tool
+	// list of its own, so the actions that refresh either do not apply.
+	// Reregistering still does: callers sign in through the client it registers.
+	const perUserDiscovery = perUserDiscoveryOn(client.config);
 
 	return (
 		<DropdownMenu open={isOpen} onOpenChange={setIsOpen}>
@@ -107,11 +133,11 @@ function MCPClientActionsMenu({
 					variant="ghost"
 					size="icon"
 					className="h-8 w-8"
-					aria-label="MCP server actions"
-					data-testid={`mcp-client-actions-${client.config.client_id}-btn`}
-					disabled={isReconnecting || isReauthorizing || isVerifyingExchange}
+					aria-label={t("registry.actionsAria")}
+					data-testid={triggerTestId ?? `mcp-client-actions-${client.config.client_id}-btn`}
+					disabled={isReconnecting || isRefreshingTools || isReauthorizing || isVerifyingExchange}
 				>
-					{isReconnecting || isAuthorizing || isReauthorizing || isVerifyingExchange ? (
+					{isReconnecting || isRefreshingTools || isAuthorizing || isReauthorizing || isVerifyingExchange ? (
 						<Loader2 className="h-4 w-4 animate-spin" />
 					) : (
 						<MoreHorizontal className="h-4 w-4" />
@@ -128,7 +154,7 @@ function MCPClientActionsMenu({
 					e.preventDefault();
 				}}
 			>
-				{hasUpdateAccess && (
+				{hasUpdateAccess && onEdit && (
 					<DropdownMenuItem
 						className="cursor-pointer"
 						data-testid={`mcp-client-edit-${client.config.client_id}-menu-item`}
@@ -139,7 +165,7 @@ function MCPClientActionsMenu({
 						}}
 					>
 						<PencilIcon className="h-4 w-4" />
-						Edit
+						{t("registry.actions.edit")}
 					</DropdownMenuItem>
 				)}
 				{hasUpdateAccess && client.state === "pending_verification" && (
@@ -154,7 +180,7 @@ function MCPClientActionsMenu({
 						}}
 					>
 						<KeyRound className="h-4 w-4" />
-						Authorize
+						{t("registry.actions.authorize")}
 					</DropdownMenuItem>
 				)}
 				{hasUpdateAccess && canReconnect && (
@@ -170,10 +196,28 @@ function MCPClientActionsMenu({
 						}}
 					>
 						<RefreshCcw className="h-4 w-4" />
-						Reconnect
+						{t("registry.actions.reconnect")}
+					</DropdownMenuItem>
+				)}
+				{hasUpdateAccess && !perUserDiscovery && (
+					<DropdownMenuItem
+						className="cursor-pointer"
+						disabled={
+							client.config.disabled || isRefreshingTools || client.state === "pending_verification" || client.state === "needs_reauth"
+						}
+						data-testid={`mcp-client-refresh-tools-${client.config.client_id}-menu-item`}
+						onSelect={(e) => {
+							e.preventDefault();
+							onRefreshTools(client);
+							setIsOpen(false);
+						}}
+					>
+						<ListRestart className="h-4 w-4" />
+						{t("registry.actions.refreshTools")}
 					</DropdownMenuItem>
 				)}
 				{hasUpdateAccess &&
+					!perUserDiscovery &&
 					client.state !== "pending_verification" &&
 					client.state !== "disabled" &&
 					(client.config.auth_type === "oauth" || client.config.auth_type === "per_user_oauth") && (
@@ -188,10 +232,34 @@ function MCPClientActionsMenu({
 							}}
 						>
 							<KeyRound className="h-4 w-4" />
-							{client.config.auth_type === "per_user_oauth" ? "Refresh admin credential" : "Reauthorize"}
+							{client.config.auth_type === "per_user_oauth"
+								? t("registry.actions.refreshAdminCredential")
+								: t("registry.actions.reauthorize")}
 						</DropdownMenuItem>
 					)}
 				{hasUpdateAccess &&
+					client.state !== "pending_verification" &&
+					client.state !== "disabled" &&
+					supportsClientReregistration(client.config.auth_type) && (
+						<DropdownMenuItem
+							className="cursor-pointer"
+							disabled={isReauthorizing}
+							data-testid={`mcp-client-reregister-${client.config.client_id}-menu-item`}
+							onSelect={(e) => {
+								e.preventDefault();
+								onReregister(client);
+								setIsOpen(false);
+							}}
+						>
+							{/* Not KeyRound like the item above it: this one replaces the
+							    credential rather than redoing consent with it, and the two
+							    sat side by side with identical icons. */}
+							<RotateCcwKey className="h-4 w-4" />
+							{t("registry.actions.reauthorizeNewClient")}
+						</DropdownMenuItem>
+					)}
+				{hasUpdateAccess &&
+					!perUserDiscovery &&
 					client.state !== "pending_verification" &&
 					client.state !== "disabled" &&
 					client.config.auth_type === "per_user_headers" && (
@@ -205,10 +273,11 @@ function MCPClientActionsMenu({
 							}}
 						>
 							<KeyRound className="h-4 w-4" />
-							Refresh admin credential
+							{t("registry.actions.refreshAdminCredential")}
 						</DropdownMenuItem>
 					)}
 				{hasUpdateAccess &&
+					!perUserDiscovery &&
 					client.state !== "pending_verification" &&
 					client.state !== "disabled" &&
 					client.config.auth_type === "token_exchange" && (
@@ -223,7 +292,7 @@ function MCPClientActionsMenu({
 							}}
 						>
 							<KeyRound className="h-4 w-4" />
-							Re-verify as me
+							{t("registry.actions.reverifyAsMe")}
 						</DropdownMenuItem>
 					)}
 				{hasDeleteAccess && (
@@ -237,7 +306,7 @@ function MCPClientActionsMenu({
 						}}
 					>
 						<Trash2 className="h-4 w-4" />
-						Delete
+						{tCommon("delete")}
 					</DropdownMenuItem>
 				)}
 			</DropdownMenuContent>
@@ -259,36 +328,43 @@ interface MCPClientsTableProps {
 	offset: number;
 	limit: number;
 	onOffsetChange: (offset: number) => void;
+	pageLoading?: boolean; // the requested page has not arrived; the list still holds the previous one
 }
 
 // ClientEndpointCell shows the /mcp/<slug> path and copies the full external URL on click.
 // Matches the Virtual MCPs table cell: the copy icon reveals on row hover (group-hover).
 function ClientEndpointCell({ slug, baseUrl }: { slug?: string; baseUrl: string }) {
-	const { copy, copied } = useCopyToClipboard({ successMessage: "Endpoint copied" });
+	const { t } = useTranslation("mcp");
+	const { copy, copied } = useCopyToClipboard({ successMessage: t("common.endpointCopied") });
 	if (!slug) return <span className="text-muted-foreground text-sm">-</span>;
 	return (
 		<Tooltip>
 			<TooltipTrigger asChild>
 				<button
 					type="button"
-					onClick={() => copy(`${baseUrl}/mcp/${slug}`)}
+					onClick={(e) => {
+						// The row opens the server's view sheet on click; copying must not.
+						e.stopPropagation();
+						copy(`${baseUrl}/mcp/${slug}`);
+					}}
 					className="text-muted-foreground hover:text-foreground flex w-full min-w-0 cursor-pointer items-center gap-1.5 font-mono text-sm transition-colors"
-					aria-label="Copy endpoint URL"
+					aria-label={t("registry.sheet.copyEndpointAria")}
 					data-testid={`mcp-client-endpoint-copy-${slug}`}
 				>
-					<span className="truncate">/mcp/{slug}</span>
+					<span className="truncate">{withBasePath(`/mcp/${slug}`)}</span>
 					<span className="shrink-0 opacity-0 transition-opacity group-hover:opacity-100">
 						{copied ? <Check className="size-3.5 shrink-0" /> : <Copy className="size-3.5 shrink-0" />}
 					</span>
 				</button>
 			</TooltipTrigger>
-			<TooltipContent className="font-mono">/mcp/{slug}</TooltipContent>
+			<TooltipContent className="font-mono">{withBasePath(`/mcp/${slug}`)}</TooltipContent>
 		</Tooltip>
 	);
 }
 
 export default function MCPClientsTable({
 	mcpClients,
+	pageLoading = false,
 	totalCount,
 	refetch,
 	search,
@@ -301,10 +377,15 @@ export default function MCPClientsTable({
 	limit,
 	onOffsetChange,
 }: MCPClientsTableProps) {
+	const { t } = useTranslation("mcp");
+	const { t: tCommon } = useTranslation("common");
 	const [formOpen, setFormOpen] = useState(false);
 	const hasCreateMCPClientAccess = useRbac(RbacResource.MCPGateway, RbacOperation.Create);
 	const hasUpdateMCPClientAccess = useRbac(RbacResource.MCPGateway, RbacOperation.Update);
 	const hasDeleteMCPClientAccess = useRbac(RbacResource.MCPGateway, RbacOperation.Delete);
+	// Every item in a row's actions menu needs one of these, so without either
+	// the menu would open empty: the column is left out instead.
+	const hasRowActions = hasUpdateMCPClientAccess || hasDeleteMCPClientAccess;
 	// Externally reachable base URL, so the endpoint cell copies the full URL callers use.
 	const { data: coreConfig } = useGetCoreConfigQuery({ fromDB: true });
 	const baseUrl = getExternalBaseUrl(coreConfig?.client_config);
@@ -317,10 +398,18 @@ export default function MCPClientsTable({
 	// get from OAuth2Authorizer/MCPHeadersAuthorizer before we exchange their
 	// identity token.
 	const [exchangeVerifyClient, setExchangeVerifyClient] = useState<MCPClient | null>(null);
-	const [showDetailSheet, setShowDetailSheet] = useState(false);
+	// Drives the "Reauthorize with a new client" confirm dialog. Confirmed
+	// rather than fired straight from the menu because registering a
+	// replacement client discards the current one, which signs out every
+	// credential bound to this server, not just the admin's.
+	const [reregisterTarget, setReregisterTarget] = useState<MCPClient | null>(null);
+	// Which of the two server sheets is open for selectedMCPClient: the read-only
+	// view a row click opens, or the edit sheet the actions menu's Edit opens.
+	const [openSheet, setOpenSheet] = useState<"view" | "edit" | null>(null);
 	const { toast } = useToast();
 
 	const [reconnectingClients, setReconnectingClients] = useState<string[]>([]);
+	const [refreshingToolsClients, setRefreshingToolsClients] = useState<string[]>([]);
 	const [authorizingClients, setAuthorizingClients] = useState<string[]>([]);
 	const [reauthorizingClients, setReauthorizingClients] = useState<string[]>([]);
 	const [verifyingExchangeClients, setVerifyingExchangeClients] = useState<string[]>([]);
@@ -330,8 +419,11 @@ export default function MCPClientsTable({
 	const [bootstrapAuthorize, setBootstrapAuthorize] = useState<{
 		authorizeUrl: string;
 		oauthConfigId: string;
+		flowId?: string;
+		expiresAt?: string;
 		mcpClientId: string;
 		isPerUserOauth: boolean;
+		perUserDiscovery: boolean;
 	} | null>(null);
 	// Drives the MCPHeadersAuthorizer dialog for a config.json-bootstrapped
 	// per_user_headers client sitting in pending_verification, triggered from
@@ -342,8 +434,11 @@ export default function MCPClientsTable({
 	const [reauthorizeFlow, setReauthorizeFlow] = useState<{
 		authorizeUrl: string;
 		oauthConfigId: string;
+		flowId?: string;
+		expiresAt?: string;
 		mcpClientId: string;
 		isPerUserOauth: boolean;
+		perUserDiscovery: boolean;
 	} | null>(null);
 	// Drives the MCPHeadersAuthorizer dialog for a per_user_headers client
 	// refreshing its admin discovery credential, triggered from the row
@@ -355,7 +450,9 @@ export default function MCPClientsTable({
 
 	// RTK Query mutations
 	const [reconnectMCPClient] = useReconnectMCPClientMutation();
+	const [refreshMCPClientTools] = useRefreshMCPClientToolsMutation();
 	const [reauthorizeMCPClient] = useReauthorizeMCPClientMutation();
+	const [reregisterMCPClient] = useReregisterMCPClientMutation();
 	const [verifyMCPClientExchange] = useVerifyMCPClientExchangeMutation();
 	const [deleteMCPClient] = useDeleteMCPClientMutation();
 	const [updateMCPClient] = useUpdateMCPClientMutation();
@@ -365,19 +462,42 @@ export default function MCPClientsTable({
 	const handleCreate = () => {
 		setFormOpen(true);
 	};
+	useActionParam("create", handleCreate, { isOpen: formOpen, enabled: hasCreateMCPClientAccess });
 
 	const handleReconnect = async (client: MCPClient) => {
 		try {
 			setReconnectingClients((prev) => [...prev, client.config.client_id]);
 			await reconnectMCPClient(client.config.client_id).unwrap();
 			setReconnectingClients((prev) => prev.filter((id) => id !== client.config.client_id));
-			toast({ title: "Reconnected", description: `Client ${client.config.name} reconnected successfully.` });
+			toast({ title: t("registry.toast.reconnected"), description: t("registry.toast.reconnectedDesc", { name: client.config.name }) });
 			if (refetch) {
 				await refetch();
 			}
 		} catch (error) {
 			setReconnectingClients((prev) => prev.filter((id) => id !== client.config.client_id));
-			toast({ title: "Error", description: getErrorMessage(error), variant: "destructive" });
+			toast({ title: tCommon("error"), description: getErrorMessage(error), variant: "destructive" });
+		}
+	};
+
+	// Re-discovers the client's tools from its upstream server immediately.
+	// Distinct from Reconnect, which recycles the connection and does not apply
+	// to per-call clients at all: this works for every client type, and is what
+	// an operator reaches for after adding or removing a tool upstream.
+	const handleRefreshTools = async (client: MCPClient) => {
+		setRefreshingToolsClients((prev) => [...prev, client.config.client_id]);
+		try {
+			const result = await refreshMCPClientTools(client.config.client_id).unwrap();
+			toast({
+				title: t("registry.toast.toolsRefreshed"),
+				description: t("registry.toast.toolsRefreshedDesc", { name: client.config.name, count: result.tool_count }),
+			});
+			if (refetch) {
+				await refetch();
+			}
+		} catch (error) {
+			toast({ title: tCommon("error"), description: getErrorMessage(error), variant: "destructive" });
+		} finally {
+			setRefreshingToolsClients((prev) => prev.filter((id) => id !== client.config.client_id));
 		}
 	};
 
@@ -408,43 +528,56 @@ export default function MCPClientsTable({
 				setBootstrapAuthorize({
 					authorizeUrl: response.authorize_url,
 					oauthConfigId: response.oauth_config_id,
+					// A client verifying on the registration it already has (per-caller
+					// discovery turned off) signs in through a flow: its config already
+					// reads "authorized", so the dialog has to poll the flow instead.
+					...(response.flow_id ? { flowId: response.flow_id, expiresAt: response.expires_at } : {}),
 					mcpClientId: client.config.client_id,
 					isPerUserOauth,
+					perUserDiscovery: perUserDiscoveryOn(client.config),
 				});
 			} else {
 				toast({
-					title: "Authorization failed",
-					description: "Unexpected response from server. Please try again.",
+					title: t("registry.toast.authorizationFailed"),
+					description: t("registry.toast.unexpectedResponse"),
 					variant: "destructive",
 				});
 			}
 		} catch (error) {
-			toast({ title: "Authorization failed", description: getErrorMessage(error), variant: "destructive" });
+			toast({ title: t("registry.toast.authorizationFailed"), description: getErrorMessage(error), variant: "destructive" });
 		} finally {
 			setAuthorizingClients((prev) => prev.filter((id) => id !== client.config.client_id));
 		}
 	};
 
-	const handleReauthorize = async (client: MCPClient) => {
+	// registerNewClient picks the endpoint: the plain one reuses the stored
+	// client_id, the other registers a replacement first. Both return the same
+	// pending_oauth payload and drive the same popup, so only the call differs.
+	const handleReauthorize = async (client: MCPClient, registerNewClient = false) => {
 		try {
 			setReauthorizingClients((prev) => [...prev, client.config.client_id]);
-			const response = await reauthorizeMCPClient(client.config.client_id).unwrap();
+			const response = registerNewClient
+				? await reregisterMCPClient(client.config.client_id).unwrap()
+				: await reauthorizeMCPClient(client.config.client_id).unwrap();
 			if (response.status === "pending_oauth" && response.authorize_url) {
 				setReauthorizeFlow({
 					authorizeUrl: response.authorize_url,
 					oauthConfigId: response.oauth_config_id,
+					flowId: response.flow_id,
+					expiresAt: response.expires_at,
 					mcpClientId: client.config.client_id,
 					isPerUserOauth: client.config.auth_type === "per_user_oauth",
+					perUserDiscovery: perUserDiscoveryOn(client.config),
 				});
 			} else {
 				toast({
-					title: "Reauthorization failed",
-					description: "Unexpected response from server. Please try again.",
+					title: t("registry.toast.reauthorizationFailed"),
+					description: t("registry.toast.unexpectedResponse"),
 					variant: "destructive",
 				});
 			}
 		} catch (error) {
-			toast({ title: "Reauthorization failed", description: getErrorMessage(error), variant: "destructive" });
+			toast({ title: t("registry.toast.reauthorizationFailed"), description: getErrorMessage(error), variant: "destructive" });
 		} finally {
 			setReauthorizingClients((prev) => prev.filter((id) => id !== client.config.client_id));
 		}
@@ -475,12 +608,12 @@ export default function MCPClientsTable({
 		try {
 			setVerifyingExchangeClients((prev) => [...prev, client.config.client_id]);
 			const response = await verifyMCPClientExchange(client.config.client_id).unwrap();
-			toast({ title: "Verified", description: response.message });
+			toast({ title: t("registry.toast.verified"), description: response.message });
 			if (refetch) {
 				await refetch();
 			}
 		} catch (error) {
-			toast({ title: "Verification failed", description: getErrorMessage(error), variant: "destructive" });
+			toast({ title: t("registry.toast.verificationFailed"), description: getErrorMessage(error), variant: "destructive" });
 		} finally {
 			setVerifyingExchangeClients((prev) => prev.filter((id) => id !== client.config.client_id));
 		}
@@ -489,12 +622,12 @@ export default function MCPClientsTable({
 	const handleDelete = async (client: MCPClient) => {
 		try {
 			await deleteMCPClient(client.config.client_id).unwrap();
-			toast({ title: "Deleted", description: `Client ${client.config.name} removed successfully.` });
+			toast({ title: t("registry.toast.deleted"), description: t("registry.toast.deletedDesc", { name: client.config.name }) });
 			if (refetch) {
 				await refetch();
 			}
 		} catch (error) {
-			toast({ title: "Error", description: getErrorMessage(error), variant: "destructive" });
+			toast({ title: tCommon("error"), description: getErrorMessage(error), variant: "destructive" });
 		}
 	};
 
@@ -505,56 +638,18 @@ export default function MCPClientsTable({
 		}
 	};
 
-	const getConnectionTypeDisplay = (type: string) => {
-		switch (type) {
-			case "http":
-				return "HTTP";
-			case "sse":
-				return "SSE";
-			case "stdio":
-				return "STDIO";
-			default:
-				return type.toUpperCase();
-		}
-	};
-
-	const getAuthTypeDisplay = (type: string | undefined) => {
-		switch (type) {
-			case "none":
-			case undefined:
-			case "":
-				return "None";
-			case "headers":
-			case "per_user_headers":
-				return "Headers";
-			case "oauth":
-			case "per_user_oauth":
-				return "OAuth";
-			case "token_exchange":
-				return "Token Exchange";
-			default:
-				return type;
-		}
-	};
-
-	// token_exchange carries the caller's own token on every call, so it is
-	// per-user even though the form does not expose a scope dropdown for it.
-	// Everything else, including "none", resolves through authScopeOf so the
-	// table agrees with the form.
-	const getAuthScopeDisplay = (type: MCPAuthType | undefined) => {
-		if (type === "token_exchange") {
-			return "Per-User";
-		}
-		return authScopeOf(type) === "per_user" ? "Per-User" : "Shared";
-	};
-
 	const handleRowClick = (mcpClient: MCPClient) => {
 		setSelectedMCPClient(mcpClient);
-		setShowDetailSheet(true);
+		setOpenSheet("view");
 	};
 
-	const handleDetailSheetClose = () => {
-		setShowDetailSheet(false);
+	const handleEdit = (mcpClient: MCPClient) => {
+		setSelectedMCPClient(mcpClient);
+		setOpenSheet("edit");
+	};
+
+	const handleSheetClose = () => {
+		setOpenSheet(null);
 		setSelectedMCPClient(null);
 	};
 
@@ -565,13 +660,15 @@ export default function MCPClientsTable({
 
 	const [pendingEdgeNav, setPendingEdgeNav] = useState<"first" | "last" | null>(null);
 
+	// Prev/next past a page edge waits for the requested page: until it arrives the list still
+	// holds the page being left.
 	useEffect(() => {
-		if (pendingEdgeNav && mcpClients.length > 0) {
+		if (pendingEdgeNav && !pageLoading && mcpClients.length > 0) {
 			const target = pendingEdgeNav === "first" ? mcpClients[0] : mcpClients[mcpClients.length - 1];
 			setSelectedMCPClient(target);
 			setPendingEdgeNav(null);
 		}
-	}, [pendingEdgeNav, mcpClients]);
+	}, [pendingEdgeNav, pageLoading, mcpClients]);
 
 	const handleDetailNavigate = (direction: "prev" | "next") => {
 		const newIndex = direction === "prev" ? selectedMCPClientIndex - 1 : selectedMCPClientIndex + 1;
@@ -586,20 +683,90 @@ export default function MCPClientsTable({
 		}
 	};
 
-	const handleEditTools = async () => {
-		setShowDetailSheet(false);
-		setSelectedMCPClient(null);
+	const handleEditSaved = async () => {
+		handleSheetClose();
 		if (refetch) {
 			await refetch();
 		}
 	};
+
+	// The view sheet shows the server as the latest poll or refetch has it, so a
+	// state change or a menu action lands on the open sheet. selectedMCPClient is
+	// only the fallback while prev/next is loading another page. The edit sheet
+	// keeps the object it opened with: a fresh one every poll would reset its form.
+	const viewedMCPClient = selectedMCPClient
+		? (mcpClients.find((c) => c.config.client_id === selectedMCPClient.config.client_id) ?? selectedMCPClient)
+		: null;
+
+	// A server that leaves the list while its view is open (deleted from the
+	// view's menu, or elsewhere) closes the view, unless prev/next is moving
+	// to another page and the list is about to be replaced.
+	useEffect(() => {
+		if (openSheet !== "view" || !selectedMCPClient || pendingEdgeNav) return;
+		if (!mcpClients.some((c) => c.config.client_id === selectedMCPClient.config.client_id)) {
+			setOpenSheet(null);
+			setSelectedMCPClient(null);
+		}
+	}, [openSheet, selectedMCPClient, pendingEdgeNav, mcpClients]);
+
+	// The view's alert offers the same fix as the actions menu, through the same handler.
+	const handleAlertAction = (client: MCPClient, kind: MCPClientAlertActionKind) => {
+		switch (kind) {
+			case "authorize":
+				void handleStartBootstrap(client);
+				return;
+			case "reauthorize":
+				void handleReauthorize(client);
+				return;
+			case "refresh_headers":
+				handleRefreshHeaders(client);
+				return;
+			case "verify_exchange":
+				handleRequestVerifyExchange(client);
+				return;
+			case "reconnect":
+				void handleReconnect(client);
+				return;
+		}
+	};
+
+	const isClientBusy = (clientId: string) =>
+		reconnectingClients.includes(clientId) ||
+		authorizingClients.includes(clientId) ||
+		reauthorizingClients.includes(clientId) ||
+		verifyingExchangeClients.includes(clientId);
+
+	const renderActionsMenu = (client: MCPClient, options: { onEdit?: (client: MCPClient) => void; triggerTestId?: string }) => (
+		<MCPClientActionsMenu
+			client={client}
+			hasUpdateAccess={hasUpdateMCPClientAccess}
+			hasDeleteAccess={hasDeleteMCPClientAccess}
+			isReconnecting={reconnectingClients.includes(client.config.client_id)}
+			isRefreshingTools={refreshingToolsClients.includes(client.config.client_id)}
+			isAuthorizing={authorizingClients.includes(client.config.client_id)}
+			isReauthorizing={reauthorizingClients.includes(client.config.client_id)}
+			isVerifyingExchange={verifyingExchangeClients.includes(client.config.client_id)}
+			canReconnect={canReconnectMCPClient(client.config)}
+			triggerTestId={options.triggerTestId}
+			onEdit={options.onEdit}
+			onReconnect={(c) => void handleReconnect(c)}
+			onRefreshTools={(c) => void handleRefreshTools(c)}
+			onAuthorize={(c) => void handleStartBootstrap(c)}
+			onReauthorize={(c) => void handleReauthorize(c)}
+			onReregister={(c) => setReregisterTarget(c)}
+			onRefreshHeaders={handleRefreshHeaders}
+			onVerifyExchange={handleRequestVerifyExchange}
+			onDelete={setClientToDelete}
+		/>
+	);
 
 	const hasActiveFilters = Boolean(debouncedSearch) || Boolean(server) || filtersActive;
 
 	// Rendered on the empty branch too, not just the populated one: PageTitle
 	// draws nothing inline, and leaving it out drops the topbar to the
 	// route-derived fallback, which for this route reads "MCP Registry".
-	const pageTitle = <PageTitle title="MCP Server Catalog">Manage servers that can connect to the MCP Tools endpoint.</PageTitle>;
+	const pageTitle = <PageTitle title={t("registry.title")}>{t("registry.description")}</PageTitle>;
+	const exchangeCopy = exchangeVerifyCopy(exchangeVerifyClient);
 
 	// True empty state: no servers at all (not just filtered to zero)
 	if (totalCount === 0 && !hasActiveFilters) {
@@ -614,34 +781,65 @@ export default function MCPClientsTable({
 
 	return (
 		<div className="flex grow flex-col overflow-auto">
-			{showDetailSheet && selectedMCPClient && (
-				<MCPClientSheet
-					mcpClient={selectedMCPClient}
-					onClose={handleDetailSheetClose}
-					onSubmitSuccess={handleEditTools}
+			{openSheet === "view" && viewedMCPClient && (
+				<MCPClientDetailsSheet
+					mcpClient={viewedMCPClient}
+					onClose={handleSheetClose}
 					onNavigate={handleDetailNavigate}
 					hasPrev={selectedMCPClientIndex > 0 || offset > 0}
 					hasNext={(selectedMCPClientIndex >= 0 && selectedMCPClientIndex < mcpClients.length - 1) || offset + limit < totalCount}
+					actions={hasRowActions && renderActionsMenu(viewedMCPClient, { triggerTestId: "mcpclient-view-actions-btn" })}
+					onAlertAction={hasUpdateMCPClientAccess ? (kind) => handleAlertAction(viewedMCPClient, kind) : undefined}
+					alertActionBusy={isClientBusy(viewedMCPClient.config.client_id)}
 				/>
 			)}
-			<AlertDialog open={!!clientToDelete} onOpenChange={(open) => !open && setClientToDelete(null)}>
+			{openSheet === "edit" && selectedMCPClient && (
+				<MCPClientSheet mcpClient={selectedMCPClient} onClose={handleSheetClose} onSubmitSuccess={handleEditSaved} />
+			)}
+			<AlertDialog open={!!reregisterTarget} onOpenChange={(open) => !open && setReregisterTarget(null)}>
 				<AlertDialogContent>
 					<AlertDialogHeader>
-						<AlertDialogTitle>Remove MCP Server</AlertDialogTitle>
+						<AlertDialogTitle>{t("registry.reregister.title", { name: reregisterTarget?.config.name })}</AlertDialogTitle>
 						<AlertDialogDescription>
-							Are you sure you want to remove MCP server {clientToDelete?.config.name}? You will need to reconnect the server to continue
-							using it.
+							{t("registry.reregister.description")}{" "}
+							{reregisterTarget?.config.auth_type === "per_user_oauth" ? t("registry.reregister.perUser") : t("registry.reregister.shared")}{" "}
+							{perUserDiscoveryOn(reregisterTarget?.config)
+								? t("registry.reregister.perUserDiscovery")
+								: reregisterTarget?.state === "pending_verification"
+									? null
+									: t("registry.reregister.otherwise")}
 						</AlertDialogDescription>
 					</AlertDialogHeader>
 					<AlertDialogFooter>
-						<AlertDialogCancel>Cancel</AlertDialogCancel>
+						<AlertDialogCancel>{tCommon("cancel")}</AlertDialogCancel>
+						<AlertDialogAction
+							data-testid="mcp-client-reregister-confirm"
+							onClick={() => {
+								const target = reregisterTarget;
+								setReregisterTarget(null);
+								if (target) void handleReauthorize(target, true);
+							}}
+						>
+							{t("registry.reregister.confirm")}
+						</AlertDialogAction>
+					</AlertDialogFooter>
+				</AlertDialogContent>
+			</AlertDialog>
+			<AlertDialog open={!!clientToDelete} onOpenChange={(open) => !open && setClientToDelete(null)}>
+				<AlertDialogContent>
+					<AlertDialogHeader>
+						<AlertDialogTitle>{t("registry.removeTitle")}</AlertDialogTitle>
+						<AlertDialogDescription>{t("registry.removeDescription", { name: clientToDelete?.config.name })}</AlertDialogDescription>
+					</AlertDialogHeader>
+					<AlertDialogFooter>
+						<AlertDialogCancel>{tCommon("cancel")}</AlertDialogCancel>
 						<AlertDialogAction
 							onClick={() => {
 								if (clientToDelete) void handleDelete(clientToDelete);
 							}}
 							className="bg-destructive hover:bg-destructive/90"
 						>
-							Delete
+							{tCommon("delete")}
 						</AlertDialogAction>
 					</AlertDialogFooter>
 				</AlertDialogContent>
@@ -652,10 +850,10 @@ export default function MCPClientsTable({
 					onClose={() => setBootstrapAuthorize(null)}
 					onSuccess={async () => {
 						toast({
-							title: "Success",
+							title: t("common.success"),
 							description: bootstrapAuthorize.isPerUserOauth
-								? "OAuth setup verified successfully. Each user will authenticate individually."
-								: "MCP client connected successfully",
+								? t("registry.toast.oauthVerifiedPerUser")
+								: t("registry.toast.clientConnected"),
 						});
 						setBootstrapAuthorize(null);
 						if (refetch) {
@@ -663,16 +861,50 @@ export default function MCPClientsTable({
 						}
 					}}
 					onError={(error) => {
-						toast({ title: "Authorization failed", description: error, variant: "destructive" });
+						toast({ title: t("registry.toast.authorizationFailed"), description: error, variant: "destructive" });
 					}}
 					onConflict={(error) => {
 						setBootstrapAuthorize(null);
-						toast({ title: "Authorization failed", description: error, variant: "destructive" });
+						toast({ title: t("registry.toast.authorizationFailed"), description: error, variant: "destructive" });
 					}}
+					onRetry={
+						bootstrapAuthorize.flowId
+							? async () => {
+									// As for reauthorize: a timed-out or denied flow is dead
+									// server-side, so Retry starts a fresh one.
+									const response = await initiateVerification(bootstrapAuthorize.mcpClientId).unwrap();
+									setBootstrapAuthorize(
+										(prev) =>
+											prev && {
+												...prev,
+												authorizeUrl: response.authorize_url,
+												oauthConfigId: response.oauth_config_id,
+												flowId: response.flow_id,
+												expiresAt: response.expires_at,
+											},
+									);
+								}
+							: undefined
+					}
+					onRegisterNewClient={
+						bootstrapAuthorize.flowId
+							? () => {
+									// Signing in on the client the server kept fails for good
+									// once its provider forgets that client, so a failed sign-in
+									// offers the reregister confirmation the menu would.
+									const target = mcpClients.find((c) => c.config.client_id === bootstrapAuthorize.mcpClientId);
+									setBootstrapAuthorize(null);
+									if (target) setReregisterTarget(target);
+								}
+							: undefined
+					}
 					authorizeUrl={bootstrapAuthorize.authorizeUrl}
 					oauthConfigId={bootstrapAuthorize.oauthConfigId}
+					flowId={bootstrapAuthorize.flowId}
+					expiresAt={bootstrapAuthorize.expiresAt}
 					mcpClientId={bootstrapAuthorize.mcpClientId}
 					isPerUserOauth={bootstrapAuthorize.isPerUserOauth}
+					perUserDiscovery={bootstrapAuthorize.perUserDiscovery}
 				/>
 			)}
 			{bootstrapHeadersClient && (
@@ -681,8 +913,8 @@ export default function MCPClientsTable({
 					onClose={() => setBootstrapHeadersClient(null)}
 					onSuccess={async () => {
 						toast({
-							title: "Success",
-							description: "Headers verified successfully. Each user will submit their own values when using this MCP server.",
+							title: t("common.success"),
+							description: t("registry.headersVerifiedDesc"),
 						});
 						setBootstrapHeadersClient(null);
 						if (refetch) {
@@ -695,13 +927,14 @@ export default function MCPClientsTable({
 					onConflict={async (error) => {
 						// 409: tools were already discovered (e.g. double submit or a
 						// concurrent verification) — the client is verified; refresh.
-						toast({ title: "Already verified", description: error });
+						toast({ title: t("registry.toast.alreadyVerified"), description: error });
 						setBootstrapHeadersClient(null);
 						if (refetch) {
 							await refetch();
 						}
 					}}
 					perUserHeaderKeys={bootstrapHeadersClient.config.per_user_header_keys ?? []}
+					perUserDiscovery={perUserDiscoveryOn(bootstrapHeadersClient.config)}
 					submitHandler={async (values) => {
 						await verifyMCPClientHeaders({
 							id: bootstrapHeadersClient.config.client_id,
@@ -744,36 +977,15 @@ export default function MCPClientsTable({
 								}
 							/>
 							<div className="min-w-0 space-y-0.5">
-								<DialogTitle className="text-sm leading-snug font-medium">
-									{exchangeVerifyClient?.state === "pending_verification" ? "Verify as me" : "Re-verify as me"}
-								</DialogTitle>
-								<DialogDescription className="text-xs leading-relaxed">
-									{exchangeVerifyClient?.state === "pending_verification"
-										? "Establish Bifrost's discovery credential using your identity."
-										: "Renew Bifrost's own discovery credential using your identity."}
-								</DialogDescription>
+								<DialogTitle className="text-sm leading-snug font-medium">{exchangeCopy.title}</DialogTitle>
+								<DialogDescription className="text-xs leading-relaxed">{exchangeCopy.description}</DialogDescription>
 							</div>
 						</div>
 					</DialogHeader>
 					<div className="space-y-3 px-5 py-4">
 						<InfoBox icon={<KeyRound className="size-4" />}>
-							<p>
-								This exchanges your own signed-in identity to{" "}
-								{exchangeVerifyClient?.state === "pending_verification" ? "establish" : "renew"} Bifrost&apos;s discovery credential for{" "}
-								<strong>{exchangeVerifyClient?.config.name}</strong>.
-							</p>
-							{exchangeVerifyClient?.state === "pending_verification" ? (
-								<p className="text-muted-foreground/80 text-xs">
-									That credential is only used to periodically fetch this server&apos;s tool list, not for real user requests, whose tokens
-									are exchanged automatically on every request.
-								</p>
-							) : (
-								<p className="text-muted-foreground/80 text-xs">
-									That credential is only used to periodically fetch this server&apos;s tool list, not for real user requests, whose tokens
-									are exchanged automatically on every request. You only need this if the credential badge shows it&apos;s expired, but
-									running it any time is safe.
-								</p>
-							)}
+							<p>{exchangeCopy.body}</p>
+							<p className="text-muted-foreground/80 text-xs">{exchangeCopy.detail}</p>
 						</InfoBox>
 						<div className="flex justify-end gap-2">
 							<Button
@@ -783,7 +995,7 @@ export default function MCPClientsTable({
 								onClick={() => setExchangeVerifyClient(null)}
 								data-testid="verify-exchange-cancel-btn"
 							>
-								Cancel
+								{tCommon("cancel")}
 							</Button>
 							<Button
 								size="sm"
@@ -799,7 +1011,9 @@ export default function MCPClientsTable({
 								{exchangeVerifyClient && verifyingExchangeClients.includes(exchangeVerifyClient.config.client_id) ? (
 									<Loader2 className="size-3.5 animate-spin" />
 								) : null}
-								Continue
+								{exchangeVerifyClient && verifyingExchangeClients.includes(exchangeVerifyClient.config.client_id)
+									? t("registry.verify.verifying")
+									: t("common.continue")}
 							</Button>
 						</div>
 					</div>
@@ -839,36 +1053,15 @@ export default function MCPClientsTable({
 								}
 							/>
 							<div className="min-w-0 space-y-0.5">
-								<DialogTitle className="text-sm leading-snug font-medium">
-									{exchangeVerifyClient?.state === "pending_verification" ? "Verify as me" : "Re-verify as me"}
-								</DialogTitle>
-								<DialogDescription className="text-xs leading-relaxed">
-									{exchangeVerifyClient?.state === "pending_verification"
-										? "Establish Bifrost's discovery credential using your identity."
-										: "Renew Bifrost's own discovery credential using your identity."}
-								</DialogDescription>
+								<DialogTitle className="text-sm leading-snug font-medium">{exchangeCopy.title}</DialogTitle>
+								<DialogDescription className="text-xs leading-relaxed">{exchangeCopy.description}</DialogDescription>
 							</div>
 						</div>
 					</DialogHeader>
 					<div className="space-y-3 px-5 py-4">
 						<InfoBox icon={<KeyRound className="size-4" />}>
-							<p>
-								This exchanges your own signed-in identity to{" "}
-								{exchangeVerifyClient?.state === "pending_verification" ? "establish" : "renew"} Bifrost&apos;s discovery credential for{" "}
-								<strong>{exchangeVerifyClient?.config.name}</strong>.
-							</p>
-							{exchangeVerifyClient?.state === "pending_verification" ? (
-								<p className="text-muted-foreground/80 text-xs">
-									That credential is only used to periodically fetch this server&apos;s tool list, not for real user requests, whose tokens
-									are exchanged automatically on every request.
-								</p>
-							) : (
-								<p className="text-muted-foreground/80 text-xs">
-									That credential is only used to periodically fetch this server&apos;s tool list, not for real user requests, whose tokens
-									are exchanged automatically on every request. You only need this if the credential badge shows it&apos;s expired, but
-									running it any time is safe.
-								</p>
-							)}
+							<p>{exchangeCopy.body}</p>
+							<p className="text-muted-foreground/80 text-xs">{exchangeCopy.detail}</p>
 						</InfoBox>
 						<div className="flex justify-end gap-2">
 							<Button
@@ -878,7 +1071,7 @@ export default function MCPClientsTable({
 								onClick={() => setExchangeVerifyClient(null)}
 								data-testid="verify-exchange-cancel-btn"
 							>
-								Cancel
+								{tCommon("cancel")}
 							</Button>
 							<Button
 								size="sm"
@@ -894,7 +1087,9 @@ export default function MCPClientsTable({
 								{exchangeVerifyClient && verifyingExchangeClients.includes(exchangeVerifyClient.config.client_id) ? (
 									<Loader2 className="size-3.5 animate-spin" />
 								) : null}
-								Continue
+								{exchangeVerifyClient && verifyingExchangeClients.includes(exchangeVerifyClient.config.client_id)
+									? t("registry.verify.verifying")
+									: t("common.continue")}
 							</Button>
 						</div>
 					</div>
@@ -908,8 +1103,8 @@ export default function MCPClientsTable({
 				<div className="relative max-w-sm flex-1">
 					<Search className="text-muted-foreground absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2" />
 					<Input
-						aria-label="Search MCP servers by name"
-						placeholder="Search by name..."
+						aria-label={t("registry.searchAria")}
+						placeholder={t("registry.searchPlaceholder")}
 						value={search}
 						onChange={(e) => onSearchChange(e.target.value)}
 						className="pl-9"
@@ -924,7 +1119,7 @@ export default function MCPClientsTable({
 						onClick={onServerFilterClear}
 						data-testid="mcp-client-server-filter-clear-btn"
 					>
-						Server filter
+						{t("registry.serverFilter")}
 						<X className="size-3" />
 					</Button>
 				)}
@@ -933,20 +1128,20 @@ export default function MCPClientsTable({
 					<MCPUsageGuideSheet />
 					<Button asChild variant="outline" data-testid="mcp-library-link-btn" className="h-8">
 						{/* The label is hidden below sm, leaving a bare icon. */}
-						<Link to="/workspace/mcp-registry/library" aria-label="MCP server library">
+						<Link to="/workspace/mcp-registry/library" aria-label={t("registry.libraryAria")}>
 							<Box />
-							<span className="hidden sm:inline">Library</span>
+							<span className="hidden sm:inline">{t("common.library")}</span>
 						</Link>
 					</Button>
 					<Button
 						onClick={handleCreate}
 						disabled={!hasCreateMCPClientAccess}
 						data-testid="create-mcp-client-btn"
-						aria-label="New MCP Server"
+						aria-label={t("registry.addServer")}
 						className="h-8 gap-2"
 					>
 						<Plus />
-						<span className="hidden sm:inline">New MCP Server</span>
+						<span className="hidden sm:inline">{t("registry.addServer")}</span>
 					</Button>
 				</div>
 			</div>
@@ -956,27 +1151,21 @@ export default function MCPClientsTable({
 					<Table data-testid="mcp-clients-table" containerClassName="h-full overflow-auto" className="w-full min-w-[1516px] table-fixed">
 						<TableHeader className="bg-muted sticky top-0 z-20">
 							<TableRow>
-								<TableHead className="w-[260px] font-semibold">Name</TableHead>
-								<TableHead className="w-[180px] font-semibold">Endpoint</TableHead>
-								<TableHead className="w-[150px] font-semibold">Connection Type</TableHead>
-								<TableHead className="w-[150px] font-semibold">Auth Type</TableHead>
-								<TableHead className="w-[140px] font-semibold">Auth Scope</TableHead>
-								<TableHead className="w-[120px] font-semibold">Code Mode</TableHead>
-								<TableHead className="w-[150px] font-semibold">Access</TableHead>
-								<TableHead className="w-[130px] font-semibold">Enabled Tools</TableHead>
-								<TableHead className="w-[160px] font-semibold">Auto-execute Tools</TableHead>
+								<TableHead className="w-[260px] font-semibold">{t("registry.columns.name")}</TableHead>
+								<TableHead className="w-[180px] font-semibold">{t("registry.columns.endpoint")}</TableHead>
+								<TableHead className="w-[150px] font-semibold">{t("registry.columns.connectionType")}</TableHead>
+								<TableHead className="w-[150px] font-semibold">{t("registry.columns.authType")}</TableHead>
+								<TableHead className="w-[140px] font-semibold">{t("registry.columns.authScope")}</TableHead>
+								<TableHead className="w-[120px] font-semibold">{t("registry.columns.codeMode")}</TableHead>
+								<TableHead className="w-[150px] font-semibold">{t("registry.columns.access")}</TableHead>
+								<TableHead className="w-[130px] font-semibold">{t("registry.columns.enabledTools")}</TableHead>
+								<TableHead className="w-[160px] font-semibold">{t("registry.columns.autoExecuteTools")}</TableHead>
 								<TableHead className="w-[140px] font-semibold">
 									<HeaderWithTooltip
-										label="State"
+										label={t("registry.columns.state")}
 										tooltip={
 											<>
-												<p>
-													The client's connection state (healthy, unstable, needs re-authorization, and so on). "Unstable" reflects
-													Bifrost's own connection checks to the server, not the results of tool calls made through it: it self-heals and
-													never blocks tool calls. For per-user clients (OAuth, headers, token exchange), this reflects Bifrost's own
-													retained admin credential (used only to periodically refresh the tool list), not any individual user's own
-													session, which is unaffected either way.
-												</p>
+												<p>{t("registry.stateColumnHelp")}</p>
 												<a
 													data-testid="mcp-client-state-link"
 													href="https://docs.getbifrost.ai/mcp/connections"
@@ -984,26 +1173,25 @@ export default function MCPClientsTable({
 													rel="noreferrer"
 													className="text-primary mt-2 inline-block underline"
 												>
-													See all connection states
+													{t("registry.seeAllConnectionStates")}
 												</a>
 											</>
 										}
 									/>
 								</TableHead>
-								<TableHead className="w-[90px] font-semibold">Status</TableHead>
-								<TableHead className={`bg-muted sticky right-0 z-10 w-14 text-right ${PIN_SHADOW_RIGHT}`}></TableHead>
+								<TableHead className="w-[90px] font-semibold">{t("registry.columns.status")}</TableHead>
+								{hasRowActions && <TableHead className={`bg-muted sticky right-0 z-10 w-14 text-right ${PIN_SHADOW_RIGHT}`}></TableHead>}
 							</TableRow>
 						</TableHeader>
 						<TableBody>
 							{mcpClients.length === 0 ? (
 								<TableRow>
-									<TableCell colSpan={12} className="h-24 text-center">
-										<span className="text-muted-foreground text-sm">No matching MCP servers found.</span>
+									<TableCell colSpan={hasRowActions ? 12 : 11} className="h-24 text-center">
+										<span className="text-muted-foreground text-sm">{t("registry.noMatch")}</span>
 									</TableCell>
 								</TableRow>
 							) : (
 								mcpClients.map((c: MCPClient) => {
-									const canReconnect = canReconnectMCPClient(c.config);
 									// Tool counts come from the last successful discovery, which is
 									// deliberately retained across a failed connection check, so an
 									// "unstable" (or degraded/needs_reauth) client still has a real
@@ -1030,36 +1218,58 @@ export default function MCPClientsTable({
 									const enabledToolsCount = enabledToolNames.size;
 									const autoExecuteToolsCount = autoExecuteToolNames.size;
 									return (
-										<TableRow key={c.config.client_id} className="group hover:bg-muted/50 transition-colors">
+										<TableRow
+											key={c.config.client_id}
+											className="group hover:bg-muted/50 cursor-pointer transition-colors"
+											onClick={() => handleRowClick(c)}
+											data-testid={`mcp-client-row-${c.config.client_id}`}
+										>
 											<TableCell className="font-medium">
-												<div className="truncate" title={c.config.name}>
+												{/* The row opens the details on click; the name is the same thing as a
+												    button, so it can be reached and opened from the keyboard. */}
+												<button
+													type="button"
+													className="focus-visible:ring-ring block max-w-full cursor-pointer truncate rounded-sm text-left outline-none hover:underline focus-visible:ring-1 focus-visible:ring-offset-1"
+													title={c.config.name}
+													onClick={(e) => {
+														e.stopPropagation();
+														handleRowClick(c);
+													}}
+													data-testid={`mcp-client-name-${c.config.client_id}`}
+												>
 													{c.config.name}
-												</div>
+												</button>
 											</TableCell>
 											<TableCell>
 												<ClientEndpointCell slug={c.config.endpoint_slug} baseUrl={baseUrl} />
 											</TableCell>
 											<TableCell data-testid="mcp-client-connection-type">
 												<Badge variant="outline" className="font-mono">
-													{getConnectionTypeDisplay(c.config.connection_type)}
+													{connectionTypeLabel(c.config.connection_type)}
 												</Badge>
 											</TableCell>
-											<TableCell data-testid="mcp-client-auth-type">{getAuthTypeDisplay(c.config.auth_type)}</TableCell>
-											<TableCell data-testid="mcp-client-auth-scope">{getAuthScopeDisplay(c.config.auth_type)}</TableCell>
+											<TableCell data-testid="mcp-client-auth-type">{authTypeLabel(c.config.auth_type)}</TableCell>
+											<TableCell data-testid="mcp-client-auth-scope">{authScopeLabel(c.config.auth_type)}</TableCell>
 											<TableCell data-testid="mcp-client-code-mode">
 												{/* Pure config, valid whatever the connection state is: a server
 												    that can't be reached right now is still configured for code
 												    mode or not. */}
-												<Badge className={c.config.is_code_mode_client ? "bg-green-100 text-green-800" : "bg-gray-100 text-gray-800"}>
-													{c.config.is_code_mode_client ? "Enabled" : "Disabled"}
+												<Badge
+													className={
+														c.config.is_code_mode_client
+															? "bg-green-100 text-green-800 dark:bg-green-950/40 dark:text-green-300"
+															: "dark:bg-muted dark:text-muted-foreground bg-gray-100 text-gray-800"
+													}
+												>
+													{c.config.is_code_mode_client ? t("common.enabled") : t("common.disabled")}
 												</Badge>
 											</TableCell>
 											<TableCell data-testid="mcp-client-vk-access">
 												{c.config.allow_by_default
-													? "Allowed by default"
+													? t("registry.filter.allowedByDefault")
 													: c.vk_configs?.length
-														? `${c.vk_configs.length} ${c.vk_configs.length === 1 ? "VK" : "VKs"}`
-														: "None"}
+														? t("registry.vkCount", { count: c.vk_configs.length })
+														: t("registry.filter.none")}
 											</TableCell>
 											<TableCell data-testid="mcp-client-enabled-tools">
 												{hasDiscoveredTools ? (
@@ -1111,11 +1321,11 @@ export default function MCPClientsTable({
 														})
 															.unwrap()
 															.then(() => {
-																toast({ title: `Server ${checked ? "enabled" : "disabled"} successfully` });
+																toast({ title: checked ? t("registry.toast.serverEnabled") : t("registry.toast.serverDisabled") });
 																if (refetch) refetch();
 															})
 															.catch((err) => {
-																toast({ title: "Error", description: getErrorMessage(err), variant: "destructive" });
+																toast({ title: tCommon("error"), description: getErrorMessage(err), variant: "destructive" });
 															})
 															.finally(() => {
 																setTogglingClientIds((prev) => {
@@ -1127,28 +1337,14 @@ export default function MCPClientsTable({
 													}}
 												/>
 											</TableCell>
-											<TableCell
-												className={`bg-card group-hover:bg-muted/50 sticky right-0 z-10 text-right ${PIN_SHADOW_RIGHT}`}
-												onClick={(e) => e.stopPropagation()}
-											>
-												<MCPClientActionsMenu
-													client={c}
-													hasUpdateAccess={hasUpdateMCPClientAccess}
-													hasDeleteAccess={hasDeleteMCPClientAccess}
-													isReconnecting={reconnectingClients.includes(c.config.client_id)}
-													isAuthorizing={authorizingClients.includes(c.config.client_id)}
-													isReauthorizing={reauthorizingClients.includes(c.config.client_id)}
-													isVerifyingExchange={verifyingExchangeClients.includes(c.config.client_id)}
-													canReconnect={canReconnect}
-													onEdit={handleRowClick}
-													onReconnect={(client) => void handleReconnect(client)}
-													onAuthorize={(client) => void handleStartBootstrap(client)}
-													onReauthorize={(client) => void handleReauthorize(client)}
-													onRefreshHeaders={handleRefreshHeaders}
-													onVerifyExchange={handleRequestVerifyExchange}
-													onDelete={setClientToDelete}
-												/>
-											</TableCell>
+											{hasRowActions && (
+												<TableCell
+													className={`bg-card group-hover:bg-muted/50 sticky right-0 z-10 text-right ${PIN_SHADOW_RIGHT}`}
+													onClick={(e) => e.stopPropagation()}
+												>
+													{renderActionsMenu(c, { onEdit: handleEdit })}
+												</TableCell>
+											)}
 										</TableRow>
 									);
 								})
@@ -1161,8 +1357,11 @@ export default function MCPClientsTable({
 				{totalCount > 0 && (
 					<div className="flex shrink-0 items-center justify-between text-xs" data-testid="pagination">
 						<div className="text-muted-foreground flex items-center gap-2">
-							{(offset + 1).toLocaleString()}-{Math.min(offset + limit, totalCount).toLocaleString()} of {totalCount.toLocaleString()}{" "}
-							entries
+							{t("common.ofEntries", {
+								from: (offset + 1).toLocaleString(getLocale()),
+								to: Math.min(offset + limit, totalCount).toLocaleString(getLocale()),
+								total: totalCount.toLocaleString(getLocale()),
+							})}
 						</div>
 
 						<div className="flex items-center gap-2">
@@ -1172,15 +1371,15 @@ export default function MCPClientsTable({
 								onClick={() => onOffsetChange(Math.max(0, offset - limit))}
 								disabled={offset === 0}
 								data-testid="mcp-clients-pagination-prev-btn"
-								aria-label="Previous page"
+								aria-label={t("common.previousPage")}
 							>
 								<ChevronLeft className="size-3" />
 							</Button>
 
 							<div className="flex items-center gap-1">
-								<span>Page</span>
+								<span>{t("common.page")}</span>
 								<span>{Math.floor(offset / limit) + 1}</span>
-								<span>of {Math.ceil(totalCount / limit)}</span>
+								<span>{t("common.ofPages", { total: Math.ceil(totalCount / limit) })}</span>
 							</div>
 
 							<Button
@@ -1189,7 +1388,7 @@ export default function MCPClientsTable({
 								onClick={() => onOffsetChange(offset + limit)}
 								disabled={offset + limit >= totalCount}
 								data-testid="mcp-clients-pagination-next-btn"
-								aria-label="Next page"
+								aria-label={t("common.nextPage")}
 							>
 								<ChevronRight className="size-3" />
 							</Button>
@@ -1205,35 +1404,51 @@ export default function MCPClientsTable({
 					onClose={() => setReauthorizeFlow(null)}
 					onSuccess={() => {
 						toast({
-							title: "Success",
-							description: reauthorizeFlow.isPerUserOauth
-								? "Admin discovery credential refreshed successfully."
-								: "MCP client re-authorized successfully",
+							title: t("common.success"),
+							description: reauthorizeFlow.perUserDiscovery
+								? t("registry.toast.perUserDiscoveryReregistered")
+								: reauthorizeFlow.isPerUserOauth
+									? t("registry.toast.adminCredentialRefreshed")
+									: t("registry.toast.reauthorized"),
 						});
 						setReauthorizeFlow(null);
 						if (refetch) void refetch();
 					}}
 					onError={(error) => {
-						toast({ title: "Reauthorization failed", description: error, variant: "destructive" });
+						toast({ title: t("registry.toast.reauthorizationFailed"), description: error, variant: "destructive" });
 					}}
-					onConflict={() => {
-						// 409: the flow's completion raced (popup postMessage vs.
-						// status polling both call complete-oauth) or this was a
-						// double submit. Either way the credential is already live
-						// server-side, so treat it as success rather than an error.
-						toast({
-							title: "Success",
-							description: reauthorizeFlow.isPerUserOauth
-								? "Admin discovery credential refreshed successfully."
-								: "MCP client re-authorized successfully",
-						});
+					onConflict={(error) => {
+						// 409: the server refused to complete because the consent
+						// never actually finished (the flow is still pending, or no
+						// fresh credential was written). Nothing was repaired, so
+						// say so instead of claiming success.
+						toast({ title: t("registry.toast.reauthorizationDidNotComplete"), description: error, variant: "destructive" });
 						setReauthorizeFlow(null);
 						if (refetch) void refetch();
 					}}
+					onRetry={async () => {
+						// A timed-out or denied flow is dead server-side. Start a
+						// fresh one so the confirm step reopens on a live authorize
+						// URL with a new flow id and deadline.
+						const response = await reauthorizeMCPClient(reauthorizeFlow.mcpClientId).unwrap();
+						setReauthorizeFlow(
+							(prev) =>
+								prev && {
+									...prev,
+									authorizeUrl: response.authorize_url,
+									oauthConfigId: response.oauth_config_id,
+									flowId: response.flow_id,
+									expiresAt: response.expires_at,
+								},
+						);
+					}}
 					authorizeUrl={reauthorizeFlow.authorizeUrl}
 					oauthConfigId={reauthorizeFlow.oauthConfigId}
+					flowId={reauthorizeFlow.flowId}
+					expiresAt={reauthorizeFlow.expiresAt}
 					mcpClientId={reauthorizeFlow.mcpClientId}
 					isPerUserOauth={reauthorizeFlow.isPerUserOauth}
+					perUserDiscovery={reauthorizeFlow.perUserDiscovery}
 					isReauthorize
 				/>
 			)}
@@ -1242,7 +1457,7 @@ export default function MCPClientsTable({
 					open={!!headersRefreshFlow}
 					onClose={() => setHeadersRefreshFlow(null)}
 					onSuccess={() => {
-						toast({ title: "Success", description: "Admin discovery credential refreshed successfully." });
+						toast({ title: t("common.success"), description: t("registry.toast.adminCredentialRefreshed") });
 						setHeadersRefreshFlow(null);
 						if (refetch) void refetch();
 					}}
@@ -1253,7 +1468,7 @@ export default function MCPClientsTable({
 						// 409: the flow's completion raced (double submit / concurrent
 						// verification) or the credential no longer needed a refresh;
 						// either way the client is fine, so treat it as success.
-						toast({ title: "Already verified", description: error });
+						toast({ title: t("registry.toast.alreadyVerified"), description: error });
 						setHeadersRefreshFlow(null);
 						if (refetch) void refetch();
 					}}
@@ -1271,12 +1486,13 @@ export default function MCPClientsTable({
 }
 
 function HeaderWithTooltip({ label, tooltip }: { label: string; tooltip: ReactNode }) {
+	const { t } = useTranslation("mcp");
 	return (
 		<Popover>
 			<PopoverTrigger asChild>
 				<button
 					type="button"
-					aria-label={`${label} column guidance`}
+					aria-label={t("registry.columnGuidanceAria", { label })}
 					data-testid="mcp-client-state-info-trigger"
 					className="inline-flex cursor-help items-center gap-2"
 				>

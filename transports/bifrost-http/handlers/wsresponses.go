@@ -13,10 +13,11 @@ import (
 	"github.com/fasthttp/router"
 	ws "github.com/fasthttp/websocket"
 	bifrost "github.com/maximhq/bifrost/core"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
-	"github.com/maximhq/bifrost/transports/bifrost-http/integrations"
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
-	bfws "github.com/maximhq/bifrost/transports/bifrost-http/websocket"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/integrations"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
+	bfws "github.com/maximhq/bifrost/transports/v2/bifrost-http/websocket"
 	"github.com/valyala/fasthttp"
 )
 
@@ -83,30 +84,48 @@ func (h *WSResponsesHandler) RegisterRoutes(r *router.Router, middlewares ...sch
 	}
 }
 
+// endSession tears down a client's session when its connection ends, normally or after a
+// recovered panic. The upstream a session pins between turns was borrowed from the pool, so it goes
+// back through the pool exactly once before the session is removed: Session.Close only closes it,
+// which would leave it counted in flight, and a pool at its limit then refuses every later borrow.
+// Upstreams dialed with request-scoped headers are never pinned, so whatever is pinned is pooled.
+func (h *WSResponsesHandler) endSession(conn *ws.Conn) {
+	if session := h.sessions.Get(conn); session != nil {
+		if upstream := session.Upstream(); upstream != nil {
+			session.SetUpstream(nil)
+			if h.pool != nil {
+				h.pool.Discard(upstream)
+			}
+		}
+	}
+	h.sessions.Remove(conn)
+}
+
 // handleUpgrade upgrades the HTTP connection to WebSocket and starts the event loop.
 func (h *WSResponsesHandler) handleUpgrade(ctx *fasthttp.RequestCtx) {
 	err := h.upgrader.Upgrade(ctx, func(conn *ws.Conn) {
 		defer conn.Close()
+		defer recoverWebSocketSession(conn)
 
 		session, sessionErr := h.sessions.Create(conn)
 		if sessionErr != nil {
 			writeWSError(conn, 429, "websocket_connection_limit_reached", sessionErr.Error())
 			return
 		}
-		defer h.sessions.Remove(conn)
+		defer h.endSession(conn)
 
-		// Capture auth headers from the upgrade request for per-event context creation
-		authHeaders := captureAuthHeaders(ctx)
+		// Capture session headers from the upgrade request for per-event context creation
+		sessionHeaders := captureSessionHeaders(ctx)
 
-		h.eventLoop(conn, session, authHeaders)
+		h.eventLoop(conn, session, sessionHeaders)
 	})
 	if err != nil {
 		logger.Warn("websocket upgrade failed for /v1/responses: %v", err)
 	}
 }
 
-// authHeaders holds auth-related headers captured during the WS upgrade.
-type authHeaders struct {
+// sessionHeaders holds request headers and credentials captured during session setup.
+type sessionHeaders struct {
 	authorization string
 	virtualKey    string
 	apiKey        string
@@ -115,9 +134,9 @@ type authHeaders struct {
 	headers       map[string][]string
 }
 
-// captureAuthHeaders captures the auth headers from the request.
-func captureAuthHeaders(ctx *fasthttp.RequestCtx) *authHeaders {
-	ah := &authHeaders{
+// captureSessionHeaders copies all request headers for use after the setup request ends.
+func captureSessionHeaders(ctx *fasthttp.RequestCtx) *sessionHeaders {
+	capturedHeaders := &sessionHeaders{
 		authorization: string(ctx.Request.Header.Peek("Authorization")),
 		virtualKey:    string(ctx.Request.Header.Peek("x-bf-vk")),
 		apiKey:        string(ctx.Request.Header.Peek("x-api-key")),
@@ -128,13 +147,13 @@ func captureAuthHeaders(ctx *fasthttp.RequestCtx) *authHeaders {
 
 	for key, value := range ctx.Request.Header.All() {
 		k := strings.ToLower(string(key))
-		ah.headers[k] = append(ah.headers[k], string(value))
+		capturedHeaders.headers[k] = append(capturedHeaders.headers[k], string(value))
 	}
-	return ah
+	return capturedHeaders
 }
 
 // eventLoop reads events from the client WebSocket and processes them.
-func (h *WSResponsesHandler) eventLoop(conn *ws.Conn, session *bfws.Session, auth *authHeaders) {
+func (h *WSResponsesHandler) eventLoop(conn *ws.Conn, session *bfws.Session, setupHeaders *sessionHeaders) {
 	for {
 		_, message, err := conn.ReadMessage()
 		if err != nil {
@@ -156,7 +175,9 @@ func (h *WSResponsesHandler) eventLoop(conn *ws.Conn, session *bfws.Session, aut
 
 		switch schemas.WebSocketEventType(envelope.Type) {
 		case schemas.WSEventResponseCreate:
-			h.handleResponseCreate(session, auth, message)
+			h.handleResponseCreate(session, setupHeaders, message)
+		case schemas.WSEventResponseInterrupt:
+			// Read only after its turn ends; OpenAI ignores it too, and an error here fails the client's next turn.
 		default:
 			writeWSError(session, 400, "invalid_request_error", "unsupported event type: "+envelope.Type)
 		}
@@ -166,7 +187,7 @@ func (h *WSResponsesHandler) eventLoop(conn *ws.Conn, session *bfws.Session, aut
 // handleResponseCreate processes a response.create event.
 // Strategy: try native WS upstream for providers that support it, otherwise use HTTP bridge.
 // If native WS upstream fails mid-stream, falls back to HTTP bridge.
-func (h *WSResponsesHandler) handleResponseCreate(session *bfws.Session, auth *authHeaders, message []byte) {
+func (h *WSResponsesHandler) handleResponseCreate(session *bfws.Session, setupHeaders *sessionHeaders, message []byte) {
 	var event schemas.WebSocketResponsesEvent
 
 	if err := sonic.Unmarshal(message, &event); err != nil {
@@ -205,7 +226,7 @@ func (h *WSResponsesHandler) handleResponseCreate(session *bfws.Session, auth *a
 		bifrostReq.Params.ExtraParams = extraParams
 	}
 
-	bifrostCtx, cancel := createBifrostContextFromAuth(h.handlerStore, auth)
+	bifrostCtx, cancel := createBifrostContextFromHeaders(h.handlerStore, setupHeaders)
 	if bifrostCtx == nil {
 		writeWSError(session, 500, "server_error", "failed to create request context")
 		return
@@ -213,6 +234,7 @@ func (h *WSResponsesHandler) handleResponseCreate(session *bfws.Session, auth *a
 	if parentRequestID, _ := bifrostCtx.Value(schemas.BifrostContextKeyParentRequestID).(string); parentRequestID == "" {
 		bifrostCtx.SetValue(schemas.BifrostContextKeyParentRequestID, session.ID())
 	}
+	h.pinSessionKey(bifrostCtx, session, bifrostReq)
 
 	// Rewrite the raw event for upstream: strip provider/ prefix from model,
 	// apply store override. The original bytes contain the bifrost-format model
@@ -231,6 +253,40 @@ func (h *WSResponsesHandler) handleResponseCreate(session *bfws.Session, auth *a
 
 	// Fall back to HTTP bridge
 	h.executeHTTPBridge(session, bifrostCtx, cancel, bifrostReq)
+}
+
+// pinSessionKey keeps a Responses WS turn on the key that served the session's last turn.
+// OpenAI binds a reasoning item's encrypted_content to the organization of the key that minted
+// it, and clients such as Codex replay those items on every turn, so a turn that rotates to a key
+// in another organization fails with invalid_encrypted_content. The pin is the explicit key id,
+// which both the native path and the HTTP bridge honor. A caller's own key pin wins, and a pinned
+// key that has left the pool is dropped so the turn selects a key as usual.
+func (h *WSResponsesHandler) pinSessionKey(ctx *schemas.BifrostContext, session *bfws.Session, req *schemas.BifrostResponsesRequest) {
+	keyID := session.ResponsesKey(req.Provider)
+	if keyID == "" {
+		return
+	}
+	if id, _ := ctx.Value(schemas.BifrostContextKeyAPIKeyID).(string); strings.TrimSpace(id) != "" {
+		return
+	}
+	if name, _ := ctx.Value(schemas.BifrostContextKeyAPIKeyName).(string); strings.TrimSpace(name) != "" {
+		return
+	}
+	ctx.SetValue(schemas.BifrostContextKeyAPIKeyID, keyID)
+	if _, err := h.client.SelectKeyForProviderRequestType(ctx, schemas.WebSocketResponsesRequest, req.Provider, req.Model); err != nil {
+		ctx.ClearValue(schemas.BifrostContextKeyAPIKeyID)
+	}
+}
+
+// isServedResponsesTurn reports whether a terminal event means a key produced the turn's output.
+func isServedResponsesTurn(t schemas.ResponsesStreamResponseType) bool {
+	return t == schemas.ResponsesStreamResponseTypeCompleted || t == schemas.ResponsesStreamResponseTypeIncomplete
+}
+
+// isEncryptedReasoningRefusalEvent reports whether an upstream WS event is OpenAI's refusal of a
+// replayed reasoning item it cannot decrypt for this key's organization.
+func isEncryptedReasoningRefusalEvent(data []byte) bool {
+	return providerUtils.GetJSONField(data, "error.code").String() == "invalid_encrypted_content"
 }
 
 // tryNativeWSUpstream attempts to forward the event to a native WS upstream connection.
@@ -375,13 +431,8 @@ func (h *WSResponsesHandler) tryNativeWSUpstream(
 		}
 		llmSpanEnded = true
 		tracer.PopulateLLMResponseAttributes(ctx, llmSpanHandle, resp, bifrostErr)
+		// Error attributes are stamped by PopulateLLMResponseAttributes above.
 		if bifrostErr != nil {
-			if bifrostErr.Error != nil {
-				tracer.SetAttribute(llmSpanHandle, "error", bifrostErr.Error.Message)
-			}
-			if bifrostErr.StatusCode != nil {
-				tracer.SetAttribute(llmSpanHandle, "status_code", *bifrostErr.StatusCode)
-			}
 			tracer.EndSpan(llmSpanHandle, schemas.SpanStatusError, "request failed")
 			return
 		}
@@ -446,6 +497,14 @@ func (h *WSResponsesHandler) tryNativeWSUpstream(
 			logger.Warn("failed to clear upstream WS read deadline for %s: %v", req.Provider, err)
 		}
 
+		// Nothing has reached the client yet, so a refused replay of encrypted reasoning goes to
+		// the HTTP bridge, whose retry loop strips encrypted_content and retries once.
+		if !forwardedAny && isEncryptedReasoningRefusalEvent(data) {
+			logger.Warn("upstream WS refused replayed encrypted reasoning for %s/%s, retrying through the HTTP bridge", req.Provider, req.Model)
+			closeUpstream()
+			return false
+		}
+
 		streamResp := parseUpstreamWSEvent(data, req.Provider, req.Model)
 		isTerminal := streamResp != nil && isTerminalStreamType(streamResp.Type)
 
@@ -494,6 +553,9 @@ func (h *WSResponsesHandler) tryNativeWSUpstream(
 		if isTerminal {
 			session.MarkResponsesTurnCompleted()
 			h.trackResponseID(session, data)
+			if isServedResponsesTurn(streamResp.Type) {
+				session.SetResponsesKey(req.Provider, key.ID)
+			}
 			return true
 		}
 	}
@@ -580,7 +642,12 @@ func writeWSShortCircuitResponse(session *bfws.Session, resp *schemas.BifrostRes
 func parseUpstreamWSEvent(data []byte, provider schemas.ModelProvider, model string) *schemas.BifrostResponsesStreamResponse {
 	var streamResp schemas.BifrostResponsesStreamResponse
 	if err := sonic.Unmarshal(data, &streamResp); err != nil {
-		return nil
+		// shell_call_output_content.delta sends `delta` as an object, which the string
+		// field rejects; the event is relayed either way, this keeps it in the logs.
+		streamResp = schemas.BifrostResponsesStreamResponse{}
+		if err := schemas.UnmarshalResponsesStreamObjectDelta(data, &streamResp); err != nil {
+			return nil
+		}
 	}
 	if streamResp.Type == "" {
 		return nil
@@ -773,39 +840,58 @@ func (h *WSResponsesHandler) convertEventToRequest(event *schemas.WebSocketRespo
 	}, nil
 }
 
-// createBifrostContextFromAuth builds a BifrostContext from the auth headers captured during upgrade.
-func createBifrostContextFromAuth(handlerStore lib.HandlerStore, auth *authHeaders) (*schemas.BifrostContext, context.CancelFunc) {
+// createBifrostContextFromHeaders builds a BifrostContext from captured session setup headers.
+func createBifrostContextFromHeaders(handlerStore lib.HandlerStore, setupHeaders *sessionHeaders) (*schemas.BifrostContext, context.CancelFunc) {
 	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
-	if auth == nil {
+	if setupHeaders == nil {
 		return ctx, cancel
 	}
 
-	if sessionID := lib.ParseSessionIDFromBaggage(auth.baggage); sessionID != "" {
+	if len(setupHeaders.headers) > 0 {
+		requestHeaders := make(map[string]string, len(setupHeaders.headers))
+		for name, values := range setupHeaders.headers {
+			if len(values) > 0 {
+				requestHeaders[name] = values[len(values)-1]
+			}
+		}
+		ctx.SetValue(schemas.BifrostContextKeyRequestHeaders, requestHeaders)
+	}
+
+	if sessionID := lib.ParseSessionIDFromBaggage(setupHeaders.baggage); sessionID != "" {
 		ctx.SetValue(schemas.BifrostContextKeyParentRequestID, sessionID)
 	}
 
-	if auth.virtualKey != "" {
-		ctx.SetValue(schemas.BifrostContextKeyVirtualKey, auth.virtualKey)
+	if setupHeaders.virtualKey != "" {
+		ctx.SetValue(schemas.BifrostContextKeyVirtualKey, setupHeaders.virtualKey)
 	}
 
 	// Handle Bearer token with sk-bf- prefix (virtual key via Authorization header)
-	if auth.authorization != "" {
-		if strings.HasPrefix(auth.authorization, "Bearer ") {
-			token := strings.TrimPrefix(auth.authorization, "Bearer ")
+	if setupHeaders.authorization != "" {
+		if strings.HasPrefix(setupHeaders.authorization, "Bearer ") {
+			token := strings.TrimPrefix(setupHeaders.authorization, "Bearer ")
 			if strings.HasPrefix(token, "sk-bf-") {
 				ctx.SetValue(schemas.BifrostContextKeyVirtualKey, token)
 			}
 		}
 	}
-	if auth.apiKey != "" {
-		if strings.HasPrefix(auth.apiKey, "sk-bf-") {
-			ctx.SetValue(schemas.BifrostContextKeyVirtualKey, auth.apiKey)
+	if setupHeaders.apiKey != "" {
+		if strings.HasPrefix(setupHeaders.apiKey, "sk-bf-") {
+			ctx.SetValue(schemas.BifrostContextKeyVirtualKey, setupHeaders.apiKey)
 		}
 	}
-	if auth.googAPIKey != "" {
-		if strings.HasPrefix(auth.googAPIKey, "sk-bf-") {
-			ctx.SetValue(schemas.BifrostContextKeyVirtualKey, auth.googAPIKey)
+	if setupHeaders.googAPIKey != "" {
+		if strings.HasPrefix(setupHeaders.googAPIKey, "sk-bf-") {
+			ctx.SetValue(schemas.BifrostContextKeyVirtualKey, setupHeaders.googAPIKey)
 		}
+	}
+	// The caller's own provider key, under the same gate as on HTTP, set before the identity
+	// settles so governance sees a resolved credential.
+	var directKey string
+	if v := setupHeaders.headers["x-bf-direct-key"]; len(v) > 0 {
+		directKey = v[0]
+	}
+	if key, ok := lib.DirectKeyFromHeaders(handlerStore, directKey, setupHeaders.authorization, setupHeaders.apiKey, setupHeaders.googAPIKey); ok {
+		ctx.SetValue(schemas.BifrostContextKeyDirectKey, key)
 	}
 	// The headers captured at upgrade are all this connection will ever present, so the identity is
 	// settled here the way the HTTP path settles it, a connection that presented nothing included:
@@ -818,7 +904,7 @@ func createBifrostContextFromAuth(handlerStore lib.HandlerStore, auth *authHeade
 		matcher = handlerStore.GetHeaderMatcher()
 	}
 	extraHeaders := make(map[string][]string)
-	for k, values := range auth.headers {
+	for k, values := range setupHeaders.headers {
 		for _, v := range values {
 			switch {
 			case k == "x-bf-vk":
@@ -941,6 +1027,10 @@ func (h *WSResponsesHandler) executeHTTPBridge(
 				chunk.BifrostResponsesStreamResponse.Response.ID != nil &&
 				*chunk.BifrostResponsesStreamResponse.Response.ID != "" {
 				session.SetLastResponseID(*chunk.BifrostResponsesStreamResponse.Response.ID)
+			}
+			if keyID, _ := ctx.Value(schemas.BifrostContextKeySelectedKeyID).(string); keyID != "" &&
+				isServedResponsesTurn(chunk.BifrostResponsesStreamResponse.Type) {
+				session.SetResponsesKey(req.Provider, keyID)
 			}
 		}
 	}

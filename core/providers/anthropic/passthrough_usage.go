@@ -8,19 +8,36 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-// ExtractAnthropicPassthroughUsage extracts usage from a passthrough response payload. path is
-// the stripped request path; body is a single SSE data event (streaming) or the full response
-// body (non-streaming). Streaming /messages usage is assembled per-event by
-// AnthropicPassthroughStreamUsage, so here /messages only ever sees a plain JSON body.
-func ExtractAnthropicPassthroughUsage(path string, _, body []byte) *schemas.BifrostPassthroughUsage {
+// ClassifyPassthroughPath maps an Anthropic passthrough path to the Bifrost request type it
+// addresses: /messages is a Responses-shaped request (Bifrost routes Anthropic Messages through
+// the Responses schema), /messages/count_tokens is a token count and /complete a legacy text
+// completion. A query string is ignored; anything else returns "". Usage extraction and passthrough
+// log parsing both dispatch on this.
+func ClassifyPassthroughPath(path string) schemas.RequestType {
 	if idx := strings.IndexByte(path, '?'); idx >= 0 {
 		path = path[:idx]
 	}
 
 	switch {
 	case strings.HasSuffix(path, "/messages"):
-		return extractAnthropicMessagesUsage(body)
+		return schemas.ResponsesRequest
+	case strings.HasSuffix(path, "/messages/count_tokens"):
+		return schemas.CountTokensRequest
 	case strings.HasSuffix(path, "/complete"):
+		return schemas.TextCompletionRequest
+	}
+	return ""
+}
+
+// ExtractAnthropicPassthroughUsage extracts usage from a passthrough response payload. path is
+// the stripped request path; body is a single SSE data event (streaming) or the full response
+// body (non-streaming). Streaming /messages usage is assembled per-event by
+// AnthropicPassthroughStreamUsage, so here /messages only ever sees a plain JSON body.
+func ExtractAnthropicPassthroughUsage(path string, reqBody, body []byte) *schemas.BifrostPassthroughUsage {
+	switch ClassifyPassthroughPath(path) {
+	case schemas.ResponsesRequest:
+		return extractAnthropicMessagesUsageForRequest(reqBody, body)
+	case schemas.TextCompletionRequest:
 		return extractAnthropicCompleteUsage(body)
 	}
 	return nil
@@ -38,11 +55,28 @@ func ExtractAnthropicMessagesUsage(body []byte) *schemas.BifrostPassthroughUsage
 	return extractAnthropicMessagesUsage(body)
 }
 
+// convertAnthropicUsageIterations converts usage.iterations[] to the neutral per-pass form, which is
+// what prices the passes billed at another model's rate (advisor). nil when there are none.
+func convertAnthropicUsageIterations(iterations []AnthropicUsage) []schemas.ResponsesResponseUsage {
+	if len(iterations) == 0 {
+		return nil
+	}
+	out := make([]schemas.ResponsesResponseUsage, 0, len(iterations))
+	for i := range iterations {
+		if converted := ConvertAnthropicUsageToBifrostUsage(&iterations[i]); converted != nil {
+			out = append(out, *converted)
+		}
+	}
+	return out
+}
+
 // buildAnthropicPassthroughUsage converts AnthropicUsage directly into BifrostPassthroughUsage.
+// The per-pass breakdown is kept alongside the folded totals, since folding drops it.
 func buildAnthropicPassthroughUsage(au *AnthropicUsage) *schemas.BifrostPassthroughUsage {
 	if au == nil {
 		return nil
 	}
+	iterations := au.Iterations
 	au = billableAnthropicUsage(au)
 	totalInput := au.InputTokens + au.CacheReadInputTokens + au.CacheCreationInputTokens
 	total := totalInput + au.OutputTokens
@@ -75,6 +109,7 @@ func buildAnthropicPassthroughUsage(au *AnthropicUsage) *schemas.BifrostPassthro
 		usage.CompletionTokensDetails = &schemas.ChatCompletionTokensDetails{
 			NumSearchQueries: &n,
 		}
+		usage.ToolUsage = &schemas.ToolUsage{WebSearch: &schemas.WebSearchToolUsage{NumRequests: n}}
 	}
 
 	// Extended-thinking tokens are already inside au.OutputTokens, so CompletionTokens
@@ -86,7 +121,7 @@ func buildAnthropicPassthroughUsage(au *AnthropicUsage) *schemas.BifrostPassthro
 		usage.CompletionTokensDetails.ReasoningTokens = au.OutputTokensDetails.ThinkingTokens
 	}
 
-	u := &schemas.BifrostPassthroughUsage{LLMUsage: usage}
+	u := &schemas.BifrostPassthroughUsage{LLMUsage: usage, Iterations: convertAnthropicUsageIterations(iterations)}
 	if au.ServiceTier != nil {
 		t := MapAnthropicServiceTierToBifrost(*au.ServiceTier)
 		u.ServiceTier = &t
@@ -105,9 +140,18 @@ func buildAnthropicPassthroughUsage(au *AnthropicUsage) *schemas.BifrostPassthro
 // message.usage (input, cache tokens incl. 5m/1h split, service_tier), while message_delta has
 // it at the top level (final output). Taking the max of each field across events combines them
 // order-independently — the same merge the native Anthropic stream does (anthropic.go).
+//
+// usage.iterations[] is kept apart from the folded total: it is cumulative (the latest list names
+// every pass so far, so it replaces the previous one), and folding it into combined again would
+// count compaction twice.
 type AnthropicPassthroughStreamUsage struct {
-	combined AnthropicUsage
-	seen     bool
+	// RequestBody is the upstream request, read to decide whether the stream's container is billable.
+	RequestBody []byte
+
+	combined   AnthropicUsage
+	iterations []AnthropicUsage
+	container  *AnthropicResponseContainer
+	seen       bool
 }
 
 // ObserveEvent merges one framed SSE data payload's usage into the running total and returns
@@ -116,6 +160,9 @@ func (a *AnthropicPassthroughStreamUsage) ObserveEvent(event []byte) *schemas.Bi
 	var evt AnthropicStreamEvent
 	if err := sonic.Unmarshal(event, &evt); err != nil {
 		return a.usage()
+	}
+	if evt.Delta != nil && evt.Delta.Container != nil {
+		a.container = evt.Delta.Container
 	}
 	// message_delta carries usage at the top level; message_start nests it under message.usage.
 	var u *AnthropicUsage
@@ -128,6 +175,9 @@ func (a *AnthropicPassthroughStreamUsage) ObserveEvent(event []byte) *schemas.Bi
 		return a.usage()
 	}
 
+	if len(u.Iterations) > 0 {
+		a.iterations = u.Iterations
+	}
 	u = billableAnthropicUsage(u)
 
 	a.seen = true
@@ -182,13 +232,25 @@ func (a *AnthropicPassthroughStreamUsage) usage() *schemas.BifrostPassthroughUsa
 	if !a.seen {
 		return nil
 	}
-	return buildAnthropicPassthroughUsage(&a.combined)
+	u := buildAnthropicPassthroughUsage(&a.combined)
+	if u != nil {
+		u.Iterations = convertAnthropicUsageIterations(a.iterations)
+		if u.LLMUsage != nil {
+			recordAnthropicContainerSession(&u.LLMUsage.ToolUsage, a.RequestBody, a.container)
+		}
+	}
+	return u
 }
 
 // extractAnthropicMessagesUsage parses usage from a /v1/messages response body. Streaming usage
 // is assembled per-event by AnthropicPassthroughStreamUsage, so this only sees a plain JSON
 // (non-streaming) body, which carries the full usage block at the top level.
 func extractAnthropicMessagesUsage(body []byte) *schemas.BifrostPassthroughUsage {
+	return extractAnthropicMessagesUsageForRequest(nil, body)
+}
+
+// extractAnthropicMessagesUsageForRequest also reads reqBody to record a billable container session.
+func extractAnthropicMessagesUsageForRequest(reqBody, body []byte) *schemas.BifrostPassthroughUsage {
 	if len(body) == 0 {
 		return nil
 	}
@@ -196,7 +258,11 @@ func extractAnthropicMessagesUsage(body []byte) *schemas.BifrostPassthroughUsage
 	if err := sonic.Unmarshal(body, &resp); err != nil || resp.Usage == nil {
 		return nil
 	}
-	return buildAnthropicPassthroughUsage(resp.Usage)
+	u := buildAnthropicPassthroughUsage(resp.Usage)
+	if u != nil && u.LLMUsage != nil {
+		recordAnthropicContainerSession(&u.LLMUsage.ToolUsage, reqBody, resp.Container)
+	}
+	return u
 }
 
 // extractAnthropicCompleteUsage handles the legacy /v1/complete endpoint.

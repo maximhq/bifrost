@@ -36,14 +36,20 @@ const hasJq = () => {
 // piped straight to a file descriptor rather than captured, since the result is routinely
 // over 100MB and would blow execFileSync's maxBuffer.
 //
+// Always `-c`. jq pretty-prints by default, and a pretty-printed Buffer array puts every
+// element on its own indented line: "        255,\n" is ~13 bytes where compact "255," is 4.
+// The merge program already caps each stream at 20000 elements, but without -c a full sweep
+// still came out at 686MB (32M lines) against 235MB compact - the "slimmed" sidecar was the
+// same size as the original, and every reader died on the 512MB string cap regardless.
+//
 // Writes via a .partial sibling and renames, so a jq run that dies midway (or a reader
 // racing a `make` invocation writing the same sidecar) can never leave a truncated file
 // sitting at the final name where the next reader would treat it as complete.
-const sanitizeTo = (src, dest) => {
+export const sanitizeTo = (src, dest) => {
   const partial = `${dest}.partial`;
   const fd = openSync(partial, "w");
   try {
-    execFileSync("jq", ["-s", "-f", MERGE_PROGRAM, src], { stdio: ["ignore", fd, "inherit"] });
+    execFileSync("jq", ["-c", "-s", "-f", MERGE_PROGRAM, src], { stdio: ["ignore", fd, "inherit"] });
   } catch (err) {
     closeSync(fd);
     try { unlinkSync(partial); } catch { /* best effort */ }

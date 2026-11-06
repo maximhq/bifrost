@@ -1,6 +1,10 @@
 package configstore
 
 import (
+	"github.com/bytedance/sonic"
+	"github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"testing"
 )
 
@@ -83,4 +87,145 @@ func TestGenerateFrameworkConfigHash_NilLiveIntervalPreservesLegacyDigest(t *tes
 			t.Fatal("expected setting live_models_sync_interval to change the digest; a config.json edit would otherwise go undetected")
 		}
 	})
+}
+
+// ruleWithFallbacks decodes a routing fixture through the persisted fallback wire format.
+func ruleWithFallbacks(t *testing.T, fallbacksJSON string) tables.TableRoutingRule {
+	t.Helper()
+	var parsed []tables.RoutingFallback
+	require.NoError(t, sonic.Unmarshal([]byte(fallbacksJSON), &parsed))
+	return tables.TableRoutingRule{
+		ID:              "rule-1",
+		Name:            "route gpt-4o",
+		CelExpression:   `model == "gpt-4o"`,
+		Scope:           "global",
+		Targets:         []tables.TableRoutingTarget{{RuleID: "rule-1", Weight: 1}},
+		ParsedFallbacks: parsed,
+	}
+}
+
+// TestGenerateRoutingRuleHash_LegacyFallbacksPreserveByteShape proves a config-origin rule with legacy-string fallbacks still hashes to its pre-change digest.
+func TestGenerateRoutingRuleHash_LegacyFallbacksPreserveByteShape(t *testing.T) {
+	for _, fallbacksJSON := range []string{
+		`["openai/gpt-4o"]`,
+		`["azure/"]`,
+		`["anthropic"]`,
+		`["openai/gpt-4o","azure/","vertex/gemini-2.5-pro"]`,
+	} {
+		t.Run(fallbacksJSON, func(t *testing.T) {
+			rule := ruleWithFallbacks(t, fallbacksJSON)
+
+			fromParsed, err := GenerateRoutingRuleHash(rule)
+			require.NoError(t, err)
+
+			// The DB-origin path hashes the raw column verbatim; the config-origin path marshals ParsedFallbacks, and the two must agree.
+			raw := fallbacksJSON
+			dbRule := rule
+			dbRule.Fallbacks = &raw
+			fromRaw, err := GenerateRoutingRuleHash(dbRule)
+			require.NoError(t, err)
+
+			assert.Equal(t, fromRaw, fromParsed, "config-origin hash drifted from the DB-origin hash")
+		})
+	}
+}
+
+// TestGenerateRoutingRuleHash_PinnedFallbackChangesHash detects changes to a configured key pin.
+func TestGenerateRoutingRuleHash_PinnedFallbackChangesHash(t *testing.T) {
+	unpinned, err := GenerateRoutingRuleHash(ruleWithFallbacks(t, `["azure/gpt-4o"]`))
+	require.NoError(t, err)
+
+	pinned, err := GenerateRoutingRuleHash(ruleWithFallbacks(t, `[{"provider":"azure","model":"gpt-4o","key_id":"k1"}]`))
+	require.NoError(t, err)
+
+	assert.NotEqual(t, unpinned, pinned, "pinning a key must change the rule hash")
+}
+
+// TestGenerateRoutingRuleHash_FallbackFormsStableAcrossRestart pins that the config-origin and
+// DB-origin hashes agree and that saving and reloading a rule does not change its hash or stored
+// column. A drift here rewrites the rule from config.json on every boot.
+func TestGenerateRoutingRuleHash_FallbackFormsStableAcrossRestart(t *testing.T) {
+	for _, fallbacksJSON := range []string{
+		`["anthropic/claude-sonnet-4"]`,
+		`["azure/"]`,
+		`[{"provider":"vertex","model":"gemini-2.5-pro","key_id":"k1"}]`,
+		`[{"provider":"vertex","model":"","key_id":"k1"}]`,
+		`["openai/gpt-4o",{"provider":"vertex","model":"gemini-2.5-pro","key_id":"k1"},"azure/"]`,
+	} {
+		t.Run(fallbacksJSON, func(t *testing.T) {
+			rule := ruleWithFallbacks(t, fallbacksJSON)
+			fromConfig, err := GenerateRoutingRuleHash(rule)
+			require.NoError(t, err)
+
+			saved := rule
+			require.NoError(t, saved.BeforeSave(nil))
+			require.NotNil(t, saved.Fallbacks)
+			fromDB, err := GenerateRoutingRuleHash(saved)
+			require.NoError(t, err)
+			assert.Equal(t, fromConfig, fromDB, "config-origin and DB-origin hashes disagree")
+
+			reloaded := tables.TableRoutingRule{ID: saved.ID, Name: saved.Name, CelExpression: saved.CelExpression, Scope: saved.Scope, Targets: saved.Targets, Fallbacks: saved.Fallbacks}
+			require.NoError(t, reloaded.AfterFind(nil))
+			require.NoError(t, reloaded.BeforeSave(nil))
+			assert.Equal(t, *saved.Fallbacks, *reloaded.Fallbacks, "re-saving a reloaded rule changed the stored column")
+			afterRestart, err := GenerateRoutingRuleHash(reloaded)
+			require.NoError(t, err)
+			assert.Equal(t, fromConfig, afterRestart, "hash changed across a restart")
+		})
+	}
+}
+
+// TestGenerateRoutingRuleHash_FallbackIdentity pins which fallback edits change the hash: the key
+// pin, provider and model do; spelling an unpinned entry as an object instead of a string does not.
+func TestGenerateRoutingRuleHash_FallbackIdentity(t *testing.T) {
+	hash := func(fallbacksJSON string) string {
+		h, err := GenerateRoutingRuleHash(ruleWithFallbacks(t, fallbacksJSON))
+		require.NoError(t, err)
+		return h
+	}
+	base := hash(`[{"provider":"vertex","model":"m","key_id":"k1"}]`)
+	assert.NotEqual(t, base, hash(`[{"provider":"vertex","model":"m","key_id":"k2"}]`), "a different key pin must change the hash")
+	assert.NotEqual(t, base, hash(`[{"provider":"vertex","model":"other","key_id":"k1"}]`), "a different model must change the hash")
+	assert.NotEqual(t, base, hash(`[{"provider":"azure","model":"m","key_id":"k1"}]`), "a different provider must change the hash")
+	assert.Equal(t, hash(`["vertex/m"]`), hash(`[{"provider":"vertex","model":"m"}]`), "an unpinned object must hash like its string form")
+	assert.Equal(t, hash(`["anthropic/"]`), hash(`[{"provider":"anthropic"}]`), "an unpinned provider-only object must hash like its string form")
+}
+
+// TestGenerateRoutingRuleHash_IDDigestIsPinned pins the routing rule hash for a rule with an id
+// and for one without. config.json rules without an id are hashed with ID "" (never with the ID
+// they adopt), and rules with an id keep the hash they had before ids became optional, so an
+// upgrade rewrites no stored rule. The literals are hardcoded so a change to the hash input
+// fails here instead of resyncing every rule on first boot.
+func TestGenerateRoutingRuleHash_IDDigestIsPinned(t *testing.T) {
+	scopeID := "team-1"
+	fallbacks := `["anthropic/claude-sonnet-4"]`
+	query := `{"combinator":"and","rules":[]}`
+	enabled := false
+	ttft := 1500
+	rule := tables.TableRoutingRule{
+		ID:            "rule-1",
+		Name:          "primary",
+		Description:   "route gpt-4o",
+		Enabled:       &enabled,
+		CelExpression: `model == "gpt-4o"`,
+		Targets: []tables.TableRoutingTarget{
+			{Provider: strPtr("openai"), Model: strPtr("gpt-4o"), KeyID: strPtr("k1"), Weight: 0.7, TTFTTimeoutMs: &ttft},
+			{Provider: strPtr("azure"), Model: strPtr("gpt-4o"), Weight: 0.3},
+		},
+		Fallbacks: &fallbacks,
+		Query:     &query,
+		Scope:     "team",
+		ScopeID:   &scopeID,
+		ChainRule: true,
+		Priority:  7,
+	}
+
+	withID, err := GenerateRoutingRuleHash(rule)
+	require.NoError(t, err)
+	assert.Equal(t, "3635a3f113fdea6c5ed4fdf419403a05c6e5f5ae75db1adceb0a4f7db2699680", withID)
+
+	rule.ID = ""
+	withoutID, err := GenerateRoutingRuleHash(rule)
+	require.NoError(t, err)
+	assert.Equal(t, "f21939c285b4db30a64394e8b15816065a3ffd685ed8d1976ebcaf4a205cbf1c", withoutID)
 }

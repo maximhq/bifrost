@@ -6,6 +6,7 @@ package runware
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -330,6 +331,18 @@ func (provider *RunwareProvider) handleImageInference(ctx *schemas.BifrostContex
 		return nil, bifrostErr
 	}
 
+	// A sync task still running at Runware's 120s cutoff comes back as a processing row and
+	// continues as an async task, so it is polled to completion rather than resent.
+	if taskUUID := processingRunwareTaskUUID(runwareResp.Data); taskUUID != "" {
+		pollStart := time.Now()
+		polledResp, polledBody, polledRaw, bifrostErr := provider.pollRunwareTask(ctx, key, taskUUID, sendBackRawResponse)
+		latency += time.Since(pollStart)
+		if bifrostErr != nil {
+			return nil, providerUtils.EnrichError(ctx, bifrostErr, body, nil, sendBackRawRequest, sendBackRawResponse, latency)
+		}
+		runwareResp, respBody, rawResponse = *polledResp, polledBody, polledRaw
+	}
+
 	// Convert to Bifrost response
 	bifrostResp, bifrostErr := ToBifrostImageGenerationResponse(&runwareResp)
 	if bifrostErr != nil {
@@ -349,9 +362,59 @@ func (provider *RunwareProvider) handleImageInference(ctx *schemas.BifrostContex
 	return bifrostResp, nil
 }
 
+// runwarePollingInterval is the interval between getResponse polls for a sync task that outlived
+// Runware's 120s window.
+const runwarePollingInterval = 2 * time.Second
+
+// pollRunwareTask polls a task with getResponse until no row is still processing, bounded by the
+// provider's request timeout. getResponse returns the task's complete result set, including rows
+// that already came back on the sync response, so its final reply replaces that response outright.
+func (provider *RunwareProvider) pollRunwareTask(ctx *schemas.BifrostContext, key schemas.Key, taskUUID string, sendBackRawResponse bool) (*RunwareResponse, []byte, interface{}, *schemas.BifrostError) {
+	jsonData, err := providerUtils.MarshalSorted(RunwareGetResponseRequest{TaskType: taskTypeGetResponse, TaskUUID: taskUUID})
+	if err != nil {
+		return nil, nil, nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
+	}
+
+	pollCtx, cancel := schemas.NewBifrostContextWithTimeout(ctx, time.Duration(provider.networkConfig.DefaultRequestTimeoutInSeconds)*time.Second)
+	defer cancel()
+
+	ticker := time.NewTicker(runwarePollingInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-pollCtx.Done():
+			if errors.Is(pollCtx.Err(), context.Canceled) {
+				return nil, nil, nil, providerUtils.NewBifrostOperationError(schemas.ErrRequestCancelled, pollCtx.Err())
+			}
+			return nil, nil, nil, providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, fmt.Errorf("runware task %s is still processing", taskUUID))
+		case <-ticker.C:
+		}
+
+		_, respBody, _, bifrostErr := provider.sendTaskArray(pollCtx, key, jsonData)
+		if bifrostErr != nil {
+			return nil, nil, nil, bifrostErr
+		}
+
+		var polledResp RunwareResponse
+		_, rawResponse, bifrostErr := providerUtils.HandleProviderResponseCtx(pollCtx, respBody, &polledResp, nil, false, sendBackRawResponse)
+		if bifrostErr != nil {
+			return nil, nil, nil, bifrostErr
+		}
+		if processingRunwareTaskUUID(polledResp.Data) == "" {
+			return &polledResp, respBody, rawResponse, nil
+		}
+	}
+}
+
 // Rerank is not supported by the Runware provider.
 func (provider *RunwareProvider) Rerank(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostRerankRequest) (*schemas.BifrostRerankResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.RerankRequest, provider.GetProviderKey())
+}
+
+// Decision is not supported by the Runware provider.
+func (provider *RunwareProvider) Decision(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostDecisionRequest) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.DecisionRequest, provider.GetProviderKey())
 }
 
 // OCR is not supported by the Runware provider.
@@ -698,6 +761,11 @@ func (provider *RunwareProvider) CountTokens(_ *schemas.BifrostContext, _ schema
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.CountTokensRequest, provider.GetProviderKey())
 }
 
+// ModelRetrieve is not supported by the Runware provider.
+func (provider *RunwareProvider) ModelRetrieve(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostModelRetrieveRequest) (*schemas.BifrostModelRetrieveResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.ModelRetrieveRequest, provider.GetProviderKey())
+}
+
 // Compaction is not supported by the Runware provider.
 func (provider *RunwareProvider) Compaction(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostCompactionRequest) (*schemas.BifrostCompactionResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.CompactionRequest, provider.GetProviderKey())
@@ -752,17 +820,18 @@ func (provider *RunwareProvider) ContainerFileDelete(_ *schemas.BifrostContext, 
 // single endpoint whose base URL already includes the /v1 version segment, so a leading /v1 in the
 // passthrough path is stripped to avoid duplicating it — both /runware_passthrough and
 // /runware_passthrough/v1 therefore map to the base endpoint.
-func (provider *RunwareProvider) buildPassthroughURL(req *schemas.BifrostPassthroughRequest) string {
+func (provider *RunwareProvider) buildPassthroughURL(req *schemas.BifrostPassthroughRequest) (string, error) {
 	baseURL := provider.networkConfig.BaseURL
 	if req.UpstreamURL != "" {
-		baseURL = strings.TrimRight(req.UpstreamURL, "/")
+		baseURL = req.UpstreamURL
 	}
-	path := strings.TrimPrefix(req.Path, "/v1")
-	url := baseURL + path
-	if req.RawQuery != "" {
-		url += "?" + req.RawQuery
+	// Collapse a leading /v1 only as a whole segment: /v1 and /v1/... map onto the base
+	// endpoint, while /v1beta/... merely shares the prefix and is forwarded as sent.
+	path := req.Path
+	if path == "/v1" || strings.HasPrefix(path, "/v1/") {
+		path = strings.TrimPrefix(path, "/v1")
 	}
-	return url
+	return providerUtils.BuildPassthroughURL(baseURL, path, req.RawQuery)
 }
 
 // Passthrough forwards a raw request to Runware's unified endpoint and returns the untouched
@@ -778,7 +847,10 @@ func (provider *RunwareProvider) Passthrough(
 	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
 	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
 
-	url := provider.buildPassthroughURL(req)
+	url, err := provider.buildPassthroughURL(req)
+	if err != nil {
+		return nil, providerUtils.NewBifrostBadRequestError(err.Error())
+	}
 
 	fasthttpReq := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()

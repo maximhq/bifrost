@@ -1,0 +1,15 @@
+{
+  "$schema": "https://www.getbifrost.ai/schema",
+  "client": {
+    "enable_logging": false,
+    "mcp_enable_temp_token_auth": true
+  },
+  "governance": {
+    "auth_config": {
+      "is_enabled": true,
+      "admin_username": "path-auth-test",
+      "admin_password": "local-path-auth-regression-only"
+    }
+  },
+  "providers": {}
+}

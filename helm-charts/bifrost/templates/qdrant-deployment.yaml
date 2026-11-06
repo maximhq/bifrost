@@ -61,5 +61,17 @@ spec:
           {{- else }}
           emptyDir: {}
           {{- end }}
+      {{- with .Values.vectorStore.qdrant.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.vectorStore.qdrant.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.vectorStore.qdrant.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
 {{- end }}
 

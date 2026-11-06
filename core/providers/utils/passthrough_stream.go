@@ -26,7 +26,14 @@ type PassthroughStreamParams struct {
 	// appears in a framed event — for providers (Gemini/Vertex) that emit it before the HTTP
 	// body closes.
 	UseTerminalDetector bool
-	Logger              schemas.Logger
+	// EndsStream finalizes the stream early on a provider-specific end event, for clients that
+	// hang up on that event before the upstream body closes (Codex on response.completed).
+	EndsStream func(event []byte) bool
+	// SkipFraming forwards the bytes without scanning them for SSE frames, for binary or otherwise
+	// unframed streams (an AWS event stream) where there is no usage to observe and a "\n\n" byte
+	// pair means nothing.
+	SkipFraming bool
+	Logger      schemas.Logger
 	// HasUsage is an optional cheap gjson presence check: it returns true only when an event
 	// carries a usage field worth parsing. When set, Observe is skipped (no full unmarshal) for
 	// events that fail it — the common case on long streams (content deltas, pings). When nil,
@@ -37,6 +44,9 @@ type PassthroughStreamParams struct {
 	// attached to the final chunk. Implementations populate usage directly from the event —
 	// no full response body is retained.
 	Observe func(event []byte) *schemas.BifrostPassthroughUsage
+	// Finalize, when set, completes the final response of a successful stream once it ends: it may
+	// name the model the stream reported running, or move the observed usage onto a provider job.
+	Finalize func(resp *schemas.BifrostPassthroughResponse)
 }
 
 // StreamPassthrough runs the shared passthrough streaming loop. It forwards each raw upstream
@@ -51,6 +61,31 @@ func StreamPassthrough(
 	postHookRunner schemas.PostHookRunner,
 	postHookSpanFinalizer func(context.Context),
 	resp *fasthttp.Response,
+	rawBodyStream io.Reader,
+	params PassthroughStreamParams,
+) chan *schemas.BifrostStreamChunk {
+	return streamPassthrough(ctx, postHookRunner, postHookSpanFinalizer, func() { ReleaseStreamingResponse(ctx, resp) }, rawBodyStream, params)
+}
+
+// StreamPassthroughHTTP is StreamPassthrough for providers built on net/http (Bedrock): the response
+// body is closed instead of a fasthttp response being released, and everything else - idle timeout,
+// cancellation, byte-exact forwarding, post hooks - is the same loop.
+func StreamPassthroughHTTP(
+	ctx *schemas.BifrostContext,
+	postHookRunner schemas.PostHookRunner,
+	postHookSpanFinalizer func(context.Context),
+	body io.ReadCloser,
+	params PassthroughStreamParams,
+) chan *schemas.BifrostStreamChunk {
+	return streamPassthrough(ctx, postHookRunner, postHookSpanFinalizer, func() { _ = body.Close() }, body, params)
+}
+
+// streamPassthrough is the loop behind StreamPassthrough and StreamPassthroughHTTP; release frees the upstream body.
+func streamPassthrough(
+	ctx *schemas.BifrostContext,
+	postHookRunner schemas.PostHookRunner,
+	postHookSpanFinalizer func(context.Context),
+	release func(),
 	rawBodyStream io.Reader,
 	params PassthroughStreamParams,
 ) chan *schemas.BifrostStreamChunk {
@@ -73,14 +108,18 @@ func StreamPassthrough(
 			} else if ctx.Err() == context.DeadlineExceeded {
 				HandleStreamTimeout(ctx, postHookRunner, ch, params.Logger, postHookSpanFinalizer, params.CancellationBody)
 			}
-			close(ch)
+			CloseStream(ctx, ch)
 		}()
-		defer ReleaseStreamingResponse(ctx, resp)
+		defer release()
 		defer stopIdleTimeout()
 		defer stopCancellation()
 
 		var pending bytes.Buffer
 		var usage *schemas.BifrostPassthroughUsage
+		// Each forwarded chunk is stamped like a typed stream chunk: accumulators fed by several
+		// plugins de-duplicate on ChunkIndex, and telemetry reads per-chunk latency.
+		chunkIndex := 0
+		lastChunkTime := params.StartTime
 
 		success := params.StatusCode >= 200 && params.StatusCode < 300
 
@@ -93,6 +132,11 @@ func StreamPassthrough(
 				if u := params.Observe(payload); u != nil {
 					usage = u
 				}
+			}
+			if params.EndsStream != nil && params.EndsStream(payload) {
+				// Upstream may keep the body open after the end event; release must abandon it, not drain it.
+				ctx.SetValue(schemas.BifrostContextKeyStreamParkedAfterFinish, true)
+				return true
 			}
 			return params.UseTerminalDetector && isTerminalSSEPayload(payload)
 		}
@@ -166,16 +210,19 @@ func StreamPassthrough(
 
 		finalize := func() {
 			ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+			extraFields.ChunkIndex = chunkIndex
 			extraFields.Latency = time.Since(params.StartTime).Milliseconds()
 			extraFields.RawRequest = params.RawRequest
-			ProcessAndSendResponse(ctx, postHookRunner, &schemas.BifrostResponse{
-				PassthroughResponse: &schemas.BifrostPassthroughResponse{
-					StatusCode:       params.StatusCode,
-					Headers:          params.Headers,
-					ExtraFields:      extraFields,
-					PassthroughUsage: usage,
-				},
-			}, ch, postHookSpanFinalizer)
+			final := &schemas.BifrostPassthroughResponse{
+				StatusCode:       params.StatusCode,
+				Headers:          params.Headers,
+				ExtraFields:      extraFields,
+				PassthroughUsage: usage,
+			}
+			if params.Finalize != nil && success {
+				params.Finalize(final)
+			}
+			ProcessAndSendResponse(ctx, postHookRunner, &schemas.BifrostResponse{PassthroughResponse: final}, ch, postHookSpanFinalizer)
 		}
 
 		buf := make([]byte, 4096)
@@ -184,6 +231,10 @@ func StreamPassthrough(
 			if n > 0 {
 				chunk := make([]byte, n)
 				copy(chunk, buf[:n])
+				extraFields.ChunkIndex = chunkIndex
+				extraFields.Latency = time.Since(lastChunkTime).Milliseconds()
+				lastChunkTime = time.Now()
+				chunkIndex++
 				// Forward the raw chunk to the client unchanged.
 				ProcessAndSendResponse(ctx, postHookRunner, &schemas.BifrostResponse{
 					PassthroughResponse: &schemas.BifrostPassthroughResponse{
@@ -194,10 +245,12 @@ func StreamPassthrough(
 					},
 				}, ch, postHookSpanFinalizer)
 
-				pending.Write(chunk)
-				if drainFrames() {
-					finalize()
-					return
+				if !params.SkipFraming {
+					pending.Write(chunk)
+					if drainFrames() {
+						finalize()
+						return
+					}
 				}
 			}
 			if readErr == io.EOF {

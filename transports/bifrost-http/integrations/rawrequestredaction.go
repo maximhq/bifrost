@@ -2,6 +2,7 @@ package integrations
 
 import (
 	"fmt"
+	"maps"
 	"strconv"
 	"strings"
 
@@ -16,6 +17,9 @@ type rawRequestTextPathCollector func(root gjson.Result, replacements map[string
 // rewriteRawRequestTextFields applies literal replacements only to paths selected by the native integration.
 // It consumes caller-owned rawBody bytes so repeated field updates can reuse the same backing array, then
 // verifies every requested literal was found and every patched value persisted before returning the body.
+// A literal holding JSON escapes also matches its decoded form, which is how a field that carries a JSON
+// document as decoded values (tool-call arguments as an object) holds it. Literals found nowhere are
+// reported as a *schemas.RawRequestLiteralsNotFoundError.
 func rewriteRawRequestTextFields(rawBody []byte, replacements map[string]string, collect rawRequestTextPathCollector) ([]byte, error) {
 	if len(replacements) == 0 {
 		return rawBody, nil
@@ -39,6 +43,21 @@ func rewriteRawRequestTextFields(rawBody []byte, replacements map[string]string,
 		return nil, err
 	}
 
+	// Each literal's decoded form is computed once here, not once per field.
+	effective, decoded := replacements, map[string]string(nil)
+	for literal, replacement := range replacements {
+		form, ok := schemas.DecodedJSONLiteral(literal)
+		if !ok {
+			continue
+		}
+		if decoded == nil {
+			effective, decoded = maps.Clone(replacements), make(map[string]string)
+		}
+		decoded[literal] = form
+		if _, taken := replacements[form]; !taken {
+			effective[form] = replacement
+		}
+	}
 	found := make(map[string]bool, len(replacements))
 	expected := make(map[string]string)
 	seenPaths := make(map[string]struct{}, len(paths))
@@ -55,12 +74,19 @@ func rewriteRawRequestTextFields(rawBody []byte, replacements map[string]string,
 		}
 		original := field.String()
 		for literal := range replacements {
-			if literal != "" && strings.Contains(original, literal) {
+			if literal == "" || found[literal] {
+				continue
+			}
+			if form, ok := decoded[literal]; strings.Contains(original, literal) || ok && strings.Contains(original, form) {
 				found[literal] = true
 			}
 		}
 
-		redacted := schemas.ApplyLiteralReplacements(original, replacements)
+		// Most owned fields hold no literal; skipping them avoids ordering the keys once per field.
+		if !containsRuntimeLiteral(original, effective) {
+			continue
+		}
+		redacted := schemas.ApplyLiteralReplacements(original, effective)
 		if redacted == original {
 			continue
 		}
@@ -74,10 +100,14 @@ func rewriteRawRequestTextFields(rawBody []byte, replacements map[string]string,
 		expected[path] = redacted
 	}
 
+	var missing []string
 	for literal := range replacements {
 		if literal != "" && !found[literal] {
-			return nil, fmt.Errorf("one or more runtime redaction literals were not found in an integration-owned content path")
+			missing = append(missing, literal)
 		}
+	}
+	if len(missing) > 0 {
+		return nil, &schemas.RawRequestLiteralsNotFoundError{Literals: missing}
 	}
 	if !gjson.ValidBytes(patched) {
 		return nil, fmt.Errorf("redacted raw request body is not valid JSON")
@@ -164,6 +194,26 @@ func appendRawRequestJSONLeafPaths(paths *[]string, value gjson.Result, path str
 		}
 		return nil
 	}
+}
+
+// collectRawRequestArgumentStringPaths selects the string values of tool-call arguments carried as a JSON value,
+// never object keys or other value types, so tool metadata and argument structure stay unchanged.
+func collectRawRequestArgumentStringPaths(paths *[]string, value gjson.Result, path string) error {
+	if value.Type == gjson.String {
+		return appendRawRequestStringPath(paths, value, path)
+	}
+	var err error
+	if value.IsObject() || value.IsArray() {
+		value.ForEach(func(key, child gjson.Result) bool {
+			childPath := rawRequestObjectPath(path, key.String())
+			if value.IsArray() {
+				childPath = rawRequestArrayPath(path, int(key.Int()))
+			}
+			err = collectRawRequestArgumentStringPaths(paths, child, childPath)
+			return err == nil
+		})
+	}
+	return err
 }
 
 // containsRuntimeLiteral reports whether text contains any non-empty replacement key.

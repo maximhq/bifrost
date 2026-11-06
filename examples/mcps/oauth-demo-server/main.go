@@ -230,6 +230,8 @@ func handleAuthServerMetadata(w http.ResponseWriter, r *http.Request) {
 		"code_challenge_methods_supported":      []string{"S256"},
 		"token_endpoint_auth_methods_supported": []string{"none"},
 		"scopes_supported":                      []string{"mcp:read", "mcp:write"},
+
+		"authorization_response_iss_parameter_supported": true,
 	})
 }
 
@@ -303,8 +305,8 @@ code{background:#f4f4f4;padding:1px 4px;border-radius:3px;font-size:12px}
 <form method="GET" action="/authorize">
 	{{range $k, $v := .Hidden}}<input type="hidden" name="{{$k}}" value="{{$v}}">{{end}}
 	<label for="user">Username</label>
-	<input type="text" id="user" name="user" value="demo-user" autofocus>
-	<button type="submit">Sign in &amp; approve</button>
+	<input type="text" id="user" name="user" value="demo-user" data-testid="oauth-demo-user-input" autofocus>
+	<button type="submit" data-testid="oauth-demo-signin-btn">Sign in &amp; approve</button>
 </form>
 </body></html>`))
 
@@ -397,6 +399,7 @@ func handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	}
 	rq := redirect.Query()
 	rq.Set("code", code)
+	rq.Set("iss", issuer) // RFC 9207
 	if state != "" {
 		rq.Set("state", state)
 	}
@@ -702,8 +705,20 @@ func protectedDataHandler(ctx context.Context, req mcp.CallToolRequest) (*mcp.Ca
 
 // ─── Wiring ──────────────────────────────────────────────────────────────────
 
+// demoInstructions is returned from the initialize handshake. Named distinctly
+// enough to be unmistakable in an aggregate built from several servers.
+const demoInstructions = "oauth-demo-server policy: call whoami first to confirm which identity the " +
+	"current access token is bound to, and re-check it after any refresh."
+
 func main() {
-	mcpServer := server.NewMCPServer("oauth-demo-server", "1.0.0")
+	// Instructions make this fixture cover a second gap beyond OAuth itself: a
+	// per-user-OAuth client holds no persistent connection, so its instructions are
+	// restored from the config store rather than re-read from the upstream. That
+	// restore path has no other fixture — every other server here is reachable
+	// without auth, which is exactly the case it does NOT exercise.
+	mcpServer := server.NewMCPServer("oauth-demo-server", "1.0.0",
+		server.WithInstructions(demoInstructions),
+	)
 	mcpServer.AddTool(
 		mcp.NewTool("whoami",
 			mcp.WithDescription("Returns the username encoded in the Bearer token. Useful for verifying which identity is bound to the current access token."),

@@ -164,3 +164,20 @@ func (response *CohereListModelsResponse) ToBifrostListModelsResponse(providerKe
 
 	return bifrostResponse
 }
+
+// ToBifrostModelRetrieveResponse converts a Cohere model object to a Bifrost model retrieve response
+func (model *CohereModel) ToBifrostModelRetrieveResponse(providerKey schemas.ModelProvider) *schemas.BifrostModelRetrieveResponse {
+	if model == nil {
+		return nil
+	}
+
+	return &schemas.BifrostModelRetrieveResponse{
+		Model: schemas.Model{
+			ID:               string(providerKey) + "/" + model.Name,
+			Name:             schemas.Ptr(model.Name),
+			ContextLength:    schemas.Ptr(model.ContextLength),
+			IsDeprecated:     model.IsDeprecated,
+			SupportedMethods: model.Endpoints,
+		},
+	}
+}

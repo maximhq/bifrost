@@ -3,7 +3,9 @@ package bedrock
 import (
 	"fmt"
 	"html"
+	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
@@ -25,6 +27,58 @@ func escapeS3KeyForURL(key string) string {
 		parts[i] = url.PathEscape(p)
 	}
 	return strings.Join(parts, "/")
+}
+
+// s3BucketRe matches the DNS-compatible bucket names a virtual-hosted S3 URL can carry.
+var s3BucketRe = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$`)
+
+// validateS3Bucket rejects bucket names that would change the request host, since the
+// bucket becomes the leading label of "https://{bucket}.{s3host}/".
+func validateS3Bucket(bucket string) *schemas.BifrostError {
+	if !s3BucketRe.MatchString(bucket) {
+		return providerUtils.NewBifrostBadRequestError(fmt.Sprintf("invalid s3 bucket name: %q", bucket))
+	}
+	return nil
+}
+
+// s3KeyErrors collects the failures of an S3 file operation that tries every key in turn.
+// Only a key in the bucket's region gets S3's real answer (404, 403, ...); the others get a
+// redirect to the bucket's regional endpoint. The real answer is what the caller needs, so it
+// wins over a wrong-region redirect, which in turn wins over a key that never reached S3.
+type s3KeyErrors struct {
+	answer      *schemas.BifrostError // S3's answer from the bucket's region
+	wrongRegion *schemas.BifrostError // S3 redirected: the key's region is not the bucket's
+	local       *schemas.BifrostError // the request never got an S3 answer
+}
+
+// status records a non-success S3 status. The key's regional endpoint is not the bucket's when S3
+// answers with a 3xx, or names another region in x-amz-bucket-region: a bucket in a region launched
+// after March 2019 answers a wrong-region request with 400 instead of a redirect. Such a response is
+// reported as a 400 that names the bucket's region, because a redirect status is nothing a client can
+// act on. Any other status is S3's answer from the bucket's region, passed in already built.
+func (e *s3KeyErrors) status(statusCode int, header http.Header, bucket, keyRegion string, answer *schemas.BifrostError) {
+	bucketRegion := header.Get("x-amz-bucket-region")
+	redirected := statusCode >= 300 && statusCode < 400
+	if !redirected && (bucketRegion == "" || strings.EqualFold(bucketRegion, keyRegion)) {
+		e.answer = answer
+		return
+	}
+	msg := fmt.Sprintf("s3 bucket %q is not in the key's region %s (S3 answered %d)", bucket, keyRegion, statusCode)
+	if bucketRegion != "" {
+		msg = fmt.Sprintf("s3 bucket %q is in region %s, not the key's region %s; add a bedrock key for %s", bucket, bucketRegion, keyRegion, bucketRegion)
+	}
+	e.wrongRegion = providerUtils.NewProviderAPIError(msg, nil, http.StatusBadRequest, nil, nil)
+}
+
+// result is the error to return once every key has failed.
+func (e *s3KeyErrors) result() *schemas.BifrostError {
+	if e.answer != nil {
+		return e.answer
+	}
+	if e.wrongRegion != nil {
+		return e.wrongRegion
+	}
+	return e.local
 }
 
 // parseS3URI parses an S3 URI (s3://bucket/key or bucket-name) and returns bucket name and key.

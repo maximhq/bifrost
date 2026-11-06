@@ -1,5 +1,13 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { formatTokenExpiry, missingHeaderKeys } from "./mcpCredential";
+import i18n from "@/lib/i18n";
+import {
+	formatRelativePast,
+	formatTokenExpiry,
+	missingHeaderKeys,
+	providerRejectedTheClient,
+	shouldSuggestReplacementClient,
+	supportsClientReregistration,
+} from "./mcpCredential";
 
 describe("formatTokenExpiry", () => {
 	const now = new Date("2026-09-03T12:00:00Z");
@@ -51,6 +59,22 @@ describe("formatTokenExpiry", () => {
 	test("unparseable input passes through", () => {
 		expect(formatTokenExpiry("not-a-date", "active")).toBe("not-a-date");
 	});
+
+	test("uses the current language without changing expiry and refresh semantics", async () => {
+		try {
+			await i18n.changeLanguage("zh-CN");
+			expect(formatRelativePast("2026-09-03T11:55:00Z")).toBe("5 分钟前");
+			expect(formatTokenExpiry("2026-09-03T12:42:00Z", "active")).toBe("42 分钟后");
+			expect(formatTokenExpiry("2026-09-01T12:00:00Z", "active", true)).toBe("下次使用时刷新");
+			expect(formatTokenExpiry("2026-09-01T12:00:00Z", "orphaned", true)).toBe("访问权限恢复后刷新");
+			expect(formatTokenExpiry("2026-09-01T12:00:00Z", "active", false)).toBe("已过期");
+			await i18n.changeLanguage("en");
+			expect(formatRelativePast("2026-09-03T11:55:00Z")).toBe("5 min ago");
+			expect(formatTokenExpiry("2026-09-03T12:42:00Z", "active")).toBe("in 42 min");
+		} finally {
+			await i18n.changeLanguage("en");
+		}
+	});
 });
 
 describe("missingHeaderKeys", () => {
@@ -65,5 +89,77 @@ describe("missingHeaderKeys", () => {
 
 	test("compares header names case-insensitively and ignores blanks", () => {
 		expect(missingHeaderKeys(["X-API-Key", " X-Tenant-ID ", "", "X-Region"], ["x-api-key", "X-Tenant-Id"])).toEqual(["X-Region"]);
+	});
+});
+
+describe("providerRejectedTheClient", () => {
+	test("matches the provider disowning Bifrost's client", () => {
+		expect(providerRejectedTheClient("provider rejected the refresh (HTTP 401, invalid_client: Invalid client_id)")).toBe(true);
+	});
+
+	test("matches regardless of case", () => {
+		expect(providerRejectedTheClient("HTTP 401, INVALID_CLIENT")).toBe(true);
+	});
+
+	test("does not match a revoked grant, which a plain reauthorize fixes", () => {
+		expect(providerRejectedTheClient("provider rejected the refresh (HTTP 400, invalid_grant: Token has been revoked)")).toBe(false);
+	});
+
+	test("does not match a rotation or an absent reason", () => {
+		expect(providerRejectedTheClient("OAuth client credentials were rotated")).toBe(false);
+		expect(providerRejectedTheClient("")).toBe(false);
+		expect(providerRejectedTheClient(undefined)).toBe(false);
+	});
+});
+
+// The servers table offers "Reauthorize with a new client" for exactly these
+// auth types, and POST /reregister refuses every other one. Both the menu item
+// and the hint that sends admins to it read this, so neither can name an
+// action the other does not offer.
+describe("supportsClientReregistration", () => {
+	test("covers the auth types whose client_id Bifrost registered itself", () => {
+		expect(supportsClientReregistration("oauth")).toBe(true);
+		expect(supportsClientReregistration("per_user_oauth")).toBe(true);
+	});
+
+	test("excludes token_exchange, whose client is configured by hand and re-verified, never re-registered", () => {
+		expect(supportsClientReregistration("token_exchange")).toBe(false);
+	});
+
+	test("excludes auth types with no OAuth client at all", () => {
+		expect(supportsClientReregistration("none")).toBe(false);
+		expect(supportsClientReregistration("headers")).toBe(false);
+		expect(supportsClientReregistration("per_user_headers")).toBe(false);
+	});
+
+	// auth_type is optional on the wire, and a server without one has no OAuth
+	// client to replace.
+	test("excludes a server with no auth type recorded", () => {
+		expect(supportsClientReregistration(undefined)).toBe(false);
+		expect(shouldSuggestReplacementClient(undefined, "invalid_client: Invalid client_id")).toBe(false);
+	});
+});
+
+describe("shouldSuggestReplacementClient", () => {
+	const disowned = "provider rejected the refresh (HTTP 401, invalid_client: Invalid client_id)";
+
+	test("suggests it where the action exists and the provider disowned the client", () => {
+		expect(shouldSuggestReplacementClient("oauth", disowned)).toBe(true);
+		expect(shouldSuggestReplacementClient("per_user_oauth", disowned)).toBe(true);
+	});
+
+	// A token_exchange credential reaches invalid_client too: the identity
+	// provider's own error code is kept verbatim in the status reason. But its
+	// actions menu has "Re-verify as me", not "Reauthorize with a new client",
+	// so the hint would send the admin looking for a menu item that is not there.
+	test("never points a token_exchange admin at an action their menu does not have", () => {
+		expect(shouldSuggestReplacementClient("token_exchange", "invalid_client: client authentication failed")).toBe(false);
+	});
+
+	test("stays quiet for a revoked grant, which a plain reauthorize fixes", () => {
+		expect(shouldSuggestReplacementClient("oauth", "provider rejected the refresh (HTTP 400, invalid_grant: Token has been revoked)")).toBe(
+			false,
+		);
+		expect(shouldSuggestReplacementClient("oauth", undefined)).toBe(false);
 	});
 });

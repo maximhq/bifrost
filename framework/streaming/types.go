@@ -47,6 +47,7 @@ type AccumulatedData struct {
 	FinishReason          *string
 	LogProbs              *schemas.BifrostLogProbs
 	RawResponse           *string
+	RawResponseFormat     schemas.RawResponseFormat // Declared format of RawResponse's frames; empty when no chunk declared one
 }
 
 // AudioStreamChunk represents a single streaming chunk
@@ -89,6 +90,7 @@ type ChatStreamChunk struct {
 	ErrorDetails       *schemas.BifrostError                  // Error if any
 	ChunkIndex         int                                    // Index of the chunk in the stream
 	RawResponse        *string                                // Raw response if available
+	RawResponseFormat  schemas.RawResponseFormat              // Declared format of RawResponse, if any
 }
 
 // ResponsesStreamChunk represents a single responses streaming chunk
@@ -104,6 +106,7 @@ type ResponsesStreamChunk struct {
 	ErrorDetails       *schemas.BifrostError                   // Error if any
 	ChunkIndex         int                                     // Index of the chunk in the stream
 	RawResponse        *string
+	RawResponseFormat  schemas.RawResponseFormat // Declared format of RawResponse, if any
 }
 
 // ImageStreamChunk represents a single image streaming chunk
@@ -151,7 +154,7 @@ type StreamAccumulator struct {
 	TerminalResponseChunkIndex int
 
 	// Passthrough streaming accumulation
-	PassthroughBody       []byte            // Accumulated body bytes from passthrough streaming chunks
+	PassthroughChunks     map[int][]byte    // Body bytes by ChunkIndex, so a chunk fed by several plugins or out of order is kept once
 	PassthroughStatusCode int               // Status code from passthrough response
 	PassthroughHeaders    map[string]string // Headers from passthrough response
 	PassthroughPath       string            // Stripped provider path, e.g. "/v1/chat/completions"
@@ -180,8 +183,8 @@ type StreamAccumulator struct {
 	// buffer and transitions the gate to Ended.
 	gatePendingTerminal     bool
 	gateSeq                 int                              // monotonic, bumped on every GateSend
-	gateReplayBuf           []*schemas.BifrostStreamChunk    // wire-format chunks captured while paused
-	gateReplayBufBytes      int64                            // sum of MarshalJSON sizes of chunks in gateReplayBuf; capped by gateReplayBufMaxBytes
+	gateReplayBuf           []gateReplayEntry                // wire-format chunks captured while paused, each with its MarshalJSON size cached at append
+	gateReplayBufBytes      int64                            // sum of cached sizes in gateReplayBuf; capped by gateReplayBufMaxBytes
 	gateReplayEventInterval time.Duration                    // delay between buffered events after paced resume is armed
 	gateCond                *sync.Cond                       // wakes flusher on Resume / End / append-while-active
 	gateEndError            *schemas.BifrostError            // delivered as terminal chunk if EndStream(err) was called with non-nil

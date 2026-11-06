@@ -206,10 +206,19 @@ func wrapHandshakeError(resp *http.Response, err error) error {
 
 	bodySnippet := readHandshakeBodySnippet(resp.Body)
 	if bodySnippet == "" {
-		return fmt.Errorf("upstream handshake failed with %s: %w", status, err)
+		return &HandshakeError{StatusCode: resp.StatusCode, Err: fmt.Errorf("upstream handshake failed with %s: %w", status, err)}
 	}
-	return fmt.Errorf("upstream handshake failed with %s: %s: %w", status, bodySnippet, err)
+	return &HandshakeError{StatusCode: resp.StatusCode, Err: fmt.Errorf("upstream handshake failed with %s: %s: %w", status, bodySnippet, err)}
 }
+
+// HandshakeError is an upstream WebSocket handshake the provider answered with an HTTP status.
+type HandshakeError struct {
+	StatusCode int
+	Err        error
+}
+
+func (e *HandshakeError) Error() string { return e.Err.Error() }
+func (e *HandshakeError) Unwrap() error { return e.Err }
 
 // readHandshakeBodySnippet reads up to 512 bytes from body and returns the
 // trimmed result. It is used to attach a short error excerpt to failed

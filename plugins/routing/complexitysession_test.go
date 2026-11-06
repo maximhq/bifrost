@@ -8,8 +8,10 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
+	"github.com/maximhq/bifrost/framework/grant"
 	"github.com/maximhq/bifrost/framework/kvstore"
 	"github.com/maximhq/bifrost/plugins/routing/complexity"
 	"github.com/maximhq/bifrost/plugins/routing/rules"
@@ -62,7 +64,7 @@ func (s *recordingSessionKVStore) SetWithTTL(key string, value any, ttl time.Dur
 
 func TestComplexitySessionStoreMonotonicLadder(t *testing.T) {
 	sessions, _ := newTestComplexitySessionStore(t, time.Minute)
-	key := complexitySessionKeyPrefix + "ladder"
+	key := "complexity-test:ladder"
 
 	resolution, err := sessions.resolve(key, complexity.TierSimple)
 	require.NoError(t, err)
@@ -91,7 +93,7 @@ func TestComplexitySessionStoreMonotonicLadder(t *testing.T) {
 
 func TestComplexitySessionStoreEmptyProposalOnlyRefreshesExisting(t *testing.T) {
 	sessions, store := newTestComplexitySessionStore(t, time.Minute)
-	key := complexitySessionKeyPrefix + "continuation"
+	key := "complexity-test:continuation"
 
 	resolution, err := sessions.resolve(key, "")
 	require.NoError(t, err)
@@ -114,7 +116,7 @@ func TestComplexitySessionStoreRefreshesTTLWhenTierDoesNotChange(t *testing.T) {
 	const sessionTTL = 45 * time.Minute
 	recordingStore := &recordingSessionKVStore{KVStore: store}
 	sessions := newComplexitySessionStore(recordingStore, sessionTTL)
-	key := complexitySessionKeyPrefix + "refresh"
+	key := "complexity-test:refresh"
 
 	_, err = sessions.resolve(key, complexity.TierMedium)
 	require.NoError(t, err)
@@ -131,7 +133,7 @@ func TestComplexitySessionStoreRefreshesTTLWhenTierDoesNotChange(t *testing.T) {
 
 func TestComplexitySessionStoreExpiryStartsNewEpoch(t *testing.T) {
 	sessions, _ := newTestComplexitySessionStore(t, 10*time.Millisecond)
-	key := complexitySessionKeyPrefix + "expiry"
+	key := "complexity-test:expiry"
 
 	_, err := sessions.resolve(key, complexity.TierComplex)
 	require.NoError(t, err)
@@ -150,7 +152,7 @@ func TestComplexitySessionStoreExpiryStartsNewEpoch(t *testing.T) {
 
 func TestComplexitySessionStoreRejectsCorruptTier(t *testing.T) {
 	sessions, store := newTestComplexitySessionStore(t, time.Minute)
-	key := complexitySessionKeyPrefix + "corrupt"
+	key := "complexity-test:corrupt"
 	require.NoError(t, store.SetWithTTL(key, "UNKNOWN", time.Minute))
 
 	_, _, err := sessions.load(key, false)
@@ -161,7 +163,7 @@ func TestComplexitySessionStoreRejectsCorruptTier(t *testing.T) {
 
 func TestComplexitySessionStoreDecodesReplicatedString(t *testing.T) {
 	sessions, store := newTestComplexitySessionStore(t, time.Minute)
-	key := complexitySessionKeyPrefix + "remote"
+	key := "complexity-test:remote"
 	now := time.Now()
 	require.NoError(t, store.SetRemote(key, []byte(`"MEDIUM"`), now.UnixNano(), now.Add(time.Minute).UnixNano()))
 
@@ -171,22 +173,70 @@ func TestComplexitySessionStoreDecodesReplicatedString(t *testing.T) {
 	require.Equal(t, complexity.TierMedium, tier)
 }
 
-func TestBuildComplexitySessionKeyScopesAndHidesIdentity(t *testing.T) {
-	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-	ctx.SetValue(schemas.BifrostContextKeyUserID, "user-1")
+func TestComplexitySessionKeyScopesByIdentityAndHidesIt(t *testing.T) {
 	sessionID := "caller-session-secret"
+	attributed := func(sessionID, virtualKeyID, userID string) *schemas.BifrostContext {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeySessionID, sessionID)
+		var user *schemas.UserRef
+		if userID != "" {
+			user = &schemas.UserRef{ID: userID}
+		}
+		var virtualKey *schemas.EntityRef
+		if virtualKeyID != "" {
+			virtualKey = &schemas.EntityRef{ID: virtualKeyID}
+		}
+		g := grant.New()
+		g.SetIdentity(grant.NewIdentity(schemas.Credential{}, user, virtualKey, nil, nil, nil, nil))
+		ctx.SetGrant(g)
+		return ctx
+	}
 
-	base := buildComplexitySessionKey(ctx, "vk-1", sessionID)
-	require.True(t, strings.HasPrefix(base, complexitySessionKeyPrefix))
+	base := complexitySessionKey(attributed(sessionID, "vk-1", "user-1"))
+	require.True(t, strings.HasPrefix(base, "session:v2:complexity:"))
 	require.NotContains(t, base, sessionID)
 	require.NotContains(t, base, "user-1")
 	require.NotContains(t, base, "vk-1")
-	require.Equal(t, base, buildComplexitySessionKey(ctx, "vk-1", sessionID))
+	require.Equal(t, base, complexitySessionKey(attributed(sessionID, "vk-1", "user-1")))
 
-	require.NotEqual(t, base, buildComplexitySessionKey(ctx, "vk-2", sessionID))
-	ctx.SetValue(schemas.BifrostContextKeyUserID, "user-2")
-	require.NotEqual(t, base, buildComplexitySessionKey(ctx, "vk-1", sessionID))
-	require.NotEqual(t, base, buildComplexitySessionKey(ctx, "vk-1", "another-session"))
+	require.NotEqual(t, base, complexitySessionKey(attributed(sessionID, "vk-2", "user-1")))
+	require.NotEqual(t, base, complexitySessionKey(attributed(sessionID, "vk-1", "user-2")))
+	require.NotEqual(t, base, complexitySessionKey(attributed("another-session", "vk-1", "user-1")))
+
+	// A request nothing governs keys under the deployment, apart from any caller's scope.
+	ungoverned := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ungoverned.SetValue(schemas.BifrostContextKeySessionID, sessionID)
+	require.NotEqual(t, base, complexitySessionKey(ungoverned))
+}
+
+func TestComplexityStateKeysScopeSubagents(t *testing.T) {
+	withHeaders := func(headers map[string]string) *schemas.BifrostContext {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeySessionID, "shared-session")
+		ctx.SetValue(schemas.BifrostContextKeyRequestHeaders, headers)
+		return ctx
+	}
+
+	parent := withHeaders(nil)
+	// The main conversation keeps the keys it had before agents were told apart.
+	require.Equal(t, bifrost.SessionStateKey(parent, complexitySessionKind), complexitySessionKey(parent))
+	require.Equal(t, bifrost.SessionStateKey(parent, complexityTurnTierKind), complexityTurnTierKey(parent))
+	// A Codex root thread names itself but no parent, so it is the main conversation.
+	require.Equal(t, complexitySessionKey(parent), complexitySessionKey(withHeaders(map[string]string{"thread-id": "root"})))
+
+	agents := []*schemas.BifrostContext{
+		withHeaders(map[string]string{"x-claude-code-agent-id": "agent-a"}),
+		withHeaders(map[string]string{"x-claude-code-agent-id": "agent-b"}),
+		withHeaders(map[string]string{"x-codex-parent-thread-id": "root", "thread-id": "child"}),
+	}
+	seen := map[string]bool{complexitySessionKey(parent): true, complexityTurnTierKey(parent): true}
+	for _, agent := range agents {
+		for _, key := range []string{complexitySessionKey(agent), complexityTurnTierKey(agent)} {
+			require.False(t, seen[key], "each agent keeps its own complexity state")
+			seen[key] = true
+		}
+	}
+	require.Equal(t, complexitySessionKey(agents[0]), complexitySessionKey(withHeaders(map[string]string{"x-claude-code-agent-id": "agent-a"})))
 }
 
 func TestPublishLocalSessionFallbackPreservesProposalEvidence(t *testing.T) {

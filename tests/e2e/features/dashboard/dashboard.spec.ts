@@ -1,3 +1,5 @@
+import type { Page } from '@playwright/test'
+import { featureFlagsApi } from '../../core/actions/api'
 import { expect, test } from '../../core/fixtures/base.fixture'
 import { waitForNetworkIdle } from '../../core/utils/test-helpers'
 import { DashboardPage } from './pages/dashboard.page'
@@ -44,15 +46,16 @@ test.describe('Dashboard', () => {
         { timeout: 15000 }
       )
 
-      await dashboardPage.selectTimePeriod('1h')
+      // The dashboard opens on the last hour, so pick a different period to force a refetch.
+      await dashboardPage.selectTimePeriod('6h')
 
       // UI: trigger shows the selected period
       const label = await dashboardPage.getSelectedPeriodLabel()
-      expect(label).toContain('Last hour')
+      expect(label).toContain('Last 6 hours')
 
       // URL: selection is reflected in query state
       const url = dashboardPage.page.url()
-      expect(url).toMatch(/period=1h|start_time=\d+&end_time=\d+/)
+      expect(url).toMatch(/period=6h|start_time=\d+&end_time=\d+/)
 
       // Data: dashboard refetched with the new range
       await responsePromise
@@ -87,6 +90,34 @@ test.describe('Dashboard', () => {
       const url = dashboardPage.page.url()
       expect(url).toMatch(/period=30d|start_time=\d+&end_time=\d+/)
     })
+
+    for (const [period, label] of [
+      ['today', 'Today'],
+      ['this_week', 'This week'],
+      ['this_month', 'This month'],
+    ] as const) {
+      test(`should change time period to ${label.toLowerCase()} and send it with the timezone`, async ({ dashboardPage }) => {
+        // Calendar periods depend on the viewer's timezone. The server resolves them, so the
+        // request carries the period plus the timezone picked in the date picker.
+        await dashboardPage.page.evaluate(() => localStorage.setItem('bifrost.timezone', 'America/New_York'))
+        await dashboardPage.goto()
+
+        const requestPromise = dashboardPage.page.waitForRequest(
+          (req) => req.url().includes('/logs/histogram') && req.url().includes(`period=${period}`),
+          { timeout: 15000 }
+        )
+
+        await dashboardPage.selectTimePeriod(period)
+
+        expect(await dashboardPage.getSelectedPeriodLabel()).toContain(label)
+        expect(dashboardPage.page.url()).toContain(`period=${period}`)
+
+        const histogramUrl = new URL((await requestPromise).url())
+        expect(histogramUrl.searchParams.get('period')).toBe(period)
+        expect(histogramUrl.searchParams.get('timezone')).toBe('America/New_York')
+        expect(histogramUrl.searchParams.get('start_time')).toBeNull()
+      })
+    }
   })
 
   test.describe('Chart Type Toggling', () => {
@@ -347,18 +378,14 @@ test.describe('Dashboard', () => {
     test('should open custom date range picker', async ({ dashboardPage }) => {
       await dashboardPage.waitForChartsToLoad()
 
-      // Look for date picker button
-      const datePicker = dashboardPage.page.getByRole('button').filter({ hasText: /Last|Custom/i }).first()
+      const datePicker = dashboardPage.getDatePickerTrigger()
       const isVisible = await datePicker.isVisible().catch(() => false)
 
       if (isVisible) {
         await datePicker.click()
 
-        // Should see date range options or calendar
-        const calendarVisible = await dashboardPage.page.locator('[role="dialog"], [role="listbox"]').isVisible().catch(() => false)
-        const optionsVisible = await dashboardPage.page.getByRole('option').first().isVisible().catch(() => false)
-
-        expect(calendarVisible || optionsVisible).toBe(true)
+        // Should see the presets and calendar popover
+        await expect(dashboardPage.page.locator('[data-radix-popper-content-wrapper]')).toBeVisible()
 
         // Close the picker
         await dashboardPage.page.keyboard.press('Escape')
@@ -382,4 +409,82 @@ test.describe('Dashboard', () => {
     })
   })
 
+  test.describe('Topbar Warp Launcher', () => {
+    let warpWasEnabled = false
+
+    test.beforeEach(async ({ dashboardPage }) => {
+      // Waiting on the page first lets the auto-login handler run, so the flag
+      // calls below carry the session cookie that page.request shares.
+      await expect(dashboardPage.pageTitle).toBeVisible()
+      const { flags } = await featureFlagsApi.getAll(dashboardPage.page.request)
+      warpWasEnabled = flags.find((flag) => flag.id === 'warp')?.enabled ?? false
+      await featureFlagsApi.set(dashboardPage.page.request, 'warp', true)
+      await dashboardPage.page.reload()
+    })
+
+    test.afterEach(async ({ dashboardPage }) => {
+      await featureFlagsApi.set(dashboardPage.page.request, 'warp', warpWasEnabled)
+    })
+
+    test('should keep the warp button in the topbar and mark it selected while open', async ({ dashboardPage }) => {
+      const warpButton = dashboardPage.page.getByTestId('topbar-warp-btn')
+      await expect(warpButton).toBeVisible()
+      await expect(warpButton).toHaveAttribute('data-state', 'closed')
+
+      await warpButton.click()
+      await expect(warpButton).toBeVisible()
+      await expect(warpButton).toHaveAttribute('data-state', 'open')
+      await expect(warpButton).toHaveAttribute('aria-pressed', 'true')
+
+      await warpButton.click()
+      await expect(warpButton).toHaveAttribute('data-state', 'closed')
+      await expect(warpButton).toHaveAttribute('aria-pressed', 'false')
+    })
+  })
+
+})
+
+// Bifrost running from config.json alone has no config store. Pages served entirely by the logs
+// store stay usable; the rest show the "not available" banner. The store flags come from /api/config,
+// so the mode is stubbed there: the suite's servers always have a config store.
+test.describe('Config-file-only mode', () => {
+  async function stubStores(page: Page, stores: { is_db_connected: boolean; is_logs_connected: boolean }) {
+    await page.route(
+      (url) => url.pathname.endsWith('/api/config'),
+      async (route) => {
+        const response = await route.fetch()
+        await route.fulfill({ response, json: { ...(await response.json()), ...stores } })
+      },
+    )
+  }
+
+  test('renders the dashboard when only the logs store is connected', async ({ page, dashboardPage }) => {
+    await stubStores(page, { is_db_connected: false, is_logs_connected: true })
+    await page.goto('/workspace/dashboard')
+    // The heading sits in the topbar, outside the store gate, so only page content proves the gate opened.
+    await expect(dashboardPage.logVolumeChart).toBeVisible()
+    await expect(page.getByTestId('config-store-documentation-link')).toHaveCount(0)
+  })
+
+  test('renders MCP logs when only the logs store is connected', async ({ page }) => {
+    await stubStores(page, { is_db_connected: false, is_logs_connected: true })
+    // The page loads its logs only once it mounts, and a fresh database shows the empty state, so the
+    // request is the marker that holds with or without data.
+    const logsRequest = page.waitForResponse((r) => new URL(r.url()).pathname.endsWith('/api/mcp-logs') && r.ok())
+    await page.goto('/workspace/mcp-logs')
+    await logsRequest
+    await expect(page.getByTestId('config-store-documentation-link')).toHaveCount(0)
+  })
+
+  test('shows the banner on pages that need the config store', async ({ page }) => {
+    await stubStores(page, { is_db_connected: false, is_logs_connected: true })
+    await page.goto('/workspace/providers')
+    await expect(page.getByTestId('config-store-documentation-link')).toBeVisible()
+  })
+
+  test('shows the banner on the dashboard when no logs store is connected', async ({ page }) => {
+    await stubStores(page, { is_db_connected: false, is_logs_connected: false })
+    await page.goto('/workspace/dashboard')
+    await expect(page.getByTestId('config-store-documentation-link')).toBeVisible()
+  })
 })

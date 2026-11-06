@@ -4,10 +4,12 @@ package ollama
 
 import (
 	"context"
+	"net/http"
 	"strings"
 	"time"
 
 	"github.com/maximhq/bifrost/core/providers/openai"
+	"github.com/maximhq/bifrost/core/providers/typesafe"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
@@ -120,6 +122,32 @@ func (provider *OllamaProvider) ListModels(ctx *schemas.BifrostContext, keys []s
 		keys,
 		request,
 		provider.listModelsByKey,
+	)
+}
+
+// ModelRetrieve retrieves a single model's metadata from Ollama's OpenAI-compatible API.
+func (provider *OllamaProvider) ModelRetrieve(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostModelRetrieveRequest) (*schemas.BifrostModelRetrieveResponse, *schemas.BifrostError) {
+	if request == nil || request.Model == "" {
+		return nil, providerUtils.NewBifrostOperationError("model is required", nil)
+	}
+	escapedModel, idErr := providerUtils.EscapeResourceID(request.Model, "model")
+	if idErr != nil {
+		return nil, idErr
+	}
+	baseURL, bifrostErr := provider.baseURLOrError(key)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	return openai.HandleOpenAIModelRetrieveRequest(
+		ctx,
+		provider.client,
+		baseURL+providerUtils.GetPathFromContext(ctx, "/v1/models/"+escapedModel),
+		key,
+		provider.networkConfig.ExtraHeaders,
+		provider.GetProviderKey(),
+		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
+		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 	)
 }
 
@@ -282,6 +310,84 @@ func (provider *OllamaProvider) Speech(ctx *schemas.BifrostContext, key schemas.
 // Rerank is not supported by the Ollama provider.
 func (provider *OllamaProvider) Rerank(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostRerankRequest) (*schemas.BifrostRerankResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.RerankRequest, provider.GetProviderKey())
+}
+
+// Decision answers a decision request on a local System One model (nimble,
+// tev1, clef, clef-flash, laya) through Ollama's /v1/systemone. Every model is
+// sent, and one that cannot score decisions, or is not pulled, comes back as
+// Ollama's own error.
+func (provider *OllamaProvider) Decision(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostDecisionRequest) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
+	baseURL, bifrostErr := provider.baseURLOrError(key)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
+		ctx,
+		request,
+		func() (providerUtils.RequestBodyWithExtraParams, error) {
+			return ToOllamaDecisionRequest(request)
+		})
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
+	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
+
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+	req.SetRequestURI(baseURL + providerUtils.GetPathFromContext(ctx, ollamaDecisionPath))
+	req.Header.SetMethod(http.MethodPost)
+	req.Header.SetContentType("application/json")
+	for name, value := range openai.BearerAuthHeader(key) {
+		req.Header.Set(name, value)
+	}
+	req.SetBody(jsonData)
+
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	defer wait()
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	providerResponseHeaders := providerUtils.ExtractProviderResponseHeaders(resp)
+	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerResponseHeaders)
+
+	if resp.StatusCode() != fasthttp.StatusOK {
+		return nil, providerUtils.EnrichError(ctx, parseOllamaDecisionError(resp), jsonData, nil, sendBackRawRequest, sendBackRawResponse, latency)
+	}
+
+	respBody, err := providerUtils.CheckAndDecodeBody(resp)
+	if err != nil {
+		rawErrBody := append([]byte(nil), resp.Body()...)
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err), jsonData, rawErrBody, sendBackRawRequest, sendBackRawResponse, latency)
+	}
+
+	var decisionResp typesafe.TypesafeDecisionResponse
+	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponseCtx(ctx, respBody, &decisionResp, jsonData, sendBackRawRequest, sendBackRawResponse)
+	if bifrostErr != nil {
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, respBody, sendBackRawRequest, sendBackRawResponse, latency)
+	}
+
+	bifrostResp, bifrostErr := typesafe.ToBifrostDecisionResponse(&decisionResp, request)
+	if bifrostErr != nil {
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, respBody, sendBackRawRequest, sendBackRawResponse, latency)
+	}
+
+	bifrostResp.ExtraFields.Latency = latency.Milliseconds()
+	bifrostResp.ExtraFields.ProviderResponseHeaders = providerResponseHeaders
+	if sendBackRawRequest {
+		bifrostResp.ExtraFields.RawRequest = rawRequest
+	}
+	if sendBackRawResponse {
+		bifrostResp.ExtraFields.RawResponse = rawResponse
+	}
+
+	return bifrostResp, nil
 }
 
 // OCR is not supported by the Ollama provider.

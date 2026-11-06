@@ -1,6 +1,6 @@
+import { BaseProviderSelector } from "@/components/ui/baseProviderSelector";
 import { Button } from "@/components/ui/button";
 import { Form, FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { getErrorMessage, setProviderFormDirtyState, useAppDispatch } from "@/lib/store";
@@ -12,6 +12,7 @@ import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useEffect, useMemo } from "react";
 import { useForm } from "react-hook-form";
+import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { z } from "zod";
 import { buildProviderUpdatePayload } from "../views/utils";
@@ -27,6 +28,7 @@ interface Props {
 
 // Standalone component for provider configuration tabs
 export function ApiStructureFormFragment({ provider }: Props) {
+	const { t } = useTranslation("models");
 	const hasUpdateProviderAccess = useRbac(RbacResource.ModelProvider, RbacOperation.Update);
 	const dispatch = useAppDispatch();
 	const [updateProvider, { isLoading: isUpdatingProvider }] = useUpdateProviderMutation();
@@ -37,6 +39,7 @@ export function ApiStructureFormFragment({ provider }: Props) {
 			base_provider_type: provider.custom_provider_config?.base_provider_type ?? "openai",
 			is_key_less: provider.custom_provider_config?.is_key_less ?? false,
 			does_not_send_done_marker: provider.custom_provider_config?.does_not_send_done_marker ?? false,
+			wait_for_usage: provider.custom_provider_config?.wait_for_usage ?? false,
 			allowed_requests: {
 				text_completion: provider.custom_provider_config?.allowed_requests?.text_completion ?? true,
 				text_completion_stream: provider.custom_provider_config?.allowed_requests?.text_completion_stream ?? true,
@@ -55,8 +58,12 @@ export function ApiStructureFormFragment({ provider }: Props) {
 				transcription_stream: provider.custom_provider_config?.allowed_requests?.transcription_stream ?? true,
 				count_tokens: provider.custom_provider_config?.allowed_requests?.count_tokens ?? true,
 				list_models: provider.custom_provider_config?.allowed_requests?.list_models ?? true,
+				model_retrieve: provider.custom_provider_config?.allowed_requests?.model_retrieve ?? false,
 				ocr: provider.custom_provider_config?.allowed_requests?.ocr ?? true,
 				ocr_stream: provider.custom_provider_config?.allowed_requests?.ocr_stream ?? true,
+				decisions: provider.custom_provider_config?.allowed_requests?.decisions ?? true,
+				passthrough: provider.custom_provider_config?.allowed_requests?.passthrough ?? true,
+				passthrough_stream: provider.custom_provider_config?.allowed_requests?.passthrough_stream ?? true,
 			},
 			request_path_overrides: provider.custom_provider_config?.request_path_overrides ?? undefined,
 		},
@@ -78,6 +85,7 @@ export function ApiStructureFormFragment({ provider }: Props) {
 					base_provider_type: data.base_provider_type as unknown as BaseProvider,
 					is_key_less: data.is_key_less ?? false,
 					does_not_send_done_marker: data.does_not_send_done_marker ?? false,
+					wait_for_usage: data.wait_for_usage ?? false,
 					allowed_requests: data.allowed_requests,
 					request_path_overrides: cleanPathOverrides(data.request_path_overrides),
 				},
@@ -85,11 +93,11 @@ export function ApiStructureFormFragment({ provider }: Props) {
 		)
 			.unwrap()
 			.then(() => {
-				toast.success("Provider configuration updated successfully");
+				toast.success(t("providers.configUpdated"));
 				form.reset(data);
 			})
 			.catch((err) => {
-				toast.error("Failed to update provider configuration", {
+				toast.error(t("providers.failedUpdateConfig"), {
 					description: getErrorMessage(err),
 				});
 			});
@@ -106,6 +114,18 @@ export function ApiStructureFormFragment({ provider }: Props) {
 		[provider.custom_provider_config?.base_provider_type],
 	);
 
+	// wait_for_usage only has meaning once the stream ends on finish_reason, so the
+	// toggle is nested under does_not_send_done_marker rather than offered on its own.
+	const doesNotSendDoneMarker = form.watch("does_not_send_done_marker");
+
+	// Clear the nested flag whenever its parent goes away: the update replaces
+	// custom_provider_config wholesale, so a stale true would otherwise be persisted.
+	useEffect(() => {
+		if (isDoneMarkerToggleDisabled || !doesNotSendDoneMarker) {
+			form.setValue("wait_for_usage", false);
+		}
+	}, [isDoneMarkerToggleDisabled, doesNotSendDoneMarker, form]);
+
 	return (
 		<Form {...form}>
 			<form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6 px-4 pb-6 md:px-6">
@@ -115,23 +135,16 @@ export function ApiStructureFormFragment({ provider }: Props) {
 						name="base_provider_type"
 						render={({ field }) => (
 							<FormItem>
-								<FormLabel>Base Provider Type</FormLabel>
-								<Select onValueChange={field.onChange} value={field.value}>
-									<FormControl>
-										<SelectTrigger disabled={true}>
-											<SelectValue placeholder="Select base provider" />
-										</SelectTrigger>
-									</FormControl>
-									<SelectContent>
-										<SelectItem value="openai">OpenAI</SelectItem>
-										<SelectItem value="anthropic">Anthropic</SelectItem>
-										<SelectItem value="bedrock">AWS Bedrock</SelectItem>
-										<SelectItem value="cohere">Cohere</SelectItem>
-										<SelectItem value="gemini">Gemini</SelectItem>
-										<SelectItem value="replicate">Replicate</SelectItem>
-									</SelectContent>
-								</Select>
-								<FormDescription>The underlying provider this custom provider will use</FormDescription>
+								<FormLabel>{t("providers.baseProviderType")}</FormLabel>
+								<FormControl>
+									<BaseProviderSelector
+										placeholder={t("providers.selectBaseProvider")}
+										value={field.value}
+										onChange={field.onChange}
+										disabled
+									/>
+								</FormControl>
+								<FormDescription>{t("providers.baseProviderTypeHelp")}</FormDescription>
 								<FormMessage />
 							</FormItem>
 						)}
@@ -142,12 +155,12 @@ export function ApiStructureFormFragment({ provider }: Props) {
 							name="is_key_less"
 							render={({ field }) => (
 								<FormItem>
-									<div className="flex items-center justify-between space-x-2 rounded-lg border p-3">
+									<div className="bg-muted/50 flex items-center justify-between space-x-2 rounded-sm border p-3">
 										<div className="space-y-0.5">
 											<label htmlFor="drop-excess-requests" className="text-sm font-medium">
-												Is Keyless?
+												{t("providers.isKeyless")}
 											</label>
-											<p className="text-muted-foreground text-sm">Whether the custom provider requires a key</p>
+											<p className="text-muted-foreground text-sm">{t("providers.requiresKey")}</p>
 										</div>
 										<Switch
 											id="drop-excess-requests"
@@ -167,17 +180,40 @@ export function ApiStructureFormFragment({ provider }: Props) {
 							name="does_not_send_done_marker"
 							render={({ field }) => (
 								<FormItem>
-									<div className="flex items-center justify-between space-x-2 rounded-lg border p-3">
+									<div className="bg-muted/50 flex items-center justify-between space-x-2 rounded-sm border p-3">
 										<div className="space-y-0.5">
 											<label htmlFor="does-not-send-done-marker" className="text-sm font-medium">
-												Does Not Send [DONE] Marker?
+												{t("providers.doesNotSendDoneMarker")}
 											</label>
-											<p className="text-muted-foreground text-sm">
-												Whether the provider ends streams on finish_reason without sending a [DONE] marker
-											</p>
+											<p className="text-muted-foreground text-sm">{t("providers.doesNotSendDoneMarkerHelp")}</p>
 										</div>
 										<Switch
 											id="does-not-send-done-marker"
+											size="md"
+											checked={field.value}
+											onCheckedChange={field.onChange}
+											disabled={!hasUpdateProviderAccess}
+										/>
+									</div>
+								</FormItem>
+							)}
+						/>
+					)}
+					{!isDoneMarkerToggleDisabled && doesNotSendDoneMarker && (
+						<FormField
+							control={form.control}
+							name="wait_for_usage"
+							render={({ field }) => (
+								<FormItem>
+									<div className="bg-muted/50 flex items-center justify-between space-x-2 rounded-sm border p-3">
+										<div className="space-y-0.5">
+											<label htmlFor="wait-for-usage" className="text-sm font-medium">
+												{t("providers.custom.waitForUsage")}
+											</label>
+											<p className="text-muted-foreground text-sm">{t("providers.custom.waitForUsageHelp")}</p>
+										</div>
+										<Switch
+											id="wait-for-usage"
 											size="md"
 											checked={field.value}
 											onCheckedChange={field.onChange}
@@ -200,18 +236,18 @@ export function ApiStructureFormFragment({ provider }: Props) {
 				{/* Form Actions */}
 				<div className="flex justify-end gap-2 py-2">
 					<Button type="button" variant="outline" onClick={() => form.reset()} disabled={!hasUpdateProviderAccess}>
-						Reset
+						{t("providers.reset")}
 					</Button>
 					<TooltipProvider>
 						<Tooltip>
 							<TooltipTrigger asChild>
 								<Button type="submit" disabled={!form.formState.isDirty || !hasUpdateProviderAccess} isLoading={isUpdatingProvider}>
-									Save API Structure Configuration
+									{t("providers.saveApiStructureConfig")}
 								</Button>
 							</TooltipTrigger>
 							{!form.formState.isValid && (
 								<TooltipContent>
-									<p>{form.formState.errors.root?.message || "Please fix validation errors"}</p>
+									<p>{form.formState.errors.root?.message || t("providers.pleaseFixValidation")}</p>
 								</TooltipContent>
 							)}
 						</Tooltip>

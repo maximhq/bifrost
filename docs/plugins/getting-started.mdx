@@ -55,6 +55,8 @@ This generates a `.so` file that exports specific functions matching Bifrost's p
     - `HTTPTransportPreAuthHook()` <sup>v2.0+</sup> - Intercept HTTP requests before the transport authenticates them; the seam for supplying credentials (HTTP transport only)
     - `HTTPTransportPreHook()` - Intercept HTTP requests after authentication, before they enter Bifrost core (HTTP transport only)
     - `HTTPTransportPostHook()` - Intercept HTTP responses after they exit Bifrost core (HTTP transport only)
+    - `HTTPTransportResponseHeadersHook()` - Modify response headers at the pre-commit boundary, including streaming responses (HTTP transport only)
+    - `HTTPTransportStreamChunkHook()` - Modify or filter streaming payload chunks (HTTP transport only)
     - `PreRequestHook()` <sup>v1.6.x+</sup> - Once-per-request routing phase: decide provider/model/fallbacks
     - `PreLLMHook()` - Intercept requests before they reach providers (runs per provider attempt)
     - `PostLLMHook()` - Process responses after provider calls (runs per provider attempt)
@@ -99,6 +101,8 @@ Plugins execute in a specific order:
     5. Provider call (if not short-circuited)
     6. `PostLLMHook`/`PostMCPHook` - Per provider attempt, reverse order of PreHooks
     7. `HTTPTransportPostHook` - Intercept HTTP responses (HTTP transport only, reverse order)
+    8. `HTTPTransportResponseHeadersHook` - Finalize response headers before they are committed, including for streams (HTTP transport only, reverse order)
+    9. `HTTPTransportStreamChunkHook` - Intercept each streaming payload chunk (HTTP transport only, reverse order)
   </Tab>
   <Tab title="v1.3.x">
     1. `TransportInterceptor` - Modifies raw HTTP requests (HTTP transport only)

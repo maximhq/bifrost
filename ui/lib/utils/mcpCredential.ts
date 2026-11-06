@@ -1,19 +1,23 @@
+import i18n, { getLocale } from "@/lib/i18n";
+
 // Formatting helpers shared by the MCP auth sessions table and the MCP
 // server sheet's credential block, so both surfaces describe the same
 // token row with the same words.
+
+import type { MCPAuthType } from "@/lib/types/mcp";
 
 export function formatRelativePast(iso: string): string {
 	try {
 		const t = new Date(iso).getTime();
 		if (Number.isNaN(t)) return iso;
 		const diffMs = Date.now() - t;
-		if (diffMs < 60_000) return "just now";
+		if (diffMs < 60_000) return i18n.t("credentials.justNow", { ns: "mcp" });
 		const mins = Math.floor(diffMs / 60_000);
-		if (mins < 60) return `${mins} min ago`;
+		if (mins < 60) return i18n.t("credentials.minutesAgo", { ns: "mcp", minutes: mins });
 		const hours = Math.floor(diffMs / 3_600_000);
-		if (hours < 48) return `${hours}h ago`;
+		if (hours < 48) return i18n.t("credentials.hoursAgo", { ns: "mcp", hours });
 		const days = Math.floor(diffMs / 86_400_000);
-		return `${days}d ago`;
+		return i18n.t("credentials.daysAgo", { ns: "mcp", days });
 	} catch {
 		return iso;
 	}
@@ -34,22 +38,22 @@ export function formatTokenExpiry(expiresAt: string | null | undefined, status: 
 		if (Number.isNaN(t)) return expiresAt;
 		const diffMs = t - Date.now();
 		if (diffMs <= 0) {
-			if (hasRefreshToken === false) return "expired";
+			if (hasRefreshToken === false) return i18n.t("credentials.expired", { ns: "mcp" });
 			switch (status) {
 				case "active":
-					return "Refreshes on next use";
+					return i18n.t("credentials.refreshNextUse", { ns: "mcp" });
 				case "orphaned":
-					return "Refreshes when access is restored";
+					return i18n.t("credentials.refreshAccessRestored", { ns: "mcp" });
 				default:
-					return "expired";
+					return i18n.t("credentials.expired", { ns: "mcp" });
 			}
 		}
 		const days = Math.floor(diffMs / 86_400_000);
-		if (days > 1) return `in ${days} days`;
+		if (days > 1) return i18n.t("credentials.inDays", { ns: "mcp", days });
 		const hours = Math.floor(diffMs / 3_600_000);
-		if (hours > 1) return `in ${hours} hours`;
+		if (hours > 1) return i18n.t("credentials.inHours", { ns: "mcp", hours });
 		const mins = Math.floor(diffMs / 60_000);
-		return `in ${Math.max(mins, 1)} min`;
+		return i18n.t("credentials.inMinutes", { ns: "mcp", minutes: Math.max(mins, 1) });
 	} catch {
 		return expiresAt;
 	}
@@ -58,13 +62,13 @@ export function formatTokenExpiry(expiresAt: string | null | undefined, status: 
 export function formatAbsoluteDateTime(iso: string): string {
 	const d = new Date(iso);
 	if (Number.isNaN(d.getTime())) return iso;
-	return d.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+	return d.toLocaleString(getLocale(), { dateStyle: "medium", timeStyle: "short" });
 }
 
 export function formatAbsoluteDate(iso: string): string {
 	const d = new Date(iso);
 	if (Number.isNaN(d.getTime())) return iso;
-	return d.toLocaleDateString(undefined, { dateStyle: "medium" });
+	return d.toLocaleDateString(getLocale(), { dateStyle: "medium" });
 }
 
 /**
@@ -77,4 +81,48 @@ export function missingHeaderKeys(required: readonly string[] | undefined, cover
 	if (!required?.length) return [];
 	const have = new Set((covered ?? []).map((k) => k.trim().toLowerCase()));
 	return required.map((k) => k.trim()).filter((k) => k && !have.has(k.toLowerCase()));
+}
+
+/**
+ * providerRejectedTheClient reads a credential's recorded rejection for the
+ * OAuth error meaning the provider does not know Bifrost's client_id at all
+ * (RFC 6749 invalid_client), as opposed to the far more common case of the
+ * grant behind one token being revoked. Only the former needs a replacement
+ * client registered before consent; plain Reauthorize fixes the latter.
+ *
+ * A loose substring match is the right amount of certainty here: it decides
+ * whether to show one extra sentence of guidance, so a provider that words its
+ * rejection differently costs the admin a hint, not a broken repair. Nothing
+ * about replacing a credential keys off this.
+ */
+export function providerRejectedTheClient(statusReason?: string): boolean {
+	return !!statusReason && statusReason.toLowerCase().includes("invalid_client");
+}
+
+/**
+ * supportsClientReregistration reports whether an auth type has the
+ * "Reauthorize with a new client" action: the ones whose OAuth client Bifrost
+ * can register for itself, which is also exactly what POST /reregister accepts.
+ * token_exchange is OAuth-shaped but not one of them. Its client is configured
+ * by hand and its repair is "Re-verify as me".
+ *
+ * The servers table's menu item and the hint below both read this rather than
+ * each spelling the list out, so neither can name an action the other does not
+ * offer.
+ */
+export function supportsClientReregistration(authType?: MCPAuthType): boolean {
+	return authType === "oauth" || authType === "per_user_oauth";
+}
+
+/**
+ * shouldSuggestReplacementClient decides whether a needs_reauth credential
+ * gets the extra sentence sending the admin to "Reauthorize with a new client".
+ * Both halves matter: the provider has to have disowned the client, and the
+ * server has to be of a kind that has that action. A token_exchange credential
+ * can carry invalid_client too (the identity provider's error code is kept
+ * verbatim in its status reason), and pointing its admin at a menu item that is
+ * not there is worse than saying nothing.
+ */
+export function shouldSuggestReplacementClient(authType: MCPAuthType | undefined, statusReason?: string): boolean {
+	return supportsClientReregistration(authType) && providerRejectedTheClient(statusReason);
 }

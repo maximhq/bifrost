@@ -2,11 +2,15 @@ package lib
 
 import (
 	"context"
+	"os"
+	"regexp"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
+	"github.com/tidwall/gjson"
 	"github.com/valyala/fasthttp"
 )
 
@@ -47,6 +51,28 @@ func TestApplyBifrostResponseHeaders(t *testing.T) {
 		assert.Empty(t, string(ctx.Response.Header.Peek(HeaderBifrostFallbackIndex)))
 	})
 
+	// A routing rule rewrote gpt-4o-mini to gpt-4o: the caller's model must be
+	// recoverable from the headers alongside the routed one.
+	t.Run("routing rewrite emits requested route next to the routed model", func(t *testing.T) {
+		ctx := &fasthttp.RequestCtx{}
+		bifrostCtx := newBifrostCtx()
+
+		extra := schemas.BifrostResponseExtraFields{
+			RoutingInfo: schemas.RoutingInfo{
+				Provider:          schemas.OpenAI,
+				Model:             "gpt-4o",
+				RequestedProvider: schemas.OpenAI,
+				RequestedModel:    "gpt-4o-mini",
+			},
+		}
+
+		ApplyBifrostResponseHeaders(ctx, bifrostCtx, extra)
+
+		assert.Equal(t, "gpt-4o", string(ctx.Response.Header.Peek(HeaderBifrostRoutingInfoModel)))
+		assert.Equal(t, "openai", string(ctx.Response.Header.Peek(HeaderBifrostRoutingInfoRequestedProvider)))
+		assert.Equal(t, "gpt-4o-mini", string(ctx.Response.Header.Peek(HeaderBifrostRoutingInfoRequestedModel)))
+	})
+
 	t.Run("fallback index from context emits when non-zero", func(t *testing.T) {
 		ctx := &fasthttp.RequestCtx{}
 		bifrostCtx := newBifrostCtx()
@@ -73,6 +99,8 @@ func TestApplyBifrostResponseHeaders(t *testing.T) {
 		assert.Empty(t, string(ctx.Response.Header.Peek(HeaderBifrostResolvedModel)))
 		assert.Empty(t, string(ctx.Response.Header.Peek(HeaderBifrostRequestType)))
 		assert.Empty(t, string(ctx.Response.Header.Peek(HeaderBifrostFallbackIndex)))
+		assert.Empty(t, string(ctx.Response.Header.Peek(HeaderBifrostRoutingInfoRequestedProvider)))
+		assert.Empty(t, string(ctx.Response.Header.Peek(HeaderBifrostRoutingInfoRequestedModel)))
 		// No accumulator installed — unmeasured must stay distinguishable from zero.
 		assert.Empty(t, string(ctx.Response.Header.Peek(HeaderBifrostUpstreamLatency)))
 	})
@@ -173,6 +201,51 @@ func TestApplyBifrostResponseHeaders(t *testing.T) {
 		assert.Empty(t, string(ctx.Response.Header.Peek(HeaderBifrostRoutingInfoPrimaryModel)))
 		assert.Empty(t, string(ctx.Response.Header.Peek(HeaderBifrostRoutingInfoServerSideFallbackModel)))
 	})
+
+	// The provider is another Bifrost: its x-bifrost-* headers describe its own hop and must not
+	// replace or add to this gateway's, including the ones this hop leaves unset. Its other
+	// headers, x-request-id among them, are forwarded as before.
+	t.Run("a chained upstream's x-bifrost headers are not forwarded", func(t *testing.T) {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Response.Header.Set("x-bifrost-request-id", "gateway-req")
+		bifrostCtx := newBifrostCtx()
+
+		ApplyBifrostResponseHeaders(ctx, bifrostCtx, schemas.BifrostResponseExtraFields{
+			Provider: schemas.OpenAI,
+			ProviderResponseHeaders: map[string]string{
+				"X-Bifrost-Request-Id":       "upstream-req",
+				"X-Bifrost-Routing-Info-Key": "upstream-key",
+				"X-Request-Id":               "req_upstream",
+				"x-ratelimit-remaining":      "41",
+			},
+		})
+
+		assert.Equal(t, "gateway-req", string(ctx.Response.Header.Peek("x-bifrost-request-id")))
+		assert.Empty(t, string(ctx.Response.Header.Peek(HeaderBifrostRoutingInfoKey)),
+			"the upstream hop's key name must not surface as this hop's")
+		assert.Equal(t, "openai", string(ctx.Response.Header.Peek(HeaderBifrostProvider)))
+		assert.Equal(t, "req_upstream", string(ctx.Response.Header.Peek("x-request-id")))
+		assert.Equal(t, "41", string(ctx.Response.Header.Peek("x-ratelimit-remaining")))
+	})
+}
+
+// TestIsGatewayOwnedResponseHeader pins which provider response header names are never forwarded:
+// the x-bifrost-* family in any case, and nothing that merely shares its first letters.
+func TestIsGatewayOwnedResponseHeader(t *testing.T) {
+	for name, want := range map[string]bool{
+		"x-bifrost-request-id":           true,
+		"X-Bifrost-Trace-Id":             true,
+		"X-BIFROST-ROUTING-INFO-KEY":     true,
+		"x-bifrost-":                     true,
+		"x-bifrost":                      false,
+		"x-bifrostish":                   false,
+		"x-request-id":                   false,
+		"x-bf-vk":                        false,
+		"x-ratelimit-remaining-requests": false,
+		"":                               false,
+	} {
+		assert.Equal(t, want, IsGatewayOwnedResponseHeader(name), name)
+	}
 }
 
 // TestApplyBifrostStreamResponseHeaders covers the streaming variant: identity
@@ -234,6 +307,26 @@ func TestApplyBifrostStreamResponseHeaders(t *testing.T) {
 		// Deprecated original-model derives from the primary on fallback.
 		assert.Equal(t, "claude-sonnet-4-6", string(ctx.Response.Header.Peek(HeaderBifrostOriginalModel)))
 		assert.Equal(t, "us.anthropic.claude-sonnet-4-6", string(ctx.Response.Header.Peek(HeaderBifrostResolvedModel)))
+	})
+
+	// Stream headers are written from the context snapshot before the first
+	// chunk, so the requested route has to ride on it as well.
+	t.Run("snapshot emits requested route", func(t *testing.T) {
+		ctx := &fasthttp.RequestCtx{}
+		bifrostCtx := newBifrostCtx()
+
+		bifrostCtx.SetValue(schemas.BifrostContextKeyRoutingInfo, schemas.RoutingInfo{
+			Provider:       schemas.OpenAI,
+			Model:          "gpt-4o",
+			RequestedModel: "gpt-4o-mini",
+		})
+
+		ApplyBifrostStreamResponseHeaders(ctx, bifrostCtx, schemas.ChatCompletionStreamRequest)
+
+		assert.Equal(t, "gpt-4o", string(ctx.Response.Header.Peek(HeaderBifrostRoutingInfoModel)))
+		assert.Equal(t, "gpt-4o-mini", string(ctx.Response.Header.Peek(HeaderBifrostRoutingInfoRequestedModel)))
+		// The caller sent a bare model, so there is no requested provider to report.
+		assert.Empty(t, string(ctx.Response.Header.Peek(HeaderBifrostRoutingInfoRequestedProvider)))
 	})
 
 	t.Run("missing snapshot emits only request type", func(t *testing.T) {
@@ -313,4 +406,324 @@ func TestApplyBifrostErrorResponseHeaders(t *testing.T) {
 		assert.Empty(t, string(ctx.Response.Header.Peek(HeaderBifrostRequestType)))
 		assert.Empty(t, string(ctx.Response.Header.Peek(HeaderBifrostRoutingInfoProvider)))
 	})
+}
+
+// cacheHeaderNames is every x-bifrost-cache-* header, one per cache_debug field.
+var cacheHeaderNames = []string{
+	"x-bifrost-cache-hit",
+	"x-bifrost-cache-id",
+	"x-bifrost-cache-hit-type",
+	"x-bifrost-cache-hit-latency-ms",
+	"x-bifrost-cache-requested-provider",
+	"x-bifrost-cache-requested-model",
+	"x-bifrost-cache-similarity",
+	"x-bifrost-cache-threshold",
+	"x-bifrost-cache-provider-used",
+	"x-bifrost-cache-model-used",
+	"x-bifrost-cache-input-tokens",
+}
+
+func cacheHeaders(ctx *fasthttp.RequestCtx) map[string]string {
+	out := map[string]string{}
+	for _, name := range cacheHeaderNames {
+		if v := ctx.Response.Header.Peek(name); len(v) > 0 {
+			out[name] = string(v)
+		}
+	}
+	return out
+}
+
+// TestApplyBifrostResponseHeaders_CacheMetadata covers the x-bifrost-cache-* headers: one per
+// cache_debug field, so a caller on a route whose body has no extra_fields (the Anthropic, GenAI,
+// Bedrock and Cohere SDK routes) still learns whether it was served from cache and which entry
+// served it. A normal response reads them from its own cache_debug; a stream, whose headers go out
+// before any chunk carries cache_debug, reads the lookup the cache plugin recorded on the context.
+func TestApplyBifrostResponseHeaders_CacheMetadata(t *testing.T) {
+	newBifrostCtx := func() *schemas.BifrostContext {
+		return schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	}
+	str := func(v string) *string { return &v }
+	threshold, similarity := 0.85, 0.9375
+	inputTokens := 12
+	latency := int64(4)
+
+	t.Run("semantic hit emits every field", func(t *testing.T) {
+		ctx := &fasthttp.RequestCtx{}
+		ApplyBifrostResponseHeaders(ctx, newBifrostCtx(), schemas.BifrostResponseExtraFields{
+			RequestType: schemas.ChatCompletionRequest,
+			CacheDebug: &schemas.BifrostCacheMetadata{
+				CacheHit:          true,
+				CacheID:           str("entry-1"),
+				HitType:           str("semantic"),
+				RequestedProvider: str("anthropic"),
+				RequestedModel:    str("claude-haiku-4-5"),
+				ProviderUsed:      str("openai"),
+				ModelUsed:         str("text-embedding-3-small"),
+				InputTokens:       &inputTokens,
+				Threshold:         &threshold,
+				Similarity:        &similarity,
+				CacheHitLatency:   &latency,
+			},
+		})
+
+		assert.Equal(t, map[string]string{
+			"x-bifrost-cache-hit":                "true",
+			"x-bifrost-cache-id":                 "entry-1",
+			"x-bifrost-cache-hit-type":           "semantic",
+			"x-bifrost-cache-hit-latency-ms":     "4",
+			"x-bifrost-cache-requested-provider": "anthropic",
+			"x-bifrost-cache-requested-model":    "claude-haiku-4-5",
+			"x-bifrost-cache-similarity":         "0.9375",
+			"x-bifrost-cache-threshold":          "0.85",
+			"x-bifrost-cache-provider-used":      "openai",
+			"x-bifrost-cache-model-used":         "text-embedding-3-small",
+			"x-bifrost-cache-input-tokens":       "12",
+		}, cacheHeaders(ctx))
+	})
+
+	t.Run("miss emits only what the miss carries", func(t *testing.T) {
+		ctx := &fasthttp.RequestCtx{}
+		ApplyBifrostResponseHeaders(ctx, newBifrostCtx(), schemas.BifrostResponseExtraFields{
+			RequestType: schemas.ChatCompletionRequest,
+			CacheDebug:  &schemas.BifrostCacheMetadata{CacheHit: false, CacheID: str("entry-2")},
+		})
+
+		assert.Equal(t, map[string]string{
+			"x-bifrost-cache-hit": "false",
+			"x-bifrost-cache-id":  "entry-2",
+		}, cacheHeaders(ctx))
+	})
+
+	t.Run("no cache_debug emits no cache headers", func(t *testing.T) {
+		ctx := &fasthttp.RequestCtx{}
+		ApplyBifrostResponseHeaders(ctx, newBifrostCtx(), schemas.BifrostResponseExtraFields{RequestType: schemas.ChatCompletionRequest})
+		assert.Empty(t, cacheHeaders(ctx))
+	})
+
+	t.Run("stream emits the recorded lookup", func(t *testing.T) {
+		ctx := &fasthttp.RequestCtx{}
+		bifrostCtx := newBifrostCtx()
+		schemas.SetCacheLookupOnContext(bifrostCtx, &schemas.BifrostCacheMetadata{
+			CacheHit: true, CacheID: str("entry-3"), HitType: str("direct"), CacheHitLatency: &latency,
+		})
+
+		ApplyBifrostStreamResponseHeaders(ctx, bifrostCtx, schemas.ChatCompletionStreamRequest)
+
+		assert.Equal(t, map[string]string{
+			"x-bifrost-cache-hit":            "true",
+			"x-bifrost-cache-id":             "entry-3",
+			"x-bifrost-cache-hit-type":       "direct",
+			"x-bifrost-cache-hit-latency-ms": "4",
+		}, cacheHeaders(ctx))
+	})
+
+	t.Run("stream with no lookup emits no cache headers", func(t *testing.T) {
+		ctx := &fasthttp.RequestCtx{}
+		ApplyBifrostStreamResponseHeaders(ctx, newBifrostCtx(), schemas.ChatCompletionStreamRequest)
+		assert.Empty(t, cacheHeaders(ctx))
+	})
+
+	// An error body carries no cache_debug, so neither do its headers, even after a lookup ran.
+	t.Run("error response emits no cache headers", func(t *testing.T) {
+		ctx := &fasthttp.RequestCtx{}
+		bifrostCtx := newBifrostCtx()
+		schemas.SetCacheLookupOnContext(bifrostCtx, &schemas.BifrostCacheMetadata{CacheHit: false, CacheID: str("entry-4")})
+
+		ApplyBifrostErrorResponseHeaders(ctx, bifrostCtx, schemas.BifrostErrorExtraFields{RequestType: schemas.ChatCompletionRequest})
+
+		assert.Empty(t, cacheHeaders(ctx))
+	})
+}
+
+// TestExtraFieldsPlacementHeaders covers client.extra_fields_placement = "headers": the scalar
+// extra_fields with no body-mode header are written only when the request is marked, and the
+// body helpers drop the top-level extra_fields key.
+func TestExtraFieldsPlacementHeaders(t *testing.T) {
+	extra := schemas.BifrostResponseExtraFields{
+		RequestType:               schemas.ChatCompletionRequest,
+		Provider:                  schemas.OpenAI,
+		Latency:                   42,
+		PricingRequestType:        schemas.ResponsesRequest,
+		ConvertedRequestType:      schemas.ChatCompletionRequest,
+		DroppedCompatPluginParams: []string{"temperature", "top_p"},
+		DroppedUnsupportedTools:   []string{"web_search"},
+		PassthroughPath:           "/v1/models",
+	}
+	scalarHeaders := []string{
+		HeaderBifrostLatency, HeaderBifrostPricingRequestType, HeaderBifrostConvertedRequestType,
+		HeaderBifrostDroppedCompatParams, HeaderBifrostDroppedUnsupportedTools, HeaderBifrostPassthroughPath,
+	}
+
+	t.Run("body mode keeps today's header set", func(t *testing.T) {
+		ctx := &fasthttp.RequestCtx{}
+		ApplyBifrostResponseHeaders(ctx, nil, extra)
+		assert.Equal(t, "openai", string(ctx.Response.Header.Peek(HeaderBifrostProvider)))
+		for _, name := range scalarHeaders {
+			assert.Empty(t, string(ctx.Response.Header.Peek(name)), name)
+		}
+	})
+
+	t.Run("headers mode writes the scalar fields", func(t *testing.T) {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.SetUserValue(FastHTTPUserValueExtraFieldsInHeaders, true)
+		ApplyBifrostResponseHeaders(ctx, nil, extra)
+		assert.Equal(t, "openai", string(ctx.Response.Header.Peek(HeaderBifrostProvider)))
+		assert.Equal(t, "42", string(ctx.Response.Header.Peek(HeaderBifrostLatency)))
+		assert.Equal(t, "responses", string(ctx.Response.Header.Peek(HeaderBifrostPricingRequestType)))
+		assert.Equal(t, "chat_completion", string(ctx.Response.Header.Peek(HeaderBifrostConvertedRequestType)))
+		assert.Equal(t, "temperature,top_p", string(ctx.Response.Header.Peek(HeaderBifrostDroppedCompatParams)))
+		assert.Equal(t, "web_search", string(ctx.Response.Header.Peek(HeaderBifrostDroppedUnsupportedTools)))
+		assert.Equal(t, "/v1/models", string(ctx.Response.Header.Peek(HeaderBifrostPassthroughPath)))
+	})
+
+	t.Run("headers mode writes error scalars", func(t *testing.T) {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.SetUserValue(FastHTTPUserValueExtraFieldsInHeaders, true)
+		ApplyBifrostErrorResponseHeaders(ctx, nil, schemas.BifrostErrorExtraFields{
+			Provider:   schemas.Anthropic,
+			Latency:    7,
+			RetryAfter: 1500,
+			ErrorType:  schemas.ErrorType("rate_limit"),
+		})
+		assert.Equal(t, "anthropic", string(ctx.Response.Header.Peek(HeaderBifrostProvider)))
+		assert.Equal(t, "7", string(ctx.Response.Header.Peek(HeaderBifrostLatency)))
+		assert.Equal(t, "1500", string(ctx.Response.Header.Peek(HeaderBifrostRetryAfterMs)))
+		assert.Equal(t, "rate_limit", string(ctx.Response.Header.Peek(HeaderBifrostErrorType)))
+	})
+
+	t.Run("body mode omits error scalars", func(t *testing.T) {
+		ctx := &fasthttp.RequestCtx{}
+		ApplyBifrostErrorResponseHeaders(ctx, nil, schemas.BifrostErrorExtraFields{Latency: 7, RetryAfter: 1500, ErrorType: schemas.ErrorType("rate_limit")})
+		assert.Empty(t, string(ctx.Response.Header.Peek(HeaderBifrostLatency)))
+		assert.Empty(t, string(ctx.Response.Header.Peek(HeaderBifrostRetryAfterMs)))
+		assert.Empty(t, string(ctx.Response.Header.Peek(HeaderBifrostErrorType)))
+	})
+
+	t.Run("stream headers carry compat dropped params from ctx in headers mode only", func(t *testing.T) {
+		bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		bifrostCtx.SetValue(schemas.BifrostContextKeyCompatDroppedParams, []string{"seed"})
+
+		bodyCtx := &fasthttp.RequestCtx{}
+		ApplyBifrostStreamResponseHeaders(bodyCtx, bifrostCtx, schemas.ChatCompletionStreamRequest)
+		assert.Empty(t, string(bodyCtx.Response.Header.Peek(HeaderBifrostDroppedCompatParams)))
+
+		headersCtx := &fasthttp.RequestCtx{}
+		headersCtx.SetUserValue(FastHTTPUserValueExtraFieldsInHeaders, true)
+		ApplyBifrostStreamResponseHeaders(headersCtx, bifrostCtx, schemas.ChatCompletionStreamRequest)
+		assert.Equal(t, "seed", string(headersCtx.Response.Header.Peek(HeaderBifrostDroppedCompatParams)))
+	})
+
+	t.Run("headers mode keeps a zero-millisecond latency on finished responses", func(t *testing.T) {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.SetUserValue(FastHTTPUserValueExtraFieldsInHeaders, true)
+		ApplyBifrostResponseHeaders(ctx, nil, schemas.BifrostResponseExtraFields{RequestType: schemas.ChatCompletionRequest, Latency: 0})
+		assert.Equal(t, "0", string(ctx.Response.Header.Peek(HeaderBifrostLatency)), "body mode serializes latency 0, so headers mode must carry it")
+	})
+
+	t.Run("headers mode writes no latency where none is known", func(t *testing.T) {
+		placeholder := &fasthttp.RequestCtx{}
+		placeholder.SetUserValue(FastHTTPUserValueExtraFieldsInHeaders, true)
+		ApplyBifrostResponseHeaders(placeholder, nil, schemas.BifrostResponseExtraFields{})
+		assert.Empty(t, string(placeholder.Response.Header.Peek(HeaderBifrostLatency)), "an empty placeholder is not a response")
+
+		stream := &fasthttp.RequestCtx{}
+		stream.SetUserValue(FastHTTPUserValueExtraFieldsInHeaders, true)
+		bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		bifrostCtx.SetValue(schemas.BifrostContextKeyRoutingInfo, schemas.RoutingInfo{Provider: schemas.OpenAI, Model: "gpt-4o-mini"})
+		ApplyBifrostStreamResponseHeaders(stream, bifrostCtx, schemas.ChatCompletionStreamRequest)
+		assert.Equal(t, "openai", string(stream.Response.Header.Peek(HeaderBifrostRoutingInfoProvider)))
+		assert.Empty(t, string(stream.Response.Header.Peek(HeaderBifrostLatency)), "stream headers go out before latency exists")
+
+		errCtx := &fasthttp.RequestCtx{}
+		errCtx.SetUserValue(FastHTTPUserValueExtraFieldsInHeaders, true)
+		ApplyBifrostErrorResponseHeaders(errCtx, nil, schemas.BifrostErrorExtraFields{RequestType: schemas.ChatCompletionRequest})
+		assert.Empty(t, string(errCtx.Response.Header.Peek(HeaderBifrostLatency)), "error latency is omitempty in the body, so 0 stays absent")
+	})
+
+	t.Run("strip removes only the top-level extra_fields", func(t *testing.T) {
+		body := []byte(`{"id":"x","extra_fields":{"latency":1},"choices":[{"extra_fields":"keep"}]}`)
+		assert.Equal(t, `{"id":"x","choices":[{"extra_fields":"keep"}]}`, string(StripExtraFields(body)))
+		assert.Equal(t, `{"id":"x"}`, string(StripExtraFields([]byte(`{"id":"x"}`))))
+		assert.Equal(t, `[1]`, string(StripExtraFields([]byte(`[1]`))))
+	})
+
+	// Responses bodies as the handlers marshal them: a stream lifecycle event that wraps a
+	// response, and a unary response.
+	responsesBodies := func(t *testing.T) (event, unary []byte) {
+		extra := schemas.BifrostResponseExtraFields{RequestType: schemas.ResponsesStreamRequest, Provider: schemas.OpenAI}
+		event, err := schemas.MarshalSorted(&schemas.BifrostStreamChunk{BifrostResponsesStreamResponse: &schemas.BifrostResponsesStreamResponse{
+			Type:        schemas.ResponsesStreamResponseTypeCreated,
+			Response:    &schemas.BifrostResponsesResponse{ID: new("resp_1"), Model: "gpt-4o"},
+			ExtraFields: extra,
+		}})
+		assert.NoError(t, err)
+		extra.RequestType = schemas.ResponsesRequest
+		unary, err = schemas.MarshalSorted(&schemas.BifrostResponsesResponse{ID: new("resp_1"), Model: "gpt-4o", ExtraFields: extra})
+		assert.NoError(t, err)
+		return event, unary
+	}
+
+	t.Run("body mode keeps one top-level extra_fields on responses bodies", func(t *testing.T) {
+		event, unary := responsesBodies(t)
+		ctx := &fasthttp.RequestCtx{}
+		for name, body := range map[string][]byte{"stream event": event, "unary": unary} {
+			out := StripExtraFieldsIfInHeaders(ctx, body)
+			assert.Equal(t, "openai", gjson.GetBytes(out, "extra_fields.provider").String(), "%s: %s", name, out)
+			assert.Equal(t, 1, strings.Count(string(out), `"extra_fields"`), "%s carries exactly one extra_fields: %s", name, out)
+		}
+	})
+
+	t.Run("headers mode leaves no extra_fields on responses bodies", func(t *testing.T) {
+		event, unary := responsesBodies(t)
+		ctx := &fasthttp.RequestCtx{}
+		ctx.SetUserValue(FastHTTPUserValueExtraFieldsInHeaders, true)
+		for name, body := range map[string][]byte{"stream event": event, "unary": unary} {
+			out := StripExtraFieldsIfInHeaders(ctx, body)
+			assert.NotContains(t, string(out), `"extra_fields"`, "%s: %s", name, out)
+			assert.Equal(t, "resp_1", gjson.GetBytes(out, "id").String()+gjson.GetBytes(out, "response.id").String(), "%s keeps its payload: %s", name, out)
+		}
+	})
+
+	t.Run("strip-if is a no-op in body mode", func(t *testing.T) {
+		body := []byte(`{"id":"x","extra_fields":{"latency":1}}`)
+		assert.Equal(t, string(body), string(StripExtraFieldsIfInHeaders(&fasthttp.RequestCtx{}, body)))
+		ctx := &fasthttp.RequestCtx{}
+		ctx.SetUserValue(FastHTTPUserValueExtraFieldsInHeaders, true)
+		assert.Equal(t, `{"id":"x"}`, string(StripExtraFieldsIfInHeaders(ctx, body)))
+	})
+}
+
+// BenchmarkApplyBifrostResponseHeaders_BodyMode pins the common-case cost: body mode adds one
+// user-value lookup and no allocations over the pre-existing header writer.
+func BenchmarkApplyBifrostResponseHeaders_BodyMode(b *testing.B) {
+	ctx := &fasthttp.RequestCtx{}
+	extra := schemas.BifrostResponseExtraFields{RequestType: schemas.ChatCompletionRequest, Provider: schemas.OpenAI, Latency: 42}
+	b.ReportAllocs()
+	for b.Loop() {
+		ApplyBifrostResponseHeaders(ctx, nil, extra)
+	}
+}
+
+// BenchmarkStripExtraFieldsIfInHeaders_BodyMode pins that body mode leaves the marshaled body untouched.
+func BenchmarkStripExtraFieldsIfInHeaders_BodyMode(b *testing.B) {
+	ctx := &fasthttp.RequestCtx{}
+	body := []byte(`{"id":"x","extra_fields":{"latency":1}}`)
+	b.ReportAllocs()
+	for b.Loop() {
+		_ = StripExtraFieldsIfInHeaders(ctx, body)
+	}
+}
+
+// TestExposedResponseHeadersListsEveryGatewayHeader guards ExposedResponseHeaders against drift:
+// every x-bifrost-* header constant in responseheaders.go must be exposed to browser clients.
+func TestExposedResponseHeadersListsEveryGatewayHeader(t *testing.T) {
+	src, err := os.ReadFile("responseheaders.go")
+	assert.NoError(t, err)
+	exposed := strings.Split(ExposedResponseHeaders, ", ")
+	names := regexp.MustCompile(`= "(x-bifrost-[a-z0-9-]+)"`).FindAllStringSubmatch(string(src), -1)
+	assert.NotEmpty(t, names)
+	for _, m := range names {
+		assert.Contains(t, exposed, m[1], "ExposedResponseHeaders is missing %s", m[1])
+	}
+	assert.Contains(t, exposed, HeaderRequestID)
 }

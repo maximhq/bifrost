@@ -27,9 +27,10 @@ type DynamicPlugin struct {
 	httpTransportPreAuthHook func(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error)
 
 	// HTTPTransportPlugin (optional)
-	httpTransportPreHook         func(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error)
-	httpTransportPostHook        func(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, resp *schemas.HTTPResponse) error
-	httpTransportStreamChunkHook func(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, stream *schemas.BifrostStreamChunk) (*schemas.BifrostStreamChunk, error)
+	httpTransportPreHook             func(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error)
+	httpTransportPostHook            func(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, resp *schemas.HTTPResponse) error
+	httpTransportStreamChunkHook     func(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, stream *schemas.BifrostStreamChunk) (*schemas.BifrostStreamChunk, error)
+	httpTransportResponseHeadersHook func(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, resp *schemas.HTTPResponseMetadata) error
 
 	// LLMPlugin (optional)
 	// preRequestHook is forward-compat: new .so plugins built against LLMPlugin can export
@@ -42,6 +43,12 @@ type DynamicPlugin struct {
 	// MCPPlugin (optional)
 	preMCPHook  func(ctx *schemas.BifrostContext, req *schemas.BifrostMCPRequest) (*schemas.BifrostMCPRequest, *schemas.MCPPluginShortCircuit, error)
 	postMCPHook func(ctx *schemas.BifrostContext, resp *schemas.BifrostMCPResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostMCPResponse, *schemas.BifrostError, error)
+
+	// A2APlugin (optional, typed). Forward-compat: new .so plugins can export
+	// PreA2AHook/PostA2AHook to participate in Agent Gateway traffic. Legacy
+	// plugins leave these nil and silently no-op for A2A.
+	preA2AHook  func(ctx *schemas.BifrostContext, req *schemas.BifrostA2ARequest) (*schemas.BifrostA2ARequest, *schemas.A2APluginShortCircuit, error)
+	postA2AHook func(ctx *schemas.BifrostContext, resp *schemas.BifrostA2AResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostA2AResponse, *schemas.BifrostError, error)
 
 	// MCPConnectionPlugin (optional, typed). Forward-compat: new .so plugins can
 	// export PreMCPConnectionHook/PostMCPConnectionHook to receive Connect events
@@ -105,6 +112,15 @@ func (dp *DynamicPlugin) HTTPTransportStreamChunkHook(ctx *schemas.BifrostContex
 	return dp.httpTransportStreamChunkHook(ctx, req, stream)
 }
 
+// HTTPTransportResponseHeadersHook intercepts response headers immediately before
+// they are committed. The symbol is optional for shared-object plugins.
+func (dp *DynamicPlugin) HTTPTransportResponseHeadersHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, resp *schemas.HTTPResponseMetadata) error {
+	if dp.httpTransportResponseHeadersHook == nil {
+		return nil
+	}
+	return dp.httpTransportResponseHeadersHook(ctx, req, resp)
+}
+
 // PreRequestHook is invoked once per top-level request to decide provider/model/fallbacks
 // (LLMPlugin interface). Defaults to a no-op passthrough for legacy plugins that don't
 // export PreRequestHook.
@@ -145,6 +161,24 @@ func (dp *DynamicPlugin) PostMCPHook(ctx *schemas.BifrostContext, resp *schemas.
 		return resp, bifrostErr, nil // No-op if not implemented
 	}
 	return dp.postMCPHook(ctx, resp, bifrostErr)
+}
+
+// PreA2AHook is invoked before Agent Gateway (A2A) operations (A2APlugin
+// interface). Defaults to a no-op passthrough when the .so did not export it.
+func (dp *DynamicPlugin) PreA2AHook(ctx *schemas.BifrostContext, req *schemas.BifrostA2ARequest) (*schemas.BifrostA2ARequest, *schemas.A2APluginShortCircuit, error) {
+	if dp.preA2AHook == nil {
+		return req, nil, nil // No-op if not implemented
+	}
+	return dp.preA2AHook(ctx, req)
+}
+
+// PostA2AHook is invoked after Agent Gateway (A2A) operations (A2APlugin
+// interface). Defaults to a no-op passthrough when the .so did not export it.
+func (dp *DynamicPlugin) PostA2AHook(ctx *schemas.BifrostContext, resp *schemas.BifrostA2AResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostA2AResponse, *schemas.BifrostError, error) {
+	if dp.postA2AHook == nil {
+		return resp, bifrostErr, nil // No-op if not implemented
+	}
+	return dp.postA2AHook(ctx, resp, bifrostErr)
 }
 
 // PreMCPConnectionHook satisfies MCPConnectionPlugin for dynamically-loaded plugins.

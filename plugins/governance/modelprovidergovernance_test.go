@@ -2523,8 +2523,9 @@ func TestStore_CheckModelBudget_ModelWithProvider_ExactMatchOnly(t *testing.T) {
 	assert.NoError(t, err, "Different provider should not match provider-specific config")
 }
 
-// TestStore_CheckModelBudget_NoCatalog_NoMatch tests that without a model catalog,
-// cross-provider matching does not happen (graceful degradation).
+// TestStore_CheckModelBudget_NoCatalog_NoMatch tests that without a model catalog, base-model
+// aliasing does not happen (graceful degradation), while the catalog-free parts of the canonical
+// spelling (whitespace, case, a known-provider prefix) still match.
 func TestStore_CheckModelBudget_NoCatalog_NoMatch(t *testing.T) {
 	logger := NewMockLogger()
 	budget := buildBudgetWithUsage("budget1", 100.0, 100.0, "1h") // At limit
@@ -2537,9 +2538,13 @@ func TestStore_CheckModelBudget_NoCatalog_NoMatch(t *testing.T) {
 	}, nil, nil)
 	require.NoError(t, err)
 
-	// Without catalog, "openai/gpt-4o" won't match "gpt-4o" config
+	// Without catalog, the dated alias of "gpt-4o" is not resolved to its base model
+	_, err = checkDeploymentBudgets(store, context.Background(), schemas.OpenRouter, "gpt-4o-2024-08-06", nil)
+	assert.NoError(t, err, "Without model catalog, base-model aliasing should not happen")
+
+	// A known-provider prefix needs no catalog to strip, so "openai/gpt-4o" is "gpt-4o"
 	_, err = checkDeploymentBudgets(store, context.Background(), schemas.OpenRouter, "openai/gpt-4o", nil)
-	assert.NoError(t, err, "Without model catalog, cross-provider matching should not happen")
+	assert.Error(t, err, "A provider-prefixed spelling must match the provider-less config without a catalog")
 
 	// Direct match should still work
 	_, err = checkDeploymentBudgets(store, context.Background(), schemas.OpenAI, "gpt-4o", nil)

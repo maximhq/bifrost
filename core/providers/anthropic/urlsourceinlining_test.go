@@ -210,13 +210,16 @@ func TestInlineURLContentSources_NoURLSourcesIsAPassthrough(t *testing.T) {
 	}
 }
 
-// BedrockMantle is the provider that needs this; native Anthropic fetches URLs itself
-// and must not pay for a redundant download.
-func TestInlineURLSourcesEnabledOnlyForBedrockMantle(t *testing.T) {
-	if !AnthropicProviderRequestDefaultsMap[schemas.BedrockMantle].InlineURLSources {
-		t.Error("BedrockMantle must inline URL sources")
+// AWS-hosted Claude has no URL fetcher, so both the Bedrock InvokeModel entry and
+// Bedrock Mantle inline URL sources; native Anthropic fetches URLs itself and must
+// not pay for a redundant download.
+func TestInlineURLSourcesEnabledOnlyForAWSHostedClaude(t *testing.T) {
+	for _, provider := range []schemas.ModelProvider{schemas.Bedrock, schemas.BedrockMantle} {
+		if !AnthropicProviderRequestDefaultsMap[provider].InlineURLSources {
+			t.Errorf("%s must inline URL sources", provider)
+		}
 	}
-	for _, provider := range []schemas.ModelProvider{schemas.Anthropic, schemas.Azure, schemas.Vertex, schemas.Bedrock} {
+	for _, provider := range []schemas.ModelProvider{schemas.Anthropic, schemas.Azure, schemas.Vertex} {
 		if AnthropicProviderRequestDefaultsMap[provider].InlineURLSources {
 			t.Errorf("%s must not inline URL sources", provider)
 		}

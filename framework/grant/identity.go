@@ -23,6 +23,12 @@ const (
 	CredentialMCPToken CredentialKind = "mcp_jwt"
 	// CredentialAPIKey marks a management API key.
 	CredentialAPIKey CredentialKind = "api_key"
+	// CredentialEdgeSession marks a Bifrost Edge agent's session token. Its value is the user's ID.
+	CredentialEdgeSession CredentialKind = "edge_session"
+	// CredentialWorkloadToken marks a short-lived token a trusted workload identity issuer signed
+	// for a non-human caller, verified on every request. It is never a user's own sign-in, so it
+	// is never usable as a delegated token-exchange subject.
+	CredentialWorkloadToken CredentialKind = "workload_jwt"
 )
 
 // NewCredential is a schemas.Credential of the given kind.

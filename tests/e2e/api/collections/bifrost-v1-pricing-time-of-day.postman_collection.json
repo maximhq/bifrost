@@ -1,0 +1,1171 @@
+{
+  "info": {
+    "name": "Bifrost V1 - Time-of-Day Pricing",
+    "description": "Regression coverage for peak/off-peak time-of-day pricing (off_peak_cost_multiplier + peak_hours on a model pricing row).\n\nEach case creates a virtual-key-scoped pricing override that pins the token rates AND the schedule in the same patch, so the expected cost is fully determined by the override and never by whatever the live datasheet happens to say. That also means the assertions do not care how many tokens the provider actually returns: each run is checked against its own logged token counts.\n\nSchedules are built relative to the run's own clock in a prerequest script, so no clock control is needed and the suite is correct at any hour or weekday. Every window lists all seven days, which keeps a window that wraps past midnight matching correctly.\n\nThree invariants: a window containing the request bills at full rate; a window excluding it scales usage charges by the multiplier; a schedule that cannot be evaluated fails closed to peak. The third matters most, because base rates are the peak prices and an inverted fallback would silently under-bill every customer.\n\nRuns against a gateway with management auth disabled, or with it enabled by passing admin_auth_header (newman --env-var admin_auth_header='Bearer <key>', or BIFROST_ADMIN_AUTH_HEADER for the runner script). That header is applied to /api/ calls only, never to the inference calls, which authenticate as the virtual key.\n\nDeliberately does NOT set x-bf-expect-cost. The dbverify reporter recomputes expected cost from the datasheet and does not model the off-peak multiplier, so it would report the off-peak case as INACCURATE. These cases assert against the logs API themselves.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Management calls need admin auth when the gateway runs with it enabled.",
+          "// Deliberately scoped to /api/ paths: the inference calls authenticate as",
+          "// the virtual key via x-bf-vk, and upserting an admin Authorization header",
+          "// onto those would change which credential the request is billed under,",
+          "// which is the whole thing these cases are asserting on.",
+          "var adminAuthHeader = pm.variables.get('admin_auth_header') || pm.environment.get('admin_auth_header');",
+          "if (adminAuthHeader && String(pm.request.url.getPath()).indexOf('/api/') === 0) {",
+          "  pm.request.headers.upsert({ key: 'Authorization', value: adminAuthHeader });",
+          "}"
+        ]
+      }
+    }
+  ],
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:8080",
+      "type": "string"
+    },
+    {
+      "key": "admin_auth_header",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "provider",
+      "value": "openai",
+      "type": "string"
+    },
+    {
+      "key": "chat_model",
+      "value": "gpt-4o-mini",
+      "type": "string"
+    },
+    {
+      "key": "tod_vk_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "tod_vk_value",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "tod_vk_name",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "peak_override_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "peak_request_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "peak_poll_retry",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "offpeak_override_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "offpeak_request_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "offpeak_poll_retry",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "badsched_override_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "badsched_request_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "badsched_poll_retry",
+      "value": "",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "Setup - Create VK for time-of-day pricing (openai gpt-4o-mini)",
+      "description": "Every pricing override in this collection is scoped to this key so the discounted rates never touch another suite's cost assertions.",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var ts = Date.now();",
+              "var uniqueName = 'Time-of-day Pricing VK ' + ts;",
+              "var provider = pm.variables.get('provider') || 'openai';",
+              "pm.collectionVariables.set('tod_vk_name', uniqueName);",
+              "pm.request.body.raw = JSON.stringify({",
+              "  name: uniqueName,",
+              "  provider_configs: [{provider: provider, weight: 1.0, allowed_models: ['*'], key_ids: ['*']}]",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var code = pm.response.code;",
+              "pm.test('Create VK returns 2xx', function () { pm.expect(code, 'body: ' + pm.response.text()).to.be.within(200, 299); });",
+              "if (code < 200 || code > 299) { return; }",
+              "// A 2xx with a non-JSON body (an SPA fallback, a proxy page) would throw",
+              "// here and abort the run rather than fail one named assertion.",
+              "var json = null;",
+              "try { json = pm.response.json(); } catch (e) { json = null; }",
+              "pm.test('Create VK returned JSON', function () { pm.expect(json, 'body: ' + pm.response.text()).to.not.equal(null); });",
+              "if (!json) { return; }",
+              "var vk = json.virtual_key || json;",
+              "// Fail here rather than storing empty credentials: every later item guards",
+              "// on these, so a 2xx without them would skip the suite and still be green.",
+              "pm.test('Created VK exposes usable credentials', function () {",
+              "  pm.expect(vk.id, 'id in: ' + pm.response.text()).to.be.a('string').and.not.be.empty;",
+              "  pm.expect(vk.value, 'value in: ' + pm.response.text()).to.be.a('string').and.not.be.empty;",
+              "});",
+              "if (!vk.id || !vk.value) { return; }",
+              "pm.collectionVariables.set('tod_vk_id', vk.id);",
+              "pm.collectionVariables.set('tod_vk_value', vk.value);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{}"
+        },
+        "url": {
+          "raw": "{{base_url}}/api/governance/virtual-keys",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "virtual-keys"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Setup - Peak override covering now (openai gpt-4o-mini)",
+      "description": "Pins the rates and a peak window that contains the current instant. The multiplier is present but must not fire.",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var missing = [\"tod_vk_id\"].filter(function (k) { return !pm.collectionVariables.get(k); });",
+              "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }",
+              "pm.collectionVariables.unset('peak_override_id');",
+              "pm.collectionVariables.unset('peak_request_id');",
+              "pm.collectionVariables.unset('peak_poll_retry');",
+              "// Build an HH:MM offset from now, in UTC. All windows below list every",
+              "// weekday, so a window that wraps past midnight still matches and the cases",
+              "// stay correct no matter which hour or day the suite runs at.",
+              "function hhmmFromNow(hoursOffset) {",
+              "  var t = new Date(Date.now() + hoursOffset * 3600 * 1000);",
+              "  function pad(n) { return (n < 10 ? '0' : '') + n; }",
+              "  return pad(t.getUTCHours()) + ':' + pad(t.getUTCMinutes());",
+              "}",
+              "var ALL_DAYS = [0, 1, 2, 3, 4, 5, 6];",
+              "// A four-hour window centred on now, so the request lands well inside it",
+              "// even if the suite is slow.",
+              "var peakHours = { timezone: 'UTC', windows: [{ days: ALL_DAYS, start: hhmmFromNow(-2), end: hhmmFromNow(2) }] };",
+              "var overrideName = 'e2e-tod-peak-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);",
+              "var patch = {",
+              "  input_cost_per_token: 1e-06,",
+              "  output_cost_per_token: 2e-06,",
+              "  // Pinned so a datasheet flat fee cannot leak into the expected total.",
+              "  // A flat per-request fee is deliberately not discounted off-peak, so",
+              "  // leaving it unset would make the off-peak assertion depend on whether",
+              "  // the live datasheet happens to carry one for this model.",
+              "  cost_per_request: 0,",
+              "  off_peak_cost_multiplier: 0.5,",
+              "  peak_hours: peakHours",
+              "};",
+              "pm.request.body.raw = JSON.stringify({",
+              "  name: overrideName,",
+              "  // Virtual-key scoped on purpose. A global or provider-scoped override",
+              "  // would halve the cost of every other request in flight and make the",
+              "  // dbverify cost-accuracy checks in the rest of the suite report",
+              "  // INACCURATE for reasons that have nothing to do with those cases.",
+              "  scope_kind: 'virtual_key',",
+              "  virtual_key_id: pm.collectionVariables.get('tod_vk_id'),",
+              "  match_type: 'exact',",
+              "  pattern: pm.variables.get('chat_model') || 'gpt-4o-mini',",
+              "  request_types: ['chat_completion'],",
+              "  patch: patch",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var code = pm.response.code;",
+              "pm.test('Setup - Peak override covering now (openai gpt-4o-mini) returns 2xx', function () { pm.expect(code, 'body: ' + pm.response.text()).to.be.within(200, 299); });",
+              "if (code < 200 || code > 299) { return; }",
+              "var body = null;",
+              "try { body = pm.response.json(); } catch (e) { body = null; }",
+              "var ov = body && (body.pricing_override || body);",
+              "pm.test('Override exposes an id', function () {",
+              "  pm.expect(ov && ov.id, 'body: ' + pm.response.text()).to.be.a('string').and.not.be.empty;",
+              "});",
+              "if (!ov || !ov.id) { return; }",
+              "pm.collectionVariables.set('peak_override_id', ov.id);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{}"
+        },
+        "url": {
+          "raw": "{{base_url}}/api/governance/pricing-overrides",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "pricing-overrides"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Peak window bills at full rate (openai gpt-4o-mini)",
+      "description": "Priming call. The assertion is on the log row, not this response.",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var missing = [\"tod_vk_value\", \"peak_override_id\"].filter(function (k) { return !pm.collectionVariables.get(k); });",
+              "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }",
+              "var reqId = 'e2e-tod-peak-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);",
+              "pm.collectionVariables.set('peak_request_id', reqId);"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var code = pm.response.code;",
+              "// Provider auth, rate limiting and upstream outages are infrastructure noise,",
+              "// not the behaviour under test. Clear the request id so the cost assertion",
+              "// downstream skips instead of failing on a row that was never written.",
+              "if ([401, 403, 429, 500, 502, 503, 504].indexOf(code) !== -1) {",
+              "  pm.collectionVariables.unset('peak_request_id');",
+              "  pm.test('Skipped: provider unavailable (status ' + code + ')', function () { pm.expect(true).to.be.true; });",
+              "  return;",
+              "}",
+              "pm.test('Inference succeeded', function () { pm.expect(code, 'body: ' + pm.response.text()).to.be.within(200, 299); });",
+              "if (code < 200 || code > 299) { pm.collectionVariables.unset('peak_request_id'); }"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-vk",
+            "value": "{{tod_vk_value}}"
+          },
+          {
+            "key": "x-request-id",
+            "value": "{{peak_request_id}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\": \"{{chat_model}}\", \"messages\": [{\"role\": \"user\", \"content\": \"ok\"}], \"max_tokens\": 5}"
+        },
+        "url": {
+          "raw": "{{base_url}}/v1/chat/completions",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Peak cost is undiscounted (openai gpt-4o-mini)",
+      "description": "A schedule whose window contains the request instant must bill the base rates untouched, even though off_peak_cost_multiplier is set.",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var missing = [\"peak_request_id\"].filter(function (k) { return !pm.collectionVariables.get(k); });",
+              "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }",
+              "var retry = Number(pm.collectionVariables.get('peak_poll_retry') || 0);",
+              "if (retry > 0) {",
+              "  // The log row is written asynchronously after the response returns, so",
+              "  // poll once a second. Newman drains pending timers before it sends.",
+              "  var until = Date.now() + 1000;",
+              "  (function waitBeforeRetry() { if (Date.now() < until) { setTimeout(waitBeforeRetry, 100); } })();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var reqId = pm.collectionVariables.get('peak_request_id');",
+              "if (!reqId) { pm.test('Skipped: no priming request to price', function () { pm.expect(true).to.be.true; }); return; }",
+              "var code = pm.response.code;",
+              "if ([401, 403, 429, 500, 502, 503, 504].indexOf(code) !== -1) {",
+              "  pm.test('Skipped: logs API unavailable (status ' + code + ')', function () { pm.expect(true).to.be.true; });",
+              "  return;",
+              "}",
+              "pm.test('Logs query returns 200', function () { pm.expect(code, 'body: ' + pm.response.text()).to.equal(200); });",
+              "if (code !== 200) { return; }",
+              "var body = null;",
+              "try { body = pm.response.json(); } catch (e) { body = null; }",
+              "pm.test('Logs query returned JSON', function () { pm.expect(body, 'body: ' + pm.response.text()).to.not.equal(null); });",
+              "if (!body) { return; }",
+              "var logs = body.logs || body.data || [];",
+              "// Do not trust the server-side request_id filter blindly. If it were ever",
+              "// ignored, logs[0] would be some other request and the cost assertion would",
+              "// report a mismatch against a row it never named. The log row id IS the",
+              "// request id, so an identity check makes a wrong row read as no row.",
+              "var candidate = logs.length ? logs[0] : null;",
+              "var rowId = candidate && (candidate.id || candidate.request_id);",
+              "var row = candidate && (!rowId || rowId === reqId) ? candidate : null;",
+              "var retry = Number(pm.collectionVariables.get('peak_poll_retry') || 0);",
+              "// Cost is denormalized onto the row after the response is logged, so an",
+              "// existing row with no cost yet is still in flight, not a failure.",
+              "if ((!row || !Number(row.cost)) && retry < 30) {",
+              "  pm.collectionVariables.set('peak_poll_retry', String(retry + 1));",
+              "  if (typeof pm.execution !== 'undefined' && pm.execution.setNextRequest) { pm.execution.setNextRequest(pm.info.requestName); } else { postman.setNextRequest(pm.info.requestName); }",
+              "  return;",
+              "}",
+              "pm.test('Priced log row exists for the request', function () {",
+              "  pm.expect(row, 'no row for request_id=' + reqId + ' after ' + retry + ' polls').to.not.equal(null);",
+              "});",
+              "if (!row) { return; }",
+              "var prompt = Number(row.prompt_tokens || 0);",
+              "var completion = Number(row.completion_tokens || 0);",
+              "var cachedRead = Number(row.cached_read_tokens || 0);",
+              "// The expected-cost formula below models only uncached text. A cache hit",
+              "// prices on different rates, so skip rather than assert something false.",
+              "if (cachedRead > 0) { pm.test('Skipped: response used cached tokens', function () { pm.expect(true).to.be.true; }); return; }",
+              "if (!(prompt > 0)) { pm.test('Skipped: row carries no token counts yet', function () { pm.expect(true).to.be.true; }); return; }",
+              "var peakCost = prompt * 1e-06 + completion * 2e-06;",
+              "var expected = peakCost * 1;",
+              "var actual = Number(row.cost || 0);",
+              "var tol = Math.max(1e-9, 1e-4 * expected);",
+              "// Request inside a peak window bills at the full rate",
+              "pm.test('Request inside a peak window bills at the full rate', function () {",
+              "  pm.expect(Math.abs(actual - expected) <= tol,",
+              "    'prompt=' + prompt + ' completion=' + completion +",
+              "    ' logged=$' + actual + ' expected=$' + expected +",
+              "    ' (peak=$' + peakCost + ' x 1) tol=' + tol).to.be.true;",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{base_url}}/api/logs?request_id={{peak_request_id}}&limit=1",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "logs"
+          ],
+          "query": [
+            {
+              "key": "request_id",
+              "value": "{{peak_request_id}}"
+            },
+            {
+              "key": "limit",
+              "value": "1"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "Teardown - Delete peak override (openai gpt-4o-mini)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var missing = [\"peak_override_id\"].filter(function (k) { return !pm.collectionVariables.get(k); });",
+              "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Override deleted', function () { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.be.within(200, 299); });",
+              "pm.collectionVariables.unset('peak_override_id');"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "DELETE",
+        "header": [],
+        "url": {
+          "raw": "{{base_url}}/api/governance/pricing-overrides/{{peak_override_id}}",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "pricing-overrides",
+            "{{peak_override_id}}"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Setup - Off-peak override excluding now (openai gpt-4o-mini)",
+      "description": "Same rates, but the peak window is three hours away, so the request is off-peak and the multiplier must apply.",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var missing = [\"tod_vk_id\"].filter(function (k) { return !pm.collectionVariables.get(k); });",
+              "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }",
+              "pm.collectionVariables.unset('offpeak_override_id');",
+              "pm.collectionVariables.unset('offpeak_request_id');",
+              "pm.collectionVariables.unset('offpeak_poll_retry');",
+              "// Build an HH:MM offset from now, in UTC. All windows below list every",
+              "// weekday, so a window that wraps past midnight still matches and the cases",
+              "// stay correct no matter which hour or day the suite runs at.",
+              "function hhmmFromNow(hoursOffset) {",
+              "  var t = new Date(Date.now() + hoursOffset * 3600 * 1000);",
+              "  function pad(n) { return (n < 10 ? '0' : '') + n; }",
+              "  return pad(t.getUTCHours()) + ':' + pad(t.getUTCMinutes());",
+              "}",
+              "var ALL_DAYS = [0, 1, 2, 3, 4, 5, 6];",
+              "// A window three hours ahead, so now can never fall inside it regardless",
+              "// of which hour the suite runs at or whether the window wraps midnight.",
+              "var peakHours = { timezone: 'UTC', windows: [{ days: ALL_DAYS, start: hhmmFromNow(3), end: hhmmFromNow(5) }] };",
+              "var overrideName = 'e2e-tod-offpeak-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);",
+              "var patch = {",
+              "  input_cost_per_token: 1e-06,",
+              "  output_cost_per_token: 2e-06,",
+              "  // Pinned so a datasheet flat fee cannot leak into the expected total.",
+              "  // A flat per-request fee is deliberately not discounted off-peak, so",
+              "  // leaving it unset would make the off-peak assertion depend on whether",
+              "  // the live datasheet happens to carry one for this model.",
+              "  cost_per_request: 0,",
+              "  off_peak_cost_multiplier: 0.5,",
+              "  peak_hours: peakHours",
+              "};",
+              "pm.request.body.raw = JSON.stringify({",
+              "  name: overrideName,",
+              "  // Virtual-key scoped on purpose. A global or provider-scoped override",
+              "  // would halve the cost of every other request in flight and make the",
+              "  // dbverify cost-accuracy checks in the rest of the suite report",
+              "  // INACCURATE for reasons that have nothing to do with those cases.",
+              "  scope_kind: 'virtual_key',",
+              "  virtual_key_id: pm.collectionVariables.get('tod_vk_id'),",
+              "  match_type: 'exact',",
+              "  pattern: pm.variables.get('chat_model') || 'gpt-4o-mini',",
+              "  request_types: ['chat_completion'],",
+              "  patch: patch",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var code = pm.response.code;",
+              "pm.test('Setup - Off-peak override excluding now (openai gpt-4o-mini) returns 2xx', function () { pm.expect(code, 'body: ' + pm.response.text()).to.be.within(200, 299); });",
+              "if (code < 200 || code > 299) { return; }",
+              "var body = null;",
+              "try { body = pm.response.json(); } catch (e) { body = null; }",
+              "var ov = body && (body.pricing_override || body);",
+              "pm.test('Override exposes an id', function () {",
+              "  pm.expect(ov && ov.id, 'body: ' + pm.response.text()).to.be.a('string').and.not.be.empty;",
+              "});",
+              "if (!ov || !ov.id) { return; }",
+              "pm.collectionVariables.set('offpeak_override_id', ov.id);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{}"
+        },
+        "url": {
+          "raw": "{{base_url}}/api/governance/pricing-overrides",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "pricing-overrides"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Off-peak window bills at the discounted rate (openai gpt-4o-mini)",
+      "description": "Priming call. The assertion is on the log row, not this response.",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var missing = [\"tod_vk_value\", \"offpeak_override_id\"].filter(function (k) { return !pm.collectionVariables.get(k); });",
+              "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }",
+              "var reqId = 'e2e-tod-offpeak-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);",
+              "pm.collectionVariables.set('offpeak_request_id', reqId);"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var code = pm.response.code;",
+              "// Provider auth, rate limiting and upstream outages are infrastructure noise,",
+              "// not the behaviour under test. Clear the request id so the cost assertion",
+              "// downstream skips instead of failing on a row that was never written.",
+              "if ([401, 403, 429, 500, 502, 503, 504].indexOf(code) !== -1) {",
+              "  pm.collectionVariables.unset('offpeak_request_id');",
+              "  pm.test('Skipped: provider unavailable (status ' + code + ')', function () { pm.expect(true).to.be.true; });",
+              "  return;",
+              "}",
+              "pm.test('Inference succeeded', function () { pm.expect(code, 'body: ' + pm.response.text()).to.be.within(200, 299); });",
+              "if (code < 200 || code > 299) { pm.collectionVariables.unset('offpeak_request_id'); }"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-vk",
+            "value": "{{tod_vk_value}}"
+          },
+          {
+            "key": "x-request-id",
+            "value": "{{offpeak_request_id}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\": \"{{chat_model}}\", \"messages\": [{\"role\": \"user\", \"content\": \"ok\"}], \"max_tokens\": 5}"
+        },
+        "url": {
+          "raw": "{{base_url}}/v1/chat/completions",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Off-peak cost is scaled by the multiplier (openai gpt-4o-mini)",
+      "description": "The regression this collection exists for. Outside every window the usage-based charges scale by off_peak_cost_multiplier and nothing else changes.",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var missing = [\"offpeak_request_id\"].filter(function (k) { return !pm.collectionVariables.get(k); });",
+              "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }",
+              "var retry = Number(pm.collectionVariables.get('offpeak_poll_retry') || 0);",
+              "if (retry > 0) {",
+              "  // The log row is written asynchronously after the response returns, so",
+              "  // poll once a second. Newman drains pending timers before it sends.",
+              "  var until = Date.now() + 1000;",
+              "  (function waitBeforeRetry() { if (Date.now() < until) { setTimeout(waitBeforeRetry, 100); } })();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var reqId = pm.collectionVariables.get('offpeak_request_id');",
+              "if (!reqId) { pm.test('Skipped: no priming request to price', function () { pm.expect(true).to.be.true; }); return; }",
+              "var code = pm.response.code;",
+              "if ([401, 403, 429, 500, 502, 503, 504].indexOf(code) !== -1) {",
+              "  pm.test('Skipped: logs API unavailable (status ' + code + ')', function () { pm.expect(true).to.be.true; });",
+              "  return;",
+              "}",
+              "pm.test('Logs query returns 200', function () { pm.expect(code, 'body: ' + pm.response.text()).to.equal(200); });",
+              "if (code !== 200) { return; }",
+              "var body = null;",
+              "try { body = pm.response.json(); } catch (e) { body = null; }",
+              "pm.test('Logs query returned JSON', function () { pm.expect(body, 'body: ' + pm.response.text()).to.not.equal(null); });",
+              "if (!body) { return; }",
+              "var logs = body.logs || body.data || [];",
+              "// Do not trust the server-side request_id filter blindly. If it were ever",
+              "// ignored, logs[0] would be some other request and the cost assertion would",
+              "// report a mismatch against a row it never named. The log row id IS the",
+              "// request id, so an identity check makes a wrong row read as no row.",
+              "var candidate = logs.length ? logs[0] : null;",
+              "var rowId = candidate && (candidate.id || candidate.request_id);",
+              "var row = candidate && (!rowId || rowId === reqId) ? candidate : null;",
+              "var retry = Number(pm.collectionVariables.get('offpeak_poll_retry') || 0);",
+              "// Cost is denormalized onto the row after the response is logged, so an",
+              "// existing row with no cost yet is still in flight, not a failure.",
+              "if ((!row || !Number(row.cost)) && retry < 30) {",
+              "  pm.collectionVariables.set('offpeak_poll_retry', String(retry + 1));",
+              "  if (typeof pm.execution !== 'undefined' && pm.execution.setNextRequest) { pm.execution.setNextRequest(pm.info.requestName); } else { postman.setNextRequest(pm.info.requestName); }",
+              "  return;",
+              "}",
+              "pm.test('Priced log row exists for the request', function () {",
+              "  pm.expect(row, 'no row for request_id=' + reqId + ' after ' + retry + ' polls').to.not.equal(null);",
+              "});",
+              "if (!row) { return; }",
+              "var prompt = Number(row.prompt_tokens || 0);",
+              "var completion = Number(row.completion_tokens || 0);",
+              "var cachedRead = Number(row.cached_read_tokens || 0);",
+              "// The expected-cost formula below models only uncached text. A cache hit",
+              "// prices on different rates, so skip rather than assert something false.",
+              "if (cachedRead > 0) { pm.test('Skipped: response used cached tokens', function () { pm.expect(true).to.be.true; }); return; }",
+              "if (!(prompt > 0)) { pm.test('Skipped: row carries no token counts yet', function () { pm.expect(true).to.be.true; }); return; }",
+              "var peakCost = prompt * 1e-06 + completion * 2e-06;",
+              "var expected = peakCost * 0.5;",
+              "var actual = Number(row.cost || 0);",
+              "var tol = Math.max(1e-9, 1e-4 * expected);",
+              "// Request outside every peak window is scaled by off_peak_cost_multiplier",
+              "pm.test('Request outside every peak window is scaled by off_peak_cost_multiplier', function () {",
+              "  pm.expect(Math.abs(actual - expected) <= tol,",
+              "    'prompt=' + prompt + ' completion=' + completion +",
+              "    ' logged=$' + actual + ' expected=$' + expected +",
+              "    ' (peak=$' + peakCost + ' x 0.5) tol=' + tol).to.be.true;",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{base_url}}/api/logs?request_id={{offpeak_request_id}}&limit=1",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "logs"
+          ],
+          "query": [
+            {
+              "key": "request_id",
+              "value": "{{offpeak_request_id}}"
+            },
+            {
+              "key": "limit",
+              "value": "1"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "Teardown - Delete off-peak override (openai gpt-4o-mini)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var missing = [\"offpeak_override_id\"].filter(function (k) { return !pm.collectionVariables.get(k); });",
+              "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Override deleted', function () { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.be.within(200, 299); });",
+              "pm.collectionVariables.unset('offpeak_override_id');"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "DELETE",
+        "header": [],
+        "url": {
+          "raw": "{{base_url}}/api/governance/pricing-overrides/{{offpeak_override_id}}",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "pricing-overrides",
+            "{{offpeak_override_id}}"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Setup - Malformed schedule override (openai gpt-4o-mini)",
+      "description": "A schedule that cannot be evaluated at all. The engine must fall back to peak rather than hand out a discount nobody configured.",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var missing = [\"tod_vk_id\"].filter(function (k) { return !pm.collectionVariables.get(k); });",
+              "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }",
+              "pm.collectionVariables.unset('badsched_override_id');",
+              "pm.collectionVariables.unset('badsched_request_id');",
+              "pm.collectionVariables.unset('badsched_poll_retry');",
+              "// Build an HH:MM offset from now, in UTC. All windows below list every",
+              "// weekday, so a window that wraps past midnight still matches and the cases",
+              "// stay correct no matter which hour or day the suite runs at.",
+              "function hhmmFromNow(hoursOffset) {",
+              "  var t = new Date(Date.now() + hoursOffset * 3600 * 1000);",
+              "  function pad(n) { return (n < 10 ? '0' : '') + n; }",
+              "  return pad(t.getUTCHours()) + ':' + pad(t.getUTCMinutes());",
+              "}",
+              "var ALL_DAYS = [0, 1, 2, 3, 4, 5, 6];",
+              "// Both halves are unusable: an out-of-range clock string and a timezone",
+              "// that is not an IANA location. Either one alone is enough to make the",
+              "// schedule unevaluable.",
+              "var peakHours = { timezone: 'Mars/Olympus', windows: [{ days: ALL_DAYS, start: '25:00', end: '99:99' }] };",
+              "var overrideName = 'e2e-tod-badsched-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);",
+              "var patch = {",
+              "  input_cost_per_token: 1e-06,",
+              "  output_cost_per_token: 2e-06,",
+              "  // Pinned so a datasheet flat fee cannot leak into the expected total.",
+              "  // A flat per-request fee is deliberately not discounted off-peak, so",
+              "  // leaving it unset would make the off-peak assertion depend on whether",
+              "  // the live datasheet happens to carry one for this model.",
+              "  cost_per_request: 0,",
+              "  off_peak_cost_multiplier: 0.5,",
+              "  peak_hours: peakHours",
+              "};",
+              "pm.request.body.raw = JSON.stringify({",
+              "  name: overrideName,",
+              "  // Virtual-key scoped on purpose. A global or provider-scoped override",
+              "  // would halve the cost of every other request in flight and make the",
+              "  // dbverify cost-accuracy checks in the rest of the suite report",
+              "  // INACCURATE for reasons that have nothing to do with those cases.",
+              "  scope_kind: 'virtual_key',",
+              "  virtual_key_id: pm.collectionVariables.get('tod_vk_id'),",
+              "  match_type: 'exact',",
+              "  pattern: pm.variables.get('chat_model') || 'gpt-4o-mini',",
+              "  request_types: ['chat_completion'],",
+              "  patch: patch",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var code = pm.response.code;",
+              "pm.test('Setup - Malformed schedule override (openai gpt-4o-mini) returns 2xx', function () { pm.expect(code, 'body: ' + pm.response.text()).to.be.within(200, 299); });",
+              "if (code < 200 || code > 299) { return; }",
+              "var body = null;",
+              "try { body = pm.response.json(); } catch (e) { body = null; }",
+              "var ov = body && (body.pricing_override || body);",
+              "pm.test('Override exposes an id', function () {",
+              "  pm.expect(ov && ov.id, 'body: ' + pm.response.text()).to.be.a('string').and.not.be.empty;",
+              "});",
+              "if (!ov || !ov.id) { return; }",
+              "pm.collectionVariables.set('badsched_override_id', ov.id);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{}"
+        },
+        "url": {
+          "raw": "{{base_url}}/api/governance/pricing-overrides",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "pricing-overrides"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Malformed schedule still serves the request (openai gpt-4o-mini)",
+      "description": "A bad schedule is a pricing concern, not a request-path one: the call must still succeed.",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var missing = [\"tod_vk_value\", \"badsched_override_id\"].filter(function (k) { return !pm.collectionVariables.get(k); });",
+              "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }",
+              "var reqId = 'e2e-tod-badsched-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);",
+              "pm.collectionVariables.set('badsched_request_id', reqId);"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var code = pm.response.code;",
+              "// Provider auth, rate limiting and upstream outages are infrastructure noise,",
+              "// not the behaviour under test. Clear the request id so the cost assertion",
+              "// downstream skips instead of failing on a row that was never written.",
+              "if ([401, 403, 429, 500, 502, 503, 504].indexOf(code) !== -1) {",
+              "  pm.collectionVariables.unset('badsched_request_id');",
+              "  pm.test('Skipped: provider unavailable (status ' + code + ')', function () { pm.expect(true).to.be.true; });",
+              "  return;",
+              "}",
+              "pm.test('Inference succeeded', function () { pm.expect(code, 'body: ' + pm.response.text()).to.be.within(200, 299); });",
+              "if (code < 200 || code > 299) { pm.collectionVariables.unset('badsched_request_id'); }"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-vk",
+            "value": "{{tod_vk_value}}"
+          },
+          {
+            "key": "x-request-id",
+            "value": "{{badsched_request_id}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\": \"{{chat_model}}\", \"messages\": [{\"role\": \"user\", \"content\": \"ok\"}], \"max_tokens\": 5}"
+        },
+        "url": {
+          "raw": "{{base_url}}/v1/chat/completions",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Malformed schedule fails closed to peak (openai gpt-4o-mini)",
+      "description": "Every base rate is the peak price, so a schedule that cannot be parsed must over-bill rather than under-bill. This pins the direction of the fallback, which is the part a refactor is most likely to invert silently.",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var missing = [\"badsched_request_id\"].filter(function (k) { return !pm.collectionVariables.get(k); });",
+              "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }",
+              "var retry = Number(pm.collectionVariables.get('badsched_poll_retry') || 0);",
+              "if (retry > 0) {",
+              "  // The log row is written asynchronously after the response returns, so",
+              "  // poll once a second. Newman drains pending timers before it sends.",
+              "  var until = Date.now() + 1000;",
+              "  (function waitBeforeRetry() { if (Date.now() < until) { setTimeout(waitBeforeRetry, 100); } })();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var reqId = pm.collectionVariables.get('badsched_request_id');",
+              "if (!reqId) { pm.test('Skipped: no priming request to price', function () { pm.expect(true).to.be.true; }); return; }",
+              "var code = pm.response.code;",
+              "if ([401, 403, 429, 500, 502, 503, 504].indexOf(code) !== -1) {",
+              "  pm.test('Skipped: logs API unavailable (status ' + code + ')', function () { pm.expect(true).to.be.true; });",
+              "  return;",
+              "}",
+              "pm.test('Logs query returns 200', function () { pm.expect(code, 'body: ' + pm.response.text()).to.equal(200); });",
+              "if (code !== 200) { return; }",
+              "var body = null;",
+              "try { body = pm.response.json(); } catch (e) { body = null; }",
+              "pm.test('Logs query returned JSON', function () { pm.expect(body, 'body: ' + pm.response.text()).to.not.equal(null); });",
+              "if (!body) { return; }",
+              "var logs = body.logs || body.data || [];",
+              "// Do not trust the server-side request_id filter blindly. If it were ever",
+              "// ignored, logs[0] would be some other request and the cost assertion would",
+              "// report a mismatch against a row it never named. The log row id IS the",
+              "// request id, so an identity check makes a wrong row read as no row.",
+              "var candidate = logs.length ? logs[0] : null;",
+              "var rowId = candidate && (candidate.id || candidate.request_id);",
+              "var row = candidate && (!rowId || rowId === reqId) ? candidate : null;",
+              "var retry = Number(pm.collectionVariables.get('badsched_poll_retry') || 0);",
+              "// Cost is denormalized onto the row after the response is logged, so an",
+              "// existing row with no cost yet is still in flight, not a failure.",
+              "if ((!row || !Number(row.cost)) && retry < 30) {",
+              "  pm.collectionVariables.set('badsched_poll_retry', String(retry + 1));",
+              "  if (typeof pm.execution !== 'undefined' && pm.execution.setNextRequest) { pm.execution.setNextRequest(pm.info.requestName); } else { postman.setNextRequest(pm.info.requestName); }",
+              "  return;",
+              "}",
+              "pm.test('Priced log row exists for the request', function () {",
+              "  pm.expect(row, 'no row for request_id=' + reqId + ' after ' + retry + ' polls').to.not.equal(null);",
+              "});",
+              "if (!row) { return; }",
+              "var prompt = Number(row.prompt_tokens || 0);",
+              "var completion = Number(row.completion_tokens || 0);",
+              "var cachedRead = Number(row.cached_read_tokens || 0);",
+              "// The expected-cost formula below models only uncached text. A cache hit",
+              "// prices on different rates, so skip rather than assert something false.",
+              "if (cachedRead > 0) { pm.test('Skipped: response used cached tokens', function () { pm.expect(true).to.be.true; }); return; }",
+              "if (!(prompt > 0)) { pm.test('Skipped: row carries no token counts yet', function () { pm.expect(true).to.be.true; }); return; }",
+              "var peakCost = prompt * 1e-06 + completion * 2e-06;",
+              "var expected = peakCost * 1;",
+              "var actual = Number(row.cost || 0);",
+              "var tol = Math.max(1e-9, 1e-4 * expected);",
+              "// Unevaluable schedule bills at peak, not at the discount",
+              "pm.test('Unevaluable schedule bills at peak, not at the discount', function () {",
+              "  pm.expect(Math.abs(actual - expected) <= tol,",
+              "    'prompt=' + prompt + ' completion=' + completion +",
+              "    ' logged=$' + actual + ' expected=$' + expected +",
+              "    ' (peak=$' + peakCost + ' x 1) tol=' + tol).to.be.true;",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{base_url}}/api/logs?request_id={{badsched_request_id}}&limit=1",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "logs"
+          ],
+          "query": [
+            {
+              "key": "request_id",
+              "value": "{{badsched_request_id}}"
+            },
+            {
+              "key": "limit",
+              "value": "1"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "Teardown - Delete malformed-schedule override (openai gpt-4o-mini)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var missing = [\"badsched_override_id\"].filter(function (k) { return !pm.collectionVariables.get(k); });",
+              "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Override deleted', function () { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.be.within(200, 299); });",
+              "pm.collectionVariables.unset('badsched_override_id');"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "DELETE",
+        "header": [],
+        "url": {
+          "raw": "{{base_url}}/api/governance/pricing-overrides/{{badsched_override_id}}",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "pricing-overrides",
+            "{{badsched_override_id}}"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Teardown - Delete VK (openai gpt-4o-mini)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var missing = [\"tod_vk_id\"].filter(function (k) { return !pm.collectionVariables.get(k); });",
+              "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('VK deleted', function () { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.be.within(200, 299); });",
+              "pm.collectionVariables.unset('tod_vk_id');",
+              "pm.collectionVariables.unset('tod_vk_value');"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "DELETE",
+        "header": [],
+        "url": {
+          "raw": "{{base_url}}/api/governance/virtual-keys/{{tod_vk_id}}",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "virtual-keys",
+            "{{tod_vk_id}}"
+          ]
+        }
+      }
+    }
+  ]
+}

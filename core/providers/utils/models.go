@@ -116,9 +116,12 @@ func DefaultMatchFns() []MatchFn {
 	}
 }
 
-// matches reports whether a and b are considered equal by any of the provided fns.
-// Returns true on the first fn that returns true.
+// matches reports whether list entry b matches model a: a regex: entry is a full RE2
+// match, any other entry is equal by the first of the provided fns that returns true.
 func matches(a, b string, fns []MatchFn) bool {
+	if schemas.IsRegexEntry(b) {
+		return schemas.MatchEntry(b, a)
+	}
 	for _, fn := range fns {
 		if fn(a, b) {
 			return true
@@ -350,7 +353,7 @@ func (p *ListModelsPipeline) BackfillModels(included map[string]bool) []schemas.
 	if !p.Unfiltered && p.AllowedModels.IsRestricted() {
 		// Case A: backfill explicit allowlist entries not yet matched.
 		for _, entry := range p.AllowedModels {
-			if included[strings.ToLower(entry)] {
+			if schemas.IsRegexEntry(entry) || included[strings.ToLower(entry)] {
 				continue
 			}
 			// Blacklist check.
@@ -376,6 +379,28 @@ func (p *ListModelsPipeline) BackfillModels(included map[string]bool) []schemas.
 				}
 			}
 			result = append(result, m)
+		}
+		// An alias allowed only by a regex: entry has no exact entry above, so backfill it here.
+		for aliasKey, alias := range p.Aliases {
+			if included[strings.ToLower(aliasKey)] || !p.allowedOnlyByRegex(aliasKey) {
+				continue
+			}
+			// Blacklist check.
+			blacklisted := false
+			for _, bl := range p.BlacklistedModels {
+				if matches(aliasKey, bl, p.MatchFns) {
+					blacklisted = true
+					break
+				}
+			}
+			if blacklisted {
+				continue
+			}
+			result = append(result, schemas.Model{
+				ID:    string(p.ProviderKey) + "/" + aliasKey,
+				Name:  schemas.Ptr(ToDisplayName(aliasKey)),
+				Alias: schemas.Ptr(alias.ModelID),
+			})
 		}
 		return result
 	}
@@ -406,4 +431,19 @@ func (p *ListModelsPipeline) BackfillModels(included map[string]bool) []schemas.
 	}
 
 	return result
+}
+
+// allowedOnlyByRegex reports whether name matches a regex: allowlist entry and no exact one.
+func (p *ListModelsPipeline) allowedOnlyByRegex(name string) bool {
+	byRegex := false
+	for _, entry := range p.AllowedModels {
+		if !matches(name, entry, p.MatchFns) {
+			continue
+		}
+		if !schemas.IsRegexEntry(entry) {
+			return false
+		}
+		byRegex = true
+	}
+	return byRegex
 }

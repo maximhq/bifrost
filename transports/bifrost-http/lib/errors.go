@@ -3,17 +3,17 @@ package lib
 import (
 	"errors"
 
-	"github.com/valyala/fasthttp"
+	"github.com/maximhq/bifrost/core/schemas"
 )
 
-// NormalizeJSONErrorStatus maps statuses that forbid response content to 502.
+// Thin wrapper, keeping it here since it is exported
 func NormalizeJSONErrorStatus(code int) int {
-	if code < 200 || code == fasthttp.StatusNoContent ||
-		code == fasthttp.StatusResetContent || code == fasthttp.StatusNotModified {
-		return fasthttp.StatusBadGateway
-	}
-	return code
+	return schemas.NormalizeJSONErrorStatus(code)
 }
 
 var ErrNotFound = errors.New("not found")
 var ErrAlreadyExists = errors.New("already exists")
+
+// ErrInvalidPluginConfig wraps a plugin config refused before the plugin is loaded, so callers
+// can tell a config the caller got wrong apart from a failure to load a valid one.
+var ErrInvalidPluginConfig = errors.New("invalid plugin config")

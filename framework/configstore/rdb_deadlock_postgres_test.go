@@ -327,3 +327,96 @@ func isForeignKeyRace(err error) bool {
 	msg := strings.ToLower(err.Error())
 	return strings.Contains(msg, "foreign key") || strings.Contains(msg, "violates foreign key constraint")
 }
+
+// TestPostgresGrantRevocationCatchesConcurrentCodeExchange runs grant revocation and an
+// authorization-code exchange for the same identity on two real connections, with the exchange
+// fired while revocation is paused after its first statement. Whichever way the two interleave,
+// the identity must end with no active refresh token: either the exchange finds its code already
+// revoked, or the token it minted is seen and revoked by revocation's later statement.
+func TestPostgresGrantRevocationCatchesConcurrentCodeExchange(t *testing.T) {
+	store := setupPostgresDeadlockStore(t)
+	ctx := context.Background()
+
+	require.NoError(t, store.DB().Create(&tables.TableOAuth2AuthorizeRequest{
+		ID: "ar-race", ClientID: "c", RedirectURI: "http://127.0.0.1/cb", State: "s", Scope: "mcp",
+		Resource: "https://bifrost.test/mcp", CodeChallenge: "ch", CodeChallengeMethod: "S256",
+		Status: tables.OAuth2AuthorizeRequestStatusConsented, CodeHash: strPtr("code-race"),
+		BfMode: "vk", BfSub: "vk-race", ExpiresAt: time.Now().Add(time.Minute), CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	}).Error)
+	existing := makeRefreshToken("rt-existing", "ar-earlier", "c", "h-existing")
+	existing.BfSub = "vk-race"
+	require.NoError(t, store.DB().Create(existing).Error)
+
+	// Pause revocation right after its first UPDATE and fire the exchange from another
+	// connection during the pause. The exchange may block on a row lock revocation holds;
+	// the pause is long enough for an unblocked exchange to commit before revocation resumes.
+	exchangeDone := make(chan error, 1)
+	var once sync.Once
+	require.NoError(t, store.DB().Callback().Update().After("gorm:update").Register("test:pause_revocation", func(db *gorm.DB) {
+		once.Do(func() {
+			minted := makeRefreshToken("rt-minted", "ar-race", "c", "h-minted")
+			minted.BfSub = "vk-race"
+			go func() { exchangeDone <- store.ConsumeOAuth2AuthorizeRequest(ctx, "ar-race", minted) }()
+			time.Sleep(500 * time.Millisecond)
+		})
+	}))
+	t.Cleanup(func() { _ = store.DB().Callback().Update().Remove("test:pause_revocation") })
+
+	require.NoError(t, store.RevokeOAuth2GrantsBySubject(ctx, "vk", "vk-race"))
+
+	var exchangeErr error
+	select {
+	case exchangeErr = <-exchangeDone:
+	case <-time.After(30 * time.Second):
+		t.Fatal("code exchange did not finish after revocation committed")
+	}
+
+	var active int64
+	require.NoError(t, store.DB().Model(&tables.TableOAuth2RefreshToken{}).
+		Where("bf_mode = ? AND bf_sub = ? AND revoked_at IS NULL", "vk", "vk-race").Count(&active).Error)
+	require.Zero(t, active, "no refresh token of the revoked identity may stay active (exchange error: %v)", exchangeErr)
+	if exchangeErr != nil {
+		require.True(t, errors.Is(exchangeErr, ErrNotFound), "the exchange can only fail because its code was revoked, got: %v", exchangeErr)
+	}
+}
+
+// TestPostgresGrantRevocationCatchesConcurrentTokenRefresh runs grant revocation while a refresh
+// rotation for the same identity is mid-transaction: the rotation has already locked the old token
+// and is about to insert its replacement. However the two interleave, the identity must end with no
+// active refresh token, so the replacement cannot outlive the revocation.
+func TestPostgresGrantRevocationCatchesConcurrentTokenRefresh(t *testing.T) {
+	store := setupPostgresDeadlockStore(t)
+	ctx := context.Background()
+
+	current := makeRefreshToken("rt-current", "family-refresh", "c", "h-current")
+	current.BfSub = "vk-refresh"
+	require.NoError(t, store.DB().Create(current).Error)
+
+	// Pause the rotation right after it revokes (and so locks) the old token, start revocation
+	// on another connection during the pause, then let the rotation insert and commit.
+	revokeDone := make(chan error, 1)
+	var once sync.Once
+	require.NoError(t, store.DB().Callback().Update().After("gorm:update").Register("test:pause_refresh", func(db *gorm.DB) {
+		once.Do(func() {
+			go func() { revokeDone <- store.RevokeOAuth2GrantsBySubject(ctx, "vk", "vk-refresh") }()
+			time.Sleep(500 * time.Millisecond)
+		})
+	}))
+	t.Cleanup(func() { _ = store.DB().Callback().Update().Remove("test:pause_refresh") })
+
+	replacement := makeRefreshToken("rt-replacement", "family-refresh", "c", "h-replacement")
+	replacement.BfSub = "vk-refresh"
+	require.NoError(t, store.RotateOAuth2RefreshToken(ctx, "rt-current", replacement))
+
+	select {
+	case err := <-revokeDone:
+		require.NoError(t, err)
+	case <-time.After(30 * time.Second):
+		t.Fatal("grant revocation did not finish after the refresh committed")
+	}
+
+	var active int64
+	require.NoError(t, store.DB().Model(&tables.TableOAuth2RefreshToken{}).
+		Where("bf_mode = ? AND bf_sub = ? AND revoked_at IS NULL", "vk", "vk-refresh").Count(&active).Error)
+	require.Zero(t, active, "a token minted by a concurrent refresh must not outlive the revocation")
+}

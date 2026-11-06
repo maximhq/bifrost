@@ -10,6 +10,14 @@ inspect:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | None | Not RBAC-gated - authorized by the credential below |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Inspect a request without forwarding it
     description: |
       Runs the pre-model plugin checks against a request and answers whether

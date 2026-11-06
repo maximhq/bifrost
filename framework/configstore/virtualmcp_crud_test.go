@@ -156,3 +156,96 @@ func TestVirtualMCP_Paginated(t *testing.T) {
 	require.Len(t, found, 1)
 	assert.Equal(t, "Research", found[0].Name)
 }
+
+// TestVirtualMCP_PaginatedFilterByMCPClientID pins the reverse lookup the MCP server sheet uses:
+// which Virtual MCPs bundle a given server. The sheet scanned one list page client-side, so a
+// Virtual MCP past the first 100 read as "not part of any virtual MCP" (#8645). The match is on the
+// exact client_id: a prefix, a different case, a client id that only appears as a tool name, and LIKE
+// metacharacters in the id must not widen it.
+func TestVirtualMCP_PaginatedFilterByMCPClientID(t *testing.T) {
+	ctx := context.Background()
+	store := setupVirtualMCPTestStore(t)
+
+	defs := []*tables.TableVirtualMCP{
+		{Name: "Has alpha", Enabled: true, ParsedTools: []tables.MCPToolSpec{vmcpSpec("other"), vmcpSpec("alpha", "*")}},
+		{Name: "Has alpha2", Enabled: true, ParsedTools: []tables.MCPToolSpec{vmcpSpec("alpha2", "echo")}},
+		{Name: "Tool named alpha", Enabled: true, ParsedTools: []tables.MCPToolSpec{vmcpSpec("other", "alpha")}},
+		{Name: "Underscore id", Enabled: true, ParsedTools: []tables.MCPToolSpec{vmcpSpec("a_b")}},
+		{Name: "Wildcard bait", Enabled: true, ParsedTools: []tables.MCPToolSpec{vmcpSpec("axb")}},
+		{Name: "Ampersand id", Enabled: true, ParsedTools: []tables.MCPToolSpec{vmcpSpec("a&b")}},
+		{Name: "Upper case id", Enabled: true, ParsedTools: []tables.MCPToolSpec{vmcpSpec("ALPHA", "*")}},
+		{Name: "No tools", Enabled: true},
+	}
+	for _, def := range defs {
+		require.NoError(t, store.CreateVirtualMCP(ctx, def))
+	}
+
+	names := func(clientID string) ([]string, int64) {
+		t.Helper()
+		found, total, err := store.GetVirtualMCPsPaginated(ctx, VirtualMCPsQueryParams{Limit: 10, MCPClientID: clientID})
+		require.NoError(t, err)
+		out := make([]string, len(found))
+		for i := range found {
+			out[i] = found[i].Name
+		}
+		return out, total
+	}
+
+	got, total := names("alpha")
+	assert.Equal(t, []string{"Has alpha"}, got)
+	assert.Equal(t, int64(1), total)
+
+	// client_id is unique case-sensitively, so ALPHA and alpha are different servers.
+	got, total = names("ALPHA")
+	assert.Equal(t, []string{"Upper case id"}, got)
+	assert.Equal(t, int64(1), total)
+
+	got, total = names("a_b")
+	assert.Equal(t, []string{"Underscore id"}, got, "_ in the id matches literally, not as a wildcard")
+	assert.Equal(t, int64(1), total)
+
+	got, _ = names("a&b")
+	assert.Equal(t, []string{"Ampersand id"}, got, "an id that encoding/json escapes still matches")
+
+	got, total = names("missing")
+	assert.Empty(t, got)
+	assert.Equal(t, int64(0), total)
+}
+
+// TestVirtualMCP_PaginatedFilterByMCPClientIDPastFirstPage pins that the filter runs in the query,
+// so total_count counts every match and a match older than the first page is still returned.
+func TestVirtualMCP_PaginatedFilterByMCPClientIDPastFirstPage(t *testing.T) {
+	ctx := context.Background()
+	store := setupVirtualMCPTestStore(t)
+
+	// Created first, so the newest-first order puts it after every filler.
+	require.NoError(t, store.CreateVirtualMCP(ctx, &tables.TableVirtualMCP{
+		Name: "Oldest with target", Enabled: true, ParsedTools: []tables.MCPToolSpec{vmcpSpec("target", "*")},
+	}))
+	for i := range 5 {
+		require.NoError(t, store.CreateVirtualMCP(ctx, &tables.TableVirtualMCP{
+			Name: "Filler " + string(rune('A'+i)), Enabled: true, ParsedTools: []tables.MCPToolSpec{vmcpSpec("other", "*")},
+		}))
+	}
+
+	found, total, err := store.GetVirtualMCPsPaginated(ctx, VirtualMCPsQueryParams{Limit: 2, MCPClientID: "target"})
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), total)
+	require.Len(t, found, 1)
+	assert.Equal(t, "Oldest with target", found[0].Name)
+}
+
+func TestVirtualMCP_GetByName(t *testing.T) {
+	ctx := context.Background()
+	store := setupVirtualMCPTestStore(t)
+
+	def := &tables.TableVirtualMCP{Name: "Platform Tools", Enabled: true}
+	require.NoError(t, store.CreateVirtualMCP(ctx, def))
+
+	got, err := store.GetVirtualMCPByName(ctx, "Platform Tools")
+	require.NoError(t, err)
+	assert.Equal(t, def.ID, got.ID)
+
+	_, err = store.GetVirtualMCPByName(ctx, "Nope")
+	assert.ErrorIs(t, err, ErrNotFound)
+}

@@ -94,7 +94,8 @@ func stripUnsupportedChatFields(ctx *schemas.BifrostContext, request *schemas.Bi
 	support := resolveParamSupport(ctx, request.Model)
 
 	_, hasExtraContextManagement := params.ExtraParams["context_management"]
-	dropAnthropicFields := len(params.ContextManagement) > 0 || hasExtraContextManagement ||
+	_, hasSafeguards := params.ExtraParams["safeguards"]
+	dropAnthropicFields := len(params.ContextManagement) > 0 || hasExtraContextManagement || hasSafeguards ||
 		params.CacheControl != nil || params.Speed != nil || params.InferenceGeo != nil ||
 		params.TaskBudget != nil || params.Container != nil || len(params.MCPServers) > 0
 
@@ -134,6 +135,9 @@ func stripUnsupportedChatFields(ctx *schemas.BifrostContext, request *schemas.Bi
 			paramsCopy.ExtraParams = map[string]any{}
 		}
 		paramsCopy.ExtraParams["thinking"] = thinking
+		if outputConfig := outputConfigParam(thinking, params); outputConfig != nil {
+			paramsCopy.ExtraParams["output_config"] = outputConfig
+		}
 		if thinkingMaxTokens != nil {
 			paramsCopy.MaxCompletionTokens = thinkingMaxTokens
 		}
@@ -185,12 +189,88 @@ func stripUnsupportedChatFields(ctx *schemas.BifrostContext, request *schemas.Bi
 		paramsCopy.ExtraParams = maps.Clone(paramsCopy.ExtraParams)
 		if dropAnthropicFields {
 			delete(paramsCopy.ExtraParams, "context_management")
+			delete(paramsCopy.ExtraParams, "safeguards")
 		}
 		if dropReasoningEffort {
 			delete(paramsCopy.ExtraParams, "reasoning_effort")
 		}
 	}
 	requestCopy.Params = &paramsCopy
+	return &requestCopy
+}
+
+// mergeGeminiSystemPrompts folds every system and developer message into a single string
+// system message for Gemini-backed endpoints. Databricks maps chat messages onto Gemini's one
+// system_instruction and rejects anything more with "Gemini models only support one system
+// prompt" (400), counting each text part of a system message as a prompt of its own. Claude
+// Code sends its system prompt as several blocks, so it hits this on every request.
+//
+// The merged message takes the place of the first system message, so a system message from
+// later in the conversation moves to the front: Gemini has nowhere else to put it. Only text
+// parts are kept, since system_instruction takes text only. Other model families are left
+// alone, and the original request is not mutated.
+func mergeGeminiSystemPrompts(ctx *schemas.BifrostContext, request *schemas.BifrostChatRequest) *schemas.BifrostChatRequest {
+	if request == nil || !schemas.IsGeminiModelFamily(ctx, request.Model) {
+		return request
+	}
+
+	isSystem := func(msg schemas.ChatMessage) bool {
+		return msg.Role == schemas.ChatMessageRoleSystem || msg.Role == schemas.ChatMessageRoleDeveloper
+	}
+	systemCount := 0
+	needsMerge := false
+	for _, msg := range request.Input {
+		if !isSystem(msg) {
+			continue
+		}
+		systemCount++
+		if msg.Role == schemas.ChatMessageRoleDeveloper || (msg.Content != nil && msg.Content.ContentStr == nil) {
+			needsMerge = true
+		}
+	}
+	if systemCount == 0 || (systemCount == 1 && !needsMerge) {
+		return request
+	}
+
+	var texts []string
+	for _, msg := range request.Input {
+		if !isSystem(msg) || msg.Content == nil {
+			continue
+		}
+		if msg.Content.ContentStr != nil {
+			if *msg.Content.ContentStr != "" {
+				texts = append(texts, *msg.Content.ContentStr)
+			}
+			continue
+		}
+		for _, block := range msg.Content.ContentBlocks {
+			if block.Text != nil && *block.Text != "" {
+				texts = append(texts, *block.Text)
+			}
+		}
+	}
+
+	merged := make([]schemas.ChatMessage, 0, len(request.Input)-systemCount+1)
+	placed := false
+	for _, msg := range request.Input {
+		if !isSystem(msg) {
+			merged = append(merged, msg)
+			continue
+		}
+		if placed {
+			continue
+		}
+		placed = true
+		joined := strings.Join(texts, "\n\n")
+		merged = append(merged, schemas.ChatMessage{
+			Name:    msg.Name,
+			Role:    schemas.ChatMessageRoleSystem,
+			Content: &schemas.ChatMessageContent{ContentStr: &joined},
+		})
+	}
+
+	requestCopy := *request
+	requestCopy.Input = merged
 	return &requestCopy
 }
 
@@ -209,6 +289,8 @@ func stripUnsupportedResponsesFields(ctx *schemas.BifrostContext, request *schem
 
 	_, hasExtraContextManagement := params.ExtraParams["context_management"]
 	dropContextManagement := len(params.ContextManagement) > 0 || hasExtraContextManagement
+	// Claude Code's auto-mode classifier payload, carried in ExtraParams by the Anthropic route.
+	_, dropSafeguards := params.ExtraParams["safeguards"]
 
 	_, hasExtraReasoningEffort := params.ExtraParams["reasoning_effort"]
 	hasReasoningEffort := hasExtraReasoningEffort || (params.Reasoning != nil &&
@@ -220,7 +302,7 @@ func stripUnsupportedResponsesFields(ctx *schemas.BifrostContext, request *schem
 	dropParallelToolCalls := !support.parallelToolCalls && params.ParallelToolCalls != nil
 	dropTextFormat := !support.responseSchema && params.Text != nil && params.Text.Format != nil
 
-	if !dropContextManagement && !dropReasoningEffort && !dropSamplingParams && !dropToolChoice &&
+	if !dropContextManagement && !dropSafeguards && !dropReasoningEffort && !dropSamplingParams && !dropToolChoice &&
 		!dropParallelToolCalls && !dropTextFormat {
 		return request
 	}
@@ -250,10 +332,13 @@ func stripUnsupportedResponsesFields(ctx *schemas.BifrostContext, request *schem
 		textCopy.Format = nil
 		paramsCopy.Text = &textCopy
 	}
-	if paramsCopy.ExtraParams != nil && (dropContextManagement || dropReasoningEffort) {
+	if paramsCopy.ExtraParams != nil && (dropContextManagement || dropSafeguards || dropReasoningEffort) {
 		paramsCopy.ExtraParams = maps.Clone(paramsCopy.ExtraParams)
 		if dropContextManagement {
 			delete(paramsCopy.ExtraParams, "context_management")
+		}
+		if dropSafeguards {
+			delete(paramsCopy.ExtraParams, "safeguards")
 		}
 		if dropReasoningEffort {
 			delete(paramsCopy.ExtraParams, "reasoning_effort")
@@ -310,6 +395,7 @@ func withResponsesWireModel(ctx *schemas.BifrostContext, key schemas.Key, reques
 // ChatCompletion performs a chat completion request against the resolved Databricks surface.
 func (provider *DatabricksProvider) ChatCompletion(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
 	request = stripUnsupportedChatFields(ctx, request)
+	request = mergeGeminiSystemPrompts(ctx, request)
 	request, bErr := inlineChatImageURLs(ctx, request)
 	if bErr != nil {
 		return nil, bErr
@@ -340,6 +426,7 @@ func (provider *DatabricksProvider) ChatCompletion(ctx *schemas.BifrostContext, 
 // Databricks surface. Both surfaces emit OpenAI-shaped Server-Sent Events.
 func (provider *DatabricksProvider) ChatCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	request = stripUnsupportedChatFields(ctx, request)
+	request = mergeGeminiSystemPrompts(ctx, request)
 	request, bErr := inlineChatImageURLs(ctx, request)
 	if bErr != nil {
 		return nil, bErr

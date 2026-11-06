@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/maximhq/bifrost/core/network"
+	"github.com/maximhq/bifrost/core/network/proxytest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -168,4 +169,45 @@ func TestDownloadPlugin_AllowlistDoesNotPermitDifferentPrivateHost(t *testing.T)
 	_, err = DownloadPlugin(server.URL, ".so", NewPluginDownloadClient(allow))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "non-public address")
+}
+
+// TestProxiedPluginDownloadClientHonoursGlobalProxy pins that plugin downloads honour the
+// global proxy for API traffic, keeping the SSRF policy: a public host goes through the
+// proxy, an allowlisted private host too, and a non-allowlisted private host is refused
+// before anything reaches the proxy.
+func TestProxiedPluginDownloadClientHonoursGlobalProxy(t *testing.T) {
+	set := proxytest.NewSet(t)
+	factory := network.NewHTTPClientFactory(&network.GlobalProxyConfig{
+		Enabled:      true,
+		Type:         network.GlobalProxyTypeHTTP,
+		URL:          "http://127.0.0.1:" + set.Config.Port(),
+		EnableForAPI: true,
+	}, nil)
+	allow, err := network.NewAllowlist([]string{"10.0.0.7"})
+	require.NoError(t, err)
+	client := NewProxiedPluginDownloadClient(allow, factory)
+
+	for _, tt := range []struct {
+		url     string
+		want    proxytest.Route
+		target  string
+		refused bool
+	}{
+		{url: "https://203.0.113.10/plugin.so", want: proxytest.Route{Proxy: "config"}, target: "203.0.113.10:443"},
+		{url: "https://10.0.0.7/plugin.so", want: proxytest.Route{Proxy: "config"}, target: "10.0.0.7:443"},
+		{url: "https://10.0.0.5/plugin.so", refused: true},
+	} {
+		set.Reset()
+		resp, err := client.Get(tt.url)
+		if err == nil {
+			resp.Body.Close()
+		}
+		if tt.refused {
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "non-public address")
+			proxytest.AssertRoute(t, set, proxytest.Direct, "", nil)
+			continue
+		}
+		proxytest.AssertRoute(t, set, tt.want, tt.target, nil)
+	}
 }

@@ -2,6 +2,7 @@ package integrations
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -11,10 +12,11 @@ import (
 	"github.com/bytedance/sonic"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/providers/anthropic"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/tidwall/gjson"
 
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/tidwall/sjson"
 	"github.com/valyala/fasthttp"
 )
@@ -45,7 +47,7 @@ func createAnthropicCompleteRouteConfig(pathPrefix string) RouteConfig {
 			return nil, errors.New("invalid request type")
 		},
 		TextResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostTextCompletionResponse) (interface{}, error) {
-			if shouldUsePassthrough(ctx, resp.ExtraFields.Provider, resp.ExtraFields.OriginalModelRequested, resp.ExtraFields.ResolvedModelUsed) {
+			if responsePassthroughActive(ctx, resp.ExtraFields.Provider, resp.ExtraFields.OriginalModelRequested, resp.ExtraFields.ResolvedModelUsed) {
 				if resp.ExtraFields.RawResponse != nil {
 					return resp.ExtraFields.RawResponse, nil
 				}
@@ -57,6 +59,61 @@ func createAnthropicCompleteRouteConfig(pathPrefix string) RouteConfig {
 		},
 		PreCallback: checkAnthropicPassthrough,
 	}
+}
+
+// anthropicRefuseThreadContinue is the ShortCircuit for the `/v1/messages` routes
+// implementing Bifrost's stateless handling of Anthropic server-side threads.
+// Thread state is bound to the upstream account that created it, and Bifrost's
+// per-request key selection, retries, and fallbacks cannot keep a continuation
+// on that account. A `thread: {"type": "continue"}` request carries only the
+// conversation delta, which Bifrost cannot serve, so it is refused with the
+// `thread_unsupported_request` error code; the client then resends the turn in
+// full and drops the thread field for the rest of the session. Create requests
+// pass through here and have the field stripped on the provider's raw-body path
+// (BuildAnthropicResponsesRequestBody), since they carry the full conversation.
+func anthropicRefuseThreadContinue(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) (bool, error) {
+	anthropicReq, ok := req.(*anthropic.AnthropicMessageRequest)
+	if !ok {
+		return false, nil
+	}
+	// The parser captures unknown top-level fields as compacted RawMessage. In
+	// large-payload mode the body is never parsed, so the enterprise metadata
+	// extractor surfaces the thread type through the routing metadata instead
+	// (already resolved and cached by the hydration in checkAnthropicPassthrough).
+	// An extractor that does not populate ThreadType leaves behavior unchanged.
+	threadType := ""
+	if threadRaw, ok := anthropicReq.ExtraParams["thread"].(json.RawMessage); ok {
+		threadType = gjson.GetBytes(threadRaw, "type").String()
+	} else if isLargePayload, _ := bifrostCtx.Value(schemas.BifrostContextKeyLargePayloadMode).(bool); isLargePayload {
+		if metadata := resolveLargePayloadMetadata(bifrostCtx); metadata != nil {
+			threadType = metadata.ThreadType
+		}
+	}
+	if threadType != "continue" {
+		return false, nil
+	}
+	// The count_tokens endpoint has its own static route without this hook; this
+	// guard keeps the wildcard /v1/messages/{path:*} route from refusing token
+	// counting if route registration ever changes. Token counting keeps working
+	// on full-replay bodies either way.
+	if strings.HasSuffix(string(ctx.Path()), "/count_tokens") {
+		return false, nil
+	}
+	payload, err := providerUtils.MarshalSorted(&anthropic.AnthropicMessageError{
+		Type: "error",
+		Error: anthropic.AnthropicMessageErrorStruct{
+			Type:    "invalid_request_error",
+			Message: `Bifrost does not keep Anthropic thread state; replay the full conversation with thread: {"type": "create"}.`,
+			Details: &anthropic.AnthropicMessageErrorDetails{ErrorCode: "thread_unsupported_request"},
+		},
+	})
+	if err != nil {
+		return true, err
+	}
+	ctx.SetStatusCode(fasthttp.StatusBadRequest)
+	ctx.SetContentType("application/json")
+	ctx.SetBody(payload)
+	return true, nil
 }
 
 // createAnthropicMessagesRouteConfig creates a route configuration for the `/v1/messages` endpoint.
@@ -80,6 +137,9 @@ func createAnthropicMessagesRouteConfig(pathPrefix string, logger schemas.Logger
 				if anthropicReq, ok := req.(*anthropic.AnthropicMessageRequest); ok {
 					bifrostReq := anthropicReq.ToBifrostResponsesRequest(ctx)
 					normalizeBifrostInputContentBlocks(bifrostReq)
+					// Input is still owned here. Strip once before hooks/fallbacks
+					// share it, avoiding a conversation-slice copy per GPT attempt.
+					bifrostReq.ExtractAnthropicBillingHeader()
 					return &schemas.BifrostRequest{
 						ResponsesRequest: bifrostReq,
 					}, nil
@@ -90,7 +150,21 @@ func createAnthropicMessagesRouteConfig(pathPrefix string, logger schemas.Logger
 				soToolName, _ := ctx.Value(schemas.BifrostContextKeyStructuredOutputToolName).(string)
 				if soToolName == "" && isClaudeModel(ctx, resp.ExtraFields.OriginalModelRequested, resp.ExtraFields.ResolvedModelUsed, string(resp.ExtraFields.Provider)) {
 					if resp.ExtraFields.RawResponse != nil {
-						return resp.ExtraFields.RawResponse, nil
+						passthrough, _ := ctx.Value(schemas.BifrostContextKeyPassthroughOverridesPresent).(bool)
+						raw, isRawJSON := resp.ExtraFields.RawResponse.(json.RawMessage)
+						if passthrough || !isRawJSON {
+							return resp.ExtraFields.RawResponse, nil
+						}
+						// Raw capture was requested: echo extra_fields as the converted path does, leaving Anthropic's bytes intact.
+						extraFields, err := sonic.Marshal(resp.ExtraFields)
+						if err != nil {
+							return nil, fmt.Errorf("marshal anthropic extra_fields: %w", err)
+						}
+						withExtraFields, err := sjson.SetRawBytes(raw, "extra_fields", extraFields)
+						if err != nil {
+							return nil, fmt.Errorf("attach anthropic extra_fields: %w", err)
+						}
+						return json.RawMessage(withExtraFields), nil
 					}
 				}
 				return anthropic.ToAnthropicResponsesResponse(ctx, resp), nil
@@ -117,7 +191,7 @@ func createAnthropicMessagesRouteConfig(pathPrefix string, logger schemas.Logger
 			StreamConfig: &StreamConfig{
 				ResponsesStreamResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostResponsesStreamResponse) (string, interface{}, error) {
 					soToolName, _ := ctx.Value(schemas.BifrostContextKeyStructuredOutputToolName).(string)
-					if soToolName == "" && shouldUsePassthrough(ctx, resp.ExtraFields.Provider, resp.ExtraFields.OriginalModelRequested, resp.ExtraFields.ResolvedModelUsed) {
+					if soToolName == "" && responsePassthroughActive(ctx, resp.ExtraFields.Provider, resp.ExtraFields.OriginalModelRequested, resp.ExtraFields.ResolvedModelUsed) {
 						anthropic.SetResponsesStreamPassthrough(ctx)
 						// Skip passthrough for ContentPartAdded: it's a synthetic bifrost event whose
 						// RawResponse carries the parent content_block_start already emitted by OutputItemAdded.
@@ -163,10 +237,22 @@ func createAnthropicMessagesRouteConfig(pathPrefix string, logger schemas.Logger
 					return string(anthropicResponse[0].Type), anthropicResponse[0], nil
 				},
 				ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
+					// A stream that errors never renders a terminal frame, so this is
+					// where its prompt-usage readings are released: handleStreaming
+					// converts chunks in order and returns after this callback, so
+					// every queued message_delta has already been converted. Kept out
+					// of ToAnthropicResponsesStreamError so that converter stays pure.
+					anthropic.ReleaseStreamPromptUsage(ctx)
 					return anthropic.ToAnthropicResponsesStreamError(err)
 				},
+				// The error path above covers a stream that failed. A stream that
+				// simply ends -- including one whose upstream closed without a
+				// message_stop -- releases here instead, rather than waiting for the
+				// next stream to sweep it.
+				Cleanup: anthropic.ReleaseStreamPromptUsage,
 			},
-			PreCallback: checkAnthropicPassthrough,
+			PreCallback:  checkAnthropicPassthrough,
+			ShortCircuit: anthropicRefuseThreadContinue,
 		})
 	}
 	return routes
@@ -312,7 +398,6 @@ func checkAnthropicPassthrough(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.Bif
 
 	var provider schemas.ModelProvider
 	var model string
-	isMessagesRequest := false
 
 	switch r := req.(type) {
 	case *anthropic.AnthropicTextRequest:
@@ -320,7 +405,6 @@ func checkAnthropicPassthrough(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.Bif
 
 	case *anthropic.AnthropicMessageRequest:
 		provider, model = schemas.ParseModelString(r.Model, "")
-		isMessagesRequest = true
 	}
 
 	headers := extractHeadersFromRequest(ctx)
@@ -349,20 +433,11 @@ func checkAnthropicPassthrough(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.Bif
 			}
 		}
 		// These providers convert output_config.format through Bifrost, including
-		// their client-facing response events, so raw request and response text
-		// rewriters do not apply.
+		// their client-facing response events, so the raw request text rewriter
+		// does not apply.
 		if anthropic.ProviderRequiresSyntheticStructuredOutput(provider) && hasOutputConfigFormat(req) {
 			bifrostCtx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, false)
 			return nil
-		}
-		if isMessagesRequest {
-			// Native Messages response forwarding is independent of raw request
-			// serialization. Vertex beta modes serialize the normalized request but
-			// still return Anthropic SSE that Guardrails must synchronize.
-			bifrostCtx.SetValue(
-				schemas.BifrostContextKeyRawStreamTextCodec,
-				schemas.RawStreamTextCodec(anthropicRawStreamTextCodec{}),
-			)
 		}
 		if provider == schemas.Vertex && (hasPromptCachingScopeBetaHeader(headers) || hasFastModeBetaHeader(headers)) {
 			bifrostCtx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, false)
@@ -376,46 +451,6 @@ func checkAnthropicPassthrough(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.Bif
 		)
 	}
 	return nil
-}
-
-// anthropicRawStreamTextCodec owns Anthropic's native text-delta JSON shape.
-type anthropicRawStreamTextCodec struct{}
-
-// Inspect returns text only for assistant content_block_delta text_delta events.
-func (anthropicRawStreamTextCodec) Inspect(rawResponse string) (schemas.RawStreamTextEvent, bool, error) {
-	if !gjson.Valid(rawResponse) {
-		return schemas.RawStreamTextEvent{}, false, fmt.Errorf("anthropic raw stream event is not valid JSON")
-	}
-	if gjson.Get(rawResponse, "type").String() != "content_block_delta" ||
-		gjson.Get(rawResponse, "delta.type").String() != "text_delta" {
-		return schemas.RawStreamTextEvent{}, false, nil
-	}
-	index := gjson.Get(rawResponse, "index")
-	if !index.Exists() || index.Type != gjson.Number || index.Int() < 0 {
-		return schemas.RawStreamTextEvent{}, false, fmt.Errorf("anthropic text_delta event has invalid index")
-	}
-	text := gjson.Get(rawResponse, "delta.text")
-	if !text.Exists() || text.Type != gjson.String {
-		return schemas.RawStreamTextEvent{}, false, fmt.Errorf("anthropic text_delta event has invalid delta.text")
-	}
-	return schemas.RawStreamTextEvent{
-		TargetID: strconv.FormatInt(index.Int(), 10),
-		Text:     text.String(),
-	}, true, nil
-}
-
-// Rewrite replaces only delta.text on an eligible Anthropic raw stream event.
-func (codec anthropicRawStreamTextCodec) Rewrite(rawResponse string, text string) (string, error) {
-	if _, eligible, err := codec.Inspect(rawResponse); err != nil {
-		return "", err
-	} else if !eligible {
-		return "", fmt.Errorf("anthropic raw stream event is not an eligible text_delta")
-	}
-	rewritten, err := sjson.Set(rawResponse, "delta.text", text)
-	if err != nil {
-		return "", fmt.Errorf("rewrite anthropic text_delta: %w", err)
-	}
-	return rewritten, nil
 }
 
 // rewriteAnthropicRawRequestBody applies runtime replacements only to Anthropic fields mirrored as mutable normalized text.
@@ -511,6 +546,8 @@ func collectAnthropicRawContentBlockPaths(paths *[]string, block gjson.Result, p
 		switch anthropic.AnthropicContentBlockType(blockType.String()) {
 		case anthropic.AnthropicContentBlockTypeText:
 			return appendRawRequestStringPath(paths, block.Get("text"), rawRequestObjectPath(path, "text"))
+		case anthropic.AnthropicContentBlockTypeToolUse:
+			return collectRawRequestArgumentStringPaths(paths, block.Get("input"), rawRequestObjectPath(path, "input"))
 		case anthropic.AnthropicContentBlockTypeToolResult, anthropic.AnthropicContentBlockTypeMCPToolResult:
 			return collectAnthropicRawContentPaths(
 				paths,
@@ -526,6 +563,20 @@ func collectAnthropicRawContentBlockPaths(paths *[]string, block gjson.Result, p
 // shouldUsePassthrough checks if the request should be sent to the passthrough endpoint.
 func shouldUsePassthrough(ctx *schemas.BifrostContext, provider schemas.ModelProvider, model string, alias string) bool {
 	return anthropic.IsClaudeCodeRequest(ctx) && isClaudeModel(ctx, model, alias, string(provider))
+}
+
+// responsePassthroughActive decides whether a reply is converted as raw Anthropic
+// passthrough. It follows shouldUsePassthrough, except that core may take an attempt off
+// raw-body passthrough after ingress chose it (provider-injected tools, structured output
+// on a provider without native support). That attempt was sent through the typed path,
+// so its reply must be re-encoded from Bifrost events: forwarding raw frames would show
+// the client turns it never asked for, and passthrough mode skips events the typed
+// stream relies on.
+func responsePassthroughActive(ctx *schemas.BifrostContext, provider schemas.ModelProvider, model string, alias string) bool {
+	if useRaw, ok := ctx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); ok && !useRaw {
+		return false
+	}
+	return shouldUsePassthrough(ctx, provider, model, alias)
 }
 
 // serverToolSynthesizesResultBlock reports whether an item's output_item.done

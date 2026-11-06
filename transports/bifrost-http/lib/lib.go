@@ -1,7 +1,11 @@
 package lib
 
 import (
+	"bytes"
+	"errors"
+	"fmt"
 	"io"
+	"mime/multipart"
 	"strconv"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -73,4 +77,45 @@ func StreamLargeResponseBody(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.Bifro
 
 	ctx.Response.SetBodyStream(reader, bodySize)
 	return true
+}
+
+// MultipartRequestPart is the part of a multipart request that holds its JSON body.
+const MultipartRequestPart = "request"
+
+// ReadMultipartRequest splits a multipart body into the JSON request, read from the
+// part named "request", and the file parts, keyed by part name. Part order is free.
+// Every part needs a distinct, non-empty name; each route links the files to the
+// request itself and rejects any it does not use.
+func ReadMultipartRequest(body []byte, boundary string) (request []byte, files map[string][]byte, err error) {
+	files = make(map[string][]byte)
+	reader := multipart.NewReader(bytes.NewReader(body), boundary)
+	for {
+		part, err := reader.NextPart()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, nil, fmt.Errorf("invalid multipart body: %w", err)
+		}
+		name := part.FormName()
+		data, err := io.ReadAll(part)
+		if err != nil {
+			return nil, nil, fmt.Errorf("invalid multipart part %q: %w", name, err)
+		}
+		if name == "" {
+			return nil, nil, errors.New("each multipart part needs a name")
+		}
+		if _, seen := files[name]; seen || (name == MultipartRequestPart && request != nil) {
+			return nil, nil, fmt.Errorf("multipart part %q is sent more than once", name)
+		}
+		if name == MultipartRequestPart {
+			request = data
+			continue
+		}
+		files[name] = data
+	}
+	if request == nil {
+		return nil, nil, errors.New(`multipart request requires a "request" part holding the JSON body`)
+	}
+	return request, files, nil
 }

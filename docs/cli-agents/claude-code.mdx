@@ -1,10 +1,10 @@
 ---
 title: "Claude Code"
-description: "Use Claude Code with Bifrost to route through any provider and unlock advanced features like MCP tools and observability."
+description: "Route Claude Code through Bifrost with a static virtual key or dynamically issued credentials, then verify that every request is governed by Bifrost."
 icon: "star-of-life"
 ---
 
-[Claude Code](https://www.claude.com/product/claude-code) brings AI-powered coding capabilities directly to your terminal.
+[Claude Code](https://code.claude.com/docs/en/overview) connects to Bifrost through Bifrost's Anthropic-compatible endpoint. Claude Code treats Bifrost as an [LLM gateway](https://code.claude.com/docs/en/llm-gateway): it sends every model request to `ANTHROPIC_BASE_URL` with a Bifrost credential instead of an Anthropic login.
 
 **Tested on Claude Code versions:**
 
@@ -17,89 +17,295 @@ icon: "star-of-life"
 | 2.1.129 | 2026-05-05 |
 | 2.1.128 | 2026-05-04 |
 
-<Warning>
-    Since version 2.1.212, Anthropic has enforced the anthropic-version header along with some others.
+## Before you begin
 
-    Go to **Settings > Client Settings** and add them as a comma-separated list:
-  
-    ```
-    anthropic-dangerous-direct-browser-access, anthropic-version, content-type, user-agent, x-api-key, x-stainless-arch, x-stainless-helper-method, x-stainless-lang, x-stainless-os, x-stainless-package-version, x-stainless-retry-count, x-stainless-runtime, x-stainless-runtime-version, x-stainless-timeout
-    ```
-</Warning>
+You need:
+
+- Claude Code installed. See [Set up Claude Code](https://code.claude.com/docs/en/setup).
+- The Bifrost gateway URL. Claude Code uses the `/anthropic` path, for example `https://bifrost.example.com/anthropic`.
+- A Bifrost credential that allows the models you plan to use:
+  - **Virtual key** (OSS and Enterprise): a `sk-bf-*` key. A new virtual key with no provider configuration denies all providers, so confirm the key allows your model.
+  - **Enterprise SSO** (Enterprise): a user provisioned through [User Provisioning](/enterprise/user-provisioning) with an assigned access profile or virtual key.
+
+## Choose a setup
+
+| Setup | Credential | Best for | Refresh |
+| --- | --- | --- | --- |
+| [Launch through Bifrost CLI](#launch-through-bifrost-cli) | Virtual key or Enterprise SSO | Fastest start; nothing written to Claude settings | Automatic |
+| [Static virtual key](#static-virtual-key) | Virtual key in `ANTHROPIC_AUTH_TOKEN` | OSS, CI, and personal use | Manual rotation |
+| [Claude subscription](#use-a-claude-subscription-through-bifrost) | claude.ai login, plus a virtual key in `x-bf-vk` | Subscription billing with Bifrost governance | Managed by Claude Code |
+| [Dynamic credentials](#dynamic-credentials-with-apikeyhelper) | Output of an `apiKeyHelper` command | Enterprise rollouts, rotating or short-lived credentials | Claude Code re-runs the helper |
+
+<Tip>
+  For enterprise developers, use [dynamic credentials with Bifrost CLI SSO](#use-bifrost-cli-sso-recommended-for-enterprise). Each request is attributed to the signed-in user, no long-lived secret is stored in Claude Code settings, and expired sessions refresh automatically.
+</Tip>
 
 <Note>
-	If your Allowed Headers are already set to `*`, you can skip this note. If not and you face issues integrating Bifrost with Claude Code,
-	try switching to `*` or adding the specific headers required by your client. By default, Bifrost whitelists: `Content-Type`,
-	`Authorization`, `X-Requested-With`, `X-Stainless-Timeout`, and `X-Api-Key`.
+**Signing in with your identity provider (Enterprise):** to have users authenticate with their work account instead of a virtual key, run Code sessions in Claude Desktop on 3P. Its configuration covers Code sessions as well as Chat and Cowork. See [Claude Desktop: Authenticate with SSO](/cli-agents/claude-desktop#2b-authenticate-with-sso).
 </Note>
 
-## Installing Claude Code
+## Launch through Bifrost CLI
+
+[Bifrost CLI](/quickstart/cli/getting-started) starts Claude Code with the gateway URL, credential, and model already set for that session. It does not modify `~/.claude/settings.json`.
 
 ```bash
-curl -fsSL https://claude.ai/install.sh | bash
+bifrost context add production --base-url https://bifrost.example.com --use
+
+# Enterprise: sign in with SSO
+bifrost auth login
+
+# OSS or Enterprise: store a virtual key instead
+printf '%s\n' "$BIFROST_VIRTUAL_KEY" | bifrost auth set-virtual-key --stdin
+
+bifrost claude --model anthropic/claude-sonnet-4-6
 ```
 
-For platform-specific instructions, visit https://code.claude.com/docs/en/overview.
+With Enterprise SSO, Bifrost CLI passes Claude Code a temporary `--settings` file whose `apiKeyHelper` runs `bifrost auth print-token`. The token is never written to Claude settings, and the temporary file is removed when Claude Code exits. With a virtual key, the key is set in the child process environment only.
 
-## Authentication Methods
+See [Coding harness integrations](/quickstart/cli/coding-agents) for model selection, persistent configuration, and removal.
 
-There are two ways to authenticate Claude Code with Bifrost:
+## Static virtual key
 
-### `ANTHROPIC_AUTH_TOKEN` (Recommended)
+Use this when a fixed virtual key is acceptable. Claude Code sends `ANTHROPIC_AUTH_TOKEN` as `Authorization: Bearer <token>`, which Bifrost accepts as a virtual key. No Anthropic account login is required.
 
-Set `ANTHROPIC_AUTH_TOKEN` to your Bifrost virtual key. Claude Code sends this token in the `Authorization: Bearer` header automatically. Bifrost recognizes this header and uses the virtual key for routing and authentication.
+<Steps>
+  <Step title="Verify the key against Bifrost">
+    ```bash
+    export ANTHROPIC_BASE_URL=https://bifrost.example.com/anthropic
+    export ANTHROPIC_AUTH_TOKEN=sk-bf-your-virtual-key
 
-**Why this is recommended:** You do not need to log in to an Anthropic account. No Anthropic credentials are required, as Bifrost handles everything through the virtual key.
+    curl -sS -w '\n%{http_code}\n' "$ANTHROPIC_BASE_URL/v1/messages" \
+      -H "Authorization: Bearer $ANTHROPIC_AUTH_TOKEN" \
+      -H "anthropic-version: 2023-06-01" \
+      -H "content-type: application/json" \
+      -d '{"model": "claude-sonnet-4-6", "max_tokens": 16, "messages": [{"role": "user", "content": "ping"}]}'
+    ```
 
-All code snippets below use this method.
+    A `200` with a JSON message confirms the URL, key, and model. A `401` means the key was rejected; a `403` usually means the key does not allow that provider or model.
+  </Step>
+  <Step title="Persist the configuration">
+    Add an `env` block to your **user** settings, `~/.claude/settings.json` (`%USERPROFILE%\.claude\settings.json` on Windows). Merge it into the existing file instead of replacing it.
 
-### `ANTHROPIC_CUSTOM_HEADERS` (Alternative)
+    ```json
+    {
+      "env": {
+        "ANTHROPIC_BASE_URL": "https://bifrost.example.com/anthropic",
+        "ANTHROPIC_AUTH_TOKEN": "sk-bf-your-virtual-key"
+      }
+    }
+    ```
 
-Set `ANTHROPIC_CUSTOM_HEADERS` to `x-bf-vk: your-virtual-key`. This passes the virtual key as a custom header instead of the `Authorization` header.
+    To scope the configuration to one repository, use `.claude/settings.local.json` and make sure it is gitignored.
+  </Step>
+  <Step title="Verify in Claude Code">
+    Follow [Verify requests reach Bifrost](#verify-requests-reach-bifrost).
+  </Step>
+</Steps>
 
-**Caveat:** Because the virtual key is sent as a custom header rather than as the bearer token, Claude Code falls back to standard Anthropic account authentication for the `Authorization` header. This means you still need to log in with an Anthropic account. No credits are needed on the Anthropic account since billing goes through your Bifrost virtual key, but the account login is still required.
+<Warning>
+  Never put a credential in a project's `.claude/settings.json`. That file is committed and shared with everyone who clones the repository.
+</Warning>
 
-## Configuring Claude Code to work with Bifrost
+## Use a Claude subscription through Bifrost
+
+To keep billing on a Claude Pro, Max, Team, or Enterprise subscription while Bifrost applies governance and logging, sign in to Claude Code with `/login` and send the virtual key in a custom header instead of `ANTHROPIC_AUTH_TOKEN`:
+
+```json
+{
+  "env": {
+    "ANTHROPIC_BASE_URL": "https://bifrost.example.com/anthropic",
+    "ANTHROPIC_CUSTOM_HEADERS": "x-bf-vk: sk-bf-your-virtual-key"
+  }
+}
+```
+
+Claude Code sends its subscription token as `Authorization: Bearer sk-ant-oat…`. On the `/anthropic` route, Bifrost forwards that token to Anthropic instead of selecting a provider key, and uses `x-bf-vk` for governance. Do not set `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_API_KEY`, or `apiKeyHelper` in this mode; any of them replaces the subscription login. Subscription usage limits still apply.
+
+## Dynamic credentials with apiKeyHelper
+
+Claude Code's [`apiKeyHelper`](https://code.claude.com/docs/en/settings-reference#apikeyhelper) setting runs a command that prints the current credential. Use it whenever the credential expires, rotates, or comes from a vault or SSO tool.
 
 <Note>
-	**To avoid caching issues in Claude Code**, follow these steps:
-
-	- Open your `settings.json` and remove the `model` field if it is present. This field overwrites the `env`-based model selection and can cause unexpected behavior.
-	- Save the file.
-	- Start Claude Code, run the `/logout` command, then restart Claude Code.
-	- When prompted to choose an authentication method:
-		- If you are using `ANTHROPIC_AUTH_TOKEN` (recommended), no Anthropic account login is required, so you can skip this step.
-		- If you are using `ANTHROPIC_CUSTOM_HEADERS`, select **"Anthropic Console account · API usage billing"** when prompted.
-		<Frame>
-			<img src="/media/cli/select-api-claude-code.png" alt="Claude cli API selection" />
-		</Frame>
+  The setting is named `apiKeyHelper`. Claude Code has no `apiKeyScript` setting.
 </Note>
 
-Claude Code supports multiple authentication methods. Choose the one that matches your account type.
+### How Claude Code uses the helper
 
-1. **Update settings.json**
+| Behavior | Detail |
+| --- | --- |
+| Command | Runs in Bash on macOS and Linux and in PowerShell on Windows. It must print only the credential to stdout. Any banner or log line on stdout makes the helper fail. |
+| Headers | The value is sent as both `Authorization: Bearer <value>` and `x-api-key: <value>`. Bifrost accepts either. |
+| Re-run | Claude Code re-runs the helper when its cached value expires, after a `401` or credential error, and when you run `/login`. |
+| Cache lifetime | Set `CLAUDE_CODE_API_KEY_HELPER_TTL_MS` explicitly. Anthropic's documentation currently gives different defaults for this cache, so do not rely on it. |
+| Timeout | Claude Code waits up to 30 seconds for the helper. A helper slower than 10 seconds shows a warning in the prompt bar. |
+| Trust | On macOS and Linux, a helper defined in project or local settings runs only after you trust the workspace. Helpers in user or managed settings do not need trust. |
 
-Global `settings.json` is placed in your home folder.
+### Use Bifrost CLI SSO (recommended for Enterprise)
 
-- macOS / Linux / WSL (User Global): `~/.claude/settings.json`
-- Windows (User Global): `%USERPROFILE%\.claude\settings.json`
-- Project-Specific: `.claude/settings.json` (located within your individual project's root directory)
-- Local Overrides: `.claude/settings.local.json` (also in the project root, used for personal preferences that aren't shared via Git)
+`bifrost auth print-token` prints a current Bifrost session token for the signed-in user. If the access token has expired, the CLI refreshes it with the stored refresh token before printing. Requests are governed by the user's access profile or selected assigned virtual key.
 
-You will need to update the most granular `settings.json`.
+<Steps>
+  <Step title="Install Bifrost CLI and sign in">
+    Follow [Install the CLI](/quickstart/cli/getting-started#install-the-cli), then:
 
-### 1. Using alias
+    ```bash
+    bifrost context add production --base-url https://bifrost.example.com --use
+    bifrost auth login
+    bifrost --context production auth print-token >/dev/null && echo "token OK"
+    ```
+  </Step>
+  <Step title="Configure Claude Code">
+    In `~/.claude/settings.json`, merge:
 
-This approach uses Bifrost's [dynamic aliasing via routing rules](/providers/aliasing-models#dynamic-aliasing) — the names `sonnet-model` and `haiku-model` are arbitrary labels that Claude Code sends, and a routing rule rewrites them to whatever provider/model you want at request time. Because the rewrite is rule-based, you can route the same alias to different targets per scope, per header, or per other request attributes.
+    <Tabs>
+      <Tab title="macOS / Linux">
+        ```json
+        {
+          "apiKeyHelper": "~/.bifrost/bin/bifrost --context production auth print-token",
+          "env": {
+            "ANTHROPIC_BASE_URL": "https://bifrost.example.com/anthropic",
+            "CLAUDE_CODE_API_KEY_HELPER_TTL_MS": "900000"
+          }
+        }
+        ```
+      </Tab>
+      <Tab title="Windows">
+        ```json
+        {
+          "apiKeyHelper": "& \"$env:USERPROFILE\\.bifrost\\bin\\bifrost.exe\" --context production auth print-token",
+          "env": {
+            "ANTHROPIC_BASE_URL": "https://bifrost.example.com/anthropic",
+            "CLAUDE_CODE_API_KEY_HELPER_TTL_MS": "900000"
+          }
+        }
+        ```
+      </Tab>
+    </Tabs>
 
-1. Add following routing rules in Bifrost
+    - Use the full path to `bifrost`; the helper shell may not load your interactive `PATH`.
+    - Pin `--context` so the helper does not follow a later `bifrost context use`.
+    - Remove `ANTHROPIC_AUTH_TOKEN` and `ANTHROPIC_API_KEY` from the same `env` block and from your shell. Both take precedence over `apiKeyHelper`.
+  </Step>
+  <Step title="Verify">
+    Start `claude` and follow [Verify requests reach Bifrost](#verify-requests-reach-bifrost). Bifrost logs show the signed-in user for each request.
+  </Step>
+</Steps>
+
+Bifrost session access tokens are valid for one hour. The refresh token is valid for 30 days and rotates on each refresh. A 15-minute helper cache keeps Claude Code well inside the access-token lifetime, and Claude Code also re-runs the helper after any `401`. When the refresh token expires or is revoked, the helper fails until you run `bifrost auth login` again.
+
+To use a specific assigned virtual key instead of the gateway's default for your user, run `bifrost virtual-keys assigned` and then `bifrost auth select-virtual-key <id>`. The selection applies to the context.
+
+### Use your own credential script
+
+Any command that prints a credential Bifrost accepts works as a helper:
+
+| Credential | Accepted by | Notes |
+| --- | --- | --- |
+| Virtual key (`sk-bf-*`) | OSS and Enterprise | Fetch it from a vault or secrets manager instead of storing it in settings. |
+| Identity-provider access token (JWT) | Enterprise with [User Provisioning](/enterprise/user-provisioning) | Must be issued by the configured identity provider for Bifrost's client or audience. Bifrost validates it and attributes the request to the matching user. |
+
+Example for a virtual key stored in HashiCorp Vault:
+
+```bash ~/bin/bifrost-credential.sh
+#!/bin/bash
+set -euo pipefail
+vault kv get -field=virtual_key secret/bifrost/claude-code
+```
+
+```bash
+chmod 700 ~/bin/bifrost-credential.sh
+```
+
+```json ~/.claude/settings.json
+{
+  "apiKeyHelper": "~/bin/bifrost-credential.sh",
+  "env": {
+    "ANTHROPIC_BASE_URL": "https://bifrost.example.com/anthropic",
+    "CLAUDE_CODE_API_KEY_HELPER_TTL_MS": "900000"
+  }
+}
+```
+
+For an identity-provider token, replace the `vault` command with your provider's token command. Set `CLAUDE_CODE_API_KEY_HELPER_TTL_MS` below the token lifetime, and make the script exit non-zero when it cannot produce a token.
+
+<Warning>
+  Send only one credential type per request. If you also send a virtual key, for example through `ANTHROPIC_CUSTOM_HEADERS: x-bf-vk: ...`, alongside an identity-provider JWT, Bifrost applies the gateway's [dual-credential policy](/enterprise/user-provisioning#requests-with-both-an-identity-token-and-a-virtual-key): it uses the JWT identity by default, and can instead prefer the virtual key or reject the request.
+</Warning>
+
+## Verify requests reach Bifrost
+
+1. Start `claude` from a new terminal.
+2. Run `/status`. On the **Status** tab, confirm:
+   - `Anthropic base URL` shows your Bifrost URL ending in `/anthropic`.
+   - The credential line names `ANTHROPIC_AUTH_TOKEN` or `apiKeyHelper`, not a claude.ai `Login method`.
+3. Send a short prompt and confirm a normal response.
+4. In the Bifrost dashboard, open **Logs** and confirm the request appears with the expected virtual key or user, provider, and model.
+
+If `/status` shows no `Anthropic base URL`, the variable did not reach the session. If it shows a claude.ai login, the Bifrost credential is missing or outranked; see [Credential precedence](#credential-precedence).
+
+## Credential precedence
+
+Claude Code chooses one credential, in this order (abbreviated from [Anthropic's authentication precedence](https://code.claude.com/docs/en/authentication#authentication-precedence)):
+
+1. Cloud-provider credentials, when `CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CODE_USE_VERTEX`, or `CLAUDE_CODE_USE_FOUNDRY` is set
+2. `ANTHROPIC_AUTH_TOKEN`
+3. `ANTHROPIC_API_KEY`
+4. `apiKeyHelper`
+5. `CLAUDE_CODE_OAUTH_TOKEN`, Anthropic profiles, and the claude.ai login from `/login`
+
+Settings files apply in this order, highest first: managed settings, `--settings` on the command line, `.claude/settings.local.json`, `.claude/settings.json`, then `~/.claude/settings.json`. A value in a settings-file `env` block overrides the same variable exported in your shell.
+
+<Warning>
+  `bifrost configure claude` writes a virtual key to `ANTHROPIC_AUTH_TOKEN` in `~/.claude/settings.json`. While that value is present, it outranks the SSO `apiKeyHelper` that `bifrost claude` injects, so requests use the virtual key instead of your SSO identity. Run `bifrost unconfigure claude` before switching to SSO.
+</Warning>
+
+## Caveats
+
+- **Unset `CLAUDE_CODE_USE_*` variables.** Any of them routes Claude Code to that cloud provider instead of `ANTHROPIC_BASE_URL`.
+- **Managed login policy.** If managed settings set `forceLoginMethod` or `forceLoginOrgUUID`, Claude Code refuses `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_API_KEY`, and `apiKeyHelper` at startup. An administrator must remove those keys to use Bifrost credentials.
+- **Restrict destinations centrally.** Administrators can set `allowedProviders` to `["customEndpoint"]` and pin `ANTHROPIC_BASE_URL` in managed settings so Claude Code only reaches Bifrost. See [Restrict which API providers a machine may use](https://code.claude.com/docs/en/authentication#restrict-which-api-providers-a-machine-may-use).
+- **Features that need a claude.ai login.** Remote Control and voice dictation are unavailable while a gateway credential is active.
+- **Credential storage.** Keep credentials in user or local settings, or behind `apiKeyHelper`. Bifrost CLI stores SSO tokens and virtual keys in the operating-system keyring.
+- **Background traffic.** Claude Code still sends nonessential traffic, such as update checks and telemetry, outside the gateway. Set `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` on networks that only allow egress to Bifrost; this also disables auto-updates.
+
+<Note>
+  Bifrost's **Settings → Client Settings → Allowed Headers** list controls CORS responses for browser-based clients. The Claude Code CLI does not send CORS preflight requests and does not require changes to this list.
+</Note>
+
+## Troubleshooting
+
+| Symptom | Cause | Fix |
+| --- | --- | --- |
+| Claude Code opens the login screen | No Bifrost credential reached the session, or it is in a project settings file that applies only after the trust prompt | Set the credential in `~/.claude/settings.json` or your shell, then restart `claude` |
+| `401` errors | The credential is invalid, expired, revoked, or not a Bifrost credential | Re-run the curl test. For SSO, run `bifrost auth login` |
+| `Your apiKeyHelper script is failing` | The helper exited non-zero, timed out, or printed nothing | Run the helper command directly in a terminal. For Bifrost CLI, run `bifrost auth status --output json` |
+| Requests are attributed to the wrong identity | `ANTHROPIC_AUTH_TOKEN` or `ANTHROPIC_API_KEY` outranks `apiKeyHelper` | Remove them from settings and your shell, then confirm with `/status` |
+| `403` or model-not-allowed errors | The virtual key or access profile does not allow the provider or model | Check the key's provider configuration, or run `bifrost models list` with the same credential |
+| Startup warning naming two credential sources | A gateway credential and a saved claude.ai login are both present | Run `/logout` to keep only the Bifrost credential |
+| `400` naming `context_management` or `Extra inputs are not permitted` | The upstream provider behind Bifrost rejects pre-release Claude fields | Set `CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1` |
+
+## Model configuration
+
+<Tip>
+Claude Code sends `x-claude-code-session-id` on every request, so a session sticks to the provider and key that served it and keeps hitting the same prompt cache, with nothing to configure. See [Session Affinity](/providers/session-affinity).
+</Tip>
+
+Claude Code maps its `sonnet`, `opus`, and `haiku` aliases through `ANTHROPIC_DEFAULT_SONNET_MODEL`, `ANTHROPIC_DEFAULT_OPUS_MODEL`, and `ANTHROPIC_DEFAULT_HAIKU_MODEL`. `ANTHROPIC_MODEL` or `--model` selects the session model. A `model` value in settings that names a specific model ID overrides the alias mapping for new sessions, so remove it or set it to an alias when you manage models through these variables.
+
+The `env` snippets below show only the model variables. Add them to the same `env` block as your base URL and credential.
+
+### Using alias
+
+This approach uses Bifrost's [dynamic aliasing via routing rules](/providers/aliasing-models#dynamic-aliasing). The names `sonnet-model` and `haiku-model` are arbitrary labels that Claude Code sends, and a routing rule rewrites them to whatever provider and model you want at request time. Because the rewrite is rule-based, you can route the same alias to different targets per scope, per header, or per other request attributes.
+
+1. Add these routing rules in Bifrost.
 
 **`sonnet-model` route**
 
-- Keep it a global level and assign priority you want to assign
-- Add model condition as `model` `=` `sonnet-model`. This option is not available out of the box - so type this string and select `Create sonnet-model`
-- And add second header condition; to check if the `user-agent` starts with `claude-cli`.
-- And then you can map this model to any model you want — Anthropic, OpenAI, Gemini, or any other provider configured in Bifrost. In the configuration given, we are using `vertex/claude-sonnet-4-6`.
+- Keep it at the global level and assign the priority you want.
+- Add a model condition `model` `=` `sonnet-model`. This option is not available out of the box, so type the string and select `Create sonnet-model`.
+- Add a second header condition that checks whether `user-agent` starts with `claude-cli`.
+- Map the model to any model configured in Bifrost, from Anthropic, OpenAI, Gemini, or another provider. The example uses `vertex/claude-sonnet-4-6`.
 
 <Frame>
 	<img src="/media/cli/sonnet-model-mapping.png" alt="sonnet-model routing example" />
@@ -107,168 +313,134 @@ This approach uses Bifrost's [dynamic aliasing via routing rules](/providers/ali
 
 **`haiku-model` route**
 
-- Repeat the above steps by replacing `sonnet-model` with `haiku-model`.
+- Repeat the steps above, replacing `sonnet-model` with `haiku-model`.
 
-2. Update `settings.json`
-
-<Note>
-	The JSON snippets below show only the `env` key. Merge them into your existing `settings.json` top-level object - do not paste them as a
-	standalone file, or you will overwrite other settings like `permissions`, `model`, and `apiKeyHelper`.
-</Note>
+2. Set the aliases in Claude Code:
 
 ```json
 "env": {
-  "ANTHROPIC_BASE_URL": "http://localhost:8080/anthropic",
-  "ANTHROPIC_AUTH_TOKEN": "your-virtual-key",
   "ANTHROPIC_DEFAULT_HAIKU_MODEL": "haiku-model",
   "ANTHROPIC_DEFAULT_SONNET_MODEL": "sonnet-model"
 }
 ```
 
-### 2. Using provider-specific model pinning
+An arbitrary alias such as `sonnet-model` may not be recognized by Claude Code for features that depend on the model name. See [Auto mode classifier compatibility](#auto-mode-classifier-compatibility).
 
-This approach pins Claude Code's Haiku/Sonnet slots to specific provider+model identifiers up front. Under the hood it behaves like Bifrost's [static aliasing](/providers/aliasing-models#static-aliasing) — the value you set is the exact target Bifrost forwards to. You can pin to **any model on any provider** Bifrost is configured for (Anthropic, Bedrock, Vertex, Azure, OpenAI, Gemini, etc.), not just Claude models on different clouds. The only requirement is that the model you pick supports the tool-calling features Claude Code needs for the operations you intend to use (file edits, bash, web search, computer use, etc.).
+### Using provider-specific model pinning
 
-#### Anthropic
+This approach pins Claude Code's model aliases to specific provider and model identifiers. It behaves like Bifrost's [static aliasing](/providers/aliasing-models#static-aliasing): the value you set is the exact target Bifrost forwards to. You can pin **any model on any provider** configured in Bifrost, as long as the model supports the tool calling Claude Code needs.
 
-Update `settings.json` to pick Anthropic models. For Anthropic models, you don't need to prefix models with provider name.
+<Tabs>
+  <Tab title="Anthropic">
+    Anthropic models do not need a provider prefix.
 
-```json
-"env": {
-  "ANTHROPIC_BASE_URL": "http://localhost:8080/anthropic",
-  "ANTHROPIC_AUTH_TOKEN": "your-virtual-key",
-  "ANTHROPIC_DEFAULT_HAIKU_MODEL": "claude-haiku-4-5",
-  "ANTHROPIC_DEFAULT_SONNET_MODEL": "claude-sonnet-4-6"
-}
-```
+    ```json
+    "env": {
+      "ANTHROPIC_DEFAULT_OPUS_MODEL": "claude-opus-4-8",
+      "ANTHROPIC_DEFAULT_SONNET_MODEL": "claude-sonnet-4-6",
+      "ANTHROPIC_DEFAULT_HAIKU_MODEL": "claude-haiku-4-5"
+    }
+    ```
+  </Tab>
+  <Tab title="Bedrock">
+    ```json
+    "env": {
+      "ANTHROPIC_DEFAULT_SONNET_MODEL": "bedrock/global.anthropic.claude-sonnet-4-6",
+      "ANTHROPIC_DEFAULT_HAIKU_MODEL": "bedrock/global.anthropic.claude-haiku-4-5"
+    }
+    ```
 
-#### Bedrock
+    You can also pin deployments in the dashboard under **Models → Model Providers → AWS Bedrock →** your key.
 
-Update `settings.json` to pick Anthropic models on Bedrock.
+    <Frame>
+    	<img src="/media/cli/claude-bedrock-pinning.png" alt="Claude bedrock pinning" />
+    </Frame>
+  </Tab>
+  <Tab title="Vertex">
+    ```json
+    "env": {
+      "ANTHROPIC_DEFAULT_SONNET_MODEL": "vertex/claude-sonnet-4-6",
+      "ANTHROPIC_DEFAULT_HAIKU_MODEL": "vertex/claude-haiku-4-5"
+    }
+    ```
+  </Tab>
+  <Tab title="Azure">
+    ```json
+    "env": {
+      "ANTHROPIC_DEFAULT_SONNET_MODEL": "azure/claude-sonnet-4-6",
+      "ANTHROPIC_DEFAULT_HAIKU_MODEL": "azure/claude-haiku-4-5"
+    }
+    ```
 
-```json
-"env": {
-  "ANTHROPIC_BASE_URL": "http://localhost:8080/anthropic",
-  "ANTHROPIC_AUTH_TOKEN": "your-virtual-key",
-  "ANTHROPIC_DEFAULT_HAIKU_MODEL": "bedrock/global.anthropic.claude-haiku-4-5",
-  "ANTHROPIC_DEFAULT_SONNET_MODEL": "bedrock/global.anthropic.claude-sonnet-4-6"
-}
-```
+    <Frame>
+    	<img src="/media/cli/claude-azure-pinning.png" alt="Azure model pinning" />
+    </Frame>
 
-If you don't pin using CLI - you can pin these in UI. Go to Dashboard > Models > Model Providers > AWS Bedrock > Key. And add deployments
+    Azure-hosted models must support **tool use** for Claude Code to work. Verify tool-calling support before pinning.
+  </Tab>
+  <Tab title="Other providers">
+    Prefix the model with the provider name:
 
-<Frame>
-	<img src="/media/cli/claude-bedrock-pinning.png" alt="Claude bedrock pinning" />
-</Frame>
+    ```json
+    "env": {
+      "ANTHROPIC_DEFAULT_SONNET_MODEL": "vertex/gemini-3.1-pro",
+      "ANTHROPIC_DEFAULT_HAIKU_MODEL": "openai/gpt-5.5"
+    }
+    ```
 
-#### Vertex
+    Non-Claude models might not implement Claude-specific server-side tools such as computer use. Anthropic does not support routing Claude Code to non-Claude models; use a Claude-family model when a workflow depends on those tools.
+  </Tab>
+</Tabs>
 
-Update `settings.json` to pick Anthropic models on Vertex.
-
-```json
-"env": {
-  "ANTHROPIC_BASE_URL": "http://localhost:8080/anthropic",
-  "ANTHROPIC_AUTH_TOKEN": "your-virtual-key",
-  "ANTHROPIC_DEFAULT_HAIKU_MODEL": "vertex/claude-haiku-4-5",
-  "ANTHROPIC_DEFAULT_SONNET_MODEL": "vertex/claude-sonnet-4-6"
-}
-```
-
-#### Azure
-
-Update `settings.json` to pick Anthropic models on Azure.
-
-```json
-"env": {
-  "ANTHROPIC_BASE_URL": "http://localhost:8080/anthropic",
-  "ANTHROPIC_AUTH_TOKEN": "your-virtual-key",
-  "ANTHROPIC_DEFAULT_HAIKU_MODEL": "azure/claude-haiku-4-5",
-  "ANTHROPIC_DEFAULT_SONNET_MODEL": "azure/claude-sonnet-4-6"
-}
-```
-
-<Frame>
-	<img src="/media/cli/claude-azure-pinning.png" alt="Azure model  pinning" />
-</Frame>
-
-<Warning>
-	Azure-hosted models must support **tool use capabilities** for Claude Code to function properly. Verify tool calling support before
-	configuring Azure models.
-</Warning>
-
-#### Other providers (OpenAI, Gemini, etc.)
-
-You are not limited to Anthropic-family models. Any provider Bifrost supports can be pinned the same way — just prefix the model with the provider name:
-
-```json
-"env": {
-  "ANTHROPIC_BASE_URL": "http://localhost:8080/anthropic",
-  "ANTHROPIC_AUTH_TOKEN": "your-virtual-key",
-  "ANTHROPIC_DEFAULT_HAIKU_MODEL": "openai/gpt-5.5",
-  "ANTHROPIC_DEFAULT_SONNET_MODEL": "vertex/gemini-3.1-pro"
-}
-```
-
-<Warning>
-	Whichever model you pin, it must support the **tool-calling features** the operations you intend to run rely on (file edits, bash, web
-	search, computer use, citations). Non-Claude models might not implement Claude-specific server-side tools like `computer_use` — if your workflow needs those, try sticking to Claude-family models on a provider that fully supports them.
-</Warning>
-
-## Model Configuration
-
-Claude Code uses three model tiers: **Sonnet** (default), **Opus** (complex tasks), and **Haiku** (fast, lightweight). With Bifrost, you can override these defaults to use any model from any provider.
-
-**Start with a Specific Model:**
-
-Launch Claude Code with a specific model using the `--model` flag:
+### Choose a model at launch or mid-session
 
 ```bash
-# Start with Opus
 claude --model claude-opus-4-8
-
-# Start with Haiku for lightweight tasks
-claude --model claude-haiku-4-5
-
-# Or any other provider/model via Bifrost
-claude --model openai/gpt-5.5
-claude --model vertex/gemini-3.1-pro
+claude --model bedrock/global.anthropic.claude-sonnet-4-6
 ```
 
-## Switching Models Mid-Session
+Inside a session, `/model <name>` switches to any provider and model configured in Bifrost, for example `/model vertex/claude-haiku-4-5` or `/model openai/gpt-5.5`. Run `/model` without arguments to see the current model.
 
-Use the `/model` command to switch models during an active session. The target can be **any provider/model combination** Bifrost is configured for — not just Claude on different clouds:
+Claude Code can also add Bifrost's models to the `/model` picker. Set `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1`; Claude Code then reads `/anthropic/v1/models` at startup and lists IDs that contain `claude` or `anthropic`. Bifrost CLI enables this automatically for sessions it launches.
 
-```bash
-# Anthropic-native (no prefix required)
-/model claude-opus-4-8
-/model claude-sonnet-4-6
+## Auto mode classifier compatibility
 
-# Claude on other clouds via Bifrost
-/model vertex/claude-haiku-4-5
-/model azure/claude-sonnet-4-6
-/model bedrock/global.anthropic.claude-sonnet-4-6
+Claude Code can perform eligible auto mode classifier checks on the server without separate classifier requests. This requires both a supported Claude Code model name and an upstream platform that has server-side checks enabled.
 
-# Non-Anthropic providers
-/model openai/gpt-5.5
-/model vertex/gemini-3.1-pro
+When you use a Bifrost model alias, keep a recognizable Claude model name in the value sent by Claude Code. Provider prefixes are supported, so values such as `bedrock/claude-sonnet-5-5` can work. An arbitrary alias such as `sonnet-model` can route to the same model in Bifrost but may not be recognized by Claude Code as an auto mode-compatible model.
+
+For Bedrock models that require an inference profile, you can expose a recognizable alias from the Bedrock key and map it to the profile ID:
+
+```text
+Claude Code model: bedrock/claude-sonnet-5-5
+Bedrock key alias: claude-sonnet-5-5
+Inference profile: global.anthropic.claude-sonnet-5-5
 ```
 
-<Tip>
-	Run `/model` without arguments to check your current model. The switch is instantaneous and Claude Code seamlessly continues your
-	conversation context with the new model.
-</Tip>
+The exact profile name depends on the AWS account and region. Use a profile that the configured credentials can invoke.
 
-## Provider Compatibility
+<Note>
+	Model naming is only one eligibility check. Anthropic enables server-side checks by platform, region, and credential. A correctly named model can still use local classifier requests if the upstream platform has not enabled the feature for that environment.
+</Note>
 
-Bifrost lets Claude Code talk to any model on any provider it's configured for. The only hard requirement is that the model you pick **properly supports tool calling for the operations you intend to perform** — Claude Code relies heavily on tool use for file edits, bash, code editing, web search, computer use, and citations.
+To verify the active session, run `/status` in Claude Code. `Auto mode server` should read `Enabled`. If Claude Code reports that the session is not eligible:
 
-A few things to keep in mind:
+1. Confirm `/model` shows the intended provider and recognizable Claude model name.
+2. Confirm the provider key maps that alias to a callable deployment or inference profile.
+3. Check whether the upstream response contains `delta.safeguard_results`.
+4. Make sure `CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS` is not set to `1`.
+
+If the upstream platform does not support server-side checks, set `CLAUDE_CODE_AUTO_MODE_SERVER=0` to suppress the notice and use Claude Code's local classifier. Those classifier requests remain billable. Anthropic documents the current behavior and version requirements in [Auto mode classifier request charges](https://code.claude.com/docs/en/auto-mode-classifier-billing).
+
+## Provider compatibility
+
+Bifrost lets Claude Code talk to any model on any provider it's configured for. The only hard requirement is that the model you pick **properly supports tool calling for the operations you intend to perform**. Claude Code relies heavily on tool use for file edits, bash, code editing, web search, computer use, and citations.
 
 - **Claude-specific server-side tools** (`web_search`, `computer_use`, `citations`) are only available on Claude-family models on providers that expose them. Non-Claude models might silently lack these capabilities.
-- **Streaming tool-call arguments** must be implemented correctly by the upstream. Some providers (notably **OpenRouter** at the time of writing) do not stream function-call arguments properly — tool calls arrive with empty `arguments` fields and Claude Code fails on file operations. If this happens, switch to a different provider in your Bifrost configuration.
+- **Streaming tool-call arguments** must be implemented correctly by the upstream. Some providers (notably **OpenRouter** at the time of writing) do not stream function-call arguments properly. Tool calls arrive with empty `arguments` fields and Claude Code fails on file operations. If this happens, switch to a different provider in your Bifrost configuration.
 - **Azure-hosted models** must explicitly support tool use; verify before pinning.
 
-If a tool call isn't executing as expected, the fastest sanity check is to swap to a known-good model (e.g. `claude-sonnet-4-6` direct from Anthropic) and confirm the issue is provider/model-specific rather than Bifrost configuration.
+If a tool call isn't executing as expected, swap to a known-good model (for example `claude-sonnet-4-6` direct from Anthropic) to confirm the issue is provider- or model-specific rather than Bifrost configuration.
 
 ## Using Bifrost as an MCP Gateway
 
@@ -397,19 +569,3 @@ Run `/mcp` inside Claude Code. `bifrost` should appear as connected with a tool 
 <Note>
 	If Claude Code behaves unexpectedly after any change to Bifrost's MCP auth settings, remove and re-add the server — Claude Code caches auth tokens per MCP server, and stale cached credentials can survive Reconnect.
 </Note>
-
-## Checklist
-
-1. Ensure the model selected is same as you configured in the `settings.json`.
-   <Frame>
-   	<img src="/media/cli/claude-cli-model-selection.png" alt="Selected model in Claude cli" />
-   </Frame>
-   If this is not the case -
-1. Select model using /config
-1. Execute `/config`
-1. Search for model
-1. Select the correct model
-   <Frame>
-   	<img src="/media/cli/claude-code-config-model-selection.png" alt="Claude code model selection using /config" />
-   </Frame>
-1. Or pass the model using `/model <model_name>` e.g., `/model sonnet-model`

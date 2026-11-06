@@ -26,7 +26,17 @@ type TableCustomer struct {
 	// count without carrying (or even loading) the full VirtualKeys relation.
 	VirtualKeyCount int `gorm:"-" json:"virtual_key_count"`
 
+	// TeamCount is the number of teams attached to this customer. Not persisted;
+	// the list read path sets it so the table can show a count without teams.
+	TeamCount int `gorm:"-" json:"team_count"`
+
 	CalendarAligned bool `gorm:"default:false" json:"calendar_aligned"`
+
+	// AccessProfile is a config-file-only field naming the enterprise access profile the customer holds
+	// in place of budgets and a rate limit of its own. Not persisted: the enterprise build attaches the
+	// profile when this entry is written from config.json (see Config.GovernanceFileSync). Part of the
+	// config hash, so changing it in the file is a change to the customer's declaration.
+	AccessProfile string `gorm:"-" json:"access_profile,omitempty"`
 
 	// Config hash is used to detect the changes synced from config.json file
 	// Every time we sync the config.json file, we will update the config hash

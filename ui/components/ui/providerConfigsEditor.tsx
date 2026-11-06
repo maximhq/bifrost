@@ -1,14 +1,18 @@
 import { Label } from "@/components/ui/label";
 import { ProviderConfigCard, ProviderConfigCardValue } from "@/components/ui/providerConfigCard";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { ProviderSelector } from "@/components/ui/providerSelector";
 import { Switch } from "@/components/ui/switch";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
+import { ProviderIconType } from "@/lib/constants/icons";
 import { ProviderLabels, ProviderName } from "@/lib/constants/logs";
 import { useGetAllKeysQuery, useGetProvidersQuery } from "@/lib/store";
-import { KnownProvider } from "@/lib/types/config";
+import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { Info } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo } from "react";
+import { useTranslation } from "react-i18next";
+
+// Picked by the row that leaves the editor for provider management, rather than adding one.
+const MANAGE_PROVIDERS_VALUE = "__manage_providers__";
 
 // Shared provider-configuration editor for the Virtual Key (core) and Access
 // Profile / Project (enterprise) forms. It owns the "Allow all providers" toggle,
@@ -67,13 +71,22 @@ export function ProviderConfigsEditor({
 	onManageProviders,
 	error,
 }: ProviderConfigsEditorProps) {
-	const { data: providersData, isLoading: isLoadingProviders, isError: isProvidersError } = useGetProvidersQuery();
-	const { data: keysData } = useGetAllKeysQuery();
+	const { t } = useTranslation("governance");
+	// Configured providers need ModelProvider:View and provider keys VirtualKeys:View. Without
+	// one the lookup is skipped: the add dropdown falls back to the static provider catalog, and
+	// the cards treat keys as unknown, the same as a failed load.
+	const hasProvidersAccess = useRbac(RbacResource.ModelProvider, RbacOperation.View);
+	const hasKeysAccess = useRbac(RbacResource.VirtualKeys, RbacOperation.View);
+	const {
+		data: providersData,
+		isLoading: isLoadingProviders,
+		isError: isProvidersError,
+	} = useGetProvidersQuery(undefined, { skip: !hasProvidersAccess });
+	const { data: keysData } = useGetAllKeysQuery(undefined, { skip: !hasKeysAccess });
 	const availableProviders = providersData || [];
-	// null = the keys query is still loading or failed (the card keeps its key
-	// control visible); [] = loaded, none exist.
+	// null = the keys query is still loading, failed or not permitted (the card keeps
+	// its key control visible); [] = loaded, none exist.
 	const availableKeys = keysData ?? null;
-	const [selectedProvider, setSelectedProvider] = useState("");
 
 	const handleAddProvider = (providerName: string) => {
 		if (!providerName || value.some((e) => e.providerName === providerName)) return;
@@ -109,14 +122,23 @@ export function ProviderConfigsEditor({
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [allowAllProviders, providerNamesKey, configuredKey]);
 
-	const unconfiguredProviders = availableProviders.filter((provider) => !value.some((e) => e.providerName === provider.name));
-	const baseProviders = unconfiguredProviders.filter((p) => p.name && !p.custom_provider_config);
-	const customProviders = unconfiguredProviders.filter((p) => p.name && p.custom_provider_config);
+	const configuredProviderNames = useMemo(() => value.map((e) => e.providerName), [value]);
+	const hasUnconfiguredProviders = availableProviders.some((provider) => !value.some((e) => e.providerName === provider.name));
+
+	// Only once there is nothing left to add does the list offer a way out to provider
+	// management, so it never competes with a real provider for the first row.
+	const manageProvidersOption = useMemo(
+		() =>
+			onManageProviders && hasProvidersAccess && !hasUnconfiguredProviders && !isLoadingProviders && !isProvidersError
+				? [{ value: MANAGE_PROVIDERS_VALUE, label: t("providerConfigs.noneLeftClick") }]
+				: undefined,
+		[onManageProviders, hasProvidersAccess, hasUnconfiguredProviders, isLoadingProviders, isProvidersError, t],
+	);
 
 	return (
 		<div className="space-y-2">
 			<div className="flex items-center gap-2">
-				<Label className="text-sm font-medium">Provider Configurations</Label>
+				<Label className="text-sm font-medium">{t("providerConfigs.title")}</Label>
 				<TooltipProvider>
 					<Tooltip>
 						<TooltipTrigger asChild>
@@ -125,10 +147,7 @@ export function ProviderConfigsEditor({
 							</span>
 						</TooltipTrigger>
 						<TooltipContent className="max-w-sm">
-							<p>
-								Configure which providers this can use and their specific settings. Leave empty to block all providers. Add providers to
-								allow them.
-							</p>
+							<p>{t("providerConfigs.tooltip")}</p>
 						</TooltipContent>
 					</Tooltip>
 				</TooltipProvider>
@@ -137,7 +156,7 @@ export function ProviderConfigsEditor({
 			{/* Allow all providers */}
 			<div className="flex w-full items-center justify-between gap-2 py-2 text-sm">
 				<div className="flex items-center gap-1.5">
-					<span>Allow all providers</span>
+					<span>{t("providerConfigs.allowAll")}</span>
 					<TooltipProvider>
 						<Tooltip>
 							<TooltipTrigger asChild>
@@ -146,10 +165,7 @@ export function ProviderConfigsEditor({
 								</span>
 							</TooltipTrigger>
 							<TooltipContent className="max-w-sm">
-								<p>
-									Grant access to every provider, including ones added later. Set budgets or limits on specific providers below, or remove a
-									provider to allow all except that one.
-								</p>
+								<p>{t("providerConfigs.allowAllTooltip")}</p>
 							</TooltipContent>
 						</Tooltip>
 					</TooltipProvider>
@@ -163,62 +179,24 @@ export function ProviderConfigsEditor({
 
 			{/* Add Provider Dropdown */}
 			<div className="flex gap-2">
-				<Select
-					value={selectedProvider}
-					onValueChange={(provider) => {
-						if (provider === "__manage_providers__") {
+				<ProviderSelector
+					mode="add"
+					source={hasProvidersAccess ? "configured" : "catalog"}
+					className="flex-1"
+					data-testid={`${testIdPrefix}-provider-select`}
+					placeholder={t("providerConfigs.selectToAdd")}
+					groupByCustom
+					excludeValues={configuredProviderNames}
+					extraOptions={manageProvidersOption}
+					emptyMessage={t("providerConfigs.noneLeft")}
+					onSelect={(provider) => {
+						if (provider === MANAGE_PROVIDERS_VALUE) {
 							onManageProviders?.();
-							setSelectedProvider("");
 							return;
 						}
 						handleAddProvider(provider);
-						setSelectedProvider("");
 					}}
-				>
-					<SelectTrigger className="flex-1" data-testid={`${testIdPrefix}-provider-select`}>
-						<SelectValue placeholder="Select a provider to add" />
-					</SelectTrigger>
-					<SelectContent>
-						{isLoadingProviders ? (
-							<div className="text-muted-foreground px-2 py-1.5 text-sm">Loading providers...</div>
-						) : isProvidersError ? (
-							<div className="text-destructive px-2 py-1.5 text-sm">Failed to load providers. Please retry.</div>
-						) : unconfiguredProviders.length === 0 ? (
-							onManageProviders ? (
-								<SelectItem
-									value="__manage_providers__"
-									className="text-muted-foreground hover:text-foreground"
-									data-testid={`${testIdPrefix}-provider-config-link`}
-								>
-									<span>
-										No providers left to configure. <span className="text-primary font-medium underline">Click to add</span>
-									</span>
-								</SelectItem>
-							) : (
-								<div className="text-muted-foreground px-2 py-1.5 text-sm">No providers left to configure</div>
-							)
-						) : (
-							<>
-								{baseProviders.map((provider, index) => (
-									<SelectItem key={`base-${index}`} value={provider.name}>
-										<RenderProviderIcon provider={provider.name as KnownProvider} size="sm" className="h-4 w-4" />
-										{ProviderLabels[provider.name as ProviderName] || provider.name}
-									</SelectItem>
-								))}
-								{customProviders.map((provider, index) => (
-									<SelectItem key={`custom-${index}`} value={provider.name}>
-										<RenderProviderIcon
-											provider={provider.custom_provider_config?.base_provider_type || (provider.name as KnownProvider)}
-											size="sm"
-											className="h-4 w-4"
-										/>
-										{provider.name}
-									</SelectItem>
-								))}
-							</>
-						)}
-					</SelectContent>
-				</Select>
+				/>
 			</div>
 
 			{/* Provider cards */}

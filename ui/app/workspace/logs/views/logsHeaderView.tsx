@@ -1,23 +1,32 @@
 import { ColumnConfigDropdown, type ColumnConfigEntry } from "@/components/table";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Command, CommandItem, CommandList } from "@/components/ui/command";
 import { DateTimePickerWithRange } from "@/components/ui/datePickerWithRange";
+import {
+	DropdownMenu,
+	DropdownMenuContent,
+	DropdownMenuItem,
+	DropdownMenuRadioGroup,
+	DropdownMenuRadioItem,
+	DropdownMenuTrigger,
+} from "@/components/ui/dropdownMenu";
 import { Input } from "@/components/ui/input";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useTimezonePreference } from "@/lib/hooks/useTimezonePreference";
 import { getErrorMessage } from "@/lib/store";
 import { useCancelRecalculateCostJobMutation, useGetRecalculateCostStatusQuery } from "@/lib/store/apis/logsApi";
 import { getActiveTempToken } from "@/lib/store/apis/tempToken";
-import type { LogFilters as LogFiltersType, RecalcJobStatus } from "@/lib/types/logs";
-import { formatLogSearchInput, isLogIdSearch, parseLogSearchInput } from "@/lib/utils/logSearch";
+import type { LogEntry, LogFilters as LogFiltersType, RecalcJobStatus } from "@/lib/types/logs";
+import { formatLogSearchInput, isLogIdSearch, type LogSearchMode, parseLogSearchInput } from "@/lib/utils/logSearch";
 import { getApiBaseUrl } from "@/lib/utils/port";
-import { getRangeForPeriod, TIME_PERIODS } from "@/lib/utils/timeRange";
-import { Calculator, ListTree, MoreVertical, Radio, RefreshCw, Search } from "lucide-react";
+import { getRangeForPeriod, TIME_PERIODS, withPeriodTimezone } from "@/lib/utils/timeRange";
+import { Calculator, ChevronDown, Download, ListTree, MoreVertical, Radio, RefreshCw, Search } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
+import { LogsExportDialog } from "./logsExportDialog";
 import { RecalculateCostDialog, type RecalculateCostMode } from "./recalculateCostDialog";
+import { useTranslation } from "react-i18next";
+import i18n from "@/lib/i18n";
 
 // One id for the whole recalculation lifecycle, so the start / progress / cancelling
 // / result updates all land on the same toast instead of stacking.
@@ -49,6 +58,9 @@ interface LogsHeaderViewProps {
 	columnLabels: Record<string, string>;
 	onToggleColumnVisibility: (id: string) => void;
 	onResetColumns: () => void;
+	currentPageLogs?: LogEntry[];
+	sortBy?: string;
+	order?: string;
 }
 
 export function LogsHeaderView({
@@ -69,9 +81,13 @@ export function LogsHeaderView({
 	columnLabels,
 	onToggleColumnVisibility,
 	onResetColumns,
+	currentPageLogs = [],
+	sortBy = "timestamp",
+	order = "desc",
 }: LogsHeaderViewProps) {
-	const [openMoreActionsPopover, setOpenMoreActionsPopover] = useState(false);
+	const { t } = useTranslation("observability");
 	const [recalcDialogOpen, setRecalcDialogOpen] = useState(false);
+	const [exportDialogOpen, setExportDialogOpen] = useState(false);
 	// Id of the recalculation job to track. Setting it starts polling via the query
 	// hook below; clearing it (on a terminal status) stops the polling.
 	const [activeRecalcJobId, setActiveRecalcJobId] = useState<string | null>(null);
@@ -92,6 +108,14 @@ export function LogsHeaderView({
 	// the worker finishes the batch it is in the middle of.
 	const [recalcCancelRequested, setRecalcCancelRequested] = useState(false);
 	const isRecalcRunning = !!activeRecalcJobId;
+	// Which search the box runs. "auto" keeps the sniffing behaviour (a pasted UUID
+	// becomes an exact id lookup); the other two pin it, for ids that aren't
+	// UUID-shaped and for content that happens to look like one.
+	const [searchMode, setSearchMode] = useState<LogSearchMode>("auto");
+	const searchModeRef = useRef<LogSearchMode>(searchMode);
+	useEffect(() => {
+		searchModeRef.current = searchMode;
+	}, [searchMode]);
 	const [localSearch, setLocalSearch] = useState(() => formatLogSearchInput(filters));
 	const searchTimeoutRef = useRef<NodeJS.Timeout | undefined>(undefined);
 	const filtersRef = useRef<LogFiltersType>(filters);
@@ -112,7 +136,10 @@ export function LogsHeaderView({
 
 	const { content_search: contentSearchFilter, request_id: requestIDFilter } = filters;
 	useEffect(() => {
-		setLocalSearch(formatLogSearchInput({ content_search: contentSearchFilter, request_id: requestIDFilter }));
+		// Deliberately not keyed on the mode: switching it re-runs the search with
+		// what is already typed, and re-syncing here would blank the box against
+		// the pre-switch filters before that round trip lands.
+		setLocalSearch(formatLogSearchInput({ content_search: contentSearchFilter, request_id: requestIDFilter }, searchModeRef.current));
 	}, [contentSearchFilter, requestIDFilter]);
 
 	useEffect(() => {
@@ -125,25 +152,25 @@ export function LogsHeaderView({
 		async (mode: RecalculateCostMode) => {
 			setRecalcDialogOpen(false);
 			const missingCostOnly = mode === "missing";
-			toast.loading("Starting cost recalculation...", { id: RECALC_TOAST_ID });
+			toast.loading(t("logs.recalc.toastStarting"), { id: RECALC_TOAST_ID });
 
 			try {
 				// Recalculation runs as a background job. Enqueue it (or attach to the one
 				// already running); the status query below polls it to a terminal state.
 				const { status, alreadyRunning } = await startRecalculateCostJob(filters, missingCostOnly);
 				if (!status.id) {
-					throw new Error("Recalculation job did not start");
+					throw new Error(t("logs.recalc.toastDidNotStart"));
 				}
 				if (alreadyRunning) {
-					toast.loading("A cost recalculation is already running...", { id: RECALC_TOAST_ID });
+					toast.loading(t("logs.recalc.toastAlreadyRunning"), { id: RECALC_TOAST_ID });
 				}
 				setRecalcCancelRequested(false);
 				setActiveRecalcJobId(status.id);
 			} catch (err) {
-				toast.error("Cost recalculation failed", { id: RECALC_TOAST_ID, description: getErrorMessage(err) });
+				toast.error(t("logs.recalc.toastFailed"), { id: RECALC_TOAST_ID, description: getErrorMessage(err) });
 			}
 		},
-		[filters],
+		[filters, t],
 	);
 
 	// Stop the tracked job. The worker finishes the batch it is in the middle of and
@@ -155,9 +182,9 @@ export function LogsHeaderView({
 		const jobId = activeRecalcJobIdRef.current;
 		if (!jobId) return;
 		setRecalcCancelRequested(true);
-		toast.loading("Cancelling cost recalculation…", {
+		toast.loading(t("logs.recalc.toastCancelling"), {
 			id: RECALC_TOAST_ID,
-			description: "Finishing the current batch. Costs already recalculated are kept.",
+			description: t("logs.recalc.toastCancellingDesc"),
 		});
 		try {
 			await cancelRecalcJob({ id: jobId }).unwrap();
@@ -167,7 +194,7 @@ export function LogsHeaderView({
 			// toast rather than stacking a second one on top of it. The next poll
 			// (2s) then restores the progress toast with its Cancel action, which
 			// is the truthful end state — the job is still running.
-			toast.error("Couldn't cancel the recalculation", {
+			toast.error(t("logs.recalc.toastCancelFailed"), {
 				id: RECALC_TOAST_ID,
 				description: getErrorMessage(err),
 			});
@@ -178,9 +205,9 @@ export function LogsHeaderView({
 	// user isn't left with a loading toast that never resolves.
 	useEffect(() => {
 		if (!activeRecalcJobId || !recalcJobStatusError) return;
-		toast.error("Cost recalculation failed", {
+		toast.error(t("logs.recalc.toastFailed"), {
 			id: RECALC_TOAST_ID,
-			description: "Lost track of the recalculation job status. Please refresh and try again.",
+			description: t("logs.recalc.toastLostTrack"),
 		});
 		setActiveRecalcJobId(null);
 		setRecalcCancelRequested(false);
@@ -201,22 +228,26 @@ export function LogsHeaderView({
 
 		if (isTerminalRecalcStatus(recalcJobStatus.status)) {
 			if (recalcJobStatus.status === "failed") {
-				toast.error("Cost recalculation failed", {
+				toast.error(t("logs.recalc.toastFailed"), {
 					id: RECALC_TOAST_ID,
-					description: recalcJobStatus.last_error || recalcJobStatus.message || "The job did not complete",
+					description: recalcJobStatus.last_error || recalcJobStatus.message || t("logs.recalc.toastDidNotComplete"),
 				});
 			} else if (recalcJobStatus.status === "cancelled") {
 				// Not an error: whatever the job committed before stopping is valid, so
 				// report the partial result rather than framing it as a failure.
-				toast.info("Cost recalculation cancelled", {
+				toast.info(t("logs.recalc.toastCancelled"), {
 					id: RECALC_TOAST_ID,
-					description: recalcJobStatus.message || `Stopped after ${recalcJobStatus.updated} updated, ${recalcJobStatus.skipped} skipped`,
+					description:
+						recalcJobStatus.message ||
+						t("logs.recalc.toastStopped", { updated: recalcJobStatus.updated, skipped: recalcJobStatus.skipped }),
 					duration: 5000,
 				});
 			} else {
-				toast.success("Cost recalculation complete", {
+				toast.success(t("logs.recalc.toastComplete"), {
 					id: RECALC_TOAST_ID,
-					description: recalcJobStatus.message || `${recalcJobStatus.updated} updated, ${recalcJobStatus.skipped} skipped`,
+					description:
+						recalcJobStatus.message ||
+						t("logs.recalc.toastUpdatedSkipped", { updated: recalcJobStatus.updated, skipped: recalcJobStatus.skipped }),
 					duration: 5000,
 				});
 			}
@@ -235,14 +266,23 @@ export function LogsHeaderView({
 
 		const total = recalcJobStatus.total || 0;
 		const processed = total > 0 ? Math.min(recalcJobStatus.processed, total) : recalcJobStatus.processed;
-		toast.loading("Recalculating log costs...", {
+		toast.loading(t("logs.recalc.toastProgress"), {
 			id: RECALC_TOAST_ID,
 			description:
 				total > 0
-					? `${processed}/${total} checked, ${recalcJobStatus.updated} updated, ${recalcJobStatus.skipped} skipped`
-					: `${recalcJobStatus.processed} checked, ${recalcJobStatus.updated} updated, ${recalcJobStatus.skipped} skipped`,
+					? t("logs.recalc.toastCheckedOfTotal", {
+							processed,
+							total,
+							updated: recalcJobStatus.updated,
+							skipped: recalcJobStatus.skipped,
+						})
+					: t("logs.recalc.toastChecked", {
+							processed: recalcJobStatus.processed,
+							updated: recalcJobStatus.updated,
+							skipped: recalcJobStatus.skipped,
+						}),
 			action: {
-				label: "Cancel",
+				label: t("labels.cancel"),
 				// preventDefault keeps the toast mounted so it can report the cancellation;
 				// sonner otherwise dismisses a toast as soon as its action fires.
 				onClick: (event) => {
@@ -254,12 +294,12 @@ export function LogsHeaderView({
 	}, [activeRecalcJobId, recalcJobStatus, recalcCancelRequested, handleCancelRecalculate, fetchLogs, fetchStats]);
 
 	const handleSearchChange = useCallback(
-		(value: string) => {
+		(value: string, mode: LogSearchMode) => {
 			setLocalSearch(value);
 			if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current);
 			// A pasted request ID resolves to an exact primary-key lookup; there is
 			// nothing to debounce for it, so only free text waits for the typist.
-			const { request_id = "", content_search = "" } = parseLogSearchInput(value);
+			const { request_id = "", content_search = "" } = parseLogSearchInput(value, mode);
 			searchTimeoutRef.current = setTimeout(
 				() => {
 					onFiltersChange({ ...filtersRef.current, request_id, content_search });
@@ -270,15 +310,26 @@ export function LogsHeaderView({
 		[onFiltersChange],
 	);
 
+	// Switching the mode re-runs whatever is already typed, so the results follow
+	// the new mode without the user having to retype or re-submit.
+	const handleSearchModeChange = useCallback(
+		(mode: LogSearchMode) => {
+			setSearchMode(mode);
+			handleSearchChange(localSearch, mode);
+		},
+		[handleSearchChange, localSearch],
+	);
+
 	// Derived from the live input rather than the filters, so the badge appears as
-	// soon as an ID is pasted instead of after the round trip.
-	const isIdSearch = isLogIdSearch(localSearch);
+	// soon as an ID is pasted instead of after the round trip. Only "auto" needs it:
+	// a pinned mode already says what it is on the dropdown trigger.
+	const isIdSearch = searchMode === "auto" && isLogIdSearch(localSearch);
 
 	return (
 		// justify-between only once the row can hold everything: while the controls
 		// wrap, spreading them pushes the last row's two icon buttons to opposite
 		// edges of the card and burns a whole row on two buttons.
-		<div className="flex grow flex-wrap lg:flex-nowrap items-center justify-start gap-2 lg:justify-between">
+		<div className="flex grow flex-wrap items-center justify-start gap-2 @4xl/logs-header:flex-nowrap @4xl/logs-header:justify-between">
 			<Button
 				data-testid="logs-refresh-btn"
 				variant="outline"
@@ -292,7 +343,7 @@ export function LogsHeaderView({
 				disabled={loading}
 			>
 				<RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
-				Refresh
+				{t("labels.refresh")}
 			</Button>
 			<Button
 				data-testid="logs-live-btn"
@@ -302,7 +353,7 @@ export function LogsHeaderView({
 				onClick={() => onPollToggle(!polling)}
 			>
 				{polling ? <Radio className="h-4 w-4 animate-pulse" /> : <Radio className="h-4 w-4" />}
-				Live
+				{t("labels.live")}
 			</Button>
 			<Tooltip>
 				<TooltipTrigger asChild>
@@ -314,27 +365,36 @@ export function LogsHeaderView({
 						onClick={() => onGroupedToggle(!grouped)}
 					>
 						<ListTree className="h-4 w-4" />
-						Group
+						{t("labels.group")}
 					</Button>
 				</TooltipTrigger>
 				<TooltipContent sideOffset={6} className="max-w-64">
-					Groups fallback attempts and linked requests under the original root request. Expand any row to view the complete request chain.
-					<br />
-					<br />
-					This grouped view may load more slowly than the flat view for very large log tables.
+					{t("logs.groupTooltip")
+						.split("\n\n")
+						.map((part, i, arr) => (
+							<span key={i}>
+								{part}
+								{i < arr.length - 1 ? (
+									<>
+										<br />
+										<br />
+									</>
+								) : null}
+							</span>
+						))}
 				</TooltipContent>
 			</Tooltip>
 			{/* Full width while the row wraps, so the search field owns its own line
 			    instead of squeezing to its 12rem minimum beside the date picker. */}
-			<div className="border-input flex h-7.5 min-w-[12rem] flex-1 basis-full items-center gap-2 rounded-sm border lg:basis-auto">
-				<Search className="mr-0.5 ml-2 size-4" />
+			<div className="border-input flex h-7.5 min-w-[12rem] flex-1 basis-full items-center overflow-hidden rounded-sm border @4xl/logs-header:basis-auto">
+				<Search className="mr-2 ml-2 size-4 shrink-0" />
 				<Input
 					type="text"
 					data-testid="logs-search-input"
 					className="!h-7 rounded-tl-none rounded-tr-sm rounded-br-sm rounded-bl-none border-none bg-slate-50 shadow-none outline-none focus-visible:ring-0"
-					placeholder="Search logs or paste a request ID"
+					placeholder={t(`logs.searchPlaceholders.${searchMode}`)}
 					value={localSearch}
-					onChange={(e) => handleSearchChange(e.target.value)}
+					onChange={(e) => handleSearchChange(e.target.value, searchMode)}
 				/>
 				{isIdSearch && (
 					<Tooltip>
@@ -344,10 +404,37 @@ export function LogsHeaderView({
 							</Badge>
 						</TooltipTrigger>
 						<TooltipContent sideOffset={6} className="max-w-64">
-							Looking up this request ID exactly. The selected time range is ignored so the request is found wherever it falls.
+							{t("logs.exactIdSearchHint")}
 						</TooltipContent>
 					</Tooltip>
 				)}
+				<DropdownMenu>
+					<DropdownMenuTrigger asChild>
+						<Button
+							variant="ghost"
+							size="sm"
+							className="text-muted-foreground h-7 shrink-0 rounded-none text-xs"
+							title={t("logs.searchModeHint")}
+							data-testid="logs-search-mode-trigger"
+						>
+							{t(`logs.searchModes.${searchMode}`)}
+							<ChevronDown className="size-3" />
+						</Button>
+					</DropdownMenuTrigger>
+					<DropdownMenuContent align="end" className="w-44">
+						<DropdownMenuRadioGroup value={searchMode} onValueChange={(value) => handleSearchModeChange(value as LogSearchMode)}>
+							<DropdownMenuRadioItem value="auto" className="text-xs" data-testid="logs-search-mode-auto">
+								{t("logs.searchModeOptions.auto")}
+							</DropdownMenuRadioItem>
+							<DropdownMenuRadioItem value="content" className="text-xs" data-testid="logs-search-mode-content">
+								{t("logs.searchModeOptions.content")}
+							</DropdownMenuRadioItem>
+							<DropdownMenuRadioItem value="request_id" className="text-xs" data-testid="logs-search-mode-request-id">
+								{t("logs.searchModeOptions.request_id")}
+							</DropdownMenuRadioItem>
+						</DropdownMenuRadioGroup>
+					</DropdownMenuContent>
+				</DropdownMenu>
 			</div>
 
 			<DateTimePickerWithRange
@@ -373,52 +460,59 @@ export function LogsHeaderView({
 					onPeriodChange(periodValue, from, to);
 				}}
 			/>
-			<Popover open={openMoreActionsPopover} onOpenChange={setOpenMoreActionsPopover}>
-				<PopoverTrigger asChild>
-					<Button variant="outline" size="sm" className="h-7.5 w-7.5">
-						<MoreVertical className="h-4 w-4" />
+			<DropdownMenu>
+				<DropdownMenuTrigger asChild>
+					<Button
+						variant="outline"
+						size="sm"
+						className="h-7.5 w-7.5"
+						aria-label={t("logs.moreActions")}
+						data-testid="logs-more-actions-btn"
+					>
+						<MoreVertical className="h-4 w-4" aria-hidden="true" />
 					</Button>
-				</PopoverTrigger>
-				<PopoverContent className="bg-accent w-[250px] p-2" align="end">
-					<Command>
-						<CommandList>
-							{/* While a job runs this doubles as the cancel control, so the run can
-							    still be stopped if the progress toast was dismissed. */}
-							<CommandItem
-								className="hover:bg-accent/50 cursor-pointer"
-								disabled={recalcCancelRequested}
-								onSelect={() => {
-									if (recalcCancelRequested) return;
-									setOpenMoreActionsPopover(false);
-									if (isRecalcRunning) {
-										void handleCancelRecalculate();
-										return;
-									}
-									setRecalcDialogOpen(true);
-								}}
-							>
-								{isRecalcRunning ? (
-									<RefreshCw className="text-muted-foreground size-4 animate-spin" />
-								) : (
-									<Calculator className="text-muted-foreground size-4" />
-								)}
-								<div className="flex flex-col">
-									<span className="text-sm">
-										{recalcCancelRequested ? "Cancelling…" : isRecalcRunning ? "Cancel recalculation" : "Recalculate costs"}
-									</span>
-									<span className="text-muted-foreground text-xs">
-										{recalcCancelRequested
-											? "Finishing the current batch"
-											: isRecalcRunning
-												? "Stop the running recalculation; costs already updated are kept"
-												: "Recompute cost for logs in this view"}
-									</span>
-								</div>
-							</CommandItem>
-						</CommandList>
-					</Command>
-				</PopoverContent>
-			</Popover>
+				</DropdownMenuTrigger>
+				<DropdownMenuContent align="end" className="w-64">
+					<DropdownMenuItem className="cursor-pointer items-start" onSelect={() => setExportDialogOpen(true)} data-testid="logs-export-btn">
+						<Download className="mt-0.5" />
+						<div className="flex flex-col">
+							<span>{t("logs.export.exportCsv")}</span>
+							<span className="text-muted-foreground text-xs">{t("logs.export.menuDescription")}</span>
+						</div>
+					</DropdownMenuItem>
+					{/* While a job runs this doubles as the cancel control, so the run can
+					    still be stopped if the progress toast was dismissed. */}
+					<DropdownMenuItem
+						className="cursor-pointer items-start"
+						disabled={recalcCancelRequested}
+						onSelect={() => {
+							if (isRecalcRunning) {
+								void handleCancelRecalculate();
+								return;
+							}
+							setRecalcDialogOpen(true);
+						}}
+					>
+						{isRecalcRunning ? <RefreshCw className="mt-0.5 animate-spin" /> : <Calculator className="mt-0.5" />}
+						<div className="flex flex-col">
+							<span>
+								{recalcCancelRequested
+									? t("logs.recalc.cancelling")
+									: isRecalcRunning
+										? t("logs.recalc.cancelRecalculation")
+										: t("logs.recalc.recalculateCosts")}
+							</span>
+							<span className="text-muted-foreground text-xs">
+								{recalcCancelRequested
+									? t("logs.recalc.hintCancelling")
+									: isRecalcRunning
+										? t("logs.recalc.hintRunning")
+										: t("logs.recalc.hintIdle")}
+							</span>
+						</div>
+					</DropdownMenuItem>
+				</DropdownMenuContent>
+			</DropdownMenu>
 			<ColumnConfigDropdown
 				entries={columnEntries}
 				labels={columnLabels}
@@ -432,6 +526,17 @@ export function LogsHeaderView({
 				filters={filters}
 				totalLogs={totalLogs}
 				onConfirm={handleRecalculateCosts}
+			/>
+
+			<LogsExportDialog
+				open={exportDialogOpen}
+				onOpenChange={setExportDialogOpen}
+				filters={filters}
+				currentPageLogs={currentPageLogs}
+				totalLogs={totalLogs}
+				sortBy={sortBy}
+				order={order}
+				grouped={grouped}
 			/>
 		</div>
 	);
@@ -457,7 +562,7 @@ async function startRecalculateCostJob(
 		credentials: "include",
 		headers,
 		// Override the page's own missing_cost_only filter with the mode chosen in the dialog.
-		body: JSON.stringify({ filters: { ...filters, missing_cost_only: missingCostOnly } }),
+		body: JSON.stringify({ filters: { ...withPeriodTimezone(filters), missing_cost_only: missingCostOnly } }),
 	});
 
 	// 202 Accepted (new job) and 409 Conflict (already running) both carry a status.
@@ -472,15 +577,15 @@ async function readRecalculateCostError(response: Response): Promise<Error> {
 	try {
 		return parseRecalculateCostStreamError(await response.text());
 	} catch {
-		return new Error(`Failed to recalculate costs (${response.status})`);
+		return new Error(i18n.t("logs.recalc.errorGenericStatus", { ns: "observability", status: response.status }));
 	}
 }
 
 function parseRecalculateCostStreamError(data: string): Error {
 	try {
 		const parsed = JSON.parse(data) as { error?: { message?: string }; message?: string };
-		return new Error(parsed.error?.message || parsed.message || "Failed to recalculate costs");
+		return new Error(parsed.error?.message || parsed.message || i18n.t("logs.recalc.errorGeneric", { ns: "observability" }));
 	} catch {
-		return new Error(data || "Failed to recalculate costs");
+		return new Error(data || i18n.t("logs.recalc.errorGeneric", { ns: "observability" }));
 	}
 }

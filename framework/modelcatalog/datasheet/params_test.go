@@ -204,3 +204,37 @@ func TestLoadModelCapabilities_MatchesBedrockMantleRows(t *testing.T) {
 		t.Errorf("bedrock lookup resolved to %+v, want the plain bedrock row", bedrockCaps)
 	}
 }
+
+// server_side_model rides the model-parameters row (no pricing column, no
+// migration), so it must survive the row -> capability record decode for the
+// provider's runtime lookup.
+func TestLoadModelCapabilities_CarriesServerSideModel(t *testing.T) {
+	s := NewTestStore(nil)
+	s.configStore = paramsOnlyConfigStore{rows: map[string]string{
+		"deepseek/deepseek-v4-flash": `{"provider":"deepseek","mode":"chat","base_model":"deepseek-v4-flash","server_side_model":"deepseek-flash"}`,
+	}}
+	s.SetSupportedParamsForTest(map[string][]string{"deepseek/deepseek-v4-flash": {"temperature"}})
+
+	caps, err := s.LoadModelCapabilities(context.Background(), schemas.DeepSeek, "deepseek-v4-flash")
+	if err != nil {
+		t.Fatalf("LoadModelCapabilities: %v", err)
+	}
+	if caps == nil || caps.ServerSideModel == nil || *caps.ServerSideModel != "deepseek-flash" {
+		t.Fatalf("ServerSideModel = %+v, want deepseek-flash", caps)
+	}
+}
+
+// The text_completion backfill checks pricingData for a completion-mode row,
+// which must match when the pricing row is spelled in another casing.
+func TestApplyModelParameters_TextCompletionBackfillMatchesAnyCase(t *testing.T) {
+	s := NewTestStore(nil)
+	s.SetPricingRowsForTest([]configstoreTables.TableModelPricing{
+		{Model: "GPT-3.5-Turbo-Instruct", Provider: "openai", Mode: "completion"},
+	})
+	s.applyModelParameters(map[string]json.RawMessage{
+		"gpt-3.5-turbo-instruct": json.RawMessage(`{"provider":"openai","mode":"chat"}`),
+	})
+	if !s.IsRequestTypeSupported("gpt-3.5-turbo-instruct", schemas.TextCompletionRequest) {
+		t.Fatal("expected text_completion to be backfilled from the GPT-3.5-Turbo-Instruct pricing row")
+	}
+}

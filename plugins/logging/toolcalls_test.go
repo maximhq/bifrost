@@ -2,6 +2,7 @@ package logging
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -247,5 +248,56 @@ func TestApplyRealtimeOutputToEntryRecordsToolCalls(t *testing.T) {
 	plugin.applyRealtimeOutputToEntry(entry, result, false, false)
 	if !reflect.DeepEqual(entry.ToolCallNames, []string{"set_alarm"}) || entry.ToolCallsParsed != nil {
 		t.Fatalf("without content logging: names=%#v calls=%+v", entry.ToolCallNames, entry.ToolCallsParsed)
+	}
+}
+
+// Filtering to function_call left custom and local shell calls out of tool_calls
+// and out of the tool name filter.
+func TestChatToolCallsFromResponsesOutputProjectsClientToolCalls(t *testing.T) {
+	const input = `{"cmd":"whoami","max_output_tokens":1000}`
+	output := []schemas.ResponsesMessage{
+		{
+			Type: schemas.Ptr(schemas.ResponsesMessageTypeCustomToolCall),
+			ID:   schemas.Ptr("ctc_1"),
+			ResponsesToolMessage: &schemas.ResponsesToolMessage{
+				CallID:                  schemas.Ptr("call_1"),
+				Name:                    schemas.Ptr("exec_command"),
+				ResponsesCustomToolCall: &schemas.ResponsesCustomToolCall{Input: input},
+			},
+		},
+		{
+			Type: schemas.Ptr(schemas.ResponsesMessageTypeLocalShellCall),
+			ID:   schemas.Ptr("lsc_1"),
+			ResponsesToolMessage: &schemas.ResponsesToolMessage{
+				Action: &schemas.ResponsesToolMessageActionStruct{
+					ResponsesLocalShellToolCallAction: &schemas.ResponsesLocalShellToolCallAction{
+						Type:    "exec",
+						Command: []string{"bash", "-lc", "whoami"},
+					},
+				},
+			},
+		},
+		// custom_tool_call without a name is still skipped.
+		{Type: schemas.Ptr(schemas.ResponsesMessageTypeCustomToolCall), ResponsesToolMessage: &schemas.ResponsesToolMessage{}},
+	}
+
+	got := chatToolCallsFromResponsesOutput(output)
+	if len(got) != 2 {
+		t.Fatalf("len = %d, want 2: %+v", len(got), got)
+	}
+	if *got[0].Type != "custom" || *got[0].Function.Name != "exec_command" || got[0].Function.Arguments != input {
+		t.Fatalf("got[0] = %+v", got[0])
+	}
+	if got[0].ID == nil || *got[0].ID != "call_1" {
+		t.Fatalf("got[0].ID = %v, want call_1", got[0].ID)
+	}
+	if *got[1].Type != "local_shell" || *got[1].Function.Name != "local_shell" {
+		t.Fatalf("got[1] = %+v", got[1])
+	}
+	if !strings.Contains(got[1].Function.Arguments, `"whoami"`) {
+		t.Fatalf("got[1].Arguments = %q, want the command", got[1].Function.Arguments)
+	}
+	if names := toolCallNames(got); !reflect.DeepEqual(names, []string{"exec_command", "local_shell"}) {
+		t.Fatalf("names = %v", names)
 	}
 }

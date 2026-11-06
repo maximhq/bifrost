@@ -1,8 +1,10 @@
 import { Label } from "@/components/ui/label";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { cn } from "@/lib/utils";
 import { Info } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
+import { useTranslation } from "react-i18next";
 
 // A tap is neither a hover nor a keyboard focus, so a Radix tooltip never opens
 // on a touch device. Coarse pointers get the same copy from a popover instead.
@@ -46,20 +48,22 @@ export function InfoTip({ label, children }: { label: string; children: ReactNod
 }
 
 export function FieldLabel({ htmlFor, children, tooltip }: { htmlFor?: string; children: ReactNode; tooltip?: ReactNode }) {
+	const { t } = useTranslation("common");
+	const fieldName = typeof children === "string" ? children : t("thisField");
 	return (
 		<div className="flex items-center gap-1.5">
 			<Label htmlFor={htmlFor}>{children}</Label>
-			{tooltip && <InfoTip label={`About ${typeof children === "string" ? children : "this field"}`}>{tooltip}</InfoTip>}
+			{tooltip && <InfoTip label={t("aboutField", { field: fieldName })}>{tooltip}</InfoTip>}
 		</div>
 	);
 }
 
-export function SectionHeading({ title, description, aside }: { title: string; description: string; aside?: ReactNode }) {
+export function SectionHeading({ title, description, aside }: { title: string; description?: string; aside?: ReactNode }) {
 	return (
-		<div className="flex flex-wrap items-start justify-between gap-2">
+		<div className={cn("flex flex-wrap justify-between gap-2", description ? "items-start" : "items-center")}>
 			<div className="space-y-1">
 				<h2 className="text-sm font-semibold">{title}</h2>
-				<p className="text-muted-foreground max-w-2xl text-xs leading-relaxed">{description}</p>
+				{description && <p className="text-muted-foreground max-w-2xl text-xs leading-relaxed">{description}</p>}
 			</div>
 			{aside}
 		</div>

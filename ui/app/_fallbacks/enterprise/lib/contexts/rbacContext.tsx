@@ -16,12 +16,17 @@ export enum RbacResource {
 	ModelProvider = "ModelProvider",
 	Plugins = "Plugins",
 	MCPGateway = "MCPGateway",
+	AgentGateway = "AgentGateway",
+	AgentLogs = "AgentLogs",
+	Relays = "Relays",
+	RelayLogs = "RelayLogs",
 	MCPToolGroups = "MCPToolGroups",
 	VirtualMCPs = "VirtualMCPs",
 	MCPLogs = "MCPLogs",
 	AdaptiveRouter = "AdaptiveRouter",
 	AuditLogs = "AuditLogs",
 	Customers = "Customers",
+	BusinessUnits = "BusinessUnits",
 	Teams = "Teams",
 	RBAC = "RBAC",
 	Governance = "Governance",
@@ -40,6 +45,10 @@ export enum RbacResource {
 	EdgeConfig = "EdgeConfig",
 	SkillsRepository = "SkillsRepository",
 	Notifications = "Notifications",
+	Warp = "Warp",
+	WarpSession = "WarpSession",
+	BackgroundJobs = "BackgroundJobs",
+	Alerting = "Alerting",
 }
 
 // RBAC Operation Names (must match backend definitions)
@@ -51,6 +60,8 @@ export enum RbacOperation {
 	Delete = "Delete",
 	Reveal = "Reveal",
 	Download = "Download",
+	CreateStandalone = "CreateStandalone",
+	ViewAs = "ViewAs",
 }
 
 interface RbacContextType {

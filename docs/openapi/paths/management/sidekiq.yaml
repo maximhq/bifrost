@@ -1,0 +1,88 @@
+# Background Jobs (Sidekiq) API
+
+sidekiq-jobs:
+  get:
+    operationId: listSidekiqJobs
+    summary: List background jobs
+    description: |
+      Returns every pending or running background job, plus jobs that reached a
+      terminal status (`completed`, `failed`, `cancelled`) within the window, newest
+      first and capped at 50. Jobs of every kind are listed, including ones started
+      from other features such as log cost recalculation or Warp log indexing.
+
+      `progress` is present only for job kinds that report it; other kinds show
+      status only. Totals are approximate, so `done` can differ from `total` on a
+      finished job.
+
+      Administrators only: the same callers that may manage Warp backfills.
+    tags:
+      - Background Jobs
+    parameters:
+      - name: since
+        in: query
+        required: false
+        description: |
+          RFC 3339 timestamp. Terminal jobs that finished before it are omitted.
+          Defaults to 24 hours ago. Active jobs are always listed.
+        schema:
+          type: string
+          format: date-time
+    responses:
+      '200':
+        description: Background jobs
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/sidekiq.yaml#/SidekiqJobList'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '403':
+        $ref: '../../openapi.yaml#/components/responses/Forbidden'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+
+sidekiq-job-cancel:
+  post:
+    operationId: cancelSidekiqJob
+    summary: Cancel a background job
+    description: |
+      Stops a pending or running job. Work the job already committed is kept; a
+      cancelled job is terminal and is not resumed.
+
+      Cancelling an unknown or already finished job is not an error: the response is
+      `{"cancelled": false}`. A job running on another node is stopped by that node
+      at its next heartbeat.
+
+      Administrators only.
+    tags:
+      - Background Jobs
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: Job ID, as returned by the list endpoint.
+        schema:
+          type: string
+    responses:
+      '200':
+        description: Cancellation result
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/sidekiq.yaml#/SidekiqJobCancelResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '403':
+        $ref: '../../openapi.yaml#/components/responses/Forbidden'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
