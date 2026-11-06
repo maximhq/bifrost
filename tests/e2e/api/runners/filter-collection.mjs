@@ -297,6 +297,18 @@ const matchesKeyword = (item, ancestorNames, haystack, keyword) => {
   return aliases.some((alias) => haystack.includes(alias));
 };
 
+// The model a raw request body names at its top level, so a "model" field nested in tool input or
+// message content cannot route the row. A body with an unquoted Postman variable does not parse;
+// the first "model" field stands in for it, which is the top-level one in the collection's rows.
+const topLevelModel = (raw) => {
+  try {
+    const model = JSON.parse(raw)?.model;
+    return typeof model === "string" ? model : "";
+  } catch {
+    return raw.match(/"model"\s*:\s*"([^"]*)"/)?.[1] || "";
+  }
+};
+
 // The `provider` override exists for --plan, which sizes every (provider, class) cell in one pass
 // and so must evaluate this predicate once per provider in the roster. Defaulting to the global
 // keeps every normal call site unchanged, and routing the collision rules through the parameter
@@ -334,7 +346,7 @@ const itemMatchesProvider = (item, ancestorNames, provider = PROVIDER) => {
   // "anthropic" only because of the route or folder name, yet the upstream call goes to the
   // model's own provider - same collision class as vertex above. Keep them out of the anthropic
   // partition; they still match their own provider's keywords through the model prefix.
-  if (provider === "anthropic" && /"model"\s*:\s*"(gemini|openai|azure|groq)\//.test(item.request?.body?.raw || "")) return false;
+  if (provider === "anthropic" && /^(gemini|openai|azure|groq)\//.test(topLevelModel(item.request?.body?.raw || ""))) return false;
   // Runware rows name the upstream vendor inside the AIR model id ("runware/anthropic:claude@...",
   // "runware/google:gemini@...", "runware/minimax:..."), so they'd otherwise be claimed by those
   // partitions too - same collision class as openrouter/bedrock_mantle/vertex above. Route them

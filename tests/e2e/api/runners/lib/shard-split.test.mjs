@@ -144,7 +144,7 @@ test("a groq/ model on the Anthropic route runs in the groq partition only", () 
               request: {
                 method: "POST",
                 url: "http://localhost:8080/anthropic/v1/messages",
-                body: { mode: "raw", raw: JSON.stringify({ model: "groq/qwen/qwen3.8-27b", messages: [] }) },
+                body: { mode: "raw", raw: '{"model":"groq/qwen/qwen3.8-27b","messages":[]}' },
               },
             },
           ],
@@ -154,6 +154,37 @@ test("a groq/ model on the Anthropic route runs in the groq partition only", () 
   );
   assert.ok(!runFilter(["--provider", "anthropic"], { source }).includes(name));
   assert.ok(runFilter(["--provider", "groq"], { source }).includes(name));
+});
+
+// Only the top-level model routes a row, so a groq/ model named in tool input stays with Anthropic.
+test("a nested groq/ model does not take a row out of the anthropic partition", () => {
+  const name = "anthropic model with a nested groq model";
+  const source = join(WORK, "source-nested-model.json");
+  writeFileSync(
+    source,
+    JSON.stringify({
+      ...COLLECTION,
+      item: [
+        {
+          name: "Routes",
+          item: [
+            {
+              name,
+              request: {
+                method: "POST",
+                url: "http://localhost:8080/anthropic/v1/messages",
+                body: {
+                  mode: "raw",
+                  raw: '{"model":"anthropic/test-model","messages":[],"tools":[{"input":{"model":"groq/qwen/qwen3.8-27b"}}]}',
+                },
+              },
+            },
+          ],
+        },
+      ],
+    })
+  );
+  assert.ok(runFilter(["--provider", "anthropic"], { source }).includes(name));
 });
 
 // ----- the partition property ------------------------------------------------------------------
