@@ -11,7 +11,7 @@ icon: "user-shield"
 
 If a single shared admin token is fine, use [OAuth 2.0](./oauth) instead.
 
-This auth type is only valid for **HTTP** and **SSE** connections.
+This auth type is only valid for **HTTP** connections. It is refused on an SSE or STDIO client, because each call opens its own connection: the API answers 400, and a `config.json` client is skipped at boot with an error naming it.
 
 <Note>
 This page covers **upstream** per-user OAuth — Bifrost holding a token *for* an upstream MCP service on behalf of each end-user, resolved **lazily** on the first tool call that needs it. Identity is asserted by the caller via headers (or upstream SSO).
@@ -39,7 +39,7 @@ You can run the admin verification either from the **Web UI** during create, or 
 
 1. Navigate to **MCP Gateway** in the sidebar
 2. Click **New MCP Server**
-3. Pick **HTTP** or **SSE** as the connection type, fill in the **Connection URL**
+3. Pick **HTTP** as the connection type, fill in the **Connection URL**
 4. Set **Auth Type** to **Per-User OAuth 2.0**
 5. Fill in the OAuth fields:
    - **Client ID** (optional — leave blank for Dynamic Client Registration)
@@ -114,6 +114,7 @@ The same lazy-auth pattern is used on both the **MCP Gateway** (`/mcp`) and the 
 3. Bifrost looks up an existing token for `(identity, mcp_client)`:
    - **Token found and `active`** → upstream call goes out transparently
    - **Missing, `orphaned`, or `needs_reauth`** → Bifrost returns an `mcp_auth_required` payload with an inline `authorize_url`. The tool is **not** executed.
+   - **Rejected upstream** (the provider expired or revoked it before the expiry Bifrost stored) → Bifrost refreshes it once and connects again, so the call goes ahead. If the provider refuses the refresh too, the token becomes `needs_reauth` and the same request returns `mcp_auth_required`.
 4. The user opens the URL, completes the upstream OAuth flow, and Bifrost stores the resulting token against their identity.
 5. The next request executes the tool normally.
 
@@ -221,9 +222,9 @@ The admin's one-time bootstrap token is not thrown away after verification: Bifr
 
 - **Tool-list refresh only.** The periodic tool syncer uses it for a one-shot connect, `tools/list`, disconnect cycle on the client's [tool sync interval](#periodic-tool-sync). It is **never** used for end-user tool calls; those always run under the caller's own token.
 - **Proactively refreshed.** The background token refresh worker keeps it alive alongside shared-client tokens, so tool discovery keeps working without anyone logging in again.
-- **Invisible on the sessions page.** Admin credentials are excluded from [MCP Sessions](../sessions); they are managed from the client sheet instead.
+- **Invisible on the sessions page.** Admin credentials are excluded from [MCP Sessions](../sessions); they are managed from the server's view sheet and actions menu instead.
 
-If the admin credential permanently dies (refresh rejected, provider-side revocation, or a credential rotation), the client list projects a **`needs_reauth`** badge next to the client's **View sessions** link. This is a display-level state: end-user credentials and tool calls keep working, only tool-list refresh pauses until an admin repairs it. Clients verified before Bifrost retained admin credentials have no admin row and simply stay healthy.
+If the admin credential permanently dies (refresh rejected, provider-side revocation, or a credential rotation), the server's state shows as **`needs_reauth`** in the servers table and on its view sheet. This is a display-level state: end-user credentials and tool calls keep working, only tool-list refresh pauses until an admin repairs it. Clients verified before Bifrost retained admin credentials have no admin row and simply stay healthy.
 
 To repair it, open the server's actions menu (**⋯**) in the MCP Server Catalog and choose **Refresh admin credential**: Bifrost redoes the admin consent flow, verifies the fresh token upstream, re-discovers tools, and installs the token as the new admin credential. If verification fails, the fresh token is revoked and the previous credential and tool set are left untouched, so the repair is safely retryable.
 

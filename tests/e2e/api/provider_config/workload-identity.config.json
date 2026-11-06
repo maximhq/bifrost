@@ -1,0 +1,332 @@
+{
+  "providers": {
+    "wif-anthropic": {
+      "keys": [
+        {
+          "name": "wif-config-file",
+          "value": "",
+          "models": [
+            "*"
+          ],
+          "weight": 1,
+          "anthropic_key_config": {
+            "workload_identity": {
+              "federation_rule_id": "fdrl_wiffixture",
+              "organization_id": "00000000-0000-0000-0000-000000000000",
+              "service_account_id": "svac_wiffixture",
+              "workspace_id": "wrkspc_wiffixture",
+              "identity_source": {
+                "type": "file",
+                "path": "env.WIF_FIXTURE_TOKEN_FILE"
+              }
+            }
+          }
+        }
+      ],
+      "network_config": {
+        "base_url": "http://127.0.0.1:8800/anthropic",
+        "max_retries": 0,
+        "default_request_timeout_in_seconds": 10,
+        "stream_idle_timeout_in_seconds": 5
+      },
+      "custom_provider_config": {
+        "base_provider_type": "anthropic",
+        "is_key_less": false
+      }
+    },
+    "wif-anthropic-rotating": {
+      "keys": [
+        {
+          "name": "wif-rotating-file",
+          "value": "",
+          "models": [
+            "*"
+          ],
+          "weight": 1,
+          "anthropic_key_config": {
+            "workload_identity": {
+              "federation_rule_id": "fdrl_wiffixture",
+              "organization_id": "00000000-0000-0000-0000-000000000000",
+              "service_account_id": "svac_wiffixture",
+              "workspace_id": "wrkspc_wiffixture",
+              "identity_source": {
+                "type": "file",
+                "path": "__WIF_FIXTURE_DIR__/tokens/rotating.jwt"
+              }
+            }
+          }
+        }
+      ],
+      "network_config": {
+        "base_url": "http://127.0.0.1:8800/anthropic",
+        "max_retries": 0,
+        "default_request_timeout_in_seconds": 10,
+        "stream_idle_timeout_in_seconds": 5
+      },
+      "custom_provider_config": {
+        "base_provider_type": "anthropic",
+        "is_key_less": false
+      }
+    },
+    "wif-anthropic-single-use": {
+      "keys": [
+        {
+          "name": "wif-single-use-file",
+          "value": "",
+          "models": [
+            "*"
+          ],
+          "weight": 1,
+          "anthropic_key_config": {
+            "workload_identity": {
+              "federation_rule_id": "fdrl_wiffixture",
+              "organization_id": "00000000-0000-0000-0000-000000000000",
+              "service_account_id": "svac_wiffixture",
+              "workspace_id": "wrkspc_wiffixture",
+              "identity_source": {
+                "type": "file",
+                "path": "__WIF_FIXTURE_DIR__/tokens/single-use.jwt"
+              }
+            }
+          }
+        }
+      ],
+      "network_config": {
+        "base_url": "http://127.0.0.1:8800/anthropic",
+        "max_retries": 0,
+        "default_request_timeout_in_seconds": 10,
+        "stream_idle_timeout_in_seconds": 5
+      },
+      "custom_provider_config": {
+        "base_provider_type": "anthropic",
+        "is_key_less": false
+      }
+    },
+    "wif-anthropic-outside": {
+      "keys": [
+        {
+          "name": "wif-outside-file",
+          "value": "",
+          "models": [
+            "*"
+          ],
+          "weight": 1,
+          "anthropic_key_config": {
+            "workload_identity": {
+              "federation_rule_id": "fdrl_wiffixture",
+              "organization_id": "00000000-0000-0000-0000-000000000000",
+              "service_account_id": "svac_wiffixture",
+              "workspace_id": "wrkspc_wiffixture",
+              "identity_source": {
+                "type": "file",
+                "path": "__WIF_FIXTURE_DIR__/outside/outside.jwt"
+              }
+            }
+          }
+        }
+      ],
+      "network_config": {
+        "base_url": "http://127.0.0.1:8800/anthropic",
+        "max_retries": 0,
+        "default_request_timeout_in_seconds": 10,
+        "stream_idle_timeout_in_seconds": 5
+      },
+      "custom_provider_config": {
+        "base_provider_type": "anthropic",
+        "is_key_less": false
+      }
+    },
+    "wif-anthropic-denied": {
+      "keys": [
+        {
+          "name": "wif-exchange-denied",
+          "value": "",
+          "models": [
+            "*"
+          ],
+          "weight": 1,
+          "anthropic_key_config": {
+            "workload_identity": {
+              "federation_rule_id": "fdrl_wiffixture",
+              "organization_id": "00000000-0000-0000-0000-000000000000",
+              "service_account_id": "svac_wiffixture",
+              "workspace_id": "wrkspc_wiffixture",
+              "identity_source": {
+                "type": "inline",
+                "token": "eyJhbGciOiJSUzI1NiIsImtpZCI6IndpZi1maXh0dXJlIn0.eyJpc3MiOiJodHRwczovL3dpZi1maXh0dXJlLmludmFsaWQiLCJzdWIiOiJleGNoYW5nZS1kZW5pZWQiLCJhdWQiOiJodHRwczovL2FwaS5hbnRocm9waWMuY29tIiwiaWF0IjoxNzkzNDkxMjAwLCJub25jZSI6ImNvbmZpZyIsImZ4Ijp7ImV4Y2hhbmdlX3N0YXR1cyI6NDAxfX0.d2lmLWZpeHR1cmU"
+              }
+            }
+          }
+        }
+      ],
+      "network_config": {
+        "base_url": "http://127.0.0.1:8800/anthropic",
+        "max_retries": 0,
+        "default_request_timeout_in_seconds": 10,
+        "stream_idle_timeout_in_seconds": 5
+      },
+      "custom_provider_config": {
+        "base_provider_type": "anthropic",
+        "is_key_less": false
+      }
+    },
+    "wif-anthropic-unavailable": {
+      "keys": [
+        {
+          "name": "wif-exchange-unavailable",
+          "value": "",
+          "models": [
+            "*"
+          ],
+          "weight": 1,
+          "anthropic_key_config": {
+            "workload_identity": {
+              "federation_rule_id": "fdrl_wiffixture",
+              "organization_id": "00000000-0000-0000-0000-000000000000",
+              "service_account_id": "svac_wiffixture",
+              "workspace_id": "wrkspc_wiffixture",
+              "identity_source": {
+                "type": "inline",
+                "token": "eyJhbGciOiJSUzI1NiIsImtpZCI6IndpZi1maXh0dXJlIn0.eyJpc3MiOiJodHRwczovL3dpZi1maXh0dXJlLmludmFsaWQiLCJzdWIiOiJleGNoYW5nZS11bmF2YWlsYWJsZSIsImF1ZCI6Imh0dHBzOi8vYXBpLmFudGhyb3BpYy5jb20iLCJpYXQiOjE3OTM0OTEyMDAsIm5vbmNlIjoiY29uZmlnIiwiZngiOnsiZXhjaGFuZ2Vfc3RhdHVzIjo1MDN9fQ.d2lmLWZpeHR1cmU"
+              }
+            }
+          }
+        }
+      ],
+      "network_config": {
+        "base_url": "http://127.0.0.1:8800/anthropic",
+        "max_retries": 0,
+        "default_request_timeout_in_seconds": 10,
+        "stream_idle_timeout_in_seconds": 5
+      },
+      "custom_provider_config": {
+        "base_provider_type": "anthropic",
+        "is_key_less": false
+      }
+    },
+    "wif-anthropic-no-token": {
+      "keys": [
+        {
+          "name": "wif-exchange-no-token",
+          "value": "",
+          "models": [
+            "*"
+          ],
+          "weight": 1,
+          "anthropic_key_config": {
+            "workload_identity": {
+              "federation_rule_id": "fdrl_wiffixture",
+              "organization_id": "00000000-0000-0000-0000-000000000000",
+              "service_account_id": "svac_wiffixture",
+              "workspace_id": "wrkspc_wiffixture",
+              "identity_source": {
+                "type": "inline",
+                "token": "eyJhbGciOiJSUzI1NiIsImtpZCI6IndpZi1maXh0dXJlIn0.eyJpc3MiOiJodHRwczovL3dpZi1maXh0dXJlLmludmFsaWQiLCJzdWIiOiJleGNoYW5nZS1uby10b2tlbiIsImF1ZCI6Imh0dHBzOi8vYXBpLmFudGhyb3BpYy5jb20iLCJpYXQiOjE3OTM0OTEyMDAsIm5vbmNlIjoiY29uZmlnIiwiZngiOnsib21pdF9hY2Nlc3NfdG9rZW4iOnRydWV9fQ.d2lmLWZpeHR1cmU"
+              }
+            }
+          }
+        }
+      ],
+      "network_config": {
+        "base_url": "http://127.0.0.1:8800/anthropic",
+        "max_retries": 0,
+        "default_request_timeout_in_seconds": 10,
+        "stream_idle_timeout_in_seconds": 5
+      },
+      "custom_provider_config": {
+        "base_provider_type": "anthropic",
+        "is_key_less": false
+      }
+    },
+    "wif-anthropic-redirect": {
+      "keys": [
+        {
+          "name": "wif-exchange-redirect",
+          "value": "",
+          "models": [
+            "*"
+          ],
+          "weight": 1,
+          "anthropic_key_config": {
+            "workload_identity": {
+              "federation_rule_id": "fdrl_wiffixture",
+              "organization_id": "00000000-0000-0000-0000-000000000000",
+              "service_account_id": "svac_wiffixture",
+              "workspace_id": "wrkspc_wiffixture",
+              "identity_source": {
+                "type": "inline",
+                "token": "eyJhbGciOiJSUzI1NiIsImtpZCI6IndpZi1maXh0dXJlIn0.eyJpc3MiOiJodHRwczovL3dpZi1maXh0dXJlLmludmFsaWQiLCJzdWIiOiJleGNoYW5nZS1yZWRpcmVjdCIsImF1ZCI6Imh0dHBzOi8vYXBpLmFudGhyb3BpYy5jb20iLCJpYXQiOjE3OTM0OTEyMDAsIm5vbmNlIjoiY29uZmlnIiwiZngiOnsicmVkaXJlY3QiOnRydWV9fQ.d2lmLWZpeHR1cmU"
+              }
+            }
+          }
+        }
+      ],
+      "network_config": {
+        "base_url": "http://127.0.0.1:8800/anthropic",
+        "max_retries": 0,
+        "default_request_timeout_in_seconds": 10,
+        "stream_idle_timeout_in_seconds": 5
+      },
+      "custom_provider_config": {
+        "base_provider_type": "anthropic",
+        "is_key_less": false
+      }
+    },
+    "wif-anthropic-static-wins": {
+      "keys": [
+        {
+          "name": "wif-static-wins",
+          "value": "wif-fixture-static-wins",
+          "models": [
+            "*"
+          ],
+          "weight": 1,
+          "anthropic_key_config": {
+            "workload_identity": {
+              "federation_rule_id": "fdrl_wiffixture",
+              "organization_id": "00000000-0000-0000-0000-000000000000",
+              "service_account_id": "svac_wiffixture",
+              "workspace_id": "wrkspc_wiffixture",
+              "identity_source": {
+                "type": "inline",
+                "token": "eyJhbGciOiJSUzI1NiIsImtpZCI6IndpZi1maXh0dXJlIn0.eyJpc3MiOiJodHRwczovL3dpZi1maXh0dXJlLmludmFsaWQiLCJzdWIiOiJzdGF0aWMtd2lucyIsImF1ZCI6Imh0dHBzOi8vYXBpLmFudGhyb3BpYy5jb20iLCJpYXQiOjE3OTM0OTEyMDAsIm5vbmNlIjoiY29uZmlnIn0.d2lmLWZpeHR1cmU"
+              }
+            }
+          }
+        }
+      ],
+      "network_config": {
+        "base_url": "http://127.0.0.1:8800/anthropic",
+        "max_retries": 0,
+        "default_request_timeout_in_seconds": 10,
+        "stream_idle_timeout_in_seconds": 5
+      },
+      "custom_provider_config": {
+        "base_provider_type": "anthropic",
+        "is_key_less": false
+      }
+    },
+    "wif-anthropic-static": {
+      "keys": [
+        {
+          "name": "wif-static-fallback",
+          "value": "wif-fixture-static-fallback",
+          "models": [
+            "*"
+          ],
+          "weight": 1
+        }
+      ],
+      "network_config": {
+        "base_url": "http://127.0.0.1:8800/anthropic",
+        "max_retries": 0,
+        "default_request_timeout_in_seconds": 10,
+        "stream_idle_timeout_in_seconds": 5
+      },
+      "custom_provider_config": {
+        "base_provider_type": "anthropic",
+        "is_key_less": false
+      }
+    }
+  }
+}

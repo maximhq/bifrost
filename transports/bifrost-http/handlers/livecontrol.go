@@ -44,7 +44,7 @@ func (h *LiveControlHandler) handleContent(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	defer req.cancel()
-	bifrostCtx, cancel := h.gateway.sessionContext(req.auth, req.preReqCtx, req.middlewareValues, req.path)
+	bifrostCtx, cancel := h.gateway.sessionContext(req.setupHeaders, req.preReqCtx, req.middlewareValues, req.path)
 	serveLiveContent(ctx, bifrostCtx, h.gateway.client, req.providerKey, req.sessionID, cancel)
 }
 

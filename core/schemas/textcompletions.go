@@ -75,6 +75,21 @@ type BifrostTextCompletionResponse struct {
 	ExtraFields       BifrostResponseExtraFields `json:"extra_fields"`
 }
 
+// WithPreservedUsage retains explicitly reported zero counts without filling in
+// missing counts or mutating the shared usage.
+func (r *BifrostTextCompletionResponse) WithPreservedUsage() any {
+	if r == nil || !r.Usage.hasExplicitZeroTokens() {
+		return r
+	}
+	return &struct {
+		*BifrostTextCompletionResponse
+		Usage completionUsage `json:"usage"`
+	}{
+		BifrostTextCompletionResponse: r,
+		Usage:                         r.Usage.completionWireUsage(),
+	}
+}
+
 type TextCompletionInput struct {
 	PromptStr   *string
 	PromptArray []string

@@ -1034,6 +1034,7 @@ func convertToProcessedStreamResponse(result *schemas.StreamAccumulatorResult, r
 		PassthroughOutput:     result.PassthroughOutput,
 		FinishReason:          result.FinishReason,
 		RawResponse:           result.RawResponse,
+		RawResponseFormat:     result.RawResponseFormat,
 	}
 
 	// Handle tool calls if present

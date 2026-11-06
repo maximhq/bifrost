@@ -1,0 +1,2 @@
+- fix: preserve explicitly reported zero token usage
+- chore: upgraded core to v1.15.0 and framework to v1.12.0

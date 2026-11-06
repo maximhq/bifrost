@@ -446,7 +446,7 @@ func (provider *AzureProvider) ChatCompletion(ctx *schemas.BifrostContext, key s
 	return openai.HandleOpenAIChatCompletionRequest(
 		ctx,
 		provider.client,
-		fmt.Sprintf("%s/openai/v1/chat/completions", endpoint),
+		azureChatCompletionURL(ctx, endpoint, request),
 		request,
 		authHeader,
 		provider.networkConfig.ExtraHeaders,
@@ -513,7 +513,7 @@ func (provider *AzureProvider) ChatCompletionStream(ctx *schemas.BifrostContext,
 		if err != nil {
 			return nil, err
 		}
-		url = fmt.Sprintf("%s/openai/v1/chat/completions", endpoint)
+		url = azureChatCompletionURL(ctx, endpoint, request)
 
 		// Use shared streaming logic from OpenAI
 		return openai.HandleOpenAIChatCompletionStreaming(
@@ -3316,100 +3316,120 @@ func (provider *AzureProvider) ContainerFileList(ctx *schemas.BifrostContext, ke
 	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
 	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
 
+	// A container lives on one key's resource: the first page finds that key, and the cursor keeps later pages on it.
 	helper, herr := providerUtils.NewSerialListHelper(keys, request.After, provider.logger, true)
 	if herr != nil {
 		return nil, providerUtils.NewBifrostOperationError("invalid pagination cursor", herr)
 	}
 
-	key, nativeCursor, ok := helper.GetCurrentKey()
-	if !ok {
-		return &schemas.BifrostContainerFileListResponse{Object: "list", Data: []schemas.ContainerFileObject{}, HasMore: false}, nil
-	}
-	if resolveAzureEndpoint(ctx, key) == "" {
-		return nil, providerUtils.NewConfigurationError("endpoint not set")
+	fetchPage := func(key schemas.Key, nativeCursor string) (*schemas.BifrostContainerFileListResponse, *schemas.BifrostError) {
+		if resolveAzureEndpoint(ctx, key) == "" {
+			return nil, providerUtils.NewConfigurationError("endpoint not set")
+		}
+
+		requestURL := provider.buildContainerURL(ctx, key, fmt.Sprintf("/containers/%s/files", escapedContainerID))
+		queryParams := url.Values{}
+		if request.Limit > 0 {
+			queryParams.Set("limit", fmt.Sprintf("%d", request.Limit))
+		}
+		if nativeCursor != "" {
+			queryParams.Set("after", nativeCursor)
+		}
+		if request.Order != nil {
+			queryParams.Set("order", *request.Order)
+		}
+		if len(queryParams) > 0 {
+			requestURL += "?" + queryParams.Encode()
+		}
+
+		req := fasthttp.AcquireRequest()
+		resp := fasthttp.AcquireResponse()
+		defer fasthttp.ReleaseRequest(req)
+		defer fasthttp.ReleaseResponse(resp)
+
+		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+		req.SetRequestURI(requestURL)
+		req.Header.SetMethod(http.MethodGet)
+
+		authHeaders, bifrostErr := provider.getAzureAuthHeaders(ctx, key, false)
+		if bifrostErr != nil {
+			return nil, bifrostErr
+		}
+		for k, v := range authHeaders {
+			req.Header.Set(k, v)
+		}
+
+		latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+		defer wait()
+		if bifrostErr != nil {
+			return nil, bifrostErr
+		}
+		if resp.StatusCode() >= 400 {
+			return nil, providerUtils.SetErrorLatency(openai.ParseOpenAIError(resp), latency)
+		}
+
+		responseBody, err := providerUtils.CheckAndDecodeBody(resp)
+		if err != nil {
+			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err)
+		}
+
+		var listResp struct {
+			Object  string                        `json:"object"`
+			Data    []schemas.ContainerFileObject `json:"data"`
+			FirstID *string                       `json:"first_id"`
+			LastID  *string                       `json:"last_id"`
+			HasMore bool                          `json:"has_more"`
+		}
+
+		rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, &listResp, nil, sendBackRawRequest, sendBackRawResponse)
+		if bifrostErr != nil {
+			return nil, bifrostErr
+		}
+
+		response := &schemas.BifrostContainerFileListResponse{
+			Object:      listResp.Object,
+			Data:        listResp.Data,
+			FirstID:     listResp.FirstID,
+			LastID:      listResp.LastID,
+			HasMore:     listResp.HasMore,
+			ExtraFields: schemas.BifrostResponseExtraFields{Latency: latency.Milliseconds()},
+		}
+		if sendBackRawRequest {
+			response.ExtraFields.RawRequest = rawRequest
+		}
+		if sendBackRawResponse {
+			response.ExtraFields.RawResponse = rawResponse
+		}
+		return response, nil
 	}
 
-	requestURL := provider.buildContainerURL(ctx, key, fmt.Sprintf("/containers/%s/files", escapedContainerID))
-	queryParams := url.Values{}
-	if request.Limit > 0 {
-		queryParams.Set("limit", fmt.Sprintf("%d", request.Limit))
+	var response *schemas.BifrostContainerFileListResponse
+	var keyIndex int
+	var bifrostErr *schemas.BifrostError
+	if helper.Cursor != nil {
+		key, nativeCursor, ok := helper.GetCurrentKey()
+		if !ok {
+			return &schemas.BifrostContainerFileListResponse{Object: "list", Data: []schemas.ContainerFileObject{}, HasMore: false}, nil
+		}
+		keyIndex = helper.GetCurrentKeyIndex()
+		response, bifrostErr = fetchPage(key, nativeCursor)
+	} else {
+		response, keyIndex, bifrostErr = providerUtils.LookupAcrossKeys(ctx, keys, func(key schemas.Key) (*schemas.BifrostContainerFileListResponse, *schemas.BifrostError) {
+			return fetchPage(key, "")
+		})
 	}
-	if nativeCursor != "" {
-		queryParams.Set("after", nativeCursor)
-	}
-	if request.Order != nil {
-		queryParams.Set("order", *request.Order)
-	}
-	if len(queryParams) > 0 {
-		requestURL += "?" + queryParams.Encode()
-	}
-
-	req := fasthttp.AcquireRequest()
-	resp := fasthttp.AcquireResponse()
-	defer fasthttp.ReleaseRequest(req)
-	defer fasthttp.ReleaseResponse(resp)
-
-	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
-	req.SetRequestURI(requestURL)
-	req.Header.SetMethod(http.MethodGet)
-
-	authHeaders, bifrostErr := provider.getAzureAuthHeaders(ctx, key, false)
-	if bifrostErr != nil {
-		return nil, bifrostErr
-	}
-	for k, v := range authHeaders {
-		req.Header.Set(k, v)
-	}
-
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
-	defer wait()
-	if bifrostErr != nil {
-		return nil, bifrostErr
-	}
-	if resp.StatusCode() >= 400 {
-		return nil, providerUtils.SetErrorLatency(openai.ParseOpenAIError(resp), latency)
-	}
-
-	responseBody, err := providerUtils.CheckAndDecodeBody(resp)
-	if err != nil {
-		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err)
-	}
-
-	var listResp struct {
-		Object  string                        `json:"object"`
-		Data    []schemas.ContainerFileObject `json:"data"`
-		FirstID *string                       `json:"first_id"`
-		LastID  *string                       `json:"last_id"`
-		HasMore bool                          `json:"has_more"`
-	}
-
-	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, &listResp, nil, sendBackRawRequest, sendBackRawResponse)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
 
 	cursorID := ""
-	if listResp.LastID != nil {
-		cursorID = *listResp.LastID
+	if response.LastID != nil {
+		cursorID = *response.LastID
 	}
-	nextCursor, hasMore := helper.BuildNextCursor(listResp.HasMore, cursorID)
-
-	response := &schemas.BifrostContainerFileListResponse{
-		Object:      listResp.Object,
-		Data:        listResp.Data,
-		FirstID:     listResp.FirstID,
-		LastID:      listResp.LastID,
-		HasMore:     hasMore,
-		ExtraFields: schemas.BifrostResponseExtraFields{Latency: latency.Milliseconds()},
-	}
+	nextCursor, hasMore := providerUtils.BuildNextCursorWithinKey(keyIndex, response.HasMore, cursorID)
+	response.HasMore = hasMore
 	if nextCursor != "" {
 		response.After = &nextCursor
-	}
-	if sendBackRawRequest {
-		response.ExtraFields.RawRequest = rawRequest
-	}
-	if sendBackRawResponse {
-		response.ExtraFields.RawResponse = rawResponse
 	}
 	return response, nil
 }
@@ -3879,7 +3899,7 @@ func (provider *AzureProvider) PassthroughStream(
 
 	var anthropicUsage *anthropic.AnthropicPassthroughStreamUsage
 	if schemas.IsAnthropicModelFamily(ctx, req.Model) {
-		anthropicUsage = &anthropic.AnthropicPassthroughStreamUsage{}
+		anthropicUsage = &anthropic.AnthropicPassthroughStreamUsage{RequestBody: req.Body}
 	}
 	return providerUtils.StreamPassthrough(
 		ctx, postHookRunner, postHookSpanFinalizer, resp, rawBodyStream,

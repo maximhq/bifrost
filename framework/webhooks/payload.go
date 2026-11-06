@@ -2,6 +2,7 @@ package webhooks
 
 import (
 	"encoding/json"
+	"sync/atomic"
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -54,14 +55,19 @@ var asyncResultPathByType = map[schemas.RequestType]string{
 }
 
 // AsyncResultPath returns the relative URL a caller can GET to fetch the
-// result of the given job, or false when the request type has no async
-// result route.
+// result of the given job, under server.base_path when one is set (see
+// SetResultURLPrefix), or false when the request type has no async result
+// route.
 func AsyncResultPath(requestType schemas.RequestType, jobID string) (string, bool) {
 	base, ok := asyncResultPathByType[requestType]
 	if !ok {
 		return "", false
 	}
-	return base + "/" + jobID, true
+	prefix := ""
+	if p := resultURLPrefix.Load(); p != nil {
+		prefix = *p
+	}
+	return prefix + base + "/" + jobID, true
 }
 
 // EventForJobStatus maps a terminal async job status to the webhook event it
@@ -137,4 +143,16 @@ func renderExpiredPayload(job *tables.TableWebhookJob, now time.Time) ([]byte, e
 			ResultExpired: true,
 		},
 	})
+}
+
+// resultURLPrefix holds the server.base_path result URLs are served under, set
+// once at startup before any delivery is rendered.
+var resultURLPrefix atomic.Pointer[string]
+
+// SetResultURLPrefix records the server.base_path ("" at the domain root, else
+// "/prefix") that AsyncResultPath puts in front of every result_url, so a
+// receiver that joins the path onto the gateway origin lands under the prefix
+// the proxy routes on.
+func SetResultURLPrefix(prefix string) {
+	resultURLPrefix.Store(&prefix)
 }
