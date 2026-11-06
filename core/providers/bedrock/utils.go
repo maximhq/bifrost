@@ -1841,6 +1841,17 @@ func encodeRedactedContentForConverse(id *string, token string) string {
 	return wrapRedactedContentForConverse(id, token)
 }
 
+// isConverseBlob reports whether token can be sent upstream as Converse redactedContent.
+// The field is a blob, so a token that is not canonical base64 cannot even deserialize:
+// Bedrock answers 400 SerializationException with an empty message, which names no
+// reasoning token and so never triggers the strip-and-retry fail-soft. Such a token was
+// minted by another host (Mantle hands back the bare rsn_ token Bedrock base64-wraps)
+// and could not verify here anyway, so the replay drops it instead.
+func isConverseBlob(token string) bool {
+	decoded, err := base64.StdEncoding.DecodeString(token)
+	return err == nil && token != "" && base64.StdEncoding.EncodeToString(decoded) == token
+}
+
 // wrapRedactedContentForConverse wraps token unconditionally, embedding id.
 func wrapRedactedContentForConverse(id *string, token string) string {
 	return base64.StdEncoding.EncodeToString([]byte(foreignRedactedContentPrefix + providerUtils.EmbedReasoningItemID(id, token)))
@@ -2147,7 +2158,7 @@ func convertMessage(ctx context.Context, model string, msg schemas.ChatMessage, 
 				// signature, without one, empty or not -- with an opaque 500. The
 				// encrypted blob is the only replayable detail, and dropping the
 				// rest beats sending a shape that cannot be accepted.
-				if detail.Type == schemas.BifrostReasoningDetailsTypeEncrypted && detail.Data != nil {
+				if detail.Type == schemas.BifrostReasoningDetailsTypeEncrypted && detail.Data != nil && isConverseBlob(*detail.Data) {
 					contentBlocks = append(contentBlocks, BedrockContentBlock{
 						ReasoningContent: &BedrockReasoningContent{RedactedContent: detail.Data},
 					})
