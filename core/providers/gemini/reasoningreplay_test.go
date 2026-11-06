@@ -108,6 +108,9 @@ func TestNonStreamReasoningItemHasID(t *testing.T) {
 			require.NotEmpty(t, *reasoning[0].ID)
 			require.False(t, strings.HasPrefix(*reasoning[0].ID, "rs_"), "id %q mimics an OpenAI id", *reasoning[0].ID)
 			require.Regexp(t, `^msg_\w+_reasoning_\d+$`, *reasoning[0].ID, "not the streaming path's generateItemID form")
+			wire, err := json.Marshal(reasoning[0])
+			require.NoError(t, err)
+			require.True(t, gjson.GetBytes(wire, "summary").IsArray(), "reasoning item has no summary array: %s", wire)
 		})
 	}
 
@@ -133,6 +136,7 @@ func TestNonStreamReasoningItemHasID(t *testing.T) {
 		wire, err := json.Marshal(contents)
 		require.NoError(t, err)
 		require.Contains(t, string(wire), `"thought":true,"text":"thinking"`)
+		require.Equal(t, 1, strings.Count(string(wire), `"text":"thinking"`), "thought text must replay exactly once: %s", wire)
 	})
 }
 
@@ -216,6 +220,43 @@ func TestNonStreamSignatureOnToolPartsHasID(t *testing.T) {
 			require.True(t, found, "no reasoning item emitted for the signature: %+v", resp.Output)
 		})
 	}
+}
+
+// Non-streamed item ids are replayed as-is to OpenAI and Azure, which reject any item id
+// longer than 64 characters ("Invalid 'input[1].id': string too long"). Scoping them by the
+// 55-character response id produced 66-71 character ids; they must fit like streamed ids do.
+func TestNonStreamItemIDsFitOpenAIIDLimit(t *testing.T) {
+	parts := []*Part{{Thought: true, Text: "thinking"}, {Text: "OK"}}
+	for i := 0; i < 10; i++ { // two-digit output indexes
+		parts = append(parts, &Part{Thought: true, Text: "more"}, &Part{Text: "more"})
+	}
+	resp := (&GenerateContentResponse{Candidates: []*Candidate{{
+		Content:           &Content{Role: "model", Parts: parts},
+		GroundingMetadata: &GroundingMetadata{WebSearchQueries: []string{"bifrost"}},
+	}}}).ToResponsesBifrostResponsesResponse()
+	require.Greater(t, len(resp.Output), 20)
+	for _, item := range resp.Output {
+		require.NotNil(t, item.ID, "item without an id: %+v", item)
+		require.LessOrEqual(t, len(*item.ID), 64, "item id %q is %d characters", *item.ID, len(*item.ID))
+	}
+}
+
+// A web_search_call built from groundingMetadata (no server-side toolCall part to take an id
+// from) carries an id in the streaming path's generateItemID("ws", index) form, not null.
+func TestNonStreamGroundingWebSearchCallHasID(t *testing.T) {
+	resp := (&GenerateContentResponse{Candidates: []*Candidate{{
+		Content:           &Content{Role: "model", Parts: []*Part{{Text: "OK"}}},
+		GroundingMetadata: &GroundingMetadata{WebSearchQueries: []string{"bifrost"}},
+	}}}).ToResponsesBifrostResponsesResponse()
+	var found bool
+	for _, item := range resp.Output {
+		if item.Type != nil && *item.Type == schemas.ResponsesMessageTypeWebSearchCall {
+			found = true
+			require.NotNil(t, item.ID, "web_search_call id is null")
+			require.Regexp(t, `^msg_\w+_ws_\d+$`, *item.ID)
+		}
+	}
+	require.True(t, found, "no web_search_call emitted: %+v", resp.Output)
 }
 
 // responsesMessagesForThoughtPart runs the real ingress converter over a single
@@ -357,5 +398,33 @@ func BenchmarkNonStreamReasoningOutput(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		_ = convertGeminiCandidatesToResponsesOutput(candidates, "msg_test")
+	}
+}
+
+// TestNonStreamThoughtTextRendersOnceInGenAIOutput pins that a non-streamed thought keeps
+// its text exactly once when the Responses output is rendered back as a GenAI response. The
+// renderer converts every message's content blocks, so reading the reasoning_text block a
+// second time from the reasoning branch would send the thought twice.
+func TestNonStreamThoughtTextRendersOnceInGenAIOutput(t *testing.T) {
+	for name, part := range map[string]*Part{
+		"thought text only":          {Thought: true, Text: "thinking"},
+		"thought text and signature": {Thought: true, Text: "thinking", ThoughtSignature: []byte{0x01, 0x02}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			bifrostResp := (&GenerateContentResponse{Candidates: []*Candidate{{Content: &Content{Role: "model", Parts: []*Part{
+				part, {Text: "OK"},
+			}}}}}).ToResponsesBifrostResponsesResponse()
+			genai := ToGeminiResponsesResponse(bifrostResp)
+			require.NotEmpty(t, genai.Candidates)
+			var thoughts int
+			for _, p := range genai.Candidates[0].Content.Parts {
+				if p.Thought && p.Text == "thinking" {
+					thoughts++
+				}
+			}
+			wire, err := json.Marshal(genai.Candidates[0].Content.Parts)
+			require.NoError(t, err)
+			require.Equal(t, 1, thoughts, "thought text must render exactly once: %s", wire)
+		})
 	}
 }

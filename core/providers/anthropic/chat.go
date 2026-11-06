@@ -1027,7 +1027,9 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 								// block -- mirrors the same hoist-to-outer-level pattern already used
 								// for Bedrock's nested cachePoint (core/providers/bedrock/responses.go).
 								// The hoisted marker ends where the last nested block ends, so the
-								// last marker found is the one kept.
+								// last marker found is the one kept, with its ttl; an earlier
+								// nested marker (and its ttl) is dropped, since a tool_result
+								// takes only one breakpoint.
 								if block.CacheControl != nil {
 									toolResult.CacheControl = block.CacheControl
 								}
@@ -1137,8 +1139,12 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 					} else if compacted := compactJSONBytes([]byte(toolCall.Function.Arguments)); compacted != nil {
 						toolUse.Input = json.RawMessage(compacted)
 					} else {
-						// Preserve original payload instead of silently dropping args.
-						toolUse.Input = json.RawMessage([]byte(toolCall.Function.Arguments))
+						// OpenAI-shaped history can carry arguments that are not valid JSON
+						// (truncated at max_tokens, concatenated objects). Anthropic needs an
+						// object here, and raw bytes fail the request marshal with a 500.
+						// Replay {} like the Gemini and Bedrock Converse converters do:
+						// Anthropic does not check history tool_use inputs against the schema.
+						toolUse.Input = json.RawMessage("{}")
 					}
 
 					content = append(content, toolUse)
