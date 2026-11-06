@@ -532,7 +532,7 @@ func TestToAnthropicChatRequest_CachingDeterminism(t *testing.T) {
 // (chat.go:759-808) only ever copied a content block's CacheControl onto the nested block itself
 // (line 784), never onto the outer tool_result block, so every cached tool result built via the
 // unified chat-completions dialect was wire-invalid for Anthropic-family providers. The fix
-// hoists the first CacheControl found among a tool message's content blocks onto the tool_result
+// hoists the last CacheControl found among a tool message's content blocks onto the tool_result
 // block itself and strips it from the nested block, mirroring the same hoist-to-outer-level
 // pattern already used for Bedrock's nested cachePoint (core/providers/bedrock/responses.go).
 func TestToAnthropicChatRequest_ToolResultCacheControlHoistedToBlock(t *testing.T) {
@@ -2995,4 +2995,174 @@ func TestToAnthropicChatRequest_PromptCacheBreakpointBecomesCacheControl(t *test
 	}
 
 	assert.Nil(t, input[0].Content.ContentBlocks[0].CacheControl, "the caller's input was mutated")
+}
+
+// openAICompatibleMessageLevelCacheControl is a turn as the AI SDK openai-compatible
+// provider sends it: cache_control on the message objects, string content, and
+// content "" on the tool-call-only assistant turn.
+const openAICompatibleMessageLevelCacheControl = `[
+  {"role":"system","content":"You are a coding agent.","cache_control":{"type":"ephemeral"}},
+  {"role":"user","content":"Create notes.txt"},
+  {"role":"assistant","content":"","tool_calls":[{"id":"call_1","type":"function","function":{"name":"write","arguments":"{\"path\":\"notes.txt\"}"}}],"cache_control":{"type":"ephemeral"}},
+  {"role":"tool","tool_call_id":"call_1","content":"Wrote notes.txt","cache_control":{"type":"ephemeral"}}
+]`
+
+func TestToAnthropicChatRequest_MessageLevelCacheControl(t *testing.T) {
+	var input []schemas.ChatMessage
+	require.NoError(t, schemas.Unmarshal([]byte(openAICompatibleMessageLevelCacheControl), &input))
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	result, err := ToAnthropicChatRequest(ctx, &schemas.BifrostChatRequest{
+		Provider: schemas.Anthropic,
+		Model:    "my-anthropic-model",
+		Input:    input,
+	})
+	require.NoError(t, err)
+
+	require.NotNil(t, result.System)
+	require.NotEmpty(t, result.System.ContentBlocks)
+	assert.NotNil(t, result.System.ContentBlocks[len(result.System.ContentBlocks)-1].CacheControl,
+		"system breakpoint must reach Anthropic")
+
+	body, err := sonic.Marshal(result)
+	require.NoError(t, err)
+	assert.Equal(t, 3, strings.Count(string(body), `"cache_control"`),
+		"system, tool_use and tool result breakpoints must all reach Anthropic: %s", body)
+
+	var toolUse *AnthropicContentBlock
+	for i := range result.Messages {
+		for j := range result.Messages[i].Content.ContentBlocks {
+			if result.Messages[i].Content.ContentBlocks[j].Type == AnthropicContentBlockTypeToolUse {
+				toolUse = &result.Messages[i].Content.ContentBlocks[j]
+			}
+		}
+	}
+	require.NotNil(t, toolUse)
+	assert.NotNil(t, toolUse.CacheControl, "the assistant's content \"\" must not swallow its marker")
+}
+
+// A tool result carries one breakpoint on Anthropic, hoisted onto the tool_result
+// block, which ends where the last nested block ends. When nested blocks carry more
+// than one marker, the last one is the one that describes that position, including a
+// message-level marker that decoding placed on the last block.
+func TestToAnthropicChatRequest_ToolResultHoistsLastCacheControl(t *testing.T) {
+	var input []schemas.ChatMessage
+	require.NoError(t, schemas.Unmarshal([]byte(`[
+	  {"role":"user","content":"Create notes.txt"},
+	  {"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"write","arguments":"{}"}}]},
+	  {"role":"tool","tool_call_id":"call_1","content":[{"type":"text","text":"a","cache_control":{"type":"ephemeral"}},{"type":"text","text":"b"}],"cache_control":{"type":"ephemeral","ttl":"1h"}}
+	]`), &input))
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	result, err := ToAnthropicChatRequest(ctx, &schemas.BifrostChatRequest{
+		Provider: schemas.Anthropic,
+		Model:    "my-anthropic-model",
+		Input:    input,
+	})
+	require.NoError(t, err)
+
+	var toolResult *AnthropicContentBlock
+	for i := range result.Messages {
+		for j := range result.Messages[i].Content.ContentBlocks {
+			if result.Messages[i].Content.ContentBlocks[j].Type == AnthropicContentBlockTypeToolResult {
+				toolResult = &result.Messages[i].Content.ContentBlocks[j]
+			}
+		}
+	}
+	require.NotNil(t, toolResult)
+	require.NotNil(t, toolResult.CacheControl)
+	require.NotNil(t, toolResult.CacheControl.TTL, "the last marker, with its 1h ttl, must be the one hoisted")
+	assert.Equal(t, "1h", *toolResult.CacheControl.TTL)
+	for _, nested := range toolResult.Content.ContentBlocks {
+		assert.Nil(t, nested.CacheControl, "Anthropic rejects cache_control inside tool_result.content")
+	}
+}
+
+// invalidToolArgumentCases are function.arguments strings a client can replay
+// in an OpenAI-shaped history. OpenAI documents that the model "does not always
+// generate valid JSON", and a max_tokens cutoff leaves arguments truncated, so
+// these show up in real traffic. Anthropic needs tool_use.input to be an object.
+var invalidToolArgumentCases = map[string]string{
+	"concatenated objects": `{"query": "morning brief"}{"pattern": "brief|morning"}`,
+	"truncated at cutoff":  `{"query": "mor`,
+	"plain text":           `not json`,
+}
+
+// toolUseInputsFromBody returns the raw input of every tool_use block in an
+// Anthropic request body, in order.
+func toolUseInputsFromBody(t *testing.T, body []byte) []string {
+	t.Helper()
+	var parsed struct {
+		Messages []struct {
+			Content json.RawMessage `json:"content"`
+		} `json:"messages"`
+	}
+	require.NoError(t, json.Unmarshal(body, &parsed))
+	var inputs []string
+	for _, msg := range parsed.Messages {
+		var blocks []struct {
+			Type  string          `json:"type"`
+			Input json.RawMessage `json:"input"`
+		}
+		if json.Unmarshal(msg.Content, &blocks) != nil {
+			continue // string content
+		}
+		for _, block := range blocks {
+			if block.Type == string(AnthropicContentBlockTypeToolUse) {
+				inputs = append(inputs, string(block.Input))
+			}
+		}
+	}
+	return inputs
+}
+
+// Invalid function.arguments in a replayed assistant turn used to reach the
+// request marshal as raw bytes and fail it with a 500 ("failed to marshal request
+// body to JSON") before any provider call. They replay as {} instead: Anthropic
+// does not check history tool_use inputs against the tool schema, so the turn
+// succeeds and the model re-calls the tool after the error tool_result.
+func TestBuildAnthropicChatRequestBody_InvalidToolArgumentsReplayAsEmptyObject(t *testing.T) {
+	cases := map[string]struct{ arguments, wantInput string }{
+		"empty":            {``, `{}`},
+		"valid keeps keys": {`{"z": 1, "a": {"b": true}}`, `{"z":1,"a":{"b":true}}`},
+	}
+	for name, arguments := range invalidToolArgumentCases {
+		cases[name] = struct{ arguments, wantInput string }{arguments, `{}`}
+	}
+
+	for _, provider := range []schemas.ModelProvider{schemas.Anthropic, schemas.Bedrock} {
+		for name, tc := range cases {
+			t.Run(string(provider)+"/"+name, func(t *testing.T) {
+				req := &schemas.BifrostChatRequest{
+					Provider: provider,
+					Model:    "claude-sonnet-4-6",
+					Input: []schemas.ChatMessage{
+						{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("find my notes")}},
+						{Role: schemas.ChatMessageRoleAssistant, ChatAssistantMessage: &schemas.ChatAssistantMessage{
+							ToolCalls: []schemas.ChatAssistantMessageToolCall{{
+								ID:   schemas.Ptr("toolu_test_1"),
+								Type: schemas.Ptr(string(schemas.ChatToolTypeFunction)),
+								Function: schemas.ChatAssistantMessageToolCallFunction{
+									Name:      schemas.Ptr("memory_search"),
+									Arguments: tc.arguments,
+								},
+							}},
+						}},
+						{
+							Role:            schemas.ChatMessageRoleTool,
+							ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: schemas.Ptr("toolu_test_1")},
+							Content:         &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Error: arguments were not valid JSON, tool not called.")},
+						},
+					},
+					Params: &schemas.ChatParameters{MaxCompletionTokens: schemas.Ptr(1024)},
+				}
+				ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+				body, bifrostErr := BuildAnthropicChatRequestBody(ctx, req, AnthropicRequestBuildConfig{Provider: provider, Model: req.Model})
+				require.Nil(t, bifrostErr, "build failed: %+v", bifrostErr)
+				assert.Equal(t, []string{tc.wantInput}, toolUseInputsFromBody(t, body))
+			})
+		}
+	}
 }
