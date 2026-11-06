@@ -151047,7 +151047,9 @@
                 "exec": [
                   "pm.test('chat over Responses: no zero image_gen block on usage', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
-                  "  pm.expect(pm.response.headers.get('x-bifrost-converted-request-type'), 'not served through Responses: ' + pm.response.text()).to.equal('responses');",
+                  "  // Body mode carries the conversion in extra_fields; the x-bifrost-converted-request-type header exists only in headers mode (#8477).",
+                  "  var converted = (pm.response.json().extra_fields || {}).converted_request_type || pm.response.headers.get('x-bifrost-converted-request-type');",
+                  "  pm.expect(converted, 'not served through Responses: ' + pm.response.text()).to.equal('responses');",
                   "  var toolUsage = pm.response.json().usage.tool_usage || {};",
                   "  pm.expect(toolUsage.image_gen, 'zero image_gen reached chat: ' + pm.response.text()).to.equal(undefined);",
                   "});"
