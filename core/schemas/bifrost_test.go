@@ -1,6 +1,8 @@
 package schemas
 
 import (
+	"bytes"
+	"encoding/json"
 	"sync"
 	"testing"
 )
@@ -53,5 +55,24 @@ func BenchmarkPopulateExtraFieldsUnchanged(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		resp.PopulateExtraFields(ChatCompletionRequest, OpenAI, "gpt-6", "gpt-6")
+	}
+}
+
+func TestStreamChunkFinalityIsNotSerialized(t *testing.T) {
+	for _, c := range []*BifrostStreamChunk{{BifrostChatResponse: &BifrostChatResponse{ID: "chat"}}, {BifrostError: &BifrostError{Error: &ErrorField{Message: "error"}}}} {
+		baseline, err := json.Marshal(c)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, finality := range []StreamChunkFinality{StreamChunkFinalityNonFinal, StreamChunkFinalityFinal} {
+			c.Finality = finality
+			got, err := json.Marshal(c)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(got, baseline) {
+				t.Errorf("finality changed JSON: %s != %s", got, baseline)
+			}
+		}
 	}
 }

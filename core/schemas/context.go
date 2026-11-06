@@ -108,6 +108,7 @@ type BifrostContext struct {
 	trustedValues         map[any]any      // read only by a holder of the key; see SetTrustedValue
 	valuesMu              sync.RWMutex
 	blockRestrictedWrites atomic.Bool
+	streamChunkFinality   atomic.Uint32         // Core-owned finality for the chunk currently being consumed.
 	grant                 atomic.Pointer[Grant] // what the request has been granted; installed by the transport, root contexts only
 
 	// Plugin scoping fields
@@ -204,7 +205,11 @@ func (bc *BifrostContext) WithValue(key any, value any) *BifrostContext {
 //	    rootCtx := ctx.Root() // capture before the scope is released
 //	    go func() {
 //	        // ... long-running work that produces stream chunks ...
-//	        rootCtx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+//	        chunk.Finality = schemas.StreamChunkFinalityFinal
+//	        select {
+//	        case ch <- chunk:
+//	        case <-rootCtx.Done():
+//	        }
 //	    }()
 //	    return req, &schemas.LLMPluginShortCircuit{Stream: ch}, nil
 //	}
@@ -445,6 +450,16 @@ func (bc *BifrostContext) Value(key any) any {
 	if _, ok := key.(bifrostContextSelfKey); ok {
 		return bc
 	}
+	// Explicit short-circuit metadata is owned by the consumer, not the producer.
+	// Project it onto the existing key so every post-hook reader sees the same chunk.
+	if key == BifrostContextKeyStreamEndIndicator {
+		switch StreamChunkFinality(bc.streamChunkFinality.Load()) {
+		case StreamChunkFinalityNonFinal:
+			return false
+		case StreamChunkFinalityFinal:
+			return true
+		}
+	}
 	bc.valuesMu.RLock()
 	if val, ok := bc.userValues[key]; ok {
 		bc.valuesMu.RUnlock()
@@ -462,6 +477,19 @@ func (bc *BifrostContext) Value(key any) any {
 	}
 
 	return bc.parent.Value(key)
+}
+
+// SetStreamChunkFinality sets the core-owned processing view for a short-circuit
+// chunk. Producers set BifrostStreamChunk.Finality instead; post-hooks cannot
+// overwrite this view while restricted writes are blocked.
+func (bc *BifrostContext) SetStreamChunkFinality(finality StreamChunkFinality) {
+	if bc.valueDelegate != nil {
+		bc.valueDelegate.SetStreamChunkFinality(finality)
+		return
+	}
+	if !bc.blockRestrictedWrites.Load() {
+		bc.streamChunkFinality.Store(uint32(finality))
+	}
 }
 
 // AuthMode derives the per-user OAuth lookup mode from current context state.

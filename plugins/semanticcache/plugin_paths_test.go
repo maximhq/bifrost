@@ -350,6 +350,13 @@ func TestStreamReplay_FullDrain(t *testing.T) {
 		if chunk == nil {
 			t.Fatal("received nil chunk")
 		}
+		wantFinality := schemas.StreamChunkFinalityNonFinal
+		if count == len(streamArray)-1 {
+			wantFinality = schemas.StreamChunkFinalityFinal
+		}
+		if chunk.Finality != wantFinality {
+			t.Errorf("chunk %d finality = %v, want %v", count, chunk.Finality, wantFinality)
+		}
 		count++
 	}
 	if count != len(streamArray) {

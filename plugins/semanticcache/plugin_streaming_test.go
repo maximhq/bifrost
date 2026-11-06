@@ -213,10 +213,6 @@ func (p *chunkStreamPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas
 	}
 
 	_, model, _ := req.GetRequestFields()
-	// Root() unwraps past this call's plugin-scoped context, which is released
-	// (and unsafe to retain) the instant PreLLMHook returns — the goroutine
-	// below outlives that.
-	root := ctx.Root()
 	streamCh := make(chan *schemas.BifrostStreamChunk)
 
 	go func() {
@@ -249,22 +245,19 @@ func (p *chunkStreamPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas
 				ExtraFields: schemas.BifrostResponseExtraFields{ChunkIndex: i},
 			}
 
+			finality := schemas.StreamChunkFinalityNonFinal
 			isLast := i == len(p.chunks)-1
 			if isLast {
+				finality = schemas.StreamChunkFinalityFinal
 				resp.Choices[0].FinishReason = bifrost.Ptr("stop")
 				resp.Usage = &schemas.BifrostLLMUsage{
 					PromptTokens:     10,
 					CompletionTokens: len(p.chunks),
 					TotalTokens:      10 + len(p.chunks),
 				}
-				// Must be set before the send below — this is the same
-				// set-before-send ordering real provider streaming code
-				// uses, so the consumer only observes it once it dequeues
-				// this last chunk (see semanticcache/main.go PostLLMHook).
-				root.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 			}
 
-			streamCh <- &schemas.BifrostStreamChunk{BifrostChatResponse: resp}
+			streamCh <- &schemas.BifrostStreamChunk{Finality: finality, BifrostChatResponse: resp}
 		}
 	}()
 
