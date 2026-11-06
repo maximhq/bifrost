@@ -14,7 +14,7 @@ Sent on every inference response, including errors and requests refused before r
 
 | Header | Value |
 |--------|-------|
-| `x-bifrost-request-id` | The `x-request-id` you sent, or a UUID Bifrost generated. It is also the ID of the request's log entry. |
+| `x-bifrost-request-id` | A UUID Bifrost generates for every HTTP request. It identifies the primary request's log entry; the client-supplied `x-request-id` is kept separately in log metadata. |
 | `x-bifrost-trace-id` | The trace ID, inherited from an incoming W3C `traceparent` or generated. |
 
 See [Correlation response headers](/providers/request-options#correlation-response-headers) for how to use them with your log store.

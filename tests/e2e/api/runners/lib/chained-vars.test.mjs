@@ -430,4 +430,18 @@ test("every hand-written 'turn N' row in provider-harness.json links to its earl
   assert.deepStrictEqual(unlinked, [], `turn rows with no producer link (their turn 1 can be sliced or rerun away):\n  ${unlinked.join("\n  ")}`);
 });
 
+test("request-ID reuse consumers retain their initialization producer", () => {
+  const collection = JSON.parse(readFileSync(new URL("../../collections/provider-harness.json", import.meta.url), "utf8"));
+  const folder = collection.item.find((item) => item.name.includes("(request ID reuse)"));
+  const entries = walkRequests([folder]);
+  const index = buildProducerIndex(entries);
+  for (const mode of ["unary", "stream"]) {
+    const rows = folder.item.filter((item) => item.name.includes("reuse " + mode));
+    for (const consumer of rows.slice(1)) {
+      const dependency = chainedDependencies(consumer, index).find((dep) => dep.variable === "requestIdReuse" + mode + "Client");
+      assert.strictEqual(dependency?.producerItem, rows[0], consumer.name + " must retain its client-ID producer when filtered or sharded");
+    }
+  }
+});
+
 console.log(`\n${passed} passed`);

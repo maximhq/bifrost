@@ -1123,7 +1123,8 @@ const virtualKeyMetadataContextKey schemas.BifrostContextKey = "bifrost-governan
 // so spend stays filterable by it (cost center, owner, ...) even after the key's metadata changes.
 // It is applied after every request-supplied source (logging headers, x-bf-lh-* and x-bf-dim-*), so
 // on a key collision the virtual key's value wins: attribution an operator set on the key cannot be
-// spoofed by a caller sending a header of the same name. Keys under schemas.LoadBalancerMetadataPrefix
+// spoofed by a caller sending a header of the same name. The captured client request ID stays
+// correlation data rather than virtual-key attribution. Keys under schemas.LoadBalancerMetadataPrefix
 // are skipped, as for headers; config validation already refuses them.
 func mergeVirtualKeyMetadata(metadata map[string]interface{}, ctx *schemas.BifrostContext) map[string]interface{} {
 	if ctx == nil {
@@ -1136,6 +1137,12 @@ func mergeVirtualKeyMetadata(metadata map[string]interface{}, ctx *schemas.Bifro
 	for key, value := range vkMetadata {
 		if strings.HasPrefix(key, schemas.LoadBalancerMetadataPrefix) {
 			continue
+		}
+		if key == "x-request-id" {
+			headers, _ := ctx.Value(schemas.BifrostContextKeyRequestHeaders).(map[string]string)
+			if clientID := headers[key]; clientID != "" && clientID != bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyRequestID) {
+				value = clientID
+			}
 		}
 		if metadata == nil {
 			metadata = make(map[string]interface{}, len(vkMetadata))

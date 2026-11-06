@@ -521,15 +521,21 @@ function expandScenario(sc) {
         // endpoint: "v1" (default) is /v1/chat/completions, "openai" the OpenAI drop-in route and
         // "anthropic" the Anthropic Messages route (same body: model, messages, max_tokens).
         const path = { v1: ["v1", "chat", "completions"], openai: ["openai", "v1", "chat", "completions"], anthropic: ["anthropic", "v1", "messages"] }[step.endpoint || "v1"];
-        // requestId sends a known x-request-id, kept as reqid_<sid>, so later steps can read this
-        // request's own log row (its id) and its fallback attempts' rows (their parent_request_id).
+        // requestId tags the request with a client ID; reqid_<sid> captures the returned canonical
+        // log ID for this request's row and its fallback attempts' parent_request_id.
         const pre = step.requestId ? [
           `var rid = 'rw-${sid}-${String(ordinal).padStart(2, "0")}-' + pm.variables.get('run_id');`,
-          `pm.collectionVariables.set('reqid_${sid}', rid);`,
           "pm.request.headers.upsert({ key: 'x-request-id', value: rid });",
         ] : null;
         items.push(item(nextId("route"), name, request("POST", url(path), body, headers),
-          events(pre, singleTest(name, routeAssertLines(sid, step, jsNameOf), cleanupTarget))));
+          events(pre, singleTest(name, [
+            ...(step.requestId ? [
+              "var logId = pm.response.headers.get('x-bifrost-request-id');",
+              "if (!logId) { throw new Error('missing x-bifrost-request-id response header'); }",
+              `pm.collectionVariables.set('reqid_${sid}', logId);`,
+            ] : []),
+            ...routeAssertLines(sid, step, jsNameOf),
+          ], cleanupTarget))));
         break;
       }
       case "updateKey": {

@@ -349,7 +349,9 @@ curl 'http://localhost:8080/api/logs?' \
   when it is set, so a request is found wherever it falls. `roots_only` is ignored too, so an ID naming
   a fallback child returns that child rather than collapsing it into its root. In the dashboard, pasting
   a request ID into the logs search box switches to this lookup automatically; prefix it with `id:` for
-  request IDs that aren't UUIDs (any string supplied via the `x-request-id` header).
+  request IDs that aren't UUIDs (for example, custom Go SDK IDs or older log entries).
+  For HTTP requests, use the generated `x-bifrost-request-id` response header. A client-supplied
+  `x-request-id` is correlation metadata, not the log's primary key.
 </Note>
 
 **Response Format**

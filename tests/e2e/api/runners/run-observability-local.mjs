@@ -42,6 +42,8 @@ const SLOW_TRIGGER = "trigger-slow-upstream";
 
 const state = {
 	otelTraceRequests: [],
+	logID: null,
+	responsesRefusalLogID: null,
 	otelMetricRequests: [],
 	mockRequests: [],
 };
@@ -265,7 +267,7 @@ async function request(method, path, body, headers = {}) {
 			json = null;
 		}
 	}
-	return { ok: res.ok, status: res.status, text, json };
+	return { ok: res.ok, status: res.status, text, json, headers: res.headers };
 }
 
 async function mustRequest(method, path, body, headers = {}) {
@@ -350,6 +352,8 @@ async function chatHelloWorld() {
 			"x-request-id": requestID,
 		},
 	);
+	state.logID = res.headers.get("x-bifrost-request-id");
+	if (!state.logID) throw new Error("chat response carried no x-bifrost-request-id");
 	const content = res.json?.choices?.[0]?.message?.content;
 	if (content !== "hello world") {
 		throw new Error(`unexpected chat response content: ${JSON.stringify(content)}`);
@@ -371,6 +375,8 @@ async function responsesRefusal() {
 			"x-request-id": responsesRefusalRequestID,
 		},
 	);
+	state.responsesRefusalLogID = res.headers.get("x-bifrost-request-id");
+	if (!state.responsesRefusalLogID) throw new Error("responses response carried no x-bifrost-request-id");
 	const text = res.json?.output?.[0]?.content?.[0]?.text;
 	if (text !== "I can't help with that.") {
 		throw new Error(`unexpected responses output text: ${JSON.stringify(text)}`);
@@ -401,6 +407,9 @@ async function chatError(id, stream) {
 	if (res.status !== 404) {
 		throw new Error(`error request (stream=${stream}) status=${res.status}, want 404: ${res.text}`);
 	}
+	const logID = res.headers.get("x-bifrost-request-id");
+	if (!logID) throw new Error("error response carried no x-bifrost-request-id");
+	return logID;
 }
 
 // chatUnparseable drives the failure Bifrost raises itself. The caller gets a 500, so
@@ -465,7 +474,7 @@ async function assertOtelReceived() {
 		"bifrost-e2e",
 		providerName,
 		modelName,
-		requestID,
+		state.logID,
 		"gen_ai.provider.name",
 		"gen_ai.request.model",
 		"bifrost.request.id",
@@ -539,7 +548,12 @@ async function abortMidFlight(id) {
 // assertOtelAbandonedTrace is the end-to-end guard for the abandoned-request path: a
 // request whose client left mid-flight must still export its trace, with the
 // cancellation recorded, rather than being dropped or flushed half-written.
-async function assertOtelAbandonedTrace(id) {
+async function assertOtelAbandonedTrace(clientID) {
+	// The client aborted before headers; resolve the generated ID through client-ID metadata.
+	const id = await poll("abandoned request log metadata", 30000, async () => {
+		const res = await mustRequest("GET", `/api/logs?metadata_x-request-id=${encodeURIComponent(clientID)}&limit=10`);
+		return res.json?.logs?.find((log) => log.metadata?.["x-request-id"] === clientID)?.id;
+	});
 	const entry = await poll("OTEL abandoned trace receiver", 20000, () =>
 		state.otelTraceRequests.find((item) => item.body.includes(Buffer.from(id))),
 	);
@@ -581,10 +595,10 @@ async function assertOtelErrorTrace(id, label) {
 // finish reasons and used to drop it, leaving refusals invisible in OTEL.
 async function assertOtelResponsesFinishReason() {
 	const entry = await poll("OTEL responses trace receiver", 20000, () =>
-		state.otelTraceRequests.find((item) => item.body.includes(Buffer.from(responsesRefusalRequestID))),
+		state.otelTraceRequests.find((item) => item.body.includes(Buffer.from(state.responsesRefusalLogID))),
 	);
 	assertBufferContainsAll("OTEL responses trace export", entry.body, [
-		responsesRefusalRequestID,
+		state.responsesRefusalLogID,
 		"gen_ai.response.finish_reason",
 		"gen_ai.response.finish_reasons",
 		RESPONSES_STOP_REASON,
@@ -722,18 +736,21 @@ async function assertPrometheusScrape() {
 
 async function assertLoggingTrace() {
 	const log = await poll("logging trace API", 30000, async () => {
-		const res = await request("GET", `/api/logs/${encodeURIComponent(requestID)}`);
+		const res = await request("GET", `/api/logs/${encodeURIComponent(state.logID)}`);
 		if (res.status === 404) {
 			return null;
 		}
 		if (!res.ok) {
-			throw new Error(`GET /api/logs/${requestID} failed with ${res.status}: ${res.text}`);
+			throw new Error(`GET /api/logs/${state.logID} failed with ${res.status}: ${res.text}`);
 		}
 		return res.json;
 	});
 
-	if (log.id !== requestID) {
+	if (log.id !== state.logID) {
 		throw new Error(`logging trace API returned unexpected id: ${JSON.stringify(log.id)}`);
+	}
+	if (log.metadata?.["x-request-id"] !== requestID) {
+		throw new Error("logging trace API lost the client x-request-id metadata");
 	}
 	if (log.status !== "success") {
 		throw new Error(`logging trace API returned unexpected status: ${JSON.stringify(log.status)}`);
@@ -885,10 +902,10 @@ async function main() {
 		// Error scenarios: non-stream provider 404, then a stream failing before
 		// its first chunk. Both must export gen_ai.error.* span attributes and a
 		// status_code-labeled error counter.
-		await chatError(errorRequestID, false);
-		await assertOtelErrorTrace(errorRequestID, "error");
-		await chatError(streamErrorRequestID, true);
-		await assertOtelErrorTrace(streamErrorRequestID, "stream-error");
+		const errorLogID = await chatError(errorRequestID, false);
+		await assertOtelErrorTrace(errorLogID, "error");
+		const streamErrorLogID = await chatError(streamErrorRequestID, true);
+		await assertOtelErrorTrace(streamErrorLogID, "stream-error");
 
 		const abandonedRequestID = `${requestID}-abandoned`;
 		await abortMidFlight(abandonedRequestID);
@@ -913,7 +930,7 @@ async function main() {
 		console.log(`  OTEL metric exports received: ${state.otelMetricRequests.length}`);
 		console.log(`  Prometheus scrape includes provider="${providerName}" model="${requestedModel}"`);
 		console.log(`  Metrics/logs token usage reconciled (scrape == logs)`);
-		console.log(`  Logging trace API returned id="${requestID}"`);
+		console.log(`  Logging trace API returned id="${state.logID}"`);
 		console.log(`  Error spans carry gen_ai.error.* and error counter has status_code (non-stream and stream).`);
 		console.log(`  Status-less failures are labelled: internal=500/bifrost_internal, SSE=502/provider_server_error.`);
 		console.log(`  Responses API span carries gen_ai.response.finish_reason="${RESPONSES_STOP_REASON}".`);

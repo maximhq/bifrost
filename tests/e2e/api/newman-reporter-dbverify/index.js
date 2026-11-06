@@ -649,12 +649,16 @@ function expectedCostFromDatasheet(entry, row) {
  * Verify that a failed/cancelled request still recorded cost + tokens.
  * The logs row is written asynchronously by the logging plugin (and usage may
  * arrive via the deferred-usage channel), so we poll with backoff. The logs
- * table is keyed by request id (Log.ID == BifrostContextKeyRequestID), which
- * the Costing requests pin via the `x-request-id` header.
+ * table is keyed by the canonical `x-bifrost-request-id` response header.
+ * A cancellation before headers uses request-scoped costing metadata, so a
+ * reused client `x-request-id` cannot match another request's log row.
  */
-async function verifyCostingRequest(db, reqId, name, results, silent) {
+async function verifyCostingRequest(db, reqId, name, results, silent, metadataOnly = false) {
   const delays = [200, 500, 1000, 2000]; // ~3.7s total, covers async write + deferred usage
-  const sql = 'SELECT cost, prompt_tokens, completion_tokens, total_tokens, cached_read_tokens, token_usage, model, provider, status, service_tier FROM logs WHERE id = $1';
+  const where = !metadataOnly ? 'id = $1' : db.type === 'postgres'
+    ? "metadata::jsonb ->> 'dbverify-request-id' = $1"
+    : `json_extract(metadata, '$."dbverify-request-id"') = $1`;
+  const sql = 'SELECT cost, prompt_tokens, completion_tokens, total_tokens, cached_read_tokens, token_usage, model, provider, status, service_tier FROM logs WHERE ' + where;
   let row = null;
   for (let i = 0; i < delays.length; i++) {
     await sleep(delays[i]);
@@ -890,7 +894,7 @@ module.exports = function (newman, options) {
   function drainCostingQueue(activeLogsDb) {
     while (earlyCostingQueue.length > 0) {
       const item = earlyCostingQueue.shift();
-      pendingVerifications.push(verifyCostingRequest(activeLogsDb, item.reqId, item.name, results, silent));
+      pendingVerifications.push(verifyCostingRequest(activeLogsDb, item.reqId, item.name, results, silent, item.metadataOnly));
     }
   }
 
@@ -937,9 +941,16 @@ module.exports = function (newman, options) {
     }
   });
 
-  newman.on('request', function (err, args) {
+  newman.on('beforeRequest', function (err, args) {
     if (err) return;
+    const expectCost = getHeader(args.request, 'x-bf-expect-cost');
+    if (expectCost && /^(1|true|yes)$/i.test(String(expectCost))) {
+      // Newman assigns a fresh HTTP request ID even when the client header repeats.
+      args.request.headers.upsert({ key: 'x-bf-lh-dbverify-request-id', value: args.cursor.httpRequestId });
+    }
+  });
 
+  newman.on('request', function (err, args) {
     const response   = args.response;
     const request    = args.request;
     const name       = (args.item && args.item.name) || 'Unknown Request';
@@ -950,9 +961,10 @@ module.exports = function (newman, options) {
     // failed requests (4xx/5xx) are exactly the case under test.
     const expectCost = getHeader(request, 'x-bf-expect-cost');
     if (expectCost && /^(1|true|yes)$/i.test(String(expectCost))) {
-      const reqId = getHeader(request, 'x-request-id');
+      const metadataOnly = !response;
+      const reqId = getHeader(response, 'x-bifrost-request-id') || (metadataOnly && getHeader(request, 'x-bf-lh-dbverify-request-id'));
       if (!reqId) {
-        results.push({ name, result: 'FAIL', detail: 'x-bf-expect-cost set but no x-request-id header to locate the log row' });
+        results.push({ name, result: 'FAIL', detail: 'x-bf-expect-cost set but no x-bifrost-request-id response header (or request-scoped costing metadata for cancellation before headers) to locate the log row' });
         return;
       }
       if (!logsDbReady || !logsDb) {
@@ -963,12 +975,14 @@ module.exports = function (newman, options) {
         }
         // Configured but the async connection hasn't resolved yet. Defer instead
         // of SKIP so a fast first request can't silently hide a billing regression.
-        earlyCostingQueue.push({ reqId, name });
+        earlyCostingQueue.push({ reqId, name, metadataOnly });
         return;
       }
-      pendingVerifications.push(verifyCostingRequest(logsDb, reqId, name, results, silent));
+      pendingVerifications.push(verifyCostingRequest(logsDb, reqId, name, results, silent, metadataOnly));
       return;
     }
+
+    if (err) return;
 
     if (!statusCode || statusCode < 200 || statusCode > 299) {
       results.push({ name, result: 'SKIP', detail: `HTTP ${statusCode || '?'} (non-2xx)` });

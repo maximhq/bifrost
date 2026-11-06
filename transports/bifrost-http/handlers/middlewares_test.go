@@ -739,8 +739,8 @@ func TestRecoveryMiddleware_TracingRecordsPanicAsError(t *testing.T) {
 	if got := string(ctx.Response.Header.Peek("x-request-id")); got != "req-panic-1" {
 		t.Errorf("x-request-id = %q, want req-panic-1", got)
 	}
-	if got := string(ctx.Response.Header.Peek("x-bifrost-request-id")); got != "req-panic-1" {
-		t.Errorf("x-bifrost-request-id = %q, want req-panic-1", got)
+	if got := string(ctx.Response.Header.Peek("x-bifrost-request-id")); got == "" || got != ctx.UserValue(schemas.BifrostContextKeyRequestID) {
+		t.Errorf("x-bifrost-request-id = %q, want the generated gateway ID", got)
 	}
 	if got := string(ctx.Response.Header.Peek("x-bifrost-trace-id")); got == "" {
 		t.Error("expected x-bifrost-trace-id on the recovered 500")
@@ -3733,19 +3733,25 @@ func TestTracingMiddleware_SetsCorrelationHeaders(t *testing.T) {
 		}
 	})
 
-	t.Run("echoes caller-supplied request id", func(t *testing.T) {
-		ctx := newCtx()
-		ctx.Request.Header.Set("x-request-id", "req-abc-123")
-		mw(func(*fasthttp.RequestCtx) {})(ctx)
-
-		if got := string(ctx.Response.Header.Peek("x-bifrost-request-id")); got != "req-abc-123" {
-			t.Errorf("x-bifrost-request-id = %q, want req-abc-123", got)
-		}
-		if got := string(ctx.Response.Header.Peek("x-request-id")); got != "req-abc-123" {
-			t.Errorf("x-request-id = %q, want req-abc-123", got)
-		}
-		if got := string(ctx.Response.Header.Peek("x-bifrost-trace-id")); got == "" {
-			t.Error("expected x-bifrost-trace-id response header to be set")
+	t.Run("separates repeated client IDs from gateway IDs", func(t *testing.T) {
+		var previousID string
+		for range 2 {
+			ctx := newCtx()
+			ctx.Request.Header.Set("x-request-id", "req-abc-123")
+			ctx.Request.Header.Set("traceparent", "00-12345678901234567890123456789012-1234567890123456-01")
+			mw(func(c *fasthttp.RequestCtx) {
+				converted, cancel := lib.ConvertToBifrostContext(c, nil)
+				defer cancel()
+				assert.Equal(t, c.UserValue(schemas.BifrostContextKeyRequestID), converted.Value(schemas.BifrostContextKeyRequestID))
+			})(ctx)
+			id := string(ctx.Response.Header.Peek("x-bifrost-request-id"))
+			assert.NotEmpty(t, id)
+			assert.NotEqual(t, "req-abc-123", id)
+			assert.NotEqual(t, previousID, id)
+			assert.Equal(t, ctx.UserValue(schemas.BifrostContextKeyRequestID), id)
+			assert.Equal(t, "req-abc-123", string(ctx.Response.Header.Peek("x-request-id")))
+			assert.Equal(t, "12345678901234567890123456789012", string(ctx.Response.Header.Peek("x-bifrost-trace-id")))
+			previousID = id
 		}
 	})
 
@@ -3763,8 +3769,8 @@ func TestTracingMiddleware_SetsCorrelationHeaders(t *testing.T) {
 			})
 		})(ctx)
 
-		if got := string(ctx.Response.Header.Peek("x-bifrost-request-id")); got != "req-abc-123" {
-			t.Errorf("x-bifrost-request-id = %q, want req-abc-123", got)
+		if got := string(ctx.Response.Header.Peek("x-bifrost-request-id")); got == "" || got != ctx.UserValue(schemas.BifrostContextKeyRequestID) {
+			t.Errorf("x-bifrost-request-id = %q, want this gateway's ID", got)
 		}
 		if got := string(ctx.Response.Header.Peek("x-bifrost-trace-id")); got == "" || got == "upstream-trace" {
 			t.Errorf("x-bifrost-trace-id = %q, want this gateway's trace id", got)
@@ -3855,15 +3861,15 @@ func TestTracingMiddleware_AccessLogIncludesRequestID(t *testing.T) {
 	ctx.Request.Header.Set("x-request-id", "req-xyz")
 
 	// CORS owns the access-log defer and wraps TracingMiddleware, so the trace_id
-	// UserValue and x-request-id header set by tracing are visible when it runs.
+	// UserValues set by tracing are visible when it runs.
 	cors(tm(func(*fasthttp.RequestCtx) {}))(ctx)
 
 	if len(logger.events) != 1 {
 		t.Fatalf("access log events = %d, want 1", len(logger.events))
 	}
 	fields := logger.events[0].strFields
-	if got := fields["request_id"]; got != "req-xyz" {
-		t.Errorf("access log request_id = %q, want req-xyz", got)
+	if got := fields["request_id"]; got == "" || got != ctx.UserValue(schemas.BifrostContextKeyRequestID) {
+		t.Errorf("access log request_id = %q, want the gateway ID", got)
 	}
 	if got := fields["trace_id"]; got == "" {
 		t.Error("expected access log to include a non-empty trace_id")
@@ -5763,4 +5769,34 @@ func BenchmarkBasePathMiddleware(b *testing.B) {
 			noop(ctx)
 		}
 	})
+}
+
+func BenchmarkTracingMiddlewareRequestID(b *testing.B) {
+	for _, supplied := range []bool{false, true} {
+		b.Run(fmt.Sprintf("supplied=%t", supplied), func(b *testing.B) {
+			SetLogger(&mockLogger{})
+			store := tracing.NewTraceStore(time.Minute, nil)
+			defer store.Stop()
+			tracer := tracing.NewTracer(store, nil, nil)
+			defer tracer.Stop()
+			handler := NewTracingMiddleware(tracer).Middleware()(func(ctx *fasthttp.RequestCtx) {
+				_, cancel := lib.ConvertToBifrostContext(ctx, nil)
+				cancel()
+			})
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.Header.SetMethod("POST")
+			ctx.Request.SetRequestURI("/v1/chat/completions")
+			if supplied {
+				ctx.Request.Header.Set("x-request-id", "benchmark-client-id")
+			}
+			b.ReportAllocs()
+			for b.Loop() {
+				handler(ctx)
+				ctx.ResetUserValues()
+				if !supplied {
+					ctx.Request.Header.Del("x-request-id")
+				}
+			}
+		})
+	}
 }

@@ -82,9 +82,8 @@ function parseHeaderArgs(raw) {
 // ─── HTTP ─────────────────────────────────────────────────────────────────────
 function inferenceHeaders(requestId) {
   const h = { "content-type": "application/json", ...extraHeaders };
-  // Setting x-request-id ourselves makes the log row id deterministic from the
-  // client side, which is what lets us find the settlement row by parent id
-  // instead of scanning a time window and guessing.
+  // The client ID is preserved in log metadata; the returned x-bifrost-request-id
+  // identifies the submission row and its settlement children.
   if (requestId) h["x-request-id"] = requestId;
   if (virtualKey) h["authorization"] = `Bearer ${virtualKey}`;
   return h;
@@ -275,7 +274,8 @@ async function runCase(spec, defaults, state) {
   const videoId = submitRes.body && (submitRes.body.id || submitRes.body.video_id);
   // x-bifrost-request-id is the log row id; the x-request-id response header is the provider's
   // own when it sends one (OpenAI does).
-  const parentRequestID = (submitRes.headers && submitRes.headers.get("x-bifrost-request-id")) || requestId;
+  const parentRequestID = submitRes.headers && submitRes.headers.get("x-bifrost-request-id");
+  if (!parentRequestID) throw new Error("submit: response carried no x-bifrost-request-id");
   const submission = { videoId, requestId: parentRequestID };
   if (!videoId) {
     setState("fail", "no video id");

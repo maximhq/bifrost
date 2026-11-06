@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
@@ -23,12 +24,104 @@ import (
 	"github.com/maximhq/bifrost/framework/queryscope"
 	"github.com/maximhq/bifrost/framework/sidekiq"
 	"github.com/maximhq/bifrost/framework/warp"
+	"github.com/maximhq/bifrost/plugins/governance"
 	loggingplugin "github.com/maximhq/bifrost/plugins/logging"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
 	"gorm.io/gorm"
 )
+
+func TestLoggingReusedClientRequestID(t *testing.T) {
+	for _, scenario := range []string{"sequential", "overlapping", "fallback"} {
+		t.Run(scenario, func(t *testing.T) {
+			store, err := logstore.NewLogStore(context.Background(), &logstore.Config{
+				Enabled: true, Type: logstore.LogStoreTypeSQLite,
+				Config: &logstore.SQLiteConfig{Path: filepath.Join(t.TempDir(), "logs.db")},
+			}, &mockLogger{})
+			require.NoError(t, err)
+			t.Cleanup(func() { require.NoError(t, store.Close(context.Background())) })
+			plugin, err := loggingplugin.Init(context.Background(), &loggingplugin.Config{}, &mockLogger{}, store, nil, nil, nil)
+			require.NoError(t, err)
+			t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
+
+			contexts := make([]*schemas.BifrostContext, 2)
+			ids := make([]string, 2)
+			for i := range contexts {
+				httpCtx := &fasthttp.RequestCtx{}
+				httpCtx.Request.Header.Set("x-request-id", "fixed-id-001")
+				var cancel context.CancelFunc
+				contexts[i], cancel = lib.ConvertToBifrostContext(httpCtx, nil)
+				t.Cleanup(cancel)
+				contexts[i].SetValue(governance.VirtualKeyMetadataContextKey, map[string]string{
+					"x-request-id": "operator-tag", "cost_center": "cc-1",
+				})
+				ids[i], _ = contexts[i].Value(schemas.BifrostContextKeyRequestID).(string)
+			}
+			pre := func(i int) {
+				req := &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{
+					Provider: schemas.OpenAI, Model: "gpt-4o-mini", Params: &schemas.ChatParameters{},
+					Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr(fmt.Sprintf("input-%d", i))}}},
+				}}
+				_, _, err := plugin.PreLLMHook(contexts[i], req)
+				require.NoError(t, err)
+			}
+			post := func(i int) {
+				response := &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{
+					Model: "gpt-4o-mini",
+					Choices: []schemas.BifrostResponseChoice{{ChatNonStreamResponseChoice: &schemas.ChatNonStreamResponseChoice{
+						Message: &schemas.ChatMessage{Role: schemas.ChatMessageRoleAssistant, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr(fmt.Sprintf("output-%d", i))}},
+					}}},
+					ExtraFields: schemas.BifrostResponseExtraFields{RequestType: schemas.ChatCompletionRequest, Provider: schemas.OpenAI},
+				}}
+				_, _, err := plugin.PostLLMHook(contexts[i], response, nil)
+				require.NoError(t, err)
+			}
+			if scenario == "overlapping" {
+				pre(0)
+				pre(1)
+				post(1)
+				post(0)
+			} else {
+				for i := range contexts {
+					pre(i)
+					if scenario == "fallback" {
+						_, _, err := plugin.PostLLMHook(contexts[i], nil, &schemas.BifrostError{
+							Error:       &schemas.ErrorField{Message: "primary unavailable"},
+							ExtraFields: schemas.BifrostErrorExtraFields{RequestType: schemas.ChatCompletionRequest, Provider: schemas.OpenAI},
+						})
+						require.NoError(t, err)
+						contexts[i].SetValue(schemas.BifrostContextKeyFallbackRequestID, "fallback-"+ids[i])
+						pre(i)
+					}
+					post(i)
+				}
+			}
+			require.NoError(t, plugin.Cleanup())
+			rows, err := store.SearchLogs(context.Background(), logstore.SearchFilters{}, logstore.PaginationOptions{Limit: 10})
+			require.NoError(t, err)
+			count := 2
+			if scenario == "fallback" {
+				count = 4
+			}
+			require.Len(t, rows.Logs, count)
+			for i, id := range ids {
+				if scenario == "fallback" {
+					child, err := store.FindByID(context.Background(), "fallback-"+id)
+					require.NoError(t, err)
+					require.Equal(t, id, *child.ParentRequestID)
+					id = child.ID
+				}
+				row, err := store.FindByID(context.Background(), id)
+				require.NoError(t, err)
+				require.Equal(t, fmt.Sprintf("input-%d", i), *row.InputHistoryParsed[0].Content.ContentStr)
+				require.Equal(t, fmt.Sprintf("output-%d", i), *row.OutputMessageParsed.Content.ContentStr)
+				require.Equal(t, "fixed-id-001", row.MetadataParsed["x-request-id"])
+				require.Equal(t, "cc-1", row.MetadataParsed["cost_center"])
+			}
+		})
+	}
+}
 
 // TestShouldUseFilterDataCacheAllowsUnscopedEmptyQuery verifies unscoped
 // requests can still share the no-query filterdata cache.

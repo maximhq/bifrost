@@ -154,6 +154,9 @@ async function chat(requestID, vkValue, promptMarker, header) {
 	if (res.status !== 200) throw new Error(`chat ${requestID} returned ${res.status}: ${res.text}`);
 	const content = res.json?.choices?.[0]?.message?.content;
 	if (content !== `reply-${promptMarker}`) throw new Error(`chat ${requestID} got ${JSON.stringify(content)} from the echo provider: ${res.text.slice(0, 400)}`);
+	const logID = res.headers.get("x-bifrost-request-id");
+	if (!logID) throw new Error(`chat ${requestID} returned no x-bifrost-request-id`);
+	return logID;
 }
 
 async function relayCall(requestID, vkValue, promptMarker, header) {
@@ -162,6 +165,9 @@ async function relayCall(requestID, vkValue, promptMarker, header) {
 	const res = await request("POST", `/relay/${relayName}/call`, { prompt: `prompt-${promptMarker}` }, headers);
 	if (res.status !== 200) throw new Error(`relay ${requestID} returned ${res.status}: ${res.text}`);
 	if (res.json?.reply !== `reply-${promptMarker}`) throw new Error(`relay ${requestID} got ${res.text.slice(0, 400)} from the echo upstream`);
+	const logID = res.headers.get("x-bifrost-request-id");
+	if (!logID) throw new Error(`relay ${requestID} returned no x-bifrost-request-id`);
+	return logID;
 }
 
 async function readLog(requestID) {
@@ -192,8 +198,8 @@ async function waitForConfig(group, inheritKey) {
 	await poll(`config ${group.global}/${group.connector}/${group.override} to take effect`, 45000, async () => {
 		const probeID = `${runTag}-probe-${randomBytes(4).toString("hex")}`;
 		const probeMarker = marker();
-		await chat(probeID, inheritKey.value, probeMarker, undefined);
-		await poll(`probe ${probeID} export`, 10000, () => exportsContain(probeID));
+		const logID = await chat(probeID, inheritKey.value, probeMarker, undefined);
+		await poll(`probe ${logID} export`, 10000, () => exportsContain(logID));
 		return exportsContain(probeMarker) === wantExported;
 	});
 }
@@ -210,14 +216,15 @@ async function runGroup(group, keys, logsDb) {
 		const relayRequestID = `${requestID}-relay`;
 		const promptMarker = marker();
 		const relayMarker = marker();
-		await chat(requestID, keys[c.vk].value, promptMarker, headerValue(c.header));
-		await relayCall(relayRequestID, keys[c.vk].value, relayMarker, headerValue(c.header));
-		sent.push({ c, requestID, relayRequestID, promptMarker, relayMarker });
+		const logID = await chat(requestID, keys[c.vk].value, promptMarker, headerValue(c.header));
+		const relayLogID = await relayCall(relayRequestID, keys[c.vk].value, relayMarker, headerValue(c.header));
+		sent.push({ c, requestID, logID, relayRequestID, relayLogID, promptMarker, relayMarker });
 	}
-	for (const { c, requestID, relayRequestID, promptMarker, relayMarker } of sent) {
+	for (const { c, requestID, logID, relayRequestID, relayLogID, promptMarker, relayMarker } of sent) {
 		const failures = [];
 		const want = c.expected.logStoresContent;
-		const log = await readLog(requestID);
+		const log = await readLog(logID);
+		if (log.metadata?.["x-request-id"] !== requestID) failures.push("log metadata lost the client x-request-id");
 		const logInput = JSON.stringify(log.input_history ?? null);
 		const logOutput = JSON.stringify(log.output_message ?? null);
 		const logHasContent = logInput.includes(promptMarker) || logOutput.includes(promptMarker);
@@ -227,11 +234,12 @@ async function runGroup(group, keys, logsDb) {
 		if (log.content_hidden !== !want) {
 			failures.push(`content_hidden=${JSON.stringify(log.content_hidden)}, want ${!want}`);
 		}
-		const rawRow = await poll(`raw log row ${requestID}`, 30000, () => logsDb.read("logs", "id", requestID));
+		const rawRow = await poll(`raw log row ${logID}`, 30000, () => logsDb.read("logs", "id", logID));
 		failures.push(...logRowFailures(rawRow, promptMarker, want));
 
 		// The relay twin: same key, same header, same decision.
-		const relayLog = await readRelayLog(relayRequestID);
+		const relayLog = await readRelayLog(relayLogID);
+		if (relayLog.metadata?.["x-request-id"] !== relayRequestID) failures.push("relay metadata lost the client x-request-id");
 		const relayHasContent = String(relayLog.request_body ?? "").includes(relayMarker) && String(relayLog.response_body ?? "").includes(relayMarker);
 		const relayLeaked = JSON.stringify(relayLog).includes(relayMarker);
 		if (want ? !relayHasContent : relayLeaked) {
@@ -240,10 +248,10 @@ async function runGroup(group, keys, logsDb) {
 		if (relayLog.content_hidden !== !want) {
 			failures.push(`relay content_hidden=${JSON.stringify(relayLog.content_hidden)}, want ${!want} like its LLM twin`);
 		}
-		const rawRelayRow = await poll(`raw relay row ${relayRequestID}`, 30000, () => logsDb.read("relay_logs", "request_id", relayRequestID));
+		const rawRelayRow = await poll(`raw relay row ${relayLogID}`, 30000, () => logsDb.read("relay_logs", "request_id", relayLogID));
 		failures.push(...relayRowFailures(rawRelayRow, relayMarker, want));
 
-		await poll(`OTel export of ${requestID}`, 30000, () => exportsContain(requestID));
+		await poll(`OTel export of ${logID}`, 30000, () => exportsContain(logID));
 		const exported = exportsContain(promptMarker) || exportsContain(`reply-${promptMarker}`);
 		if (exported !== c.expected.connectorExportsContent) {
 			failures.push(`OTel ${exported ? "exported" : "stripped"} content, want ${c.expected.connectorExportsContent ? "exported" : "stripped"}`);
