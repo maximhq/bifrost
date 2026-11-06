@@ -1,0 +1,1 @@
+- feat: add configurable stream read buffer size via `stream_read_buffer_size_kb` in network config (thanks [@mvanhorn](https://github.com/mvanhorn)!)

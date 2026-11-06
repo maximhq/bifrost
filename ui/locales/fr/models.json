@@ -159,6 +159,8 @@
 			"maxConnsHelp": "Nombre maximal de connexions TCP par hôte du fournisseur. Pour les fournisseurs HTTP/2 (par ex. Bedrock), chaque connexion prend en charge ~100 flux simultanés.",
 			"keepAliveTimeout": "Délai d’expiration du Keep-Alive (secondes)",
 			"keepAliveHelp": "Keep-Alive d’inactivité pour les connexions du pool. Définissez une valeur inférieure au Keep-Alive du serveur amont pour éviter de réutiliser des connexions qu’il a déjà fermées.",
+			"streamReadBufferSize": "Taille du tampon de lecture du flux (Ko)",
+			"streamReadBufferHelp": "Taille du tampon de lecture des réponses en streaming, en Ko. S’applique au streaming vocal Azure et au streaming des modèles Gemini et Vertex Gemini ; les autres fournisseurs et les flux Vertex Anthropic l’ignorent. Alloué par flux : les grandes valeurs consomment de la mémoire pour chaque flux simultané. Par défaut : 64. Plage : 1–16384.",
 			"enforceHttp2": "Forcer HTTP/2",
 			"enforceHttp2Help": "Forcer HTTP/2 sur les connexions aux fournisseurs. Pertinent pour les fournisseurs basés sur net/http (par ex. Bedrock) où chaque connexion HTTP/2 prend en charge ~100 flux simultanés.",
 			"http2PingInterval": "Intervalle de ping HTTP/2 (secondes)",

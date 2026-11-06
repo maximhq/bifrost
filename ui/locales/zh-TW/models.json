@@ -159,6 +159,8 @@
 			"maxConnsHelp": "每個供應商主機的最大 TCP 連線數。對於 HTTP/2 供應商（例如 Bedrock），每個連線支援約 100 個併發流。",
 			"keepAliveTimeout": "Keep-Alive 超時（秒）",
 			"keepAliveHelp": "連線池空閒 keep-alive。請設為低於上游伺服器的 keep-alive，以免複用對方已關閉的連線。",
+			"streamReadBufferSize": "串流讀取緩衝區大小 (KB)",
+			"streamReadBufferHelp": "串流回應的讀取緩衝區大小，單位為 KB。適用於 Azure 語音串流以及 Gemini 和 Vertex Gemini 模型串流；其他提供者和 Vertex Anthropic 串流會忽略此設定。每個串流各自配置，因此較大的值會為每個並行串流占用記憶體。預設值：64。範圍：1–16384。",
 			"enforceHttp2": "強制 HTTP/2",
 			"enforceHttp2Help": "強制供應商連線使用 HTTP/2。適用於基於 net/http 的供應商（例如 Bedrock），每個 HTTP/2 連線支援約 100 個併發流。",
 			"http2PingInterval": "HTTP/2 Ping 間隔（秒）",

@@ -104,6 +104,7 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 					provider.network_config?.stream_idle_timeout_in_seconds ?? DefaultNetworkConfig.stream_idle_timeout_in_seconds,
 				keep_alive_timeout_in_seconds:
 					provider.network_config?.keep_alive_timeout_in_seconds ?? DefaultNetworkConfig.keep_alive_timeout_in_seconds,
+				stream_read_buffer_size_kb: provider.network_config?.stream_read_buffer_size_kb ?? DefaultNetworkConfig.stream_read_buffer_size_kb,
 				max_conns_per_host: provider.network_config?.max_conns_per_host ?? DefaultNetworkConfig.max_conns_per_host,
 				enforce_http2: provider.network_config?.enforce_http2 ?? DefaultNetworkConfig.enforce_http2,
 				http2_ping_interval_in_seconds:
@@ -157,6 +158,7 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 					data.network_config?.stream_idle_timeout_in_seconds ?? DefaultNetworkConfig.stream_idle_timeout_in_seconds,
 				keep_alive_timeout_in_seconds:
 					data.network_config?.keep_alive_timeout_in_seconds ?? DefaultNetworkConfig.keep_alive_timeout_in_seconds,
+				stream_read_buffer_size_kb: data.network_config?.stream_read_buffer_size_kb ?? DefaultNetworkConfig.stream_read_buffer_size_kb,
 				max_conns_per_host: data.network_config?.max_conns_per_host ?? DefaultNetworkConfig.max_conns_per_host,
 				enforce_http2: data.network_config?.enforce_http2 ?? DefaultNetworkConfig.enforce_http2,
 				http2_ping_interval_in_seconds:
@@ -196,6 +198,7 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 					provider.network_config?.stream_idle_timeout_in_seconds ?? DefaultNetworkConfig.stream_idle_timeout_in_seconds,
 				keep_alive_timeout_in_seconds:
 					provider.network_config?.keep_alive_timeout_in_seconds ?? DefaultNetworkConfig.keep_alive_timeout_in_seconds,
+				stream_read_buffer_size_kb: provider.network_config?.stream_read_buffer_size_kb ?? DefaultNetworkConfig.stream_read_buffer_size_kb,
 				max_conns_per_host: provider.network_config?.max_conns_per_host ?? DefaultNetworkConfig.max_conns_per_host,
 				enforce_http2: provider.network_config?.enforce_http2 ?? DefaultNetworkConfig.enforce_http2,
 				http2_ping_interval_in_seconds:
@@ -348,6 +351,7 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 										<FormControl>
 											<Input
 												placeholder={t("providers.network.placeholderInitialBackoff")}
+												data-testid="network-config-retry-backoff-initial-input"
 												{...field}
 												value={field.value === undefined || Number.isNaN(field.value) ? "" : field.value}
 												disabled={!hasUpdateProviderAccess}
@@ -378,6 +382,7 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 										<FormControl>
 											<Input
 												placeholder={t("providers.network.placeholderMaxBackoff")}
+												data-testid="network-config-retry-backoff-max-input"
 												{...field}
 												value={field.value === undefined || Number.isNaN(field.value) ? "" : field.value}
 												disabled={!hasUpdateProviderAccess}
@@ -468,6 +473,38 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 								)}
 							/>
 						</div>
+						<FormField
+							control={form.control}
+							name="network_config.stream_read_buffer_size_kb"
+							render={({ field }) => (
+								<FormItem>
+									<FormLabel>{t("providers.network.streamReadBufferSize")}</FormLabel>
+									<FormControl>
+										<Input
+											data-testid="network-config-stream-read-buffer-size-input"
+											placeholder="64"
+											{...field}
+											value={field.value === undefined || Number.isNaN(field.value) ? "" : field.value}
+											disabled={!hasUpdateProviderAccess}
+											onChange={(e) => {
+												const value = e.target.value;
+												if (value === "") {
+													field.onChange(undefined);
+													return;
+												}
+												const parsed = Number(value);
+												if (!Number.isNaN(parsed)) {
+													field.onChange(parsed);
+												}
+												form.trigger("network_config");
+											}}
+										/>
+									</FormControl>
+									<FormDescription>{t("providers.network.streamReadBufferHelp")}</FormDescription>
+									<FormMessage />
+								</FormItem>
+							)}
+						/>
 						<FormField
 							control={form.control}
 							name="network_config.enforce_http2"
