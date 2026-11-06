@@ -123,6 +123,7 @@ async function connectLogsDb(url) {
     const client = new pg.Client({ connectionString: url });
     await client.connect();
     return {
+      type: "postgres",
       query: async (sql, p) => (await client.query(sql, p)).rows,
       close: () => client.end().catch(() => {}),
     };
@@ -130,6 +131,7 @@ async function connectLogsDb(url) {
   const Database = require("better-sqlite3");
   const sdb = new Database(url.replace(/^sqlite:\/\//i, ""), { readonly: true });
   return {
+    type: "sqlite",
     query: async (sql, p) => sdb.prepare(sql.replace(/\$\d+/g, "?")).all(...p),
     close: () => {
       try {
@@ -139,13 +141,17 @@ async function connectLogsDb(url) {
   };
 }
 
-async function pollLogRow(db, id) {
+async function pollLogRow(db, logId, clientId) {
+  // Before response headers arrive, only the automatically captured client ID is available.
+  const where = logId ? "id = $1" : db.type === "postgres"
+    ? "metadata::jsonb ->> 'x-request-id' = $1"
+    : `json_extract(metadata, '$."x-request-id"') = $1`;
   const sql =
-    "SELECT cost, prompt_tokens, completion_tokens, total_tokens, cached_read_tokens, token_usage, model, provider, status, service_tier FROM logs WHERE id = $1";
+    "SELECT id, cost, prompt_tokens, completion_tokens, total_tokens, cached_read_tokens, token_usage, model, provider, status, service_tier FROM logs WHERE " + where;
   let last = null;
   for (const ms of [300, 700, 1200, 2000]) {
     await new Promise((r) => setTimeout(r, ms));
-    const rows = await db.query(sql, [id]);
+    const rows = await db.query(sql, [logId || clientId]);
     if (rows && rows.length) {
       last = rows[0];
       if (last.cost != null && Number(last.cost) > 0) return last;
@@ -284,6 +290,7 @@ const cases = [...streamCases, ...nonStreamCases].filter(
 async function runNonStreamCase(testCase) {
   const controller = new AbortController();
   const requestId = `nonstream-cancel-${testCase.provider}-${crypto.randomUUID()}`;
+  let logId = null;
   const timer = setTimeout(
     () => controller.abort(new Error("intentional non-stream abort before response")),
     nonStreamAbortMs,
@@ -299,6 +306,8 @@ async function runNonStreamCase(testCase) {
       body: JSON.stringify(resolveVariables(testCase.body)),
       signal: controller.signal,
     });
+    logId = response.headers.get("x-bifrost-request-id");
+    if (!logId) throw new Error("missing x-bifrost-request-id response header");
     // fetch() resolves once the status and headers are in, possibly before the body.
     // Keep the abort armed until the body is drained: an abort that lands mid-body
     // rejects text() with AbortError and is handled as an aborted trial below.
@@ -308,6 +317,7 @@ async function runNonStreamCase(testCase) {
     return {
       ...testCase,
       requestId,
+      logId,
       ok: true,
       status: response.status,
       aborted: false,
@@ -318,6 +328,7 @@ async function runNonStreamCase(testCase) {
     return {
       ...testCase,
       requestId,
+      logId,
       ok: controller.signal.aborted,
       aborted: controller.signal.aborted,
       error: err?.message || String(err),
@@ -332,8 +343,9 @@ async function runCase(testCase) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(new Error("stream read timeout")), readTimeoutMs);
   let bytesRead = 0;
-  // Pin a known request id so the cost-verification pass can locate the log row.
+  // Keep the client ID for metadata lookup if cancellation precedes response headers.
   const requestId = `stream-cancel-${testCase.provider}-${crypto.randomUUID()}`;
+  let logId = null;
 
   try {
     const metricsBefore = EARLY_USAGE_PROVIDERS.has(testCase.provider)
@@ -350,6 +362,8 @@ async function runCase(testCase) {
       signal: controller.signal,
     });
 
+    logId = response.headers.get("x-bifrost-request-id");
+    if (!logId) throw new Error("missing x-bifrost-request-id response header");
     const contentType = response.headers.get("content-type") || "";
     if (!response.ok) {
       const body = await response.text().catch(() => "");
@@ -395,6 +409,7 @@ async function runCase(testCase) {
     return {
       ...testCase,
       requestId,
+      logId,
       ok: bytesRead > 0 && !metricsError,
       status: response.status,
       contentType,
@@ -406,6 +421,7 @@ async function runCase(testCase) {
     return {
       ...testCase,
       requestId,
+      logId,
       ok: false,
       bytesRead,
       aborted: controller.signal.aborted,
@@ -573,7 +589,8 @@ if (skipCostCheck) {
         if (r.nonStream) {
           // Every abandoned non-streaming request must reach a terminal log status,
           // whether or not usage was recorded (#6972); see lib/nonstream-cancel-verdict.mjs.
-          const row = r.aborted && r.requestId ? await pollLogRow(db, r.requestId) : null;
+          const row = r.aborted && r.requestId ? await pollLogRow(db, r.logId, r.requestId) : null;
+          if (row) r.logId = row.id;
           const v = evaluateNonStreamCancel({
             row,
             racedToCompletion: r.racedToCompletion,
@@ -603,7 +620,7 @@ if (skipCostCheck) {
           r.costCheck = "SKIP";
           continue;
         }
-        let row = await pollLogRow(db, r.requestId);
+        let row = await pollLogRow(db, r.logId, r.requestId);
         // Raced to completion: a success row WITH terminal usage means the upstream
         // stream finished before the abort was observed - Gemini-family usage only
         // arrives in the terminal chunk, so the provider generated and billed the
@@ -629,12 +646,14 @@ if (skipCostCheck) {
           });
           if (!(rerun.ok && rerun.aborted && rerun.requestId)) break;
           r.requestId = rerun.requestId;
-          row = await pollLogRow(db, rerun.requestId);
+          r.logId = rerun.logId;
+          row = await pollLogRow(db, rerun.logId, rerun.requestId);
         }
+        if (row) r.logId = row.id;
         if (racedRetries > 0) r.racedToCompletionRetries = racedRetries;
         if (!row) {
           r.costCheck = "FAIL";
-          r.costDetail = `no log row for ${r.requestId}`;
+          r.costDetail = `no log row for ${r.logId || `client metadata x-request-id=${r.requestId}`}`;
           costFailures++;
         } else if (!statusIsCancelOutcome(row.status)) {
           // A streaming cancel logs status=cancelled (#4831; error on older builds).

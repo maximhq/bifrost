@@ -2631,11 +2631,11 @@ const EP54 = folder("EP-54 Non-VK keys in VK headers", `Setup: ${FLEET}; a provi
 // INPUT is examples/mcps/input-required-server, whose tools ask the caller for input mid-call
 // (2026-07-28 input_required). Each test registers it as client "inputs" (HTTP, auth none, per-call)
 // and calls it as an anonymous 2026-07-28 caller declaring the capabilities the test names.
-// pollLogRow polls GET /api/mcp-logs/R for up to about 15s (log entries are written in 5s batches), until it is no longer "processing".
+// pollLogRow polls the canonical log ID captured for R for up to about 15s (log entries are written in 5s batches), until it is no longer "processing".
 const pollLogRow = (R) => [
   "var left = 30;",
   "function poll() {",
-  `  pm.sendRequest({ url: pm.variables.get('base_url') + '/api/mcp-logs/${R}', method: 'GET', header: { Authorization: pm.variables.get('admin_auth_header') } }, function (err, res) {`,
+  `  pm.sendRequest({ url: pm.variables.get('base_url') + '/api/mcp-logs/' + pm.collectionVariables.get(${lit('logid_' + R)}), method: 'GET', header: { Authorization: pm.variables.get('admin_auth_header') } }, function (err, res) {`,
   "    if ((!err && res.code === 200 && res.json().status !== 'processing') || --left <= 0) { return; }",
   "    setTimeout(poll, 500);",
   "  });",
@@ -2645,8 +2645,8 @@ const pollLogRow = (R) => [
 const EP53 = folder("EP-53 Log entry for a /mcp call", `Setup: ${FLEET}; the full-access VK (${VKS.full.text}); tools/call alpha-echo with x-request-id r1.`, [
   ...fleetSetup("EP-53"), createVK("EP-53", "full"),
   rpc("EP-53", "setup: tools/call alpha-echo with x-request-id r1", call("alpha-echo", { text: "hi" }), { headers: [MCP_ACCEPT, vkHeader("EP-53", "full"), { key: "x-request-id", value: "r1" }], asserts: [A.status(200)] }),
-  request("EP-53", "GET /api/mcp-logs/r1", "GET", "/api/mcp-logs/r1", { pre: pollLogRow("r1"), asserts: [A.status(200), A.jsonEquals("status", "success"), A.jsonEquals("tool_name", "echo"), A.jsonEquals("server_label", "alpha"), A.custom("virtual_key_id is the full-access VK's", ["pm.expect(pm.response.json().virtual_key_id, 'body: ' + pm.response.text()).to.equal(pm.collectionVariables.get('ep-53_full_id'));"])] }),
-  request("EP-53", "teardown: delete the log entry", "DELETE", "/api/mcp-logs", { body: { ids: ["r1"] }, asserts: [A.status(200)] }),
+  request("EP-53", "GET the call's MCP log", "GET", "/api/mcp-logs/{{logid_r1}}", { pre: pollLogRow("r1"), asserts: [A.status(200), A.jsonEquals("status", "success"), A.jsonEquals("tool_name", "echo"), A.jsonEquals("server_label", "alpha"), A.custom("virtual_key_id is the full-access VK's", ["pm.expect(pm.response.json().virtual_key_id, 'body: ' + pm.response.text()).to.equal(pm.collectionVariables.get('ep-53_full_id'));"])] }),
+  request("EP-53", "teardown: delete the log entry", "DELETE", "/api/mcp-logs", { body: { ids: ["{{logid_r1}}"] }, asserts: [A.status(200)] }),
   deleteVK("EP-53", "full"), ...fleetTeardown("EP-53"),
 ]);
 
@@ -3329,15 +3329,15 @@ const FAIL18 = folder("FAIL-18 Malformed tools/call reply", "Setup: alpha (echo_
 // ================================================================ LOG log entries written by tool calls
 
 // LOG tests run on setClient's alpha (echo_tool, add_tool) as client alpha, per call, and tag each call with a
-// folder-unique x-request-id R, which becomes the MCP log entry's id.
+// folder-unique x-request-id R; the collection test keeps its returned canonical ID as logid_<R>.
 const ALPHA_TOOLS_TEXT = "alpha (echo_tool, add_tool) registered as client alpha, auth none, per call, tools_to_execute [\"*\"]";
 const reqId = (R) => ({ key: "x-request-id", value: R });
 const execR = (id, title, R, tool, args, asserts, { query = "", headers = [] } = {}) => execBody(id, title,
   { id: `${R}-call`, type: "function", function: { name: tool, arguments: lit(args) } }, asserts, { query, headers: [reqId(R), ...headers] });
 const rpcR = (id, title, path, R, tok, asserts, headers = []) => rpc(id, title, call("alpha-echo_tool", { text: tok }), { path, headers: [MCP_ACCEPT, reqId(R), ...headers], asserts });
-// logRow polls GET /api/mcp-logs/R (see pollLogRow), then asserts on it.
-const logRow = (id, title, R, asserts) => request(id, title, "GET", `/api/mcp-logs/${R}`, { pre: pollLogRow(R), asserts: [A.status(200), ...asserts] });
-const noRowYet = (id, title, R) => request(id, title, "GET", `/api/mcp-logs/${R}`, { asserts: [A.status(404), A.msgEquals("MCP log not found")] });
+// logRow polls the canonical log ID captured for R (see pollLogRow), then asserts on it.
+const logRow = (id, title, R, asserts) => request(id, title, "GET", `/api/mcp-logs/{{logid_${R}}}`, { pre: pollLogRow(R), asserts: [A.status(200), ...asserts] });
+const noRowYet = (id, title, R) => request(id, title, "GET", `/api/mcp-logs/{{logid_${R}}}`, { asserts: [A.status(404), A.msgEquals("MCP log not found")] });
 const rowIs = (field, v) => A.custom(`${field} is ${lit(v)}`, [`pm.expect(pm.response.json()[${lit(field)}], 'body: ' + pm.response.text()).to.eql(${lit(v)});`]);
 const rowLacks = (...fields) => A.custom(`no ${fields.join(" or ")}`, fields.map((f) => `pm.expect(pm.response.json(), 'body: ' + pm.response.text()).to.not.have.property(${lit(f)});`));
 const rowLatency = () => A.custom("latency is a number", ["pm.expect(pm.response.json().latency, 'body: ' + pm.response.text()).to.be.a('number');"]);
@@ -3414,7 +3414,7 @@ const LOG09_POLL = [
 const pollLogCount = (query, n) => [
   "var left = 30;",
   "function poll() {",
-  `  pm.sendRequest({ url: pm.variables.get('base_url') + '/api/mcp-logs?${query}', method: 'GET', header: { Authorization: pm.variables.get('admin_auth_header') } }, function (err, res) {`,
+  `  pm.sendRequest({ url: pm.variables.get('base_url') + pm.variables.replaceIn('/api/mcp-logs?${query}'), method: 'GET', header: { Authorization: pm.variables.get('admin_auth_header') } }, function (err, res) {`,
   `    if ((!err && res.code === 200 && res.json().pagination.total_count >= ${n}) || --left <= 0) { return; }`,
   "    setTimeout(poll, 500);",
   "  });",
@@ -3609,7 +3609,7 @@ const LOG38 = folder("LOG-38 Delete logs", `Setup: ${ALPHA_TOOLS_TEXT}; authenti
   ...setClient("LOG-38", {}),
   execR("LOG-38", "setup: execute alpha-echo_tool", "log38-r", "alpha-echo_tool", {}, [A.status(200)]),
   logRow("LOG-38", "control: the log entry exists", "log38-r", []),
-  request("LOG-38", "delete the log entry", "DELETE", "/api/mcp-logs", { body: { ids: ["log38-r"] }, asserts: [A.status(200), A.jsonMessage("MCP tool logs deleted successfully")] }),
+  request("LOG-38", "delete the log entry", "DELETE", "/api/mcp-logs", { body: { ids: ["{{logid_log38-r}}"] }, asserts: [A.status(200), A.jsonMessage("MCP tool logs deleted successfully")] }),
   noRowYet("LOG-38", "the log entry is gone", "log38-r"),
   deleteClient("LOG-38", "log-38-a"),
 ]);
@@ -5845,26 +5845,26 @@ const INF45 = folder("INF-45 Per-user auth stops the loop", `Setup: ${LLM_TEXT};
 ]);
 
 // agentLogs reads the MCP log entries of model request R once count of them have landed.
-const agentLogs = (id, title, R, count, asserts) => request(id, title, "GET", `/api/mcp-logs?llm_request_ids=${R}`, { pre: pollLogCount(`llm_request_ids=${R}`, count), asserts: [A.status(200), ...asserts] });
+const agentLogs = (id, title, R, count, asserts) => request(id, title, "GET", `/api/mcp-logs?llm_request_ids={{logid_${R}}}`, { pre: pollLogCount(`llm_request_ids={{logid_${R}}}`, count), asserts: [A.status(200), ...asserts] });
 const LOG_LIST = "var logs = pm.response.json().logs || [];";
 const INF46 = folder("INF-46 Log entry for an agent call", `Setup: as INF-34 (${AGENT_TEXT(["echo"])}; turn 1 calls alpha-echo, turn 2 answers "done"), sent with x-request-id inf46-r.`, [
   ...agentSetup("INF-46", ["echo"]),
   llmScript("INF-46", "inf46", { turns: [{ tool_calls: [llmCall("t1", "alpha-echo")] }, { text: "done" }] }),
   infPost("INF-46", "chat with x-request-id inf46-r", "/v1/chat/completions", chatBody("inf46"), [A.status(200)], { headers: [{ key: "x-request-id", value: "inf46-r" }] }),
-  agentLogs("INF-46", "the call's log entry", "inf46-r", 1, [A.custom("one entry: echo on alpha, success, llm_request_id inf46-r", [LOG_LIST,
+  agentLogs("INF-46", "the call's log entry", "inf46-r", 1, [A.custom("one entry: echo on alpha, success, the canonical llm_request_id", [LOG_LIST,
     "pm.expect(logs.length, 'body: ' + pm.response.text()).to.equal(1);",
     "pm.expect(logs[0].tool_name).to.equal('echo');",
     "pm.expect(logs[0].server_label).to.equal('alpha');",
     "pm.expect(logs[0].status).to.equal('success');",
-    "pm.expect(logs[0].llm_request_id).to.equal('inf46-r');",
+    "pm.expect(logs[0].llm_request_id).to.equal(pm.collectionVariables.get('logid_inf46-r'));",
   ])]),
   agentTeardown("INF-46"),
 ]);
 
 const PARALLEL_TURN = { tool_calls: [llmCall("e1", "alpha-echo"), llmCall("a1", "alpha-add", { a: 1, b: 2 })] };
-const parallelEntries = (R) => A.custom(`2 entries, each llm_request_id ${R}, with distinct ids that are not ${R}`, [LOG_LIST,
+const parallelEntries = (R) => A.custom(`2 entries linked to ${R}'s canonical log ID, with distinct tool log IDs`, [LOG_LIST,
   "pm.expect(pm.response.json().pagination.total_count, 'body: ' + pm.response.text()).to.equal(2);",
-  `logs.forEach(function (r) { pm.expect(r.llm_request_id).to.equal(${lit(R)}); pm.expect(r.id).to.not.equal(${lit(R)}); });`,
+  `logs.forEach(function (r) { pm.expect(r.llm_request_id).to.equal(pm.collectionVariables.get(${lit("logid_" + R)})); pm.expect(r.id).to.not.equal(pm.collectionVariables.get(${lit("logid_" + R)})); });`,
   "pm.expect(logs[0].id).to.not.equal(logs[1].id);",
 ]);
 const LOG06 = folder("LOG-06 Agent mode on chat: one log entry per tool call", `Setup: ${AGENT_TEXT(["*"])}; the model calls alpha-echo and alpha-add in parallel, then answers "done"; the chat is sent with x-request-id log06-r.`, [
@@ -5887,12 +5887,12 @@ const LOG08 = folder("LOG-08 Agent mode over two turns", `Setup: ${AGENT_TEXT(["
   ...agentSetup("LOG-08", ["*"]),
   llmScript("LOG-08", "log08", { turns: [{ tool_calls: [llmCall("e1", "alpha-echo", { text: "one" })] }, { tool_calls: [llmCall("e2", "alpha-echo", { text: "two" })] }, { text: "done" }] }),
   infPost("LOG-08", "chat with x-request-id log08-r", "/v1/chat/completions", chatBody("log08"), [A.status(200)], { headers: [{ key: "x-request-id", value: "log08-r" }] }),
-  agentLogs("LOG-08", "the log entries for log08-r", "log08-r", 2, [A.custom("both entries carry llm_request_id log08-r; the second turn's entry has a new request_id", [LOG_LIST,
+  agentLogs("LOG-08", "the log entries for log08-r", "log08-r", 2, [A.custom("both entries carry the canonical llm_request_id; the second turn's entry has a new request_id", [LOG_LIST,
     "pm.expect(logs.length, 'body: ' + pm.response.text()).to.equal(2);",
-    "logs.forEach(function (r) { pm.expect(r.llm_request_id).to.equal('log08-r'); });",
+    "logs.forEach(function (r) { pm.expect(r.llm_request_id).to.equal(pm.collectionVariables.get('logid_log08-r')); });",
     "var second = logs.filter(function (r) { return JSON.stringify(r.arguments).indexOf('two') >= 0; });",
     "pm.expect(second.length, 'logs: ' + pm.response.text()).to.equal(1);",
-    "pm.expect(second[0].request_id).to.be.a('string').and.not.equal('log08-r');",
+    "pm.expect(second[0].request_id).to.be.a('string').and.not.equal(pm.collectionVariables.get('logid_log08-r'));",
     "pm.expect(second[0].request_id).to.not.equal('');",
   ])]),
   agentTeardown("LOG-08"),
@@ -6047,11 +6047,11 @@ const GOV01 = folder("GOV-01 VK limited to one tool", `Setup: ${GOV_TEXT("mcp_co
   llmCaptured("GOV-01", "only alpha-echo is injected", "gov01", [reqCount(1), toolsAre(0, ["alpha-echo"])]),
   govExec("GOV-01", "alpha-echo", [A.status(200)]),
   execTool("GOV-01", "execute alpha-add with the virtual key and x-request-id gov01-add", "alpha-add", blocked("GOV-01", "alpha-add"), { headers: [...withVK("GOV-01"), { key: "x-request-id", value: "gov01-add" }] }),
-  request("GOV-01", "the blocked call's log entry", "GET", "/api/mcp-logs/gov01-add", {
-    pre: ["var left = 30;", "function poll() { pm.sendRequest({ url: pm.variables.get('base_url') + '/api/mcp-logs/gov01-add', method: 'GET', header: { Authorization: pm.variables.get('admin_auth_header') } }, function (err, res) { if ((!err && res.code === 200 && res.json().status !== 'processing') || --left <= 0) { return; } setTimeout(poll, 500); }); }", "poll();"],
+  request("GOV-01", "the blocked call's log entry", "GET", "/api/mcp-logs/{{logid_gov01-add}}", {
+    pre: ["var left = 30;", "function poll() { pm.sendRequest({ url: pm.variables.get('base_url') + '/api/mcp-logs/' + pm.collectionVariables.get('logid_gov01-add'), method: 'GET', header: { Authorization: pm.variables.get('admin_auth_header') } }, function (err, res) { if ((!err && res.code === 200 && res.json().status !== 'processing') || --left <= 0) { return; } setTimeout(poll, 500); }); }", "poll();"],
     asserts: [A.status(200), A.custom("status \"error\", tool add", ["var b = pm.response.json();", "pm.expect(b.status, 'body: ' + pm.response.text()).to.equal('error');", "pm.expect(b.tool_name).to.equal('add');"])],
   }),
-  request("GOV-01", "teardown: delete the log entry", "DELETE", "/api/mcp-logs", { body: { ids: ["gov01-add"] }, asserts: [A.status(200)] }),
+  request("GOV-01", "teardown: delete the log entry", "DELETE", "/api/mcp-logs", { body: { ids: ["{{logid_gov01-add}}"] }, asserts: [A.status(200)] }),
   govTeardownVK("GOV-01"),
   deleteClient("GOV-01", "gov-01-alpha"),
 ]);
@@ -7362,9 +7362,9 @@ const keepBudget = (v) => [VK_READ, `pm.collectionVariables.set(${lit(v)}, Strin
 const keepRequests = (v) => [VK_READ, `pm.collectionVariables.set(${lit(v)}, String(vk.rate_limit.request_current_usage));`];
 const budgetPlus = (v, d) => A.custom(`budget current_usage is ${d} more than recorded`, [VK_READ, `pm.expect(vk.budgets[0].current_usage, 'body: ' + pm.response.text()).to.be.closeTo(Number(pm.collectionVariables.get(${lit(v)})) + ${d}, 1e-9);`]);
 const requestsPlus = (v, d) => A.custom(`request_current_usage is ${d} more than recorded`, [VK_READ, `pm.expect(vk.rate_limit.request_current_usage, 'body: ' + pm.response.text()).to.equal(Number(pm.collectionVariables.get(${lit(v)})) + ${d});`]);
-// logOf polls GET /api/mcp-logs/<R> until the write lands; asserts see the entry as `e`.
-const logOf = (id, title, R, asserts) => request(id, title, "GET", `/api/mcp-logs/${R}`, {
-  pre: ["var left = 30;", `function poll() { pm.sendRequest({ url: pm.variables.get('base_url') + '/api/mcp-logs/${R}', method: 'GET', header: { Authorization: pm.variables.get('admin_auth_header') } }, function (err, res) { if ((!err && res.code === 200 && res.json().status !== 'processing') || --left <= 0) { return; } setTimeout(poll, 500); }); }`, "poll();"],
+// logOf polls the canonical log ID captured for R until the write lands; asserts see the entry as `e`.
+const logOf = (id, title, R, asserts) => request(id, title, "GET", `/api/mcp-logs/{{logid_${R}}}`, {
+  pre: ["var left = 30;", `function poll() { pm.sendRequest({ url: pm.variables.get('base_url') + '/api/mcp-logs/' + pm.collectionVariables.get(${lit('logid_' + R)}), method: 'GET', header: { Authorization: pm.variables.get('admin_auth_header') } }, function (err, res) { if ((!err && res.code === 200 && res.json().status !== 'processing') || --left <= 0) { return; } setTimeout(poll, 500); }); }`, "poll();"],
   asserts: [A.status(200), ...asserts],
 });
 const entryCost = (v) => A.custom(v === null ? "the entry has no cost" : `the entry's cost is ${v}`, ["var e = pm.response.json();", v === null ? "pm.expect(e.cost == null, 'body: ' + pm.response.text()).to.equal(true);" : `pm.expect(e.cost, 'body: ' + pm.response.text()).to.be.closeTo(${v}, 1e-9);`]);
@@ -9064,16 +9064,18 @@ const GO33 = folder("GO-33 50 parallel /mcp sessions", "Setup: fleet server go33
     "      var names = !err ? ((body(res).result || {}).tools || []).map(function (t) { return t.name; }) : [];",
     "      if (names.indexOf('go33-echo_tool') < 0) { return finish(i, false, 'tools/list ' + why(err, res)); }",
     "      rpcTo({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'go33-echo_tool', arguments: { text: tok } } }, sid, { 'x-request-id': tok }, function (err, res) {",
-    "        finish(i, !err && echoed(res, tok), 'tools/call ' + why(err, res));",
+    "        var logId = !err && res.headers.get('x-bifrost-request-id');",
+    "        if (logId) pm.collectionVariables.set('logid_' + tok, logId);",
+    "        finish(i, !err && !!logId && echoed(res, tok), 'tools/call ' + why(err, res));",
     "      });",
     "    });",
     "  });",
     "}",
   ])),
-  request("GO-33", "50 log entries for go33, with ids go33-0 to go33-49", "GET", "/api/mcp-logs?server_labels=go33&limit=100", { pre: pollLogCount("server_labels=go33", 50), asserts: [A.status(200), A.custom("total_count is 50 and the ids are go33-0 to go33-49", [
+  request("GO-33", "50 log entries for go33, with the returned canonical ids", "GET", "/api/mcp-logs?server_labels=go33&limit=100", { pre: pollLogCount("server_labels=go33", 50), asserts: [A.status(200), A.custom("total_count is 50 and the ids match all 50 responses", [
     LOG_LIST,
     "pm.expect(pm.response.json().pagination.total_count, 'body: ' + pm.response.text()).to.equal(50);",
-    "var want = []; for (var i = 0; i < 50; i++) { want.push('go33-' + i); }",
+    "var want = []; for (var i = 0; i < 50; i++) { want.push(pm.collectionVariables.get('logid_go33-' + i)); }",
     "pm.expect(logs.map(function (l) { return l.id; }).sort()).to.eql(want.sort());",
   ])] }),
   vkDelete("GO-33", "teardown: delete the VK", "go33_vk"),
@@ -11352,7 +11354,7 @@ const EP75 = folder("EP-75 A Virtual MCP slug follows the /mcp rules", `Setup: $
 ]);
 
 // EP-76: MCP logs record input_required rounds and link a call's rounds by round_trip_id.
-const EP76 = folder("EP-76 MCP logs record input_required rounds", `Setup: ${INPUTS}. ask_environment asks and its retry answers "staging"; a second ask_environment call is its own round trip; busy answers retry later. Each request carries its own x-request-id, which names its log entry.`, [
+const EP76 = folder("EP-76 MCP logs record input_required rounds", `Setup: ${INPUTS}. ask_environment asks and its retry answers "staging"; a second ask_environment call is its own round trip; busy answers retry later. Each request carries its own x-request-id; its returned x-bifrost-request-id names the log entry.`, [
   inputsSetup("EP-76"),
   modernCall("EP-76", "setup: the caller receives the elicitation", "inputs-ask_environment", ELICIT_FORM, {}, [A.status(200), inputRequired(["environment"], "ep76_state")], [], [reqId("ep76-ask")]),
   modernCall("EP-76", "setup: the retry with the answer completes the call", "inputs-ask_environment", ELICIT_FORM,
@@ -11381,7 +11383,7 @@ const EP76 = folder("EP-76 MCP logs record input_required rounds", `Setup: ${INP
   ])]),
   request("EP-76", "filtering by round_trip_id returns exactly both rounds", "GET", "/api/mcp-logs?round_trip_id={{ep76_round_trip}}", { asserts: [A.status(200), A.custom("the two rounds, and nothing else", [
     "var ids = (pm.response.json().logs || []).map(function (l) { return l.id; }).sort();",
-    "pm.expect(ids, 'body: ' + pm.response.text()).to.eql(['ep76-answer', 'ep76-ask']);",
+    "pm.expect(ids, 'body: ' + pm.response.text()).to.eql([pm.collectionVariables.get('logid_ep76-answer'), pm.collectionVariables.get('logid_ep76-ask')].sort());",
   ])] }),
   modernCall("EP-76", "setup: busy answers retry later, asking nothing", "inputs-busy", ELICIT_FORM, {}, [A.status(200), inputRequired([], "ep76_busy_state")], [], [reqId("ep76-busy")]),
   logRow("EP-76", "a retry-later round is logged as retry_later with no result", "ep76-busy", [A.jsonEquals("status", "input_required"), A.custom("metadata.retry_later is true and there is no result", [
@@ -11389,12 +11391,12 @@ const EP76 = folder("EP-76 MCP logs record input_required rounds", `Setup: ${INP
     "pm.expect((b.metadata || {}).retry_later, 'body: ' + pm.response.text()).to.equal(true);",
     "pm.expect(b.result, 'body: ' + pm.response.text()).to.be.undefined;",
   ])]),
-  request("EP-76", "teardown: delete the log entries", "DELETE", "/api/mcp-logs", { body: { ids: ["ep76-ask", "ep76-answer", "ep76-other", "ep76-busy"] }, asserts: [A.status(200)] }),
+  request("EP-76", "teardown: delete the log entries", "DELETE", "/api/mcp-logs", { body: { ids: ["{{logid_ep76-ask}}", "{{logid_ep76-answer}}", "{{logid_ep76-other}}", "{{logid_ep76-busy}}"] }, asserts: [A.status(200)] }),
   inputsTeardown("EP-76"),
 ]);
 
 // EP-77: MCP logs record MCP Apps use.
-const EP77 = folder("EP-77 MCP logs record MCP Apps use", `Setup: ${APPS_TEXT}. An apps caller calls refresh by its server-given name on /mcp/apps and reads ui://dash/view. Each request carries its own x-request-id, which names its log entry.`, [
+const EP77 = folder("EP-77 MCP logs record MCP Apps use", `Setup: ${APPS_TEXT}. An apps caller calls refresh by its server-given name on /mcp/apps and reads ui://dash/view. Each request carries its own x-request-id; its returned x-bifrost-request-id names the log entry.`, [
   ...appsSetup("EP-77"),
   appsCall("EP-77", "setup: an apps caller calls refresh by its server-given name on the slug", "/mcp/apps", "refresh", HOSTS_APPS, [toolText("dash:refresh")], { headers: [reqId("ep77-app")] }),
   logRow("EP-77", "the app's call carries the MCP Apps markers", "ep77-app", [A.jsonEquals("status", "success"), A.custom("mcp_apps, app_only, requested_name and ui_resource_uri", [
@@ -12287,6 +12289,14 @@ const collection = {
       "End-to-end MCP tests for Bifrost. Each folder inside a section is one test case, named by its ID, and its requests carry that ID as a prefix. Run with `make run-mcp-harness-test`, which boots its own Bifrost and enables dashboard auth before the run.",
     schema: "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
   },
+  event: [{ listen: "test", script: { type: "text/javascript", exec: [
+    "var clientId = pm.request.headers.get('x-request-id');",
+    "if (clientId) {",
+    "  var logId = pm.response.headers.get('x-bifrost-request-id');",
+    "  pm.test('canonical request ID is returned', function () { pm.expect(logId).to.be.a('string').and.not.empty; });",
+    "  pm.collectionVariables.set('logid_' + pm.variables.replaceIn(clientId), logId || '');",
+    "}",
+  ] } }],
   variable: [
     { key: "base_url", value: "http://localhost:8093" },
     { key: "admin_auth_header", value: "" },

@@ -177,17 +177,24 @@ async function createKey(body) {
 async function relayRequest(name, method, path, { body, headers = {}, contentType = "application/json" } = {}) {
 	const h = { ...headers };
 	if (body !== undefined && !Object.keys(h).some((k) => k.toLowerCase() === "content-type")) h["content-type"] = contentType;
-	return api.request(method, `/relay/${name}${path}`, body, h, { raw: true });
+	const res = await api.request(method, `/relay/${name}${path}`, body, h, { raw: true });
+	if (!res.headers.get("x-bifrost-request-id")) throw new Error(`relay ${name}${path} returned no x-bifrost-request-id`);
+	return res;
 }
 
 // relayRows lists every relay row this run wrote, keyed by request_id. Rows are written by an
 // asynchronous batch writer, so callers poll for the ids they expect.
 async function relayRowsByRequestID() {
 	const rows = new Map();
-	for (let offset = 0; ; offset += 1000) {
-		const res = await api.mustRequest("GET", `/api/relay-logs?search=${encodeURIComponent(runTag)}&limit=1000&offset=${offset}`);
-		for (const r of res.json?.logs ?? []) if (r.request_id) rows.set(r.request_id, r);
-		if ((res.json?.logs ?? []).length < 1000) break;
+	// Canonical UUIDs no longer contain runTag, and search does not match relay_name.
+	// Scope by this run's relay names in bounded batches so pricing's 640 names fit in the URL.
+	for (let start = 0; start < created.relays.length; start += 100) {
+		const names = created.relays.slice(start, start + 100).map(encodeURIComponent).join(",");
+		for (let offset = 0; ; offset += 1000) {
+			const res = await api.mustRequest("GET", `/api/relay-logs?relay_names=${names}&limit=1000&offset=${offset}`);
+			for (const r of res.json?.logs ?? []) if (r.request_id) rows.set(r.request_id, r);
+			if ((res.json?.logs ?? []).length < 1000) break;
+		}
 	}
 	return rows;
 }
@@ -302,9 +309,9 @@ async function suitePricing(ctx) {
 		const { c, variant, requestID } = call;
 		const query = c.modelSource === "query" ? `?model=q-${c.id}` : "";
 		const res = await relayRequest(`${runTag}-${c.id}`, "POST", `/${variant}${query}`, { body: pricingRequestBody(`m-${c.id}`), headers: { "x-request-id": requestID } });
-		return { ...call, status: res.status, text: res.text };
+		return { ...call, requestID: res.headers.get("x-bifrost-request-id"), status: res.status, text: res.text };
 	});
-	const rows = await waitForRelayRows(calls.map((c) => c.requestID));
+	const rows = await waitForRelayRows(sent.map((s) => s.requestID));
 	for (const s of sent) {
 		const { c, variant, requestID } = s;
 		const failures = [];
@@ -369,7 +376,7 @@ async function suiteStreaming(ctx) {
 	const sent = await mapLimit(cases, 8, async (c) => {
 		const requestID = rid(c.id);
 		const res = await relayRequest(`${runTag}-${c.id}`, "POST", "/stream", { body: "{}", headers: { "x-request-id": requestID } });
-		return { c, requestID, res };
+		return { c, requestID: res.headers.get("x-bifrost-request-id"), res };
 	});
 	const rows = await waitForRelayRows(sent.map((s) => s.requestID));
 	for (const { c, requestID, res } of sent) {
@@ -419,7 +426,7 @@ async function suiteBilling(ctx) {
 			body: c.method === "GET" || c.method === "HEAD" ? undefined : "{}",
 			headers: { "x-request-id": requestID },
 		});
-		return { c, requestID, res };
+		return { c, requestID: res.headers.get("x-bifrost-request-id"), res };
 	});
 	const rows = await waitForRelayRows(sent.map((s) => s.requestID));
 	for (const { c, requestID, res } of sent) {
@@ -451,7 +458,7 @@ async function suiteRoutes(ctx) {
 		await createRelay(cfg);
 		const requestID = rid("rt", c.id);
 		const res = await relayRequest(name, c.method, c.path, { body: c.method === "GET" ? undefined : "{}", headers: { "x-request-id": requestID, ...(c.headers ?? {}) } });
-		sent.push({ c, requestID, res });
+		sent.push({ c, requestID: res.headers.get("x-bifrost-request-id"), res });
 	}
 	const relayed = sent.filter((s) => s.c.want.status === 200);
 	const rows = await waitForRelayRows(relayed.map((s) => s.requestID));
@@ -561,8 +568,9 @@ async function suiteAuth(ctx) {
 		if (h["x-api-key"] || h.cookie) failures.push("a caller credential header reached the upstream");
 		if (h["x-bf-relay-matrix"]) failures.push("an x-bf-* header reached the upstream");
 		if (h["x-forwarded-app"] !== "kept") failures.push("an ordinary caller header was not forwarded");
+		if (h["x-request-id"] !== requestID) failures.push("the original client x-request-id was not forwarded");
 		if (JSON.stringify(res.json).includes(callerSecret)) failures.push("the caller's secret reached the upstream");
-		const row = await relayRow(requestID);
+		const row = await relayRow(res.headers.get("x-bifrost-request-id"));
 		// The echo upstream answers with the headers it received, so its reply (the logged response
 		// body) carries the relay credential by the upstream's own choice. Everything else Bifrost
 		// writes on the row must not.
@@ -605,7 +613,9 @@ function pairKeyBody(echo, extra = {}) {
 async function llmCall(echo, requestID, vkValue, headers = {}, content = "prompt-none") {
 	const h = { "x-request-id": requestID, ...headers };
 	if (vkValue) h["x-bf-vk"] = vkValue;
-	return api.request("POST", "/v1/chat/completions", { model: echo.model, messages: [{ role: "user", content }] }, h);
+	const res = await api.request("POST", "/v1/chat/completions", { model: echo.model, messages: [{ role: "user", content }] }, h);
+	if (!res.headers.get("x-bifrost-request-id")) throw new Error(`LLM call ${requestID} returned no x-bifrost-request-id`);
+	return res;
 }
 
 async function echoRelayCall(echo, requestID, vkValue, headers = {}, query = "", prompt = "prompt-none") {
@@ -638,8 +648,8 @@ async function suiteGovernance(ctx) {
 		if (a.status !== 200) failures.push(`LLM call got ${a.status}: ${a.text.slice(0, 200)}`);
 		if (b.status !== 200) failures.push(`relay call got ${b.status}: ${b.text.slice(0, 200)}`);
 		if (failures.length === 0) {
-			const llm = await llmRow(lid);
-			const relay = await relayRow(relayID);
+			const llm = await llmRow(a.headers.get("x-bifrost-request-id"));
+			const relay = await relayRow(b.headers.get("x-bifrost-request-id"));
 			for (const f of attributionFields) {
 				const l = JSON.stringify(llm[f] ?? null);
 				const r = JSON.stringify(relay[f] ?? null);
@@ -697,14 +707,16 @@ async function suiteGovernance(ctx) {
 	];
 	for (const bc of budgetCases) {
 		const got = [];
+		let lastRequestID;
 		for (let i = 0; i < bc.want.length; i++) {
 			const res = await echoRelayCall(echo, rid("gov", bc.id, String(i)), bc.vk.value);
+			lastRequestID = res.headers.get("x-bifrost-request-id");
 			got.push(res.status);
 			await sleep(300);
 		}
 		const failures = [];
 		expectEqual(failures, "statuses", got, bc.want);
-		const refused = await relayRow(rid("gov", bc.id, String(bc.want.length - 1))).catch(() => null);
+		const refused = await relayRow(lastRequestID).catch(() => null);
 		if (!refused) failures.push("the refused call wrote no relay row");
 		else {
 			expectEqual(failures, "refused row status", refused.status, "error");
@@ -807,8 +819,8 @@ async function suiteSettings(ctx) {
 		if (a.status !== 200 || b.status !== 200) {
 			record("settings", "metadata-parity", [`calls got LLM ${a.status} relay ${b.status}`]);
 		} else {
-			const llm = await llmRow(lid);
-			const relay = await relayRow(relayID);
+			const llm = await llmRow(a.headers.get("x-bifrost-request-id"));
+			const relay = await relayRow(b.headers.get("x-bifrost-request-id"));
 			for (const [field, label] of [
 				["session_id", "session id"],
 				["user_agent", "user agent"],
@@ -840,11 +852,11 @@ async function suiteSettings(ctx) {
 		{
 			const lidH = rid("set", "harness", "llm");
 			const ridH = rid("set", "harness", "relay");
-			await llmCall(echo, lidH, vk.value, { "x-session-id": `h-${runTag}` });
-			await echoRelayCall(echo, ridH, vk.value, { "x-session-id": `h-${runTag}` });
+			const a = await llmCall(echo, lidH, vk.value, { "x-session-id": `h-${runTag}` });
+			const b = await echoRelayCall(echo, ridH, vk.value, { "x-session-id": `h-${runTag}` });
 			const failures = [];
-			const llm = await llmRow(lidH);
-			const relay = await relayRow(ridH);
+			const llm = await llmRow(a.headers.get("x-bifrost-request-id"));
+			const relay = await relayRow(b.headers.get("x-bifrost-request-id"));
 			expectEqual(failures, "relay session_id vs LLM", relay.session_id ?? null, llm.session_id ?? null);
 			record("settings", "harness session header", failures);
 		}
@@ -852,8 +864,8 @@ async function suiteSettings(ctx) {
 		// Query strings that carry credentials are redacted on the row even with content on.
 		{
 			const id = rid("set", "redact");
-			await echoRelayCall(echo, id, vk.value, {}, "?api_key=s3cr3t-relay-matrix&token=tok-relay-matrix&q=kept");
-			const row = await relayRow(id);
+			const res = await echoRelayCall(echo, id, vk.value, {}, "?api_key=s3cr3t-relay-matrix&token=tok-relay-matrix&q=kept");
+			const row = await relayRow(res.headers.get("x-bifrost-request-id"));
 			const failures = [];
 			if (String(row.path).includes("s3cr3t-relay-matrix") || String(row.path).includes("tok-relay-matrix")) failures.push(`row path ${row.path} kept a credential`);
 			if (!String(row.path).includes("q=kept")) failures.push(`row path ${row.path} lost an ordinary parameter`);
@@ -864,10 +876,10 @@ async function suiteSettings(ctx) {
 		// and labelled in both when off.
 		{
 			const doomed = await createKey(pairKeyBody(echo, { name: "doomed" }));
-			await llmCall(echo, rid("set", "doomed", "llm"), doomed.value);
-			await echoRelayCall(echo, rid("set", "doomed", "relay"), doomed.value);
-			await llmRow(rid("set", "doomed", "llm"));
-			await relayRow(rid("set", "doomed", "relay"));
+			const a = await llmCall(echo, rid("set", "doomed", "llm"), doomed.value);
+			const b = await echoRelayCall(echo, rid("set", "doomed", "relay"), doomed.value);
+			await llmRow(a.headers.get("x-bifrost-request-id"));
+			await relayRow(b.headers.get("x-bifrost-request-id"));
 			const find = (fd) => (fd?.virtual_keys ?? []).find((k) => k.id === doomed.id) ?? null;
 			const filterData = async () => ({
 				llm: find((await api.mustRequest("GET", "/api/logs/filterdata?dimensions=virtual_keys")).json),
@@ -922,7 +934,7 @@ async function suiteLogsAPI(ctx) {
 	await createRelay({ name: failRelay, base_url: `${ctx.upstreamURL}/${failID}`, auth: { type: "none" }, routes: [{ method: "POST", path: "/**" }] });
 	await api.mustRequest("PUT", `/api/governance/virtual-keys/${v1.id}`, { relay_grants: [{ relay_name: echo.relay }, { relay_name: failRelay }] });
 
-	// Each logical call is made on both kinds of traffic: id suffix -llm / -relay.
+	// Each logical call tags both kinds of traffic; LLM rows use the returned canonical ID.
 	const plan = [
 		{ id: "a", vk: v1, session: `s1-${runTag}` },
 		{ id: "b", vk: v1, session: `s1-${runTag}` },
@@ -933,22 +945,31 @@ async function suiteLogsAPI(ctx) {
 	const userAgent = `relay-matrix/${runTag}`;
 	for (const p of plan) {
 		const headers = { "x-bf-session-id": p.session, "user-agent": userAgent, "x-bf-lh-env": "prod" };
-		await llmCall(echo, rid("api", p.id, "llm"), p.vk.value, headers);
-		await echoRelayCall(echo, rid("api", p.id, "relay"), p.vk.value, headers);
+		const a = await llmCall(echo, rid("api", p.id, "llm"), p.vk.value, headers);
+		p.logID = a.headers.get("x-bifrost-request-id");
+		const b = await echoRelayCall(echo, rid("api", p.id, "relay"), p.vk.value, headers);
+		p.relayRequestID = b.headers.get("x-bifrost-request-id");
 	}
 	// One error on each side.
-	await api.request("POST", "/v1/chat/completions", { model: `${echo.provider}/${ECHO_FAIL_MODEL}`, messages: [{ role: "user", content: "x" }] }, { "x-request-id": rid("api", "err", "llm"), "x-bf-vk": v1.value });
-	await relayRequest(failRelay, "POST", "/x", { body: "{}", headers: { "x-request-id": rid("api", "err", "relay"), "x-bf-vk": v1.value } });
+	const errorResponse = await api.request("POST", "/v1/chat/completions", { model: `${echo.provider}/${ECHO_FAIL_MODEL}`, messages: [{ role: "user", content: "x" }] }, { "x-request-id": rid("api", "err", "llm"), "x-bf-vk": v1.value });
+	const errorLogID = errorResponse.headers.get("x-bifrost-request-id");
+	if (!errorLogID) throw new Error("failing LLM call returned no x-bifrost-request-id");
+	const relayErrorResponse = await relayRequest(failRelay, "POST", "/x", { body: "{}", headers: { "x-request-id": rid("api", "err", "relay"), "x-bf-vk": v1.value } });
+	const relayErrorRequestID = relayErrorResponse.headers.get("x-bifrost-request-id");
 	for (const p of plan) {
-		await llmRow(rid("api", p.id, "llm"));
-		await relayRow(rid("api", p.id, "relay"));
+		await llmRow(p.logID);
+		await relayRow(p.relayRequestID);
 	}
-	await relayRow(rid("api", "err", "relay"));
-	const llmErr = await llmRow(rid("api", "err", "llm")).catch(() => null);
+	await relayRow(relayErrorRequestID);
+	const llmErr = await llmRow(errorLogID).catch(() => null);
 
 	const llmScope = `providers=${encodeURIComponent(echo.provider)}`;
 	const relayScope = `relay_names=${encodeURIComponent(echo.relay)}&relay_names=${encodeURIComponent(failRelay)}`;
-	const runIDs = (rows, kind) => rows.map((r) => r.request_id ?? r.id).filter((id) => id && id.startsWith(rid("api")) && id.endsWith(`-${kind}`)).map((id) => id.split("-").slice(-2, -1)[0]).sort();
+	const llmLabels = new Map(plan.map((p) => [p.logID, p.id]));
+	llmLabels.set(errorLogID, "err");
+	const relayLabels = new Map(plan.map((p) => [p.relayRequestID, p.id]));
+	relayLabels.set(relayErrorRequestID, "err");
+	const runIDs = (rows, kind) => rows.map((r) => kind === "llm" ? llmLabels.get(r.id) : relayLabels.get(r.request_id)).filter(Boolean).sort();
 	const query = async (kind, params) => {
 		const base = kind === "llm" ? `/api/logs?${llmScope}` : `/api/relay-logs?${relayScope}`;
 		const res = await api.mustRequest("GET", `${base}&limit=1000&${params}`);
@@ -1037,12 +1058,13 @@ async function suiteLogsAPI(ctx) {
 	// Delete, on both.
 	{
 		const failures = [];
-		const relay = await relayRow(rid("api", "c", "relay"));
+		const call = plan.find((p) => p.id === "c");
+		const relay = await relayRow(call.relayRequestID);
 		await api.mustRequest("DELETE", "/api/relay-logs", { ids: [relay.id] });
 		const gone = await api.request("GET", `/api/relay-logs/${relay.id}`);
 		expectEqual(failures, "relay row after delete", gone.status, 404);
-		await api.mustRequest("DELETE", "/api/logs", { ids: [rid("api", "c", "llm")] });
-		const goneLLM = await api.request("GET", `/api/logs/${encodeURIComponent(rid("api", "c", "llm"))}`);
+		await api.mustRequest("DELETE", "/api/logs", { ids: [call.logID] });
+		const goneLLM = await api.request("GET", `/api/logs/${encodeURIComponent(call.logID)}`);
 		expectEqual(failures, "LLM row after delete", goneLLM.status, 404);
 		record("logsapi", "delete", failures);
 	}
@@ -1113,7 +1135,7 @@ async function suiteNetwork(ctx) {
 		const res = await relayRequest(name, "POST", "/x", { body: "{}", headers: { "x-request-id": id } });
 		const failures = [];
 		if (res.status < 500) failures.push(`caller got ${res.status}, want a timeout error`);
-		const row = await relayRow(id);
+		const row = await relayRow(res.headers.get("x-bifrost-request-id"));
 		expectEqual(failures, "status", row.status, "error");
 		if (row.cost) failures.push(`a call with no reply was charged ${row.cost}`);
 		record("network", "timeout_seconds", failures);
@@ -1123,8 +1145,18 @@ async function suiteNetwork(ctx) {
 		const name = `${runTag}-net-idle`;
 		await mk(name, stallID, { network: { stream_idle_timeout_in_seconds: 1 } });
 		const id = rid("net", "idle");
-		await relayRequest(name, "POST", "/x", { body: "{}", headers: { "x-request-id": id } }).catch(() => null);
-		const row = await relayRow(id);
+		const res = await fetch(`${baseURL}/relay/${name}/x`, {
+			method: "POST", body: "{}", redirect: "manual",
+			headers: {
+				"content-type": "application/json", "x-request-id": id,
+				...(process.env.BIFROST_E2E_AUTH_HEADER ? { Authorization: process.env.BIFROST_E2E_AUTH_HEADER } : {}),
+				"X-Bifrost-Setup-Token": (process.env.BIFROST_E2E_SETUP_TOKEN || process.env.BIFROST_SETUP_TOKEN || "bifrost-e2e-setup-token").trim(),
+			},
+		});
+		const requestID = res.headers.get("x-bifrost-request-id");
+		if (!requestID) throw new Error("idle relay response carried no x-bifrost-request-id");
+		await res.arrayBuffer().catch(() => {});
+		const row = await relayRow(requestID);
 		const failures = [];
 		expectEqual(failures, "status", row.status, "error");
 		const errText = JSON.stringify(row.error_details ?? "");
@@ -1140,7 +1172,7 @@ async function suiteNetwork(ctx) {
 		const failures = [];
 		expectEqual(failures, "caller status", res.status, 302);
 		if (!String(res.headers.get("location") || "").includes("/elsewhere")) failures.push(`location=${res.headers.get("location")}`);
-		const row = await relayRow(id);
+		const row = await relayRow(res.headers.get("x-bifrost-request-id"));
 		expectEqual(failures, "status_code", row.status_code, 302);
 		if ((seen.get(redirectID) ?? []).length !== 1) failures.push(`the upstream saw ${(seen.get(redirectID) ?? []).length} requests, want 1 (redirect not followed)`);
 		record("network", "redirect returned", failures);
@@ -1188,7 +1220,7 @@ async function suiteNetwork(ctx) {
 		const res = await relayRequest(name, "POST", "/x", { body: "{}", headers: { "x-request-id": id } });
 		const failures = [];
 		if (res.status < 500) failures.push(`caller got ${res.status}`);
-		const row = await relayRow(id);
+		const row = await relayRow(res.headers.get("x-bifrost-request-id"));
 		expectEqual(failures, "status", row.status, "error");
 		if (row.cost) failures.push(`charged ${row.cost} for no reply`);
 		record("network", "unreachable upstream", failures);
@@ -1202,7 +1234,7 @@ async function suiteNetwork(ctx) {
 		const failures = [];
 		expectEqual(failures, "caller status", res.status, 200);
 		expectEqual(failures, "caller bytes", res.buf.length, largeBytes);
-		const row = await relayRowWhere(id, (r) => String(r.response_body ?? "").length === largeBytes, 120000);
+		const row = await relayRowWhere(res.headers.get("x-bifrost-request-id"), (r) => String(r.response_body ?? "").length === largeBytes, 120000);
 		expectEqual(failures, "bytes_out", row.bytes_out, largeBytes);
 		expectEqual(failures, "logged response_body length", String(row.response_body ?? "").length, largeBytes);
 		record("network", `buffered reply of ${largeMB} MiB`, failures);
@@ -1214,11 +1246,13 @@ async function suiteNetwork(ctx) {
 		const id = rid("net", "cancel");
 		const ac = new AbortController();
 		const res = await fetch(`${baseURL}/relay/${name}/x`, { method: "POST", body: "{}", headers: { "content-type": "application/json", "x-request-id": id }, signal: ac.signal });
+		const requestID = res.headers.get("x-bifrost-request-id");
+		if (!requestID) throw new Error("cancelled relay response carried no x-bifrost-request-id");
 		const reader = res.body.getReader();
 		await reader.read();
 		await sleep(500);
 		ac.abort();
-		const row = await relayRow(id);
+		const row = await relayRow(requestID);
 		const failures = [];
 		expectEqual(failures, "status", row.status, "cancelled");
 		if (!(row.cost > 0)) failures.push(`cost=${row.cost}, want the observed usage charged`);
@@ -1461,11 +1495,12 @@ async function suiteHybrid(ctx) {
 
 	// Offload and hydrate.
 	{
-		const lid = rid("hy", "llm");
+		const clientID = rid("hy", "llm");
 		const relayID = rid("hy", "relay");
-		await llmCall(echo, lid, vk.value, {}, long);
-		await echoRelayCall(echo, relayID, vk.value, {}, "", long);
-		const relay = await relayRowWhere(relayID, (r) => String(r.request_body ?? "").includes(long) && String(r.response_body ?? "").includes("x".repeat(5000)));
+		const a = await llmCall(echo, clientID, vk.value, {}, long);
+		const lid = a.headers.get("x-bifrost-request-id");
+		const b = await echoRelayCall(echo, relayID, vk.value, {}, "", long);
+		const relay = await relayRowWhere(b.headers.get("x-bifrost-request-id"), (r) => String(r.request_body ?? "").includes(long) && String(r.response_body ?? "").includes("x".repeat(5000)));
 		const failures = [];
 		const raw = await ctx.logsDb.read("relay_logs", "id", relay.id);
 		if (!String(relay.request_body ?? "").includes(long)) failures.push("API did not return the full relay request body");
@@ -1503,11 +1538,12 @@ async function suiteHybrid(ctx) {
 	try {
 		await api.putClientConfig(snapshot, { disable_content_logging: true, retain_content_in_object_storage: true });
 		await sleep(500);
-		const lid = rid("hy", "hidden", "llm");
+		const clientID = rid("hy", "hidden", "llm");
 		const relayID = rid("hy", "hidden", "relay");
-		await llmCall(echo, lid, vk.value, {}, `prompt-hidden-${runTag}`);
-		await echoRelayCall(echo, relayID, vk.value, {}, "", `prompt-hidden-${runTag}`);
-		const relay = await relayRow(relayID);
+		const a = await llmCall(echo, clientID, vk.value, {}, `prompt-hidden-${runTag}`);
+		const lid = a.headers.get("x-bifrost-request-id");
+		const b = await echoRelayCall(echo, relayID, vk.value, {}, "", `prompt-hidden-${runTag}`);
+		const relay = await relayRow(b.headers.get("x-bifrost-request-id"));
 		const llm = await llmRow(lid);
 		const failures = [];
 		expectEqual(failures, "relay content_hidden", relay.content_hidden, true);
@@ -1527,11 +1563,12 @@ async function suiteHybrid(ctx) {
 
 	// Deleting a row deletes its object, on both.
 	{
-		const lid = rid("hy", "del", "llm");
+		const clientID = rid("hy", "del", "llm");
 		const relayID = rid("hy", "del", "relay");
-		await llmCall(echo, lid, vk.value, {}, long);
-		await echoRelayCall(echo, relayID, vk.value, {}, "", long);
-		const relay = await relayRow(relayID);
+		const a = await llmCall(echo, clientID, vk.value, {}, long);
+		const lid = a.headers.get("x-bifrost-request-id");
+		const b = await echoRelayCall(echo, relayID, vk.value, {}, "", long);
+		const relay = await relayRow(b.headers.get("x-bifrost-request-id"));
 		await llmRow(lid);
 		const failures = [];
 		if (!relayExcluded) await objectFor("relay", relay.id).catch(() => failures.push("no relay object before delete"));
