@@ -2263,3 +2263,21 @@ func TestDeepCopyChatMessageHandlesNilAndEmptyCacheFields(t *testing.T) {
 		})
 	}
 }
+
+// TestDeepCopyChatMessagePreservesAzureContext pins that a deep-copied assistant message keeps
+// Azure On Your Data's citation context, and that the copy does not share the original's bytes.
+func TestDeepCopyChatMessagePreservesAzureContext(t *testing.T) {
+	original := ChatMessage{
+		Role:                 ChatMessageRoleAssistant,
+		Content:              &ChatMessageContent{ContentStr: Ptr("Bifrost routes requests [doc1].")},
+		ChatAssistantMessage: &ChatAssistantMessage{Context: json.RawMessage(`{"citations":[{"title":"overview.md"}]}`)},
+	}
+	copied := DeepCopyChatMessage(original)
+	if copied.ChatAssistantMessage == nil || string(copied.ChatAssistantMessage.Context) != string(original.ChatAssistantMessage.Context) {
+		t.Fatalf("context = %v, want %s", copied.ChatAssistantMessage, original.ChatAssistantMessage.Context)
+	}
+	copied.ChatAssistantMessage.Context[0] = '['
+	if original.ChatAssistantMessage.Context[0] != '{' {
+		t.Errorf("the copy shares the original's context bytes")
+	}
+}

@@ -5343,7 +5343,11 @@ func (s *RDBLogStore) deleteExpiredBatchPostgres(ctx context.Context, table, key
 	if !ok {
 		lockKey = retentionAdvisoryLockKeyOther
 	}
-	stmt := fmt.Sprintf("DELETE FROM %s WHERE %s IN (SELECT %s FROM %s WHERE %s < ? ORDER BY %s LIMIT ? FOR UPDATE SKIP LOCKED)", table, key, key, table, column, column)
+	// ARRAY(...) runs the locking subquery once, as an InitPlan. As "key IN (subquery)" the planner picks a nested-loop
+	// semi join that rescans it, and SKIP LOCKED then hands each rescan the next unlocked rows: one statement deleted
+	// 9999 rows for a LIMIT of 5000, and drainExpired read the oversized count as ClickHouse's whole-range delete and
+	// stopped with expired rows left.
+	stmt := fmt.Sprintf("DELETE FROM %s WHERE %s = ANY(ARRAY(SELECT %s FROM %s WHERE %s < ? ORDER BY %s LIMIT ? FOR UPDATE SKIP LOCKED))", table, key, key, table, column, column)
 	var deleted int64
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var acquired bool
