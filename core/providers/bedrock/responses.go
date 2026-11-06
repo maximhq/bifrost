@@ -4315,7 +4315,7 @@ func ConvertBifrostMessagesToBedrockMessages(ctx context.Context, model string, 
 				reasoningBlocks = convertBifrostReasoningToConverseResponseReasoning(&msg, isConverseForeignReasoning(ctx), embedsConverseReasoningItemID(ctx))
 			} else {
 				requireSigned := converseRequiresSignedReasoning(model)
-				reasoningBlocks = convertBifrostReasoningToBedrockReasoning(&msg, converseReasoningShape(model), requireSigned, !requireSigned)
+				reasoningBlocks = dropNonBlobRedactedContent(convertBifrostReasoningToBedrockReasoning(&msg, converseReasoningShape(model), requireSigned, !requireSigned))
 			}
 			if len(reasoningBlocks) > 0 {
 				pendingReasoningContentBlocks = append(pendingReasoningContentBlocks, reasoningBlocks...)
@@ -5578,6 +5578,25 @@ func reasoningMessageHasText(msg *schemas.ResponsesMessage) bool {
 		}
 	}
 	return false
+}
+
+// dropNonBlobRedactedContent removes upstream-bound redactedContent blocks whose token
+// is not a Converse blob (see isConverseBlob). It filters in place only when one is found.
+func dropNonBlobRedactedContent(blocks []BedrockContentBlock) []BedrockContentBlock {
+	for i, block := range blocks {
+		if block.ReasoningContent == nil || block.ReasoningContent.RedactedContent == nil || isConverseBlob(*block.ReasoningContent.RedactedContent) {
+			continue
+		}
+		kept := blocks[:i:i]
+		for _, rest := range blocks[i+1:] {
+			if rest.ReasoningContent != nil && rest.ReasoningContent.RedactedContent != nil && !isConverseBlob(*rest.ReasoningContent.RedactedContent) {
+				continue
+			}
+			kept = append(kept, rest)
+		}
+		return kept
+	}
+	return blocks
 }
 
 func convertBifrostReasoningToBedrockReasoning(msg *schemas.ResponsesMessage, shape schemas.BedrockReasoningShape, requireSigned, stripBlockSignatures bool) []BedrockContentBlock {

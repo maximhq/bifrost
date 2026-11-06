@@ -1163,6 +1163,59 @@ func TestBuildAnthropicResponsesRequestBody_BedrockInvokeDropsWebSearch(t *testi
 	}
 }
 
+// TestBuildAnthropicResponsesRequestBody_BedrockInvokeDropsWebSearchDespiteCatalog pins the
+// live failure the catalog-free test above missed: the datasheet marks Claude on Bedrock
+// supports_web_search (60 Bedrock rows do), and that record used to override the host flag,
+// so web_search_20250305 still reached InvokeModel and Bedrock answered 400.
+func TestBuildAnthropicResponsesRequestBody_BedrockInvokeDropsWebSearchDespiteCatalog(t *testing.T) {
+	yes := true
+	schemas.SetCapabilityResolver(func(provider schemas.ModelProvider, model string) *schemas.ModelCapabilities {
+		return &schemas.ModelCapabilities{SupportsWebSearch: &yes, SupportsCodeExecution: &yes}
+	})
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+
+	for _, provider := range []schemas.ModelProvider{schemas.Bedrock, schemas.BedrockMantle} {
+		t.Run(string(provider), func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+			model := "global.anthropic.claude-sonnet-4-6"
+			request := &schemas.BifrostResponsesRequest{
+				Provider: provider,
+				Model:    model,
+				Input:    makeSimpleInput("What changed in the repo?"),
+				Params: &schemas.ResponsesParameters{
+					Tools: []schemas.ResponsesTool{
+						responsesToolFromJSON(t, `{"type":"tool_search","execution":"client"}`),
+						responsesToolFromJSON(t, `{"type":"web_search","external_web_access":false}`),
+						responsesToolFromJSON(t, `{"type":"code_interpreter","container":{"type":"auto"}}`),
+						responsesToolFromJSON(t, `{"type":"function","name":"get_weather","parameters":{"type":"object","properties":{}}}`),
+					},
+				},
+			}
+			body, err := BuildAnthropicResponsesRequestBody(ctx, request, AnthropicRequestBuildConfig{
+				Provider:      provider,
+				Model:         model,
+				ValidateTools: true,
+			})
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			var sawFunction bool
+			for _, tool := range providerUtils.GetJSONField(body, "tools").Array() {
+				typ := tool.Get("type").String()
+				if strings.HasPrefix(typ, "web_search_") || strings.HasPrefix(typ, "code_execution_") {
+					t.Errorf("%s does not serve %s, but a catalog record let it through: %s", provider, typ, string(body))
+				}
+				if tool.Get("name").String() == "get_weather" {
+					sawFunction = true
+				}
+			}
+			if !sawFunction {
+				t.Errorf("function tool was lost: %s", string(body))
+			}
+		})
+	}
+}
+
 // TestRawBodyBuilderKeepsToolsAndSetsBetaHeaders checks the thing that actually goes
 // upstream, rather than any one step of building it.
 //

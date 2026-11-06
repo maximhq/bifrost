@@ -2086,6 +2086,21 @@ func (p *GovernancePlugin) Cleanup() error {
 	return cleanupErr
 }
 
+// responseSucceeded reports whether result counts as a successful request. A passthrough call
+// relays the upstream's error status as a response rather than an error, so it is judged by that
+// status: a call the provider refused does not count against request limits, the same as a refused
+// inference request. Only the request count reads this; tokens and cost a refused call reported
+// are still charged.
+func responseSucceeded(result *schemas.BifrostResponse) bool {
+	if result == nil {
+		return false
+	}
+	if pt := result.PassthroughResponse; pt != nil && pt.StatusCode >= 400 {
+		return false
+	}
+	return true
+}
+
 // postHookWorker is a worker function that processes the response and updates usage tracking
 // It is used to avoid blocking the main thread when updating usage tracking
 // Handles both cases: with virtual key and without virtual key (empty string)
@@ -2104,8 +2119,7 @@ func (p *GovernancePlugin) Cleanup() error {
 //   - skipRequestCount: Whether this is a session continuation that must not count as a request
 //   - pricingScopes: Prebuilt pricing lookup scopes using governance VK ID (nil if not applicable)
 func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError, provider schemas.ModelProvider, model string, requestType schemas.RequestType, requestID string, billingNonce string, isFinalChunk bool, attemptNumber int, fallbackIndex int, skipRequestCount bool, pricingScopes *modelcatalog.PricingLookupScopes, budgets, rateLimits []schemas.Limit, routingMetadata *schemas.BifrostRoutingMetadata) {
-	// Determine if request was successful
-	success := (result != nil)
+	success := responseSucceeded(result)
 	billedReason := "success"
 
 	// Streaming detection

@@ -4353,3 +4353,54 @@ func TestToAnthropicResponsesRequest_PromptCacheBreakpointBudget(t *testing.T) {
 		}
 	})
 }
+
+// Same contract as the chat path (see
+// TestBuildAnthropicChatRequestBody_InvalidToolArgumentsReplayAsEmptyObject):
+// a function_call input item with invalid arguments replays as {} instead of
+// failing the request marshal with a 500.
+func TestBuildAnthropicResponsesRequestBody_InvalidFunctionCallArgumentsReplayAsEmptyObject(t *testing.T) {
+	cases := map[string]struct{ arguments, wantInput string }{
+		"valid keeps keys": {`{"z": 1, "a": {"b": true}}`, `{"z":1,"a":{"b":true}}`},
+	}
+	for name, arguments := range invalidToolArgumentCases {
+		cases[name] = struct{ arguments, wantInput string }{arguments, `{}`}
+	}
+
+	for _, provider := range []schemas.ModelProvider{schemas.Anthropic, schemas.Bedrock} {
+		for name, tc := range cases {
+			t.Run(string(provider)+"/"+name, func(t *testing.T) {
+				input := append(makeSimpleInput("find my notes"),
+					schemas.ResponsesMessage{
+						Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+						ResponsesToolMessage: &schemas.ResponsesToolMessage{
+							CallID:    schemas.Ptr("call_1"),
+							Name:      schemas.Ptr("memory_search"),
+							Arguments: schemas.Ptr(tc.arguments),
+						},
+					},
+					schemas.ResponsesMessage{
+						Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
+						ResponsesToolMessage: &schemas.ResponsesToolMessage{
+							CallID: schemas.Ptr("call_1"),
+							Output: &schemas.ResponsesToolMessageOutputStruct{ResponsesToolCallOutputStr: schemas.Ptr("Error: arguments were not valid JSON, tool not called.")},
+						},
+					},
+				)
+				req := &schemas.BifrostResponsesRequest{
+					Provider: provider,
+					Model:    "claude-sonnet-4-6",
+					Input:    input,
+					Params:   &schemas.ResponsesParameters{MaxOutputTokens: schemas.Ptr(1024)},
+				}
+				ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+				body, bifrostErr := BuildAnthropicResponsesRequestBody(ctx, req, AnthropicRequestBuildConfig{Provider: provider, Model: req.Model})
+				if bifrostErr != nil {
+					t.Fatalf("build failed: %+v", bifrostErr.Error)
+				}
+				if got := toolUseInputsFromBody(t, body); !slices.Equal(got, []string{tc.wantInput}) {
+					t.Errorf("tool_use inputs = %v, want [%s]", got, tc.wantInput)
+				}
+			})
+		}
+	}
+}
