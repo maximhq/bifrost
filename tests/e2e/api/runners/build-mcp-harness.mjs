@@ -7431,7 +7431,7 @@ const GOV24 = folder("GOV-24 Unpriced and failed calls cost nothing", `Setup: al
   execR2("GOV-24", "control: a successful echo call", "alpha-echo", "gov24-ok", [A.status(200)], vkUse("gov24_vk")),
   logOf("GOV-24", "control: its log entry", "gov24-ok", [entryCost(0.001)]),
   vkMemory("GOV-24", "control: the priced echo is charged and counted", "gov24_vk", [budgetPlus("gov24_b1", 0.001), requestsPlus("gov24_r1", 1)]),
-  deleteLogs("GOV-24", ["gov24-ok"]),
+  deleteLogs("GOV-24", ["{{logid_gov24-ok}}"]),
   vkDelete("GOV-24", "teardown: delete the VK", "gov24_vk"),
   agentTeardown("GOV-24"),
 ]);
@@ -7544,7 +7544,7 @@ const GOV28 = folder("GOV-28 Pricing edits apply live", `Setup: ${ALPHA_EA}, ech
   request("GOV-28", "rename the client to alpha2", "PUT", "/api/mcp/client/gov-28-alpha", { body: { name: "alpha2" }, asserts: [A.status(200)] }),
   execR2("GOV-28", "execute alpha2-echo", "alpha2-echo", "gov28-r3", [A.status(200)]),
   logOf("GOV-28", "it logs under alpha2", "gov28-r3", [A.jsonEquals("server_label", "alpha2")]),
-  deleteLogs("GOV-28", ["gov28-r1", "gov28-r2", "gov28-r3"]),
+  deleteLogs("GOV-28", ["{{logid_gov28-r1}}", "{{logid_gov28-r2}}", "{{logid_gov28-r3}}"]),
   agentTeardown("GOV-28"),
 ]);
 
@@ -7678,7 +7678,7 @@ const LOG30 = folder("LOG-30 Stats", `Setup: ${LOG_CLIENT_TEXT("log30", ", echo_
     "pm.expect(b.average_latency).to.be.above(0);",
     "pm.expect(b.average_latency).to.be.closeTo(Number(pm.collectionVariables.get('log30_avg')), 1e-6);",
   ])] }),
-  deleteLogs("LOG-30", ["log30-1", "log30-2", "log30-3", "log30-4"]),
+  deleteLogs("LOG-30", ["{{logid_log30-1}}", "{{logid_log30-2}}", "{{logid_log30-3}}", "{{logid_log30-4}}"]),
   deleteClient("LOG-30", "log30-c"),
 ]);
 
@@ -7693,7 +7693,7 @@ const LOG34 = folder("LOG-34 Histogram", `Setup: ${LOG_CLIENT_TEXT("log34")}; tw
     `pm.expect(${bucketSum("success")}).to.equal(2);`,
     `pm.expect(${bucketSum("error")}).to.equal(1);`,
   ])] }),
-  deleteLogs("LOG-34", ["log34-1", "log34-2", "log34-3"]),
+  deleteLogs("LOG-34", ["{{logid_log34-1}}", "{{logid_log34-2}}", "{{logid_log34-3}}"]),
   deleteClient("LOG-34", "log34-c"),
 ]);
 
@@ -7705,7 +7705,7 @@ const LOG35 = folder("LOG-35 Cost histogram", `Setup: ${LOG_CLIENT_TEXT("log35",
     "pm.expect(b.bucket_size_seconds, 'body: ' + pm.response.text()).to.equal(3600);",
     `pm.expect(${bucketSum("total_cost")}).to.be.closeTo(0.5, 1e-9);`,
   ])] }),
-  deleteLogs("LOG-35", ["log35-1", "log35-2"]),
+  deleteLogs("LOG-35", ["{{logid_log35-1}}", "{{logid_log35-2}}"]),
   deleteClient("LOG-35", "log35-c"),
 ]);
 
