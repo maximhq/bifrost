@@ -313194,6 +313194,70 @@
           ]
         }
       ]
+    },
+    {
+      "name": "322. Codex subagent encrypted_content block survives the fail-soft retry (subagent encrypted block)",
+      "description": "Ticket 11340: Codex on gpt-6.1-sol failed with \"Missing required parameter: 'input[N].content[1].encrypted_content'\"\nwhen consecutive turns hit different Azure resources (East, then West).\n\nCodex multi_agent v1 records the parent task in a subagent thread as an agent_message whose content[1] is\n{\"type\":\"encrypted_content\",\"encrypted_content\":\"...\"}: a block that is nothing but that field. West refuses\nEast's ciphertext, the fail-soft (core/encryptedreasoning.go) strips and retries once, and it used to blank\nthe field on that block, so Azure answered the retry with missing_required_parameter and hid the real refusal.\nThe fix drops a block of type encrypted_content whole (dropsWholeContentBlock); it carries no text.\n\nThe forged reasoning item stands in for the cross-resource ciphertext (Azure refuses it the same way).\nPre-fix this row returns 400 missing_required_parameter; post-fix 200 with only input_text on the agent_message.\nAzure only: OpenAI accepts this forged ciphertext without a refusal, so the retry never fires there.",
+      "item": [
+        {
+          "name": "azure/gpt-6.1-sol /v1/responses Codex subagent agent_message encrypted_content block heals on retry - subagent encrypted block",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text() || '';",
+                  "pm.test('azure: fail-soft retry heals a Codex subagent history instead of returning 400', function () {",
+                  "  pm.expect(text, 'the retry blanked the encrypted_content block (ticket 11340)').to.not.include('missing_required_parameter');",
+                  "  pm.expect(text, 'the upstream refusal reached the client').to.not.include('invalid_encrypted_content');",
+                  "  pm.expect(pm.response.code, 'failed: ' + text).to.equal(200);",
+                  "  pm.expect(pm.response.json().output, 'no output after the stripped retry').to.be.an('array').that.is.not.empty;",
+                  "});",
+                  "pm.test('azure: retried payload drops the encrypted_content block and keeps the task text', function () {",
+                  "  var raw = (pm.response.json().extra_fields || {}).raw_request;",
+                  "  if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+                  "  pm.expect(raw, 'no raw_request returned: ' + text).to.be.an('object');",
+                  "  var agent = (raw.input || []).filter(function (i) { return i.type === 'agent_message'; });",
+                  "  pm.expect(agent.length, 'the agent_message was dropped: ' + JSON.stringify(raw)).to.equal(1);",
+                  "  var types = (agent[0].content || []).map(function (c) { return c.type; });",
+                  "  pm.expect(types, 'expected only the task text block').to.eql(['input_text']);",
+                  "  pm.expect(agent[0].author, 'author lost on the retry').to.equal('/root');",
+                  "  pm.expect(JSON.stringify(raw), 'a ciphertext survived the strip').to.not.include('encrypted_content');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"azure/gpt-6.1-sol\",\"input\":[{\"type\":\"reasoning\",\"id\":\"rs_bfharness0000000000000000000000000000000000322\",\"summary\":[],\"encrypted_content\":\"gAAAAABqdgntZpz92rFHmQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0Iv\"},{\"type\":\"agent_message\",\"id\":\"amsg_bfharness322\",\"author\":\"/root\",\"recipient\":\"/root/reply_number\",\"content\":[{\"type\":\"input_text\",\"text\":\"Message Type: NEW_TASK\\nTask: reply with the number 782.\"},{\"type\":\"encrypted_content\",\"encrypted_content\":\"gAAAAABqdgntZpz92rFHmQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0Iv\"}]},{\"role\":\"user\",\"content\":\"Reply with just the number 782.\"}],\"max_output_tokens\":256}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
