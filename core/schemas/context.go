@@ -621,16 +621,18 @@ func (bc *BifrostContext) setReservedValue(key, value any) {
 	bc.userValues[key] = value
 }
 
-// GetOrStoreReservedValue atomically loads a reserved context value if one is
-// already present, otherwise calls supplier, stores the result under key, and
-// returns it. The supplier is invoked only on a cache miss. Unlike SetValue,
-// this bypasses the blockRestrictedWrites guard — it is the write-side twin of
-// setReservedValue, used by Bifrost internals for reserved keys that must land
-// even while plugins' post-hooks have restricted writes (e.g. streaming chunk
-// post-hooks). Internal use only.
-func (bc *BifrostContext) GetOrStoreReservedValue(key BifrostContextKey, supplier func() any) any {
+// getOrStoreReservedValue loads key if it is already set, otherwise calls
+// supplier and stores its result. Like setReservedValue it bypasses
+// blockRestrictedWrites, so it stays unexported and is reached only through
+// narrowly named helpers such as GetOrStoreOpencodeSession.
+//
+// The supplier runs outside the lock, because suppliers read the context and
+// valuesMu is not reentrant. Two first callers racing on an empty key may
+// therefore both run it, but only the first result is stored and every caller
+// returns that stored value.
+func (bc *BifrostContext) getOrStoreReservedValue(key BifrostContextKey, supplier func() any) any {
 	if bc.valueDelegate != nil {
-		return bc.valueDelegate.GetOrStoreReservedValue(key, supplier)
+		return bc.valueDelegate.getOrStoreReservedValue(key, supplier)
 	}
 	bc.valuesMu.RLock()
 	if val, ok := bc.userValues[key]; ok {
@@ -644,14 +646,27 @@ func (bc *BifrostContext) GetOrStoreReservedValue(key BifrostContextKey, supplie
 	bc.valuesMu.Lock()
 	defer bc.valuesMu.Unlock()
 	// Re-check: a concurrent caller may have stored a value while we computed.
-	if val, ok := bc.userValues[key]; ok {
-		return val
+	if stored, ok := bc.userValues[key]; ok {
+		return stored
 	}
 	if bc.userValues == nil {
 		bc.userValues = make(map[any]any, 16)
 	}
 	bc.userValues[key] = val
 	return val
+}
+
+// GetOrStoreOpencodeSession returns the request's resolved x-opencode-session
+// value, calling supplier and caching its result under the reserved
+// BifrostContextKeyOpencodeSession on the first call. The write bypasses
+// blockRestrictedWrites so a value resolved during a streaming post-hook still
+// lands and retries see the same session. Bifrost-internal (called by the
+// OpenCode provider - DO NOT CALL THIS MANUALLY).
+func (bc *BifrostContext) GetOrStoreOpencodeSession(supplier func() string) string {
+	value, _ := bc.getOrStoreReservedValue(BifrostContextKeyOpencodeSession, func() any {
+		return supplier()
+	}).(string)
+	return value
 }
 
 // ReadyStreamCommitWatch records that a held stream attempt produced the chunk its first-chunk

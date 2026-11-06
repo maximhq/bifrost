@@ -3,6 +3,7 @@ package opencode
 import (
 	"context"
 	"regexp"
+	"strings"
 	"sync"
 	"testing"
 
@@ -52,21 +53,21 @@ func TestIsSafeOpencodeSessionValue(t *testing.T) {
 }
 
 // TestResolveOpencodeSessionClientHeaderWins verifies the client-sent
-// x-opencode-session header is forwarded verbatim (namespaced per virtual key)
+// x-opencode-session header is forwarded (namespaced per virtual key ID)
 // and takes precedence over the Bifrost session id.
 func TestResolveOpencodeSessionClientHeaderWins(t *testing.T) {
-	t.Run("forwarded verbatim and namespaced per virtual key", func(t *testing.T) {
+	t.Run("forwarded and namespaced per virtual key ID", func(t *testing.T) {
 		ctx := newTestOpencodeCtx(t, map[string]string{
 			OpencodeSessionHeader: "client-sess-abc",
 		})
-		ctx.SetValue(schemas.BifrostContextKeyVirtualKey, "vk-1")
+		setOpencodeVirtualKey(ctx, "vk-1")
 
 		if got := ResolveOpencodeSession(ctx); got != "vk-1:client-sess-abc" {
 			t.Errorf("ResolveOpencodeSession() = %q, want %q", got, "vk-1:client-sess-abc")
 		}
 	})
 
-	t.Run("forwarded verbatim without a virtual key", func(t *testing.T) {
+	t.Run("forwarded unqualified without a virtual key", func(t *testing.T) {
 		ctx := newTestOpencodeCtx(t, map[string]string{
 			OpencodeSessionHeader: "client-sess-abc",
 		})
@@ -86,6 +87,29 @@ func TestResolveOpencodeSessionClientHeaderWins(t *testing.T) {
 	})
 }
 
+// TestResolveOpencodeSessionClientHeaderLengthBound verifies the client header
+// goes through the shared MaxSessionIDLength bound: at the limit it is used,
+// one rune over it is treated as absent and the fallback chain applies.
+func TestResolveOpencodeSessionClientHeaderLengthBound(t *testing.T) {
+	atLimit := strings.Repeat("a", schemas.MaxSessionIDLength)
+	ctx := newTestOpencodeCtx(t, map[string]string{OpencodeSessionHeader: atLimit})
+	ctx.SetValue(schemas.BifrostContextKeySessionID, "bf-sess-123")
+	if got := ResolveOpencodeSession(ctx); got != atLimit {
+		t.Errorf("ResolveOpencodeSession() at the limit = %q, want the client header", got)
+	}
+
+	ctx = newTestOpencodeCtx(t, map[string]string{OpencodeSessionHeader: atLimit + "a"})
+	ctx.SetValue(schemas.BifrostContextKeySessionID, "bf-sess-123")
+	if got := ResolveOpencodeSession(ctx); got != "bf-sess-123" {
+		t.Errorf("ResolveOpencodeSession() over the limit = %q, want fallback %q", got, "bf-sess-123")
+	}
+
+	ctx = newTestOpencodeCtx(t, map[string]string{OpencodeSessionHeader: "  client-sess-abc  "})
+	if got := ResolveOpencodeSession(ctx); got != "client-sess-abc" {
+		t.Errorf("ResolveOpencodeSession() = %q, want the trimmed client header", got)
+	}
+}
+
 // TestResolveOpencodeSessionFallbackChain verifies the resolution order when the
 // client header is absent, empty, poisoned, or whitespace-only: the Bifrost
 // session id is used, otherwise a UUID is synthesized.
@@ -93,7 +117,7 @@ func TestResolveOpencodeSessionFallbackChain(t *testing.T) {
 	t.Run("session id used when client header absent", func(t *testing.T) {
 		ctx := newTestOpencodeCtx(t, nil)
 		ctx.SetValue(schemas.BifrostContextKeySessionID, "bf-sess-123")
-		ctx.SetValue(schemas.BifrostContextKeyVirtualKey, "vk-1")
+		setOpencodeVirtualKey(ctx, "vk-1")
 		if got := ResolveOpencodeSession(ctx); got != "vk-1:bf-sess-123" {
 			t.Errorf("ResolveOpencodeSession() = %q, want %q", got, "vk-1:bf-sess-123")
 		}
@@ -180,7 +204,7 @@ func TestResolveOpencodeSessionSynthesizesUUID(t *testing.T) {
 
 	t.Run("namespaced UUID is still a UUID after the prefix", func(t *testing.T) {
 		ctx := newTestOpencodeCtx(t, nil)
-		ctx.SetValue(schemas.BifrostContextKeyVirtualKey, "vk-1")
+		setOpencodeVirtualKey(ctx, "vk-1")
 		got := ResolveOpencodeSession(ctx)
 		prefix := "vk-1:"
 		if len(got) <= len(prefix) || got[:len(prefix)] != prefix {
@@ -201,7 +225,7 @@ func TestResolveOpencodeSessionNamespacesPerVirtualKey(t *testing.T) {
 	build := func(vk string) *schemas.BifrostContext {
 		ctx := newTestOpencodeCtx(t, map[string]string{OpencodeSessionHeader: "shared-session"})
 		if vk != "" {
-			ctx.SetValue(schemas.BifrostContextKeyVirtualKey, vk)
+			setOpencodeVirtualKey(ctx, vk)
 		}
 		return ctx
 	}
@@ -218,9 +242,31 @@ func TestResolveOpencodeSessionNamespacesPerVirtualKey(t *testing.T) {
 		t.Errorf("ResolveOpencodeSession() not stable for the same virtual key: %q vs %q", again, vk1)
 	}
 
+	t.Run("virtual key value is never used as the namespace", func(t *testing.T) {
+		// Without governance only the virtual key secret is on the context. It
+		// is a Bifrost credential, so it must not be sent to the gateway.
+		ctx := newTestOpencodeCtx(t, map[string]string{OpencodeSessionHeader: "shared-session"})
+		ctx.SetValue(schemas.BifrostContextKeyVirtualKey, opencodeVirtualKeySecret("vk-1"))
+		if got := ResolveOpencodeSession(ctx); got != "shared-session" {
+			t.Errorf("ResolveOpencodeSession() = %q, want unqualified value without a governance virtual key ID", got)
+		}
+	})
+
+	t.Run("governance ID is used, not the virtual key value", func(t *testing.T) {
+		ctx := newTestOpencodeCtx(t, map[string]string{OpencodeSessionHeader: "shared-session"})
+		setOpencodeVirtualKey(ctx, "vk-1")
+		got := ResolveOpencodeSession(ctx)
+		if got != "vk-1:shared-session" {
+			t.Errorf("ResolveOpencodeSession() = %q, want %q", got, "vk-1:shared-session")
+		}
+		if strings.Contains(got, opencodeVirtualKeySecret("vk-1")) {
+			t.Errorf("ResolveOpencodeSession() = %q leaks the virtual key value", got)
+		}
+	})
+
 	t.Run("unsafe virtual key leaves value unqualified", func(t *testing.T) {
 		ctx := newTestOpencodeCtx(t, map[string]string{OpencodeSessionHeader: "shared-session"})
-		ctx.SetValue(schemas.BifrostContextKeyVirtualKey, "evil\r\nvk")
+		setOpencodeVirtualKey(ctx, "evil\r\nvk")
 		if got := ResolveOpencodeSession(ctx); got != "shared-session" {
 			t.Errorf("ResolveOpencodeSession() = %q, want unqualified value with unsafe virtual key", got)
 		}
@@ -253,7 +299,7 @@ func TestNamespaceOpencodeSessionNoCollision(t *testing.T) {
 	// injective and the two results distinct.
 	mk := func(vk string) *schemas.BifrostContext {
 		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-		ctx.SetValue(schemas.BifrostContextKeyVirtualKey, vk)
+		setOpencodeVirtualKey(ctx, vk)
 		return ctx
 	}
 
@@ -284,7 +330,7 @@ func TestResolveOpencodeSessionNilContext(t *testing.T) {
 // next resolution.
 func TestResolveOpencodeSessionStableUnderBlockRestrictedWrites(t *testing.T) {
 	ctx := newTestOpencodeCtx(t, nil)
-	ctx.SetValue(schemas.BifrostContextKeyVirtualKey, "vk-1")
+	setOpencodeVirtualKey(ctx, "vk-1")
 
 	first := ResolveOpencodeSession(ctx)
 	if !uuidValueRe.MatchString(first[5:]) {
@@ -302,7 +348,7 @@ func TestResolveOpencodeSessionStableUnderBlockRestrictedWrites(t *testing.T) {
 // single-flight when many goroutines resolve the same context at once.
 func TestResolveOpencodeSessionConcurrentSameContext(t *testing.T) {
 	ctx := newTestOpencodeCtx(t, nil)
-	ctx.SetValue(schemas.BifrostContextKeyVirtualKey, "vk-1")
+	setOpencodeVirtualKey(ctx, "vk-1")
 
 	const goroutines = 100
 	results := make(chan string, goroutines)
