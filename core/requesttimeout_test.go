@@ -1226,9 +1226,10 @@ func TestWrapStreamForRequestTimeout_AbandonedConsumerIsStillBounded(t *testing.
 }
 
 // TestDefaultDrainBounds_SendWaitsForASlowWriter pins the production send
-// bound. The slow-consumer test passes its own short bound, so without this a
-// regression back to a few seconds would let a slow HTTP writer see the stream
-// close and send [DONE] for a truncated response again.
+// bound, which the slow-consumer test replaces with its own short one. An HTTP
+// handler that misses the bound still reports the timeout from the fired
+// marker. An SDK caller that misses it sees the channel close with no error
+// chunk, so the bound is what delivers the timeout to them.
 func TestDefaultDrainBounds_SendWaitsForASlowWriter(t *testing.T) {
 	if defaultDrainBounds.send != time.Minute {
 		t.Fatalf("default terminal-send bound is %v, want 1m", defaultDrainBounds.send)
