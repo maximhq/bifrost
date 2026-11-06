@@ -307772,7 +307772,7 @@
           }
         },
         {
-          "name": "openrouter/anthropic/claude-sonnet-5 anthropic messages: empty text document goes out as a data URL in one input item - empty text document - #8849",
+          "name": "openrouter/anthropic/claude-sonnet-5 anthropic messages: empty text document is dropped and the rest stays in one input item - empty text document - #8849",
           "event": [
             {
               "listen": "test",
@@ -307787,16 +307787,20 @@
                   "  pm.expect(raw, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + text.slice(0, 300)).to.be.an('object');",
                   "  return raw;",
                   "}",
-                  "pm.test('user turn is one input item with every block', function () {",
+                  "pm.test('user turn is one input item: both non-empty documents and the text', function () {",
                   "  var raw = rawRequest();",
                   "  pm.expect(raw.input.length, 'user turn was split: ' + JSON.stringify(raw.input).slice(0, 600)).to.equal(1);",
-                  "  pm.expect(raw.input[0].content.length).to.equal(4);",
+                  "  pm.expect(raw.input[0].content.length, JSON.stringify(raw.input[0].content).slice(0, 600)).to.equal(3);",
+                  "  pm.expect(raw.input[0].content[2].type).to.equal('input_text');",
                   "});",
-                  "pm.test('empty document is a parseable data URL with a filename', function () {",
-                  "  var file = rawRequest().input[0].content[1];",
-                  "  pm.expect(file.type).to.equal('input_file');",
-                  "  pm.expect(file.file_data, 'file_data must be a data URL, not \"\": ' + JSON.stringify(file)).to.equal('data:text/plain;base64,');",
-                  "  pm.expect(file.filename, 'OpenAI-shaped surfaces need a filename beside file_data').to.equal('document.txt');",
+                  "pm.test('the empty document is not sent: OpenRouter rejects the empty data URL', function () {",
+                  "  var files = rawRequest().input[0].content.filter(function (b) { return b.type === 'input_file'; });",
+                  "  pm.expect(files.length, JSON.stringify(files)).to.equal(2);",
+                  "  files.forEach(function (file) {",
+                  "    pm.expect(file.file_data, 'empty data URL reached OpenRouter: ' + JSON.stringify(file)).to.not.equal('data:text/plain;base64,');",
+                  "    pm.expect(file.file_data, JSON.stringify(file)).to.match(/^data:text\\/plain;base64,.+/);",
+                  "    pm.expect(file.filename, 'OpenAI-shaped surfaces need a filename beside file_data').to.equal('document.txt');",
+                  "  });",
                   "});"
                 ]
               }
@@ -307832,6 +307836,127 @@
                 "anthropic",
                 "v1",
                 "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai/gpt-4o-mini chat completions: a formed empty text data URL with a filename is dropped beside text - empty text document",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text() || '';",
+                  "pm.test('status 200: the empty data URL is not forwarded, so OpenAI does not reject the request', function () { pm.expect(pm.response.code, 'failed: ' + text.slice(0, 600)).to.equal(200); });",
+                  "function rawRequest() {",
+                  "  var raw = ((pm.response.json() || {}).extra_fields || {}).raw_request;",
+                  "  if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+                  "  pm.expect(raw, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + text.slice(0, 300)).to.be.an('object');",
+                  "  return raw;",
+                  "}",
+                  "pm.test('the formed empty data URL is dropped and the text stays', function () {",
+                  "  var raw = rawRequest();",
+                  "  pm.expect(JSON.stringify(raw), 'empty data URL reached OpenAI').to.not.include('data:text/plain;base64,\"');",
+                  "  var content = raw.messages[0].content;",
+                  "  pm.expect(content.length, JSON.stringify(content)).to.equal(1);",
+                  "  pm.expect(content[0].type).to.equal('text');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"max_tokens\":16,\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"file\",\"file\":{\"file_data\":\"data:text/plain;base64,\",\"filename\":\"empty.txt\"}},{\"type\":\"text\",\"text\":\"Say ok.\"}]}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai/gpt-4o-mini responses: a formed empty text data URL with a filename is dropped beside text - empty text document",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text() || '';",
+                  "pm.test('status 200: the empty data URL is not forwarded, so OpenAI does not reject the request', function () { pm.expect(pm.response.code, 'failed: ' + text.slice(0, 600)).to.equal(200); });",
+                  "function rawRequest() {",
+                  "  var raw = ((pm.response.json() || {}).extra_fields || {}).raw_request;",
+                  "  if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+                  "  pm.expect(raw, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + text.slice(0, 300)).to.be.an('object');",
+                  "  return raw;",
+                  "}",
+                  "pm.test('the formed empty data URL is dropped and the text stays', function () {",
+                  "  var raw = rawRequest();",
+                  "  pm.expect(JSON.stringify(raw), 'empty data URL reached OpenAI').to.not.include('data:text/plain;base64,\"');",
+                  "  var content = raw.input[0].content;",
+                  "  pm.expect(content.length, JSON.stringify(content)).to.equal(1);",
+                  "  pm.expect(content[0].type).to.equal('input_text');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"max_output_tokens\":16,\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_file\",\"file_data\":\"data:text/plain;base64,\",\"filename\":\"empty.txt\"},{\"type\":\"input_text\",\"text\":\"Say ok.\"}]}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
               ]
             }
           }
