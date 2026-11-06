@@ -21,6 +21,9 @@ func parseReplicateError(resp *fasthttp.Response) *schemas.BifrostError {
 			Message: string(body),
 		},
 	}
+	if decoded, err := providerUtils.CheckAndDecodeBody(resp); err == nil {
+		bifrostErr.ExtraFields.ProviderErrorExcerpt = providerUtils.ProviderErrorExcerpt(decoded)
+	}
 
 	var replicateErr ReplicateError
 	if err := sonic.Unmarshal(body, &replicateErr); err == nil && replicateErr.Detail != "" {
