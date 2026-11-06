@@ -753,6 +753,69 @@ func TestAccounting_InteractionRunIsChargedOnce(t *testing.T) {
 	assert.Equal(t, int64(1), rateLimit.RequestCurrentUsage, "a run is one request: its create, not its polls or its settlement")
 }
 
+// A passthrough call relays the upstream's status as a response, not an error, so a call the
+// provider refused reached the post hook looking like a success and counted against the key's
+// request allowance. A refused inference request does not count, and neither may a refused
+// passthrough one. Seen live as an Interactions create Google rejected with 400 ("'input' must be a
+// Content[] ...") consuming one of a rate-limited key's requests, so a later run on that key read
+// two requests where it had made one.
+func TestAccounting_RefusedPassthroughIsNotARequest(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		status       int
+		wantRequests int64
+	}{
+		{"upstream 400", 400, 0},
+		{"upstream 429", 429, 0},
+		{"upstream 500", 500, 0},
+		{"upstream 200", 200, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			plugin, store := governedPassthroughFixture(t)
+			ctx := presentCtx("sk-bf-pt")
+			const model = "deep-research-preview-04-2026"
+			_, shortCircuit, err := plugin.PreLLMHook(ctx, &schemas.BifrostRequest{
+				RequestType: schemas.PassthroughRequest,
+				PassthroughRequest: &schemas.BifrostPassthroughRequest{
+					Provider: schemas.Vertex, Model: model, Method: "POST", Path: "/projects/p/locations/global/interactions",
+				},
+			})
+			require.NoError(t, err)
+			require.Nil(t, shortCircuit)
+			_, _, err = plugin.PostLLMHook(ctx, &schemas.BifrostResponse{
+				PassthroughResponse: &schemas.BifrostPassthroughResponse{
+					StatusCode: tc.status,
+					Body:       []byte(`{"error":{"message":"'input' must be a Content[], string, Turn[], Step[], or Content","code":"invalid_request"}}`),
+					ExtraFields: schemas.BifrostResponseExtraFields{
+						RequestType:            schemas.PassthroughRequest,
+						Provider:               schemas.Vertex,
+						OriginalModelRequested: model,
+						ResolvedModelUsed:      model,
+					},
+				},
+			}, nil)
+			require.NoError(t, err)
+			settleAccounting(t, plugin)
+
+			rateLimit := store.GetGovernanceData(context.Background()).RateLimits["rl-vk"]
+			assert.Equal(t, tc.wantRequests, rateLimit.RequestCurrentUsage, "upstream status %d", tc.status)
+		})
+	}
+}
+
+// BenchmarkResponseSucceeded measures the success check the async accounting worker runs once per
+// settled request: a passthrough response with an upstream error status and a chat response.
+func BenchmarkResponseSucceeded(b *testing.B) {
+	refused := &schemas.BifrostResponse{PassthroughResponse: &schemas.BifrostPassthroughResponse{StatusCode: 400}}
+	chat := &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{}}
+	b.ReportAllocs()
+	for b.Loop() {
+		if responseSucceeded(refused) || !responseSucceeded(chat) {
+			b.Fatal("wrong verdict")
+		}
+	}
+}
+
 // TestAccounting_SkipRequestCountChargesCostOnly: a GPT Live voice window bills its
 // cost and tokens but is not a request, so it must not consume request allowance.
 func TestAccounting_SkipRequestCountChargesCostOnly(t *testing.T) {
