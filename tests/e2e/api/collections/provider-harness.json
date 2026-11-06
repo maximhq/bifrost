@@ -162972,11 +162972,17 @@
                 "exec": [
                   "var bk = pm.variables.get('awsS3Bucket') || '';",
                   "if (!bk || bk.indexOf('{{') === 0) { pm.test.skip('awsS3Bucket not configured', function () {}); return; }",
-                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
                   "pm.test('valid bucket reaches AWS instead of the bucket gate', function () {",
                   "  var t = pm.response.text();",
                   "  pm.expect(t, 'valid bucket was caught by the gate: ' + t.slice(0, 300)).to.not.match(/invalid s3 bucket name/);",
                   "  pm.expect(pm.response.code, 'expected an upstream 4xx: ' + t.slice(0, 300)).to.be.within(400, 499);",
+                  "});",
+                  "// File operations try every bedrock key; a key outside the bucket's region gets S3's 301. That redirect",
+                  "// used to replace the bucket region's 404 and reach the caller as the status (s3 key region).",
+                  "pm.test('the bucket region\\u2019s answer is returned, never a wrong-region redirect', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(t, 'a wrong-region key\\u2019s redirect won: ' + t.slice(0, 300)).to.not.include('status 301');",
+                  "  pm.expect(t, 'a wrong-region key\\u2019s answer won over the bucket region\\u2019s: ' + t.slice(0, 300)).to.not.include('is in region');",
                   "});"
                 ]
               }
@@ -162999,6 +163005,60 @@
                 "v1",
                 "files",
                 "s3%3A%2F%2F{{awsS3Bucket}}%2Fbifrost-harness-no-such-object"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "bedrock"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-4XX] bedrock file content: valid bucket, missing object answers from the bucket's region, never a 3xx - s3 key region",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var bk = pm.variables.get('awsS3Bucket') || '';",
+                  "if (!bk || bk.indexOf('{{') === 0) { pm.test.skip('awsS3Bucket not configured', function () {}); return; }",
+                  "// GET of a missing object: the key in the bucket's region gets S3's 404 (403 without s3:ListBucket);",
+                  "// a bedrock key in any other region gets a 301 PermanentRedirect. File operations try every key, and the",
+                  "// last key's 301 used to replace the 404 and reach the caller as the status.",
+                  "pm.test('a missing object is the bucket region\\u2019s 4xx, not a wrong-region redirect', function () {",
+                  "  var t = pm.response.text();",
+                  "  // A missing object is S3's 404 (403 without s3:ListBucket); a wrong-region 400 must not pass for it.",
+                  "  pm.expect([403, 404], 'expected an S3 403 or 404: ' + t.slice(0, 400)).to.include(pm.response.code);",
+                  "  pm.expect(t, 'expected an S3 GET error: ' + t.slice(0, 400)).to.include('S3 GET failed:');",
+                  "  pm.expect(t, 'valid bucket was caught by the gate: ' + t.slice(0, 300)).to.not.match(/invalid s3 bucket name/);",
+                  "  pm.expect(t, 'a wrong-region key\\u2019s redirect won: ' + t.slice(0, 400)).to.not.include('PermanentRedirect');",
+                  "  pm.expect(t, 'a wrong-region key\\u2019s answer won over the bucket region\\u2019s: ' + t.slice(0, 400)).to.not.include('is in region');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/files/s3%3A%2F%2F{{awsS3Bucket}}%2Fbifrost-harness-no-such-object/content?provider=bedrock",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "files",
+                "s3%3A%2F%2F{{awsS3Bucket}}%2Fbifrost-harness-no-such-object",
+                "content"
               ],
               "query": [
                 {
