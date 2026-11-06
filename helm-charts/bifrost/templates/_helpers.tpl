@@ -656,6 +656,9 @@ false
 {{- if hasKey $providerConfig.network_config "allow_private_network" }}
 {{- $_ := set $networkConfig "allow_private_network" $providerConfig.network_config.allow_private_network }}
 {{- end }}
+{{- if hasKey $providerConfig.network_config "max_remote_file_size_bytes" }}
+{{- $_ := set $networkConfig "max_remote_file_size_bytes" $providerConfig.network_config.max_remote_file_size_bytes }}
+{{- end }}
 {{- $_ := set $providerCopy "network_config" $networkConfig }}
 {{- end }}
 {{- if $providerConfig.keys }}

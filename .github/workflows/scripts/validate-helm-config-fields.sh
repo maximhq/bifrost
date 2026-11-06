@@ -374,6 +374,38 @@ assert_field_value 'providers.bedrock.keys[0].bedrock_key_config.secret_key' '.p
 assert_field_value 'providers.bedrock.keys[0].bedrock_key_config.session_token' '.providers.bedrock.keys.[0].bedrock_key_config.session_token' '"env.AWS_TOKEN"'
 assert_field_value 'providers.bedrock.keys[0].bedrock_key_config.arn' '.providers.bedrock.keys.[0].bedrock_key_config.arn' '"arn:aws:iam::role/test"'
 
+# Remote-file limits must survive the provider network_config allowlist.
+cat > "$TMPDIR/values-remote-file-limit.yaml" << 'VALS'
+bifrost:
+  providers:
+    openai:
+      keys:
+        - name: test-key
+          value: test-value
+      network_config:
+        max_remote_file_size_bytes: 52428800
+    anthropic:
+      keys:
+        - name: test-key
+          value: test-value
+      network_config:
+        max_remote_file_size_bytes: 0
+    gemini:
+      keys:
+        - name: test-key
+          value: test-value
+      network_config:
+        max_retries: 0
+VALS
+render_config "$TMPDIR/values-remote-file-limit.yaml"
+assert_field_value 'remote-file limit preserves custom bytes' '.providers.openai.network_config.max_remote_file_size_bytes' '52428800'
+assert_field_value 'remote-file limit preserves explicit zero' '.providers.anthropic.network_config.max_remote_file_size_bytes' '0'
+if python3 -c "import json; cfg = json.load(open('$TMPDIR/config.json')); assert 'max_remote_file_size_bytes' not in cfg['providers']['gemini']['network_config']"; then
+  report_result 'remote-file limit stays omitted when unset' 0
+else
+  report_result 'remote-file limit stays omitted when unset' 1
+fi
+
 ###############################################################################
 # 4. Governance (budgets, rate_limits, customers, teams, virtual_keys, routing_rules, auth_config)
 ###############################################################################

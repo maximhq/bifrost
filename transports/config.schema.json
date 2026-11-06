@@ -7316,6 +7316,13 @@
           "maximum": 3600,
           "description": "Idle keep-alive for pooled connections, in seconds. Set below the upstream server's keep-alive so Bifrost drops idle connections before the server closes them. Default: 30."
         },
+        "max_remote_file_size_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1073741824,
+          "default": 26214400,
+          "description": "Maximum original bytes per HTTP(S) resource downloaded by Bifrost for provider input, before base64 encoding. Omitted or 0 uses 25 MiB (26214400 bytes); maximum 1 GiB. Does not limit URLs forwarded upstream, inline data, or gs:// downloads. Existing fetch timeout and SSRF protections still apply."
+        },
         "max_conns_per_host": {
           "type": "integer",
           "minimum": 1,
@@ -7396,6 +7403,13 @@
           "minimum": 1,
           "maximum": 3600,
           "description": "Idle keep-alive for pooled connections, in seconds. Set below the upstream server's keep-alive so Bifrost drops idle connections before the server closes them. Default: 30."
+        },
+        "max_remote_file_size_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1073741824,
+          "default": 26214400,
+          "description": "Maximum original bytes per HTTP(S) resource downloaded by Bifrost for provider input, before base64 encoding. Omitted or 0 uses 25 MiB (26214400 bytes); maximum 1 GiB. Does not limit URLs forwarded upstream, inline data, or gs:// downloads. Existing fetch timeout and SSRF protections still apply."
         },
         "max_conns_per_host": {
           "type": "integer",

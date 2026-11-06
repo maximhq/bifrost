@@ -11,6 +11,53 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// TestNetworkConfigRemoteFileLimitRoundTrip checks both JSON codecs preserve the configured byte limit.
+func TestNetworkConfigRemoteFileLimitRoundTrip(t *testing.T) {
+	for _, codec := range []struct {
+		name      string
+		marshal   func(any) ([]byte, error)
+		unmarshal func([]byte, any) error
+	}{
+		{"json", json.Marshal, json.Unmarshal},
+		{"sonic", MarshalSorted, Unmarshal},
+	} {
+		t.Run(codec.name, func(t *testing.T) {
+			var config NetworkConfig
+			require.NoError(t, codec.unmarshal([]byte(`{"max_remote_file_size_bytes":67108864}`), &config))
+			encoded, err := codec.marshal(config)
+			require.NoError(t, err)
+			assert.Contains(t, string(encoded), `"max_remote_file_size_bytes":67108864`)
+		})
+	}
+}
+
+// TestNetworkConfigRemoteFileLimitValidation checks malformed and out-of-range limits are rejected and zero selects the default.
+func TestNetworkConfigRemoteFileLimitValidation(t *testing.T) {
+	for _, input := range []string{
+		`{"max_remote_file_size_bytes":-1}`,
+		`{"max_remote_file_size_bytes":1073741825}`,
+		`{"max_remote_file_size_bytes":9223372036854775807}`,
+		`{"max_remote_file_size_bytes":1.5}`,
+		`{"max_remote_file_size_bytes":"64MiB"}`,
+	} {
+		var config NetworkConfig
+		require.Error(t, json.Unmarshal([]byte(input), &config), input)
+		require.Error(t, Unmarshal([]byte(input), &config), input)
+	}
+	for _, value := range []int64{0, 1, DefaultMaxRemoteFileSizeBytes, 64 << 20, MaxRemoteFileSizeBytesUpperBound} {
+		config := NetworkConfig{MaxRemoteFileSizeBytes: value}
+		require.NoError(t, config.ValidateRemoteFileSizeLimit())
+		want := value
+		if want == 0 {
+			want = DefaultMaxRemoteFileSizeBytes
+		}
+		assert.Equal(t, want, config.RemoteFileSizeLimit())
+	}
+	var absent *NetworkConfig
+	assert.Equal(t, DefaultMaxRemoteFileSizeBytes, absent.RemoteFileSizeLimit())
+	require.NoError(t, absent.ValidateRemoteFileSizeLimit())
+}
+
 // These tests use schemas.Marshal/Unmarshal (sonic) to verify round-trip
 // behavior matches what the production pipeline actually does.
 

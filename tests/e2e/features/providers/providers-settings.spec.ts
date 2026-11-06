@@ -250,9 +250,29 @@ test.describe("Provider Settings", () => {
   });
 
   test.describe("Network Configuration", () => {
-    test.beforeEach(async ({ providersPage }) => {
+    let originalProvider: string | undefined;
+
+    test.beforeEach(async ({ providersPage, request }) => {
+      originalProvider = undefined;
+      const response = await request.get("/api/providers/openai");
+      expect(response.ok()).toBeTruthy();
+      originalProvider = await response.text();
       await providersPage.goto();
       await providersPage.selectProvider("openai");
+    });
+
+    test.afterEach(async ({ request }) => {
+      if (!originalProvider) return;
+      // Restore through the API: the original zero backoffs cannot pass UI validation.
+      // afterEach also runs when a save/reload assertion fails halfway through the test.
+      const restored = await request.put("/api/providers/openai", {
+        data: originalProvider,
+        headers: { "Content-Type": "application/json" },
+      });
+      expect(restored.ok()).toBeTruthy();
+      const response = await request.get("/api/providers/openai");
+      expect(response.ok()).toBeTruthy();
+      expect((await response.json()).network_config).toEqual(JSON.parse(originalProvider).network_config);
     });
 
     test("should display network config tab", async ({ providerSettingsPage }) => {
@@ -265,22 +285,68 @@ test.describe("Provider Settings", () => {
       await expect(providerSettingsPage.page.getByLabel(/Max Retries/i)).toBeVisible();
     });
 
+    test("should persist and reset the remote file size limit", async ({ providersPage, providerSettingsPage }) => {
+      const page = providerSettingsPage.page;
+      await providerSettingsPage.selectConfigTab("network");
+      const input = page.getByTestId("network-config-max-remote-file-size-input");
+      const original = await input.inputValue();
+      const custom = original === "67108864" ? "33554432" : "67108864";
+      // The seed config has zero backoffs, below the form's existing 100ms minimum.
+      const initialBackoff = page.getByTestId("network-config-initial-backoff-input");
+      const maxBackoff = page.getByTestId("network-config-max-backoff-input");
+      if (Number(await initialBackoff.inputValue()) < 100) await initialBackoff.fill("500");
+      if (Number(await maxBackoff.inputValue()) < 100) await maxBackoff.fill("10000");
+      for (const value of [custom, "0", custom, ""]) {
+        await input.fill(value);
+        const [request] = await Promise.all([
+          page.waitForRequest((req) => req.method() === "PUT" && req.url().endsWith("/api/providers/openai")),
+          providerSettingsPage.saveNetworkConfig(),
+        ]);
+        expect(request.postDataJSON().network_config.max_remote_file_size_bytes).toBe(Number(value));
+        await page.reload();
+        await providersPage.selectProvider("openai");
+        await providerSettingsPage.selectConfigTab("network");
+        await expect(input).toHaveValue(value || "0");
+      }
+    });
+
+    test("should validate the remote file size limit before saving", async ({ providerSettingsPage }) => {
+      const page = providerSettingsPage.page;
+      await providerSettingsPage.selectConfigTab("network");
+      const input = page.getByTestId("network-config-max-remote-file-size-input");
+      const original = await input.inputValue();
+      try {
+        for (const value of ["-1", "1.5", "1073741825"]) {
+          await input.fill(value);
+          const message = page.getByTestId("network-config-max-remote-file-size-error");
+          await expect(message).toBeVisible();
+          await expect(message).toHaveText("Enter a whole number from 0 to 1073741824 bytes.");
+          await expect(input).toHaveAttribute("aria-invalid", "true");
+        }
+        await input.fill("1073741824");
+        await expect(input).toHaveAttribute("aria-invalid", "false");
+        await expect(page.getByTestId("network-config-max-remote-file-size-error")).not.toBeVisible();
+      } finally {
+        await input.fill(original);
+      }
+    });
+
     test("should display backoff settings", async ({ providerSettingsPage }) => {
       await providerSettingsPage.selectConfigTab("network");
 
       // Should see backoff configuration
       await expect(
-        providerSettingsPage.page.getByLabel(/Initial Backoff/i),
+        providerSettingsPage.page.getByTestId("network-config-initial-backoff-input"),
       ).toBeVisible();
-      await expect(providerSettingsPage.page.getByLabel(/Max Backoff/i)).toBeVisible();
+      await expect(providerSettingsPage.page.getByTestId("network-config-max-backoff-input")).toBeVisible();
     });
 
     test("should update timeout value", async ({ providerSettingsPage }) => {
       await providerSettingsPage.selectConfigTab("network");
 
       // Ensure backoff fields are valid (minimum 100ms) so form validation passes
-      const initialBackoff = providerSettingsPage.page.getByLabel(/Initial Backoff/i);
-      const maxBackoff = providerSettingsPage.page.getByLabel(/Max Backoff/i);
+      const initialBackoff = providerSettingsPage.page.getByTestId("network-config-initial-backoff-input");
+      const maxBackoff = providerSettingsPage.page.getByTestId("network-config-max-backoff-input");
       const ibVal = await initialBackoff.inputValue();
       const mbVal = await maxBackoff.inputValue();
       if (Number(ibVal) < 100) {
@@ -306,18 +372,14 @@ test.describe("Provider Settings", () => {
       const saveBtn = providerSettingsPage.getConfigSaveBtn("network");
       await expect(saveBtn).toBeEnabled();
       await providerSettingsPage.saveNetworkConfig();
-
-      // Restore original value to avoid leaving form dirty
-      await providerSettingsPage.fillNumberInput(timeoutInput, originalValue);
-      await providerSettingsPage.saveNetworkConfig();
     });
 
     test("should update max retries value", async ({ providerSettingsPage }) => {
       await providerSettingsPage.selectConfigTab("network");
 
       // Ensure backoff fields are valid (minimum 100ms) so form validation passes
-      const initialBackoff = providerSettingsPage.page.getByLabel(/Initial Backoff/i);
-      const maxBackoff = providerSettingsPage.page.getByLabel(/Max Backoff/i);
+      const initialBackoff = providerSettingsPage.page.getByTestId("network-config-initial-backoff-input");
+      const maxBackoff = providerSettingsPage.page.getByTestId("network-config-max-backoff-input");
       const ibVal = await initialBackoff.inputValue();
       const mbVal = await maxBackoff.inputValue();
       if (Number(ibVal) < 100) {
@@ -340,10 +402,6 @@ test.describe("Provider Settings", () => {
       // Save button should be enabled
       const saveBtn = providerSettingsPage.getConfigSaveBtn("network");
       await expect(saveBtn).toBeEnabled();
-      await providerSettingsPage.saveNetworkConfig();
-
-      // Restore original value to avoid leaving form dirty
-      await providerSettingsPage.fillNumberInput(retriesInput, originalValue);
       await providerSettingsPage.saveNetworkConfig();
     });
   });

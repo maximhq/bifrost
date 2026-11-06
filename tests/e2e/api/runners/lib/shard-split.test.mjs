@@ -19,6 +19,7 @@ import { readFileSync, writeFileSync, mkdtempSync, rmSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve, join } from "node:path";
 import { tmpdir } from "node:os";
+import { runInNewContext } from "node:vm";
 
 let passed = 0;
 function test(name, fn) {
@@ -729,6 +730,45 @@ test("Azure live session rows run only in the azure partition", () => {
   );
   assert.deepEqual(runFilter(["--provider", "openai"], { source }), ["openai-live", "azure-chat-openai-route"]);
   assert.deepEqual(runFilter(["--provider", "azure"], { source }), ["azure-live-native", "azure-live-openai-route", "azure-sdk-live", "azure-sdk-bare-ua-live", "azure-chat-openai-route"]);
+});
+
+test("Remote-file-limit serial folder runs only in the bedrock partition", () => {
+  const source = resolve(HERE, "../../collections/provider-harness.json");
+  const selected = runFilter(["--provider", "bedrock", "--feature", "remote-file-limit"], { source });
+  assert.equal(selected.length, 6, "retain create, key, both inference modes, delete and deletion check");
+  for (const provider of ["openai", "gemini", "anthropic", "minimax", "vertex", "azure"]) {
+    assert.deepEqual(runFilter(["--provider", provider, "--feature", "remote-file-limit"], { source }), [], provider);
+  }
+});
+
+test("Remote-file-limit reruns never overwrite an existing provider", () => {
+  const source = resolve(HERE, "../../collections/provider-harness.json");
+  const folder = JSON.parse(readFileSync(source, "utf8")).item.find((item) => item.name.includes("(remote-file-limit)"));
+  const setup = folder.item[0];
+  assert.equal(setup.request.method, "POST", "create an isolated provider instead of saving shared state");
+  assert.equal(setup.request.url, "{{baseUrl}}/api/providers");
+  const values = new Map();
+  let run = 0;
+  const pm = {
+    collectionVariables: { set: (key, value) => values.set(key, value) },
+    variables: { replaceIn: (value) => { assert.equal(value, "{{$guid}}"); return `run-${++run}`; } },
+  };
+  const script = setup.event.find((event) => event.listen === "prerequest").script.exec.join("\n");
+  const create = () => {
+    runInNewContext(script, { pm });
+    return JSON.parse(setup.request.body.raw.replace("{{remoteFileLimitProvider}}", values.get("remoteFileLimitProvider")));
+  };
+  const interrupted = create();
+  const retry = create();
+  assert.notEqual(retry.provider, interrupted.provider, "an interrupted provider must not be reused");
+  assert.match(retry.provider, /^bedrock-remote-file-limit-/);
+  assert.equal(retry.network_config.max_remote_file_size_bytes, 16);
+  assert.equal(folder.item.some((item) => item.request.method === "PUT"), false, "never update shared configuration");
+  assert.equal(folder.item[1].request.url, "{{baseUrl}}/api/providers/{{remoteFileLimitProvider}}/keys");
+  assert.equal(JSON.parse(folder.item[1].request.body.raw).name, "{{remoteFileLimitProvider}}", "key names are globally unique, including after interruption");
+  assert.equal(folder.item[4].request.method, "DELETE");
+  assert.equal(folder.item[4].request.url, "{{baseUrl}}/api/providers/{{remoteFileLimitProvider}}");
+  assert.equal(folder.item[5].request.url, folder.item[4].request.url);
 });
 
 rmSync(WORK, { recursive: true, force: true });
