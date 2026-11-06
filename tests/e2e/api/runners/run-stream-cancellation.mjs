@@ -13,6 +13,7 @@ const require = createRequire(import.meta.url);
 // Shared with newman-reporter-dbverify so provider alias normalization stays in sync.
 const { resolvePricingEntry, expectedCostFromRow } = require("../lib/pricing");
 const { readLogsDbUrl } = require("../lib/logs-db-url");
+const { openSqliteReadonly } = require("../lib/sqlite-readonly");
 
 const args = Object.fromEntries(
   process.argv.slice(2).reduce((acc, cur, i, arr) => {
@@ -127,8 +128,7 @@ async function connectLogsDb(url) {
       close: () => client.end().catch(() => {}),
     };
   }
-  const Database = require("better-sqlite3");
-  const sdb = new Database(url.replace(/^sqlite:\/\//i, ""), { readonly: true });
+  const sdb = openSqliteReadonly(url.replace(/^sqlite:\/\//i, ""));
   return {
     query: async (sql, p) => sdb.prepare(sql.replace(/\$\d+/g, "?")).all(...p),
     close: () => {
