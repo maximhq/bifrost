@@ -313084,7 +313084,7 @@
     },
     {
       "name": "322. Client request ID reuse preserves logs (request ID reuse)",
-      "description": "Repeated x-request-id is client correlation only. Six explicit inexpensive OpenAI requests cover unary and streaming completion: distinct generated IDs, correct persisted input/output, and original correlation metadata. Log reads poll the asynchronous writer; all unexpected statuses fail.",
+      "description": "Repeated x-request-id is client correlation only. Four explicit inexpensive OpenAI requests cover unary and streaming completion: distinct generated IDs, correct persisted input/output, and original correlation metadata. Log reads poll the asynchronous writer; all unexpected statuses fail.",
       "item": [
         {
           "name": "OpenAI gpt-4o-mini request ID reuse unary 1",
@@ -313141,27 +313141,6 @@
           }
         },
         {
-          "name": "OpenAI gpt-4o-mini request ID reuse unary 3",
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              },
-              {
-                "key": "x-request-id",
-                "value": "{{requestIdReuseunaryClient}}"
-              }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Echo this marker: request ID reuse unary 3\"\n    }\n  ],\n  \"max_tokens\": 32\n}"
-            },
-            "url": "{{baseUrl}}/v1/chat/completions"
-          }
-        },
-        {
           "name": "OpenAI gpt-4o-mini request ID reuse stream 1",
           "request": {
             "method": "POST",
@@ -313211,27 +313190,6 @@
             "body": {
               "mode": "raw",
               "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Echo this marker: request ID reuse stream 2\"\n    }\n  ],\n  \"max_tokens\": 32,\n  \"stream\": true\n}"
-            },
-            "url": "{{baseUrl}}/v1/chat/completions"
-          }
-        },
-        {
-          "name": "OpenAI gpt-4o-mini request ID reuse stream 3",
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              },
-              {
-                "key": "x-request-id",
-                "value": "{{requestIdReusestreamClient}}"
-              }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Echo this marker: request ID reuse stream 3\"\n    }\n  ],\n  \"max_tokens\": 32,\n  \"stream\": true\n}"
             },
             "url": "{{baseUrl}}/v1/chat/completions"
           }

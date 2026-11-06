@@ -1059,23 +1059,6 @@ func TestConvertToBifrostContext_RequestIDIsPerHTTPRequest(t *testing.T) {
 	}
 }
 
-func BenchmarkConvertToBifrostContextRequestID(b *testing.B) {
-	for _, supplied := range []bool{false, true} {
-		b.Run(fmt.Sprintf("supplied=%t", supplied), func(b *testing.B) {
-			ctx := &fasthttp.RequestCtx{}
-			if supplied {
-				ctx.Request.Header.Set("x-request-id", "benchmark-client-id")
-			}
-			b.ReportAllocs()
-			for b.Loop() {
-				_, cancel := ConvertToBifrostContext(ctx, testHandlerStore{})
-				cancel()
-				ctx.ResetUserValues()
-			}
-		})
-	}
-}
-
 // BenchmarkConvertToBifrostContextClientIP measures a request from a real peer behind a proxy, with capture off (the default) and on.
 func BenchmarkConvertToBifrostContextClientIP(b *testing.B) {
 	for _, capture := range []bool{false, true} {

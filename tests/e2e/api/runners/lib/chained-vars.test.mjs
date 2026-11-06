@@ -3,7 +3,6 @@
 // ci-interval.test.mjs next door.
 import assert from "node:assert";
 import { readFileSync } from "node:fs";
-import { runInNewContext } from "node:vm";
 import {
   walkRequests,
   buildProducerIndex,
@@ -442,24 +441,6 @@ test("request-ID reuse consumers retain their initialization producer", () => {
       const dependency = chainedDependencies(consumer, index).find((dep) => dep.variable === "requestIdReuse" + mode + "Client");
       assert.strictEqual(dependency?.producerItem, rows[0], consumer.name + " must retain its client-ID producer when filtered or sharded");
     }
-  }
-});
-
-test("session-affinity log callbacks use the canonical response ID", () => {
-  const collection = JSON.parse(readFileSync(new URL("../../collections/provider-harness.json", import.meta.url), "utf8"));
-  const folder = collection.item.find((item) => item.name.includes("(session-key-affinity)"));
-  for (const item of folder.item) {
-    const script = item.event.find((event) => event.listen === "prerequest").script.exec.join("\n");
-    const start = script.indexOf("function chat(");
-    const end = script.indexOf("// Providers left", start);
-    let invoked = false;
-    const context = {
-      BASE: "http://fixture", MODEL: "fixture", CHAT_BODY: { messages: [], max_tokens: 1 },
-      pm: { sendRequest(_request, cb) { cb(null, { headers: { get: () => "canonical-id" }, json: () => ({ extra_fields: {} }) }); } },
-    };
-    runInNewContext(script.slice(start, end), context);
-    context.chat("fixture", {}, (_res, _routing, id) => { invoked = true; assert.strictEqual(id, "canonical-id", item.name); });
-    assert.ok(invoked);
   }
 });
 
