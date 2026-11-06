@@ -1120,6 +1120,102 @@ func TestBuildAnthropicResponsesRequestBody_BedrockInvokeKeepsToolSearch(t *test
 	}
 }
 
+// TestBuildAnthropicResponsesRequestBody_BedrockInvokeDropsWebSearch pins the Codex
+// shape on Bedrock Claude: a tool_search moves the request onto InvokeModel, where the
+// web_search Codex always sends used to go out as web_search_20250305 and Bedrock
+// answered 400 "tool type 'web_search_20250305' is not supported for this model".
+// Converse already drops it for non-Nova models; InvokeModel must too.
+func TestBuildAnthropicResponsesRequestBody_BedrockInvokeDropsWebSearch(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	request := &schemas.BifrostResponsesRequest{
+		Provider: schemas.Bedrock,
+		Model:    "global.anthropic.claude-sonnet-5-5",
+		Input:    makeSimpleInput("What changed in the repo?"),
+		Params: &schemas.ResponsesParameters{
+			Tools: []schemas.ResponsesTool{
+				responsesToolFromJSON(t, `{"type":"tool_search","execution":"client"}`),
+				responsesToolFromJSON(t, `{"type":"web_search","external_web_access":false}`),
+				responsesToolFromJSON(t, `{"type":"code_interpreter","container":{"type":"auto"}}`),
+				responsesToolFromJSON(t, `{"type":"function","name":"shell","parameters":{"type":"object","properties":{}}}`),
+			},
+		},
+	}
+	body, err := BuildAnthropicResponsesRequestBody(ctx, request, AnthropicRequestBuildConfig{
+		Provider:      schemas.Bedrock,
+		Model:         "global.anthropic.claude-sonnet-5-5",
+		ValidateTools: true,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var sawShell bool
+	for _, tool := range providerUtils.GetJSONField(body, "tools").Array() {
+		typ := tool.Get("type").String()
+		if strings.HasPrefix(typ, "web_search_") || strings.HasPrefix(typ, "code_execution_") {
+			t.Errorf("Bedrock Claude does not accept %s, but it was sent: %s", typ, string(body))
+		}
+		if tool.Get("name").String() == "shell" {
+			sawShell = true
+		}
+	}
+	if !sawShell {
+		t.Errorf("function tool was lost: %s", string(body))
+	}
+}
+
+// TestBuildAnthropicResponsesRequestBody_BedrockInvokeDropsWebSearchDespiteCatalog pins the
+// live failure the catalog-free test above missed: the datasheet marks Claude on Bedrock
+// supports_web_search (60 Bedrock rows do), and that record used to override the host flag,
+// so web_search_20250305 still reached InvokeModel and Bedrock answered 400.
+func TestBuildAnthropicResponsesRequestBody_BedrockInvokeDropsWebSearchDespiteCatalog(t *testing.T) {
+	yes := true
+	schemas.SetCapabilityResolver(func(provider schemas.ModelProvider, model string) *schemas.ModelCapabilities {
+		return &schemas.ModelCapabilities{SupportsWebSearch: &yes, SupportsCodeExecution: &yes}
+	})
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+
+	for _, provider := range []schemas.ModelProvider{schemas.Bedrock, schemas.BedrockMantle} {
+		t.Run(string(provider), func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+			model := "global.anthropic.claude-sonnet-4-6"
+			request := &schemas.BifrostResponsesRequest{
+				Provider: provider,
+				Model:    model,
+				Input:    makeSimpleInput("What changed in the repo?"),
+				Params: &schemas.ResponsesParameters{
+					Tools: []schemas.ResponsesTool{
+						responsesToolFromJSON(t, `{"type":"tool_search","execution":"client"}`),
+						responsesToolFromJSON(t, `{"type":"web_search","external_web_access":false}`),
+						responsesToolFromJSON(t, `{"type":"code_interpreter","container":{"type":"auto"}}`),
+						responsesToolFromJSON(t, `{"type":"function","name":"get_weather","parameters":{"type":"object","properties":{}}}`),
+					},
+				},
+			}
+			body, err := BuildAnthropicResponsesRequestBody(ctx, request, AnthropicRequestBuildConfig{
+				Provider:      provider,
+				Model:         model,
+				ValidateTools: true,
+			})
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			var sawFunction bool
+			for _, tool := range providerUtils.GetJSONField(body, "tools").Array() {
+				typ := tool.Get("type").String()
+				if strings.HasPrefix(typ, "web_search_") || strings.HasPrefix(typ, "code_execution_") {
+					t.Errorf("%s does not serve %s, but a catalog record let it through: %s", provider, typ, string(body))
+				}
+				if tool.Get("name").String() == "get_weather" {
+					sawFunction = true
+				}
+			}
+			if !sawFunction {
+				t.Errorf("function tool was lost: %s", string(body))
+			}
+		})
+	}
+}
+
 // TestRawBodyBuilderKeepsToolsAndSetsBetaHeaders checks the thing that actually goes
 // upstream, rather than any one step of building it.
 //
@@ -3612,5 +3708,58 @@ func TestSearchToolVersionKeepsDeclaredCodeExecution(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// TestBuildAnthropicResponsesRequestBody_UnsignedThinkingReplay pins that a thinking
+// block with an empty signature is replayed verbatim to Anthropic-compatible
+// self-hosted servers (vLLM, SGLang), which never sign their own thinking, while
+// native Anthropic still has it stripped (it rejects an unsigned block).
+func TestBuildAnthropicResponsesRequestBody_UnsignedThinkingReplay(t *testing.T) {
+	const thinking = "I privately choose the code word PAMPLEMOUSSE-47."
+	body := []byte(`{"model":"deepseek-v4.1-flash","max_tokens":3000,"thinking":{"type":"enabled","budget_tokens":2000},` +
+		`"tools":[{"name":"ping","description":"ping","input_schema":{"type":"object","properties":{}}}],` +
+		`"messages":[{"role":"user","content":"Pick a code word, then call ping."},` +
+		`{"role":"assistant","content":[{"type":"thinking","thinking":"` + thinking + `","signature":""},{"type":"tool_use","id":"t1","name":"ping","input":{}}]},` +
+		`{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"pong"}]}]}`)
+
+	build := func(t *testing.T, provider schemas.ModelProvider, raw bool) []byte {
+		t.Helper()
+		ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+		var req AnthropicMessageRequest
+		if err := json.Unmarshal(body, &req); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		request := req.ToBifrostResponsesRequest(ctx)
+		request.Provider = provider
+		if raw {
+			ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+			request.RawRequestBody = body
+		}
+		out, bifrostErr := BuildAnthropicResponsesRequestBody(ctx, request, AnthropicRequestBuildConfig{Provider: provider, ValidateTools: true})
+		if bifrostErr != nil {
+			t.Fatalf("build: %v", bifrostErr.Error)
+		}
+		return out
+	}
+	thinkingOf := func(out []byte) string {
+		return gjson.GetBytes(out, `messages.1.content.#(type=="thinking").thinking`).String()
+	}
+
+	for _, provider := range []schemas.ModelProvider{schemas.VLLM, schemas.SGL} {
+		for _, raw := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s_raw=%v_keeps", provider, raw), func(t *testing.T) {
+				if got := thinkingOf(build(t, provider, raw)); got != thinking {
+					t.Fatalf("unsigned thinking not replayed, got %q", got)
+				}
+			})
+		}
+	}
+	for _, raw := range []bool{false, true} {
+		t.Run(fmt.Sprintf("anthropic_raw=%v_strips", raw), func(t *testing.T) {
+			if got := thinkingOf(build(t, schemas.Anthropic, raw)); got != "" {
+				t.Fatalf("unsigned thinking must be stripped for native Anthropic, got %q", got)
+			}
+		})
 	}
 }

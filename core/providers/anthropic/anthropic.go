@@ -694,6 +694,9 @@ func HandleAnthropicChatCompletionRequest(
 	if convTracer != nil {
 		convTracer.EndSpan(convHandle, schemas.SpanStatusOk, "")
 	}
+	if bifrostResponse.Usage != nil {
+		recordAnthropicContainerSession(&bifrostResponse.Usage.ToolUsage, jsonBody, response.Container)
+	}
 
 	// Set ExtraFields
 	bifrostResponse.ExtraFields.Latency = latency.Milliseconds()
@@ -1186,6 +1189,9 @@ func HandleAnthropicChatCompletionStreaming(
 			if event.Type == AnthropicStreamEventTypeMessageStart && event.Message != nil && event.Message.ID != "" {
 				messageID = event.Message.ID
 			}
+			if event.Delta != nil && event.Delta.Container != nil {
+				recordAnthropicContainerSession(&usage.ToolUsage, jsonBody, event.Delta.Container)
+			}
 			// Check for usage in both top-level event.Usage and nested event.Message.Usage
 			// message_start events have usage nested in message.usage, while message_delta has it at top level
 			var usageToProcess *AnthropicUsage
@@ -1546,6 +1552,9 @@ func HandleAnthropicResponsesRequest(
 	if convTracer != nil {
 		convTracer.EndSpan(convHandle, schemas.SpanStatusOk, "")
 	}
+	if bifrostResponse.Usage != nil {
+		recordAnthropicContainerSession(&bifrostResponse.Usage.ToolUsage, jsonBody, response.Container)
+	}
 
 	if config.Provider == schemas.Bedrock {
 		action, trace := bedrockInvokeGuardrailOutcome(responseBody)
@@ -1897,6 +1906,12 @@ func HandleAnthropicResponsesStream(
 			// streamdeltausage.go.
 			if event.Type == AnthropicStreamEventTypeMessageDelta {
 				recordAnthropicStreamDeltaPromptUsage(ctx, chunkIndex, eventDataBytes)
+			}
+			if event.Delta != nil && event.Delta.Container != nil {
+				recordAnthropicContainerSession(&usage.ToolUsage, jsonBody, event.Delta.Container)
+				if billedUsage != nil {
+					recordAnthropicContainerSession(&billedUsage.ToolUsage, jsonBody, event.Delta.Container)
+				}
 			}
 			// Note: response.created and response.in_progress are now emitted by ToBifrostResponsesStream
 			// from the message_start event, so we don't need to call them manually here
@@ -3555,7 +3570,7 @@ func (provider *AnthropicProvider) PassthroughStream(
 	}
 	var messagesUsage *AnthropicPassthroughStreamUsage
 	if strings.HasSuffix(strippedPath, "/messages") {
-		messagesUsage = &AnthropicPassthroughStreamUsage{}
+		messagesUsage = &AnthropicPassthroughStreamUsage{RequestBody: req.Body}
 	}
 	return providerUtils.StreamPassthrough(
 		ctx, postHookRunner, postHookSpanFinalizer, resp, bodyStream,

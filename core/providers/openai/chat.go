@@ -136,6 +136,12 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 	if chatUsesPromptCacheBreakpoints(caps, schemas.ResolveBaseProvider(ctx, bifrostReq.Provider), capModel) {
 		ceiling := promptCacheBreakpointCeiling(ctx, true, openaiReq.ChatParameters.PromptCacheOptions, openaiReq.ExtraParams)
 		openaiReq.Messages = applyChatCacheBreakpoints(openaiReq.Messages, ceiling)
+		openaiReq.Messages = stripChatCacheBreakpointTTL(openaiReq.Messages)
+		if opts := openaiReq.ChatParameters.PromptCacheOptions; opts != nil && opts.TTL != nil && *opts.TTL != "30m" {
+			optsCopy := *opts
+			optsCopy.TTL = nil
+			openaiReq.ChatParameters.PromptCacheOptions = &optsCopy
+		}
 	}
 
 	// OpenRouter forwards cache_control verbatim to Claude, which rejects more than four
@@ -663,6 +669,42 @@ func clampOpenRouterCacheControl(req *OpenAIChatRequest, n int) {
 			msg.OpenAIChatAssistantMessage.ToolCalls[ref.toolCall].CacheControl = nil
 		}
 	}
+}
+
+// stripChatCacheBreakpointTTL drops breakpoint ttl, which Chat Completions rejects (Responses-only).
+// Copies only the touched messages, since they alias bifrostReq.Input.
+func stripChatCacheBreakpointTTL(messages []OpenAIMessage) []OpenAIMessage {
+	var out []OpenAIMessage
+	for i := range messages {
+		if messages[i].Content == nil {
+			continue
+		}
+		var blocks []schemas.ChatContentBlock
+		for j, block := range messages[i].Content.ContentBlocks {
+			if block.PromptCacheBreakpoint == nil || block.PromptCacheBreakpoint.TTL == nil {
+				continue
+			}
+			if blocks == nil {
+				blocks = append([]schemas.ChatContentBlock(nil), messages[i].Content.ContentBlocks...)
+			}
+			bp := *block.PromptCacheBreakpoint
+			bp.TTL = nil
+			blocks[j].PromptCacheBreakpoint = &bp
+		}
+		if blocks == nil {
+			continue
+		}
+		if out == nil {
+			out = append([]OpenAIMessage(nil), messages...)
+		}
+		content := *out[i].Content
+		content.ContentBlocks = blocks
+		out[i].Content = &content
+	}
+	if out == nil {
+		return messages
+	}
+	return out
 }
 
 // applyChatCacheBreakpoints rewrites ephemeral cache_control markers on text parts

@@ -286,6 +286,43 @@ func TestCancelledStreamPricesResolvedModel(t *testing.T) {
 	}
 }
 
+// TestDroppedRequestSkipsUpstreamMetrics pins that a request dropped on a full queue counts as
+// an error but not as upstream traffic, while any other 503 still counts as both.
+func TestDroppedRequestSkipsUpstreamMetrics(t *testing.T) {
+	cases := []struct {
+		name         string
+		errType      string
+		wantUpstream float64
+	}{
+		{"request_dropped skips upstream metrics", schemas.RequestDropped, 0},
+		{"a provider 503 still counts as upstream", "overloaded_error", 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := newTestPlugin(t)
+			bErr := &schemas.BifrostError{
+				StatusCode: new(503),
+				Error:      &schemas.ErrorField{Message: "unavailable", Type: new(tc.errType)},
+			}
+			bErr.PopulateExtraFields(schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4o", "gpt-4o")
+			if _, _, err := p.PostLLMHook(newHookContext(schemas.ChatCompletionRequest), nil, bErr); err != nil {
+				t.Fatalf("PostLLMHook: %v", err)
+			}
+			// The upstream metrics are written before this counter in the same goroutine.
+			waitForCounter(t, p.registry, "bifrost_error_requests_total", 1)
+
+			if got := counterTotal(t, p.registry, "bifrost_upstream_requests_total"); got != tc.wantUpstream {
+				t.Errorf("bifrost_upstream_requests_total = %v, want %v", got, tc.wantUpstream)
+			}
+			for _, name := range []string{"bifrost_upstream_latency_seconds", "bifrost_request_retries"} {
+				if got := histogramSampleCount(t, p.registry, name); float64(got) != tc.wantUpstream {
+					t.Errorf("%s sample count = %d, want %v", name, got, tc.wantUpstream)
+				}
+			}
+		})
+	}
+}
+
 // TestPostLLMHookRequiresStartTime asserts the documented early-return: without startTimeKey in
 // context (PreLLMHook never ran) PostLLMHook records nothing rather than panicking or recording
 // with a bogus latency.
