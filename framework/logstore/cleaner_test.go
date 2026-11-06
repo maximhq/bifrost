@@ -424,6 +424,20 @@ func TestPostgresRetentionBatchYieldsWhileLockHeld(t *testing.T) {
 	assert.Equal(t, int64(20), deleted, "the lock goes with the holder's transaction")
 }
 
+// One Postgres batch deletes at most batchSize rows. drainExpired reads a larger count as ClickHouse's whole-range
+// delete and stops, so a statement that overshoots the limit leaves expired rows behind.
+func TestPostgresRetentionBatchNeverExceedsBatchSize(t *testing.T) {
+	store, db := setupRetentionPostgres(t, 3*batchSize+123, 0)
+	cutoff := time.Now().UTC().AddDate(0, 0, -30)
+
+	for _, want := range []int64{batchSize, batchSize, batchSize, 123, 0} {
+		deleted, err := store.DeleteLogsBatch(context.Background(), cutoff, batchSize)
+		require.NoError(t, err)
+		require.Equal(t, want, deleted, "each batch must stop at the limit")
+	}
+	assert.Zero(t, countLogs(t, db, "old-"))
+}
+
 // An operator's own pruner holding row locks must not stall the cleaner: the
 // batch skips those rows and deletes the rest.
 func TestPostgresRetentionBatchSkipsLockedRows(t *testing.T) {

@@ -446,7 +446,7 @@ func (provider *AzureProvider) ChatCompletion(ctx *schemas.BifrostContext, key s
 	return openai.HandleOpenAIChatCompletionRequest(
 		ctx,
 		provider.client,
-		fmt.Sprintf("%s/openai/v1/chat/completions", endpoint),
+		azureChatCompletionURL(ctx, endpoint, request),
 		request,
 		authHeader,
 		provider.networkConfig.ExtraHeaders,
@@ -513,7 +513,7 @@ func (provider *AzureProvider) ChatCompletionStream(ctx *schemas.BifrostContext,
 		if err != nil {
 			return nil, err
 		}
-		url = fmt.Sprintf("%s/openai/v1/chat/completions", endpoint)
+		url = azureChatCompletionURL(ctx, endpoint, request)
 
 		// Use shared streaming logic from OpenAI
 		return openai.HandleOpenAIChatCompletionStreaming(
@@ -3899,7 +3899,7 @@ func (provider *AzureProvider) PassthroughStream(
 
 	var anthropicUsage *anthropic.AnthropicPassthroughStreamUsage
 	if schemas.IsAnthropicModelFamily(ctx, req.Model) {
-		anthropicUsage = &anthropic.AnthropicPassthroughStreamUsage{}
+		anthropicUsage = &anthropic.AnthropicPassthroughStreamUsage{RequestBody: req.Body}
 	}
 	return providerUtils.StreamPassthrough(
 		ctx, postHookRunner, postHookSpanFinalizer, resp, rawBodyStream,

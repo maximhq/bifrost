@@ -2383,7 +2383,7 @@
                 "type": "text/javascript",
                 "exec": [
                   "var warp = eval('(' + pm.collectionVariables.get('warp_lib') + ')')(pm);",
-                  "warp.prerequest({\"name\":\"Summarises what one user was doing from the topics\",\"ask\":\"What kinds of tasks was Alex Rivera doing this week?\",\"expect\":{\"toolsAll\":[\"list_topics\"],\"toolsOnly\":[\"describe_filter_space\",\"ask_user\",\"list_topics\"],\"answerAll\":[\"\\\\]\\\\([^)]*topic_ids=\"],\"answerNone\":[\"\\\\|\\\\s*\\\\[[^\\\\]|]+\\\\]\\\\([^)]*selected_log=\",\"github\\\\.com/maximhq/bifrost/issues/new\"],\"argsMatch\":[{\"tool\":\"list_topics\",\"pattern\":\"user-alex-rivera\"}]}});"
+                  "warp.prerequest({\"name\":\"Summarises what one user was doing from the topics\",\"ask\":\"What kinds of tasks was Alex Rivera doing this week?\",\"expect\":{\"toolsAll\":[\"list_topics\"],\"toolsOnly\":[\"describe_filter_space\",\"ask_user\",\"list_topics\",\"query_usage_by\"],\"answerAll\":[\"\\\\]\\\\([^)]*topic_ids=\"],\"answerNone\":[\"\\\\|\\\\s*\\\\[[^\\\\]|]+\\\\]\\\\([^)]*selected_log=\",\"github\\\\.com/maximhq/bifrost/issues/new\"],\"argsMatch\":[{\"tool\":\"list_topics\",\"pattern\":\"user-alex-rivera\"}]}});"
                 ]
               }
             },
@@ -2393,7 +2393,7 @@
                 "type": "text/javascript",
                 "exec": [
                   "var warp = eval('(' + pm.collectionVariables.get('warp_lib') + ')')(pm);",
-                  "warp.test({\"name\":\"Summarises what one user was doing from the topics\",\"ask\":\"What kinds of tasks was Alex Rivera doing this week?\",\"expect\":{\"toolsAll\":[\"list_topics\"],\"toolsOnly\":[\"describe_filter_space\",\"ask_user\",\"list_topics\"],\"answerAll\":[\"\\\\]\\\\([^)]*topic_ids=\"],\"answerNone\":[\"\\\\|\\\\s*\\\\[[^\\\\]|]+\\\\]\\\\([^)]*selected_log=\",\"github\\\\.com/maximhq/bifrost/issues/new\"],\"argsMatch\":[{\"tool\":\"list_topics\",\"pattern\":\"user-alex-rivera\"}]}});"
+                  "warp.test({\"name\":\"Summarises what one user was doing from the topics\",\"ask\":\"What kinds of tasks was Alex Rivera doing this week?\",\"expect\":{\"toolsAll\":[\"list_topics\"],\"toolsOnly\":[\"describe_filter_space\",\"ask_user\",\"list_topics\",\"query_usage_by\"],\"answerAll\":[\"\\\\]\\\\([^)]*topic_ids=\"],\"answerNone\":[\"\\\\|\\\\s*\\\\[[^\\\\]|]+\\\\]\\\\([^)]*selected_log=\",\"github\\\\.com/maximhq/bifrost/issues/new\"],\"argsMatch\":[{\"tool\":\"list_topics\",\"pattern\":\"user-alex-rivera\"}]}});"
                 ]
               }
             }
