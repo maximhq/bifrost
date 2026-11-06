@@ -1080,6 +1080,11 @@ func (p *PrometheusPlugin) acquireActiveRequest(ctx *schemas.BifrostContext, req
 	p.ActiveRequests.WithLabelValues(string(requestType)).Inc()
 }
 
+// isDroppedRequest reports whether core dropped the request on a full provider queue.
+func isDroppedRequest(bifrostErr *schemas.BifrostError) bool {
+	return bifrostErr != nil && bifrostErr.Error != nil && bifrostErr.Error.Type != nil && *bifrostErr.Error.Type == schemas.RequestDropped
+}
+
 // releaseActiveRequest decrements ActiveRequests if this request holds a slot and clears
 // it, so every terminal path can call it and the gauge drops exactly once. A later
 // fallback attempt re-acquires through PreLLMHook, keeping per-attempt inc/dec balanced.
@@ -1456,18 +1461,21 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 			p.ProviderKeyUp.WithLabelValues(string(provider), selectedKeyID, selectedKeyName).Set(1)
 		}
 
-		p.UpstreamRequestsTotal.WithLabelValues(promLabelValues...).Inc()
+		// A request dropped on a full queue never reached a provider, so it only counts as an error.
+		if !isDroppedRequest(bifrostErr) {
+			p.UpstreamRequestsTotal.WithLabelValues(promLabelValues...).Inc()
 
-		// Record retries used for this request. Observed once per request (per the goroutine
-		// guarding around isStreamFinal), so .Sum/.Count map cleanly to "total retry attempts"
-		// and "total requests"; bucket le="0" gives "requests that succeeded on the first try".
-		p.RequestRetries.WithLabelValues(promLabelValues...).Observe(float64(numberOfRetries))
+			// Record retries used for this request. Observed once per request (per the goroutine
+			// guarding around isStreamFinal), so .Sum/.Count map cleanly to "total retry attempts"
+			// and "total requests"; bucket le="0" gives "requests that succeeded on the first try".
+			p.RequestRetries.WithLabelValues(promLabelValues...).Observe(float64(numberOfRetries))
 
-		// Record latency
-		duration := time.Since(startTime).Seconds()
-		// Default labels, then is_success, then custom labels.
-		latencyLabelValues := spliceLabelValues(promLabelValues, len(p.defaultBifrostLabels), strconv.FormatBool(bifrostErr == nil))
-		p.UpstreamLatencySeconds.WithLabelValues(latencyLabelValues...).Observe(duration)
+			// Record latency
+			duration := time.Since(startTime).Seconds()
+			// Default labels, then is_success, then custom labels.
+			latencyLabelValues := spliceLabelValues(promLabelValues, len(p.defaultBifrostLabels), strconv.FormatBool(bifrostErr == nil))
+			p.UpstreamLatencySeconds.WithLabelValues(latencyLabelValues...).Observe(duration)
+		}
 
 		// SDK caller: no transport hooks fire, so this LLM-hook window is all there
 		// is to measure overhead against.
