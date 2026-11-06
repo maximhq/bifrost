@@ -313081,6 +313081,209 @@
           ]
         }
       ]
+    },
+    {
+      "name": "322. Client request ID reuse preserves logs (request ID reuse)",
+      "description": "Repeated x-request-id is client correlation only. Six explicit inexpensive OpenAI requests cover unary and streaming completion: distinct generated IDs, correct persisted input/output, and original correlation metadata. Log reads poll the asynchronous writer; all unexpected statuses fail.",
+      "item": [
+        {
+          "name": "OpenAI gpt-4o-mini request ID reuse unary 1",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-request-id",
+                "value": "{{requestIdReuseunaryClient}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Echo this marker: request ID reuse unary 1\"\n    }\n  ],\n  \"max_tokens\": 32\n}"
+            },
+            "url": "{{baseUrl}}/v1/chat/completions"
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('requestIdReuseunaryClient', 'request-id-reuse-unary-' + pm.variables.replaceIn('{{$guid}}'));",
+                  "pm.collectionVariables.set('requestIdReuseunaryIDs', '[]');"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "OpenAI gpt-4o-mini request ID reuse unary 2",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-request-id",
+                "value": "{{requestIdReuseunaryClient}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Echo this marker: request ID reuse unary 2\"\n    }\n  ],\n  \"max_tokens\": 32\n}"
+            },
+            "url": "{{baseUrl}}/v1/chat/completions"
+          }
+        },
+        {
+          "name": "OpenAI gpt-4o-mini request ID reuse unary 3",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-request-id",
+                "value": "{{requestIdReuseunaryClient}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Echo this marker: request ID reuse unary 3\"\n    }\n  ],\n  \"max_tokens\": 32\n}"
+            },
+            "url": "{{baseUrl}}/v1/chat/completions"
+          }
+        },
+        {
+          "name": "OpenAI gpt-4o-mini request ID reuse stream 1",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-request-id",
+                "value": "{{requestIdReusestreamClient}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Echo this marker: request ID reuse stream 1\"\n    }\n  ],\n  \"max_tokens\": 32,\n  \"stream\": true\n}"
+            },
+            "url": "{{baseUrl}}/v1/chat/completions"
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('requestIdReusestreamClient', 'request-id-reuse-stream-' + pm.variables.replaceIn('{{$guid}}'));",
+                  "pm.collectionVariables.set('requestIdReusestreamIDs', '[]');"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "OpenAI gpt-4o-mini request ID reuse stream 2",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-request-id",
+                "value": "{{requestIdReusestreamClient}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Echo this marker: request ID reuse stream 2\"\n    }\n  ],\n  \"max_tokens\": 32,\n  \"stream\": true\n}"
+            },
+            "url": "{{baseUrl}}/v1/chat/completions"
+          }
+        },
+        {
+          "name": "OpenAI gpt-4o-mini request ID reuse stream 3",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-request-id",
+                "value": "{{requestIdReusestreamClient}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Echo this marker: request ID reuse stream 3\"\n    }\n  ],\n  \"max_tokens\": 32,\n  \"stream\": true\n}"
+            },
+            "url": "{{baseUrl}}/v1/chat/completions"
+          }
+        }
+      ],
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var body = JSON.parse(pm.request.body.raw);",
+              "var key = 'requestIdReuse' + (body.stream ? 'stream' : 'unary');",
+              "pm.test('request ID reuse: completion succeeds', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+              "var id = pm.response.headers.get('x-bifrost-request-id');",
+              "var client = pm.collectionVariables.get(key + 'Client');",
+              "var ids = JSON.parse(pm.collectionVariables.get(key + 'IDs') || '[]');",
+              "pm.test('request ID reuse: unique generated log ID', function () {",
+              "  pm.expect(id, pm.response.text()).to.be.a('string').and.not.empty;",
+              "  pm.expect(id).not.to.equal(client); pm.expect(ids).not.to.include(id);",
+              "});",
+              "ids.push(id); pm.collectionVariables.set(key + 'IDs', JSON.stringify(ids));",
+              "var output;",
+              "if (body.stream) {",
+              "  var output = '';",
+              "  pm.test('request ID reuse: stream completes', function () { pm.expect(pm.response.text()).to.include('data: [DONE]'); });",
+              "  pm.response.text().split('\\n').forEach(function (line) {",
+              "    if (line.indexOf('data: ') !== 0) return;",
+              "    var payload = line.slice(6).trim(); if (!payload || payload === '[DONE]') return;",
+              "    var chunk = JSON.parse(payload); (chunk.choices || []).forEach(function (c) { if (c.delta && c.delta.content) output += c.delta.content; });",
+              "  });",
+              "} else { output = pm.response.json().choices[0].message.content; }",
+              "var attempts = 0;",
+              "function readLog() {",
+              "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + encodeURIComponent(id), method: 'GET' }, function (err, res) {",
+              "    pm.test('request ID reuse: log read reaches gateway', function () { pm.expect(err).to.equal(null); });",
+              "    if (err) return;",
+              "    if ((res.code === 404 || (res.code === 200 && res.json().status === 'processing')) && ++attempts < 40) { setTimeout(readLog, 250); return; }",
+              "    pm.test('request ID reuse: own log is persisted intact', function () {",
+              "      pm.expect(res.code, res.text()).to.equal(200);",
+              "      var row = res.json(); pm.expect(row.id).to.equal(id); pm.expect(row.status).to.equal('success');",
+              "      pm.expect(row.input_history[0].content).to.equal(body.messages[0].content);",
+              "      pm.expect(row.output_message.content).to.equal(output);",
+              "      pm.expect(row.metadata['x-request-id']).to.equal(client);",
+              "    });",
+              "  });",
+              "}",
+              "if (id) readLog();"
+            ]
+          }
+        }
+      ]
     }
   ]
 }
