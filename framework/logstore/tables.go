@@ -1224,7 +1224,10 @@ func (l *Log) DeserializeFields() error {
 			l.usageRebuiltFromColumns = false
 			// Logs stores web search count in num_search_queries (legacy behaviour), we map it to tool_usage so that repricing bills it.
 			if u := l.TokenUsageParsed; u != nil && u.CompletionTokensDetails != nil && u.CompletionTokensDetails.NumSearchQueries != nil && *u.CompletionTokensDetails.NumSearchQueries > 0 {
-				u.ToolUsage = &schemas.ToolUsage{WebSearch: &schemas.WebSearchToolUsage{NumRequests: *u.CompletionTokensDetails.NumSearchQueries}}
+				if u.ToolUsage == nil {
+					u.ToolUsage = &schemas.ToolUsage{}
+				}
+				u.ToolUsage.WebSearch = &schemas.WebSearchToolUsage{NumRequests: *u.CompletionTokensDetails.NumSearchQueries}
 			}
 		}
 	}
@@ -2300,12 +2303,16 @@ func (j *AsyncJob) ToResponse() *schemas.AsyncJobResponse {
 			}
 		case schemas.ChatCompletionRequest, schemas.ChatCompletionStreamRequest:
 			var result schemas.BifrostChatResponse
-			if err := sonic.Unmarshal([]byte(j.Response), &result); err == nil {
+			data := []byte(j.Response)
+			if err := sonic.Unmarshal(data, &result); err == nil {
+				result.Usage.PreserveTokenCountZeros(data, "usage.prompt_tokens", "usage.completion_tokens")
 				resp.Result = &result
 			}
 		case schemas.TextCompletionRequest, schemas.TextCompletionStreamRequest:
 			var result schemas.BifrostTextCompletionResponse
-			if err := sonic.Unmarshal([]byte(j.Response), &result); err == nil {
+			data := []byte(j.Response)
+			if err := sonic.Unmarshal(data, &result); err == nil {
+				result.Usage.PreserveTokenCountZeros(data, "usage.prompt_tokens", "usage.completion_tokens")
 				resp.Result = &result
 			}
 		case schemas.EmbeddingRequest:
@@ -3274,6 +3281,14 @@ func serializeTokenUsage(u *schemas.BifrostLLMUsage) *schemas.BifrostLLMUsage {
 	}
 	stored := *u
 	stored.ToolUsage = nil
+	// These have no legacy column, so they stay on tool_usage for repricing. OpenAI sends zero image counts on every response.
+	if len(u.ToolUsage.ContainerSessions) > 0 || u.ToolUsage.ImageGen.HasTokens() {
+		stored.ToolUsage = &schemas.ToolUsage{ContainerSessions: u.ToolUsage.ContainerSessions}
+		if u.ToolUsage.ImageGen.HasTokens() {
+			stored.ToolUsage.ImageGen = u.ToolUsage.ImageGen
+			stored.ToolUsage.ImageGenModel = u.ToolUsage.ImageGenModel
+		}
+	}
 	if ws := u.ToolUsage.WebSearch; ws != nil && ws.NumRequests > 0 {
 		details := schemas.ChatCompletionTokensDetails{}
 		if u.CompletionTokensDetails != nil {
