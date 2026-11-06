@@ -499,10 +499,16 @@ function checkLocaleRoot(localesDir, report) {
 					const reference = source.has(key) ? source.get(key) : (source.get(`${base}_other`) ?? source.get(base));
 					if (reference !== undefined) compare(`${nsName}:${key}`, reference, target.get(key), category === "one");
 				}
+				// i18next tries `_zero` for a count of 0 whatever the plural rules pick, so a translation may add
+				// it where that form reads wrong (pt-BR puts 0 in `one`: "0 dia"). It is optional, and may drop the count.
+				const zero = `${base}_zero`;
+				const zeroReference = source.get(zero) ?? source.get(`${base}_other`) ?? source.get(base);
+				if (target.has(zero) && zeroReference !== undefined) compare(`${nsName}:${zero}`, zeroReference, target.get(zero), true);
 			}
 			for (const key of target.keys()) {
 				if (source.has(key)) continue;
-				if (isPluralKey(key) && sourcePluralBases.has(baseKey(key)) && categories.includes(suffixOf(key))) continue;
+				if (isPluralKey(key) && sourcePluralBases.has(baseKey(key)) && (suffixOf(key) === "zero" || categories.includes(suffixOf(key))))
+					continue;
 				issues.extra.push(`${nsName}:${key}`);
 			}
 		}

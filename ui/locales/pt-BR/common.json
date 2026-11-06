@@ -147,6 +147,7 @@
 			"removed": "Opção removida. {{selected}} de {{total}} opções selecionadas.",
 			"opened": "Menu suspenso aberto. {{count}} opções disponíveis. Use as teclas de seta para navegar.",
 			"closed": "Menu suspenso fechado.",
+			"found_zero": "Nenhuma opção encontrada para \"{{query}}\"",
 			"found_one": "{{count}} opção encontrada para \"{{query}}\"",
 			"found_other": "{{count}} opções encontradas para \"{{query}}\""
 		},
@@ -251,6 +252,7 @@
 	},
 	"trialBanner": {
 		"expired": "Sua avaliação do Bifrost Enterprise expirou. <link0>Fale conosco</link0> se precisar de ajuda.",
+		"expiresIn_zero": "Sua avaliação do Bifrost Enterprise expira em {{count}} dias. <link0>Fale conosco</link0> se precisar de ajuda.",
 		"expiresIn_one": "Sua avaliação do Bifrost Enterprise expira em {{count}} dia. <link0>Fale conosco</link0> se precisar de ajuda.",
 		"expiresIn_other": "Sua avaliação do Bifrost Enterprise expira em {{count}} dias. <link0>Fale conosco</link0> se precisar de ajuda.",
 		"expiredSubject": "Preciso de ajuda com minha avaliação enterprise expirada",

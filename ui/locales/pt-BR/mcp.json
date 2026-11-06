@@ -1278,6 +1278,7 @@
 		"preview": {
 			"baseUrlInvalid": "A URL base deve ser uma URL http:// ou https:// absoluta",
 			"untitled": "API sem título",
+			"toolCount_zero": "{{count}} ferramentas",
 			"toolCount_one": "{{count}} ferramenta",
 			"toolCount_other": "{{count}} ferramentas",
 			"baseUrl": "URL base",

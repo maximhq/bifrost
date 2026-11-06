@@ -77,4 +77,21 @@ describe("Portuguese variants", () => {
 		expect(i18n.resolvedLanguage).toBe("pt-BR");
 		expect(label()).not.toBe(european);
 	});
+
+	// CLDR puts 0 in the `one` category for pt-BR, so these read "0 ferramenta" without a `_zero` form.
+	it("uses the _zero form for a count of zero in pt-BR and keeps the singular for one", async () => {
+		const { changeLocale, i18nReady, default: i18n } = await loadI18n();
+		await i18nReady;
+		await changeLocale("pt-BR");
+		expect(i18n.t("trialBanner.expiresIn", { ns: "common", count: 0 })).toContain("expira em 0 dias.");
+		expect(i18n.t("trialBanner.expiresIn", { ns: "common", count: 1 })).toContain("expira em 1 dia.");
+		expect(i18n.t("multiSelect.announce.found", { ns: "common", count: 0, query: "x" })).toBe('Nenhuma opção encontrada para "x"');
+		expect(i18n.t("multiSelect.announce.found", { ns: "common", count: 1, query: "x" })).toBe('1 opção encontrada para "x"');
+		expect(i18n.t("openapi.preview.toolCount", { ns: "mcp", count: 0 })).toBe("0 ferramentas");
+		expect(i18n.t("openapi.preview.toolCount", { ns: "mcp", count: 1 })).toBe("1 ferramenta");
+		expect(i18n.t("relays.openapiImport.routeCount", { ns: "config", count: 0 })).toBe("0 rotas");
+		expect(i18n.t("relays.openapiImport.routeCount", { ns: "config", count: 1 })).toBe("1 rota");
+		expect(i18n.t("relays.openapiImport.importCount", { ns: "config", count: 0 })).toBe("Importar 0 rotas");
+		expect(i18n.t("relays.openapiImport.importCount", { ns: "config", count: 1 })).toBe("Importar 1 rota");
+	});
 });
