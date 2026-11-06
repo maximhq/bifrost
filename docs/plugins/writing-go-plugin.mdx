@@ -192,7 +192,7 @@ func Cleanup() error {
 ```
 
 <Note>
-This skeleton only shows the LLM and HTTP transport hooks. Plugins that need to intercept the **MCP gateway** (per-tool-call governance, transport-setup mutation) can also export `PreMCPHook` / `PostMCPHook` / `PreMCPConnectionHook` / `PostMCPConnectionHook` — see [MCP plugin hooks overview](#mcp-plugin-hooks-overview-sup-v1-5-x-sup) below.
+This skeleton only shows the LLM and HTTP transport hooks. Plugins that need to intercept the **MCP gateway** (per-tool-call governance, transport-setup mutation) can also export `PreMCPHook` / `PostMCPHook` / `PreMCPConnectionHook` / `PostMCPConnectionHook` — see [MCP plugin hooks overview](#mcp-plugin-hooks-overview-sup-v1-5-x-sup) below. Plugins that need to see **Relay** traffic can export `PreRelayHook` / `PostRelayHook`, described below.
 </Note>
   </Tab>
   <Tab title="v1.4.x">
@@ -1090,6 +1090,28 @@ Key points:
 - The Connect hooks are the wrong place for this: Connect runs once per shared transport, before any per-request identity exists, so there is no single caller to stamp. Per-request identity belongs in the envelope hooks.
 - The other MCP hook symbols don't need to be exported for this plugin to load; the loader treats each hook as optional.
 
+#### `PreRelayHook(ctx, req)`
+
+Called for [Relay](/relays/overview) traffic (non-LLM APIs called through `/relay/{name}/...`) after the route has matched and before the upstream is called. `req` carries the relay name, method, path, the matched route and whether the call is billable. Return a `RelayPluginShortCircuit` to answer without calling the upstream, for example to deny the call.
+
+```go
+func PreRelayHook(ctx *schemas.BifrostContext, req *schemas.BifrostRelayRequest) (*schemas.BifrostRelayRequest, *schemas.RelayPluginShortCircuit, error) {
+    return req, nil, nil
+}
+```
+
+#### `PostRelayHook(ctx, resp, bifrostErr)`
+
+Called once the relay reply (or the stream) has ended. For a counted call, `resp.Usage` carries the priced cost that governance charges to budgets; it is `nil` for calls that aren't counted (non-billable routes, non-`2xx` replies). `resp` is `nil` when the call failed with `bifrostErr`.
+
+```go
+func PostRelayHook(ctx *schemas.BifrostContext, resp *schemas.BifrostRelayResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostRelayResponse, *schemas.BifrostError, error) {
+    return resp, bifrostErr, nil
+}
+```
+
+Both relay hooks are optional: a plugin that exports neither passes relay calls through unchanged.
+
 #### `Cleanup() error`
 
 Called on Bifrost shutdown. Use this to:
@@ -1433,7 +1455,7 @@ $ go version -m my-plugin.so | grep bifrost
 
 **Error**: `plugin: symbol Init not found`
 
-**Solution**: Ensure all required functions are exported (start with capital letter) and have the correct signature. The loader treats every hook as optional except `GetName` and `Cleanup` — including the MCP hook quartet (`PreMCPHook`, `PostMCPHook`, `PreMCPConnectionHook`, `PostMCPConnectionHook`). A typo in a hook name silently disables that hook rather than failing the load.
+**Solution**: Ensure all required functions are exported (start with capital letter) and have the correct signature. The loader treats every hook as optional except `GetName` and `Cleanup` — including the MCP hook quartet (`PreMCPHook`, `PostMCPHook`, `PreMCPConnectionHook`, `PostMCPConnectionHook`) and the relay hooks (`PreRelayHook`, `PostRelayHook`). A typo in a hook name silently disables that hook rather than failing the load.
 
 ## Source Code Reference
 
@@ -1656,7 +1678,7 @@ For verbose plugin-loader logs, set `BIFROST_LOG_LEVEL=debug` in the environment
 
 ```bash
 # List symbols exported by plugin
-go tool nm my-plugin.so | grep -E 'Init|GetName|PreLLMHook|PreMCPHook|PreMCPConnectionHook|PostMCPHook|PostMCPConnectionHook'
+go tool nm my-plugin.so | grep -E 'Init|GetName|PreLLMHook|PreMCPHook|PreMCPConnectionHook|PostMCPHook|PostMCPConnectionHook|PreRelayHook|PostRelayHook'
 ```
 
 **Verify Go version:**

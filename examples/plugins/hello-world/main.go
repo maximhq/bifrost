@@ -10,6 +10,7 @@ const (
 	transportPreHookKey  schemas.BifrostContextKey = "hello-world-plugin-transport-pre-hook"
 	transportPostHookKey schemas.BifrostContextKey = "hello-world-plugin-transport-post-hook"
 	preHookKey           schemas.BifrostContextKey = "hello-world-plugin-pre-hook"
+	relayPreHookKey      schemas.BifrostContextKey = "hello-world-plugin-relay-pre-hook"
 )
 
 func Init(config any) error {
@@ -86,6 +87,26 @@ func PostLLMHook(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bif
 	value2 := ctx.Value(preHookKey)
 	fmt.Println("value2:", value2)
 	ctx.Log(schemas.LogLevelInfo, "PostLLMHook called")
+	return resp, bifrostErr, nil
+}
+
+// PreRelayHook is called before a Relay call (/relay/{name}/...) is sent upstream.
+// Return a RelayPluginShortCircuit to answer without calling the upstream.
+func PreRelayHook(ctx *schemas.BifrostContext, req *schemas.BifrostRelayRequest) (*schemas.BifrostRelayRequest, *schemas.RelayPluginShortCircuit, error) {
+	fmt.Println("PreRelayHook called for relay", req.RelayName)
+	ctx.SetValue(relayPreHookKey, "relay-pre-hook-value")
+	ctx.Log(schemas.LogLevelInfo, "PreRelayHook called")
+	return req, nil, nil
+}
+
+// PostRelayHook is called once the Relay reply (or stream) has ended. resp.Usage carries the
+// priced cost of a counted call.
+func PostRelayHook(ctx *schemas.BifrostContext, resp *schemas.BifrostRelayResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostRelayResponse, *schemas.BifrostError, error) {
+	fmt.Println("PostRelayHook called, value:", ctx.Value(relayPreHookKey))
+	if resp != nil && resp.Usage != nil {
+		fmt.Printf("relay call cost: %f\n", resp.Usage.Cost)
+	}
+	ctx.Log(schemas.LogLevelInfo, "PostRelayHook called")
 	return resp, bifrostErr, nil
 }
 
