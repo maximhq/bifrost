@@ -155992,6 +155992,149 @@
             }
           },
           "response": []
+        },
+        {
+          "name": "91.b1 bedrock/global.anthropic.claude-haiku-4-5 /v1/chat/completions streaming - raw_response retains the messageStop and metadata events - raw-stream-frames",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Bedrock's messageStop and metadata events produce no Bifrost chunk of their own, so the converse",
+                  "// stream dropped their payloads from raw_response and its closing chunks carried a placeholder \"{}\":",
+                  "// a logged stream lost its stop reason, its additionalModelResponseFields and its usage.",
+                  "var text = pm.response.text() || '';",
+                  "pm.test('91.b1 streaming request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + text.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "var rawFrames = [];",
+                  "text.split('\\n').forEach(function (l) {",
+                  "  if (l.indexOf('data: ') !== 0) { return; }",
+                  "  var p = l.slice(6).trim();",
+                  "  if (p === '[DONE]' || !p.length) { return; }",
+                  "  var j; try { j = JSON.parse(p); } catch (e) { return; }",
+                  "  var rr = (j.extra_fields || (j.response && j.response.extra_fields) || {}).raw_response;",
+                  "  if (rr === undefined || rr === null) { return; }",
+                  "  if (typeof rr !== 'string') { rr = JSON.stringify(rr); }",
+                  "  rr.split('\\n\\n').forEach(function (f) { if (f.trim().length) { rawFrames.push(f.trim()); } });",
+                  "});",
+                  "var parsed = [];",
+                  "rawFrames.forEach(function (f) { try { parsed.push(JSON.parse(f)); } catch (e) {} });",
+                  "var dbg = ' | frames=' + rawFrames.length + ' sample=' + rawFrames.join(' ~~ ').slice(0, 1200);",
+                  "pm.test('91.b1 raw_response carries the messageStop event', function () {",
+                  "  pm.expect(parsed.filter(function (j) { return typeof j.stopReason === 'string'; }).length, 'no frame with stopReason' + dbg).to.eql(1);",
+                  "});",
+                  "pm.test('91.b1 raw_response carries the metadata event with usage', function () {",
+                  "  pm.expect(parsed.filter(function (j) { return j.usage && j.usage.inputTokens > 0; }).length, 'no frame with usage.inputTokens' + dbg).to.eql(1);",
+                  "});",
+                  "pm.test('91.b1 no placeholder stands in for an upstream event', function () {",
+                  "  pm.expect(rawFrames.indexOf('{}'), 'a \"{}\" frame was recorded' + dbg).to.eql(-1);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-response",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0\",\n  \"stream\": true,\n  \"max_tokens\": 48,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say hello in one short sentence.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "91.b2 bedrock/global.anthropic.claude-haiku-4-5 /v1/responses streaming - raw_response retains the messageStop and metadata events - raw-stream-frames",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Bedrock's messageStop and metadata events produce no Bifrost chunk of their own, so the converse",
+                  "// stream dropped their payloads from raw_response and its closing chunks carried a placeholder \"{}\":",
+                  "// a logged stream lost its stop reason, its additionalModelResponseFields and its usage.",
+                  "var text = pm.response.text() || '';",
+                  "pm.test('91.b2 streaming request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + text.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "var rawFrames = [];",
+                  "text.split('\\n').forEach(function (l) {",
+                  "  if (l.indexOf('data: ') !== 0) { return; }",
+                  "  var p = l.slice(6).trim();",
+                  "  if (p === '[DONE]' || !p.length) { return; }",
+                  "  var j; try { j = JSON.parse(p); } catch (e) { return; }",
+                  "  var rr = (j.extra_fields || (j.response && j.response.extra_fields) || {}).raw_response;",
+                  "  if (rr === undefined || rr === null) { return; }",
+                  "  if (typeof rr !== 'string') { rr = JSON.stringify(rr); }",
+                  "  rr.split('\\n\\n').forEach(function (f) { if (f.trim().length) { rawFrames.push(f.trim()); } });",
+                  "});",
+                  "var parsed = [];",
+                  "rawFrames.forEach(function (f) { try { parsed.push(JSON.parse(f)); } catch (e) {} });",
+                  "var dbg = ' | frames=' + rawFrames.length + ' sample=' + rawFrames.join(' ~~ ').slice(0, 1200);",
+                  "pm.test('91.b2 raw_response carries the messageStop event', function () {",
+                  "  pm.expect(parsed.filter(function (j) { return typeof j.stopReason === 'string'; }).length, 'no frame with stopReason' + dbg).to.eql(1);",
+                  "});",
+                  "pm.test('91.b2 raw_response carries the metadata event with usage', function () {",
+                  "  pm.expect(parsed.filter(function (j) { return j.usage && j.usage.inputTokens > 0; }).length, 'no frame with usage.inputTokens' + dbg).to.eql(1);",
+                  "});",
+                  "pm.test('91.b2 no placeholder stands in for an upstream event', function () {",
+                  "  pm.expect(rawFrames.indexOf('{}'), 'a \"{}\" frame was recorded' + dbg).to.eql(-1);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-response",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0\",\n  \"stream\": true,\n  \"max_output_tokens\": 48,\n  \"input\": \"Say hello in one short sentence.\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "response": []
         }
       ]
     },
