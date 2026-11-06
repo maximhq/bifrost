@@ -327,39 +327,17 @@ func drainAfterCancel(ch chan *schemas.BifrostStreamChunk, bounds drainBounds) {
 	}
 }
 
-// requestTimeoutStreamChunk is the terminal chunk forwardTimeoutChunkIfFired
-// sends when the declared x-bf-request-timeout deadline actually expired.
-// Shaped like providerUtils.NewBifrostTimeoutError (StatusCode 504,
-// Error.Type RequestTimedOut) so the HTTP transport's handleStreaming routes
-// it through the route's error converter and ends the stream, instead of
-// treating ch's close as normal completion and sending the client a
-// successful [DONE].
-func requestTimeoutStreamChunk() *schemas.BifrostStreamChunk {
-	statusCode := 504
-	errorType := schemas.RequestTimedOut
-	return &schemas.BifrostStreamChunk{
-		BifrostError: &schemas.BifrostError{
-			IsBifrostError: true,
-			StatusCode:     &statusCode,
-			Error: &schemas.ErrorField{
-				Type:    &errorType,
-				Message: "request timed out: the x-bf-request-timeout deadline was reached before the stream finished",
-			},
-		},
-	}
-}
-
-// forwardTimeoutChunkIfFired sends requestTimeoutStreamChunk on out, but only
-// when ctx was cancelled because the request-timeout deadline actually fired
-// (BifrostContextKeyRequestTimeoutFired), never for an arbitrary cancellation
-// such as a client disconnect, where there is no caller left to report to.
+// forwardTimeoutChunkIfFired sends a schemas.NewRequestTimeoutStreamError
+// chunk on out, but only when ctx was cancelled because the request-timeout
+// deadline actually fired (BifrostContextKeyRequestTimeoutFired), never for an
+// arbitrary cancellation such as a client disconnect, where there is no caller
+// left to report to.
 //
-// out is unbuffered, so the send waits for the consumer. The HTTP handlers
-// always come back to receive until out closes, but one can be mid-write to a
-// slow client for a long time, and giving up early lets it see out close and
-// send [DONE] for a truncated response. The wait is bounded only for a
-// consumer that never comes back (an SDK caller that abandons the stream), so
-// the bound is long: the same minute the background drain uses.
+// out is unbuffered, so the send waits for the consumer, which can be
+// mid-write to a slow client. The wait is bounded so a consumer that never
+// comes back (an SDK caller that abandons the stream) cannot hold the
+// goroutine. An HTTP handler that comes back after the bound sees out close
+// without the chunk and reads the fired marker itself.
 func forwardTimeoutChunkIfFired(ctx *schemas.BifrostContext, out chan<- *schemas.BifrostStreamChunk, wait time.Duration) {
 	if !requestTimeoutFired(ctx) {
 		return
@@ -367,7 +345,7 @@ func forwardTimeoutChunkIfFired(ctx *schemas.BifrostContext, out chan<- *schemas
 	timer := time.NewTimer(wait)
 	defer timer.Stop()
 	select {
-	case out <- requestTimeoutStreamChunk():
+	case out <- &schemas.BifrostStreamChunk{BifrostError: schemas.NewRequestTimeoutStreamError()}:
 	case <-timer.C:
 	}
 }

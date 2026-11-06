@@ -3324,6 +3324,15 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 			}
 		}
 
+		// Core gives up on delivering the timeout chunk to a consumer that stays
+		// busy past its send bound, so the stream can close without it.
+		if bifrostCtx != nil {
+			if fired, _ := bifrostCtx.Value(schemas.BifrostContextKeyRequestTimeoutFired).(bool); fired {
+				sendConvertedStreamError(schemas.NewRequestTimeoutStreamError())
+				return
+			}
+		}
+
 		// Only send the [DONE] marker for plain SSE APIs that expect it.
 		// Do NOT send [DONE] for the following cases:
 		//   - OpenAI "responses" API and Anthropic messages API: they signal completion by simply closing the stream, not sending [DONE].
