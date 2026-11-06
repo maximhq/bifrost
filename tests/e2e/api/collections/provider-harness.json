@@ -197778,7 +197778,7 @@
           ]
         },
         {
-          "name": "153.6b bedrock converse-stream messageStop carries stop_sequence and additionalModelResponseFields (response field paths)",
+          "name": "153.6b bedrock converse-stream messageStop carries the native stop_sequence (response field paths)",
           "request": {
             "method": "POST",
             "header": [
@@ -197815,11 +197815,16 @@
                   "  pm.expect(pm.response.code, body.slice(0, 600)).to.equal(200);",
                   "  pm.expect(pm.response.headers.get('content-type') || '', 'content-type').to.include('vnd.amazon.eventstream');",
                   "});",
-                  "pm.test('messageStop reports the native stop_sequence and echoes additionalModelResponseFields', function () {",
+                  "// AWS's own ConverseStream messageStop for Claude carries stopReason but no additionalModelResponseFields,",
+                  "// even when the request asks for /stop_sequence (probed against bedrock-runtime directly, 2026-11-06); the",
+                  "// non-streaming Converse response (153.6) does carry it. So the fields are checked only when AWS sends them.",
+                  "pm.test('messageStop reports the native stop_sequence, and any additionalModelResponseFields unchanged', function () {",
                   "  var stop = body.slice(body.lastIndexOf('messageStop'));",
                   "  pm.expect(body, 'no messageStop event: ' + body.slice(-600)).to.include('messageStop');",
                   "  pm.expect(stop, 'messageStop payload: ' + stop.slice(0, 600)).to.match(/\"stopReason\"\\s*:\\s*\"stop_sequence\"/);",
-                  "  pm.expect(stop, 'messageStop payload: ' + stop.slice(0, 600)).to.match(/\"additionalModelResponseFields\"\\s*:\\s*\\{\\s*\"stop_sequence\"\\s*:\\s*\"three\"/);",
+                  "  if (stop.indexOf('additionalModelResponseFields') !== -1) {",
+                  "    pm.expect(stop, 'messageStop payload: ' + stop.slice(0, 600)).to.match(/\"additionalModelResponseFields\"\\s*:\\s*\\{\\s*\"stop_sequence\"\\s*:\\s*\"three\"/);",
+                  "  }",
                   "});"
                 ]
               }
@@ -225173,7 +225178,15 @@
                   "// a1 is refused; the fallback is pinned to b1, which is disabled, so it fails key selection and b2 is",
                   "// never used. The primary's error is what the caller gets.",
                   "failedWith('the fallback pinned to a disabled key cannot serve, and the primary error (401) is returned', pm.response, 401);",
-                  "pm.test('the error is the primary provider\\u2019s', function () { pm.expect(text).to.not.include('no supported key found'); });",
+                  "// Since #9292 the primary's error carries every fallback's outcome in extra_fields.fallback_attempts, so the",
+                  "// fallback's key-selection refusal appears in the body by design; the primary's own message must not be it.",
+                  "pm.test('the error is the primary provider\\u2019s', function () { pm.expect(((json.error || {}).message) || '', text).to.not.include('no supported key found'); });",
+                  "pm.test('the fallback refused for its disabled key is reported in fallback_attempts', function () {",
+                  "  var attempts = ((json.extra_fields || {}).fallback_attempts) || [];",
+                  "  var b = attempts.filter(function (a) { return a.provider === state.p_b; });",
+                  "  pm.expect(b.length, 'fallback_attempts: ' + JSON.stringify(attempts)).to.eql(1);",
+                  "  pm.expect(b[0].message || '', JSON.stringify(b[0])).to.include('no supported key found');",
+                  "});",
                   "pm.test('the error carries the primary provider\\u2019s headers', function () { pm.expect(pm.response.headers.get('x-bifrost-routing-info-provider'), text).to.eql(state.p_a); });",
                   "call('PUT', '/api/providers/' + encodeURIComponent(state.p_b) + '/keys/' + encodeURIComponent(state.keys.b1.id), { name: state.keys.b1.name, enabled: true }, function (resE) {",
                   "  expectOk('b1 was enabled again', resE);",
@@ -304457,7 +304470,7 @@
           }
         },
         {
-          "name": "OpenAI gpt-6.1-sol named tool output /responses unary - #9571",
+          "name": "OpenAI gpt-6.1-sol named tool output /openai/v1/responses unary - #9571",
           "event": [
             {
               "listen": "test",
@@ -304489,11 +304502,11 @@
                 }
               }
             },
-            "url": "{{baseUrl}}/responses"
+            "url": "{{baseUrl}}/openai/v1/responses"
           }
         },
         {
-          "name": "OpenAI gpt-6.1-sol named tool output /responses streaming - #9571",
+          "name": "OpenAI gpt-6.1-sol named tool output /openai/v1/responses streaming - #9571",
           "event": [
             {
               "listen": "test",
@@ -304525,7 +304538,7 @@
                 }
               }
             },
-            "url": "{{baseUrl}}/responses"
+            "url": "{{baseUrl}}/openai/v1/responses"
           }
         },
         {
@@ -309058,7 +309071,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"openai/gpt-5.6-sol\",\n  \"max_output_tokens\": 8000,\n  \"input\": [\n    {\n      \"role\": \"developer\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"{{cachePrefix}} [ttl12h {{ttl12hNonce}}]\",\n          \"prompt_cache_breakpoint\": {\n            \"mode\": \"explicit\",\n            \"ttl\": \"12h\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Answer in one short word: is the sky blue?\"\n        }\n      ]\n    }\n  ]\n}"
+              "raw": "{\n  \"model\": \"openai/gpt-5.6-sol\",\n  \"max_output_tokens\": 8000,\n  \"input\": [\n    {\n      \"role\": \"developer\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"[ttl12h {{ttl12hNonce}}] {{cachePrefix}}\",\n          \"prompt_cache_breakpoint\": {\n            \"mode\": \"explicit\",\n            \"ttl\": \"12h\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Answer in one short word: is the sky blue?\"\n        }\n      ]\n    }\n  ]\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/responses",
@@ -309118,7 +309131,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"openai/gpt-5.6-sol\",\n  \"max_output_tokens\": 8000,\n  \"stream\": true,\n  \"input\": [\n    {\n      \"role\": \"developer\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"{{cachePrefix}} [ttl12h {{ttl12hNonce}}]\",\n          \"prompt_cache_breakpoint\": {\n            \"mode\": \"explicit\",\n            \"ttl\": \"12h\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Answer in one short word: is the sky blue?\"\n        }\n      ]\n    }\n  ]\n}"
+              "raw": "{\n  \"model\": \"openai/gpt-5.6-sol\",\n  \"max_output_tokens\": 8000,\n  \"stream\": true,\n  \"input\": [\n    {\n      \"role\": \"developer\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"[ttl12h {{ttl12hNonce}}] {{cachePrefix}}\",\n          \"prompt_cache_breakpoint\": {\n            \"mode\": \"explicit\",\n            \"ttl\": \"12h\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Answer in one short word: is the sky blue?\"\n        }\n      ]\n    }\n  ]\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/responses",
@@ -309193,7 +309206,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"openai/gpt-5.6-sol\",\n  \"max_tokens\": 8000,\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"{{cachePrefix}} [ttl12h {{ttl12hNonce}}]\",\n          \"prompt_cache_breakpoint\": {\n            \"mode\": \"explicit\",\n            \"ttl\": \"12h\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Answer in one short word: is the sky blue?\"\n    }\n  ]\n}"
+              "raw": "{\n  \"model\": \"openai/gpt-5.6-sol\",\n  \"max_tokens\": 8000,\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"[ttl12h {{ttl12hNonce}}] {{cachePrefix}}\",\n          \"prompt_cache_breakpoint\": {\n            \"mode\": \"explicit\",\n            \"ttl\": \"12h\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Answer in one short word: is the sky blue?\"\n    }\n  ]\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/chat/completions",
@@ -309270,7 +309283,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"openai/gpt-5.6-sol\",\n  \"max_tokens\": 8000,\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"{{cachePrefix}} [ttl12h {{ttl12hNonce}}]\",\n          \"prompt_cache_breakpoint\": {\n            \"mode\": \"explicit\",\n            \"ttl\": \"12h\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Answer in one short word: is the sky blue?\"\n    }\n  ]\n}"
+              "raw": "{\n  \"model\": \"openai/gpt-5.6-sol\",\n  \"max_tokens\": 8000,\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"[ttl12h {{ttl12hNonce}}] {{cachePrefix}}\",\n          \"prompt_cache_breakpoint\": {\n            \"mode\": \"explicit\",\n            \"ttl\": \"12h\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Answer in one short word: is the sky blue?\"\n    }\n  ]\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/chat/completions",
@@ -309336,7 +309349,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"bedrock/openai.gpt-5.6-sol\",\n  \"max_output_tokens\": 8000,\n  \"input\": [\n    {\n      \"role\": \"developer\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"{{cachePrefix}} [ttl12h {{ttl12hNonce}}]\",\n          \"prompt_cache_breakpoint\": {\n            \"mode\": \"explicit\",\n            \"ttl\": \"12h\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Answer in one short word: is the sky blue?\"\n        }\n      ]\n    }\n  ]\n}"
+              "raw": "{\n  \"model\": \"bedrock/openai.gpt-5.6-sol\",\n  \"max_output_tokens\": 8000,\n  \"input\": [\n    {\n      \"role\": \"developer\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"[ttl12h {{ttl12hNonce}}] {{cachePrefix}}\",\n          \"prompt_cache_breakpoint\": {\n            \"mode\": \"explicit\",\n            \"ttl\": \"12h\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Answer in one short word: is the sky blue?\"\n        }\n      ]\n    }\n  ]\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/responses",
@@ -309400,7 +309413,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"bedrock/openai.gpt-5.6-sol\",\n  \"max_output_tokens\": 8000,\n  \"prompt_cache_options\": {\n    \"mode\": \"explicit\",\n    \"ttl\": \"12h\"\n  },\n  \"input\": [\n    {\n      \"role\": \"developer\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"{{cachePrefix}} [ttl12h {{ttl12hNonce}}]\",\n          \"prompt_cache_breakpoint\": {\n            \"mode\": \"explicit\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Answer in one short word: is the sky blue?\"\n        }\n      ]\n    }\n  ]\n}"
+              "raw": "{\n  \"model\": \"bedrock/openai.gpt-5.6-sol\",\n  \"max_output_tokens\": 8000,\n  \"prompt_cache_options\": {\n    \"mode\": \"explicit\",\n    \"ttl\": \"12h\"\n  },\n  \"input\": [\n    {\n      \"role\": \"developer\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"[ttl12h {{ttl12hNonce}}] {{cachePrefix}}\",\n          \"prompt_cache_breakpoint\": {\n            \"mode\": \"explicit\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Answer in one short word: is the sky blue?\"\n        }\n      ]\n    }\n  ]\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/responses",
@@ -309465,7 +309478,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"openai/gpt-5.6-sol\",\n  \"max_output_tokens\": 8000,\n  \"prompt_cache_options\": {\n    \"ttl\": \"12h\"\n  },\n  \"input\": [\n    {\n      \"role\": \"developer\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"{{cachePrefix}} [ttl12h {{ttl12hNonce}}]\",\n          \"prompt_cache_breakpoint\": {\n            \"mode\": \"explicit\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Answer in one short word: is the sky blue?\"\n        }\n      ]\n    }\n  ]\n}"
+              "raw": "{\n  \"model\": \"openai/gpt-5.6-sol\",\n  \"max_output_tokens\": 8000,\n  \"prompt_cache_options\": {\n    \"ttl\": \"12h\"\n  },\n  \"input\": [\n    {\n      \"role\": \"developer\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"[ttl12h {{ttl12hNonce}}] {{cachePrefix}}\",\n          \"prompt_cache_breakpoint\": {\n            \"mode\": \"explicit\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Answer in one short word: is the sky blue?\"\n        }\n      ]\n    }\n  ]\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/responses",
@@ -309535,7 +309548,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"openai/gpt-5.6-sol\",\n  \"max_tokens\": 8000,\n  \"prompt_cache_options\": {\n    \"ttl\": \"12h\"\n  },\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"{{cachePrefix}} [ttl12h {{ttl12hNonce}}]\",\n          \"prompt_cache_breakpoint\": {\n            \"mode\": \"explicit\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Answer in one short word: is the sky blue?\"\n    }\n  ]\n}"
+              "raw": "{\n  \"model\": \"openai/gpt-5.6-sol\",\n  \"max_tokens\": 8000,\n  \"prompt_cache_options\": {\n    \"ttl\": \"12h\"\n  },\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"[ttl12h {{ttl12hNonce}}] {{cachePrefix}}\",\n          \"prompt_cache_breakpoint\": {\n            \"mode\": \"explicit\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Answer in one short word: is the sky blue?\"\n    }\n  ]\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/chat/completions",
