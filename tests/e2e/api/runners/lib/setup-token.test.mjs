@@ -30,6 +30,21 @@ test("a call to this gateway's /api gets the token, whatever shape the request t
   assert.deepEqual(sent({ url: "{{baseUrl}}/api/providers" }).header, { "X-Bifrost-Setup-Token": "tok" });
 });
 
+test("a scrape of this gateway's /metrics gets the token: the setup lock covers it too", () => {
+  // The OSS setup lock guards every non-public route, not only /api, so the 286.x overhead-metric
+  // rows' own /metrics scrape came back 401 and failed before the request they measure.
+  assert.deepEqual(sent({ url: `${BASE}/metrics`, method: "GET" }).header, { "X-Bifrost-Setup-Token": "tok" });
+  assert.deepEqual(sent("{{baseUrl}}/metrics").header, { "X-Bifrost-Setup-Token": "tok" });
+  // The path is compared without its query string or fragment.
+  assert.deepEqual(sent({ url: `${BASE}/metrics?format=prometheus`, method: "GET" }).header, { "X-Bifrost-Setup-Token": "tok" });
+  assert.deepEqual(sent({ url: `${BASE}/metrics#scrape`, method: "GET" }).header, { "X-Bifrost-Setup-Token": "tok" });
+  assert.deepEqual(sent("{{baseUrl}}/metrics?format=prometheus").header, { "X-Bifrost-Setup-Token": "tok" });
+  const otherMetrics = { url: "http://127.0.0.1:9090/metrics" };
+  assert.equal(sent(otherMetrics), otherMetrics);
+  const lookalike = { url: `${BASE}/metrics-proxy/x` };
+  assert.equal(sent(lookalike), lookalike);
+});
+
 test("a token the script already set is kept, in any letter case", () => {
   assert.deepEqual(sent({ url: `${BASE}/api/providers`, header: { "x-bifrost-setup-token": "own" } }).header, { "x-bifrost-setup-token": "own" });
   assert.deepEqual(sent({ url: `${BASE}/api/providers`, header: [{ key: "X-Bifrost-Setup-Token", value: "own" }] }).header, [{ key: "X-Bifrost-Setup-Token", value: "own" }]);

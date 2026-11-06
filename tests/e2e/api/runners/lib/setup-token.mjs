@@ -8,7 +8,8 @@
 // pm.sendRequest does not help: the sandbox ignores the assignment.
 //
 // So each script that calls pm.sendRequest is rewritten to call a helper defined at its top. The
-// helper adds the token to calls aimed at this gateway's /api and passes every other call through
+// helper adds the token to calls aimed at this gateway's /api and /metrics (the lock guards every
+// non-public route, and the overhead-metric rows scrape /metrics) and passes every other call through
 // as it was, so the token never reaches a local fixture or a third party. A script that names
 // X-Bifrost-Setup-Token manages the header itself (the lockout rows) and is left alone.
 
@@ -23,7 +24,8 @@ export function setupTokenHelper(tokenVar) {
     `  var token = pm.variables.get('${tokenVar}'), base = pm.variables.get('baseUrl') || '';`,
     "  if (typeof req === 'string') { req = { url: req, method: 'GET' }; }",
     "  var url = String((req && req.url && req.url.raw) || (req && req.url) || '');",
-    "  var ours = (base !== '' && url.indexOf(base + '/api/') === 0) || url.indexOf('{{baseUrl}}/api/') === 0;",
+    "  var locked = function (root) { var path = url.slice(root.length).split(/[?#]/)[0]; return path.indexOf('/api/') === 0 || path === '/metrics'; };",
+    "  var ours = (base !== '' && url.indexOf(base) === 0 && locked(base)) || (url.indexOf('{{baseUrl}}') === 0 && locked('{{baseUrl}}'));",
     "  if (token && ours) {",
     `    var named = function (k) { return String(k).toLowerCase() === '${TOKEN_HEADER.toLowerCase()}'; };`,
     "    var h = req.header;",
