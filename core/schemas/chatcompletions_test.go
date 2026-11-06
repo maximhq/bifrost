@@ -403,3 +403,22 @@ func TestChatMessageUnmarshalMessageLevelCacheControl(t *testing.T) {
 		}
 	})
 }
+
+// BenchmarkChatMessageUnmarshalAssistant measures decoding an assistant reply message, the
+// common shape without Azure's context and the On Your Data shape with it. Only the latter
+// copies the raw context.
+func BenchmarkChatMessageUnmarshalAssistant(b *testing.B) {
+	plain := []byte(`{"role":"assistant","content":"Bifrost routes requests across providers.","refusal":null}`)
+	withContext := []byte(`{"role":"assistant","content":"Bifrost routes requests [doc1].","context":{"citations":[{"content":"Bifrost routes requests across providers.","title":"overview.md","url":"https://example.com/overview.md"}],"intent":"[\"what does bifrost do\"]"}}`)
+	for name, data := range map[string][]byte{"plain": plain, "with_context": withContext} {
+		b.Run(name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				var msg ChatMessage
+				if err := Unmarshal(data, &msg); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
