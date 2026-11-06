@@ -113,6 +113,10 @@
           "    } else if (typeof j.output_text === 'string' && j.output_text.length > 0) {",
           "        shape = 'openai-responses-output_text';",
           "        hasContent = true;",
+          "    } else if (j.type === 'function_call_output' && j.output !== undefined) {",
+          "        shape = 'mcp-tool-result-responses';",
+          "        // POST /v1/mcp/tool/execute?format=responses answers with one function_call_output; its output (a string or input_* blocks) IS the result.",
+          "        hasContent = typeof j.output === 'string' ? j.output.length > 0 : Array.isArray(j.output) && j.output.length > 0;",
           "    } else if (Array.isArray(j.output) && j.output.length > 0) {",
           "        shape = 'openai-responses-output';",
           "        // Responses tool-use items are all typed <tool>_call (function_call, tool_search_call, custom_tool_call, mcp_call, local_shell_call, ...). A client-execution call is a valid TERMINAL output: the model emits the call and stops, waiting for the matching *_output, so no text accompanies it.",
@@ -265,6 +269,10 @@
           "    } else if (j.type === 'completion' && typeof j.completion === 'string') {",
           "        shape = 'anthropic-text-completion';",
           "        hasContent = j.completion.length > 0;",
+          "    } else if (j.session && typeof j.session.id === 'string' && j.transport && typeof j.transport.type === 'string') {",
+          "        shape = 'live-session';",
+          "        // POST /v1/live/sessions answers with the session id and its transport (an SDP answer for WebRTC); the conversation runs on that transport, so the body carries no text.",
+          "        hasContent = j.session.id.length > 0;",
           "    }",
           "    pm.expect(hasContent, 'expected non-empty content (shape=' + shape + ', body=' + JSON.stringify(j).slice(0, 200) + ')').to.be.true;",
           "  });",
@@ -155992,6 +156000,149 @@
             }
           },
           "response": []
+        },
+        {
+          "name": "91.b1 bedrock/global.anthropic.claude-haiku-4-5 /v1/chat/completions streaming - raw_response retains the messageStop and metadata events - raw-stream-frames",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Bedrock's messageStop and metadata events produce no Bifrost chunk of their own, so the converse",
+                  "// stream dropped their payloads from raw_response and its closing chunks carried a placeholder \"{}\":",
+                  "// a logged stream lost its stop reason, its additionalModelResponseFields and its usage.",
+                  "var text = pm.response.text() || '';",
+                  "pm.test('91.b1 streaming request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + text.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "var rawFrames = [];",
+                  "text.split('\\n').forEach(function (l) {",
+                  "  if (l.indexOf('data: ') !== 0) { return; }",
+                  "  var p = l.slice(6).trim();",
+                  "  if (p === '[DONE]' || !p.length) { return; }",
+                  "  var j; try { j = JSON.parse(p); } catch (e) { return; }",
+                  "  var rr = (j.extra_fields || (j.response && j.response.extra_fields) || {}).raw_response;",
+                  "  if (rr === undefined || rr === null) { return; }",
+                  "  if (typeof rr !== 'string') { rr = JSON.stringify(rr); }",
+                  "  rr.split('\\n\\n').forEach(function (f) { if (f.trim().length) { rawFrames.push(f.trim()); } });",
+                  "});",
+                  "var parsed = [];",
+                  "rawFrames.forEach(function (f) { try { parsed.push(JSON.parse(f)); } catch (e) {} });",
+                  "var dbg = ' | frames=' + rawFrames.length + ' sample=' + rawFrames.join(' ~~ ').slice(0, 1200);",
+                  "pm.test('91.b1 raw_response carries the messageStop event', function () {",
+                  "  pm.expect(parsed.filter(function (j) { return typeof j.stopReason === 'string'; }).length, 'no frame with stopReason' + dbg).to.eql(1);",
+                  "});",
+                  "pm.test('91.b1 raw_response carries the metadata event with usage', function () {",
+                  "  pm.expect(parsed.filter(function (j) { return j.usage && j.usage.inputTokens > 0; }).length, 'no frame with usage.inputTokens' + dbg).to.eql(1);",
+                  "});",
+                  "pm.test('91.b1 no placeholder stands in for an upstream event', function () {",
+                  "  pm.expect(rawFrames.indexOf('{}'), 'a \"{}\" frame was recorded' + dbg).to.eql(-1);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-response",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0\",\n  \"stream\": true,\n  \"max_tokens\": 48,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say hello in one short sentence.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "91.b2 bedrock/global.anthropic.claude-haiku-4-5 /v1/responses streaming - raw_response retains the messageStop and metadata events - raw-stream-frames",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Bedrock's messageStop and metadata events produce no Bifrost chunk of their own, so the converse",
+                  "// stream dropped their payloads from raw_response and its closing chunks carried a placeholder \"{}\":",
+                  "// a logged stream lost its stop reason, its additionalModelResponseFields and its usage.",
+                  "var text = pm.response.text() || '';",
+                  "pm.test('91.b2 streaming request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + text.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "var rawFrames = [];",
+                  "text.split('\\n').forEach(function (l) {",
+                  "  if (l.indexOf('data: ') !== 0) { return; }",
+                  "  var p = l.slice(6).trim();",
+                  "  if (p === '[DONE]' || !p.length) { return; }",
+                  "  var j; try { j = JSON.parse(p); } catch (e) { return; }",
+                  "  var rr = (j.extra_fields || (j.response && j.response.extra_fields) || {}).raw_response;",
+                  "  if (rr === undefined || rr === null) { return; }",
+                  "  if (typeof rr !== 'string') { rr = JSON.stringify(rr); }",
+                  "  rr.split('\\n\\n').forEach(function (f) { if (f.trim().length) { rawFrames.push(f.trim()); } });",
+                  "});",
+                  "var parsed = [];",
+                  "rawFrames.forEach(function (f) { try { parsed.push(JSON.parse(f)); } catch (e) {} });",
+                  "var dbg = ' | frames=' + rawFrames.length + ' sample=' + rawFrames.join(' ~~ ').slice(0, 1200);",
+                  "pm.test('91.b2 raw_response carries the messageStop event', function () {",
+                  "  pm.expect(parsed.filter(function (j) { return typeof j.stopReason === 'string'; }).length, 'no frame with stopReason' + dbg).to.eql(1);",
+                  "});",
+                  "pm.test('91.b2 raw_response carries the metadata event with usage', function () {",
+                  "  pm.expect(parsed.filter(function (j) { return j.usage && j.usage.inputTokens > 0; }).length, 'no frame with usage.inputTokens' + dbg).to.eql(1);",
+                  "});",
+                  "pm.test('91.b2 no placeholder stands in for an upstream event', function () {",
+                  "  pm.expect(rawFrames.indexOf('{}'), 'a \"{}\" frame was recorded' + dbg).to.eql(-1);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-response",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0\",\n  \"stream\": true,\n  \"max_output_tokens\": 48,\n  \"input\": \"Say hello in one short sentence.\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "response": []
         }
       ]
     },
@@ -162972,11 +163123,17 @@
                 "exec": [
                   "var bk = pm.variables.get('awsS3Bucket') || '';",
                   "if (!bk || bk.indexOf('{{') === 0) { pm.test.skip('awsS3Bucket not configured', function () {}); return; }",
-                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
                   "pm.test('valid bucket reaches AWS instead of the bucket gate', function () {",
                   "  var t = pm.response.text();",
                   "  pm.expect(t, 'valid bucket was caught by the gate: ' + t.slice(0, 300)).to.not.match(/invalid s3 bucket name/);",
                   "  pm.expect(pm.response.code, 'expected an upstream 4xx: ' + t.slice(0, 300)).to.be.within(400, 499);",
+                  "});",
+                  "// File operations try every bedrock key; a key outside the bucket's region gets S3's 301. That redirect",
+                  "// used to replace the bucket region's 404 and reach the caller as the status (s3 key region).",
+                  "pm.test('the bucket region\\u2019s answer is returned, never a wrong-region redirect', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(t, 'a wrong-region key\\u2019s redirect won: ' + t.slice(0, 300)).to.not.include('status 301');",
+                  "  pm.expect(t, 'a wrong-region key\\u2019s answer won over the bucket region\\u2019s: ' + t.slice(0, 300)).to.not.include('is in region');",
                   "});"
                 ]
               }
@@ -162999,6 +163156,60 @@
                 "v1",
                 "files",
                 "s3%3A%2F%2F{{awsS3Bucket}}%2Fbifrost-harness-no-such-object"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "bedrock"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-4XX] bedrock file content: valid bucket, missing object answers from the bucket's region, never a 3xx - s3 key region",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var bk = pm.variables.get('awsS3Bucket') || '';",
+                  "if (!bk || bk.indexOf('{{') === 0) { pm.test.skip('awsS3Bucket not configured', function () {}); return; }",
+                  "// GET of a missing object: the key in the bucket's region gets S3's 404 (403 without s3:ListBucket);",
+                  "// a bedrock key in any other region gets a 301 PermanentRedirect. File operations try every key, and the",
+                  "// last key's 301 used to replace the 404 and reach the caller as the status.",
+                  "pm.test('a missing object is the bucket region\\u2019s 4xx, not a wrong-region redirect', function () {",
+                  "  var t = pm.response.text();",
+                  "  // A missing object is S3's 404 (403 without s3:ListBucket); a wrong-region 400 must not pass for it.",
+                  "  pm.expect([403, 404], 'expected an S3 403 or 404: ' + t.slice(0, 400)).to.include(pm.response.code);",
+                  "  pm.expect(t, 'expected an S3 GET error: ' + t.slice(0, 400)).to.include('S3 GET failed:');",
+                  "  pm.expect(t, 'valid bucket was caught by the gate: ' + t.slice(0, 300)).to.not.match(/invalid s3 bucket name/);",
+                  "  pm.expect(t, 'a wrong-region key\\u2019s redirect won: ' + t.slice(0, 400)).to.not.include('PermanentRedirect');",
+                  "  pm.expect(t, 'a wrong-region key\\u2019s answer won over the bucket region\\u2019s: ' + t.slice(0, 400)).to.not.include('is in region');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/files/s3%3A%2F%2F{{awsS3Bucket}}%2Fbifrost-harness-no-such-object/content?provider=bedrock",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "files",
+                "s3%3A%2F%2F{{awsS3Bucket}}%2Fbifrost-harness-no-such-object",
+                "content"
               ],
               "query": [
                 {
@@ -197567,7 +197778,7 @@
           ]
         },
         {
-          "name": "153.6b bedrock converse-stream messageStop carries stop_sequence and additionalModelResponseFields (response field paths)",
+          "name": "153.6b bedrock converse-stream messageStop carries the native stop_sequence (response field paths)",
           "request": {
             "method": "POST",
             "header": [
@@ -197604,11 +197815,16 @@
                   "  pm.expect(pm.response.code, body.slice(0, 600)).to.equal(200);",
                   "  pm.expect(pm.response.headers.get('content-type') || '', 'content-type').to.include('vnd.amazon.eventstream');",
                   "});",
-                  "pm.test('messageStop reports the native stop_sequence and echoes additionalModelResponseFields', function () {",
+                  "// AWS's own ConverseStream messageStop for Claude carries stopReason but no additionalModelResponseFields,",
+                  "// even when the request asks for /stop_sequence (probed against bedrock-runtime directly, 2026-11-06); the",
+                  "// non-streaming Converse response (153.6) does carry it. So the fields are checked only when AWS sends them.",
+                  "pm.test('messageStop reports the native stop_sequence, and any additionalModelResponseFields unchanged', function () {",
                   "  var stop = body.slice(body.lastIndexOf('messageStop'));",
                   "  pm.expect(body, 'no messageStop event: ' + body.slice(-600)).to.include('messageStop');",
                   "  pm.expect(stop, 'messageStop payload: ' + stop.slice(0, 600)).to.match(/\"stopReason\"\\s*:\\s*\"stop_sequence\"/);",
-                  "  pm.expect(stop, 'messageStop payload: ' + stop.slice(0, 600)).to.match(/\"additionalModelResponseFields\"\\s*:\\s*\\{\\s*\"stop_sequence\"\\s*:\\s*\"three\"/);",
+                  "  if (stop.indexOf('additionalModelResponseFields') !== -1) {",
+                  "    pm.expect(stop, 'messageStop payload: ' + stop.slice(0, 600)).to.match(/\"additionalModelResponseFields\"\\s*:\\s*\\{\\s*\"stop_sequence\"\\s*:\\s*\"three\"/);",
+                  "  }",
                   "});"
                 ]
               }
@@ -224962,7 +225178,15 @@
                   "// a1 is refused; the fallback is pinned to b1, which is disabled, so it fails key selection and b2 is",
                   "// never used. The primary's error is what the caller gets.",
                   "failedWith('the fallback pinned to a disabled key cannot serve, and the primary error (401) is returned', pm.response, 401);",
-                  "pm.test('the error is the primary provider\\u2019s', function () { pm.expect(text).to.not.include('no supported key found'); });",
+                  "// Since #9292 the primary's error carries every fallback's outcome in extra_fields.fallback_attempts, so the",
+                  "// fallback's key-selection refusal appears in the body by design; the primary's own message must not be it.",
+                  "pm.test('the error is the primary provider\\u2019s', function () { pm.expect(((json.error || {}).message) || '', text).to.not.include('no supported key found'); });",
+                  "pm.test('the fallback refused for its disabled key is reported in fallback_attempts', function () {",
+                  "  var attempts = ((json.extra_fields || {}).fallback_attempts) || [];",
+                  "  var b = attempts.filter(function (a) { return a.provider === state.p_b; });",
+                  "  pm.expect(b.length, 'fallback_attempts: ' + JSON.stringify(attempts)).to.eql(1);",
+                  "  pm.expect(b[0].message || '', JSON.stringify(b[0])).to.include('no supported key found');",
+                  "});",
                   "pm.test('the error carries the primary provider\\u2019s headers', function () { pm.expect(pm.response.headers.get('x-bifrost-routing-info-provider'), text).to.eql(state.p_a); });",
                   "call('PUT', '/api/providers/' + encodeURIComponent(state.p_b) + '/keys/' + encodeURIComponent(state.keys.b1.id), { name: state.keys.b1.name, enabled: true }, function (resE) {",
                   "  expectOk('b1 was enabled again', resE);",
@@ -240058,16 +240282,17 @@
               "listen": "test",
               "script": {
                 "exec": [
-                  "var MISMATCH = 'provider does not match the passthrough route: expected openai';",
+                  "var MISMATCH = 'provider does not match the passthrough route: expected openai or a custom provider based on it';",
                   "var errorOf = function (res) { var j = {}; try { j = res.json() || {}; } catch (e) { j = {}; } return (j.error || {}).message; };",
                   "pm.test('a standard provider other than the route’s is refused, and nothing is dispatched', function () {",
                   "  pm.expect(errorOf(pm.response), pm.response.text()).to.eql(MISMATCH);",
                   "  pm.expect(pm.response.headers.get('x-bifrost-provider'), pm.response.text()).to.equal(undefined);",
                   "});",
                   "pm.sendRequest({ url: pm.variables.get('baseUrl') + '/openai_passthrough/v1/chat/completions', method: 'POST', header: { 'Content-Type': 'application/json', 'x-model-provider': 'openai_pc_auto' }, body: { mode: 'raw', raw: JSON.stringify({\"model\":\"gpt-4o-mini\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with the single word: ok\"}],\"max_tokens\":3}) } }, function (err, res) {",
-                  "  pm.test('a custom provider built on the route’s provider is refused too: the header must name the route’s provider exactly', function () {",
-                  "    pm.expect(res && res.code, err ? String(err) : res.text()).to.eql(400);",
-                  "    pm.expect(errorOf(res), res.text()).to.eql(MISMATCH);",
+                  "  pm.test('a custom provider built on the route’s provider without a passthrough policy is refused with 403, and nothing is dispatched', function () {",
+                  "    pm.expect(res && res.code, err ? String(err) : res.text()).to.eql(403);",
+                  "    pm.expect(errorOf(res), res.text()).to.eql('passthrough is not enabled for provider openai_pc_auto; configure its passthrough allowed routes');",
+                  "    pm.expect(res.headers.get('x-bifrost-provider'), res.text()).to.equal(undefined);",
                   "  });",
                   "});"
                 ],
@@ -277098,7 +277323,11 @@
                   "});",
                   "pm.test(\"Codex uses streaming passthrough dispatch\", function () {",
                   "  pm.expect(pm.response.headers.get(\"x-bifrost-request-type\"), pm.response.text()).to.equal(\"passthrough_stream\");",
-                  "  pm.expect(pm.response.headers.get(\"x-bifrost-passthrough-path\"), pm.response.text()).to.equal(\"/backend-api/codex/responses\");",
+                  "  // x-bifrost-passthrough-path is written only in extra_fields_placement=headers; a passthrough body is the raw upstream body, so body mode has nothing to check.",
+                  "  var passthroughPath = pm.response.headers.get(\"x-bifrost-passthrough-path\");",
+                  "  if (passthroughPath !== undefined) {",
+                  "    pm.expect(passthroughPath, pm.response.text()).to.equal(\"/backend-api/codex/responses\");",
+                  "  }",
                   "});"
                 ]
               }
@@ -277172,7 +277401,11 @@
                   "});",
                   "pm.test(\"Codex uses streaming passthrough dispatch\", function () {",
                   "  pm.expect(pm.response.headers.get(\"x-bifrost-request-type\"), pm.response.text()).to.equal(\"passthrough_stream\");",
-                  "  pm.expect(pm.response.headers.get(\"x-bifrost-passthrough-path\"), pm.response.text()).to.equal(\"/backend-api/codex/responses\");",
+                  "  // x-bifrost-passthrough-path is written only in extra_fields_placement=headers; a passthrough body is the raw upstream body, so body mode has nothing to check.",
+                  "  var passthroughPath = pm.response.headers.get(\"x-bifrost-passthrough-path\");",
+                  "  if (passthroughPath !== undefined) {",
+                  "    pm.expect(passthroughPath, pm.response.text()).to.equal(\"/backend-api/codex/responses\");",
+                  "  }",
                   "});"
                 ]
               }
@@ -277226,13 +277459,19 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
+                  "// The model list body is ~700KB; newman's CLI failure table truncates cells quadratically, so an uncapped body as the message hangs the run.",
+                  "var bodyHead = pm.response.text().slice(0, 2000);",
                   "pm.test(\"Codex model list is forwarded to the ChatGPT backend\", function () {",
-                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
-                  "  pm.expect(pm.response.json().models, pm.response.text()).to.be.an(\"array\").that.is.not.empty;",
+                  "  pm.expect(pm.response.code, bodyHead).to.equal(200);",
+                  "  pm.expect(pm.response.json().models, bodyHead).to.be.an(\"array\").that.is.not.empty;",
                   "});",
                   "pm.test(\"Codex model list uses unary passthrough dispatch\", function () {",
-                  "  pm.expect(pm.response.headers.get(\"x-bifrost-request-type\"), pm.response.text()).to.equal(\"passthrough\");",
-                  "  pm.expect(pm.response.headers.get(\"x-bifrost-passthrough-path\"), pm.response.text()).to.equal(\"/backend-api/codex/models\");",
+                  "  pm.expect(pm.response.headers.get(\"x-bifrost-request-type\"), bodyHead).to.equal(\"passthrough\");",
+                  "  // x-bifrost-passthrough-path is written only in extra_fields_placement=headers; a passthrough body is the raw upstream body, so body mode has nothing to check.",
+                  "  var passthroughPath = pm.response.headers.get(\"x-bifrost-passthrough-path\");",
+                  "  if (passthroughPath !== undefined) {",
+                  "    pm.expect(passthroughPath, bodyHead).to.equal(\"/backend-api/codex/models\");",
+                  "  }",
                   "});"
                 ]
               }
@@ -284916,7 +285155,7 @@
           }
         },
         {
-          "name": "[EXPECT-403] anthropic claude-haiku-4-5 /anthropic/v1/messages: an advisor tool naming claude-opus-4-8 is refused with model_blocked - server tool model check",
+          "name": "[EXPECT-403] anthropic claude-haiku-4-5 /anthropic/v1/messages: an advisor tool naming claude-opus-4-8 is refused as a permission_error - server tool model check",
           "event": [
             {
               "listen": "test",
@@ -284929,8 +285168,10 @@
                   "pm.test('anthropic messages: refused with 403', function () {",
                   "  pm.expect(pm.response.code, 'want 403 model_blocked: ' + txt.slice(0, 600)).to.eql(403);",
                   "});",
-                  "pm.test('anthropic messages: the refusal is model_blocked and names the advisor model', function () {",
-                  "  pm.expect(txt, txt.slice(0, 600)).to.include('model_blocked');",
+                  "pm.test('anthropic messages: the refusal is the Anthropic permission_error and names the advisor model', function () {",
+                  "  // The Anthropic route answers in Anthropic's error shape, which carries permission_error, not the gateway's model_blocked code.",
+                  "  pm.expect(txt, txt.slice(0, 600)).to.include('\"type\":\"permission_error\"');",
+                  "  pm.expect(txt, txt.slice(0, 600)).to.include('is not allowed for virtual key');",
                   "  pm.expect(txt, txt.slice(0, 600)).to.include('claude-opus-4-8');",
                   "});"
                 ]
@@ -284979,7 +285220,7 @@
           }
         },
         {
-          "name": "[EXPECT-403] anthropic claude-haiku-4-5 /anthropic/v1/messages stream: an advisor tool naming claude-opus-4-8 is refused with model_blocked - server tool model check",
+          "name": "[EXPECT-403] anthropic claude-haiku-4-5 /anthropic/v1/messages stream: an advisor tool naming claude-opus-4-8 is refused as a permission_error - server tool model check",
           "event": [
             {
               "listen": "test",
@@ -284992,8 +285233,10 @@
                   "pm.test('anthropic messages stream: refused with 403', function () {",
                   "  pm.expect(pm.response.code, 'want 403 model_blocked: ' + txt.slice(0, 600)).to.eql(403);",
                   "});",
-                  "pm.test('anthropic messages stream: the refusal is model_blocked and names the advisor model', function () {",
-                  "  pm.expect(txt, txt.slice(0, 600)).to.include('model_blocked');",
+                  "pm.test('anthropic messages stream: the refusal is the Anthropic permission_error and names the advisor model', function () {",
+                  "  // The Anthropic route answers in Anthropic's error shape, which carries permission_error, not the gateway's model_blocked code.",
+                  "  pm.expect(txt, txt.slice(0, 600)).to.include('\"type\":\"permission_error\"');",
+                  "  pm.expect(txt, txt.slice(0, 600)).to.include('is not allowed for virtual key');",
                   "  pm.expect(txt, txt.slice(0, 600)).to.include('claude-opus-4-8');",
                   "});"
                 ]
@@ -290929,7 +291172,8 @@
                   "pm.sendRequest({",
                   "  url: pm.variables.get('baseUrl') + '/mcp',",
                   "  method: 'POST',",
-                  "  header: { 'Content-Type': 'application/json', 'Accept': 'application/json, text/event-stream', 'MCP-Protocol-Version': '2025-06-18', 'X-Forwarded-For': '203.0.113.8, 10.0.0.1' },",
+                  "  // sse_mcp and slow_mcp serve the same fixture and a read goes to the first client by name, so pin it to sse_mcp, the label the log query filters on.",
+                  "  header: { 'Content-Type': 'application/json', 'Accept': 'application/json, text/event-stream', 'MCP-Protocol-Version': '2025-06-18', 'X-Forwarded-For': '203.0.113.8, 10.0.0.1', 'x-bf-mcp-include-clients': 'sse_mcp' },",
                   "  body: { mode: 'raw', raw: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'resources/read', params: { uri: uri } }) }",
                   "}, function (err, res) {",
                   "  var text = res ? res.text() : '';",
@@ -291018,7 +291262,8 @@
                   "pm.sendRequest({",
                   "  url: pm.variables.get('baseUrl') + '/mcp',",
                   "  method: 'POST',",
-                  "  header: { 'Content-Type': 'application/json', 'Accept': 'application/json, text/event-stream', 'MCP-Protocol-Version': '2025-06-18' },",
+                  "  // sse_mcp and slow_mcp serve the same fixture and a read goes to the first client by name, so pin it to sse_mcp, the label the log query filters on.",
+                  "  header: { 'Content-Type': 'application/json', 'Accept': 'application/json, text/event-stream', 'MCP-Protocol-Version': '2025-06-18', 'x-bf-mcp-include-clients': 'sse_mcp' },",
                   "  body: { mode: 'raw', raw: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'resources/read', params: { uri: 'file:///fixture/report,2026.md' } }) }",
                   "}, function (err, res) {",
                   "  var text = res ? res.text() : '';",
@@ -291942,14 +292187,14 @@
           }
         },
         {
-          "name": "anthropic/claude-sonnet-5-5 /anthropic/v1/messages streaming: message_delta invents no prompt counters - #7896",
+          "name": "anthropic/claude-sonnet-5-5 /anthropic/v1/messages streaming: message_delta prompt counters agree with message_start - #7896",
           "event": [
             {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('a message_delta reports no prompt counter the upstream did not send - #7896', function () {",
+                  "pm.test('a message_delta prompt counter agrees with message_start - #7896', function () {",
                   "  pm.expect(pm.response.code, 'stream request failed: ' + pm.response.text()).to.be.below(400);",
                   "  var body = pm.response.text() || '';",
                   "  var lines = body.split(/\\r?\\n/).filter(function (l) { return l.indexOf('data:') === 0; });",
@@ -291962,16 +292207,16 @@
                   "  pm.expect(deltas.length, 'no message_delta data line found in stream: ' + body.slice(0, 400)).to.be.above(0);",
                   "  // An accumulating client OVERWRITES the fields each usage object carries, so a",
                   "  // message_delta reporting input_tokens:0 erases the prompt count it already has.",
-                  "  // Anthropic sends no prompt counters on that frame, so neither may Bifrost.",
+                  "  // Anthropic reports cumulative prompt counters on message_delta, so a counter",
+                  "  // the frame carries must equal message_start's. A gateway that invents one for an",
+                  "  // output-only upstream frame is pinned by TestStreamedPromptUsageSurvivesToTheClient.",
                   "  deltas.forEach(function (l, i) {",
                   "    var frame = JSON.parse(l.replace(/^data:\\s*/, ''));",
                   "    if (!frame.usage) { return; }",
-                  "    // Anthropic reports prompt counters on message_start and output-only on",
-                  "    // message_delta. Comparing against message_start's figure would also pass",
-                  "    // for a gateway that COPIES it onto the delta -- which is the invented",
-                  "    // counter this case exists to catch -- so absence is what gets asserted.",
+                  "    var startUsage = startFrame.message.usage;",
                   "    ['input_tokens', 'cache_creation_input_tokens', 'cache_read_input_tokens'].forEach(function (key) {",
-                  "      pm.expect(frame.usage, 'message_delta #' + i + ' reports ' + key + ':' + frame.usage[key] + '; the upstream sends no prompt counters on this frame, and an accumulating client OVERWRITES the ' + promptTokens + ' it already has from message_start: ' + l.slice(0, 300)).to.not.have.property(key);",
+                  "      if (!(key in frame.usage) || frame.usage[key] === null) { return; }",
+                  "      pm.expect(frame.usage[key], 'message_delta #' + i + ' reports ' + key + ':' + frame.usage[key] + ' but message_start reported ' + startUsage[key] + '; an accumulating client OVERWRITES its count with it: ' + l.slice(0, 300)).to.eql(startUsage[key]);",
                   "    });",
                   "  });",
                   "});"
@@ -296533,7 +296778,7 @@
           "description": "Which header selects a route is the operator's choice, so a route matcher may name any header, here an x-amz-* header under aws_sigv4 that the relay does not forward upstream. Before, create was refused with 400 \"is not forwarded under aws_sigv4\". Management API only, the upstream is never called.",
           "item": [
             {
-              "name": "create a sigv4 relay whose route matches on X-Amz-Storage-Class - relays-e2e",
+              "name": "[EXPECT-201] create a sigv4 relay whose route matches on X-Amz-Storage-Class - relays-e2e",
               "event": [
                 {
                   "listen": "test",
@@ -296578,7 +296823,7 @@
               }
             },
             {
-              "name": "cleanup: delete the sigv4 relay - relays-e2e",
+              "name": "[EXPECT-204] cleanup: delete the sigv4 relay - relays-e2e",
               "event": [
                 {
                   "listen": "test",
@@ -303761,6 +304006,20 @@
           "name": "[EXPECT-400] gemini deep-research-preview-04-2026 interactions create via /genai_passthrough/v1beta: an agent the key allows is forwarded to Google - interactions agent governance",
           "event": [
             {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Snapshot the key's request count from memory (the DB copy lags up to 10s): a create Google refuses must not consume one (passthrough upstream refusal).",
+                  "pm.collectionVariables.unset('iagRefusedBaseRequests');",
+                  "pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/governance/virtual-keys/' + encodeURIComponent(pm.collectionVariables.get('iagVKID')) + '?from_memory=true', method: 'GET' }, function (err, res) {",
+                  "  var rl = (!err && res.code === 200) ? ((res.json().virtual_key || {}).rate_limit || null) : null;",
+                  "  if (rl) { pm.collectionVariables.set('iagRefusedBaseRequests', String(rl.request_current_usage || 0)); }",
+                  "});"
+                ]
+              }
+            },
+            {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
@@ -303786,6 +304045,19 @@
                   "      pm.test('gemini interactions allowlisted agent: the log row names the agent', function () {",
                   "        pm.expect(row.model, JSON.stringify(row).slice(0, 600)).to.eql('deep-research-preview-04-2026');",
                   "      });",
+                  "      // A passthrough call relays Google's 400 as a response, which governance counted as a successful",
+                  "      // request: the run the next case makes then read two requests on this key. A refused call is no request.",
+                  "      var base = Number(pm.collectionVariables.get('iagRefusedBaseRequests'));",
+                  "      setTimeout(function () {",
+                  "        pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/governance/virtual-keys/' + encodeURIComponent(pm.collectionVariables.get('iagVKID')) + '?from_memory=true', method: 'GET' }, function (err2, res2) {",
+                  "          var rl = (!err2 && res2.code === 200) ? ((res2.json().virtual_key || {}).rate_limit || {}) : null;",
+                  "          pm.test('gemini interactions allowlisted agent: the refused create counts no request (passthrough upstream refusal)', function () {",
+                  "            pm.expect(isNaN(base), 'no baseline: ' + pm.collectionVariables.get('iagRefusedBaseRequests')).to.eql(false);",
+                  "            pm.expect(rl, 'virtual key read failed: ' + (err2 ? String(err2) : (res2.code + ' ' + res2.text().slice(0, 300)))).to.be.an('object');",
+                  "            pm.expect((rl.request_current_usage || 0) - base, 'rate limit: ' + JSON.stringify(rl)).to.eql(0);",
+                  "          });",
+                  "        });",
+                  "      }, 1500);",
                   "      return;",
                   "    }",
                   "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
@@ -304198,7 +304470,7 @@
           }
         },
         {
-          "name": "OpenAI gpt-6.1-sol named tool output /responses unary - #9571",
+          "name": "OpenAI gpt-6.1-sol named tool output /openai/v1/responses unary - #9571",
           "event": [
             {
               "listen": "test",
@@ -304230,11 +304502,11 @@
                 }
               }
             },
-            "url": "{{baseUrl}}/responses"
+            "url": "{{baseUrl}}/openai/v1/responses"
           }
         },
         {
-          "name": "OpenAI gpt-6.1-sol named tool output /responses streaming - #9571",
+          "name": "OpenAI gpt-6.1-sol named tool output /openai/v1/responses streaming - #9571",
           "event": [
             {
               "listen": "test",
@@ -304266,7 +304538,7 @@
                 }
               }
             },
-            "url": "{{baseUrl}}/responses"
+            "url": "{{baseUrl}}/openai/v1/responses"
           }
         },
         {
@@ -308799,7 +309071,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"openai/gpt-5.6-sol\",\n  \"max_output_tokens\": 8000,\n  \"input\": [\n    {\n      \"role\": \"developer\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"{{cachePrefix}} [ttl12h {{ttl12hNonce}}]\",\n          \"prompt_cache_breakpoint\": {\n            \"mode\": \"explicit\",\n            \"ttl\": \"12h\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Answer in one short word: is the sky blue?\"\n        }\n      ]\n    }\n  ]\n}"
+              "raw": "{\n  \"model\": \"openai/gpt-5.6-sol\",\n  \"max_output_tokens\": 8000,\n  \"input\": [\n    {\n      \"role\": \"developer\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"[ttl12h {{ttl12hNonce}}] {{cachePrefix}}\",\n          \"prompt_cache_breakpoint\": {\n            \"mode\": \"explicit\",\n            \"ttl\": \"12h\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Answer in one short word: is the sky blue?\"\n        }\n      ]\n    }\n  ]\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/responses",
@@ -308859,7 +309131,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"openai/gpt-5.6-sol\",\n  \"max_output_tokens\": 8000,\n  \"stream\": true,\n  \"input\": [\n    {\n      \"role\": \"developer\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"{{cachePrefix}} [ttl12h {{ttl12hNonce}}]\",\n          \"prompt_cache_breakpoint\": {\n            \"mode\": \"explicit\",\n            \"ttl\": \"12h\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Answer in one short word: is the sky blue?\"\n        }\n      ]\n    }\n  ]\n}"
+              "raw": "{\n  \"model\": \"openai/gpt-5.6-sol\",\n  \"max_output_tokens\": 8000,\n  \"stream\": true,\n  \"input\": [\n    {\n      \"role\": \"developer\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"[ttl12h {{ttl12hNonce}}] {{cachePrefix}}\",\n          \"prompt_cache_breakpoint\": {\n            \"mode\": \"explicit\",\n            \"ttl\": \"12h\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Answer in one short word: is the sky blue?\"\n        }\n      ]\n    }\n  ]\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/responses",
@@ -308897,10 +309169,20 @@
                   "var rr = (body.extra_fields || {}).raw_request;",
                   "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
                   "var wire = JSON.stringify(rr || null);",
-                  "pm.test('prompt_cache_breakpoint.ttl stripped on Chat (OpenAI rejects it there)', function () {",
+                  "// The compat plugin routes gpt-5.6-sol chat to Responses (its datasheet disables reasoning with tool calls on",
+                  "// chat; folder 168), so check whichever wire went out. Responses takes the 12h ttl; Chat accepts only 30m.",
+                  "// Before: the chat->Responses conversion dropped the block's breakpoint, so the 12h write never happened.",
+                  "pm.test('prompt_cache_breakpoint survives on the wire Bifrost sent (ttl kept on Responses, stripped on Chat)', function () {",
                   "  pm.expect(rr, 'raw_request missing: ' + txt.slice(0, 300)).to.be.an('object');",
-                  "  var bp = (((rr.messages || [])[0] || {}).content || [])[0] || {};",
-                  "  pm.expect((bp.prompt_cache_breakpoint || {}).mode, 'breakpoint dropped: ' + wire.slice(0, 400)).to.eql('explicit'); pm.expect((bp.prompt_cache_breakpoint || {}).ttl, 'ttl forwarded to Chat: ' + wire.slice(0, 400)).to.be.undefined;",
+                  "  var onResponses = Array.isArray(rr.input);",
+                  "  var bp = ((((onResponses ? rr.input : rr.messages) || [])[0] || {}).content || [])[0] || {};",
+                  "  pm.expect((bp.prompt_cache_breakpoint || {}).mode, 'breakpoint dropped: ' + wire.slice(0, 400)).to.eql('explicit');",
+                  "  if (onResponses) {",
+                  "    pm.expect((body.extra_fields || {}).converted_request_type, 'Responses-shaped wire without a conversion: ' + wire.slice(0, 300)).to.eql('responses');",
+                  "    pm.expect((bp.prompt_cache_breakpoint || {}).ttl, 'ttl dropped on Responses: ' + wire.slice(0, 400)).to.eql('12h');",
+                  "  } else {",
+                  "    pm.expect((bp.prompt_cache_breakpoint || {}).ttl, 'ttl forwarded to Chat: ' + wire.slice(0, 400)).to.be.undefined;",
+                  "  }",
                   "});",
                   "pm.test('usage reports a cache write', function () {",
                   "  var d = ((body.usage || {}).prompt_tokens_details) || {};",
@@ -308924,7 +309206,84 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"openai/gpt-5.6-sol\",\n  \"max_tokens\": 8000,\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"{{cachePrefix}} [ttl12h {{ttl12hNonce}}]\",\n          \"prompt_cache_breakpoint\": {\n            \"mode\": \"explicit\",\n            \"ttl\": \"12h\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Answer in one short word: is the sky blue?\"\n    }\n  ]\n}"
+              "raw": "{\n  \"model\": \"openai/gpt-5.6-sol\",\n  \"max_tokens\": 8000,\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"[ttl12h {{ttl12hNonce}}] {{cachePrefix}}\",\n          \"prompt_cache_breakpoint\": {\n            \"mode\": \"explicit\",\n            \"ttl\": \"12h\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Answer in one short word: is the sky blue?\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai gpt-5.6-sol /v1/chat/completions forced to Responses keeps the 12h prompt_cache_breakpoint (compat conversion) non-streaming",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Fresh prefix per request so the 12h write happens even on a rerun within the same run.",
+                  "pm.variables.set('ttl12hNonce', String(Date.now()) + '-' + Math.floor(Math.random() * 1e9) + '-chat-to-responses');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The targeted x-bf-compat header forces the chat->Responses conversion (folder 168), so this row always exercises",
+                  "// it. Before: the conversion dropped the block's prompt_cache_breakpoint, so the 12h write never reached OpenAI.",
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('status is 200', function () { pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200); });",
+                  "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "pm.test('the chat request was converted to Responses', function () {",
+                  "  pm.expect((body.extra_fields || {}).converted_request_type, 'expected responses: ' + txt.slice(0, 400)).to.eql('responses');",
+                  "  pm.expect(rr, 'raw_request missing: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "  pm.expect(rr.input, 'outbound body is not Responses-shaped: ' + wire.slice(0, 400)).to.be.an('array');",
+                  "});",
+                  "pm.test('the block prompt_cache_breakpoint survives the conversion with its 12h ttl', function () {",
+                  "  var bp = ((((rr || {}).input || [])[0] || {}).content || [])[0] || {};",
+                  "  pm.expect((bp.prompt_cache_breakpoint || {}).mode, 'breakpoint dropped by the conversion: ' + wire.slice(0, 400)).to.eql('explicit');",
+                  "  pm.expect((bp.prompt_cache_breakpoint || {}).ttl, 'ttl dropped by the conversion: ' + wire.slice(0, 400)).to.eql('12h');",
+                  "});",
+                  "pm.test('usage reports a cache write', function () {",
+                  "  var d = ((body.usage || {}).prompt_tokens_details) || {};",
+                  "  pm.expect(d.cache_write_tokens, 'no cache write: ' + JSON.stringify(body.usage)).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-compat",
+                "value": "[\"force_reasoning_only_models_to_responses\"]"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-5.6-sol\",\n  \"max_tokens\": 8000,\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"[ttl12h {{ttl12hNonce}}] {{cachePrefix}}\",\n          \"prompt_cache_breakpoint\": {\n            \"mode\": \"explicit\",\n            \"ttl\": \"12h\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Answer in one short word: is the sky blue?\"\n    }\n  ]\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/chat/completions",
@@ -308990,7 +309349,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"bedrock/openai.gpt-5.6-sol\",\n  \"max_output_tokens\": 8000,\n  \"input\": [\n    {\n      \"role\": \"developer\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"{{cachePrefix}} [ttl12h {{ttl12hNonce}}]\",\n          \"prompt_cache_breakpoint\": {\n            \"mode\": \"explicit\",\n            \"ttl\": \"12h\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Answer in one short word: is the sky blue?\"\n        }\n      ]\n    }\n  ]\n}"
+              "raw": "{\n  \"model\": \"bedrock/openai.gpt-5.6-sol\",\n  \"max_output_tokens\": 8000,\n  \"input\": [\n    {\n      \"role\": \"developer\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"[ttl12h {{ttl12hNonce}}] {{cachePrefix}}\",\n          \"prompt_cache_breakpoint\": {\n            \"mode\": \"explicit\",\n            \"ttl\": \"12h\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Answer in one short word: is the sky blue?\"\n        }\n      ]\n    }\n  ]\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/responses",
@@ -309054,7 +309413,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"bedrock/openai.gpt-5.6-sol\",\n  \"max_output_tokens\": 8000,\n  \"prompt_cache_options\": {\n    \"mode\": \"explicit\",\n    \"ttl\": \"12h\"\n  },\n  \"input\": [\n    {\n      \"role\": \"developer\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"{{cachePrefix}} [ttl12h {{ttl12hNonce}}]\",\n          \"prompt_cache_breakpoint\": {\n            \"mode\": \"explicit\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Answer in one short word: is the sky blue?\"\n        }\n      ]\n    }\n  ]\n}"
+              "raw": "{\n  \"model\": \"bedrock/openai.gpt-5.6-sol\",\n  \"max_output_tokens\": 8000,\n  \"prompt_cache_options\": {\n    \"mode\": \"explicit\",\n    \"ttl\": \"12h\"\n  },\n  \"input\": [\n    {\n      \"role\": \"developer\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"[ttl12h {{ttl12hNonce}}] {{cachePrefix}}\",\n          \"prompt_cache_breakpoint\": {\n            \"mode\": \"explicit\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Answer in one short word: is the sky blue?\"\n        }\n      ]\n    }\n  ]\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/responses",
@@ -309119,7 +309478,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"openai/gpt-5.6-sol\",\n  \"max_output_tokens\": 8000,\n  \"prompt_cache_options\": {\n    \"ttl\": \"12h\"\n  },\n  \"input\": [\n    {\n      \"role\": \"developer\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"{{cachePrefix}} [ttl12h {{ttl12hNonce}}]\",\n          \"prompt_cache_breakpoint\": {\n            \"mode\": \"explicit\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Answer in one short word: is the sky blue?\"\n        }\n      ]\n    }\n  ]\n}"
+              "raw": "{\n  \"model\": \"openai/gpt-5.6-sol\",\n  \"max_output_tokens\": 8000,\n  \"prompt_cache_options\": {\n    \"ttl\": \"12h\"\n  },\n  \"input\": [\n    {\n      \"role\": \"developer\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"[ttl12h {{ttl12hNonce}}] {{cachePrefix}}\",\n          \"prompt_cache_breakpoint\": {\n            \"mode\": \"explicit\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Answer in one short word: is the sky blue?\"\n        }\n      ]\n    }\n  ]\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/responses",
@@ -309157,9 +309516,15 @@
                   "var rr = (body.extra_fields || {}).raw_request;",
                   "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
                   "var wire = JSON.stringify(rr || null);",
-                  "pm.test('prompt_cache_options.ttl 12h stripped on Chat (Chat accepts only 30m)', function () {",
+                  "// gpt-5.6-sol chat is routed to Responses by the compat plugin (folder 168); Responses takes 12h, Chat only 30m.",
+                  "pm.test('prompt_cache_options.ttl 12h kept on Responses, stripped on Chat', function () {",
                   "  pm.expect(rr, 'raw_request missing: ' + txt.slice(0, 300)).to.be.an('object');",
-                  "  pm.expect((rr.prompt_cache_options || {}).ttl, 'request-level ttl forwarded to Chat: ' + wire.slice(0, 400)).to.be.undefined;",
+                  "  if (Array.isArray(rr.input)) {",
+                  "    pm.expect((body.extra_fields || {}).converted_request_type, 'Responses-shaped wire without a conversion: ' + wire.slice(0, 300)).to.eql('responses');",
+                  "    pm.expect((rr.prompt_cache_options || {}).ttl, 'request-level ttl dropped on Responses: ' + wire.slice(0, 400)).to.eql('12h');",
+                  "  } else {",
+                  "    pm.expect((rr.prompt_cache_options || {}).ttl, 'request-level ttl forwarded to Chat: ' + wire.slice(0, 400)).to.be.undefined;",
+                  "  }",
                   "});",
                   "pm.test('usage reports a cache write', function () {",
                   "  var d = ((body.usage || {}).prompt_tokens_details) || {};",
@@ -309183,7 +309548,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"openai/gpt-5.6-sol\",\n  \"max_tokens\": 8000,\n  \"prompt_cache_options\": {\n    \"ttl\": \"12h\"\n  },\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"{{cachePrefix}} [ttl12h {{ttl12hNonce}}]\",\n          \"prompt_cache_breakpoint\": {\n            \"mode\": \"explicit\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Answer in one short word: is the sky blue?\"\n    }\n  ]\n}"
+              "raw": "{\n  \"model\": \"openai/gpt-5.6-sol\",\n  \"max_tokens\": 8000,\n  \"prompt_cache_options\": {\n    \"ttl\": \"12h\"\n  },\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"[ttl12h {{ttl12hNonce}}] {{cachePrefix}}\",\n          \"prompt_cache_breakpoint\": {\n            \"mode\": \"explicit\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Answer in one short word: is the sky blue?\"\n    }\n  ]\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/chat/completions",
@@ -312831,7 +313196,71 @@
       ]
     },
     {
-      "name": "322. Cohere chat stream reports cached tokens (PR #8672) (cohere stream cached tokens)",
+      "name": "322. Codex subagent encrypted_content block survives the fail-soft retry (subagent encrypted block)",
+      "description": "Ticket 11340: Codex on gpt-6.1-sol failed with \"Missing required parameter: 'input[N].content[1].encrypted_content'\"\nwhen consecutive turns hit different Azure resources (East, then West).\n\nCodex multi_agent v1 records the parent task in a subagent thread as an agent_message whose content[1] is\n{\"type\":\"encrypted_content\",\"encrypted_content\":\"...\"}: a block that is nothing but that field. West refuses\nEast's ciphertext, the fail-soft (core/encryptedreasoning.go) strips and retries once, and it used to blank\nthe field on that block, so Azure answered the retry with missing_required_parameter and hid the real refusal.\nThe fix drops a block of type encrypted_content whole (dropsWholeContentBlock); it carries no text.\n\nThe forged reasoning item stands in for the cross-resource ciphertext (Azure refuses it the same way).\nPre-fix this row returns 400 missing_required_parameter; post-fix 200 with only input_text on the agent_message.\nAzure only: OpenAI accepts this forged ciphertext without a refusal, so the retry never fires there.",
+      "item": [
+        {
+          "name": "azure/gpt-6.1-sol /v1/responses Codex subagent agent_message encrypted_content block heals on retry - subagent encrypted block",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text() || '';",
+                  "pm.test('azure: fail-soft retry heals a Codex subagent history instead of returning 400', function () {",
+                  "  pm.expect(text, 'the retry blanked the encrypted_content block (ticket 11340)').to.not.include('missing_required_parameter');",
+                  "  pm.expect(text, 'the upstream refusal reached the client').to.not.include('invalid_encrypted_content');",
+                  "  pm.expect(pm.response.code, 'failed: ' + text).to.equal(200);",
+                  "  pm.expect(pm.response.json().output, 'no output after the stripped retry').to.be.an('array').that.is.not.empty;",
+                  "});",
+                  "pm.test('azure: retried payload drops the encrypted_content block and keeps the task text', function () {",
+                  "  var raw = (pm.response.json().extra_fields || {}).raw_request;",
+                  "  if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+                  "  pm.expect(raw, 'no raw_request returned: ' + text).to.be.an('object');",
+                  "  var agent = (raw.input || []).filter(function (i) { return i.type === 'agent_message'; });",
+                  "  pm.expect(agent.length, 'the agent_message was dropped: ' + JSON.stringify(raw)).to.equal(1);",
+                  "  var types = (agent[0].content || []).map(function (c) { return c.type; });",
+                  "  pm.expect(types, 'expected only the task text block').to.eql(['input_text']);",
+                  "  pm.expect(agent[0].author, 'author lost on the retry').to.equal('/root');",
+                  "  pm.expect(JSON.stringify(raw), 'a ciphertext survived the strip').to.not.include('encrypted_content');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"azure/gpt-6.1-sol\",\"input\":[{\"type\":\"reasoning\",\"id\":\"rs_bfharness0000000000000000000000000000000000322\",\"summary\":[],\"encrypted_content\":\"gAAAAABqdgntZpz92rFHmQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0Iv\"},{\"type\":\"agent_message\",\"id\":\"amsg_bfharness322\",\"author\":\"/root\",\"recipient\":\"/root/reply_number\",\"content\":[{\"type\":\"input_text\",\"text\":\"Message Type: NEW_TASK\\nTask: reply with the number 782.\"},{\"type\":\"encrypted_content\",\"encrypted_content\":\"gAAAAABqdgntZpz92rFHmQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0Iv\"}]},{\"role\":\"user\",\"content\":\"Reply with just the number 782.\"}],\"max_output_tokens\":256}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "323. Cohere chat stream reports cached tokens (PR #8672) (cohere stream cached tokens)",
       "description": "The Cohere chat completion stream built its final usage from message-end without usage.cached_tokens, so prompt_tokens_details.cached_read_tokens was never set on a stream, while the non-streaming chat conversion and both Responses conversions mapped it. The [write] row sends a long prefix that carries a per-run nonce so the first request is cold; the [read] row repeats it after a short pause and pins that the final streamed usage reports cached_read_tokens > 0. Whether a repeat hits Cohere's cache is up to Cohere: a cold read fails the row rather than passing silently.",
       "item": [
         {
