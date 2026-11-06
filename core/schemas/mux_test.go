@@ -2680,3 +2680,42 @@ func TestUsageConvertersKeepIterations(t *testing.T) {
 		t.Fatal("converted Iterations alias the source")
 	}
 }
+
+// TestChatToResponsesKeepsPromptCacheBreakpoint guards the caller's prompt-caching intent across the
+// chat -> Responses conversion. A message block's prompt_cache_breakpoint was not copied, so a chat
+// request the compat plugin routes to Responses (openai/gpt-5.6-sol, whose datasheet disables
+// reasoning with tool calls on chat) reached OpenAI with its explicit 12h breakpoint gone and was
+// cached at the default TTL. The single-block system message is the shape the provider harness sends.
+func TestChatToResponsesKeepsPromptCacheBreakpoint(t *testing.T) {
+	breakpoint := &PromptCacheBreakpoint{Mode: Ptr("explicit"), TTL: Ptr("12h")}
+	img := &ChatInputImage{URL: "https://example.com/a.png"}
+	for _, tc := range []struct {
+		name   string
+		role   ChatMessageRole
+		blocks []ChatContentBlock
+	}{
+		{"system single text block", ChatMessageRoleSystem, []ChatContentBlock{
+			{Type: ChatContentBlockTypeText, Text: Ptr("manual"), PromptCacheBreakpoint: breakpoint},
+		}},
+		{"user text and image", ChatMessageRoleUser, []ChatContentBlock{
+			{Type: ChatContentBlockTypeText, Text: Ptr("manual"), PromptCacheBreakpoint: breakpoint},
+			{Type: ChatContentBlockTypeImage, ImageURLStruct: img, PromptCacheBreakpoint: breakpoint},
+		}},
+		{"unmarked block stays unmarked", ChatMessageRoleUser, []ChatContentBlock{
+			{Type: ChatContentBlockTypeText, Text: Ptr("plain")},
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			msg := ChatMessage{Role: tc.role, Content: &ChatMessageContent{ContentBlocks: tc.blocks}}
+			out := msg.ToResponsesMessages()
+			if len(out) != 1 || out[0].Content == nil || len(out[0].Content.ContentBlocks) != len(tc.blocks) {
+				t.Fatalf("unexpected conversion %+v", out)
+			}
+			for j, block := range out[0].Content.ContentBlocks {
+				if !reflect.DeepEqual(block.PromptCacheBreakpoint, tc.blocks[j].PromptCacheBreakpoint) {
+					t.Errorf("block %d: prompt_cache_breakpoint = %+v, want %+v", j, block.PromptCacheBreakpoint, tc.blocks[j].PromptCacheBreakpoint)
+				}
+			}
+		})
+	}
+}

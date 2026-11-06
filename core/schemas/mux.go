@@ -661,9 +661,10 @@ func (cm *ChatMessage) ToResponsesMessages() []ResponsesMessage {
 				}
 
 				responseBlocks = append(responseBlocks, ResponsesMessageContentBlock{
-					Type:         blockType,
-					Text:         block.Text,
-					GuardContent: block.GuardContent,
+					Type:                  blockType,
+					Text:                  block.Text,
+					GuardContent:          block.GuardContent,
+					PromptCacheBreakpoint: block.PromptCacheBreakpoint, // egress decides whether the target takes it
 				})
 				rb := &responseBlocks[len(responseBlocks)-1]
 				if blockType == ResponsesOutputMessageContentTypeText {

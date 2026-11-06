@@ -2064,12 +2064,18 @@
             "item": "Open Source",
             "icon": "rocket",
             "pages": [
-              "changelogs/v2.4.0",
-              "changelogs/v2.3.2",
-              "changelogs/v2.3.1",
-              "changelogs/v2.3.0",
-              "changelogs/v2.2.6",
-              "changelogs/v2.2.5",
+              "changelogs/v2.5.0",
+              {
+                "group": "October 2026",
+                "pages": [
+                  "changelogs/v2.4.0",
+                  "changelogs/v2.3.2",
+                  "changelogs/v2.3.1",
+                  "changelogs/v2.3.0",
+                  "changelogs/v2.2.6",
+                  "changelogs/v2.2.5"
+                ]
+              },
               {
                 "group": "September 2026",
                 "pages": [
