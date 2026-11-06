@@ -489,7 +489,9 @@ type Log struct {
 	RealtimeInputCorrection *RealtimeInputCorrection         `gorm:"-" json:"-"` // Transient: merge one late transcript into the latest offloaded payload
 
 	RedactionData            *schemas.RedactionData        `gorm:"-" json:"-"`                           // Transient guardrail redaction data consumed by enterprise logstore wrappers
+	RawResponseFormat        schemas.RawResponseFormat     `gorm:"-" json:"-"`                           // Transient: declared format of a streamed RawResponse's frames, so redaction can match text split across them
 	PassthroughParseFormat   schemas.ModelProvider         `gorm:"-" json:"-"`                           // Transient: base provider whose wire format the log writer parses passthrough bodies with; empty skips parsing
+	PassthroughStreamFormat  schemas.RawResponseFormat     `gorm:"-" json:"-"`                           // Transient: declared format of a streamed passthrough response body's events, so redaction can match text split across them
 	PassthroughParseMaxBytes int64                         `gorm:"-" json:"-"`                           // Transient: large-payload request threshold applied to media parsed from passthrough bodies; 0 keeps everything
 	RedactionMapping         string                        `gorm:"type:text" json:"-"`                   // Reversible redaction mapping (encrypted when an encryption key is set), written by enterprise logstore wrappers; deleted with the row
 	RevealRedactionMapping   *schemas.RedactionMapsByPhase `gorm:"-" json:"redaction_mapping,omitempty"` // Virtual field populated only on permitted log-detail reads
@@ -1222,7 +1224,10 @@ func (l *Log) DeserializeFields() error {
 			l.usageRebuiltFromColumns = false
 			// Logs stores web search count in num_search_queries (legacy behaviour), we map it to tool_usage so that repricing bills it.
 			if u := l.TokenUsageParsed; u != nil && u.CompletionTokensDetails != nil && u.CompletionTokensDetails.NumSearchQueries != nil && *u.CompletionTokensDetails.NumSearchQueries > 0 {
-				u.ToolUsage = &schemas.ToolUsage{WebSearch: &schemas.WebSearchToolUsage{NumRequests: *u.CompletionTokensDetails.NumSearchQueries}}
+				if u.ToolUsage == nil {
+					u.ToolUsage = &schemas.ToolUsage{}
+				}
+				u.ToolUsage.WebSearch = &schemas.WebSearchToolUsage{NumRequests: *u.CompletionTokensDetails.NumSearchQueries}
 			}
 		}
 	}
@@ -1994,6 +1999,7 @@ type MCPToolLog struct {
 	LLMRequestID       *string   `gorm:"type:varchar(255);column:llm_request_id;index:idx_mcp_logs_llm_request_id" json:"llm_request_id,omitempty"` // Links to the LLM request that triggered this tool call
 	SessionID          *string   `gorm:"type:varchar(255);index:idx_mcp_logs_session_id,where:session_id IS NOT NULL" json:"session_id,omitempty"`
 	AgentCorrelationID *string   `gorm:"type:varchar(255);index:idx_mcp_logs_agent_correlation_id,where:agent_correlation_id IS NOT NULL" json:"agent_correlation_id,omitempty"`
+	RoundTripID        *string   `gorm:"type:varchar(64);index:idx_mcp_logs_round_trip_id,where:round_trip_id IS NOT NULL" json:"round_trip_id,omitempty"` // Shared by every round of one gateway tool call that asked its caller for input
 	Timestamp          time.Time `gorm:"index;index:idx_mcp_logs_vk_ts,priority:2;index:idx_mcp_logs_user_ts,priority:2;index:idx_mcp_logs_team_ts,priority:2;not null" json:"timestamp"`
 	ToolName           string    `gorm:"type:varchar(255);index:idx_mcp_logs_tool_name;not null" json:"tool_name"`
 	ServerLabel        string    `gorm:"type:varchar(255);index:idx_mcp_logs_server_label" json:"server_label,omitempty"` // MCP server that provided the tool
@@ -2297,12 +2303,16 @@ func (j *AsyncJob) ToResponse() *schemas.AsyncJobResponse {
 			}
 		case schemas.ChatCompletionRequest, schemas.ChatCompletionStreamRequest:
 			var result schemas.BifrostChatResponse
-			if err := sonic.Unmarshal([]byte(j.Response), &result); err == nil {
+			data := []byte(j.Response)
+			if err := sonic.Unmarshal(data, &result); err == nil {
+				result.Usage.PreserveTokenCountZeros(data, "usage.prompt_tokens", "usage.completion_tokens")
 				resp.Result = &result
 			}
 		case schemas.TextCompletionRequest, schemas.TextCompletionStreamRequest:
 			var result schemas.BifrostTextCompletionResponse
-			if err := sonic.Unmarshal([]byte(j.Response), &result); err == nil {
+			data := []byte(j.Response)
+			if err := sonic.Unmarshal(data, &result); err == nil {
+				result.Usage.PreserveTokenCountZeros(data, "usage.prompt_tokens", "usage.completion_tokens")
 				resp.Result = &result
 			}
 		case schemas.EmbeddingRequest:
@@ -2467,6 +2477,7 @@ type MCPToolLogSearchFilters struct {
 	AgentNames         []string   `json:"agent_names,omitempty"`
 	SessionID          string     `json:"session_id,omitempty"`
 	AgentCorrelationID string     `json:"agent_correlation_id,omitempty"`
+	RoundTripID        string     `json:"round_trip_id,omitempty"`
 	Apps               []string   `json:"apps,omitempty"`        // Backend-detected client apps
 	UserAgents         []string   `json:"user_agents,omitempty"` // Raw User-Agent strings; kept for compatibility/debug filtering
 	StartTime          *time.Time `json:"start_time,omitempty"`
@@ -3270,6 +3281,14 @@ func serializeTokenUsage(u *schemas.BifrostLLMUsage) *schemas.BifrostLLMUsage {
 	}
 	stored := *u
 	stored.ToolUsage = nil
+	// These have no legacy column, so they stay on tool_usage for repricing. OpenAI sends zero image counts on every response.
+	if len(u.ToolUsage.ContainerSessions) > 0 || u.ToolUsage.ImageGen.HasTokens() {
+		stored.ToolUsage = &schemas.ToolUsage{ContainerSessions: u.ToolUsage.ContainerSessions}
+		if u.ToolUsage.ImageGen.HasTokens() {
+			stored.ToolUsage.ImageGen = u.ToolUsage.ImageGen
+			stored.ToolUsage.ImageGenModel = u.ToolUsage.ImageGenModel
+		}
+	}
 	if ws := u.ToolUsage.WebSearch; ws != nil && ws.NumRequests > 0 {
 		details := schemas.ChatCompletionTokensDetails{}
 		if u.CompletionTokensDetails != nil {

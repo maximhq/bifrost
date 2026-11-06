@@ -954,13 +954,18 @@ func TestMCPGateway_RecordsCallerCapabilities(t *testing.T) {
 type inputRequiringToolManager struct {
 	echoToolManager
 	resumed atomic.Pointer[mcp.MultiRoundTripParams]
+	carried atomic.Pointer[string]
 }
 
 func (m *inputRequiringToolManager) ExecuteChatMCPTool(ctx context.Context, _ *schemas.ChatAssistantMessageToolCall) (*schemas.ChatMessage, *schemas.BifrostError) {
+	carried, _ := ctx.Value(schemas.BifrostContextKeyMCPRoundTripID).(string)
+	m.carried.Store(&carried)
 	if resume, _ := ctx.Value(schemas.BifrostContextKeyMCPInputResumption).(*mcp.MultiRoundTripParams); resume != nil {
 		m.resumed.Store(resume)
-		done := "deployed to staging"
-		return &schemas.ChatMessage{Content: &schemas.ChatMessageContent{ContentStr: &done}}, nil
+		if len(resume.InputResponses) > 0 {
+			done := "deployed to staging"
+			return &schemas.ChatMessage{Content: &schemas.ChatMessageContent{ContentStr: &done}}, nil
+		}
 	}
 	result := &mcp.CallToolResult{
 		Result:               mcp.Result{ResultType: mcp.ResultTypeInputRequired},
@@ -973,8 +978,9 @@ func (m *inputRequiringToolManager) ExecuteChatMCPTool(ctx context.Context, _ *s
 	return message, nil
 }
 
-// A 2026-07-28 caller gets an upstream's input_required unchanged, and its retry's answers and
-// requestState reach core.
+// A 2026-07-28 caller gets an upstream's input_required with the upstream's requestState wrapped in the
+// call's round-trip id; its retry's answers reach core with the upstream's own state, and the id stays
+// with the call across rounds while a separate call gets its own.
 func TestMCPGateway_PassesInputRequiredThrough(t *testing.T) {
 	tm := &inputRequiringToolManager{echoToolManager: echoToolManager{fakeInstructionsToolManager{}}}
 	h, err := NewMCPServerHandler(context.Background(), &lib.Config{ClientConfig: &configstore.ClientConfig{}}, tm, nil, nil, nil)
@@ -1000,12 +1006,32 @@ func TestMCPGateway_PassesInputRequiredThrough(t *testing.T) {
 	require.True(t, result.NeedsInput(), "the caller gets the upstream's input_required")
 	require.Contains(t, result.InputRequests, "env")
 	assert.Equal(t, "Which environment?", result.InputRequests["env"].Elicitation.Message)
-	assert.Equal(t, "s1", result.RequestState)
+	id, upstream := coremcp.UnwrapRoundTripState(result.RequestState)
+	require.NotEmpty(t, id, "the requestState names the call: %q", result.RequestState)
+	assert.Equal(t, "s1", upstream)
 	assert.Nil(t, tm.resumed.Load(), "a first call carries nothing to resume")
+	assert.Empty(t, *tm.carried.Load())
+
+	// A retry without answers is asked again and keeps the call's id.
+	retry := call
+	retry.Params.RequestState = result.RequestState
+	again, err := c.CallTool(ctx, retry)
+	require.NoError(t, err)
+	require.True(t, again.NeedsInput())
+	assert.Equal(t, result.RequestState, again.RequestState, "a round that asks again keeps the call's id")
+	assert.Equal(t, id, *tm.carried.Load(), "core sees the id the retry carried")
+	assert.Equal(t, "s1", tm.resumed.Load().RequestState, "the upstream gets its own state back")
+
+	// A separate call to the same server, which issues the same state, is its own round trip.
+	other, err := c.CallTool(ctx, call)
+	require.NoError(t, err)
+	otherID, otherUpstream := coremcp.UnwrapRoundTripState(other.RequestState)
+	assert.Equal(t, "s1", otherUpstream)
+	assert.NotEqual(t, id, otherID, "separate calls get separate ids")
 
 	answer := mcp.ElicitationResult{ElicitationResponse: mcp.ElicitationResponse{Action: mcp.ElicitationResponseActionAccept, Content: map[string]any{"env": "staging"}}}
 	call.Params.InputResponses = mcp.InputResponses{"env": mcp.NewElicitationInputResponse(answer)}
-	call.Params.RequestState = result.RequestState
+	call.Params.RequestState = again.RequestState
 	result, err = c.CallTool(ctx, call)
 	require.NoError(t, err)
 	require.False(t, result.NeedsInput())
@@ -1014,6 +1040,14 @@ func TestMCPGateway_PassesInputRequiredThrough(t *testing.T) {
 	require.NotNil(t, resumed, "the retry's answers must reach core")
 	assert.Equal(t, "s1", resumed.RequestState)
 	require.Contains(t, resumed.InputResponses, "env")
+	assert.Equal(t, id, *tm.carried.Load())
+
+	// A state Bifrost did not wrap reaches the upstream unchanged, with no id.
+	call.Params.RequestState = "s1"
+	_, err = c.CallTool(ctx, call)
+	require.NoError(t, err)
+	assert.Equal(t, "s1", tm.resumed.Load().RequestState)
+	assert.Empty(t, *tm.carried.Load())
 }
 
 // A caller narrowed away from the owning client lists none of its prompts or resources and gets
@@ -2082,16 +2116,20 @@ func TestMCPGateway_MCPAppsForPerCallerClients(t *testing.T) {
 	read(gateway("", hostsApps), "ui://notes/notes/board")
 }
 
-// recordingGatewayManager records the tool names the gateway executes.
+// recordingGatewayManager records the tool names the gateway executes, and the server-given name each
+// call was made with, as the MCP log reads it from ctx ("" for an exact name).
 type recordingGatewayManager struct {
 	coreGatewayManager
-	mu    sync.Mutex
-	names []string
+	mu        sync.Mutex
+	names     []string
+	requested []string
 }
 
 func (r *recordingGatewayManager) ExecuteChatMCPTool(ctx context.Context, call *schemas.ChatAssistantMessageToolCall) (*schemas.ChatMessage, *schemas.BifrostError) {
+	requested, _ := ctx.Value(schemas.BifrostContextKeyMCPRequestedToolName).(string)
 	r.mu.Lock()
 	r.names = append(r.names, *call.Function.Name)
+	r.requested = append(r.requested, requested)
 	r.mu.Unlock()
 	return r.coreGatewayManager.ExecuteChatMCPTool(ctx, call)
 }
@@ -2190,7 +2228,7 @@ func TestMCPGateway_ServerGivenToolNames(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			c := connect(t, tc.path)
 			tm.mu.Lock()
-			tm.names = nil
+			tm.names, tm.requested = nil, nil
 			tm.mu.Unlock()
 			if tc.want == notFound {
 				req := mcp.CallToolRequest{}
@@ -2216,6 +2254,11 @@ func TestMCPGateway_ServerGivenToolNames(t *testing.T) {
 				assert.Empty(t, tm.names, "a refused alias never reaches Bifrost's executor")
 			} else {
 				assert.Equal(t, []string{tc.runs}, tm.names, "plugins and logs see the prefixed name")
+				requested := ""
+				if tc.tool != tc.runs {
+					requested = tc.tool
+				}
+				assert.Equal(t, []string{requested}, tm.requested, "the log keeps the server-given name a call was made with")
 			}
 		})
 	}

@@ -928,7 +928,7 @@ func TestDatabricksChatStripsAnthropicOnlyFields(t *testing.T) {
 			TaskBudget:        &schemas.ChatTaskBudget{},
 			Container:         &schemas.ChatContainer{},
 			MCPServers:        []schemas.ChatMCPServer{{Name: "docs"}},
-			ExtraParams:       map[string]any{"databricks_test_param": "kept"},
+			ExtraParams:       map[string]any{"databricks_test_param": "kept", "safeguards": json.RawMessage(`{"z":1}`)},
 		},
 	}
 
@@ -942,7 +942,7 @@ func TestDatabricksChatStripsAnthropicOnlyFields(t *testing.T) {
 	defer mu.Unlock()
 	for _, field := range []string{
 		"context_management", "cache_control", "speed", "inference_geo",
-		"task_budget", "container", "mcp_servers",
+		"task_budget", "container", "mcp_servers", "safeguards",
 	} {
 		if _, exists := gotBody[field]; exists {
 			t.Errorf("%s reached Databricks: %#v", field, gotBody[field])
@@ -951,8 +951,130 @@ func TestDatabricksChatStripsAnthropicOnlyFields(t *testing.T) {
 	if gotBody["databricks_test_param"] != "kept" {
 		t.Errorf("unrelated extra param: got %#v, want %q", gotBody["databricks_test_param"], "kept")
 	}
-	if request.Params.CacheControl == nil || request.Params.Speed == nil || len(request.Params.MCPServers) == 0 {
+	if request.Params.CacheControl == nil || request.Params.Speed == nil || len(request.Params.MCPServers) == 0 ||
+		request.Params.ExtraParams["safeguards"] == nil {
 		t.Error("sanitizing the wire request mutated the original request")
+	}
+}
+
+// TestDatabricksChatStripsSafeguardsOnly pins safeguards as the sole trigger: with no other
+// Anthropic-only field set, it alone must still be dropped from the wire.
+func TestDatabricksChatStripsSafeguardsOnly(t *testing.T) {
+	t.Parallel()
+
+	var mu sync.Mutex
+	var gotBody map[string]any
+	provider, server := newStubProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode request body: %v", err)
+		}
+		mu.Lock()
+		gotBody = body
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(stubChatResponse))
+	})
+
+	key := schemas.Key{
+		Models: []string{"*"},
+		Value:  *schemas.NewSecretVar("dapi-test"),
+		DatabricksKeyConfig: &schemas.DatabricksKeyConfig{
+			WorkspaceURL: *schemas.NewSecretVar(serverHost(t, server)),
+		},
+	}
+	request := &schemas.BifrostChatRequest{
+		Provider: schemas.Databricks,
+		Model:    "databricks-claude-sonnet-4-5",
+		Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hey")}}},
+		Params: &schemas.ChatParameters{
+			ExtraParams: map[string]any{"databricks_test_param": "kept", "safeguards": json.RawMessage(`{"z":1}`)},
+		},
+	}
+
+	ctx, cancel := schemas.NewBifrostContextWithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if _, bErr := provider.ChatCompletion(ctx, key, request); bErr != nil {
+		t.Fatalf("ChatCompletion returned an error: %v", bErr)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if _, exists := gotBody["safeguards"]; exists {
+		t.Errorf("safeguards reached Databricks: %#v", gotBody["safeguards"])
+	}
+	if gotBody["databricks_test_param"] != "kept" {
+		t.Errorf("unrelated extra param: got %#v, want %q", gotBody["databricks_test_param"], "kept")
+	}
+	if request.Params.ExtraParams["safeguards"] == nil || request.Params.ExtraParams["databricks_test_param"] != "kept" {
+		t.Errorf("sanitizing the wire request mutated the caller's ExtraParams: %#v", request.Params.ExtraParams)
+	}
+}
+
+// TestDatabricksResponsesStripsAnthropicOnlyFields pins the Claude Code shape on the
+// Responses surface: /anthropic/v1/messages carries context_management and safeguards in
+// ExtraParams, and Databricks forwards ExtraParams, so both reached the wire and the endpoint
+// answered "safeguards: Extra inputs are not permitted".
+func TestDatabricksResponsesStripsAnthropicOnlyFields(t *testing.T) {
+	t.Parallel()
+
+	var mu sync.Mutex
+	var gotBody map[string]any
+	provider, server := newStubProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode request body: %v", err)
+		}
+		mu.Lock()
+		gotBody = body
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(stubResponsesResponse))
+	})
+
+	key := schemas.Key{
+		Models: []string{"*"},
+		Value:  *schemas.NewSecretVar("dapi-test"),
+		DatabricksKeyConfig: &schemas.DatabricksKeyConfig{
+			WorkspaceURL: *schemas.NewSecretVar(serverHost(t, server)),
+		},
+	}
+	tests := []struct {
+		name  string
+		extra map[string]any
+	}{
+		{"safeguards only", map[string]any{"databricks_test_param": "kept", "safeguards": json.RawMessage(`{"z":1}`)}},
+		{"safeguards and context_management", map[string]any{
+			"databricks_test_param": "kept",
+			"safeguards":            json.RawMessage(`{"z":1}`),
+			"context_management":    json.RawMessage(`{"edits":[{"type":"clear_thinking_20251015","keep":"all"}]}`),
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			request := responsesRequest("databricks-claude-sonnet-4-5")
+			request.Params = &schemas.ResponsesParameters{ExtraParams: tt.extra}
+
+			ctx, cancel := schemas.NewBifrostContextWithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			if _, bErr := provider.Responses(ctx, key, request); bErr != nil {
+				t.Fatalf("Responses returned an error: %v", bErr)
+			}
+
+			mu.Lock()
+			defer mu.Unlock()
+			for _, field := range []string{"safeguards", "context_management"} {
+				if _, exists := gotBody[field]; exists {
+					t.Errorf("%s reached Databricks: %#v", field, gotBody[field])
+				}
+			}
+			if gotBody["databricks_test_param"] != "kept" {
+				t.Errorf("unrelated extra param: got %#v, want %q", gotBody["databricks_test_param"], "kept")
+			}
+			if request.Params.ExtraParams["safeguards"] == nil {
+				t.Error("sanitizing the wire request mutated the original request")
+			}
+		})
 	}
 }
 

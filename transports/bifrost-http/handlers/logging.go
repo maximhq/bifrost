@@ -3075,6 +3075,7 @@ func parseMCPCorrelationFilters(ctx *fasthttp.RequestCtx, filters *logstore.MCPT
 	filters.AgentNames = parseCommaSeparated(string(ctx.QueryArgs().Peek("agent_names")))
 	filters.SessionID = strings.TrimSpace(string(ctx.QueryArgs().Peek("session_id")))
 	filters.AgentCorrelationID = strings.TrimSpace(string(ctx.QueryArgs().Peek("agent_correlation_id")))
+	filters.RoundTripID = strings.TrimSpace(string(ctx.QueryArgs().Peek("round_trip_id")))
 }
 
 // parseMCPFiltersAndPagination parses MCP tool log filters and pagination from query parameters.

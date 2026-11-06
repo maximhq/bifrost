@@ -1190,3 +1190,38 @@ func TestClearContextForInternalRequestKeepsTheAnthropicStreamPromptUsageWitness
 		})
 	}
 }
+
+// Only a video edit that names an existing video is walked across keys; one that uploads content keeps normal key selection.
+func TestIsKeyScopedLookupRequest_VideoEdit(t *testing.T) {
+	byID := &schemas.BifrostRequest{RequestType: schemas.VideoEditRequest, VideoEditRequest: &schemas.BifrostVideoEditRequest{Input: &schemas.VideoEditInput{Video: schemas.VideoInput{ID: "video_1"}}}}
+	byBytes := &schemas.BifrostRequest{RequestType: schemas.VideoEditRequest, VideoEditRequest: &schemas.BifrostVideoEditRequest{Input: &schemas.VideoEditInput{Video: schemas.VideoInput{Video: []byte("x")}}}}
+	if !isKeyScopedLookupRequest(byID) {
+		t.Fatal("edit by id should be walked across keys")
+	}
+	if isKeyScopedLookupRequest(byBytes) {
+		t.Fatal("edit with uploaded content should keep normal key selection")
+	}
+}
+
+// A Responses stream failure carries the event name ("response.failed", "error") as its top-level
+// type and the provider's error type nested; the fallback attempt reports the nested one, and a
+// refusal that sets only the top-level type (governance) keeps it.
+func TestFallbackAttemptOfPrefersNestedErrorType(t *testing.T) {
+	fallback := schemas.Fallback{Provider: "prov-b", Model: "m-b"}
+	cases := []struct {
+		name string
+		err  *schemas.BifrostError
+		want string
+	}{
+		{"response.failed event", &schemas.BifrostError{Type: schemas.Ptr("response.failed"), Error: &schemas.ErrorField{Type: schemas.Ptr("server_error"), Message: "upstream failed"}}, "server_error"},
+		{"error event", &schemas.BifrostError{Type: schemas.Ptr("error"), Error: &schemas.ErrorField{Type: schemas.Ptr("rate_limit_exceeded"), Message: "slow down"}}, "rate_limit_exceeded"},
+		{"top-level type only", &schemas.BifrostError{Type: schemas.Ptr("provider_blocked"), Error: &schemas.ErrorField{Message: "not allowed"}}, "provider_blocked"},
+		{"empty nested type", &schemas.BifrostError{Type: schemas.Ptr("provider_blocked"), Error: &schemas.ErrorField{Type: schemas.Ptr(""), Message: "not allowed"}}, "provider_blocked"},
+		{"nested type only", &schemas.BifrostError{Error: &schemas.ErrorField{Type: schemas.Ptr("invalid_request_error"), Message: "bad"}}, "invalid_request_error"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, fallbackAttemptOf(fallback, tc.err).Type)
+		})
+	}
+}

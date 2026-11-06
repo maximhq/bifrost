@@ -40,6 +40,7 @@ function buildMCPFilterParams(filters: MCPToolLogFilters): Record<string, string
 	}
 	if (filters.session_id) params.session_id = filters.session_id;
 	if (filters.agent_correlation_id) params.agent_correlation_id = filters.agent_correlation_id;
+	if (filters.round_trip_id) params.round_trip_id = filters.round_trip_id;
 	if (filters.apps && filters.apps.length > 0) {
 		params.apps = JSON.stringify(filters.apps);
 	}

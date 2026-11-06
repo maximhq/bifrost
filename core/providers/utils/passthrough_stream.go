@@ -80,6 +80,7 @@ func StreamPassthroughHTTP(
 	return streamPassthrough(ctx, postHookRunner, postHookSpanFinalizer, func() { _ = body.Close() }, body, params)
 }
 
+// streamPassthrough is the loop behind StreamPassthrough and StreamPassthroughHTTP; release frees the upstream body.
 func streamPassthrough(
 	ctx *schemas.BifrostContext,
 	postHookRunner schemas.PostHookRunner,
@@ -115,6 +116,10 @@ func streamPassthrough(
 
 		var pending bytes.Buffer
 		var usage *schemas.BifrostPassthroughUsage
+		// Each forwarded chunk is stamped like a typed stream chunk: accumulators fed by several
+		// plugins de-duplicate on ChunkIndex, and telemetry reads per-chunk latency.
+		chunkIndex := 0
+		lastChunkTime := params.StartTime
 
 		success := params.StatusCode >= 200 && params.StatusCode < 300
 
@@ -205,6 +210,7 @@ func streamPassthrough(
 
 		finalize := func() {
 			ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+			extraFields.ChunkIndex = chunkIndex
 			extraFields.Latency = time.Since(params.StartTime).Milliseconds()
 			extraFields.RawRequest = params.RawRequest
 			final := &schemas.BifrostPassthroughResponse{
@@ -225,6 +231,10 @@ func streamPassthrough(
 			if n > 0 {
 				chunk := make([]byte, n)
 				copy(chunk, buf[:n])
+				extraFields.ChunkIndex = chunkIndex
+				extraFields.Latency = time.Since(lastChunkTime).Milliseconds()
+				lastChunkTime = time.Now()
+				chunkIndex++
 				// Forward the raw chunk to the client unchanged.
 				ProcessAndSendResponse(ctx, postHookRunner, &schemas.BifrostResponse{
 					PassthroughResponse: &schemas.BifrostPassthroughResponse{
