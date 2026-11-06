@@ -255,6 +255,26 @@ func NewAdminConfiguredHTTPClient(timeout time.Duration) *http.Client {
 	return newOAuthDiscoveryHTTPClient(withRequirePublicTarget(context.Background(), false), timeout)
 }
 
+// requestContext is the context an outbound OAuth request runs under: ctx's
+// cancellation and deadline, none of its values. net/http dials on a goroutine
+// that can outlive the request and reads values from its context while it
+// dials. Handlers pass a *fasthttp.RequestCtx, whose user values are not safe
+// for concurrent use, and keep writing them once the call returns. Every value
+// this chain needs is read from ctx before the request is built (the
+// destination policy, by newOAuthDiscoveryHTTPClient), so dropping them here
+// loses nothing.
+func requestContext(ctx context.Context) context.Context {
+	if ctx == nil {
+		return context.Background()
+	}
+	return valuelessContext{ctx}
+}
+
+// valuelessContext forwards Deadline, Done and Err and answers every Value with nil.
+type valuelessContext struct{ context.Context }
+
+func (valuelessContext) Value(any) any { return nil }
+
 // newOAuthDiscoveryHTTPClient returns a client for the OAuth chain whose
 // transport applies the destination policy recorded on ctx (see
 // requirePublicTargetFrom).
@@ -338,7 +358,7 @@ func DiscoverOAuthMetadata(ctx context.Context, serverURL string) (*OAuthMetadat
 	// Step 1: Attempt to connect to MCP server, expect 401 with WWW-Authenticate header
 	client := newOAuthDiscoveryHTTPClient(ctx, 10*time.Second)
 
-	req, err := http.NewRequestWithContext(ctx, "GET", serverURL, nil)
+	req, err := http.NewRequestWithContext(requestContext(ctx), "GET", serverURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
@@ -455,7 +475,7 @@ func parseWWWAuthenticateHeader(header string) (resourceMetadataURL string, scop
 func fetchResourceMetadata(ctx context.Context, metadataURL, serverURL string) ([]string, []string, string, error) {
 	client := newOAuthDiscoveryHTTPClient(ctx, 10*time.Second)
 
-	req, err := http.NewRequestWithContext(ctx, "GET", metadataURL, nil)
+	req, err := http.NewRequestWithContext(requestContext(ctx), "GET", metadataURL, nil)
 	if err != nil {
 		return nil, nil, "", err
 	}
@@ -579,7 +599,7 @@ func fetchSingleAuthServerMetadata(ctx context.Context, issuer string, usable fu
 	var mismatch error
 	for _, candidateURL := range candidateURLs {
 		logger.Debug(fmt.Sprintf("[OAuth Discovery] Trying metadata endpoint: %s", candidateURL))
-		req, err := http.NewRequestWithContext(ctx, "GET", candidateURL, nil)
+		req, err := http.NewRequestWithContext(requestContext(ctx), "GET", candidateURL, nil)
 		if err != nil {
 			continue
 		}
@@ -878,7 +898,7 @@ func RegisterDynamicClient(ctx context.Context, registrationURL string, req *Dyn
 	}
 
 	// Create HTTP request
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", registrationURL, strings.NewReader(string(reqBody)))
+	httpReq, err := http.NewRequestWithContext(requestContext(ctx), "POST", registrationURL, strings.NewReader(string(reqBody)))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create registration request: %w", err)
 	}

@@ -581,6 +581,79 @@ func TestValidateKeyOAuthKeyConfig(t *testing.T) {
 	})
 }
 
+func TestValidateKeyAnthropicWorkloadIdentity(t *testing.T) {
+	wif := func(mutate func(*schemas.AnthropicWorkloadIdentityConfig)) *schemas.AnthropicKeyConfig {
+		c := &schemas.AnthropicWorkloadIdentityConfig{
+			FederationRuleID: *schemas.NewSecretVar("fdrl_rule"),
+			OrganizationID:   *schemas.NewSecretVar("00000000-0000-0000-0000-000000000000"),
+			ServiceAccountID: *schemas.NewSecretVar("svac_account"),
+			IdentitySource:   &schemas.IdentitySource{Type: schemas.IdentitySourceFile, Path: schemas.NewSecretVar("/var/run/secrets/anthropic.com/token")},
+		}
+		if mutate != nil {
+			mutate(c)
+		}
+		return &schemas.AnthropicKeyConfig{WorkloadIdentity: c}
+	}
+
+	tests := []struct {
+		name      string
+		key       schemas.Key
+		wantError string
+	}{
+		{name: "a token file is sufficient", key: schemas.Key{AnthropicKeyConfig: wif(nil)}},
+		{name: "an inline token is sufficient", key: schemas.Key{AnthropicKeyConfig: wif(func(c *schemas.AnthropicWorkloadIdentityConfig) {
+			c.IdentitySource = &schemas.IdentitySource{Type: schemas.IdentitySourceInline, Token: schemas.NewSecretVar("eyJ.eyJ.sig")}
+		})}},
+		{name: "env-backed references count as present", key: schemas.Key{AnthropicKeyConfig: wif(func(c *schemas.AnthropicWorkloadIdentityConfig) {
+			c.FederationRuleID = *schemas.NewSecretVar("env.ANTHROPIC_FEDERATION_RULE_ID_UNSET_IN_TEST")
+			c.IdentitySource = &schemas.IdentitySource{Type: schemas.IdentitySourceInline, Token: schemas.NewSecretVar("env.ANTHROPIC_IDENTITY_TOKEN_UNSET_IN_TEST")}
+		})}},
+		{name: "a value alongside an incomplete config keeps the key usable", key: schemas.Key{Value: *schemas.NewSecretVar("sk-ant"), AnthropicKeyConfig: wif(func(c *schemas.AnthropicWorkloadIdentityConfig) {
+			c.ServiceAccountID = schemas.SecretVar{}
+		})}},
+		{name: "an empty anthropic_key_config is ignored", key: schemas.Key{Value: *schemas.NewSecretVar("sk-ant"), AnthropicKeyConfig: &schemas.AnthropicKeyConfig{}}},
+		{name: "missing rule", key: schemas.Key{AnthropicKeyConfig: wif(func(c *schemas.AnthropicWorkloadIdentityConfig) { c.FederationRuleID = *schemas.NewSecretVar(" ") })}, wantError: "federation_rule_id is required"},
+		{name: "missing organization", key: schemas.Key{AnthropicKeyConfig: wif(func(c *schemas.AnthropicWorkloadIdentityConfig) { c.OrganizationID = schemas.SecretVar{} })}, wantError: "organization_id is required"},
+		{name: "missing service account", key: schemas.Key{AnthropicKeyConfig: wif(func(c *schemas.AnthropicWorkloadIdentityConfig) { c.ServiceAccountID = schemas.SecretVar{} })}, wantError: "service_account_id is required"},
+		{name: "no identity source", key: schemas.Key{AnthropicKeyConfig: wif(func(c *schemas.AnthropicWorkloadIdentityConfig) { c.IdentitySource = nil })}, wantError: "identity_source is required"},
+		{name: "a file source without a path", key: schemas.Key{AnthropicKeyConfig: wif(func(c *schemas.AnthropicWorkloadIdentityConfig) { c.IdentitySource.Path = nil })}, wantError: "of type file needs path and no token"},
+		{name: "a file source that also carries a token", key: schemas.Key{AnthropicKeyConfig: wif(func(c *schemas.AnthropicWorkloadIdentityConfig) {
+			c.IdentitySource.Token = schemas.NewSecretVar("eyJ.eyJ.sig")
+		})}, wantError: "of type file needs path and no token"},
+		{name: "an inline source without a token", key: schemas.Key{AnthropicKeyConfig: wif(func(c *schemas.AnthropicWorkloadIdentityConfig) {
+			c.IdentitySource = &schemas.IdentitySource{Type: schemas.IdentitySourceInline, Token: schemas.NewSecretVar(" ")}
+		})}, wantError: "of type inline needs token and no path"},
+		{name: "an unknown source type", key: schemas.Key{AnthropicKeyConfig: wif(func(c *schemas.AnthropicWorkloadIdentityConfig) { c.IdentitySource.Type = "gcp_metadata" })}, wantError: "identity_source.type must be file or inline"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			key := tt.key
+			err := validateKey(schemas.Anthropic, &key)
+			if tt.wantError == "" {
+				assert.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantError)
+		})
+	}
+
+	t.Run("a federated key may have no value only on an anthropic-based provider", func(t *testing.T) {
+		assert.True(t, keyValueMayBeEmpty(schemas.Anthropic, &schemas.Key{AnthropicKeyConfig: wif(nil)}))
+		assert.False(t, keyValueMayBeEmpty(schemas.Anthropic, &schemas.Key{}))
+		assert.False(t, keyValueMayBeEmpty(schemas.Anthropic, &schemas.Key{AnthropicKeyConfig: &schemas.AnthropicKeyConfig{}}))
+		assert.False(t, keyValueMayBeEmpty(schemas.OpenAI, &schemas.Key{AnthropicKeyConfig: wif(nil)}))
+	})
+
+	t.Run("workload identity is refused on a provider that does not federate", func(t *testing.T) {
+		key := schemas.Key{AnthropicKeyConfig: wif(nil)}
+		err := validateKey(schemas.OpenAI, &key)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "only supported on anthropic")
+	})
+}
+
 // A request cancelled at the same instant its backoff expires must still be
 // reported as cancelled: Go's select picks uniformly among ready cases, so a
 // timer-only check lets roughly half of such requests run one more attempt
@@ -1114,6 +1187,41 @@ func TestClearContextForInternalRequestKeepsTheAnthropicStreamPromptUsageWitness
 					t.Errorf("usage.%s is %s, want %d (%s)", key, got.Raw, want, frame)
 				}
 			}
+		})
+	}
+}
+
+// Only a video edit that names an existing video is walked across keys; one that uploads content keeps normal key selection.
+func TestIsKeyScopedLookupRequest_VideoEdit(t *testing.T) {
+	byID := &schemas.BifrostRequest{RequestType: schemas.VideoEditRequest, VideoEditRequest: &schemas.BifrostVideoEditRequest{Input: &schemas.VideoEditInput{Video: schemas.VideoInput{ID: "video_1"}}}}
+	byBytes := &schemas.BifrostRequest{RequestType: schemas.VideoEditRequest, VideoEditRequest: &schemas.BifrostVideoEditRequest{Input: &schemas.VideoEditInput{Video: schemas.VideoInput{Video: []byte("x")}}}}
+	if !isKeyScopedLookupRequest(byID) {
+		t.Fatal("edit by id should be walked across keys")
+	}
+	if isKeyScopedLookupRequest(byBytes) {
+		t.Fatal("edit with uploaded content should keep normal key selection")
+	}
+}
+
+// A Responses stream failure carries the event name ("response.failed", "error") as its top-level
+// type and the provider's error type nested; the fallback attempt reports the nested one, and a
+// refusal that sets only the top-level type (governance) keeps it.
+func TestFallbackAttemptOfPrefersNestedErrorType(t *testing.T) {
+	fallback := schemas.Fallback{Provider: "prov-b", Model: "m-b"}
+	cases := []struct {
+		name string
+		err  *schemas.BifrostError
+		want string
+	}{
+		{"response.failed event", &schemas.BifrostError{Type: schemas.Ptr("response.failed"), Error: &schemas.ErrorField{Type: schemas.Ptr("server_error"), Message: "upstream failed"}}, "server_error"},
+		{"error event", &schemas.BifrostError{Type: schemas.Ptr("error"), Error: &schemas.ErrorField{Type: schemas.Ptr("rate_limit_exceeded"), Message: "slow down"}}, "rate_limit_exceeded"},
+		{"top-level type only", &schemas.BifrostError{Type: schemas.Ptr("provider_blocked"), Error: &schemas.ErrorField{Message: "not allowed"}}, "provider_blocked"},
+		{"empty nested type", &schemas.BifrostError{Type: schemas.Ptr("provider_blocked"), Error: &schemas.ErrorField{Type: schemas.Ptr(""), Message: "not allowed"}}, "provider_blocked"},
+		{"nested type only", &schemas.BifrostError{Error: &schemas.ErrorField{Type: schemas.Ptr("invalid_request_error"), Message: "bad"}}, "invalid_request_error"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, fallbackAttemptOf(fallback, tc.err).Type)
 		})
 	}
 }

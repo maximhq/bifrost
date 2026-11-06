@@ -1,4 +1,7 @@
+import type { TFunction } from "i18next";
+import i18n from "@/lib/i18n";
 // Known provider names array - centralized definition
+import { withBasePath } from "@/lib/utils/basePath";
 export const KnownProvidersNames = [
 	"anthropic",
 	"azure",
@@ -78,6 +81,10 @@ export const EmbeddingSupportedProviders: readonly ProviderName[] = [
 ] as const;
 
 export const Statuses = ["success", "error", "processing", "cancelled"] as const;
+
+// MCP logs also have input_required: the server asked the caller for input, and the retry is its own row.
+export const MCPStatuses = [...Statuses, "input_required"] as const;
+export type MCPStatus = (typeof MCPStatuses)[number];
 
 export const RequestTypes = [
 	"list_models",
@@ -221,24 +228,30 @@ export interface ClientApp {
 // every release, so never match on an exact string. Identifiers are best-effort
 // and meant to be extended as new clients appear.
 const userAgentAppMatchers: { identifiers: string[]; app: ClientApp }[] = [
-	{ identifiers: ["bifrost-warp"], app: { name: "Warp", icon: "/images/warp.svg" } },
-	{ identifiers: ["chatgpt-web"], app: { name: "ChatGPT Web", icon: "/images/openai.png" } },
-	{ identifiers: ["claude-chat-web", "claude-web"], app: { name: "Claude Chat Web", icon: "/images/claude-desktop.png" } },
-	{ identifiers: ["claude-desktop"], app: { name: "Claude Desktop", icon: "/images/claude-desktop.png" } },
-	{ identifiers: ["claude-cowork"], app: { name: "Claude Cowork", icon: "/images/claude-desktop.png" } },
-	{ identifiers: ["claude-code", "claude-cli", "claude-vscode"], app: { name: "Claude Code", icon: "/images/claude-code.png" } },
-	{ identifiers: ["codex-cli", "codex-tui"], app: { name: "Codex CLI", icon: "/images/codex.png" } },
-	{ identifiers: ["codex-desktop"], app: { name: "Codex Desktop", icon: "/images/codex.png" } },
-	{ identifiers: ["codex"], app: { name: "Codex Desktop", icon: "/images/codex.png" } },
-	{ identifiers: ["cursor"], app: { name: "Cursor", icon: "/images/cursor.png" } },
-	{ identifiers: ["kilo"], app: { name: "Kilo Code", icon: "/images/kilo-code.png" } },
-	{ identifiers: ["roo"], app: { name: "Roo Code", icon: "/images/roo-code.png" } },
-	{ identifiers: ["cline"], app: { name: "Cline", icon: "/images/cline.png" } },
-	{ identifiers: ["opencode"], app: { name: "OpenCode", icon: "/images/opencode.png" } },
-	{ identifiers: ["windsurf"], app: { name: "Windsurf", icon: "/images/windsurf.png" } },
-	{ identifiers: ["antigravity-cli"], app: { name: "Antigravity CLI", icon: "/images/harness/antigravity.svg" } },
-	{ identifiers: ["antigravity-desktop", "antigravity/"], app: { name: "Antigravity Desktop", icon: "/images/harness/antigravity.svg" } },
-	{ identifiers: ["gemini", "geminicli"], app: { name: "Gemini CLI", icon: "/images/gemini-cli.png" } },
+	{ identifiers: ["bifrost-warp"], app: { name: "Warp", icon: withBasePath("/images/warp.svg") } },
+	{ identifiers: ["chatgpt-web"], app: { name: "ChatGPT Web", icon: withBasePath("/images/openai.png") } },
+	{ identifiers: ["claude-chat-web", "claude-web"], app: { name: "Claude Chat Web", icon: withBasePath("/images/claude-desktop.png") } },
+	{ identifiers: ["claude-desktop"], app: { name: "Claude Desktop", icon: withBasePath("/images/claude-desktop.png") } },
+	{ identifiers: ["claude-cowork"], app: { name: "Claude Cowork", icon: withBasePath("/images/claude-desktop.png") } },
+	{
+		identifiers: ["claude-code", "claude-cli", "claude-vscode"],
+		app: { name: "Claude Code", icon: withBasePath("/images/claude-code.png") },
+	},
+	{ identifiers: ["codex-cli", "codex-tui"], app: { name: "Codex CLI", icon: withBasePath("/images/codex.png") } },
+	{ identifiers: ["codex-desktop"], app: { name: "Codex Desktop", icon: withBasePath("/images/codex.png") } },
+	{ identifiers: ["codex"], app: { name: "Codex Desktop", icon: withBasePath("/images/codex.png") } },
+	{ identifiers: ["cursor"], app: { name: "Cursor", icon: withBasePath("/images/cursor.png") } },
+	{ identifiers: ["kilo"], app: { name: "Kilo Code", icon: withBasePath("/images/kilo-code.png") } },
+	{ identifiers: ["roo"], app: { name: "Roo Code", icon: withBasePath("/images/roo-code.png") } },
+	{ identifiers: ["cline"], app: { name: "Cline", icon: withBasePath("/images/cline.png") } },
+	{ identifiers: ["opencode"], app: { name: "OpenCode", icon: withBasePath("/images/opencode.png") } },
+	{ identifiers: ["windsurf"], app: { name: "Windsurf", icon: withBasePath("/images/windsurf.png") } },
+	{ identifiers: ["antigravity-cli"], app: { name: "Antigravity CLI", icon: withBasePath("/images/harness/antigravity.svg") } },
+	{
+		identifiers: ["antigravity-desktop", "antigravity/"],
+		app: { name: "Antigravity Desktop", icon: withBasePath("/images/harness/antigravity.svg") },
+	},
+	{ identifiers: ["gemini", "geminicli"], app: { name: "Gemini CLI", icon: withBasePath("/images/gemini-cli.png") } },
 	{ identifiers: ["qwencode", "qwen"], app: { name: "Qwen Code" } },
 ];
 
@@ -274,6 +287,8 @@ export const logAppDisplayName = (app: ClientApp, userAgent?: string | null): st
 	if ((app.name === "Unknown" || app.name === "Other") && userAgent?.trim()) {
 		return userAgent.trim();
 	}
+	if (app.name === "Unknown") return i18n.t("logs.detail.unknown", { ns: "observability" });
+	if (app.name === "Other") return i18n.t("labels.other", { ns: "observability" });
 	return app.name;
 };
 
@@ -289,6 +304,7 @@ export const StatusBarColors = {
 	error: "bg-chart-error",
 	processing: "bg-blue-500",
 	cancelled: "bg-gray-400",
+	input_required: "bg-amber-500",
 } as const;
 
 export const RequestTypeLabels = {
@@ -383,6 +399,11 @@ export const RequestTypeLabels = {
 	live_content: "Live Recording",
 	live_sideband: "Live Sideband",
 } as const;
+
+export function getRequestTypeLabel(type: string, t: TFunction<"observability">): string {
+	const label = RequestTypeLabels[type as keyof typeof RequestTypeLabels];
+	return label ? t(`requestTypes.${type.replaceAll(".", "_")}`, { defaultValue: label }) : type;
+}
 
 export const RequestTypeColors = {
 	"chat.completion": "bg-blue-100 text-blue-800",
@@ -488,6 +509,11 @@ export const RoutingEngineUsedLabels = {
 	"session-affinity": "Session",
 	core: "Core",
 } as const;
+
+export function getRoutingEngineLabel(engine: string, t: TFunction<"observability">): string {
+	const label = RoutingEngineUsedLabels[engine as keyof typeof RoutingEngineUsedLabels];
+	return label ? t(`routingEngineLabels.${engine.replaceAll("-", "_")}`, { defaultValue: label }) : engine;
+}
 
 export const RoutingEngineUsedColors = {
 	"routing-rule": "bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-300",

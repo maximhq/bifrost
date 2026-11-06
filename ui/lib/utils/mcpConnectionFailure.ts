@@ -2,19 +2,26 @@
 // server sheet's reason block, so both surfaces fold and describe the same
 // failure records the same way.
 
+import i18n from "@/lib/i18n";
 import type { MCPClient, MCPConnectionFailure, MCPConnectionState, MCPInstanceState } from "@/lib/types/mcp";
 
-const STAGE_LABELS: Record<string, string> = {
-	connect: "Connecting",
-	ping: "Ping",
-	list_tools: "Listing tools",
-	tool_discovery: "Discovering tools",
-	transport_lost: "Connection dropped",
-	credential: "Credential",
-};
-
 export function failureStageLabel(stage: string): string {
-	return STAGE_LABELS[stage] ?? stage;
+	switch (stage) {
+		case "connect":
+			return i18n.t("registry.failure.stageConnect", { ns: "mcp" });
+		case "ping":
+			return i18n.t("registry.failure.stagePing", { ns: "mcp" });
+		case "list_tools":
+			return i18n.t("registry.failure.stageListTools", { ns: "mcp" });
+		case "tool_discovery":
+			return i18n.t("registry.failure.stageToolDiscovery", { ns: "mcp" });
+		case "transport_lost":
+			return i18n.t("registry.failure.stageTransportLost", { ns: "mcp" });
+		case "credential":
+			return i18n.t("registry.failure.stageCredential", { ns: "mcp" });
+		default:
+			return stage;
+	}
 }
 
 /**
@@ -41,10 +48,15 @@ export function formatDurationSince(iso: string): string {
  * server has been in this state.
  */
 export function formatFailureTiming(failure: MCPConnectionFailure, state: MCPConnectionState): string {
-	const line = `Last failed ${formatDurationSince(failure.at)} ago`;
-	if (!failure.since || failure.since === failure.at) return line;
-	const word = state === "needs_reauth" ? "needs reauth" : state;
-	return `${line} · ${word} for ${formatDurationSince(failure.since)}`;
+	const age = formatDurationSince(failure.at);
+	if (!failure.since || failure.since === failure.at) return i18n.t("registry.failure.lastFailedAgo", { ns: "mcp", age });
+	const word =
+		state === "needs_reauth"
+			? i18n.t("registry.failure.stateNeedsReauth", { ns: "mcp" })
+			: state === "unstable"
+				? i18n.t("registry.failure.stateUnstable", { ns: "mcp" })
+				: state;
+	return i18n.t("registry.failure.lastFailedRun", { ns: "mcp", age, state: word, duration: formatDurationSince(failure.since) });
 }
 
 export interface MCPInstanceGroup {
@@ -92,14 +104,16 @@ export function hasStateReason(client: Pick<MCPClient, "last_failure" | "node_st
 export function stateReasonTitle(state: MCPConnectionState, hasBreakdown: boolean): string {
 	switch (state) {
 		case "degraded":
-			return "Instances disagree about this server's state";
+			return i18n.t("registry.failure.titleDegraded", { ns: "mcp" });
 		case "unstable":
-			return hasBreakdown ? "Last connection check failed on every instance" : "Last connection check failed";
+			return hasBreakdown
+				? i18n.t("registry.failure.titleUnstableAll", { ns: "mcp" })
+				: i18n.t("registry.failure.titleUnstable", { ns: "mcp" });
 		case "needs_reauth":
-			return "Reauthorization required";
+			return i18n.t("registry.failure.titleNeedsReauth", { ns: "mcp" });
 		case "error":
-			return "Not registered in the runtime";
+			return i18n.t("registry.failure.titleError", { ns: "mcp" });
 		default:
-			return "Connection state";
+			return i18n.t("registry.failure.titleDefault", { ns: "mcp" });
 	}
 }

@@ -3,6 +3,7 @@ import { BifrostOCRResponse, OCRDocument } from "@/lib/types/logs";
 import { Button } from "@/components/ui/button";
 import { CodeEditor } from "@/components/ui/codeEditor";
 import { ChevronLeft, ChevronRight, FileText } from "lucide-react";
+import { useTranslation } from "react-i18next";
 
 function getImageSrc(b64: string): string {
 	if (b64.startsWith("/9j/")) return `data:image/jpeg;base64,${b64}`;
@@ -18,6 +19,7 @@ interface OCRViewProps {
 }
 
 export default function OCRView({ ocrInput, ocrOutput }: OCRViewProps) {
+	const { t } = useTranslation("observability");
 	const pages = ocrOutput?.pages ?? [];
 	const totalPages = pages.length;
 	const [currentIndex, setCurrentIndex] = useState(0);
@@ -43,17 +45,17 @@ export default function OCRView({ ocrInput, ocrOutput }: OCRViewProps) {
 				<div className="w-full rounded-sm border">
 					<div className="flex items-center gap-2 border-b px-6 py-2 text-sm font-medium">
 						<FileText className="h-4 w-4" />
-						OCR Input
+						{t("logs.ocrInput")}
 					</div>
 					<div className="space-y-4 p-6">
 						<div>
-							<div className="text-muted-foreground mb-2 text-xs font-medium">TYPE</div>
-							<div className="font-mono text-xs">{ocrInput.type === "document_url" ? "Document" : "Image"}</div>
+							<div className="text-muted-foreground mb-2 text-xs font-medium">{t("logs.ocr.type")}</div>
+							<div className="font-mono text-xs">{ocrInput.type === "document_url" ? t("logs.media.document") : t("logs.media.image")}</div>
 						</div>
 						{(ocrInput.document_url || ocrInput.image_url) && (
 							<div>
 								<div className="text-muted-foreground mb-2 text-xs font-medium">
-									{ocrInput.type === "document_url" ? "DOCUMENT URL" : "IMAGE URL"}
+									{ocrInput.type === "document_url" ? t("logs.media.documentUrl") : t("logs.media.imageUrl")}
 								</div>
 								<div className="font-mono text-xs break-all">{ocrInput.document_url ?? ocrInput.image_url}</div>
 							</div>
@@ -67,18 +69,18 @@ export default function OCRView({ ocrInput, ocrOutput }: OCRViewProps) {
 				<div className="w-full rounded-sm border">
 					<div className="flex items-center gap-2 border-b px-6 py-2 text-sm font-medium">
 						<FileText className="h-4 w-4" />
-						OCR Output
+						{t("logs.ocr.output")}
 					</div>
 
 					<div className="space-y-4 p-6">
 						{ocrOutput.usage_info && (
 							<div className="grid grid-cols-1 gap-3 md:grid-cols-3">
 								<div className="space-y-1">
-									<div className="text-muted-foreground text-xs font-medium">PAGES PROCESSED</div>
+									<div className="text-muted-foreground text-xs font-medium">{t("logs.ocr.pagesProcessed")}</div>
 									<div className="font-mono text-xs">{ocrOutput.usage_info.pages_processed}</div>
 								</div>
 								<div className="space-y-1">
-									<div className="text-muted-foreground text-xs font-medium">DOCUMENT SIZE</div>
+									<div className="text-muted-foreground text-xs font-medium">{t("logs.ocr.documentSize")}</div>
 									<div className="font-mono text-xs">{(ocrOutput.usage_info.doc_size_bytes / 1024).toFixed(1)} KB</div>
 								</div>
 							</div>
@@ -86,7 +88,7 @@ export default function OCRView({ ocrInput, ocrOutput }: OCRViewProps) {
 
 						{ocrOutput.document_annotation && (
 							<div>
-								<div className="text-muted-foreground mb-2 text-xs font-medium">DOCUMENT ANNOTATION</div>
+								<div className="text-muted-foreground mb-2 text-xs font-medium">{t("logs.ocr.documentAnnotation")}</div>
 								<div className="font-mono text-xs">{ocrOutput.document_annotation}</div>
 							</div>
 						)}
@@ -96,7 +98,7 @@ export default function OCRView({ ocrInput, ocrOutput }: OCRViewProps) {
 								{currentPage.dimensions && (
 									<div className="grid grid-cols-1 gap-3 md:grid-cols-3">
 										<div className="space-y-1">
-											<div className="text-muted-foreground text-xs font-medium">DIMENSIONS</div>
+											<div className="text-muted-foreground text-xs font-medium">{t("logs.ocr.dimensions")}</div>
 											<div className="font-mono text-xs">
 												{currentPage.dimensions.width} × {currentPage.dimensions.height}px
 											</div>
@@ -110,7 +112,7 @@ export default function OCRView({ ocrInput, ocrOutput }: OCRViewProps) {
 
 								{currentPage.markdown ? (
 									<div>
-										<div className="text-muted-foreground mb-2 text-xs font-medium">MARKDOWN</div>
+										<div className="text-muted-foreground mb-2 text-xs font-medium">{t("logs.ocr.markdown")}</div>
 										<CodeEditor
 											className="z-0 w-full"
 											shouldAdjustInitialHeight
@@ -127,18 +129,20 @@ export default function OCRView({ ocrInput, ocrOutput }: OCRViewProps) {
 										/>
 									</div>
 								) : (
-									<div className="text-muted-foreground font-mono text-xs">No text extracted from this page.</div>
+									<div className="text-muted-foreground font-mono text-xs">{t("logs.ocr.noText")}</div>
 								)}
 
 								{pageImages.length > 0 && (
 									<div>
-										<div className="text-muted-foreground mb-2 text-xs font-medium">EXTRACTED IMAGES ({pageImages.length})</div>
+										<div className="text-muted-foreground mb-2 text-xs font-medium">
+											{t("logs.ocr.extractedImages", { count: pageImages.length })}
+										</div>
 										<div className="flex flex-wrap gap-2">
 											{pageImages.map((img) => (
 												<img
 													key={img.id}
 													src={getImageSrc(img.image_base64!)}
-													alt={`Extracted ${img.id}`}
+													alt={t("logs.ocr.extractedAlt", { id: img.id })}
 													className="max-h-48 max-w-48 rounded border object-contain"
 												/>
 											))}
@@ -152,21 +156,21 @@ export default function OCRView({ ocrInput, ocrOutput }: OCRViewProps) {
 											variant="outline"
 											size="sm"
 											onClick={goToPrevious}
-											aria-label="Previous page"
-											title="Previous page"
+											aria-label={t("labels.previousPage")}
+											title={t("labels.previousPage")}
 											data-testid="ocr-view-pagination-prev-button"
 										>
 											<ChevronLeft className="h-4 w-4" />
 										</Button>
 										<span className="text-muted-foreground text-sm">
-											Page {currentIndex + 1} / {totalPages}
+											{t("logs.ocr.pageOf", { current: currentIndex + 1, total: totalPages })}
 										</span>
 										<Button
 											variant="outline"
 											size="sm"
 											onClick={goToNext}
-											aria-label="Next page"
-											title="Next page"
+											aria-label={t("labels.nextPage")}
+											title={t("labels.nextPage")}
 											data-testid="ocr-view-pagination-next-button"
 										>
 											<ChevronRight className="h-4 w-4" />

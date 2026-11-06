@@ -197,3 +197,42 @@ func waitForPort(ctx context.Context, port int, timeout time.Duration) error {
 	}
 	return fmt.Errorf("timed out after %s", timeout)
 }
+
+// startInputRequiredServer launches one examples/mcps/input-required-server process and returns its
+// /mcp URL. Skips the calling test when the fixture has not been built.
+func startInputRequiredServer(t *testing.T) string {
+	t.Helper()
+
+	root, err := bifrostRootDir()
+	if err != nil {
+		t.Fatalf("locate repository root: %v", err)
+	}
+	bin := filepath.Join(root, "..", "examples", "mcps", "input-required-server", "bin", "input-required-server")
+	if _, statErr := os.Stat(bin); statErr != nil {
+		t.Skip("input-required-server not built (run `make setup-mcp-tests`)")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	port, err := freePort(ctx)
+	if err != nil {
+		cancel()
+		t.Fatalf("allocate port: %v", err)
+	}
+	cmd := exec.CommandContext(ctx, bin)
+	cmd.Env = append(os.Environ(), fmt.Sprintf("MCP_HTTP_PORT=%d", port))
+	cmd.Stdout = os.Stderr
+	cmd.Stderr = os.Stderr
+	if err := cmd.Start(); err != nil {
+		cancel()
+		t.Fatalf("start input-required-server: %v", err)
+	}
+	t.Cleanup(func() {
+		cancel()
+		_ = cmd.Process.Kill()
+		_, _ = cmd.Process.Wait()
+	})
+	if err := waitForPort(ctx, port, 10*time.Second); err != nil {
+		t.Fatalf("input-required-server port %d never came up: %v", port, err)
+	}
+	return fmt.Sprintf("http://localhost:%d/mcp", port)
+}

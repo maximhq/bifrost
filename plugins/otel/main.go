@@ -1413,15 +1413,29 @@ func (p *OtelPlugin) recordRelayMetricsFromTrace(ctx context.Context, exporter *
 			}
 			relayAttrs = append(relayAttrs, attribute.String(schemas.AttrErrorTypeSpec, errorType))
 		}
-		var durationSeconds float64
-		if !span.StartTime.IsZero() && !span.EndTime.IsZero() {
-			durationSeconds = span.EndTime.Sub(span.StartTime).Seconds()
+		exporter.RecordRelayOperationDuration(ctx, schemas.RelaySpanDurationSeconds(span), relayAttrs...)
+		if upstreamMs, ok := schemas.GetFloat64AttrOK(span.Attributes, schemas.AttrBifrostRelayUpstreamDurationMs); ok && upstreamMs > 0 {
+			exporter.RecordRelayUpstreamDuration(ctx, upstreamMs/1000, relayAttrs...)
 		}
-		exporter.RecordRelayOperationDuration(ctx, durationSeconds, relayAttrs...)
+		if trace.RootSpan != nil {
+			if overheadMs, ok := schemas.GetFloat64AttrOK(trace.RootSpan.Attributes, schemas.AttrBifrostOverheadDurationMs); ok && overheadMs >= 0 {
+				exporter.RecordRelayOverheadLatency(ctx, overheadMs*1000, relayAttrs...)
+			}
+		}
 		if cost, ok := schemas.GetFloat64AttrOK(span.Attributes, schemas.AttrBifrostRelayCost); ok && cost > 0 {
 			exporter.RecordRelayCost(ctx, cost, relayAttrs...)
 		}
 	}
+}
+
+// hasRelaySpan reports whether the trace carries a relay call.
+func hasRelaySpan(trace *schemas.Trace) bool {
+	for _, span := range trace.Spans {
+		if span != nil && span.Kind == schemas.SpanKindRelay {
+			return true
+		}
+	}
+	return false
 }
 
 // recordMetricsFromTrace extracts metrics data from a completed trace and records them
@@ -1485,7 +1499,9 @@ func (p *OtelPlugin) recordMetricsFromTrace(ctx context.Context, exporter *Metri
 	// transport work no llm.call span sees). Labelled off the final attempt span so
 	// provider/model dimensions match the other per-request metrics; the root span
 	// carries only HTTP attributes.
-	if overheadMicros, ok := overheadMicrosFromTrace(trace); ok {
+	// A relay trace has no LLM attempt to label the overhead with: recorded here it would land in
+	// the LLM overhead histogram with empty provider and model labels, keyed by the raw URL path.
+	if overheadMicros, ok := overheadMicrosFromTrace(trace); ok && (finalSpan != nil || !hasRelaySpan(trace)) {
 		labelSpan := finalSpan
 		if labelSpan == nil {
 			labelSpan = trace.RootSpan

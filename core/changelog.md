@@ -1,1 +1,35 @@
-- Add audio URL support for Gemini multimodal chat and responses input.
+- feat: mcp - per-user tool discovery: pluggable discovery store, per-caller tools, prompts and resources on the gateway, per-caller connect tool, Refresh tools, and an explicit pending_verification flag
+- feat: mcp - serve MCP Apps tools and ui:// resources on the gateway, keep app-only tools away from models, and accept tools by their upstream names
+- feat: mcp - relay input_required to gateway callers, forward callers' declared capabilities upstream, and log rounds by round_trip_id and MCP Apps use
+- feat: mcp - dial boot MCP clients in the background
+- feat: anthropic - workload identity federation for Anthropic and Anthropic-based keys
+- feat: accept SOCKS5 global proxies, trust the global proxy's CA, and always verify targets through a proxy
+- feat: record caller IP and user email on LLM, MCP and relay logs; bring relay logging to LLM log parity
+- feat: count containers started by OpenAI and Azure code interpreter and hosted shell and by Anthropic code execution on `usage.tool_usage.container_sessions`, including under `previous_response_id` and `conversation`
+- feat: openai - keep `tool_usage.image_gen` on Responses output with the image tool's model, and support prompt cache breakpoint TTL
+- feat: gemini - treat the Interactions agent as the model on /genai_passthrough and name it on poll records
+- feat: schemas - raw response formats and raw request/response text rewriters so plugins can edit streamed and passthrough payloads
+- feat: gemini - accept audio URLs in multimodal chat and responses input
+- fix: anthropic - keep message-level cache_control on chat messages, and map prompt cache breakpoints to cache_control for Anthropic and Bedrock (thanks [@Atharva-Kanherkar](https://github.com/Atharva-Kanherkar)!)
+- fix: preserve explicitly reported zero token usage (thanks [@Constantine3](https://github.com/Constantine3)!)
+- fix: anthropic - Claude Haiku 5.x takes reasoning effort as adaptive thinking plus output_config.effort, drops sampling params, and Anthropic-based custom providers read their base provider's capabilities (thanks [@macdod](https://github.com/macdod)!)
+- fix: anthropic - Responses requests drop empty text blocks instead of failing with a 400 (thanks [@david-choi-querypie](https://github.com/david-choi-querypie)!)
+- fix: anthropic - preserve explicit web search and web fetch versions (thanks [@ykakade](https://github.com/ykakade)!)
+- fix: anthropic - keep source type on text documents with empty data; drop web_search and code_execution for Claude on Bedrock; run Codex's client tool search as the caller's own; replay invalid tool arguments as `{}`
+- fix: responses - merge re-declared additional tools instead of duplicating them after namespace flattening
+- fix: openai - keep content on Codex assistant messages with encrypted_content; keep the name on a function_call_output without call_id
+- fix: gemini - keep minted item ids under 64 characters and add ids to non-streamed reasoning items; bedrock mantle replay keeps them
+- fix: vllm and sglang - keep unsigned thinking blocks and replayed reasoning content; emit thinking deltas for raw reasoning_text events
+- fix: anthropic - streamed web_search blocks always carry the query
+- fix: bedrock - strip leaked DSML tags from DeepSeek V3.2; omit stopSequences for models that reject it
+- fix: databricks - strip the Anthropic-only safeguards param
+- fix: github copilot - serve tool search without the rejected beta header
+- fix: keep assistant text alongside tool calls when converting chat to Responses messages
+- fix: runware - poll the task when a sync request turns async
+- fix: multi-key providers - follow-up calls on a stored response, container or video find the key that created it; video list pages across every key
+- fix: routing rules fall back when the primary target returns 4xx
+- fix: run post-hooks for requests rejected before enqueue
+- fix: relays - match passthrough for headers and streams
+- fix: mcp - call upstream tools by exact name, keep tool error flags, log every code mode call in agent mode, apply tool_execution_timeout to code mode and in-process clients, and report the caller's deadline in timeout errors
+- fix: mcp - stop retrying permanent connect errors, refresh per-call credentials once on 401, keep failed enables unstable with the checker retrying, apply TLS/SSE/ping edits live, and check sooner after a failed reconnect
+- fix: mcp - return 400, 404 and 409 instead of 500 for client create, rename and reconnect mistakes

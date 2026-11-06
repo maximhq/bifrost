@@ -33,7 +33,7 @@ The `/mcp` gateway's own authentication mode is a separate, global setting from 
 
 If the upstream MCP server doesn't trust your SCIM identity provider's issuer — most third-party SaaS services — direct token exchange cannot work there. If the service supports Okta Cross App Access, use the [Cross App Access (`id_jag`) profile](./cross-app-access); otherwise use [Per-User OAuth](./per-user-oauth).
 
-This auth type is only valid for **HTTP** and **SSE** connections.
+This auth type is only valid for **HTTP** connections. It is refused on an SSE or STDIO client, because each call opens its own connection: the API answers 400, and a `config.json` client is skipped at boot with an error naming it.
 
 ---
 
@@ -97,7 +97,7 @@ Each MCP client scopes its own exchange: which resource (`audience`) the token i
 
 1. Navigate to **MCP Gateway** in the sidebar
 2. Click **New MCP Server**
-3. Pick **HTTP** or **SSE** as the connection type, fill in the **Connection URL**
+3. Pick **HTTP** as the connection type, fill in the **Connection URL**
 4. Set **Auth Type** to **Token Exchange (On-Behalf-Of)** — only shown when an identity provider is configured
 5. Fill in:
    - **Audience** — the resource identifier this server is registered as at your identity provider (e.g. `api://jira-mcp` for Okta/Auth0/Keycloak). **For Microsoft Entra ID**, this is the resource app's **Application (client) ID** — a bare GUID, not the `api://...` Application ID URI shown under "Expose an API"; see [Audience mismatch](#microsoft-entra-id-known-setup-gotchas) below for why

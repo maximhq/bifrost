@@ -6,6 +6,7 @@ package runware
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -330,6 +331,18 @@ func (provider *RunwareProvider) handleImageInference(ctx *schemas.BifrostContex
 		return nil, bifrostErr
 	}
 
+	// A sync task still running at Runware's 120s cutoff comes back as a processing row and
+	// continues as an async task, so it is polled to completion rather than resent.
+	if taskUUID := processingRunwareTaskUUID(runwareResp.Data); taskUUID != "" {
+		pollStart := time.Now()
+		polledResp, polledBody, polledRaw, bifrostErr := provider.pollRunwareTask(ctx, key, taskUUID, sendBackRawResponse)
+		latency += time.Since(pollStart)
+		if bifrostErr != nil {
+			return nil, providerUtils.EnrichError(ctx, bifrostErr, body, nil, sendBackRawRequest, sendBackRawResponse, latency)
+		}
+		runwareResp, respBody, rawResponse = *polledResp, polledBody, polledRaw
+	}
+
 	// Convert to Bifrost response
 	bifrostResp, bifrostErr := ToBifrostImageGenerationResponse(&runwareResp)
 	if bifrostErr != nil {
@@ -347,6 +360,51 @@ func (provider *RunwareProvider) handleImageInference(ctx *schemas.BifrostContex
 	}
 
 	return bifrostResp, nil
+}
+
+// runwarePollingInterval is the interval between getResponse polls for a sync task that outlived
+// Runware's 120s window.
+const runwarePollingInterval = 2 * time.Second
+
+// pollRunwareTask polls a task with getResponse until no row is still processing, bounded by the
+// provider's request timeout. getResponse returns the task's complete result set, including rows
+// that already came back on the sync response, so its final reply replaces that response outright.
+func (provider *RunwareProvider) pollRunwareTask(ctx *schemas.BifrostContext, key schemas.Key, taskUUID string, sendBackRawResponse bool) (*RunwareResponse, []byte, interface{}, *schemas.BifrostError) {
+	jsonData, err := providerUtils.MarshalSorted(RunwareGetResponseRequest{TaskType: taskTypeGetResponse, TaskUUID: taskUUID})
+	if err != nil {
+		return nil, nil, nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
+	}
+
+	pollCtx, cancel := schemas.NewBifrostContextWithTimeout(ctx, time.Duration(provider.networkConfig.DefaultRequestTimeoutInSeconds)*time.Second)
+	defer cancel()
+
+	ticker := time.NewTicker(runwarePollingInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-pollCtx.Done():
+			if errors.Is(pollCtx.Err(), context.Canceled) {
+				return nil, nil, nil, providerUtils.NewBifrostOperationError(schemas.ErrRequestCancelled, pollCtx.Err())
+			}
+			return nil, nil, nil, providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, fmt.Errorf("runware task %s is still processing", taskUUID))
+		case <-ticker.C:
+		}
+
+		_, respBody, _, bifrostErr := provider.sendTaskArray(pollCtx, key, jsonData)
+		if bifrostErr != nil {
+			return nil, nil, nil, bifrostErr
+		}
+
+		var polledResp RunwareResponse
+		_, rawResponse, bifrostErr := providerUtils.HandleProviderResponseCtx(pollCtx, respBody, &polledResp, nil, false, sendBackRawResponse)
+		if bifrostErr != nil {
+			return nil, nil, nil, bifrostErr
+		}
+		if processingRunwareTaskUUID(polledResp.Data) == "" {
+			return &polledResp, respBody, rawResponse, nil
+		}
+	}
 }
 
 // Rerank is not supported by the Runware provider.
