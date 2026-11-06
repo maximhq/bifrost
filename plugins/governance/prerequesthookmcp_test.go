@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
@@ -474,8 +475,9 @@ func TestPreMCPHookGatesTheToolOnAccess(t *testing.T) {
 	})
 }
 
-// Codemode meta-tools skip evaluation, but their discovery side enumerates tools through the
-// request context, so PreMCPHook has to scope that context to the grant before letting them run.
+// Codemode meta-tools are not in any grant's tool list, but their discovery side enumerates tools
+// through the request context, so PreMCPHook has to scope that context to the grant before letting
+// them run.
 func TestPreMCPHookScopesCodemodeDiscoveryToAccess(t *testing.T) {
 	vk := buildVKForMCPStamping([]string{"read_file"})
 
@@ -513,29 +515,60 @@ func TestPreMCPHookScopesCodemodeDiscoveryToAccess(t *testing.T) {
 		assert.Nil(t, shortCircuit)
 		assert.Nil(t, ctx.Value(schemas.MCPContextKeyIncludeTools))
 	})
+}
 
-	t.Run("a context carrying no grant at all is shown no tools", func(t *testing.T) {
-		// The HTTP transport installs a grant on every request; a caller of the Go API may not.
-		// Access cannot be resolved for such a context, so discovery fails closed.
-		plugin := newAccessTestPlugin(t, vk, nil)
-		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-
+// TestPreMCPHookEvaluatesCodemodeToolsLikeAnyTool pins that a caller who may not use tools at all is
+// refused a codemode meta-tool too. They skipped evaluation, so an inactive or expired key, a credential
+// that resolves to nothing, or no credential where one is required could still list and read the tool
+// stubs on the execute endpoint, though every tool call the code made would then be refused.
+func TestPreMCPHookEvaluatesCodemodeToolsLikeAnyTool(t *testing.T) {
+	refusal := func(t *testing.T, plugin *GovernancePlugin, ctx *schemas.BifrostContext) *schemas.BifrostError {
+		t.Helper()
 		_, shortCircuit, err := plugin.PreMCPHook(ctx, mcpToolCall("listToolFiles"))
-
 		require.NoError(t, err)
-		assert.Nil(t, shortCircuit)
-		assert.Equal(t, []string{}, ctx.Value(schemas.MCPContextKeyIncludeTools))
+		require.NotNil(t, shortCircuit, "the meta-tool is refused")
+		require.NotNil(t, shortCircuit.Error)
+		require.NotNil(t, shortCircuit.Error.Type)
+		return shortCircuit.Error
+	}
+
+	t.Run("an inactive key", func(t *testing.T) {
+		vk := buildVKForMCPStamping([]string{"read_file"})
+		inactive := false
+		vk.IsActive = &inactive
+		bifrostErr := refusal(t, newAccessTestPlugin(t, vk, nil), newPreRequestCtx(nil, nil))
+		assert.Equal(t, string(DecisionAccessBlocked), *bifrostErr.Type)
+		assert.Contains(t, bifrostErr.Error.Message, "virtual key is inactive")
 	})
 
-	t.Run("a credential that resolves to nothing is shown no tools", func(t *testing.T) {
-		plugin := newAccessTestPlugin(t, vk, nil)
-		ctx := presentCtx("sk-bf-revoked")
+	t.Run("an expired key", func(t *testing.T) {
+		vk := buildVKForMCPStamping([]string{"read_file"})
+		past := time.Now().UTC().Add(-time.Second)
+		vk.ExpiresAt = &past
+		bifrostErr := refusal(t, newAccessTestPlugin(t, vk, nil), newPreRequestCtx(nil, nil))
+		assert.Equal(t, string(DecisionAccessBlocked), *bifrostErr.Type)
+	})
 
-		_, shortCircuit, err := plugin.PreMCPHook(ctx, mcpToolCall("listToolFiles"))
+	t.Run("no credential where one is required", func(t *testing.T) {
+		plugin := newAccessTestPlugin(t, buildVKForMCPStamping([]string{"read_file"}), nil)
+		plugin.cfgMutex.Lock()
+		plugin.isVkMandatory = boolPtr(true)
+		plugin.cfgMutex.Unlock()
+		bifrostErr := refusal(t, plugin, emptyCtx())
+		assert.Equal(t, "virtual_key_required", *bifrostErr.Type)
+	})
 
-		require.NoError(t, err)
-		assert.Nil(t, shortCircuit, "codemode meta-tools are still not refused here; evaluation refuses their tool calls")
-		assert.Equal(t, []string{}, ctx.Value(schemas.MCPContextKeyIncludeTools))
+	t.Run("a credential that resolves to nothing", func(t *testing.T) {
+		plugin := newAccessTestPlugin(t, buildVKForMCPStamping([]string{"read_file"}), nil)
+		bifrostErr := refusal(t, plugin, presentCtx("sk-bf-revoked"))
+		assert.Equal(t, string(DecisionAccessNotFound), *bifrostErr.Type)
+	})
+
+	t.Run("a context carrying no grant at all", func(t *testing.T) {
+		// The HTTP transport installs a grant on every request; a caller of the Go API may not.
+		plugin := newAccessTestPlugin(t, buildVKForMCPStamping([]string{"read_file"}), nil)
+		bifrostErr := refusal(t, plugin, schemas.NewBifrostContext(context.Background(), schemas.NoDeadline))
+		assert.Equal(t, string(DecisionAccessUnresolved), *bifrostErr.Type)
 	})
 }
 

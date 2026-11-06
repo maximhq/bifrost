@@ -103,6 +103,9 @@ type AnthropicProviderRequestDefaults struct {
 	// for this model". Native Anthropic accepts URLs and fetches them itself, so
 	// it leaves this off and avoids a redundant download.
 	InlineURLSources bool
+
+	// KeepUnsignedThinking replays thinking blocks with an empty signature (self-hosted servers never sign).
+	KeepUnsignedThinking bool
 }
 
 // AnthropicProviderRequestDefaultsMap maps each Anthropic-family provider to
@@ -156,7 +159,10 @@ var AnthropicProviderRequestDefaultsMap = map[schemas.ModelProvider]AnthropicPro
 		RemapToolVersions:         true,
 		InjectBetaHeadersIntoBody: true,
 	},
-	schemas.SGL: {},
+	// vLLM and SGLang serve /v1/messages without signing their thinking; the model
+	// needs its own unsigned reasoning back on the next turn.
+	schemas.SGL:  {KeepUnsignedThinking: true},
+	schemas.VLLM: {KeepUnsignedThinking: true},
 }
 
 // BuildAnthropicResponsesRequestBody is the single implementation of the
@@ -499,7 +505,7 @@ func BuildAnthropicResponsesRequestBody(ctx *schemas.BifrostContext, request *sc
 		}
 	}
 
-	jsonBody, err = StripEmptyThinkingBlocks(jsonBody)
+	jsonBody, err = StripEmptyThinkingBlocks(jsonBody, defaults.KeepUnsignedThinking)
 	if err != nil {
 		return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
 	}
@@ -808,7 +814,7 @@ func BuildAnthropicChatRequestBody(ctx *schemas.BifrostContext, request *schemas
 		}
 	}
 
-	jsonBody, err = StripEmptyThinkingBlocks(jsonBody)
+	jsonBody, err = StripEmptyThinkingBlocks(jsonBody, defaults.KeepUnsignedThinking)
 	if err != nil {
 		return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
 	}

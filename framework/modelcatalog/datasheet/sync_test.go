@@ -97,7 +97,7 @@ func TestApplyPricingDataBedrockRowBeatsMantleRow(t *testing.T) {
 	for i := 0; i < syncRepeats; i++ {
 		store.applyPricingData(entries)
 		store.mu.RLock()
-		row, ok := store.pricingData[makeKey("anthropic.claude-sonnet-5-5", "bedrock", "chat")]
+		row, ok := store.pricingData[makeKeyNormalized("anthropic.claude-sonnet-5-5", "bedrock", "chat")]
 		store.mu.RUnlock()
 		if !ok || row.InputCostPerToken == nil || *row.InputCostPerToken != 2e-06 {
 			t.Fatalf("apply %d stored input cost %v, want 2e-06 from the bedrock row", i, deref(row.InputCostPerToken))
@@ -144,6 +144,31 @@ func TestResolvePricingRowsTieBreakIsOrderIndependentAndWarns(t *testing.T) {
 		if len(rec.warns) != 1 || !strings.Contains(rec.warns[0], "bedrock_a/m kept over bedrock_mantle/m, bedrock_x/m") {
 			t.Fatalf("run %d: warnings=%q, want one naming the kept and dropped rows", i, rec.warns)
 		}
+	}
+}
+
+// The database keeps each casing as its own row, so a sync neither drops one nor
+// warns about it. Only the in-memory map collapses them, onto the lowercase row.
+func TestResolvePricingRowsKeepsCaseVariantsForDatabase(t *testing.T) {
+	entries := map[string]Entry{
+		"azure/deepseek-v4-pro": costEntry("azure", 1e-06),
+		"azure/DeepSeek-V4-Pro": costEntry("azure", 2e-06),
+	}
+	rec := &warnRecorder{}
+	s := NewTestStore(nil)
+	s.logger = rec
+	rows := s.resolvePricingRows(entries)
+	if len(rows) != 2 || rows[0].Model != "DeepSeek-V4-Pro" || rows[1].Model != "deepseek-v4-pro" {
+		t.Fatalf("rows=%+v, want one row per casing", rows)
+	}
+	if len(rec.warns) != 0 {
+		t.Fatalf("warnings=%q, want none", rec.warns)
+	}
+
+	s.applyPricingData(entries)
+	row := s.Get("DeepSeek-V4-Pro", "azure", schemas.ChatCompletionRequest)
+	if row == nil || row.InputCostPerToken == nil || *row.InputCostPerToken != 1e-06 {
+		t.Fatalf("Get() = %+v, want the lowercase row at 1e-06", row)
 	}
 }
 

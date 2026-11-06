@@ -113,6 +113,21 @@ func TestExtractPayload_NilOrEmptyMetadataOmittedFromSnapshot(t *testing.T) {
 	assert.NotContains(t, payload, "metadata", "empty Metadata must not appear in snapshot")
 }
 
+// TestExtractPayload_CarriesCallerIdentity pins that the object-store snapshot carries user_email and client_ip.
+func TestExtractPayload_CarriesCallerIdentity(t *testing.T) {
+	email, ip := "ada@example.com", "10.0.0.5"
+	payload := ExtractPayload(&Log{ID: "who", UserEmail: &email, ClientIP: &ip})
+	assert.Equal(t, email, payload["user_email"])
+	assert.Equal(t, ip, payload["client_ip"])
+	assert.NotContains(t, payload, "forwarded_for")
+
+	bare := ExtractPayload(&Log{ID: "anon"})
+	for _, key := range []string{"user_email", "client_ip"} {
+		assert.NotContains(t, bare, key, "absent values stay out of the snapshot")
+	}
+	assert.True(t, isPayloadEmpty(ExtractPayload(&Log{ID: "identity-only", UserEmail: &email, ClientIP: &ip})), "identity alone does not trigger an upload")
+}
+
 func TestClearPayload_DoesNotTouchIndexFields(t *testing.T) {
 	log := &Log{
 		ID:           "test-1",

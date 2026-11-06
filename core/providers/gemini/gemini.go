@@ -716,8 +716,12 @@ func HandleGeminiChatCompletionStream(
 
 				// A split event yields several deltas; attach the upstream event once,
 				// on the last of them, so a base64 media payload is not copied per delta.
+				// Only an unsplit event's payload backs exactly its delta's text.
 				if sendBackRawResponse && i == len(responses)-1 {
 					response.ExtraFields.RawResponse = string(eventData)
+					if len(responses) == 1 {
+						response.ExtraFields.RawResponseFormat = schemas.RawResponseFormatGeminiStreamChunk
+					}
 				}
 
 				lastChunkTime = time.Now()
@@ -1231,6 +1235,7 @@ func HandleGeminiResponsesStream(
 				return
 			}
 
+			rawIdx, rawFormat := geminiResponsesRawAttachment(responses)
 			for i, response := range responses {
 				if response != nil {
 					response.ExtraFields = schemas.BifrostResponseExtraFields{
@@ -1246,9 +1251,10 @@ func HandleGeminiResponsesStream(
 						}
 					}
 
-					// Only add raw response to the LAST response in the array
-					if sendBackRawResponse && i == len(responses)-1 {
+					// Attach the upstream event to exactly one response
+					if sendBackRawResponse && i == rawIdx {
 						response.ExtraFields.RawResponse = string(eventData)
+						response.ExtraFields.RawResponseFormat = rawFormat
 					}
 
 					chunkIndex++
@@ -1322,6 +1328,36 @@ func HandleGeminiResponsesStream(
 	}()
 
 	return responseChan, nil
+}
+
+// geminiResponsesRawAttachment picks the response that carries one Gemini stream chunk's raw payload: its only
+// output_text.delta, so the raw text travels with the normalized text it backs, or else the last response, which
+// for a chunk holding one function call is its output_item.done (or the completed response) with the whole
+// arguments. The payload's format is declared only when that response carries all of the chunk's text and
+// arguments; a chunk spreading them over several responses keeps it undeclared, since one payload cannot mirror
+// each of them.
+func geminiResponsesRawAttachment(responses []*schemas.BifrostResponsesStreamResponse) (int, schemas.RawResponseFormat) {
+	textIdx, textDeltas, functionCalls := -1, 0, 0
+	for i, response := range responses {
+		if response == nil {
+			continue
+		}
+		switch response.Type {
+		case schemas.ResponsesStreamResponseTypeOutputTextDelta:
+			textIdx = i
+			textDeltas++
+		case schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDone:
+			functionCalls++
+		}
+	}
+	switch {
+	case textDeltas == 1 && functionCalls == 0:
+		return textIdx, schemas.RawResponseFormatGeminiStreamChunk
+	case textDeltas == 0 && functionCalls <= 1:
+		return len(responses) - 1, schemas.RawResponseFormatGeminiStreamChunk
+	default:
+		return len(responses) - 1, ""
+	}
 }
 
 // Embedding performs an embedding request to the Gemini API.
@@ -4288,8 +4324,14 @@ func (provider *GeminiProvider) Passthrough(
 	}
 
 	var passthroughUsage *schemas.BifrostPassthroughUsage
+	var servedModel string
+	var providerJob *schemas.BifrostPassthroughJob
 	if resp.StatusCode() >= 200 && resp.StatusCode() < 300 {
-		passthroughUsage = ExtractGeminiPassthroughUsage(req.Path, req.Body, body)
+		if IsInteractionsPassthroughPath(req.Path) {
+			passthroughUsage, servedModel, providerJob = InteractionsPassthroughResult(req, body)
+		} else {
+			passthroughUsage = ExtractGeminiPassthroughUsage(req.Path, req.Body, body)
+		}
 	}
 
 	bifrostResponse := &schemas.BifrostPassthroughResponse{
@@ -4302,6 +4344,8 @@ func (provider *GeminiProvider) Passthrough(
 			PassthroughPath:         req.Path,
 		},
 		PassthroughUsage: passthroughUsage,
+		ServedModel:      servedModel,
+		ProviderJob:      providerJob,
 	}
 
 	return bifrostResponse, nil
@@ -4380,21 +4424,25 @@ func (provider *GeminiProvider) PassthroughStream(
 	}
 
 	providerUtils.SetStreamIdleTimeoutIfEmpty(ctx, provider.networkConfig.StreamIdleTimeoutInSeconds)
-	return providerUtils.StreamPassthrough(
-		ctx, postHookRunner, postHookSpanFinalizer, resp, bodyStream,
-		providerUtils.PassthroughStreamParams{
-			StatusCode:          resp.StatusCode(),
-			Headers:             headers,
-			Path:                req.Path,
-			RawRequest:          req.Body,
-			CancellationBody:    providerUtils.PassthroughJSONBody(fasthttpReq, req.Body),
-			StartTime:           startTime,
-			UseTerminalDetector: true,
-			Logger:              provider.logger,
-			HasUsage:            HasGeminiPassthroughUsage,
-			Observe: func(event []byte) *schemas.BifrostPassthroughUsage {
-				return ExtractGeminiPassthroughUsage(req.Path, req.Body, event)
-			},
+	params := providerUtils.PassthroughStreamParams{
+		StatusCode:          resp.StatusCode(),
+		Headers:             headers,
+		Path:                req.Path,
+		RawRequest:          req.Body,
+		CancellationBody:    providerUtils.PassthroughJSONBody(fasthttpReq, req.Body),
+		StartTime:           startTime,
+		UseTerminalDetector: true,
+		Logger:              provider.logger,
+		HasUsage:            HasGeminiPassthroughUsage,
+		Observe: func(event []byte) *schemas.BifrostPassthroughUsage {
+			return ExtractGeminiPassthroughUsage(req.Path, req.Body, event)
 		},
-	), nil
+	}
+	if IsInteractionsPassthroughPath(req.Path) {
+		observer := NewInteractionsStreamObserver(req)
+		params.HasUsage = HasInteractionsStreamInfo
+		params.Observe = observer.Observe
+		params.Finalize = observer.Finalize
+	}
+	return providerUtils.StreamPassthrough(ctx, postHookRunner, postHookSpanFinalizer, resp, bodyStream, params), nil
 }

@@ -1,3 +1,4 @@
+import i18n, { getLocale } from "@/lib/i18n";
 export const COMPACT_NUMBER_FORMAT = {
 	notation: "compact",
 	compactDisplay: "short",
@@ -6,7 +7,7 @@ export const COMPACT_NUMBER_FORMAT = {
 
 export function formatCompactNumber(value: number, maximumFractionDigits = 2): string {
 	if (!Number.isFinite(value)) return "0";
-	return new Intl.NumberFormat("en-US", {
+	return new Intl.NumberFormat(getLocale(), {
 		...COMPACT_NUMBER_FORMAT,
 		maximumFractionDigits,
 	}).format(value);
@@ -15,9 +16,14 @@ export function formatCompactNumber(value: number, maximumFractionDigits = 2): s
 export function formatCurrencyNumber(value: number, maximumFractionDigits = 2): string {
 	if (!Number.isFinite(value)) return "$0";
 	if (value !== 0 && Math.abs(value) < 0.01) {
-		return `$${value.toFixed(4)}`;
+		return new Intl.NumberFormat(getLocale(), {
+			style: "currency",
+			currency: "USD",
+			minimumFractionDigits: 4,
+			maximumFractionDigits: 4,
+		}).format(value);
 	}
-	return new Intl.NumberFormat("en-US", {
+	return new Intl.NumberFormat(getLocale(), {
 		...COMPACT_NUMBER_FORMAT,
 		style: "currency",
 		currency: "USD",
@@ -65,8 +71,8 @@ export function formatTokenPriceCompact(cost?: number, maximumFractionDigits = D
  * @returns Formatted full token price string.
  */
 export function formatTokenPriceFull(cost?: number, maximumFractionDigits = DEFAULT_TOKEN_PRICE_MAX_FRACTION_DIGITS): string {
-	if (cost === undefined || cost === null || !Number.isFinite(cost)) return "Not available";
-	return `${formatTokenPriceValue(cost, maximumFractionDigits)} / 1M tokens`;
+	if (cost === undefined || cost === null || !Number.isFinite(cost)) return i18n.t("pricing.notAvailable", { ns: "models" });
+	return i18n.t("pricing.perMillionTokens", { ns: "models", price: formatTokenPriceValue(cost, maximumFractionDigits) });
 }
 
 /**
@@ -78,6 +84,6 @@ export function formatTokenPriceFull(cost?: number, maximumFractionDigits = DEFA
  * @returns Formatted full character price string.
  */
 export function formatCharacterPriceFull(cost?: number, maximumFractionDigits = DEFAULT_TOKEN_PRICE_MAX_FRACTION_DIGITS): string {
-	if (cost === undefined || cost === null || !Number.isFinite(cost)) return "Not available";
-	return `${formatTokenPriceValue(cost, maximumFractionDigits)} / 1M characters`;
+	if (cost === undefined || cost === null || !Number.isFinite(cost)) return i18n.t("pricing.notAvailable", { ns: "models" });
+	return i18n.t("pricing.perMillionCharacters", { ns: "models", price: formatTokenPriceValue(cost, maximumFractionDigits) });
 }

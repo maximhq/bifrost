@@ -28,6 +28,6 @@ output "service_url" {
 }
 
 output "health_check_url" {
-  description = "Internal cluster URL for the Bifrost health check endpoint."
+  description = "Internal cluster URL for the Bifrost health check endpoint (reaches the service directly, so no ingress prefix)."
   value       = "http://${kubernetes_service.bifrost.metadata[0].name}.${kubernetes_namespace.bifrost.metadata[0].name}.svc.cluster.local${var.health_check_path}"
 }
