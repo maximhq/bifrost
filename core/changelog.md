@@ -9,6 +9,7 @@
 - feat: openai - keep `tool_usage.image_gen` on Responses output with the image tool's model, and support prompt cache breakpoint TTL
 - feat: gemini - treat the Interactions agent as the model on /genai_passthrough and name it on poll records
 - feat: schemas - raw response formats and raw request/response text rewriters so plugins can edit streamed and passthrough payloads
+- feat: gemini - accept audio URLs in multimodal chat and responses input
 - fix: anthropic - keep message-level cache_control on chat messages, and map prompt cache breakpoints to cache_control for Anthropic and Bedrock (thanks [@Atharva-Kanherkar](https://github.com/Atharva-Kanherkar)!)
 - fix: preserve explicitly reported zero token usage (thanks [@Constantine3](https://github.com/Constantine3)!)
 - fix: anthropic - Claude Haiku 5.x takes reasoning effort as adaptive thinking plus output_config.effort, drops sampling params, and Anthropic-based custom providers read their base provider's capabilities (thanks [@macdod](https://github.com/macdod)!)
