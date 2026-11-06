@@ -277301,7 +277301,11 @@
                   "});",
                   "pm.test(\"Codex uses streaming passthrough dispatch\", function () {",
                   "  pm.expect(pm.response.headers.get(\"x-bifrost-request-type\"), pm.response.text()).to.equal(\"passthrough_stream\");",
-                  "  pm.expect(pm.response.headers.get(\"x-bifrost-passthrough-path\"), pm.response.text()).to.equal(\"/backend-api/codex/responses\");",
+                  "  // x-bifrost-passthrough-path is written only in extra_fields_placement=headers; a passthrough body is the raw upstream body, so body mode has nothing to check.",
+                  "  var passthroughPath = pm.response.headers.get(\"x-bifrost-passthrough-path\");",
+                  "  if (passthroughPath !== undefined) {",
+                  "    pm.expect(passthroughPath, pm.response.text()).to.equal(\"/backend-api/codex/responses\");",
+                  "  }",
                   "});"
                 ]
               }
@@ -277375,7 +277379,11 @@
                   "});",
                   "pm.test(\"Codex uses streaming passthrough dispatch\", function () {",
                   "  pm.expect(pm.response.headers.get(\"x-bifrost-request-type\"), pm.response.text()).to.equal(\"passthrough_stream\");",
-                  "  pm.expect(pm.response.headers.get(\"x-bifrost-passthrough-path\"), pm.response.text()).to.equal(\"/backend-api/codex/responses\");",
+                  "  // x-bifrost-passthrough-path is written only in extra_fields_placement=headers; a passthrough body is the raw upstream body, so body mode has nothing to check.",
+                  "  var passthroughPath = pm.response.headers.get(\"x-bifrost-passthrough-path\");",
+                  "  if (passthroughPath !== undefined) {",
+                  "    pm.expect(passthroughPath, pm.response.text()).to.equal(\"/backend-api/codex/responses\");",
+                  "  }",
                   "});"
                 ]
               }
@@ -277429,13 +277437,19 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
+                  "// The model list body is ~700KB; newman's CLI failure table truncates cells quadratically, so an uncapped body as the message hangs the run.",
+                  "var bodyHead = pm.response.text().slice(0, 2000);",
                   "pm.test(\"Codex model list is forwarded to the ChatGPT backend\", function () {",
-                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
-                  "  pm.expect(pm.response.json().models, pm.response.text()).to.be.an(\"array\").that.is.not.empty;",
+                  "  pm.expect(pm.response.code, bodyHead).to.equal(200);",
+                  "  pm.expect(pm.response.json().models, bodyHead).to.be.an(\"array\").that.is.not.empty;",
                   "});",
                   "pm.test(\"Codex model list uses unary passthrough dispatch\", function () {",
-                  "  pm.expect(pm.response.headers.get(\"x-bifrost-request-type\"), pm.response.text()).to.equal(\"passthrough\");",
-                  "  pm.expect(pm.response.headers.get(\"x-bifrost-passthrough-path\"), pm.response.text()).to.equal(\"/backend-api/codex/models\");",
+                  "  pm.expect(pm.response.headers.get(\"x-bifrost-request-type\"), bodyHead).to.equal(\"passthrough\");",
+                  "  // x-bifrost-passthrough-path is written only in extra_fields_placement=headers; a passthrough body is the raw upstream body, so body mode has nothing to check.",
+                  "  var passthroughPath = pm.response.headers.get(\"x-bifrost-passthrough-path\");",
+                  "  if (passthroughPath !== undefined) {",
+                  "    pm.expect(passthroughPath, bodyHead).to.equal(\"/backend-api/codex/models\");",
+                  "  }",
                   "});"
                 ]
               }
@@ -309127,10 +309141,20 @@
                   "var rr = (body.extra_fields || {}).raw_request;",
                   "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
                   "var wire = JSON.stringify(rr || null);",
-                  "pm.test('prompt_cache_breakpoint.ttl stripped on Chat (OpenAI rejects it there)', function () {",
+                  "// The compat plugin routes gpt-5.6-sol chat to Responses (its datasheet disables reasoning with tool calls on",
+                  "// chat; folder 168), so check whichever wire went out. Responses takes the 12h ttl; Chat accepts only 30m.",
+                  "// Before: the chat->Responses conversion dropped the block's breakpoint, so the 12h write never happened.",
+                  "pm.test('prompt_cache_breakpoint survives on the wire Bifrost sent (ttl kept on Responses, stripped on Chat)', function () {",
                   "  pm.expect(rr, 'raw_request missing: ' + txt.slice(0, 300)).to.be.an('object');",
-                  "  var bp = (((rr.messages || [])[0] || {}).content || [])[0] || {};",
-                  "  pm.expect((bp.prompt_cache_breakpoint || {}).mode, 'breakpoint dropped: ' + wire.slice(0, 400)).to.eql('explicit'); pm.expect((bp.prompt_cache_breakpoint || {}).ttl, 'ttl forwarded to Chat: ' + wire.slice(0, 400)).to.be.undefined;",
+                  "  var onResponses = Array.isArray(rr.input);",
+                  "  var bp = ((((onResponses ? rr.input : rr.messages) || [])[0] || {}).content || [])[0] || {};",
+                  "  pm.expect((bp.prompt_cache_breakpoint || {}).mode, 'breakpoint dropped: ' + wire.slice(0, 400)).to.eql('explicit');",
+                  "  if (onResponses) {",
+                  "    pm.expect((body.extra_fields || {}).converted_request_type, 'Responses-shaped wire without a conversion: ' + wire.slice(0, 300)).to.eql('responses');",
+                  "    pm.expect((bp.prompt_cache_breakpoint || {}).ttl, 'ttl dropped on Responses: ' + wire.slice(0, 400)).to.eql('12h');",
+                  "  } else {",
+                  "    pm.expect((bp.prompt_cache_breakpoint || {}).ttl, 'ttl forwarded to Chat: ' + wire.slice(0, 400)).to.be.undefined;",
+                  "  }",
                   "});",
                   "pm.test('usage reports a cache write', function () {",
                   "  var d = ((body.usage || {}).prompt_tokens_details) || {};",
@@ -309146,6 +309170,83 @@
               {
                 "key": "Content-Type",
                 "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-5.6-sol\",\n  \"max_tokens\": 8000,\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"{{cachePrefix}} [ttl12h {{ttl12hNonce}}]\",\n          \"prompt_cache_breakpoint\": {\n            \"mode\": \"explicit\",\n            \"ttl\": \"12h\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Answer in one short word: is the sky blue?\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai gpt-5.6-sol /v1/chat/completions forced to Responses keeps the 12h prompt_cache_breakpoint (compat conversion) non-streaming",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Fresh prefix per request so the 12h write happens even on a rerun within the same run.",
+                  "pm.variables.set('ttl12hNonce', String(Date.now()) + '-' + Math.floor(Math.random() * 1e9) + '-chat-to-responses');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The targeted x-bf-compat header forces the chat->Responses conversion (folder 168), so this row always exercises",
+                  "// it. Before: the conversion dropped the block's prompt_cache_breakpoint, so the 12h write never reached OpenAI.",
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('status is 200', function () { pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200); });",
+                  "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "pm.test('the chat request was converted to Responses', function () {",
+                  "  pm.expect((body.extra_fields || {}).converted_request_type, 'expected responses: ' + txt.slice(0, 400)).to.eql('responses');",
+                  "  pm.expect(rr, 'raw_request missing: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "  pm.expect(rr.input, 'outbound body is not Responses-shaped: ' + wire.slice(0, 400)).to.be.an('array');",
+                  "});",
+                  "pm.test('the block prompt_cache_breakpoint survives the conversion with its 12h ttl', function () {",
+                  "  var bp = ((((rr || {}).input || [])[0] || {}).content || [])[0] || {};",
+                  "  pm.expect((bp.prompt_cache_breakpoint || {}).mode, 'breakpoint dropped by the conversion: ' + wire.slice(0, 400)).to.eql('explicit');",
+                  "  pm.expect((bp.prompt_cache_breakpoint || {}).ttl, 'ttl dropped by the conversion: ' + wire.slice(0, 400)).to.eql('12h');",
+                  "});",
+                  "pm.test('usage reports a cache write', function () {",
+                  "  var d = ((body.usage || {}).prompt_tokens_details) || {};",
+                  "  pm.expect(d.cache_write_tokens, 'no cache write: ' + JSON.stringify(body.usage)).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-compat",
+                "value": "[\"force_reasoning_only_models_to_responses\"]"
               },
               {
                 "key": "x-bf-send-back-raw-request",
@@ -309387,9 +309488,15 @@
                   "var rr = (body.extra_fields || {}).raw_request;",
                   "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
                   "var wire = JSON.stringify(rr || null);",
-                  "pm.test('prompt_cache_options.ttl 12h stripped on Chat (Chat accepts only 30m)', function () {",
+                  "// gpt-5.6-sol chat is routed to Responses by the compat plugin (folder 168); Responses takes 12h, Chat only 30m.",
+                  "pm.test('prompt_cache_options.ttl 12h kept on Responses, stripped on Chat', function () {",
                   "  pm.expect(rr, 'raw_request missing: ' + txt.slice(0, 300)).to.be.an('object');",
-                  "  pm.expect((rr.prompt_cache_options || {}).ttl, 'request-level ttl forwarded to Chat: ' + wire.slice(0, 400)).to.be.undefined;",
+                  "  if (Array.isArray(rr.input)) {",
+                  "    pm.expect((body.extra_fields || {}).converted_request_type, 'Responses-shaped wire without a conversion: ' + wire.slice(0, 300)).to.eql('responses');",
+                  "    pm.expect((rr.prompt_cache_options || {}).ttl, 'request-level ttl dropped on Responses: ' + wire.slice(0, 400)).to.eql('12h');",
+                  "  } else {",
+                  "    pm.expect((rr.prompt_cache_options || {}).ttl, 'request-level ttl forwarded to Chat: ' + wire.slice(0, 400)).to.be.undefined;",
+                  "  }",
                   "});",
                   "pm.test('usage reports a cache write', function () {",
                   "  var d = ((body.usage || {}).prompt_tokens_details) || {};",
