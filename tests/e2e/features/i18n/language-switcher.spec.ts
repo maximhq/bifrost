@@ -91,6 +91,9 @@ test.describe('Language setting (Client Settings)', () => {
     await expectLanguage(page, 'pt-BR')
     expect(await page.evaluate((key) => localStorage.getItem(key), LOCALE_STORAGE_KEY)).toBe('pt-BR')
 
+    await page.reload()
+    await expectLanguage(page, 'pt-BR')
+
     await selectLanguage(page, 'pt')
     await expectLanguage(page, 'pt')
     expect(await page.evaluate((key) => localStorage.getItem(key), LOCALE_STORAGE_KEY)).toBe('pt')
