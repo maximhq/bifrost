@@ -65,6 +65,30 @@ func TestApplyHeaderRequestMetadata(t *testing.T) {
 	}
 }
 
+// Passthrough ingress keeps requestMetadata as json.RawMessage; it is merged only when headers are present.
+func TestApplyHeaderRequestMetadataRawBody(t *testing.T) {
+	header := map[string]string{"x-bf-bedrock-metadata-trace_id": "abc"}
+	tests := []struct {
+		name        string
+		raw         string
+		headers     map[string]string
+		want        map[string]string
+		wantInExtra bool
+	}{
+		{"object merges with headers", `{"tenant_slug":"body"}`, header, map[string]string{"tenant_slug": "body", "trace_id": "abc"}, false},
+		{"null keeps header entries", `null`, header, map[string]string{"trace_id": "abc"}, false},
+		{"no headers leaves raw for passthrough", `{"tenant_slug":"body"}`, nil, nil, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := &BedrockConverseRequest{ExtraParams: map[string]interface{}{"requestMetadata": json.RawMessage(tt.raw)}}
+			applyHeaderRequestMetadata(headerMetadataCtx(tt.headers), req)
+			assert.Equal(t, tt.want, req.RequestMetadata)
+			assert.Equal(t, tt.wantInExtra, req.ExtraParams["requestMetadata"] != nil)
+		})
+	}
+}
+
 func TestApplyHeaderRequestMetadataCapsEntries(t *testing.T) {
 	headers := make(map[string]string)
 	for i := range 20 {

@@ -1421,13 +1421,6 @@ func applyBedrockExtraParams(extraParams map[string]interface{}, bedrockReq *Bed
 	}
 
 	if reqMetadata, exists := extraParams["requestMetadata"]; exists {
-		// Passthrough ingress keeps unknown fields as json.RawMessage.
-		if raw, ok := reqMetadata.(json.RawMessage); ok {
-			var decoded map[string]interface{}
-			if sonic.Unmarshal(raw, &decoded) == nil && decoded != nil {
-				reqMetadata = decoded
-			}
-		}
 		if metadata, ok := schemas.SafeExtractStringMap(reqMetadata); ok {
 			delete(extraParams, "requestMetadata")
 			bedrockReq.RequestMetadata = metadata
@@ -1466,6 +1459,19 @@ func applyHeaderRequestMetadata(ctx *schemas.BifrostContext, bedrockReq *Bedrock
 	metadata := maps.Clone(bedrockReq.RequestMetadata)
 	if metadata == nil {
 		metadata = make(map[string]string, len(keys))
+	}
+	// Passthrough ingress keeps requestMetadata as json.RawMessage. Only now, with headers
+	// present, is it merged here; otherwise it stays in ExtraParams for the passthrough merge.
+	// ExtraParams is a per-request copy, so deleting from it is safe.
+	if raw, ok := bedrockReq.ExtraParams["requestMetadata"].(json.RawMessage); ok {
+		var decoded map[string]interface{}
+		if sonic.Unmarshal(raw, &decoded) == nil {
+			// A JSON null decodes to a nil map; dropping it keeps it from erasing header entries.
+			if body, ok := schemas.SafeExtractStringMap(decoded); ok || decoded == nil {
+				maps.Copy(metadata, body)
+				delete(bedrockReq.ExtraParams, "requestMetadata")
+			}
+		}
 	}
 	for _, key := range keys {
 		if len(metadata) >= maxRequestMetadataEntries {
