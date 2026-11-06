@@ -123,7 +123,7 @@ https://www.googleapis.com/auth/admin.directory.group.member.readonly
 | **Domain** | Your Google Workspace primary domain (e.g. `company.com`) |
 | **Client ID** | OAuth Client ID from Step 2 |
 | **Client Secret** | OAuth Client Secret from Step 2 |
-| **Audience** | Optional override (defaults to Client ID) |
+| **Audiences** | Optional - one or more accepted audiences (defaults to Client ID) |
 | **Admin Email** | Admin user to impersonate for Directory API (Step 5) |
 | **Service Account Source** | Choose one: Paste JSON / Environment variable / File path |
 | **Service Account JSON / Env Var / File** | The value for the chosen source |
@@ -186,6 +186,7 @@ You can also map any custom attributes to any entity (role, team or business uni
 | `clientId` | Yes | OAuth 2.0 Web Client ID from Step 2. |
 | `clientSecret` | Yes | Client Secret - required for token revocation and for confidential server-side flows. |
 | `audience` | No | Expected JWT audience. Defaults to `clientId`. |
+| `allowedAudiences` | No | More accepted JWT audiences, unioned with `audience`. |
 | `adminEmail` | Yes  | Workspace admin to impersonate via domain-wide delegation. Required when any service-account field is set. |
 | `serviceAccountJson` | One of 3 | Raw JSON string of the service account key. |
 | `serviceAccountEnvVar` | One of 3 | Name of the environment variable containing the JSON. |

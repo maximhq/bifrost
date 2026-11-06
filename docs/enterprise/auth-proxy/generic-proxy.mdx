@@ -89,7 +89,7 @@ Go to **Governance** → **User Provisioning**, open the identity provider you w
 
 <Step title="Enable the proxy and select Generic OIDC proxy">
 
-Toggle **Identity-Aware Proxy (IAP)** on, then set **Proxy** to **Generic OIDC proxy**. The **Header name**, **Issuer URL**, and **Audience** fields appear below, along with the **Mode** selector.
+Toggle **Identity-Aware Proxy (IAP)** on, then set **Proxy** to **Generic OIDC proxy**. The **Header name**, **Issuer URL**, and **Audiences** fields appear below, along with the **Mode** selector.
 
 </Step>
 
@@ -99,7 +99,7 @@ Toggle **Identity-Aware Proxy (IAP)** on, then set **Proxy** to **Generic OIDC p
 | --- | --- |
 | **Header name** | The request header carrying the proxy-signed JWT, e.g. `X-Forwarded-Assertion`. **Required** for a generic proxy. |
 | **Issuer URL** | The proxy token issuer (`iss` claim). Bifrost discovers the JWKS via `<issuer>/.well-known/openid-configuration` unless you override it. Must be `https`. |
-| **Audience** | The expected `aud` claim binding the token to Bifrost. |
+| **Audiences** | The expected `aud` values binding the token to Bifrost; a token naming any of them is accepted. |
 
 Under **Advanced**, you can supply an explicit **JWKS URL** (skips OIDC discovery) and change the **identity claim** (defaults to `email`).
 
@@ -152,7 +152,7 @@ The `authProxy` block lives inside your SSO provider's `config` under the top-le
 | `issuerUrl` | string (secret) | Yes | Token issuer (`iss`). Used for OIDC discovery of the JWKS. Must be `https`. |
 | `jwksUrl` | string (secret) | No | Explicit JWKS URL. Skips OIDC discovery when set. Must be `https`. |
 | `audience` | string (secret) | Yes* | Expected `aud` claim binding the token to Bifrost. |
-| `allowedAudiences` | string[] | No | Accept any of several audiences instead of a single `audience`. |
+| `allowedAudiences` | string[] | No | More accepted audiences. A token naming `audience` or any of these is accepted. |
 | `userIdClaim` | string (secret) | No | Token claim used as the user identity. Defaults to `email`. |
 
 <Note>
