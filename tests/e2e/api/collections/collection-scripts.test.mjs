@@ -300,8 +300,14 @@ test("proxy teardown is skipped in the unauthenticated pass, which stored nothin
   assert.strictEqual(ctx.state.skipped, true, "expected skipRequest()");
 });
 
+test("proxy teardown is skipped when no snapshot was taken, since the folder made no writes", () => {
+  const ctx = run(disableProxyPrerequest, { variables: { admin_auth_header: "Bearer x" } });
+  assert.strictEqual(ctx.state.skipped, true, "expected skipRequest() without proxy_original_config");
+});
+
 test("proxy teardown runs in the authenticated pass and disables the proxy for every surface", () => {
-  for (const variables of [{ admin_auth_header: "Bearer x" }, { setup_token: "t" }]) {
+  const proxy_original_config = JSON.stringify({ enabled: false });
+  for (const variables of [{ admin_auth_header: "Bearer x", proxy_original_config }, { setup_token: "t", proxy_original_config }]) {
     const ctx = run(disableProxyPrerequest, { variables });
     assert.strictEqual(ctx.state.skipped, false, `unexpected skipRequest() for ${JSON.stringify(variables)}`);
   }
