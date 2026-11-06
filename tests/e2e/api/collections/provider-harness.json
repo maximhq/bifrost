@@ -308341,7 +308341,7 @@
     },
     {
       "name": "316. Bedrock tool result with duplicate JSON keys falls back to text (tool result duplicate keys)",
-      "description": "Bedrock Converse rejects a toolResult json block whose object repeats a key, at any depth, with \"The format of the value at messages.N.content.M.toolResult.content.0.json is invalid\", failing the whole request and aborting the caller's agent run. tryParseJSONIntoContentBlock validated tool-result strings with json.Compact, which accepts duplicate keys, and only guarded empty-string keys, so {\"a\":1,\"a\":2} was forwarded as a json block. The guard (jsonHasConverseUnsafeObjectKey) now also tracks keys per object and falls back to a text block carrying the original string. Case 1 pins the chat-completions converter (convertToolMessages) with a nested duplicate; case 2 pins the Responses converter (function_call_output); case 3 pins the /anthropic drop-in, which reaches the same helper. Cases 1 and 2 read the outbound Converse body via x-bf-send-back-raw-request; all three are red before the fix (Converse 400) and green after. The /bedrock converse drop-in is not covered: the client sends the json block natively and the helper is never called.",
+      "description": "Bedrock Converse rejects a toolResult json block whose object repeats a key, at any depth, with \"The format of the value at messages.N.content.M.toolResult.content.0.json is invalid\", failing the whole request and aborting the caller's agent run. tryParseJSONIntoContentBlock validated tool-result strings with json.Compact, which accepts duplicate keys, and only guarded empty-string keys, so {\"a\":1,\"a\":2} was forwarded as a json block. The guard (jsonHasConverseUnsafeObjectKey) now also tracks keys per object and falls back to a text block carrying the original string. Case 1 pins the chat-completions converter (convertToolMessages) with a nested duplicate; case 2 pins the Responses converter (function_call_output); case 3 pins the /anthropic drop-in, which reaches the same helper. Each case reads the outbound Converse body via x-bf-send-back-raw-request and requires a single text block carrying the original string; all three are red before the fix (Converse 400) and green after. The /bedrock converse drop-in is not covered: the client sends the json block natively and the helper is never called.",
       "item": [
         {
           "name": "316.1 bedrock/claude-haiku-4-5 /v1/chat/completions string tool result with a nested duplicate key falls back to text (tool result duplicate keys)",
@@ -308475,7 +308475,7 @@
           }
         },
         {
-          "name": "316.3 bedrock/claude-haiku-4-5 /anthropic/v1/messages tool_result with a duplicate key is accepted by Converse (tool result duplicate keys)",
+          "name": "316.3 bedrock/claude-haiku-4-5 /anthropic/v1/messages tool_result with a duplicate key falls back to text (tool result duplicate keys)",
           "event": [
             {
               "listen": "test",
@@ -308487,9 +308487,25 @@
                   "// Converse rejects a toolResult json block whose object repeats a key, at any depth, with",
                   "// \"The format of the value at messages.N.content.M.toolResult.content.0.json is invalid\".",
                   "// json.Compact accepts duplicates, so Bifrost must send such tool output as a text block.",
-                  "pm.test('316.3 bedrock/claude-haiku-4-5 /anthropic/v1/messages tool_result with a duplicate key is accepted by Converse (tool result duplicate keys): request succeeds', function () {",
+                  "pm.test('316.3 bedrock/claude-haiku-4-5 /anthropic/v1/messages tool_result with a duplicate key falls back to text (tool result duplicate keys): request succeeds', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(200);",
                   "  pm.expect(txt, 'Converse rejected the duplicate-key tool result as json: ' + txt.slice(0, 400)).to.not.include('toolResult.content.0.json is invalid');",
+                  "});",
+                  "",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "",
+                  "pm.test('316.3 bedrock/claude-haiku-4-5 /anthropic/v1/messages tool_result with a duplicate key falls back to text (tool result duplicate keys): toolResult carries the original string as a text block', function () {",
+                  "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "  var inner = null;",
+                  "  (rr.messages || []).forEach(function (m) { (m.content || []).forEach(function (b) { if (b.toolResult && !inner) { inner = b.toolResult.content || []; } }); });",
+                  "  pm.expect(inner, 'no toolResult block reached Converse: ' + wire.slice(0, 600)).to.be.an('array');",
+                  "  pm.expect(inner.length, 'toolResult content: ' + JSON.stringify(inner)).to.eql(1);",
+                  "  pm.expect(inner[0].json, 'duplicate-key tool output was sent as a json block: ' + JSON.stringify(inner)).to.be.undefined;",
+                  "  pm.expect(inner[0].text, 'text fallback must carry the original bytes: ' + JSON.stringify(inner)).to.eql(\"{\\\"a\\\":1,\\\"a\\\":2}\");",
                   "});"
                 ]
               }
@@ -308501,6 +308517,10 @@
               {
                 "key": "Content-Type",
                 "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
               }
             ],
             "body": {
