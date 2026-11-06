@@ -29,6 +29,12 @@ async function expectLanguage(page: Page, locale: string) {
   await expect(page.getByRole('button', { name: expected.observability, exact: true })).toBeVisible()
 }
 
+// expectLanguage reads strings both Portuguese catalogs share, so this one tells them apart.
+async function expectPortugueseCatalog(page: Page, locale: 'pt-BR' | 'pt') {
+  const label = catalog(locale, 'config').clientSettings.dropExcessRequests as string
+  await expect(page.getByText(label, { exact: true })).toBeVisible()
+}
+
 test.describe('Language setting (Client Settings)', () => {
   test.beforeEach(async ({ page }) => {
     await page.goto('/workspace/config/client-settings')
@@ -93,9 +99,11 @@ test.describe('Language setting (Client Settings)', () => {
 
     await page.reload()
     await expectLanguage(page, 'pt-BR')
+    await expectPortugueseCatalog(page, 'pt-BR')
 
     await selectLanguage(page, 'pt')
     await expectLanguage(page, 'pt')
+    await expectPortugueseCatalog(page, 'pt')
     expect(await page.evaluate((key) => localStorage.getItem(key), LOCALE_STORAGE_KEY)).toBe('pt')
   })
 
