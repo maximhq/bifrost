@@ -617,11 +617,16 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 	// Verified Claude models take structured output natively as output_config.format in
 	// additionalModelRequestFields: the model's decoding is constrained, and no
 	// synthetic tool competes with the caller's tools or needs a forced
-	// tool_choice. Other models go through the synthetic `bf_so_*` tool, a
-	// regular Converse tool call.
+	// tool_choice. Other models, and schemas output_config.format can't carry, go
+	// through the synthetic `bf_so_*` tool, a regular Converse tool call.
 	var responseFormatTool *BedrockTool
+	var outputFormat json.RawMessage
+	native := false
 	if schemas.IsAnthropicModelFamily(ctx, bifrostReq.Model) && anthropic.DefaultSupportsNativeStructuredOutput(caps.Model()) {
-		if outputFormat := nativeAnthropicOutputFormat(chatResponseFormatSchema(bifrostReq.Params)); outputFormat != nil {
+		outputFormat, native = nativeAnthropicOutputFormat(chatResponseFormatSchema(bifrostReq.Params))
+	}
+	if native {
+		if outputFormat != nil {
 			if bedrockReq.AdditionalModelRequestFields == nil {
 				bedrockReq.AdditionalModelRequestFields = schemas.NewOrderedMap()
 			}
@@ -2616,24 +2621,24 @@ func convertImageToBedrockSource(ctx context.Context, model, imageURL string) (*
 
 // nativeAnthropicOutputFormat is the output_config.format Claude takes for
 // structured output, built from the same schema the synthetic bf_so_* tool would
-// carry. Anthropic requires additionalProperties false on objects, so a
-// top-level object schema that leaves it unset gets it. Nil when there is no
-// schema to constrain the reply to.
-func nativeAnthropicOutputFormat(schema json.RawMessage) json.RawMessage {
+// carry, with every object that leaves additionalProperties unset closed. Nil
+// when there is no schema to constrain the reply to. ok is false when the
+// schema can't be sent natively: an object that sets additionalProperties to
+// true or a schema is rejected by output_config.format, so the request keeps
+// the bf_so_* tool, which enforces the schema as written.
+func nativeAnthropicOutputFormat(schema json.RawMessage) (format json.RawMessage, ok bool) {
 	if len(schema) == 0 {
-		return nil
+		return nil, true
 	}
-	schema = anthropic.NormalizeSchemaForAnthropicRaw(schema)
-	if gjson.GetBytes(schema, "type").String() == "object" && !gjson.GetBytes(schema, "additionalProperties").Exists() {
-		if withDefault, err := sjson.SetBytes(schema, "additionalProperties", false); err == nil {
-			schema = withDefault
-		}
+	closed, ok := anthropic.CloseObjectSchemasRaw(anthropic.NormalizeSchemaForAnthropicRaw(schema))
+	if !ok {
+		return nil, false
 	}
-	format, err := sjson.SetRawBytes([]byte(`{"type":"json_schema"}`), "schema", schema)
+	format, err := sjson.SetRawBytes([]byte(`{"type":"json_schema"}`), "schema", closed)
 	if err != nil {
-		return nil
+		return nil, false
 	}
-	return json.RawMessage(format)
+	return format, true
 }
 
 // chatResponseFormatSchema is the JSON schema of a json_schema response_format,

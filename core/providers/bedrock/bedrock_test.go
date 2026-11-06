@@ -2862,7 +2862,7 @@ func BenchmarkConverseResponseRoundTripEndTurn(b *testing.B) {
 	}
 }
 
-func TestToBedrockResponsesRequest_AnthropicTextFormatUsesOutputConfig(t *testing.T) {
+func TestToBedrockResponsesRequest_UnverifiedAnthropicTextFormatUsesSyntheticTool(t *testing.T) {
 	schemaObj := schemas.NewOrderedMapFromPairs(
 		schemas.KV("type", "object"),
 		schemas.KV("properties", schemas.NewOrderedMapFromPairs(
@@ -2893,10 +2893,8 @@ func TestToBedrockResponsesRequest_AnthropicTextFormatUsesOutputConfig(t *testin
 	require.NoError(t, err)
 	require.NotNil(t, bedrockReq)
 
-	// PR #3184 moved Anthropic structured output off native output_config.format
-	// (rejected by Opus 4.7) onto the synthetic bf_so_* tool path used by all
-	// Bedrock models. The test now asserts the synthetic tool reached
-	// toolConfig.tools.
+	// Claude 3 Sonnet isn't verified for native output_config.format, so it
+	// keeps the synthetic bf_so_* tool.
 	require.NotNil(t, bedrockReq.ToolConfig, "expected toolConfig for structured output")
 	foundSyntheticTool := false
 	for _, tool := range bedrockReq.ToolConfig.Tools {
@@ -3895,10 +3893,10 @@ func TestAnthropicOutputConfigFormatStillFallsBackToBudgetTokensForReasoning(t *
 	assert.Equal(t, "auto", *result.Params.Reasoning.Summary)
 }
 
-// TestAnthropicStructuredOutputUsesOutputConfigWithoutForcedToolChoice ensures
-// Anthropic Bedrock structured output uses native output_config.format and does
-// not synthesize a forced tool choice, while keeping reasoning (thinking) active.
-func TestAnthropicStructuredOutputUsesOutputConfigWithoutForcedToolChoice(t *testing.T) {
+// TestUnverifiedAnthropicStructuredOutputUsesSyntheticToolWithThinking ensures a
+// Claude model not verified for native output_config.format keeps the synthetic
+// bf_so_* tool, while keeping reasoning (thinking) active.
+func TestUnverifiedAnthropicStructuredOutputUsesSyntheticToolWithThinking(t *testing.T) {
 	responseFormat := any(map[string]any{
 		"type": "json_schema",
 		"json_schema": map[string]any{
@@ -3939,8 +3937,8 @@ func TestAnthropicStructuredOutputUsesOutputConfigWithoutForcedToolChoice(t *tes
 	require.NotNil(t, result)
 	require.NotNil(t, result.AdditionalModelRequestFields)
 
-	// PR #3184 moved Anthropic structured output off native output_config.format
-	// onto the synthetic bf_so_* tool path used by all Bedrock models.
+	// Claude 3.7 Sonnet isn't verified for native output_config.format, so it
+	// keeps the synthetic bf_so_* tool.
 	require.NotNil(t, result.ToolConfig, "expected toolConfig for structured output")
 	foundSyntheticTool := false
 	for _, tool := range result.ToolConfig.Tools {
@@ -4247,6 +4245,130 @@ func TestToBedrockResponsesRequest_AnthropicNativeStructuredOutputKeepsEffort(t 
 	assert.Equal(t, "low", gjson.Get(fields, "output_config.effort").String())
 	assert.Equal(t, "json_schema", gjson.Get(fields, "output_config.format.type").String())
 	assert.Nil(t, bedrockReq.ToolConfig, "expected no synthetic bf_so_* tool")
+}
+
+// chatStructuredOutputRequest is a chat request on a verified Claude model with
+// a json_schema response_format carrying schema.
+func chatStructuredOutputRequest(schema map[string]any) *schemas.BifrostChatRequest {
+	responseFormat := any(map[string]any{
+		"type": "json_schema",
+		"json_schema": map[string]any{
+			"name":   "person",
+			"schema": schema,
+		},
+	})
+	return &schemas.BifrostChatRequest{
+		Model: "eu.anthropic.claude-opus-5-5",
+		Input: []schemas.ChatMessage{
+			{
+				Role:    schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Invent a person who has moved house twice.")},
+			},
+		},
+		Params: &schemas.ChatParameters{ResponseFormat: &responseFormat},
+	}
+}
+
+// requireSyntheticStructuredOutputTool asserts the request carries the bf_so_*
+// tool and no native output_config.format.
+func requireSyntheticStructuredOutputTool(t *testing.T, toolConfig *bedrock.BedrockToolConfig, fields *schemas.OrderedMap) {
+	t.Helper()
+	if fields != nil {
+		assert.False(t, gjson.Get(additionalFieldsJSON(t, fields), "output_config.format").Exists(), "expected no output_config.format")
+	}
+	require.NotNil(t, toolConfig, "expected toolConfig for structured output")
+	foundSyntheticTool := false
+	for _, tool := range toolConfig.Tools {
+		if tool.ToolSpec != nil && strings.HasPrefix(tool.ToolSpec.Name, "bf_so_") {
+			foundSyntheticTool = true
+			break
+		}
+	}
+	require.True(t, foundSyntheticTool, "expected synthetic bf_so_* tool for structured output")
+}
+
+// TestBedrockAnthropicNativeStructuredOutputClosesNestedObjects: Converse
+// rejects output_config.format when any object, nested ones included, leaves
+// additionalProperties unset, so every object in properties, items, $defs and
+// anyOf is closed.
+func TestBedrockAnthropicNativeStructuredOutputClosesNestedObjects(t *testing.T) {
+	address := func() map[string]any {
+		return map[string]any{
+			"type":       "object",
+			"properties": map[string]any{"city": map[string]any{"type": "string"}},
+			"required":   []any{"city"},
+		}
+	}
+	schema := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"address":  address(),
+			"previous": map[string]any{"type": "array", "items": address()},
+			"employer": map[string]any{"$ref": "#/$defs/employer"},
+			"pet":      map[string]any{"anyOf": []any{address(), map[string]any{"type": "null"}}},
+		},
+		"required": []any{"address", "previous", "employer", "pet"},
+		"$defs":    map[string]any{"employer": address()},
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	result, err := bedrock.ToBedrockChatCompletionRequest(ctx, chatStructuredOutputRequest(schema))
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	fields := additionalFieldsJSON(t, result.AdditionalModelRequestFields)
+	for _, path := range []string{
+		"output_config.format.schema",
+		"output_config.format.schema.properties.address",
+		"output_config.format.schema.properties.previous.items",
+		"output_config.format.schema.$defs.employer",
+		"output_config.format.schema.properties.pet.anyOf.0",
+	} {
+		additionalProperties := gjson.Get(fields, path+".additionalProperties")
+		assert.True(t, additionalProperties.Exists() && additionalProperties.Type == gjson.False, "expected additionalProperties false at %s", path)
+	}
+	assert.False(t, gjson.Get(fields, "output_config.format.schema.properties.pet.anyOf.1.additionalProperties").Exists(), "non-object schemas are left alone")
+	assert.Nil(t, result.ToolConfig, "expected no synthetic bf_so_* tool")
+}
+
+// TestBedrockAnthropicChatOpenObjectSchemaUsesSyntheticTool: output_config.format
+// rejects additionalProperties true, and closing the object would reject replies
+// the schema allows, so the request keeps the bf_so_* tool.
+func TestBedrockAnthropicChatOpenObjectSchemaUsesSyntheticTool(t *testing.T) {
+	schema := map[string]any{
+		"type":                 "object",
+		"properties":           map[string]any{"name": map[string]any{"type": "string"}},
+		"required":             []any{"name"},
+		"additionalProperties": true,
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	result, err := bedrock.ToBedrockChatCompletionRequest(ctx, chatStructuredOutputRequest(schema))
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	requireSyntheticStructuredOutputTool(t, result.ToolConfig, result.AdditionalModelRequestFields)
+}
+
+// TestToBedrockResponsesRequest_AnthropicNestedOpenObjectUsesSyntheticTool: an
+// additionalProperties schema on a nested object can't be sent natively either,
+// so the whole request keeps the bf_so_* tool.
+func TestToBedrockResponsesRequest_AnthropicNestedOpenObjectUsesSyntheticTool(t *testing.T) {
+	req := classificationResponsesRequest("eu.anthropic.claude-opus-5-5")
+	req.Params.Text.Format.JSONSchema.Schema.SchemaMap.Set("properties", schemas.NewOrderedMapFromPairs(
+		schemas.KV("labels", schemas.NewOrderedMapFromPairs(
+			schemas.KV("type", "object"),
+			schemas.KV("additionalProperties", schemas.NewOrderedMapFromPairs(schemas.KV("type", "string"))),
+		)),
+	))
+	req.Params.Text.Format.JSONSchema.Schema.SchemaMap.Set("required", []string{"labels"})
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bedrockReq, err := bedrock.ToBedrockResponsesRequest(ctx, req)
+	require.NoError(t, err)
+	require.NotNil(t, bedrockReq)
+
+	requireSyntheticStructuredOutputTool(t, bedrockReq.ToolConfig, bedrockReq.AdditionalModelRequestFields)
 }
 
 // TestNonAnthropicStructuredOutputStillUsesToolConversion ensures Bedrock models

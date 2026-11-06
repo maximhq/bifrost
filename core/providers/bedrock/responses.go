@@ -2840,28 +2840,33 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 				}
 			}
 		}
-		if bifrostReq.Params.Text != nil {
-			if bifrostReq.Params.Text.Format != nil && schemas.IsAnthropicModelFamily(ctx, bifrostReq.Model) &&
-				anthropic.DefaultSupportsNativeStructuredOutput(caps.Model()) {
-				// Verified Claude models take structured output natively as
-				// output_config.format in additionalModelRequestFields: the
-				// model's decoding is constrained, and no synthetic tool competes
-				// with the caller's tools or needs a forced tool_choice.
+		if bifrostReq.Params.Text != nil && bifrostReq.Params.Text.Format != nil {
+			// Verified Claude models take structured output natively as
+			// output_config.format in additionalModelRequestFields: the model's
+			// decoding is constrained, and no synthetic tool competes with the
+			// caller's tools or needs a forced tool_choice.
+			var outputFormat json.RawMessage
+			native := false
+			if schemas.IsAnthropicModelFamily(ctx, bifrostReq.Model) && anthropic.DefaultSupportsNativeStructuredOutput(caps.Model()) {
 				schema, err := textFormatSchema(bifrostReq.Params.Text)
 				if err != nil {
 					return nil, err
 				}
-				if outputFormat := nativeAnthropicOutputFormat(schema); outputFormat != nil {
+				outputFormat, native = nativeAnthropicOutputFormat(schema)
+			}
+			if native {
+				if outputFormat != nil {
 					if bedrockReq.AdditionalModelRequestFields == nil {
 						bedrockReq.AdditionalModelRequestFields = schemas.NewOrderedMap()
 					}
 					setOutputConfigField(bedrockReq.AdditionalModelRequestFields, "format", outputFormat)
 				}
-			} else if bifrostReq.Params.Text.Format != nil {
-				// Other models go through the synthetic `bf_so_*` tool path. We
-				// capture the tool here and defer injection until after normal
-				// tool/tool_choice conversion so the forced structured-output tool
-				// choice is not overwritten.
+			} else {
+				// Other models, and schemas output_config.format can't carry, go
+				// through the synthetic `bf_so_*` tool path. We capture the tool
+				// here and defer injection until after normal tool/tool_choice
+				// conversion so the forced structured-output tool choice is not
+				// overwritten.
 				responseFormatTool, _, err := convertTextFormatToTool(ctx, bifrostReq.Model, bifrostReq.Params.Text)
 				if err != nil {
 					return nil, err

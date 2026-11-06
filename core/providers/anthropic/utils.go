@@ -4557,6 +4557,77 @@ func NormalizeSchemaForAnthropicRaw(schema json.RawMessage) json.RawMessage {
 	return body
 }
 
+// CloseObjectSchemasRaw sets additionalProperties false on every object schema
+// that leaves it unset, at any depth: output_config.format rejects an object
+// without it, nested ones included. It reports false, and returns the schema
+// unchanged, when an object sets additionalProperties to true or a schema.
+// output_config.format rejects those too, and closing them would reject replies
+// the caller's schema allows. It visits the same subschemas as
+// NormalizeSchemaForAnthropicRaw.
+func CloseObjectSchemasRaw(schema json.RawMessage) (json.RawMessage, bool) {
+	node := gjson.ParseBytes(schema)
+	if !node.IsObject() {
+		return schema, true
+	}
+
+	body := append([]byte(nil), schema...)
+
+	if node.Get("type").String() == "object" {
+		additional := node.Get("additionalProperties")
+		switch {
+		case !additional.Exists():
+			body, _ = sjson.SetBytes(body, "additionalProperties", false)
+		case additional.Type != gjson.False:
+			return schema, false
+		}
+	}
+
+	for _, key := range []string{"properties", "definitions", "$defs"} {
+		children := node.Get(key)
+		if !children.IsObject() {
+			continue
+		}
+		closedChildren := []byte("{}")
+		ok := true
+		children.ForEach(func(name, child gjson.Result) bool {
+			var closed json.RawMessage
+			closed, ok = CloseObjectSchemasRaw(json.RawMessage(child.Raw))
+			closedChildren, _ = sjson.SetRawBytes(closedChildren, sjsonEscapeKey(name.String()), closed)
+			return ok
+		})
+		if !ok {
+			return schema, false
+		}
+		body, _ = sjson.SetRawBytes(body, sjsonEscapeKey(key), closedChildren)
+	}
+
+	if items := node.Get("items"); items.IsObject() {
+		closed, ok := CloseObjectSchemasRaw(json.RawMessage(items.Raw))
+		if !ok {
+			return schema, false
+		}
+		body, _ = sjson.SetRawBytes(body, "items", closed)
+	}
+
+	for _, key := range []string{"anyOf", "oneOf", "allOf"} {
+		branches := node.Get(key)
+		if !branches.IsArray() {
+			continue
+		}
+		closedBranches := []byte("[]")
+		for i, branch := range branches.Array() {
+			closed, ok := CloseObjectSchemasRaw(json.RawMessage(branch.Raw))
+			if !ok {
+				return schema, false
+			}
+			closedBranches, _ = sjson.SetRawBytes(closedBranches, fmt.Sprintf("%d", i), closed)
+		}
+		body, _ = sjson.SetRawBytes(body, key, closedBranches)
+	}
+
+	return body, true
+}
+
 // normalizeSchemaForAnthropic recursively normalizes a JSON schema to be compatible with Anthropic's API.
 // This handles cases where:
 // 1. type is an array like ["string", "null"] - converted to single type
