@@ -1,8 +1,23 @@
 # All variables pass through to the bifrost module.
 # Defaults match the parent module's defaults.
 
-variable "cloud_provider" { type = string }
-variable "service" { type = string }
+# Validation mirrors the root module so expect_failures in root_validation can
+# reference these wrapper variables (nested module variables cannot be named).
+variable "cloud_provider" {
+  type = string
+  validation {
+    condition     = contains(["aws", "gcp", "azure", "kubernetes"], var.cloud_provider)
+    error_message = "cloud_provider must be one of: aws, gcp, azure, kubernetes"
+  }
+}
+
+variable "service" {
+  type = string
+  validation {
+    condition     = contains(["ecs", "eks", "gke", "cloud-run", "aks", "aci", "deployment"], var.service)
+    error_message = "service must be one of: ecs, eks, gke, cloud-run, aks, aci, deployment"
+  }
+}
 variable "region" { type = string }
 
 variable "config_json" {
