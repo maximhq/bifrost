@@ -965,6 +965,19 @@ export const ProviderIcons = {
 			</svg>
 		);
 	},
+	wally: ({ size = "md", className = "" }: IconProps) => {
+		const resolvedSize = resolveSize(size);
+
+		return (
+			<img
+				src={withBasePath("/images/wally.svg")}
+				alt="wally"
+				width={resolvedSize}
+				height={resolvedSize}
+				className={cn("object-contain", className)}
+			/>
+		);
+	},
 	databricks: ({ size = "md", className = "" }: IconProps) => {
 		const resolvedSize = resolveSize(size);
 

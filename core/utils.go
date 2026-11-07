@@ -52,6 +52,7 @@ var dynamicallyConfigurableProviders = []schemas.ModelProvider{
 	schemas.Sarvam,
 	schemas.Vertex,
 	schemas.Wafer,
+	schemas.Wally,
 	schemas.XAI,
 }
 
