@@ -26,7 +26,9 @@ export function getMCPLogPresentation(log: MCPToolLogEntry, t?: TFunction<"obser
 								: log.status === "cancelled"
 									? (t?.("mcpLogs.presentation.cancelled") ?? "Cancelled")
 									: (t?.("mcpLogs.presentation.processing") ?? "Processing");
-	const description = approved
+	// An ordinary execution (succeeded, failed, cancelled, still running) has nothing to add to its
+	// status label, so it carries no description and the sheet and tooltips show none.
+	const description: string | undefined = approved
 		? (t?.("mcpLogs.presentation.approvedDescription") ?? "Allowed before execution. No execution result is recorded in this entry.")
 		: blocked
 			? (t?.("mcpLogs.presentation.blockedDescription") ?? "Blocked before execution.")
@@ -38,7 +40,7 @@ export function getMCPLogPresentation(log: MCPToolLogEntry, t?: TFunction<"obser
 					: log.status === "input_required"
 						? (t?.("mcpLogs.presentation.inputRequiredDescription") ??
 							"The MCP server asked the caller for input before completing. The retry that answers it is a separate entry.")
-						: (t?.("mcpLogs.presentation.executionDescription") ?? "Recorded tool execution outcome.");
+						: undefined;
 	const rawDuration = log.metadata?.inspection_duration_ms;
 	const duration = rawDuration == null || (typeof rawDuration === "string" && rawDuration.trim() === "") ? undefined : Number(rawDuration);
 	const inspectionDuration = duration != null && Number.isFinite(duration) && duration >= 0 ? duration : undefined;

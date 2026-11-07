@@ -62,6 +62,14 @@ describe("getMCPLogPillTone", () => {
 		expect(getMCPLogPillTone(log, presentation)).toBe("input");
 	});
 
+	test("an ordinary execution has no description, so nothing generic is shown for it", () => {
+		for (const status of ["success", "error", "cancelled", "processing"] as const) {
+			expect(getMCPLogPresentation(entry({ status })).description).toBeUndefined();
+		}
+		expect(getMCPLogPresentation(pendingPolicyEntry({ decision: "deny" })).description).toBe("Blocked before execution.");
+		expect(getMCPLogPresentation(entry({ status: "unknown" })).description).toContain("outcome is not known");
+	});
+
 	test("a retry-later round says it asked for no input", () => {
 		const log = entry({ status: "input_required", metadata: { retry_later: true } });
 		const presentation = getMCPLogPresentation(log);

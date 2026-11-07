@@ -1045,8 +1045,7 @@
 			"blockedDescription": "Blocked before execution.",
 			"observedDescription": "Tool activity was captured, but its execution outcome is not known.",
 			"inputRequiredDescription": "The MCP server asked the caller for input before completing. The retry that answers it is a separate entry.",
-			"retryLaterDescription": "The MCP server asked the caller to retry later, without asking for input. The retry is a separate entry.",
-			"executionDescription": "Recorded tool execution outcome."
+			"retryLaterDescription": "The MCP server asked the caller to retry later, without asking for input. The retry is a separate entry."
 		},
 		"noResults": "No results found. Try adjusting your filters and/or time range.",
 		"observedRoundTrip": "Observed round trip"

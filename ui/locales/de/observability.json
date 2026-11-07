@@ -1045,8 +1045,7 @@
 			"blockedDescription": "Vor der Ausführung blockiert.",
 			"observedDescription": "Tool-Aktivität wurde erfasst, das Ausführungsergebnis ist jedoch nicht bekannt.",
 			"inputRequiredDescription": "Der MCP-Server hat den Aufrufer vor dem Abschluss um eine Eingabe gebeten. Der Wiederholungsversuch mit der Antwort ist ein eigener Eintrag.",
-			"retryLaterDescription": "Der MCP-Server hat den Aufrufer gebeten, es später erneut zu versuchen, ohne eine Eingabe anzufordern. Der erneute Versuch ist ein separater Eintrag.",
-			"executionDescription": "Aufgezeichnetes Tool-Ausführungsergebnis."
+			"retryLaterDescription": "Der MCP-Server hat den Aufrufer gebeten, es später erneut zu versuchen, ohne eine Eingabe anzufordern. Der erneute Versuch ist ein separater Eintrag."
 		},
 		"noResults": "Keine Ergebnisse gefunden. Passe deine Filter und/oder den Zeitraum an.",
 		"observedRoundTrip": "Beobachtete Roundtrip-Zeit"
