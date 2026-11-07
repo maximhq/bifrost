@@ -7748,11 +7748,13 @@ const INF32 = folder("INF-32 Disabled client", `Setup: ${LLM_TEXT}; alpha (echo,
   deleteClient("INF-32", "inf-32-alpha"),
 ]);
 
-const MCP_DIMS = ["apps", "server_labels", "tool_names", "user_agents", "virtual_keys"];
+const MCP_SCOPE_DIMS = ["business_units", "customers", "projects", "teams", "users"];
+const MCP_DIMS = ["apps", "business_units", "customers", "projects", "server_labels", "teams", "tool_names", "user_agents", "users", "virtual_keys"];
 const keysAre = (keys) => A.custom(`the body's keys are ${lit(keys)}`, [`pm.expect(Object.keys(pm.response.json()).sort(), 'body: ' + pm.response.text()).to.eql(${lit(keys)});`]);
 const LOG32 = folder("LOG-32 Filter data dimensions", "Setup: none.", [
   request("LOG-32", "dimensions=tool_names", "GET", "/api/mcp-logs/filterdata?dimensions=tool_names", { asserts: [A.status(200), keysAre(["tool_names"])] }),
-  request("LOG-32", "dimensions=bogus falls back to all five", "GET", "/api/mcp-logs/filterdata?dimensions=bogus", { asserts: [A.status(200), keysAre(MCP_DIMS)] }),
+  request("LOG-32", "dimensions=users,teams,customers,business_units,projects", "GET", "/api/mcp-logs/filterdata?dimensions=users,teams,customers,business_units,projects", { asserts: [A.status(200), keysAre(MCP_SCOPE_DIMS)] }),
+  request("LOG-32", "dimensions=bogus falls back to all ten", "GET", "/api/mcp-logs/filterdata?dimensions=bogus", { asserts: [A.status(200), keysAre(MCP_DIMS)] }),
 ]);
 
 const ADM02 = folder("ADM-02 Setup-lock gating of `POST /api/mcp/client`", `Setup: alpha (echo_tool, add_tool) on loopback; ${LOCK_TEXT}. Each create is a sticky client on alpha.`, [

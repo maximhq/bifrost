@@ -1059,6 +1059,12 @@ func TestClickHouseMCPAttributionFilters(t *testing.T) {
 	assertMCPAttributionFilters(t, store.RDBLogStore, store.BatchCreateMCPToolLogsIfNotExists)
 }
 
+// The MCP filter options fan out over the JSON-array columns through this backend's own ARRAY JOIN.
+func TestClickHouseMCPKeyPairs(t *testing.T) {
+	store := trySetupClickHouseStore(t)
+	assertMCPKeyPairs(t, store.RDBLogStore, store.BatchCreateMCPToolLogsIfNotExists)
+}
+
 // The keyset cursor bound its timestamp as a time.Time, which the driver sends
 // at seconds precision. Ascending, every page re-read the rows earlier in the
 // cursor's second, and a second holding a full page never advanced; descending,

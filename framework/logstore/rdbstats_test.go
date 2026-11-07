@@ -553,6 +553,128 @@ func assertA2AAttributionFilters(t *testing.T, store *RDBLogStore, create func(c
 	}
 }
 
+// TestGetDistinctMCPKeyPairsFollowsRelayOptions checks the MCP filter dropdowns list options the way
+// the Relay Logs ones do.
+func TestGetDistinctMCPKeyPairsFollowsRelayOptions(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(t, err)
+	require.NoError(t, db.AutoMigrate(&MCPToolLog{}))
+	store := &RDBLogStore{db: db, logger: bifrost.NewDefaultLogger(schemas.LogLevelInfo)}
+	assertMCPKeyPairs(t, store, store.BatchCreateMCPToolLogsIfNotExists)
+}
+
+// assertMCPKeyPairs pins the MCP filter options: teams, customers and business units fan out over
+// their JSON-array columns, each id is listed once, a user with no name is still listed, search and
+// limit narrow the list, and rows older than the filter-data window or outside the row scope add
+// nothing. create is the store's own writer, since ClickHouse writes MCP tool logs its own way.
+func assertMCPKeyPairs(t *testing.T, store *RDBLogStore, create func(context.Context, []*MCPToolLog) error) {
+	t.Helper()
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	userID, userName, namelessUserID, oldUserID := "user-a", "MCP User", "user-nameless", "user-old"
+	projectID, projectName := "project-a", "Apollo"
+	soloTeamID, soloTeamName := "team-solo", "Solo"
+	require.NoError(t, create(ctx, []*MCPToolLog{
+		{
+			ID: "options-a", ToolName: "Read", Timestamp: now, Status: "success",
+			UserID: &userID, UserName: &userName, ProjectID: &projectID, ProjectName: &projectName,
+			TeamIDsParsed: []string{"team-b", "team-a"}, TeamNamesParsed: []string{"Beta", "Alpha"},
+			CustomerIDsParsed: []string{"customer-b", "customer-a"}, CustomerNamesParsed: []string{"Bravo", "Acme"},
+			BusinessUnitIDsParsed: []string{"bu-b", "bu-a"}, BusinessUnitNamesParsed: []string{"Build", "Advisory"},
+		},
+		// The same team under a second name is still one option.
+		{ID: "options-renamed", ToolName: "Read", Timestamp: now, Status: "success", UserID: &userID, UserName: &userName,
+			TeamIDsParsed: []string{"team-a"}, TeamNamesParsed: []string{"Alpha Renamed"}},
+		// A scalar team with no array, as the virtual key path writes it.
+		{ID: "options-scalar", ToolName: "Read", Timestamp: now, Status: "success", UserID: &userID, UserName: &userName, TeamID: &soloTeamID, TeamName: &soloTeamName},
+		{ID: "options-nameless", ToolName: "Read", Timestamp: now, Status: "success", UserID: &namelessUserID},
+		{ID: "options-old", ToolName: "Read", Timestamp: now.AddDate(0, 0, -(defaultFilterDataCutoffDays + 1)), Status: "success", UserID: &oldUserID},
+	}))
+
+	options := func(ctx context.Context, idCol, nameCol string, limit int, query string) []KeyPairResult {
+		t.Helper()
+		pairs, err := store.GetDistinctMCPKeyPairs(ctx, idCol, nameCol, limit, query)
+		require.NoError(t, err)
+		return pairs
+	}
+	// Where a nameless id sorts follows the database's NULL ordering, as on the Relay Logs options.
+	require.ElementsMatch(t, []KeyPairResult{{ID: namelessUserID, Name: ""}, {ID: userID, Name: userName}}, options(ctx, "user_id", "user_name", 100, ""))
+	require.Equal(t, []KeyPairResult{{ID: "team-a", Name: "Alpha Renamed"}, {ID: "team-b", Name: "Beta"}, {ID: soloTeamID, Name: soloTeamName}}, options(ctx, "team_id", "team_name", 100, ""))
+	require.Equal(t, []KeyPairResult{{ID: "customer-a", Name: "Acme"}, {ID: "customer-b", Name: "Bravo"}}, options(ctx, "customer_id", "customer_name", 100, ""))
+	require.Equal(t, []KeyPairResult{{ID: "bu-a", Name: "Advisory"}, {ID: "bu-b", Name: "Build"}}, options(ctx, "business_unit_id", "business_unit_name", 100, ""))
+	require.Equal(t, []KeyPairResult{{ID: projectID, Name: projectName}}, options(ctx, "project_id", "project_name", 100, ""))
+	require.Equal(t, []KeyPairResult{{ID: "team-b", Name: "Beta"}}, options(ctx, "team_id", "team_name", 1, "et"))
+
+	scoped := queryscope.WithQueryScope(ctx, func(db *gorm.DB) *gorm.DB {
+		return db.Where("user_id = ?", namelessUserID)
+	})
+	require.Empty(t, options(scoped, "team_id", "team_name", 100, ""))
+}
+
+// TestPostgresMCPKeyPairsAndAttributionFilters runs the MCP option and attribution checks on Postgres,
+// whose fan-out and membership SQL (IS JSON ARRAY, a lateral join) differ from SQLite's and ClickHouse's.
+func TestPostgresMCPKeyPairsAndAttributionFilters(t *testing.T) {
+	db := trySetupPostgresDB(t)
+	if db == nil {
+		t.Skip("Postgres not available")
+	}
+	require.NoError(t, db.AutoMigrate(&MCPToolLog{}))
+	store := &RDBLogStore{db: db, logger: bifrost.NewDefaultLogger(schemas.LogLevelInfo)}
+	// The logstore_test schema is the suite's own, so each check starts from an empty table.
+	clear := func() { require.NoError(t, db.Exec("DELETE FROM mcp_tool_logs").Error) }
+	t.Cleanup(clear)
+	clear()
+	assertMCPKeyPairs(t, store, store.BatchCreateMCPToolLogsIfNotExists)
+	clear()
+	assertMCPAttributionFilters(t, store, store.BatchCreateMCPToolLogsIfNotExists)
+}
+
+// TestGetDistinctMCPKeyPairsAppliesDimensionCeiling verifies the MCP filter dropdowns list only the
+// organisations the caller may be shown, like the LLM, Relay and agent log dropdowns.
+func TestGetDistinctMCPKeyPairsAppliesDimensionCeiling(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(t, err)
+	require.NoError(t, db.AutoMigrate(&MCPToolLog{}))
+	store := &RDBLogStore{db: db, logger: bifrost.NewDefaultLogger(schemas.LogLevelInfo)}
+	userID, userName := "user-a", "MCP User"
+	otherID, otherName := "user-b", "Other User"
+	require.NoError(t, store.BatchCreateMCPToolLogsIfNotExists(context.Background(), []*MCPToolLog{
+		{
+			ID: "ceiling-a", ToolName: "Read", Timestamp: time.Now().UTC(), Status: "success", UserID: &userID, UserName: &userName,
+			TeamIDsParsed: []string{"team-a", "team-hidden"}, TeamNamesParsed: []string{"Alpha", "Hidden"},
+			CustomerIDsParsed: []string{"customer-a", "customer-hidden"}, CustomerNamesParsed: []string{"Acme", "Hidden Co"},
+			BusinessUnitIDsParsed: []string{"bu-hidden"}, BusinessUnitNamesParsed: []string{"Hidden BU"},
+		},
+		{ID: "ceiling-b", ToolName: "Read", Timestamp: time.Now().UTC(), Status: "success", UserID: &otherID, UserName: &otherName},
+	}))
+
+	allowed := map[string][]string{"team_id": {"team-a"}, "customer_id": {"customer-a"}, "business_unit_id": {}, "user_id": {userID}}
+	ctx := queryscope.WithDimensionScope(context.Background(), func(col string) ([]string, bool) {
+		ids, ok := allowed[col]
+		return ids, ok
+	})
+	for _, tc := range []struct {
+		idCol, nameCol string
+		want           []KeyPairResult
+	}{
+		{"team_id", "team_name", []KeyPairResult{{ID: "team-a", Name: "Alpha"}}},
+		{"customer_id", "customer_name", []KeyPairResult{{ID: "customer-a", Name: "Acme"}}},
+		{"business_unit_id", "business_unit_name", nil},
+		{"user_id", "user_name", []KeyPairResult{{ID: userID, Name: userName}}},
+	} {
+		pairs, err := store.GetDistinctMCPKeyPairs(ctx, tc.idCol, tc.nameCol, 100, "")
+		require.NoError(t, err)
+		if tc.want == nil {
+			require.Empty(t, pairs, tc.idCol)
+			continue
+		}
+		require.Equal(t, tc.want, pairs, tc.idCol)
+	}
+
+	_, err = store.GetDistinctMCPKeyPairs(context.Background(), "tool_name", "tool_name", 100, "")
+	require.Error(t, err)
+}
+
 // TestMCPAttributionFiltersApplyToRowsAndStats checks each stored scope filters records, stats and the histogram.
 func TestMCPAttributionFiltersApplyToRowsAndStats(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})

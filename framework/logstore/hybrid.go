@@ -2452,6 +2452,11 @@ func (h *HybridLogStore) GetAvailableMCPVirtualKeys(ctx context.Context, limit i
 	return h.inner.GetAvailableMCPVirtualKeys(ctx, limit, query)
 }
 
+// GetDistinctMCPKeyPairs delegates to the inner store.
+func (h *HybridLogStore) GetDistinctMCPKeyPairs(ctx context.Context, idCol, nameCol string, limit int, query string) ([]KeyPairResult, error) {
+	return h.inner.GetDistinctMCPKeyPairs(ctx, idCol, nameCol, limit, query)
+}
+
 // Async Job methods — delegated directly.
 
 // CreateAsyncJob creates a new async job.

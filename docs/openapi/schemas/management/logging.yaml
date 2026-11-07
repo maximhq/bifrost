@@ -471,6 +471,49 @@ MCPLogsFilterDataResponse:
             type: string
             description: Virtual key value (redacted if applicable)
       description: All unique virtual keys
+    apps:
+      type: array
+      items:
+        type: string
+      description: Client apps detected from the callers' User-Agent, for the `apps` dimension.
+    user_agents:
+      type: array
+      items:
+        type: string
+      description: Raw caller User-Agent strings, for the `user_agents` dimension.
+    users:
+      type: array
+      items:
+        $ref: '#/FilterKeyPair'
+      description: >-
+        Users that appear in the MCP logs, for the `users` dimension. A user with
+        no recorded name is listed with an empty name.
+    teams:
+      type: array
+      items:
+        $ref: '#/FilterKeyPair'
+      description: >-
+        Teams that appear in the MCP logs, for the `teams` dimension, including
+        every team of a call recorded under several.
+    customers:
+      type: array
+      items:
+        $ref: '#/FilterKeyPair'
+      description: >-
+        Customers that appear in the MCP logs, for the `customers` dimension,
+        including every customer of a call recorded under several.
+    business_units:
+      type: array
+      items:
+        $ref: '#/FilterKeyPair'
+      description: >-
+        Business units that appear in the MCP logs, for the `business_units`
+        dimension, including every business unit of a call recorded under several.
+    projects:
+      type: array
+      items:
+        $ref: '#/FilterKeyPair'
+      description: Projects that appear in the MCP logs, for the `projects` dimension.
 
 DeleteMCPLogsRequest:
   type: object

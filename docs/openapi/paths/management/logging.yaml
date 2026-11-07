@@ -1848,9 +1848,26 @@ mcp-logs-filterdata:
         [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get available MCP log filter data
     description: |
-      Returns all unique filter data from MCP tool logs (tool names, server labels).
+      Returns the values each MCP log filter can take, read from the MCP tool logs of the last 30 days.
     tags:
       - Logging
+    parameters:
+      - name: dimensions
+        in: query
+        description: >-
+          Comma-separated dimensions to return. One or more of `tool_names`,
+          `server_labels`, `apps`, `user_agents`, `virtual_keys`, `users`, `teams`,
+          `customers`, `business_units`, `projects`. Unrecognised values are ignored,
+          and asking for none returns every dimension.
+        schema:
+          type: string
+      - name: q
+        in: query
+        description: >-
+          Free-text search within the requested dimensions. Passing it bypasses
+          the response cache.
+        schema:
+          type: string
     security:
       - ManagementBearerAuth: []
       - BasicAuth: []
