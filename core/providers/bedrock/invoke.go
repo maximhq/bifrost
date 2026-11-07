@@ -2184,6 +2184,10 @@ func toAnthropicInvokeStreamBytes(ctx *schemas.BifrostContext, resp *schemas.Bif
 				"role":    "assistant",
 				"content": []interface{}{},
 				"model":   model,
+				// Anthropic and Bedrock send both keys as null on message_start; clients test
+				// stop_reason === null to tell an in-progress message from a finished one.
+				"stop_reason":   nil,
+				"stop_sequence": nil,
 				"usage": map[string]interface{}{
 					"input_tokens":  0,
 					"output_tokens": 0,

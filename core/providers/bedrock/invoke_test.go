@@ -317,6 +317,32 @@ func TestToAnthropicInvokeStreamBytes_MessageDeltaCarriesUsage(t *testing.T) {
 	assert.False(t, hasCreation, "no cache write occurred on this turn")
 }
 
+// TestToAnthropicInvokeStreamBytes_MessageStartHasNullStopFields pins that message_start carries
+// stop_reason and stop_sequence as explicit JSON null, as Anthropic and Bedrock do. A client that
+// tests `stop_reason === null` to tell an in-progress message from a finished one must not see
+// the keys missing (undefined).
+func TestToAnthropicInvokeStreamBytes_MessageStartHasNullStopFields(t *testing.T) {
+	resp := &schemas.BifrostResponsesStreamResponse{
+		Type:     schemas.ResponsesStreamResponseTypeCreated,
+		Response: &schemas.BifrostResponsesResponse{ID: schemas.Ptr("msg_bedrock_1")},
+	}
+
+	frames, err := toAnthropicInvokeStreamBytes(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), resp)
+	require.NoError(t, err)
+	require.Len(t, frames, 1, "expected a single message_start frame")
+
+	var messageStart map[string]interface{}
+	require.NoError(t, json.Unmarshal(frames[0], &messageStart))
+	message, ok := messageStart["message"].(map[string]interface{})
+	require.True(t, ok, "message_start must carry a message object")
+
+	for _, key := range []string{"stop_reason", "stop_sequence"} {
+		value, present := message[key]
+		assert.True(t, present, "message_start.message must carry %s", key)
+		assert.Nil(t, value, "message_start.message.%s must be null", key)
+	}
+}
+
 // TestToAnthropicInvokeStreamBytes_MessageStartCarriesUsage is the /invoke-with-response-stream
 // half of #5885. The sibling test above pins the authoritative figures on message_delta, which
 // is correct — but message_start was being built with no usage key at all, and Anthropic-dialect
