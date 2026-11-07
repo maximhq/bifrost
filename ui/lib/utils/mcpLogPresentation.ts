@@ -75,6 +75,11 @@ const MCP_TOOL_ERROR_PREFIX = /^MCP tool call failed for [^:\n]+: /;
 const MCP_TOOL_ERROR_SENTINEL = /: mcp tool call (failed|timed out)$/;
 // Longer messages stay plain text, which bounds the JSON.parse work each render of the sheet does.
 const MAX_JSON_SCAN_LENGTH = 100_000;
+// Deeper JSON stays text: JSON.stringify recurses once per level, and the pretty-printed size grows
+// with the square of the depth.
+const MAX_JSON_DEPTH = 20;
+// A failed JSON.parse throws, which costs far more than the scan, so only this many are tried.
+const MAX_JSON_PARSE_ATTEMPTS = 50;
 
 // The upstream error text for the error card, with the first JSON object or array inside it pulled
 // out and pretty-printed. The copy button keeps the full stored message.
@@ -88,19 +93,23 @@ export function splitMCPErrorMessage(message: string): { text: string; json?: st
 		.trimEnd();
 	return {
 		text: unwrapped.slice(0, found.start).trimEnd(),
-		json: JSON.stringify(found.value, null, 2),
+		json: found.json,
 		...(textAfter ? { textAfter } : {}),
 	};
 }
 
-// The first object or array in text that parses as JSON and holds something worth a block of its own.
-// The text comes from the upstream MCP server, so its brackets are untrusted and the work has to stay
-// linear in its length: one pass pairs every bracket with a stack, and only the outermost pairs, which
-// never overlap, are handed to JSON.parse. Quotes count only inside brackets, where they delimit JSON
-// strings, and a closing bracket of the wrong kind drops the brackets still open.
-function findEmbeddedJSON(text: string): { start: number; end: number; value: unknown } | undefined {
+// The first object or array in text that parses as JSON and holds something worth a block of its own,
+// pretty-printed. The text comes from the upstream MCP server, so its brackets are untrusted and the work
+// has to stay linear in its length: one pass pairs every bracket with a stack and records how deeply each
+// pair nests, and only the outermost pairs, which never overlap, are candidates. A candidate nested past
+// MAX_JSON_DEPTH, or whose first character cannot start JSON, is skipped without parsing, and the search
+// gives up after MAX_JSON_PARSE_ATTEMPTS parses that fail. Quotes count only inside brackets, where they
+// delimit JSON strings, and a closing bracket of the wrong kind drops the brackets still open.
+function findEmbeddedJSON(text: string): { start: number; end: number; json: string } | undefined {
 	const open: number[] = [];
-	const pairs: Array<[number, number]> = [];
+	// For each open bracket, the depth of the deepest pair closed inside it so far.
+	const innerDepth: number[] = [];
+	const pairs: Array<[start: number, close: number, depth: number]> = [];
 	let inString = false;
 	for (let i = 0; i < text.length; i++) {
 		const ch = text[i];
@@ -111,14 +120,19 @@ function findEmbeddedJSON(text: string): { start: number; end: number; value: un
 		}
 		if (ch === "{" || ch === "[") {
 			open.push(i);
+			innerDepth.push(0);
 		} else if (ch === "}" || ch === "]") {
 			const start = open.pop();
 			if (start === undefined) continue;
+			const depth = (innerDepth.pop() ?? 0) + 1;
 			if (text[start] !== (ch === "}" ? "{" : "[")) {
 				open.length = 0;
+				innerDepth.length = 0;
 				continue;
 			}
-			pairs.push([start, i]);
+			pairs.push([start, i, depth]);
+			const top = innerDepth.length - 1;
+			if (top >= 0 && innerDepth[top] < depth) innerDepth[top] = depth;
 		} else if (ch === '"' && open.length > 0) {
 			inString = true;
 		}
@@ -127,17 +141,31 @@ function findEmbeddedJSON(text: string): { start: number; end: number; value: un
 	// one is skipped.
 	pairs.sort((a, b) => a[0] - b[0]);
 	let coveredUntil = -1;
-	for (const [start, close] of pairs) {
+	let attempts = 0;
+	for (const [start, close, depth] of pairs) {
 		if (start <= coveredUntil) continue;
 		coveredUntil = close;
+		if (depth > MAX_JSON_DEPTH || !mayOpenJSON(text, start)) continue;
+		if (++attempts > MAX_JSON_PARSE_ATTEMPTS) return undefined;
 		try {
 			const value: unknown = JSON.parse(text.slice(start, close + 1));
-			if (isStructured(value)) return { start, end: close + 1, value };
+			if (isStructured(value)) return { start, end: close + 1, json: JSON.stringify(value, null, 2) };
 		} catch {
-			// Brackets that are not JSON, such as "[WARN]", or JSON nested too deeply to walk: keep scanning.
+			// Brackets that start like JSON but are not, such as "[2026-11-07 10:00]": keep scanning.
 		}
 	}
 	return undefined;
+}
+
+const JSON_WHITESPACE = " \t\n\r";
+const JSON_ARRAY_FIRST_CHARS = '"{[]-0123456789tfn';
+
+// Whether the bracket at start can open JSON at all, so "[WARN]" or "{a}" are skipped without the
+// exception a failed JSON.parse throws. The pair is balanced, so the scan stops at its closing bracket.
+function mayOpenJSON(text: string, start: number): boolean {
+	let i = start + 1;
+	while (JSON_WHITESPACE.includes(text[i])) i++;
+	return text[start] === "{" ? text[i] === '"' || text[i] === "}" : JSON_ARRAY_FIRST_CHARS.includes(text[i]);
 }
 
 // A non-empty object, or an array holding at least one, so "[1, 2]" or "{}" stay in the sentence.
