@@ -20,6 +20,8 @@
 - **MCP Server UI** - The MCP server sheet splits into a read-only view and a settings editor, tool parameters toggle between table and JSON, extra access grants have their own registry, and code mode settings collapse into an accordion
 - **Sticky Log Message Filter** - The log detail messages filter persists across reloads
 - **Duration Strings for `tool_sync_interval`** - Accepts values like `30m` alongside bare minutes
+- **Request Timeout Header** - `x-bf-request-timeout` (duration string or whole seconds, clamped to 30m) sets one total deadline for a request or stream, across every fallback attempt and MCP agent turn. When it fires, streams end with a terminal `504 request_timed_out` error and other requests fail with 504 (thanks [@public-aanp-tanium](https://github.com/public-aanp-tanium)!)
+- **Stream Idle Timeout Header** - `x-bf-stream-idle-timeout` (duration string or whole seconds, clamped to 30m) overrides the stream idle timeout for one request without changing the provider's `stream_idle_timeout_in_seconds` (thanks [@public-aanp-tanium](https://github.com/public-aanp-tanium)!)
 
 ## 🐞 Fixed
 
