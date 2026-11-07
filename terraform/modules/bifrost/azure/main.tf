@@ -5,8 +5,12 @@
 terraform {
   required_providers {
     azurerm = {
-      source  = "hashicorp/azurerm"
-      version = ">= 3.0"
+      source = "hashicorp/azurerm"
+      # 5.0 removed skip_provider_registration (used by the root module's
+      # default provider block, deprecated but accepted through 4.x) and
+      # azurerm_subnet.service_endpoints. A fresh init without this cap
+      # resolves 5.x and fails validation.
+      version = ">= 3.0, < 5.0"
     }
   }
 }
@@ -17,18 +21,27 @@ locals {
   # Sanitize name_prefix for resources that require alphanumeric-only names
   name_prefix_clean = replace(var.name_prefix, "-", "")
 
-  # Validate: existing VPC and subnets must be provided together
-  _validate_vpc_subnet = (
-    (var.existing_vpc_id == null) == (var.existing_subnet_ids == null)
-  )
-
   # Resolve resource group: use existing or create new
   resource_group_name = var.resource_group_name != null ? var.resource_group_name : azurerm_resource_group.this[0].name
   resource_group_id   = var.resource_group_name != null ? data.azurerm_resource_group.existing[0].id : azurerm_resource_group.this[0].id
 
   # Resolve networking: use existing or create new
-  vnet_id    = var.existing_vpc_id != null ? var.existing_vpc_id : azurerm_virtual_network.this[0].id
-  subnet_ids = var.existing_subnet_ids != null ? var.existing_subnet_ids : [azurerm_subnet.this[0].id]
+  vnet_id = var.existing_vpc_id != null ? var.existing_vpc_id : azurerm_virtual_network.this[0].id
+  # Splat rather than [0]: with a mismatched pair the created subnet has count 0,
+  # and the precondition below must be the error the plan reports.
+  subnet_ids = var.existing_subnet_ids != null ? var.existing_subnet_ids : azurerm_subnet.this[*].id
+}
+
+# existing_vpc_id and existing_subnet_ids must arrive together; otherwise the
+# plan either indexes a subnet that is never created or builds a VNet the given
+# subnets do not belong to.
+resource "terraform_data" "validate_network_inputs" {
+  lifecycle {
+    precondition {
+      condition     = (var.existing_vpc_id == null) == (var.existing_subnet_ids == null)
+      error_message = "existing_vpc_id and existing_subnet_ids must be set together: pass both to reuse a network, or neither to create one."
+    }
+  }
 }
 
 # =============================================================================

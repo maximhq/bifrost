@@ -113,11 +113,13 @@ run "valid_kubernetes_deployment" {
   }
 }
 
-# --- Invalid inputs (use wrapper — expect_failures references wrapper vars) ---
+# --- Invalid inputs ---
+# These run against the root module itself (no wrapper) so expect_failures
+# names the root variables and the runs fail if the root's validation rules
+# are removed. Validation fails before any provider is configured.
 
 run "invalid_cloud_provider_rejected" {
   command = plan
-  module { source = "./tests/setup" }
   variables {
     cloud_provider = "digitalocean"
     service        = "ecs"
@@ -129,7 +131,6 @@ run "invalid_cloud_provider_rejected" {
 
 run "invalid_service_rejected" {
   command = plan
-  module { source = "./tests/setup" }
   variables {
     cloud_provider = "aws"
     service        = "lambda"

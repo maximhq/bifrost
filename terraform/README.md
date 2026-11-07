@@ -57,7 +57,9 @@ For `scim_config` with `provider = "okta"`, include `config.issuerUrl`, `config.
 
 ## Provider Configuration
 
-You only need to configure the Terraform providers for the cloud you are deploying to. For example, deploying to AWS ECS only requires the `aws` provider -- you do not need to configure `google`, `azurerm`, or `kubernetes`.
+The root module references every cloud's resources (the unused clouds have `count = 0`), and Terraform configures every provider it references during `plan`. A plan through the root module therefore needs working credentials for AWS, Google, and Azure at the same time, even when only one cloud receives resources.
+
+To deploy to one cloud with only that cloud's credentials, call its platform module directly: `modules/bifrost/aws`, `modules/bifrost/gcp`, `modules/bifrost/azure`, or `modules/bifrost/kubernetes`. They take the resolved `config_json` string instead of the per-section variables. [`examples/aws-ecs-postgres`](examples/aws-ecs-postgres/) and [`examples/gcp-cloud-run-postgres`](examples/gcp-cloud-run-postgres/) show the pattern, including the config merge.
 
 See the [module README](modules/bifrost/README.md#provider-configuration) for provider configuration examples per cloud.
 
@@ -71,7 +73,7 @@ terraform init
 terraform test
 ```
 
-Tests cover all 7 deployment targets across 10 test files. See the [module README](modules/bifrost/README.md#testing) for details.
+Tests cover all 7 deployment targets across 11 test files. See the [module README](modules/bifrost/README.md#testing) for details.
 
 ## Directory Structure
 

@@ -42,7 +42,13 @@ module "bifrost" {
 
 ## Provider Configuration
 
-You only need to configure the Terraform providers for the cloud you are deploying to. Unused cloud modules are skipped automatically (`count = 0`).
+Unused cloud modules create nothing (`count = 0`), but Terraform still configures every provider referenced in the tree during `plan`. Through this root module a plan needs credentials for AWS, Google, and Azure at once: the `aws` provider wants a credential chain, `google` wants Application Default Credentials, and `azurerm` wants an `az login` or service principal. The `kubernetes` provider is lenient and needs nothing until a cluster resource is used.
+
+If you only have one cloud's credentials, call that cloud's platform module directly (`./aws`, `./gcp`, `./azure`, `./kubernetes`) and pass it the resolved `config_json`; `examples/aws-ecs-postgres` and `examples/gcp-cloud-run-postgres` do exactly that.
+
+The root module declares its own `azurerm` provider block (`features {}` plus `skip_provider_registration`) so that AWS, GCP and Kubernetes callers need no Azure configuration. Terraform treats that block as a separate provider configuration: an `azurerm` block in your own root module, including its `subscription_id`, does not configure it. Through the root module, select the Azure subscription with the environment (`ARM_SUBSCRIPTION_ID`, or `az account set`) and keep `azurerm` within `>= 3.0, < 5.0`. To pass a fully configured `azurerm` provider, call `./azure` directly.
+
+The blocks below show the provider each cloud needs for its own resources.
 
 **AWS (ECS / EKS):**
 
@@ -171,6 +177,7 @@ Test files are in `tests/` and cover all 7 deployment targets:
 | `azure_aks.tftest.hcl`      | AKS: cluster, HPA, ingress, resource groups        |
 | `azure_aci.tftest.hcl`      | ACI: compute, resource groups, VNets               |
 | `kubernetes.tftest.hcl`     | Generic K8s: storage class, ingress, annotations   |
+| `network_inputs.tftest.hcl` | GCP/Azure: existing VPC and subnets must pair      |
 
 ## Examples
 
