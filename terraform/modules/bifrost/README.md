@@ -196,4 +196,4 @@ Test files are in `tests/` and cover all 7 deployment targets:
 
 ## Examples
 
-See the [`examples/`](../../examples/) directory for complete deployment examples for each cloud provider and service combination.
+See the [`examples/`](../../examples/) directory for complete deployment examples for each cloud provider and service combination. [`aws-ecs-postgres`](../../examples/aws-ecs-postgres/) and [`gcp-cloud-run-postgres`](../../examples/gcp-cloud-run-postgres/) are the one-click stacks driven by `deploy/aws/deploy.sh` and `deploy/gcp/deploy.sh`.
