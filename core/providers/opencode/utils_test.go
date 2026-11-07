@@ -264,6 +264,27 @@ func TestResolveOpencodeSessionNamespacesPerVirtualKey(t *testing.T) {
 		}
 	})
 
+	t.Run("grant virtual key namespaces without the deprecated context key", func(t *testing.T) {
+		ctx := newTestOpencodeCtx(t, map[string]string{OpencodeSessionHeader: "shared-session"})
+		ctx.SetGrant(&opencodeStubGrant{identity: &opencodeStubIdentity{virtualKeyID: "vk-grant"}})
+		if got := ResolveOpencodeSession(ctx); got != "vk-grant:shared-session" {
+			t.Errorf("ResolveOpencodeSession() = %q, want %q from the grant identity", got, "vk-grant:shared-session")
+		}
+	})
+
+	t.Run("unsettled grant sections leave value unqualified", func(t *testing.T) {
+		for name, g := range map[string]schemas.Grant{
+			"no identity":    &opencodeStubGrant{},
+			"no virtual key": &opencodeStubGrant{identity: &opencodeStubIdentity{}},
+		} {
+			ctx := newTestOpencodeCtx(t, map[string]string{OpencodeSessionHeader: "shared-session"})
+			ctx.SetGrant(g)
+			if got := ResolveOpencodeSession(ctx); got != "shared-session" {
+				t.Errorf("%s: ResolveOpencodeSession() = %q, want unqualified value", name, got)
+			}
+		}
+	})
+
 	t.Run("unsafe virtual key leaves value unqualified", func(t *testing.T) {
 		ctx := newTestOpencodeCtx(t, map[string]string{OpencodeSessionHeader: "shared-session"})
 		setOpencodeVirtualKey(ctx, "evil\r\nvk")

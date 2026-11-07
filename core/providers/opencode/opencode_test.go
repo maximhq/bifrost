@@ -553,12 +553,44 @@ func newOpencodeWireCtx(t *testing.T, requestHeaders map[string]string) *schemas
 
 // setOpencodeVirtualKey mimics a governed request: the transport stores the
 // virtual key secret under BifrostContextKeyVirtualKey and the governance plugin
-// resolves its ID. The secret is derived from the ID so tests can assert it
-// never reaches the wire.
+// resolves its ID onto the request's Grant identity. The secret is derived from
+// the ID so tests can assert it never reaches the wire.
 func setOpencodeVirtualKey(ctx *schemas.BifrostContext, id string) {
 	ctx.SetValue(schemas.BifrostContextKeyVirtualKey, opencodeVirtualKeySecret(id))
-	ctx.SetValue(schemas.BifrostContextKeyGovernanceVirtualKeyID, id)
+	ctx.SetGrant(&opencodeStubGrant{identity: &opencodeStubIdentity{virtualKeyID: id}})
 }
+
+// opencodeStubIdentity settles only which virtual key the request is attributed
+// to; everything else answers as unknown.
+type opencodeStubIdentity struct {
+	virtualKeyID string
+}
+
+func (i *opencodeStubIdentity) Credential() schemas.Credential { return schemas.Credential{} }
+func (i *opencodeStubIdentity) Presented() bool                { return i.virtualKeyID != "" }
+func (i *opencodeStubIdentity) User() *schemas.UserRef         { return nil }
+func (i *opencodeStubIdentity) VirtualKey() *schemas.EntityRef {
+	if i.virtualKeyID == "" {
+		return nil
+	}
+	return &schemas.EntityRef{ID: i.virtualKeyID}
+}
+func (i *opencodeStubIdentity) Teams() []schemas.EntityRef         { return nil }
+func (i *opencodeStubIdentity) Customers() []schemas.EntityRef     { return nil }
+func (i *opencodeStubIdentity) BusinessUnits() []schemas.EntityRef { return nil }
+func (i *opencodeStubIdentity) Project() *schemas.EntityRef        { return nil }
+
+// opencodeStubGrant carries only an identity, which is all session namespacing reads.
+type opencodeStubGrant struct {
+	identity schemas.Identity
+}
+
+func (g *opencodeStubGrant) Identity() schemas.Identity          { return g.identity }
+func (g *opencodeStubGrant) Access() schemas.Access              { return nil }
+func (g *opencodeStubGrant) Limits() schemas.Limits              { return nil }
+func (g *opencodeStubGrant) SetIdentity(i schemas.Identity) bool { g.identity = i; return i != nil }
+func (g *opencodeStubGrant) SetAccess(schemas.Access) bool       { return false }
+func (g *opencodeStubGrant) SetLimits(schemas.Limits) bool       { return false }
 
 // opencodeVirtualKeySecret is the fake virtual key value paired with id.
 func opencodeVirtualKeySecret(id string) string {
@@ -1041,7 +1073,7 @@ func BenchmarkOpencodeInferenceAuthHeaders(b *testing.B) {
 	newCtx := func() *schemas.BifrostContext {
 		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 		ctx.SetValue(schemas.BifrostContextKeySessionID, "bf-sess-123")
-		ctx.SetValue(schemas.BifrostContextKeyGovernanceVirtualKeyID, "vk-1")
+		setOpencodeVirtualKey(ctx, "vk-1")
 		return ctx
 	}
 	b.Run("baseline_bearer_only", func(b *testing.B) {

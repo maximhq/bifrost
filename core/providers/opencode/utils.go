@@ -93,12 +93,12 @@ func resolveOpencodeSessionValue(ctx *schemas.BifrostContext) string {
 }
 
 // namespaceOpencodeSession qualifies a resolved session value with the ID of the
-// request's virtual key (set by the governance plugin), so the same client
+// virtual key the request's Grant identity is attributed to, so the same client
 // session used under two different virtual keys cannot collide upstream. It
 // never uses the virtual key value itself: that is a Bifrost credential and must
-// not reach a third-party gateway. Without a governance-resolved virtual key ID
-// (or with an unsafe one) the value is left unqualified rather than dropping the
-// request.
+// not reach a third-party gateway. Without a settled Grant identity carrying a
+// virtual key (or with an unsafe ID) the value is left unqualified rather than
+// dropping the request.
 //
 // Each component is escaped before joining so the only literal ":" in the
 // result is the separator we insert. Without escaping, ("a", "b:c") and
@@ -108,8 +108,20 @@ func resolveOpencodeSessionValue(ctx *schemas.BifrostContext) string {
 // strings. The escaped output stays within isSafeOpencodeSessionValue's
 // charset (only printable ASCII is introduced).
 func namespaceOpencodeSession(ctx *schemas.BifrostContext, value string) string {
-	virtualKeyID, ok := ctx.Value(schemas.BifrostContextKeyGovernanceVirtualKeyID).(string)
-	if !ok || strings.TrimSpace(virtualKeyID) == "" || !isSafeOpencodeSessionValue(virtualKeyID) {
+	grant := ctx.Grant()
+	if grant == nil {
+		return value
+	}
+	identity := grant.Identity()
+	if identity == nil {
+		return value
+	}
+	virtualKey := identity.VirtualKey()
+	if virtualKey == nil {
+		return value
+	}
+	virtualKeyID := virtualKey.ID
+	if strings.TrimSpace(virtualKeyID) == "" || !isSafeOpencodeSessionValue(virtualKeyID) {
 		return value
 	}
 	return escapeSessionComponent(virtualKeyID) + ":" + escapeSessionComponent(value)
