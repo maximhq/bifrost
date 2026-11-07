@@ -172,3 +172,46 @@ variable "volume_size_gb" {
   description = "Persistent volume size in GB for SQLite storage."
   type        = number
 }
+
+# --- Managed database and generated secrets (ECS only) ---
+variable "create_database" {
+  description = "Provision an RDS PostgreSQL 16 instance and wire PG_* into the ECS task."
+  type        = bool
+  default     = false
+}
+
+variable "database_name" {
+  description = "Database name created on the RDS instance."
+  type        = string
+  default     = "bifrost"
+}
+
+variable "database_user" {
+  description = "Master user created on the RDS instance."
+  type        = string
+  default     = "bifrost"
+}
+
+variable "database_instance_class" {
+  description = "RDS instance class. Defaults to db.t4g.small."
+  type        = string
+  default     = null
+}
+
+variable "database_storage_gb" {
+  description = "RDS allocated storage in GB."
+  type        = number
+  default     = 20
+}
+
+variable "database_deletion_protection" {
+  description = "Enable RDS deletion protection and keep a final snapshot on destroy."
+  type        = bool
+  default     = false
+}
+
+variable "generate_secrets" {
+  description = "Generate BIFROST_ENCRYPTION_KEY and BIFROST_SETUP_TOKEN in Secrets Manager and inject them into the ECS task."
+  type        = bool
+  default     = false
+}

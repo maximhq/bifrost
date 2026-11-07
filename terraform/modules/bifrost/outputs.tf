@@ -23,3 +23,20 @@ output "config_json" {
   value       = local.config_json
   sensitive   = true
 }
+
+output "setup_token" {
+  description = "Generated bootstrap token for the first admin account (only when generate_secrets is true)."
+  value = try(coalesce(
+    try(module.aws[0].setup_token, null),
+    try(module.gcp[0].setup_token, null),
+  ), null)
+  sensitive = true
+}
+
+output "database_endpoint" {
+  description = "Connection endpoint of the managed PostgreSQL database (only when create_database is true). AWS: host:port. GCP: the Cloud SQL connection name."
+  value = try(coalesce(
+    try(module.aws[0].database_endpoint, null),
+    try(module.gcp[0].database_endpoint, null),
+  ), null)
+}

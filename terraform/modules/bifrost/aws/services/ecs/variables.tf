@@ -120,3 +120,22 @@ variable "assign_public_ip" {
   type        = bool
   default     = true
 }
+
+# --- Extra runtime environment ---
+variable "extra_environment" {
+  description = "Additional plain environment variables for the Bifrost container (name/value)."
+  type = list(object({
+    name  = string
+    value = string
+  }))
+  default = []
+}
+
+variable "extra_secrets" {
+  description = "Additional secret environment variables for the Bifrost container (name/valueFrom Secrets Manager ARN, optionally with a JSON key selector)."
+  type = list(object({
+    name      = string
+    valueFrom = string
+  }))
+  default = []
+}

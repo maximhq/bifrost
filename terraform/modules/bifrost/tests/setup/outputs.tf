@@ -10,3 +10,12 @@ output "config_json" {
   value     = module.bifrost.config_json
   sensitive = true
 }
+
+output "setup_token" {
+  value     = module.bifrost.setup_token
+  sensitive = true
+}
+
+output "database_endpoint" {
+  value = module.bifrost.database_endpoint
+}
