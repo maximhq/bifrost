@@ -205,6 +205,20 @@ func (l *SharedObjectPluginLoader) LoadPlugin(path string, config any) (schemas.
 		}
 	}
 
+	// Optional: PreRelayHook (RelayPlugin — Relay traffic). Plugins that don't export it
+	// keep working; DynamicPlugin's default is a no-op passthrough.
+	if sym, err := pluginObj.Lookup("PreRelayHook"); err == nil {
+		if dp.preRelayHook, ok = sym.(func(ctx *schemas.BifrostContext, req *schemas.BifrostRelayRequest) (*schemas.BifrostRelayRequest, *schemas.RelayPluginShortCircuit, error)); !ok {
+			return nil, fmt.Errorf("failed to cast PreRelayHook to expected signature")
+		}
+	}
+	// Optional: PostRelayHook (RelayPlugin — Relay traffic).
+	if sym, err := pluginObj.Lookup("PostRelayHook"); err == nil {
+		if dp.postRelayHook, ok = sym.(func(ctx *schemas.BifrostContext, resp *schemas.BifrostRelayResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostRelayResponse, *schemas.BifrostError, error)); !ok {
+			return nil, fmt.Errorf("failed to cast PostRelayHook to expected signature")
+		}
+	}
+
 	// Optional: PreMCPConnectionHook (MCPConnectionPlugin — typed Connect hook).
 	// New .so plugins built against MCPConnectionPlugin can export this symbol to
 	// observe Connect events. Legacy plugins that don't export it keep working;

@@ -50,6 +50,12 @@ type DynamicPlugin struct {
 	preA2AHook  func(ctx *schemas.BifrostContext, req *schemas.BifrostA2ARequest) (*schemas.BifrostA2ARequest, *schemas.A2APluginShortCircuit, error)
 	postA2AHook func(ctx *schemas.BifrostContext, resp *schemas.BifrostA2AResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostA2AResponse, *schemas.BifrostError, error)
 
+	// RelayPlugin (optional, typed). .so plugins can export PreRelayHook/PostRelayHook to
+	// see Relay traffic (/relay/{name}/...), including the priced RelayUsage after the call.
+	// Plugins that don't export them no-op for relays.
+	preRelayHook  func(ctx *schemas.BifrostContext, req *schemas.BifrostRelayRequest) (*schemas.BifrostRelayRequest, *schemas.RelayPluginShortCircuit, error)
+	postRelayHook func(ctx *schemas.BifrostContext, resp *schemas.BifrostRelayResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostRelayResponse, *schemas.BifrostError, error)
+
 	// MCPConnectionPlugin (optional, typed). Forward-compat: new .so plugins can
 	// export PreMCPConnectionHook/PostMCPConnectionHook to receive Connect events
 	// with the typed signatures. Legacy plugins (pre-MCPConnectionPlugin) leave
@@ -179,6 +185,24 @@ func (dp *DynamicPlugin) PostA2AHook(ctx *schemas.BifrostContext, resp *schemas.
 		return resp, bifrostErr, nil // No-op if not implemented
 	}
 	return dp.postA2AHook(ctx, resp, bifrostErr)
+}
+
+// PreRelayHook is invoked before a Relay call (RelayPlugin interface). Defaults to a
+// no-op passthrough when the .so did not export it.
+func (dp *DynamicPlugin) PreRelayHook(ctx *schemas.BifrostContext, req *schemas.BifrostRelayRequest) (*schemas.BifrostRelayRequest, *schemas.RelayPluginShortCircuit, error) {
+	if dp.preRelayHook == nil {
+		return req, nil, nil
+	}
+	return dp.preRelayHook(ctx, req)
+}
+
+// PostRelayHook is invoked after a Relay call has ended (RelayPlugin interface). Defaults to
+// a no-op passthrough when the .so did not export it.
+func (dp *DynamicPlugin) PostRelayHook(ctx *schemas.BifrostContext, resp *schemas.BifrostRelayResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostRelayResponse, *schemas.BifrostError, error) {
+	if dp.postRelayHook == nil {
+		return resp, bifrostErr, nil
+	}
+	return dp.postRelayHook(ctx, resp, bifrostErr)
 }
 
 // PreMCPConnectionHook satisfies MCPConnectionPlugin for dynamically-loaded plugins.

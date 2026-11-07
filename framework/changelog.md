@@ -1,3 +1,4 @@
+- feat: shared-object plugins can export `PreRelayHook` / `PostRelayHook` to handle Relay traffic [@01infinity](https://github.com/01infinity)
 - feat: configstore - per-user MCP discovery stores, pending_verification flag, Anthropic workload identity column, and 12h cache write pricing columns
 - feat: logstore - client_ip (opt-in via `logs_store.capture_client_ip`) and user_email columns, exported to object storage
 - feat: logstore - relay log store parity with LLM logs: session and correlation ids, large payload previews

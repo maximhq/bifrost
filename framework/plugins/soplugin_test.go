@@ -216,11 +216,79 @@ func TestDynamicPluginLifecycle(t *testing.T) {
 		assert.Equal(t, bifrostErr, modifiedErr, "Error should be unchanged")
 	})
 
+	// Test PreRelayHook / PostRelayHook are loaded from the shared object and dispatched to it
+	t.Run("RelayHooks", func(t *testing.T) {
+		relayPlugin, ok := plugin.(schemas.RelayPlugin)
+		require.True(t, ok, "Plugin should be a RelayPlugin")
+
+		pluginCtx, cancel := schemas.NewBifrostContextWithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		req := &schemas.BifrostRelayRequest{RelayName: "tavily", Method: "POST", Path: "/search", Billable: true}
+		modifiedReq, shortCircuit, err := relayPlugin.PreRelayHook(pluginCtx, req)
+		require.NoError(t, err, "PreRelayHook should not return error")
+		assert.Nil(t, shortCircuit, "PreRelayHook should not return short circuit")
+		assert.Equal(t, req, modifiedReq, "Request should be unchanged")
+		// The value is set by the plugin's own PreRelayHook, proving the exported symbol ran
+		// rather than DynamicPlugin's no-op default.
+		assert.Equal(t, "relay-pre-hook-value", pluginCtx.Value(schemas.BifrostContextKey("hello-world-plugin-relay-pre-hook")))
+
+		resp := &schemas.BifrostRelayResponse{RelayName: "tavily", StatusCode: http.StatusOK, Usage: &schemas.RelayUsage{Cost: 0.008}}
+		modifiedResp, modifiedErr, err := relayPlugin.PostRelayHook(pluginCtx, resp, nil)
+		require.NoError(t, err, "PostRelayHook should not return error")
+		assert.Equal(t, resp, modifiedResp, "Response should be unchanged")
+		assert.Nil(t, modifiedErr, "Error should be nil")
+	})
+
 	// Test Cleanup
 	t.Run("Cleanup", func(t *testing.T) {
 		err := plugin.Cleanup()
 		assert.NoError(t, err, "Cleanup should not return error")
 	})
+}
+
+// TestDynamicPlugin_RelayHooksAreOptional verifies that a plugin which doesn't export the relay
+// hooks passes Relay traffic through unchanged.
+func TestDynamicPlugin_RelayHooksAreOptional(t *testing.T) {
+	plugin := &DynamicPlugin{
+		getName: func() string { return "legacy-plugin" },
+		cleanup: func() error { return nil },
+	}
+	req := &schemas.BifrostRelayRequest{RelayName: "tavily"}
+	gotReq, shortCircuit, err := plugin.PreRelayHook(nil, req)
+	require.NoError(t, err)
+	assert.Same(t, req, gotReq)
+	assert.Nil(t, shortCircuit)
+
+	resp := &schemas.BifrostRelayResponse{RelayName: "tavily"}
+	bifrostErr := &schemas.BifrostError{}
+	gotResp, gotErr, err := plugin.PostRelayHook(nil, resp, bifrostErr)
+	require.NoError(t, err)
+	assert.Same(t, resp, gotResp)
+	assert.Same(t, bifrostErr, gotErr)
+}
+
+// TestDynamicPlugin_RelayHooksDispatch verifies that exported relay hooks receive the call and
+// that a short circuit is returned to the caller.
+func TestDynamicPlugin_RelayHooksDispatch(t *testing.T) {
+	denied := &schemas.RelayPluginShortCircuit{Error: &schemas.BifrostError{Error: &schemas.ErrorField{Message: "denied"}}}
+	var postCalled bool
+	plugin := &DynamicPlugin{
+		getName: func() string { return "relay-plugin" },
+		preRelayHook: func(_ *schemas.BifrostContext, req *schemas.BifrostRelayRequest) (*schemas.BifrostRelayRequest, *schemas.RelayPluginShortCircuit, error) {
+			return req, denied, nil
+		},
+		postRelayHook: func(_ *schemas.BifrostContext, resp *schemas.BifrostRelayResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostRelayResponse, *schemas.BifrostError, error) {
+			postCalled = true
+			return resp, bifrostErr, nil
+		},
+	}
+	_, shortCircuit, err := plugin.PreRelayHook(nil, &schemas.BifrostRelayRequest{})
+	require.NoError(t, err)
+	assert.Same(t, denied, shortCircuit)
+
+	_, _, err = plugin.PostRelayHook(nil, &schemas.BifrostRelayResponse{}, nil)
+	require.NoError(t, err)
+	assert.True(t, postCalled)
 }
 
 func TestAsHTTPTransportPluginRecognizesResponseHeadersOnlyDynamicPlugin(t *testing.T) {
