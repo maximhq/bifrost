@@ -1024,6 +1024,7 @@
 		"rounds": "Tours",
 		"execution": "Exécution",
 		"errorDetails": "Détails de l'erreur",
+		"errorNoMessage": "L'appel de l'outil a échoué sans message d'erreur.",
 		"pluginLogs": "Journaux du plugin",
 		"loading": "Chargement des journaux MCP...",
 		"native": "Native",

@@ -80,6 +80,7 @@ import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { parseAsBoolean, parseAsString, useQueryState } from "nuqs";
 import { toast } from "sonner";
 import BlockHeader from "../views/blockHeader";
+import { LogErrorCard } from "../views/logErrorCard";
 import { CopyInlineButton, HeroStat, StatusPill, statusCodeBadgeClass } from "../views/logHeroStat";
 import { FallbackChainBanner, FallbackChainTimeline, useFallbackChain } from "../views/fallbackChain";
 import CollapsibleBox from "../views/collapsibleBox";
@@ -3226,36 +3227,26 @@ export function LogDetailView({
 						)}
 
 						{(displayErrorMessage || log.error_details?.error.error != null || log.status === "error") && (
-							<div className="rounded-sm border border-red-200 bg-red-50/70 p-5 dark:border-red-900 dark:bg-red-950/30">
-								<div className="flex items-center gap-2 text-red-700 dark:text-red-400">
-									<AlertCircle className="h-4 w-4 shrink-0" />
-									<span className="text-[12.5px] font-semibold">{t("labels.error")}</span>
-									{displayErrorMessage ? <CopyInlineButton text={displayErrorMessage} /> : null}
-								</div>
-								<div className="mt-2 text-[13px] leading-relaxed break-words whitespace-pre-wrap text-red-700 dark:text-red-400">
-									{displayErrorMessage ??
-										(log.content_hidden
-											? statusCode
-												? t("logs.detail.errorNotStoredWithStatus", { statusCode })
-												: t("logs.detail.errorNotStored")
-											: statusCode
-												? t("logs.detail.providerErrorNoMessageWithStatus", { statusCode })
-												: t("logs.detail.providerErrorNoMessage"))}
-								</div>
-								{log.error_details?.error.error != null ? (
-									<details className="group mt-3 rounded-sm border border-red-200/70 bg-white/40 dark:border-red-900/70 dark:bg-red-950/40">
-										<summary className="flex cursor-pointer items-center justify-between px-3 py-2 text-[12px] text-red-700 hover:bg-red-50/80 dark:text-red-400 dark:hover:bg-red-950/60">
-											<span className="font-medium">{t("logs.detail.details")}</span>
-											<ChevronDown className="h-3.5 w-3.5 transition-transform group-open:rotate-180" />
-										</summary>
-										<div className="custom-scrollbar max-h-[400px] overflow-y-auto border-t border-red-200/70 px-3 py-2 font-mono text-[11.5px] leading-[1.6] break-words whitespace-pre-wrap text-red-900 dark:border-red-900/70 dark:text-red-300">
-											{typeof log.error_details.error.error === "string"
-												? log.error_details.error.error
-												: JSON.stringify(log.error_details.error.error, null, 2)}
-										</div>
-									</details>
-								) : null}
-							</div>
+							<LogErrorCard
+								message={
+									displayErrorMessage ??
+									(log.content_hidden
+										? statusCode
+											? t("logs.detail.errorNotStoredWithStatus", { statusCode })
+											: t("logs.detail.errorNotStored")
+										: statusCode
+											? t("logs.detail.providerErrorNoMessageWithStatus", { statusCode })
+											: t("logs.detail.providerErrorNoMessage"))
+								}
+								copyText={displayErrorMessage}
+								details={
+									log.error_details?.error.error != null
+										? typeof log.error_details.error.error === "string"
+											? log.error_details.error.error
+											: JSON.stringify(log.error_details.error.error, null, 2)
+										: null
+								}
+							/>
 						)}
 					</TabsContent>
 

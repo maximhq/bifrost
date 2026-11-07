@@ -1018,6 +1018,7 @@
 		"rounds": "ラウンド",
 		"execution": "実行",
 		"errorDetails": "エラーの詳細",
+		"errorNoMessage": "ツール呼び出しはエラーメッセージなしで失敗しました。",
 		"pluginLogs": "プラグインログ",
 		"loading": "MCP のログを読み込み中...",
 		"native": "ネイティブ",

@@ -250,6 +250,21 @@ test.describe('MCP Log Prompt and Resource Reads', () => {
 })
 
 const ROUND_TRIP = '0123456789abcdef'
+const AUTH_ERROR = 'Authentication required for oauth_peruser. Visit the auth link to connect your account.'
+
+// Shaped like Bifrost's tool-call failure: its own prefix and sentinel around the upstream error, which carries JSON.
+const WRAPPED_JSON_ERROR = `MCP tool call failed for Notion-notion-get-users: invalid params: Invalid tools/call request: [
+  {
+    "expected": "record",
+    "code": "invalid_type",
+    "path": [
+      "params",
+      "arguments"
+    ],
+    "message": "Invalid input: expected record, received null"
+  }
+]: mcp tool call failed`
+
 const roundTripLogs = [
   {
     ...listLog,
@@ -290,6 +305,45 @@ const roundTripLogs = [
     server_label: 'dash',
     result: 'refreshed',
     metadata: { mcp_apps: true, app_only: true, ui_resource_uri: 'ui://dash/view', requested_name: 'refresh' },
+  },
+  {
+    ...listLog,
+    id: 'mcp-error-auth',
+    request_id: 'req-mcp-error-auth',
+    tool_name: 'search',
+    server_label: 'oauth_peruser',
+    status: 'error',
+    error_details: {
+      is_bifrost_error: false,
+      error: { message: AUTH_ERROR, error: AUTH_ERROR },
+      extra_fields: { request_type: 'mcp_tool_execution' },
+    },
+  },
+  {
+    ...listLog,
+    id: 'mcp-error-structured',
+    request_id: 'req-mcp-error-structured',
+    tool_name: 'deploy',
+    server_label: 'deploy',
+    status: 'error',
+    error_details: {
+      is_bifrost_error: true,
+      status_code: 502,
+      error: { type: 'upstream_error', message: 'MCP server returned 502', error: { code: -32603, data: 'gateway timeout' } },
+      extra_fields: { request_type: 'mcp_tool_execution' },
+    },
+  },
+  {
+    ...listLog,
+    id: 'mcp-error-wrapped-json',
+    request_id: 'req-mcp-error-wrapped-json',
+    tool_name: 'notion-get-users',
+    server_label: 'Notion',
+    status: 'error',
+    error_details: {
+      is_bifrost_error: false,
+      error: { message: WRAPPED_JSON_ERROR, error: WRAPPED_JSON_ERROR },
+    },
   },
 ]
 
@@ -385,6 +439,49 @@ test.describe('MCP Log Round Trips and MCP Apps', () => {
     for (const marker of ['Caller hosts MCP Apps', 'App-only tool', 'Opens ui://dash/view', 'Called as refresh']) {
       await expect(apps).toContainText(marker)
     }
+  })
+
+  test('a failed call shows its error message in the error card, not the raw error object', async ({ mcpLogsPage, page }) => {
+    await stubRoundTripLogs(page, [])
+    await mcpLogsPage.goto()
+    await expect(mcpLogsPage.logsTable).toBeVisible()
+
+    await mcpLogsPage.viewLogDetails(4)
+    const sheet = mcpLogsPage.logDetailSheet
+    const card = sheet.getByTestId('mcplogdetails-error')
+    await expect(card).toContainText(AUTH_ERROR)
+    // error.error repeats the message, so there is nothing more to expand.
+    await expect(sheet.getByTestId('mcplogdetails-error-details')).toHaveCount(0)
+    await expect(sheet.getByText('is_bifrost_error')).toHaveCount(0)
+    await expect(sheet.getByText('extra_fields')).toHaveCount(0)
+  })
+
+  test('a failed call with a structured error keeps it under Details', async ({ mcpLogsPage, page }) => {
+    await stubRoundTripLogs(page, [])
+    await mcpLogsPage.goto()
+    await expect(mcpLogsPage.logsTable).toBeVisible()
+
+    await mcpLogsPage.viewLogDetails(5)
+    const sheet = mcpLogsPage.logDetailSheet
+    await expect(sheet.getByTestId('mcplogdetails-error')).toContainText('MCP server returned 502')
+    const details = sheet.getByTestId('mcplogdetails-error-details')
+    await details.getByText('Details').click()
+    await expect(details).toContainText('-32603')
+    await expect(details).toContainText('gateway timeout')
+    await expect(sheet.getByText('extra_fields')).toHaveCount(0)
+  })
+
+  test('a failed call shows the upstream error with its JSON formatted, without Bifrost\'s wrapper', async ({ mcpLogsPage, page }) => {
+    await stubRoundTripLogs(page, [])
+    await mcpLogsPage.goto()
+    await expect(mcpLogsPage.logsTable).toBeVisible()
+
+    await mcpLogsPage.viewLogDetails(6)
+    const card = mcpLogsPage.logDetailSheet.getByTestId('mcplogdetails-error')
+    await expect(card.getByTestId('mcplogdetails-error-json')).toContainText('"code": "invalid_type"')
+    await expect(card).toContainText('invalid params: Invalid tools/call request:')
+    await expect(card).not.toContainText('MCP tool call failed for')
+    await expect(card).not.toContainText(': mcp tool call failed')
   })
 
   test('the sidebar filters by round trip ID and labels every status', async ({ mcpLogsPage, page }) => {

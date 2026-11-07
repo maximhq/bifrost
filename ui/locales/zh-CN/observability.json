@@ -1019,6 +1019,7 @@
 		"rounds": "轮次",
 		"execution": "执行",
 		"errorDetails": "错误详情",
+		"errorNoMessage": "工具调用失败，但没有返回错误消息。",
 		"pluginLogs": "插件日志",
 		"loading": "正在加载 MCP 日志…",
 		"native": "原生",
