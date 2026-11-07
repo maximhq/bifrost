@@ -1,7 +1,8 @@
 import {
 	MCPToolLogEntry,
 	MCPToolLogFilters,
-	MCPToolLogStats,
+	LatencyHistogramResponse,
+	MCPToolLogStatsResponse,
 	MCPToolLogFilterData,
 	MCPHistogramResponse,
 	MCPCostHistogramResponse,
@@ -94,16 +95,18 @@ export const mcpLogsApi = baseApi.injectEndpoints({
 			providesTags: (result, error, id) => [{ type: "MCPLogs", id }],
 		}),
 
-		// Get MCP tool logs statistics with filters
+		// Get MCP tool logs statistics with filters. comparePrevious opts in to change-vs-previous-period, as
+		// getLogsStats and getRelayLogStats do; callers that omit it get the plain stats and their own cache entry.
 		getMCPLogsStats: builder.query<
-			MCPToolLogStats,
+			MCPToolLogStatsResponse,
 			{
 				filters: MCPToolLogFilters;
+				comparePrevious?: boolean;
 			}
 		>({
-			query: ({ filters }) => ({
+			query: ({ filters, comparePrevious }) => ({
 				url: "/mcp-logs/stats",
-				params: buildMCPFilterParams(filters),
+				params: { ...buildMCPFilterParams(filters), ...(comparePrevious ? { compare_to_previous: "true" } : {}) },
 			}),
 			providesTags: ["MCPLogs"],
 		}),
@@ -131,6 +134,15 @@ export const mcpLogsApi = baseApi.injectEndpoints({
 		getMCPHistogram: builder.query<MCPHistogramResponse, { filters: MCPToolLogFilters }>({
 			query: ({ filters }) => ({
 				url: "/mcp-logs/histogram",
+				params: buildMCPFilterParams(filters),
+			}),
+			providesTags: ["MCPLogs"],
+		}),
+
+		// Get MCP latency percentiles, in the /logs/histogram/latency shape
+		getMCPLatencyHistogram: builder.query<LatencyHistogramResponse, { filters: MCPToolLogFilters }>({
+			query: ({ filters }) => ({
+				url: "/mcp-logs/histogram/latency",
 				params: buildMCPFilterParams(filters),
 			}),
 			providesTags: ["MCPLogs"],
@@ -179,6 +191,7 @@ export const {
 	useGetMCPHistogramQuery,
 	useLazyGetMCPHistogramQuery,
 	useGetMCPCostHistogramQuery,
+	useGetMCPLatencyHistogramQuery,
 	useGetMCPTopToolsQuery,
 	useLazyGetMCPCostHistogramQuery,
 	useLazyGetMCPTopToolsQuery,

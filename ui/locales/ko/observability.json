@@ -940,6 +940,9 @@
 		"copyToClipboard": "클립보드에 복사",
 		"stats": {
 			"totalExecutions": "총 처형",
+			"executions": "실행",
+			"ofAllExecutions": "이 기간의 전체 MCP 도구 호출 중",
+			"perExecution": "{{value}}/호출",
 			"successRate": "성공률",
 			"avgLatency": "평균 지연 시간",
 			"totalCost": "총 비용"

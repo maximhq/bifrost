@@ -940,6 +940,9 @@
 		"copyToClipboard": "复制到剪贴板",
 		"stats": {
 			"totalExecutions": "总执行次数",
+			"executions": "执行次数",
+			"ofAllExecutions": "占此时间窗口内所有 MCP 工具调用的比例",
+			"perExecution": "{{value}}/次调用",
 			"successRate": "成功率",
 			"avgLatency": "平均延迟",
 			"totalCost": "总费用"

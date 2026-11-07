@@ -945,6 +945,9 @@
 		"copyToClipboard": "In die Zwischenablage kopieren",
 		"stats": {
 			"totalExecutions": "Ausführungen insgesamt",
+			"executions": "Ausführungen",
+			"ofAllExecutions": "Von allen MCP-Tool-Aufrufen in diesem Zeitraum",
+			"perExecution": "{{value}}/Aufruf",
 			"successRate": "Erfolgsrate",
 			"avgLatency": "Durchschn. Latenz",
 			"totalCost": "Gesamtkosten"
