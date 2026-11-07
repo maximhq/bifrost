@@ -13,10 +13,12 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/maximhq/bifrost/cli/internal/browserauth"
 	"github.com/maximhq/bifrost/cli/internal/client"
 	"github.com/maximhq/bifrost/cli/internal/config"
 	"github.com/maximhq/bifrost/cli/internal/operations"
@@ -550,6 +552,90 @@ func TestAuthPrintTokenBrowserLogin(t *testing.T) {
 	}
 	if secretStore["test:agent-token"] != "ck-bf-agent-login" || secretStore["test:agent-refresh-token"] != "refresh-login" {
 		t.Fatalf("login credentials were not persisted: %#v", secretStore)
+	}
+}
+
+// TestAuthLoginCallbackPort verifies the SSO callback port comes from
+// --callback-port, falls back to BIFROST_CALLBACK_PORT, and rejects bad values
+// before any listener is opened.
+func TestAuthLoginCallbackPort(t *testing.T) {
+	reservePort := func(t *testing.T) int {
+		t.Helper()
+		listener, err := net.Listen("tcp4", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		port := listener.Addr().(*net.TCPAddr).Port
+		_ = listener.Close()
+		return port
+	}
+	envPort := reservePort(t)
+	flagPort := reservePort(t)
+	for _, test := range []struct {
+		name     string
+		env      string
+		args     []string
+		wantPort int
+		wantErr  string
+	}{
+		{name: "environment", env: strconv.Itoa(envPort), wantPort: envPort},
+		{name: "flag overrides environment", env: strconv.Itoa(envPort), args: []string{"--callback-port", strconv.Itoa(flagPort)}, wantPort: flagPort},
+		{name: "invalid environment", env: "70000", wantErr: "invalid callback port \"70000\""},
+		{name: "invalid flag", args: []string{"--callback-port", "abc"}, wantErr: "invalid callback port \"abc\""},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Setenv(browserauth.CallbackPortEnv, test.env)
+			runner, _, _ := newTestRunner(t, testRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+				switch request.URL.Path {
+				case "/api/agent/auth/status":
+					return jsonResponse(request, `{"idp_configured":true}`), nil
+				case "/api/agent/auth/token":
+					return jsonResponse(request, `{"agent_access_token":"ck-bf-agent-login","refresh_token":"refresh-login","user":{"email":"user@example.com"}}`), nil
+				case "/api/agent/virtual-keys":
+					return jsonResponse(request, `{"virtual_keys":[]}`), nil
+				default:
+					t.Fatalf("unexpected path %q", request.URL.Path)
+					return nil, nil
+				}
+			}))
+			env, err := runner.resolveEnvironment(globalOptions{Output: "json", Quiet: true}, credentialAgentToken|credentialAgentVirtualKeyID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			gotPort := 0
+			env.BrowserAuth.OpenBrowser = func(target string) error {
+				authorization, err := url.Parse(target)
+				if err != nil {
+					return err
+				}
+				callback, err := url.Parse(authorization.Query().Get("redirect_uri"))
+				if err != nil {
+					return err
+				}
+				gotPort, _ = strconv.Atoi(callback.Port())
+				callback.RawQuery = url.Values{"state": {authorization.Query().Get("state")}, "code": {"test-code"}}.Encode()
+				go func() {
+					response, getErr := http.Get(callback.String())
+					if getErr == nil {
+						_ = response.Body.Close()
+					}
+				}()
+				return nil
+			}
+			err = runner.authLogin(context.Background(), env, test.args)
+			if test.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), test.wantErr) {
+					t.Fatalf("error = %v, want %q", err, test.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if gotPort != test.wantPort {
+				t.Fatalf("callback port = %d, want %d", gotPort, test.wantPort)
+			}
+		})
 	}
 }
 

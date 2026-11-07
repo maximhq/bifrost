@@ -77,6 +77,7 @@ credential:
 - `BIFROST_AGENT_TOKEN`
 - `BIFROST_AGENT_VIRTUAL_KEY_ID`
 - `BIFROST_OUTPUT`
+- `BIFROST_CALLBACK_PORT` (fixed loopback port for the Enterprise SSO callback)
 
 `BIFROST_AGENT_TOKEN` supplies an access token for the current process only.
 Automatic SSO refresh requires the access/refresh pair stored by
@@ -386,9 +387,26 @@ already have a gateway session, the gateway first shows its normal login page
 and preserves the authorization URL in `return_to`; completing login resumes
 the CLI flow.
 
-The callback browser and CLI must run on the same machine because authentication
-returns to an ephemeral `127.0.0.1` port. SSH-only and container sessions should
-use a scoped management API key until the gateway exposes a device-code flow.
+Authentication returns to a `127.0.0.1` callback on the machine running the CLI,
+on a free port chosen at sign-in. When the browser runs somewhere else (an SSH
+session or a dev container), use either of these:
+
+- **Paste the callback.** After you sign in, the browser is sent to
+  `http://127.0.0.1:<port>/callback?code=...&state=...`, which fails to load
+  because nothing listens there on the browser's machine. Copy that address from
+  the browser and paste it into the waiting `bifrost auth login`, then press
+  Enter. The CLI accepts it only if its `state` matches this sign-in. This works
+  when `auth login` runs in an interactive terminal; the full-screen launcher
+  points you at `bifrost auth login` instead.
+- **Forward a fixed port.** Pin the callback port with `--callback-port` or
+  `BIFROST_CALLBACK_PORT` and forward it before signing in, for example
+  `ssh -L 8765:127.0.0.1:8765 devbox`, then run
+  `bifrost auth login --callback-port 8765` on the remote side. The CLI binds
+  only to `127.0.0.1` and fails with an error if the port is busy rather than
+  picking another one. Forwarding methods that deliver to the container's
+  network interface instead of its loopback (such as Docker `-p`) will not reach
+  it.
+
 Access and rotating refresh tokens are stored separately in the operating-system
 keyring. An agent-authenticated inference or agent self-service request whose
 response identifies a rejected agent session refreshes once and retries once,
