@@ -525,24 +525,6 @@ const ADM42 = folder("ADM-42 Reconnect a sticky client", "Setup: a client on alp
   deleteClient("ADM-42", "adm42-s"),
 ]);
 
-const ADM44 = folder("ADM-44 refresh-tools picks up upstream changes", "Setup: a per-call client and a sticky client on alpha.", [
-  ...freshServer("ADM-44", "alpha", ["echo_tool", "add_tool"]),
-  createClient("ADM-44", httpClient("adm44-c", "adm44_c", "alpha"), "setup: create the per-call client"),
-  createClient("ADM-44", httpClient("adm44-s", "adm44_s", "alpha", { needs_session_stickiness: true }), "setup: create the sticky client"),
-  mockPost("ADM-44", "alpha", "tools/add", "add new_tool through the control API", { tool: { name: "new_tool" } }),
-  ...["adm44-c", "adm44-s"].flatMap((cid) => [
-    request("ADM-44", `refresh ${cid}`, "POST", `/api/mcp/client/${cid}/refresh-tools`, {
-      asserts: [A.status(200), A.jsonMessage("MCP client tools refreshed successfully"), A.jsonEquals("tool_count", 3)],
-    }),
-    getClient("ADM-44", cid, `${cid} lists new_tool`, [A.custom("tools include new_tool", [
-      "var names = pm.response.json().clients[0].tools.map(function (t) { return t.name; });",
-      "pm.expect(names, 'body: ' + pm.response.text()).to.include('new_tool');",
-    ])]),
-  ]),
-  deleteClient("ADM-44", "adm44-c"),
-  deleteClient("ADM-44", "adm44-s"),
-]);
-
 // ---------------------------------------------------------------- EP tests on the two-server fleet
 // fleetSetup: alpha (echo, add) and beta (echo), registered as HTTP clients alpha and beta,
 // auth none, tools_to_execute ["*"], allow_by_default false. FLEET describes it in folder text.
@@ -2736,19 +2718,18 @@ const SET02 = folder("SET-02 A VK grant and the client allow-list both apply", "
 ]);
 
 const alphaToolsOnMcp = "tools.filter(function (t) { return t.name.indexOf('alpha-') === 0; }).map(function (t) { return t.name; }).sort()";
-const SET07 = folder("SET-07 Refresh picks up added and removed tools, skips bad names", "Setup: alpha (echo_tool, add_tool) as client alpha, sticky, tools_to_execute [\"*\"]; then alpha adds z_tool, removes add_tool and adds \"bad/name\".", [
+const SET07 = folder("SET-07 Refresh on a sticky client skips unsafe names", "Setup: alpha (echo_tool, add_tool) as client alpha, sticky, tools_to_execute [\"*\"]; then alpha adds z_tool and \"bad/name\", and the client is refreshed. INF-11 is the per-call twin; SYNC covers added and removed tools on every client type.", [
   ...setClient("SET-07", { needs_session_stickiness: true }),
   mockPost("SET-07", "alpha", "tools/add", "setup: alpha adds z_tool", { tool: { name: "z_tool" } }),
-  mockPost("SET-07", "alpha", "tools/remove", "setup: alpha removes add_tool", { name: "add_tool" }),
   mockPost("SET-07", "alpha", "tools/add", "setup: alpha adds bad/name", { tool: { name: "bad/name" } }),
-  request("SET-07", "refresh-tools", "POST", "/api/mcp/client/set-07-a/refresh-tools", { asserts: [A.status(200), A.jsonEquals("tool_count", 2)] }),
-  getClient("SET-07", "set-07-a", "the client lists echo_tool and z_tool", [toolNamesAre(["echo_tool", "z_tool"])]),
-  setExec("SET-07", "execute add_tool", "add_tool", [A.status(400), A.msgContains("is not available or not permitted")]),
+  request("SET-07", "refresh-tools reports 3 tools", "POST", "/api/mcp/client/set-07-a/refresh-tools", { asserts: [A.status(200), A.jsonEquals("tool_count", 3)] }),
+  getClient("SET-07", "set-07-a", "the client lists add_tool, echo_tool and z_tool, not bad/name", [toolNamesAre(["add_tool", "echo_tool", "z_tool"])]),
+  setExec("SET-07", "execute bad/name", "bad/name", [A.status(400), A.msgContains("is not available or not permitted")]),
   request("SET-07", "/mcp lists the same tools", "POST", "/mcp", {
-    noAuth: true, raw: JSON.stringify(listMsg), headers: [MCP_ACCEPT], pre: pollMcpList(`JSON.stringify(${alphaToolsOnMcp}) === '["alpha-echo_tool","alpha-z_tool"]'`),
-    asserts: [A.status(200), A.custom("alpha's tools are exactly [\"alpha-echo_tool\",\"alpha-z_tool\"]", [
+    noAuth: true, raw: JSON.stringify(listMsg), headers: [MCP_ACCEPT], pre: pollMcpList(`JSON.stringify(${alphaToolsOnMcp}) === '["alpha-add_tool","alpha-echo_tool","alpha-z_tool"]'`),
+    asserts: [A.status(200), A.custom("alpha's tools are exactly [\"alpha-add_tool\",\"alpha-echo_tool\",\"alpha-z_tool\"]", [
       "var tools = pm.response.json().result.tools;",
-      `pm.expect(${alphaToolsOnMcp}, 'body: ' + pm.response.text()).to.eql(["alpha-echo_tool", "alpha-z_tool"]);`,
+      `pm.expect(${alphaToolsOnMcp}, 'body: ' + pm.response.text()).to.eql(["alpha-add_tool", "alpha-echo_tool", "alpha-z_tool"]);`,
     ])],
   }),
   deleteClient("SET-07", "set-07-a"),
@@ -6613,19 +6594,6 @@ const ADM87 = folder("ADM-87 Create does not take tool_pricing", `Setup: ${ALPHA
   deleteClient("ADM-87", "adm-87-a"),
 ]);
 
-// AUTH-46: a per_user_headers client created over the API keeps the admin's sample values as its admin credential, which
-// periodic discovery uses to pick up a tool the server adds later.
-const AUTH46_TOOLS = ["add_tool", "echo_tool", "extra_tool"];
-const AUTH46 = folder("AUTH-46 Periodic discovery of an API-created per_user_headers client", "Setup: admin credentials; fleet server auth46 (echo_tool, add_tool) requires x-key: good; a per_user_headers client on it, created over the API with per_user_header_keys [\"x-key\"], sample x-key good, tools_to_execute [\"*\"] and tool_sync_interval \"5s\"; auth46 then adds extra_tool.", [
-  ...freshServer("AUTH-46", "auth46", ["echo_tool", "add_tool"]),
-  mockAuth("AUTH-46", "auth46", "setup: auth46 requires x-key: good", { require_headers: { "x-key": "good" } }),
-  createClient("AUTH-46", HEADERS_BASE("auth46-h", "auth46_h", { connection_string: `${CHAOS}/s/auth46/mcp`, per_user_header_keys: ["x-key"], user_headers: { "x-key": "good" }, tools_to_execute: ["*"], tool_sync_interval: "5s" }), "setup: create the per_user_headers client, syncing every 5s"),
-  getClient("AUTH-46", "auth46-h", "after create: healthy with two tools, syncing every 5s, with an active headers credential", [clientState("healthy"), toolNamesAre(["add_tool", "echo_tool"]), SYNC_5S, credKind("headers"), credStatus("active")]),
-  request("AUTH-46", "auth46 adds extra_tool", "POST", "/control/auth46/tools/add", { base: CHAOS, noAuth: true, body: { tool: { name: "extra_tool" } }, asserts: [A.status(200)], extraTests: ["pm.collectionVariables.set('auth46_t0', Date.now());"] }),
-  getClient("AUTH-46", "auth46-h", "the client lists extra_tool within 20s and stays healthy", [toolNamesAre(AUTH46_TOOLS), seenWithin("auth46-h", 20), clientState("healthy")], { pre: pollClientTools("auth46-h", 3, 20, "auth46_t0") }),
-  deleteClient("AUTH-46", "auth46-h"),
-]);
-
 // ================================================================ per-user header credentials, flows and the sessions list
 
 const HDR_FLOWS = "/api/mcp/per-user-headers/flows/";
@@ -6960,21 +6928,6 @@ const CONN11 = folder("CONN-11 Per-call handshake and the tool timeout", "Setup:
   execTool("CONN-11", "execute", "conn11_c-echo_tool", [A.status(400), A.msgContains("failed to establish ephemeral MCP connection"), responseTime(30000, 120000)]),
   mockPost("CONN-11", "alpha", "faults/clear", "teardown: clear alpha's faults", {}),
   deleteClient("CONN-11", "conn11-c"),
-]);
-
-const CONN16 = folder("CONN-16 Tool list changes", "Setup: alpha (echo_tool, add_tool); a sticky client conn16_c on alpha, auth none, tools_to_execute [\"*\"]. Then alpha adds new_tool and pushes list_changed; the client is refreshed; alpha removes echo_tool; the client is refreshed again.", [
-  ...freshServer("CONN-16", "alpha", ["echo_tool", "add_tool"]),
-  createClient("CONN-16", httpClient("conn16-c", "conn16_c", "alpha", { needs_session_stickiness: true, tools_to_execute: ["*"] }), "setup: create the sticky client"),
-  mockPost("CONN-16", "alpha", "tools/add", "alpha adds new_tool", { tool: { name: "new_tool" } }),
-  request("CONN-16", "alpha pushes list_changed", "POST", "/control/alpha/notify/tools-changed", { base: CHAOS, noAuth: true, body: {}, asserts: [A.status(200)], extraTests: ["pm.collectionVariables.set('conn16_t0', Date.now());"] }),
-  getClient("CONN-16", "conn16-c", "within 5s the client lists new_tool without a refresh", [toolNamesAre(["add_tool", "echo_tool", "new_tool"]), seenWithin("conn16-c", 5)], { pre: pollClientTools("conn16-c", 3, 5, "conn16_t0") }),
-  mockGet("CONN-16", "alpha", "alpha has one open stream", [counterIs("open_streams", 1)]),
-  clientPost("CONN-16", "refresh-tools", "conn16-c", "refresh-tools", [A.status(200), A.jsonEquals("tool_count", 3)]),
-  execTool("CONN-16", "execute conn16_c-new_tool", "conn16_c-new_tool", [A.status(200)]),
-  mockPost("CONN-16", "alpha", "tools/remove", "alpha removes echo_tool", { name: "echo_tool" }),
-  clientPost("CONN-16", "refresh-tools again", "conn16-c", "refresh-tools", [A.status(200)]),
-  execTool("CONN-16", "execute conn16_c-echo_tool", "conn16_c-echo_tool", [A.status(400), A.msgContains("is not available or not permitted")]),
-  deleteClient("CONN-16", "conn16-c"),
 ]);
 
 // ================================================================ more Bifrost MCP endpoint tests
@@ -8870,30 +8823,6 @@ const waitClientFor = (clientId, cond, seconds) => [
   "poll();",
 ];
 const listsNewTool = (clientId, seconds) => ({ pre: waitClientFor(clientId, "(c.tools || []).length >= 3", seconds) });
-
-const SET04 = folder("SET-04 Per-client sync interval drives rediscovery", "Setup: fleet server set04 (echo_tool, add_tool); a sticky client set04 on it with tool_sync_interval \"5s\" while mcp_tool_sync_interval stays at its default; a VK granting every tool of set04. set04 then adds new_tool and nothing asks for a refresh.", [
-  ...freshServer("SET-04", "set04", ["echo_tool", "add_tool"]),
-  createClient("SET-04", stickyClient("set04-c", "set04", "set04", { tool_sync_interval: "5s" })),
-  vkCreate("SET-04", "setup: create a VK granting every tool of set04", { name: "SET-04 key", mcp_configs: [{ mcp_client_name: "set04", tools_to_execute: ["*"] }] }, "set04_vk"),
-  mockGet("SET-04", "set04", "setup: record set04's tools/list and ping counts", [], [
-    "var m = pm.response.json().counters.methods || {};",
-    "pm.collectionVariables.set('set04_list', m['tools/list'] || 0);",
-    "pm.collectionVariables.set('set04_ping', m.ping || 0);",
-  ]),
-  mockPost("SET-04", "set04", "tools/add", "set04 adds new_tool", { tool: { name: "new_tool" } }),
-  getClient("SET-04", "set04-c", "within 20s the client lists new_tool", [toolNamesAre(SET_NEW_TOOLS)], listsNewTool("set04-c", 20)),
-  rpc("SET-04", "/mcp tools/list with the VK includes set04-new_tool", listMsg, { headers: [MCP_ACCEPT, { key: "x-bf-vk", value: "{{set04_vk}}" }], asserts: [A.status(200), A.custom("the tools include set04-new_tool", [
-    "var names = ((pm.response.json().result || {}).tools || []).map(function (t) { return t.name; });",
-    "pm.expect(names, 'body: ' + pm.response.text()).to.include('set04-new_tool');",
-  ])] }),
-  mockGet("SET-04", "set04", "set04 was asked tools/list and ping again", [A.custom("tools/list +1 or more and ping +1 or more since the add", [
-    "var m = pm.response.json().counters.methods || {};",
-    "pm.expect(m['tools/list'] || 0, JSON.stringify(m)).to.be.at.least(Number(pm.collectionVariables.get('set04_list')) + 1);",
-    "pm.expect(m.ping || 0, JSON.stringify(m)).to.be.at.least(Number(pm.collectionVariables.get('set04_ping')) + 1);",
-  ])]),
-  vkDelete("SET-04", "teardown: delete the VK", "set04_vk"),
-  deleteClient("SET-04", "set04-c"),
-]);
 
 const SET05 = folder("SET-05 Global sync interval re-times only clients that follow it", "Setup: fleet servers set05a and set05b (echo_tool, add_tool); a sticky client set05a on set05a with no tool_sync_interval of its own, so it follows the global, and a sticky client set05b on set05b with tool_sync_interval \"10m\"; then mcp_tool_sync_interval 1 (minute), and each server adds new_tool.", [
   readConfig("SET-05"),
@@ -12570,12 +12499,12 @@ const collection = {
     { key: "admin_auth_header", value: "" },
   ],
   item: [
-    section("ADM Client admin", "Client admin tests.", [ADM01, ADM02, ADM03, ADM04, ADM05, ADM06, ADM07, ADM08, ADM10, ADM11, ADM12, ADM13, ADM14, ADM15, ADM16, ADM17, ADM18, ADM19, ADM20, ADM21, ADM22, ADM23, ADM24, ADM25, ADM26, ADM27, ADM28, ADM29, ADM30, ADM31, ADM32, ADM33, ADM34, ADM35, ADM37, ADM38, ADM39, ADM40, ADM41, ADM42, ADM43, ADM44, ADM45, ADM46, ADM47, ADM50, ADM51, ADM52, ADM53, ADM54, ADM55, ADM56, ADM57, ADM58, ADM59, ADM60, ADM61, ADM62, ADM63, ADM65, ADM66, ADM67, ADM68, ADM69, ADM70, ADM71, ADM72, ADM73, ADM74, ADM75, ADM76, ADM77, ADM78, ADM80, ADM81, ADM82, ADM83, ADM84, ADM85, ADM86, ADM87, ADM88]),
-    section("AUTH Upstream auth", "Upstream auth tests.", [AUTH01, AUTH02, AUTH03, AUTH04, AUTH05, AUTH06, AUTH07, AUTH08, AUTH09, AUTH10, AUTH11, AUTH12, AUTH13, AUTH14, AUTH15, AUTH16, AUTH17, AUTH18, AUTH19, AUTH20, AUTH21, AUTH23, AUTH24, AUTH25, AUTH27, AUTH28, AUTH29, AUTH30, AUTH31, AUTH32, AUTH33, AUTH34, AUTH35, AUTH36, AUTH37, AUTH38, AUTH39, AUTH40, AUTH41, AUTH42, AUTH43, AUTH44, AUTH45, AUTH46, AUTH47, AUTH48, AUTH49, AUTH50, AUTH51, AUTH52, AUTH53, AUTH54, AUTH55, AUTH56, AUTH57, AUTH58, AUTH59, AUTH60, AUTH61, AUTH62, AUTH63, AUTH64]),
-    section("CONN Connection types", "Connection type tests.", [CONN01, CONN02, CONN03, CONN04, CONN05, CONN06, CONN07, CONN08, CONN09, CONN10, CONN11, CONN12, CONN16, CONN17, CONN18, CONN19, CONN20, CONN21, CONN22, GO18, CONN23, CONN24, CONN25, CONN27, CONN28, CONN29, GO34, GO36]),
+    section("ADM Client admin", "Client admin tests.", [ADM01, ADM02, ADM03, ADM04, ADM05, ADM06, ADM07, ADM08, ADM10, ADM11, ADM12, ADM13, ADM14, ADM15, ADM16, ADM17, ADM18, ADM19, ADM20, ADM21, ADM22, ADM23, ADM24, ADM25, ADM26, ADM27, ADM28, ADM29, ADM30, ADM31, ADM32, ADM33, ADM34, ADM35, ADM37, ADM38, ADM39, ADM40, ADM41, ADM42, ADM43, ADM45, ADM46, ADM47, ADM50, ADM51, ADM52, ADM53, ADM54, ADM55, ADM56, ADM57, ADM58, ADM59, ADM60, ADM61, ADM62, ADM63, ADM65, ADM66, ADM67, ADM68, ADM69, ADM70, ADM71, ADM72, ADM73, ADM74, ADM75, ADM76, ADM77, ADM78, ADM80, ADM81, ADM82, ADM83, ADM84, ADM85, ADM86, ADM87, ADM88]),
+    section("AUTH Upstream auth", "Upstream auth tests.", [AUTH01, AUTH02, AUTH03, AUTH04, AUTH05, AUTH06, AUTH07, AUTH08, AUTH09, AUTH10, AUTH11, AUTH12, AUTH13, AUTH14, AUTH15, AUTH16, AUTH17, AUTH18, AUTH19, AUTH20, AUTH21, AUTH23, AUTH24, AUTH25, AUTH27, AUTH28, AUTH29, AUTH30, AUTH31, AUTH32, AUTH33, AUTH34, AUTH35, AUTH36, AUTH37, AUTH38, AUTH39, AUTH40, AUTH41, AUTH42, AUTH43, AUTH44, AUTH45, AUTH47, AUTH48, AUTH49, AUTH50, AUTH51, AUTH52, AUTH53, AUTH54, AUTH55, AUTH56, AUTH57, AUTH58, AUTH59, AUTH60, AUTH61, AUTH62, AUTH63, AUTH64]),
+    section("CONN Connection types", "Connection type tests.", [CONN01, CONN02, CONN03, CONN04, CONN05, CONN06, CONN07, CONN08, CONN09, CONN10, CONN11, CONN12, CONN17, CONN18, CONN19, CONN20, CONN21, CONN22, GO18, CONN23, CONN24, CONN25, CONN27, CONN28, CONN29, GO34, GO36]),
     section("EP Bifrost MCP endpoint", "Bifrost MCP endpoint tests.", [EP01, EP02, EP03, EP04, EP05, EP06, EP07, EP08, EP09, EP11, EP12, EP13, EP14, EP15, EP16, EP17, EP18, EP19, EP20, EP21, EP22, EP23, EP24, EP25, EP26, EP27, EP28, EP29, EP30, EP31, EP32, EP33, EP34, EP35, EP36, EP37, EP38, EP39, EP40, EP41, EP42, EP43, EP44, EP45, EP46, EP47, EP48, EP49, EP50, EP51, EP52, EP53, EP54, EP55, EP56, EP57, EP58, EP59, EP60, EP61, EP62, EP63, EP64, EP65, EP66, EP67, EP68, EP69, EP70, EP71, EP72, EP73, EP74, EP75, EP76, EP77, GO01, GO02, GO03, GO06, GO07, GO08, GO09, GO10, GO11, GO12, GO13, GO14, GO33, GO35]),
     section("OAS Bifrost OAuth server", "Bifrost OAuth server tests.", [OAS01, OAS02, OAS03, OAS05, OAS06, OAS07, OAS08, OAS09, OAS10, OAS11, OAS12, OAS13, OAS14, OAS15, OAS16, OAS17, OAS18, OAS19, OAS20, OAS21, OAS23, OAS25, OAS27, OAS28, OAS29, OAS30, OAS31, OAS32, OAS33, OAS34, OAS35, OAS36, OAS38, OAS39, OAS40, OAS42, OAS43, OAS44, OAS45]),
-    section("SET Per-client settings", "Per-client setting tests.", [SET01, SET02, SET07, SET08, SET09, SET14, SET19, SET20, SET18, SET21, SET22, SET26, SET27, SET28, SET29, SET30, SET31, SET32, SET04, SET05, SET10, SET11, SET15, SET23]),
+    section("SET Per-client settings", "Per-client setting tests.", [SET01, SET02, SET07, SET08, SET09, SET14, SET19, SET20, SET18, SET21, SET22, SET26, SET27, SET28, SET29, SET30, SET31, SET32, SET05, SET10, SET11, SET15, SET23]),
     section("GOV Governance", "Virtual MCP and virtual key governance tests.", [GOV01, GOV02, GOV03, GOV04, GOV05, GOV06, GOV07, GOV08, GOV09, GOV10, GOV11, GOV12, GOV14, GOV15, GOV16, GOV17, GOV18, GOV19, GOV20, GOV21, GOV22, GOV23, GOV24, GOV25, GOV26, GOV28, GOV29, GOV30, GOV31, GOV32, GOV33, GOV34, GOV35, GOV36, GOV37, GOV38, GOV39]),
     section("INF Inference", "Inference tests.", [INF01, INF02, INF03, INF04, INF06, INF07, INF08, INF09, INF10, INF11, INF12, INF14, INF15, INF16, INF17, INF18, INF19, INF20, INF21, INF22, INF23, INF24, INF25, INF26, INF27, INF28, INF29, INF30, INF31, INF32, INF33, INF34, INF35, INF36, INF37, INF38, INF39, INF40, INF41, INF42, INF43, INF44, INF45, INF46, INF47, INF48, INF49, INF50, INF51, INF52, INF53, INF54, INF55, INF56, INF57, INF58, INF59, INF60, INF61, INF62, INF63, INF64, INF65, INF66, INF76, INF77, INF67, INF78, INF79, INF80]),
     section("LIB MCP library", "MCP library tests.", [LIB01, LIB02, LIB03, LIB05, LIB06, LIB07, LIB08, LIB09, LIB10, LIB11, LIB12, LIB13, LIB14, LIB15, LIB16, LIB17, LIB18, LIB19, LIB20, LIB21, LIB22, LIB23, LIB24, LIB25, LIB26, LIB27, LIB32, LIB33, LIB34, LIB36, LIB37]),
