@@ -64,6 +64,10 @@ With Enterprise SSO, Bifrost CLI passes Claude Code a temporary `--settings` fil
 
 See [Coding harness integrations](/quickstart/cli/coding-agents) for model selection, persistent configuration, and removal.
 
+<Note>
+  `/anthropic/v1/messages` and `/v1/messages` reach the same Anthropic Messages handler, so `ANTHROPIC_BASE_URL` can be either the gateway root or the `/anthropic` URL used below. Clients that read `/v1/models` get Bifrost's own listing at the root and the Anthropic-shaped listing under `/anthropic`; both carry the model's context size.
+</Note>
+
 ## Static virtual key
 
 Use this when a fixed virtual key is acceptable. Claude Code sends `ANTHROPIC_AUTH_TOKEN` as `Authorization: Bearer <token>`, which Bifrost accepts as a virtual key. No Anthropic account login is required.
