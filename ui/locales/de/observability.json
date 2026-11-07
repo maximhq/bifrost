@@ -974,7 +974,6 @@
 			"toolName": "Tool-Name",
 			"server": "Server",
 			"virtualKey": "Virtueller Schlüssel",
-			"llmRequestId": "LLM-Request-ID",
 			"metadata": "Metadaten",
 			"deleteFailed": "Fehler beim Löschen des Protokolls",
 			"invalidDate": "Ungültiges Datum",

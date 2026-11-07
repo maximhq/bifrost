@@ -119,6 +119,10 @@ test.describe('MCP Log Detail Hydration', () => {
     await expect(mcpLogsPage.logDetailSheet.getByText('Result')).toBeVisible()
     await expect(page.getByText('hydrated-search-term')).toBeVisible()
     await expect(page.getByText('hydrated-result-value')).toBeVisible()
+
+    // The LLM request ID is shown once, as the header link to the LLM log, not repeated in Request Details.
+    await expect(mcpLogsPage.logDetailSheet.getByTestId('mcplogdetails-llm-request-id-link')).toHaveText(listLog.llm_request_id)
+    await expect(mcpLogsPage.logDetailSheet.getByText(listLog.llm_request_id, { exact: true })).toHaveCount(1)
   })
 
   test('opens the sheet from a selected_log link when that log is not on the loaded page', async ({ mcpLogsPage, page }) => {

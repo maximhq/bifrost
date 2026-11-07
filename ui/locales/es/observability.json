@@ -974,7 +974,6 @@
 			"toolName": "Nombre de la herramienta",
 			"server": "Servidor",
 			"virtualKey": "Clave virtual",
-			"llmRequestId": "LLM Solicitud de identificación",
 			"metadata": "Metadatos",
 			"deleteFailed": "Error al eliminar el registro",
 			"invalidDate": "Fecha inválida",

@@ -969,7 +969,6 @@
 			"toolName": "工具名称",
 			"server": "服务器",
 			"virtualKey": "虚拟密钥",
-			"llmRequestId": "LLM 请求 ID",
 			"metadata": "元数据",
 			"deleteFailed": "删除日志失败",
 			"invalidDate": "无效日期",
