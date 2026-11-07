@@ -4262,6 +4262,15 @@ jobs:
         run: |
           ./.github/workflows/scripts/push-mintlify-changelog.sh "${{ needs.detect-changes.outputs.transport-version }}"
 
+      # render.yaml (the "Deploy to Render" Blueprint) pins the image tag.
+      # Move it to the version whose image this run publishes. Gated on the
+      # Docker release so the Blueprint never points at a tag that was not
+      # built; prereleases are skipped inside the script.
+      - name: Pin one-click deploy templates to this release
+        if: needs.detect-changes.outputs.docker-needs-release == 'true'
+        run: |
+          ./.github/workflows/scripts/bump-deploy-image-tags.sh "${{ needs.detect-changes.outputs.transport-version }}"
+
   # Notification
   notify:
     needs:
