@@ -1891,7 +1891,7 @@ func toBedrockInvokeAnthropicResponse(resp *schemas.BifrostResponsesResponse, mo
 	// Stop reason
 	stopReason := "end_turn"
 	if resp.IncompleteDetails != nil {
-		stopReason = resp.IncompleteDetails.Reason
+		stopReason = anthropicInvokeStopReason(resp.IncompleteDetails.Reason)
 	} else {
 		// Check for tool_use
 		for _, block := range result.Content {
@@ -1966,6 +1966,10 @@ func toBedrockInvokeAI21Response(resp *schemas.BifrostResponsesResponse) *Bedroc
 	finishReason := "stop"
 	if resp.IncompleteDetails != nil {
 		finishReason = resp.IncompleteDetails.Reason
+		// AI21's vocabulary is stop/length; max_output_tokens is Bifrost's internal reason.
+		if finishReason == schemas.ResponsesResponseIncompleteReasonMaxOutputTokens {
+			finishReason = "length"
+		}
 	}
 
 	result.Choices = []BedrockInvokeAI21Choice{
@@ -2146,6 +2150,8 @@ func anthropicInvokeStopReason(reason string) string {
 	switch reason {
 	case "content_filter", "guardrail_intervened":
 		return string(anthropic.AnthropicStopReasonRefusal)
+	case string(schemas.ResponsesResponseIncompleteReasonMaxOutputTokens):
+		return string(anthropic.AnthropicStopReasonMaxTokens)
 	}
 	switch mapped := anthropic.ConvertBifrostFinishReasonToAnthropic(reason); mapped {
 	case anthropic.AnthropicStopReasonEndTurn, anthropic.AnthropicStopReasonMaxTokens,

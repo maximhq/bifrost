@@ -313258,6 +313258,55 @@
           }
         }
       ]
+    },
+    {
+      "name": "323. Bedrock InvokeModel (Anthropic shape) reports max_tokens when truncated (PR #9383)",
+      "description": "On the Bedrock /invoke route with the direct Anthropic request shape, a response cut off by the token limit carries Bifrost's internal incomplete reason max_output_tokens. The Anthropic-shaped invoke response used to copy that reason into stop_reason verbatim, a value the Anthropic vocabulary does not contain. The case sets a tiny max_tokens so the reply is truncated and pins stop_reason to max_tokens. Refusal and content-filter reasons are not covered here; they are pinned by the Go unit tests.",
+      "item": [
+        {
+          "name": "bedrock/{{bedrockModel}} invoke: direct Anthropic shape truncated by max_tokens reports stop_reason max_tokens - bedrock-invoke-stop-reason - #9379",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var LABEL = 'bedrock invoke max_tokens stop_reason';",
+                  "pm.test(LABEL + ': request succeeds', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "var body = pm.response.json();",
+                  "pm.test(LABEL + ': stop_reason is max_tokens', function () { pm.expect(body.stop_reason, 'response: ' + pm.response.text()).to.eql('max_tokens'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"anthropic_version\": \"bedrock-2023-05-31\",\n  \"max_tokens\": 8,\n  \"messages\": [{\"role\":\"user\",\"content\":\"Write a detailed essay about the history of the Roman Empire.\"}]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/{{bedrockModel}}/invoke",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "{{bedrockModel}}",
+                "invoke"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
     }
   ]
 }
