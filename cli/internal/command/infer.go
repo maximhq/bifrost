@@ -241,7 +241,7 @@ func (r *Runner) runInfer(ctx context.Context, env *environment, args []string) 
 // runHarness launches one coding agent directly with argument passthrough.
 func (r *Runner) runHarness(ctx context.Context, env *environment, args []string) error {
 	if len(args) == 0 || args[0] == "--help" || args[0] == "-h" {
-		_, err := fmt.Fprint(r.Out, "Usage: bifrost run <claude|codex|gemini|opencode> [--model MODEL] [--worktree NAME] [--skip-verify] [-- agent arguments]\n")
+		_, err := fmt.Fprint(r.Out, "Usage: bifrost run <claude|codex|gemini|opencode|pi|antigravity> [--model MODEL] [--worktree NAME] [--skip-verify] [-- agent arguments]\n")
 		return err
 	}
 	agent, ok := harness.Get(args[0])

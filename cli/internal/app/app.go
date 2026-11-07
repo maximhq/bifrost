@@ -268,6 +268,13 @@ func (a *App) Run(ctx context.Context) error {
 
 			// Handle install request
 			if choice.InstallHarness {
+				if h.InstallPkg == "" {
+					msg = h.Label + " requires manual installation"
+					if h.InstallURL != "" {
+						msg += "; see " + h.InstallURL
+					}
+					continue
+				}
 				cmd, args := installer.InstallCommand(h)
 				shouldInstall, err := tui.RunConfirmInstall(a.bootHeader, h.Label, cmd+" "+strings.Join(args, " "))
 				if err != nil {
