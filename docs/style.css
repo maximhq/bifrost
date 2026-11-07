@@ -134,3 +134,72 @@ nav[aria-label="Main"] .navbar-link a[href*="#free-license"]:hover {
         white-space: nowrap !important;
     }
 }
+
+/* "Deploy to the cloud in one click" card on the gateway quickstart. */
+.deploy-cloud {
+    margin: 1.5rem 0;
+    padding: 1.25rem 1.5rem;
+    border: 1px solid rgb(var(--gray-200, 229 231 235));
+    border-radius: 0.75rem;
+}
+
+.dark .deploy-cloud {
+    border-color: rgb(255 255 255 / 0.12);
+}
+
+.deploy-cloud > strong {
+    display: block;
+    font-size: 1.125rem;
+    margin-bottom: 0.5rem;
+}
+
+.deploy-cloud > p {
+    margin: 0 0 1rem 0;
+}
+
+.deploy-buttons {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+}
+
+.deploy-btn,
+.deploy-btn:hover {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.625rem 1.25rem;
+    border-radius: 0.5rem;
+    color: #fff !important;
+    font-size: 0.9375rem;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+    text-decoration: none !important;
+    border-bottom: none !important;
+    transition: filter 120ms ease, transform 120ms ease;
+}
+
+.deploy-btn:hover {
+    filter: brightness(1.08);
+    transform: translateY(-1px);
+}
+
+.deploy-btn-railway {
+    background: linear-gradient(90deg, #6d28d9 0%, #a855f7 100%);
+}
+
+.deploy-btn-render {
+    background: #5b2ee5;
+}
+
+.deploy-btn-aws {
+    background: #f59e0b;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+}
+
+.deploy-btn-gcp {
+    background: #4f7cf6;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+}

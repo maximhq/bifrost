@@ -22,6 +22,34 @@ This guide assumes you already have:
 If you use PostgreSQL for `config_store` or `logs_store`, ensure the target database is UTF8 encoded. See [PostgreSQL UTF8 Requirement](../quickstart/gateway/setting-up#postgresql-utf8-requirement).
 </Note>
 
+## One-click deploy
+
+<a className="deploy-btn deploy-btn-aws" href="https://console.aws.amazon.com/cloudshell/home" target="_blank" rel="noopener noreferrer">Deploy on AWS</a>
+
+The button opens AWS CloudShell in your account. Paste one line into it:
+
+```bash
+git clone --depth 1 https://github.com/maximhq/bifrost && bifrost/deploy/aws/deploy.sh
+```
+
+The script installs Terraform if CloudShell lacks it, asks for a region, and applies [`terraform/examples/aws-ecs-postgres`](https://github.com/maximhq/bifrost/tree/main/terraform/examples/aws-ecs-postgres). It needs no prepared VPC, cluster, or secrets; everything in the note above is created for you:
+
+| Resource | What it is |
+|---|---|
+| VPC, two public subnets, security groups | Network for the service and the database |
+| ECS cluster and Fargate service | One task running the Bifrost image, 1 vCPU and 2 GB by default |
+| RDS PostgreSQL 16 (`db.t4g.small`, 20 GB encrypted gp3, 7-day backups, private) | Configuration store and log store |
+| Secrets Manager `<prefix>/config` and `<prefix>/runtime` | `config.json`, the database password, `BIFROST_ENCRYPTION_KEY`, `BIFROST_SETUP_TOKEN` |
+| Application Load Balancer | Public HTTP entry point |
+
+Apply takes about ten minutes, most of it RDS. The script then prints the dashboard URL and the setup token. Open the URL, [create the first admin account](/quickstart/gateway/setting-up-auth) with the token, add a provider key, and [create a virtual key](/features/governance/virtual-keys); inference routes require one because the load balancer is public.
+
+Terraform state stays in the example directory inside CloudShell's persistent home. Keep that clone to change or destroy the stack, or move the state to an S3 backend. The listener is plain HTTP; add an ACM certificate and an HTTPS listener before production traffic.
+
+Environment overrides for the script: `AWS_REGION`, `BIFROST_NAME_PREFIX`, `BIFROST_IMAGE_TAG` (pin a release), `BIFROST_IMAGE_REPOSITORY`, and `BIFROST_AUTO_APPROVE=1`. Tear down with `terraform destroy` in the example directory.
+
+**Enterprise:** set `BIFROST_IMAGE_REPOSITORY` to the registry path issued for your organization before running the script. Private registries need pull credentials on the task execution role; see the [enterprise AWS guide](/deployment-guides/enterprise/aws).
+
 ## Deployment Methods
 
 Choose your preferred deployment method:

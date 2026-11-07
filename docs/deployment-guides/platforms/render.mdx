@@ -23,6 +23,26 @@ Bifrost Enterprise requires PostgreSQL 16 or later for both stores and does not 
 
 See [Bifrost Deployment Requirements](/deployment-guides/runtime-contract) for the shared container values.
 
+## One-click deploy
+
+<a className="deploy-btn deploy-btn-render" href="https://render.com/deploy?repo=https://github.com/maximhq/bifrost" target="_blank" rel="noopener noreferrer">Deploy to Render</a>
+
+The button reads the Blueprint at the root of the Bifrost repository, [`render.yaml`](https://github.com/maximhq/bifrost/blob/main/render.yaml), and creates:
+
+| Resource | What it is |
+|---|---|
+| Web service `bifrost` | The pinned `maximhq/bifrost` release image, `starter` plan, one instance, health check on `/health` |
+| Render Postgres `bifrost-db` | PostgreSQL 16 on the `basic-256mb` plan; holds the configuration store and the log store |
+
+The service receives `config.json` through `BIFROST_CONFIG_JSON` (every value in it is an `env.` reference), the Postgres connection through `fromDatabase` references, and two secrets that Render generates on the first sync: `BIFROST_ENCRYPTION_KEY` and `BIFROST_SETUP_TOKEN`. Inference routes require a virtual key. The release pipeline moves the pinned image tag on every stable release.
+
+After the deploy reports live:
+
+1. Open the service URL and [create the first admin account](/quickstart/gateway/setting-up-auth) with the value of `BIFROST_SETUP_TOKEN` from the service's Environment tab.
+2. Add a provider key and [create a virtual key](/features/governance/virtual-keys).
+
+**Enterprise:** fork or copy the Blueprint, set `image.url` to the registry path issued for your organization, add `registryCredential: { fromRegistryCreds: { name: <credential> } }` after creating that credential in the Render dashboard, and deploy from your copy. Nothing else in the file changes.
+
 ## Deploy Bifrost
 
 Render does not provide a CLI command that fully creates an image-backed web service. The steps below minimize dashboard work and make every Bifrost value explicit.
@@ -41,12 +61,12 @@ cat > config.json <<'JSON'
   "config_store": {
     "enabled": true,
     "type": "postgres",
-    "config": {"host": "env.PG_HOST", "port": "5432", "user": "env.PG_USER", "password": "env.PG_PASSWORD", "db_name": "env.PG_DATABASE", "ssl_mode": "require"}
+    "config": {"host": "env.PG_HOST", "port": "env.PG_PORT", "user": "env.PG_USER", "password": "env.PG_PASSWORD", "db_name": "env.PG_DATABASE", "ssl_mode": "env.PG_SSL_MODE"}
   },
   "logs_store": {
     "enabled": true,
     "type": "postgres",
-    "config": {"host": "env.PG_HOST", "port": "5432", "user": "env.PG_USER", "password": "env.PG_PASSWORD", "db_name": "env.PG_DATABASE", "ssl_mode": "require"}
+    "config": {"host": "env.PG_HOST", "port": "env.PG_PORT", "user": "env.PG_USER", "password": "env.PG_PASSWORD", "db_name": "env.PG_DATABASE", "ssl_mode": "env.PG_SSL_MODE"}
   }
 }
 JSON
@@ -64,7 +84,8 @@ In Render, choose **New → Web Service → Existing Image**, then set:
 |---|---|
 | Image | `docker.io/maximhq/bifrost:<BIFROST_VERSION>` |
 | Health path | `/health` |
-| Docker command | `/bin/sh -c 'printf "%s" "$BIFROST_CONFIG_B64" \| base64 -d > /app/data/config.json && exec /app/docker-entrypoint.sh'` |
+
+Leave the Docker command empty. The image entrypoint writes `BIFROST_CONFIG_B64` (or `BIFROST_CONFIG_JSON`) to `/app/data/config.json` on first boot.
 
 ### Step 3: Add environment variables and deploy
 
@@ -76,12 +97,16 @@ APP_PORT=10000
 PORT=10000
 BIFROST_CONFIG_B64=<BASE64_OUTPUT_FROM_STEP_1>
 PG_HOST=<POSTGRES_HOST>
+PG_PORT=5432
 PG_USER=<POSTGRES_USER>
 PG_PASSWORD=<POSTGRES_PASSWORD>
 PG_DATABASE=<POSTGRES_DATABASE>
+PG_SSL_MODE=prefer
 BIFROST_ENCRYPTION_KEY=<STABLE_ENCRYPTION_KEY>
 BIFROST_SETUP_TOKEN=<SETUP_TOKEN>
 ```
+
+Use `PG_SSL_MODE=require` when the database is reached over the public internet instead of Render's private network.
 
 Deploy one instance. Render Postgres is one option; any PostgreSQL 16 or later server reachable from the service is valid. The configuration requires authentication on inference routes. Use the setup token to [create the first admin account](/quickstart/gateway/setting-up-auth), then [create a virtual key](/features/governance/virtual-keys) before sending inference traffic or sharing the public service URL with clients.
 
@@ -92,10 +117,6 @@ curl --fail --show-error https://<RENDER_HOSTNAME>/health
 ```
 
 Inspect the Render logs if the health check does not pass. Bifrost must be able to resolve and connect to the configured PostgreSQL host during startup.
-
-### One-click status
-
-Render supports a **Deploy to Render** button backed by a root `render.yaml`. Bifrost does not publish that Blueprint yet. A safe Blueprint must pin a tested Bifrost image and provide a reviewed configuration/secret flow; it would then need an automated update and smoke test for every Bifrost release. This guide therefore does not link to an unverified button.
 
 ## SQLite storage alternative (OSS only)
 
