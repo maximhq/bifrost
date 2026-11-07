@@ -265,6 +265,9 @@ const WRAPPED_JSON_ERROR = `MCP tool call failed for Notion-notion-get-users: in
   }
 ]: mcp tool call failed`
 
+// Bifrost's wrapper around an upstream error with no text, which leaves nothing once the wrapper is dropped.
+const EMPTY_UPSTREAM_ERROR = 'MCP tool call failed for search: : mcp tool call failed'
+
 const roundTripLogs = [
   {
     ...listLog,
@@ -343,6 +346,18 @@ const roundTripLogs = [
     error_details: {
       is_bifrost_error: false,
       error: { message: WRAPPED_JSON_ERROR, error: WRAPPED_JSON_ERROR },
+    },
+  },
+  {
+    ...listLog,
+    id: 'mcp-error-empty-upstream',
+    request_id: 'req-mcp-error-empty-upstream',
+    tool_name: 'search',
+    server_label: 'deploy',
+    status: 'error',
+    error_details: {
+      is_bifrost_error: false,
+      error: { message: EMPTY_UPSTREAM_ERROR, error: EMPTY_UPSTREAM_ERROR },
     },
   },
 ]
@@ -491,6 +506,15 @@ test.describe('MCP Log Round Trips and MCP Apps', () => {
     await expect(card).toContainText('invalid params: Invalid tools/call request:')
     await expect(card).not.toContainText('MCP tool call failed for')
     await expect(card).not.toContainText(': mcp tool call failed')
+  })
+
+  test('a failed call whose upstream error is empty says so instead of showing an empty card', async ({ mcpLogsPage, page }) => {
+    await stubRoundTripLogs(page, [])
+    await mcpLogsPage.goto()
+    await expect(mcpLogsPage.logsTable).toBeVisible()
+
+    await mcpLogsPage.viewLogDetails(7)
+    await expect(mcpLogsPage.logDetailSheet.getByTestId('mcplogdetails-error')).toContainText('The tool call failed without an error message.')
   })
 
   test('the sidebar lists users, teams, customers, business units and projects and filters by the one picked', async ({ mcpLogsPage, page }) => {

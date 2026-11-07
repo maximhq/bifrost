@@ -851,7 +851,7 @@ export function MCPLogDetailSheet({
 
 							{errorCard && (
 								<LogErrorCard
-									message={errorText ? errorText.text : t("mcpLogs.errorNoMessage")}
+									message={errorText?.text || (errorText?.json ? "" : t("mcpLogs.errorNoMessage"))}
 									json={errorText?.json}
 									messageAfter={errorText?.textAfter}
 									copyText={errorCard.message}

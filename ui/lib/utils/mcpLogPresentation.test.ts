@@ -1,4 +1,4 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 
 import type { BifrostError, MCPToolLogEntry } from "@/lib/types/logs";
 import {
@@ -172,6 +172,40 @@ describe("splitMCPErrorMessage", () => {
 		const message = `${"[".repeat(30_000)}${"]".repeat(30_000)}`;
 		expect(() => splitMCPErrorMessage(message)).not.toThrow();
 		expect(splitMCPErrorMessage(message).json).toBeUndefined();
+	});
+
+	test("deeply nested objects leave the message as text instead of overflowing the stack", () => {
+		const message = `${'{"a":'.repeat(16_000)}1${"}".repeat(16_000)}`;
+		expect(() => splitMCPErrorMessage(message)).not.toThrow();
+		expect(splitMCPErrorMessage(message).json).toBeUndefined();
+	});
+
+	// Pretty-printing grows with the square of the nesting depth: 3,000 levels in 18KB print as 18MB.
+	test("JSON nested past 20 levels stays text", () => {
+		const nested = (depth: number) => `${'{"a":'.repeat(depth)}1${"}".repeat(depth)}`;
+		expect(splitMCPErrorMessage(nested(20)).json).toBe(JSON.stringify(JSON.parse(nested(20)), null, 2));
+		expect(splitMCPErrorMessage(nested(21))).toEqual({ text: nested(21) });
+	});
+
+	// A failed JSON.parse throws, which costs far more than the scan.
+	test("brackets that cannot open JSON are skipped without a parse attempt", () => {
+		const parse = vi.spyOn(JSON, "parse");
+		try {
+			expect(splitMCPErrorMessage(`${"[WARN] {a} ".repeat(1_000)}{"code": 1}`).json).toBe(JSON.stringify({ code: 1 }, null, 2));
+			expect(parse).toHaveBeenCalledTimes(1);
+		} finally {
+			parse.mockRestore();
+		}
+	});
+
+	test("after 50 brackets that fail to parse, the rest of the message stays text", () => {
+		const parse = vi.spyOn(JSON, "parse");
+		try {
+			expect(splitMCPErrorMessage(`${"[1x] ".repeat(1_000)}{"code": 1}`).json).toBeUndefined();
+			expect(parse).toHaveBeenCalledTimes(50);
+		} finally {
+			parse.mockRestore();
+		}
 	});
 });
 
