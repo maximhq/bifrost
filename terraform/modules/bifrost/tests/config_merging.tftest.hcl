@@ -144,3 +144,47 @@ run "server_override" {
     error_message = "server variable should land in config.json as the server block"
   }
 }
+
+# --- Managed values never override what the base config already sets ---
+
+run "generate_secrets_keeps_base_encryption_key" {
+  command = plan
+  module { source = "./tests/setup" }
+  variables {
+    cloud_provider   = "aws"
+    service          = "ecs"
+    region           = "us-east-1"
+    generate_secrets = true
+    config_json      = jsonencode({ encryption_key = "base-key", setup_token = "base-token" })
+  }
+  assert {
+    condition     = jsondecode(nonsensitive(output.config_json))["encryption_key"] == "base-key"
+    error_message = "generate_secrets must not replace an encryption_key present in the base config (a new key makes existing encrypted data unreadable)"
+  }
+  assert {
+    condition     = jsondecode(nonsensitive(output.config_json))["setup_token"] == "base-token"
+    error_message = "generate_secrets must not replace a setup_token present in the base config"
+  }
+}
+
+run "create_database_keeps_base_store" {
+  command = plan
+  module { source = "./tests/setup" }
+  variables {
+    cloud_provider  = "aws"
+    service         = "ecs"
+    region          = "us-east-1"
+    create_database = true
+    config_json = jsonencode({
+      config_store = { enabled = true, type = "sqlite", config = { path = "/app/data/bifrost.db" } }
+    })
+  }
+  assert {
+    condition     = jsondecode(nonsensitive(output.config_json))["config_store"]["type"] == "sqlite"
+    error_message = "create_database must not replace a config_store present in the base config"
+  }
+  assert {
+    condition     = jsondecode(nonsensitive(output.config_json))["logs_store"]["type"] == "postgres"
+    error_message = "a store absent from the base config still receives the managed PostgreSQL definition"
+  }
+}

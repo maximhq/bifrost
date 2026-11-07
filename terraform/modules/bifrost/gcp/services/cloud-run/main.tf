@@ -47,8 +47,41 @@ resource "google_cloud_run_v2_service" "bifrost" {
       }
     }
 
+    # Cloud SQL connector mount: the instance appears as a unix socket at
+    # /cloudsql/<connection name>, which is what PG_HOST points to.
+    dynamic "volumes" {
+      for_each = var.cloud_sql_connection_name != null ? [var.cloud_sql_connection_name] : []
+      content {
+        name = "cloudsql"
+        cloud_sql_instance {
+          instances = [volumes.value]
+        }
+      }
+    }
+
     containers {
       image = var.image
+
+      dynamic "env" {
+        for_each = var.extra_environment
+        content {
+          name  = env.value.name
+          value = env.value.value
+        }
+      }
+
+      dynamic "env" {
+        for_each = var.extra_secret_environment
+        content {
+          name = env.value.name
+          value_source {
+            secret_key_ref {
+              secret  = env.value.secret
+              version = "latest"
+            }
+          }
+        }
+      }
 
       command = ["/bin/sh"]
       args = [
@@ -72,6 +105,14 @@ resource "google_cloud_run_v2_service" "bifrost" {
       volume_mounts {
         name       = "config-volume"
         mount_path = "/var/run/bifrost-config"
+      }
+
+      dynamic "volume_mounts" {
+        for_each = var.cloud_sql_connection_name != null ? [1] : []
+        content {
+          name       = "cloudsql"
+          mount_path = "/cloudsql"
+        }
       }
 
       # Startup probe – allows time for the container to initialize

@@ -27,3 +27,10 @@ output "health_check_url" {
   description = "URL to the Bifrost health check endpoint."
   value       = var.create_load_balancer ? "http://${aws_lb.bifrost[0].dns_name}${var.health_check_path}" : null
 }
+
+# Plain environment of the planned container (never the secrets), so the
+# platform-module tests can check what reaches the task definition.
+output "container_environment" {
+  description = "Plain environment variables (name/value) of the Bifrost container."
+  value       = local.container_environment
+}

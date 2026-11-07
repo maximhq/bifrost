@@ -104,6 +104,23 @@ provider "kubernetes" {
 
 Invalid combinations (e.g. `cloud_provider = "aws"` with `service = "gke"`) are rejected at plan time with a clear error message.
 
+### Managed database and generated secrets
+
+`aws/ecs` and `gcp/cloud-run` can provision their own PostgreSQL 16 and runtime secrets, which is what the one-click AWS and GCP buttons use:
+
+| Variable | Default | Effect |
+|----------|---------|--------|
+| `create_database` | `false` | AWS: RDS PostgreSQL 16 in the service VPC, reachable only from the service security group. GCP: Cloud SQL PostgreSQL 16 mounted into Cloud Run over the Cloud SQL connector at `/cloudsql`. Both stores are pointed at it through `PG_HOST`, `PG_PORT`, `PG_USER`, `PG_PASSWORD`, `PG_DATABASE`, and `PG_SSL_MODE` env references unless `config_store` or `logs_store` is set explicitly or already present in the base config. |
+| `database_name`, `database_user` | `bifrost` | Database and application user; the password is generated and stored in Secrets Manager or Secret Manager. |
+| `database_instance_class` | `db.t4g.small` / `db-custom-1-3840` | RDS instance class or Cloud SQL tier. |
+| `database_storage_gb` | `20` | Disk size. |
+| `database_deletion_protection` | `false` | Protect the database from `terraform destroy`. Switch it back off and apply before destroying. |
+| `database_skip_final_snapshot` | `true` | AWS only. Set `false` to keep a final RDS snapshot named `<name_prefix>-db-final` on destroy; independent of deletion protection. |
+| `generate_secrets` | `false` | Generate `BIFROST_ENCRYPTION_KEY` and `BIFROST_SETUP_TOKEN`, store them in the cloud secret manager, inject them into the container, and reference them from `config.json`. Explicit `encryption_key` or `setup_token` values, and values already present in the base config, win. |
+| `setup_token` | `null` | Bootstrap token for the first admin account, written to `config.json` as `setup_token`. |
+
+Setting either flag on another target fails at plan time. The generated setup token is exposed through the `setup_token` output.
+
 > **Preview:** these targets have maintained Terraform implementations and mocked plan tests, but are not continuously deployed to live cloud accounts. Validate the generated plan, networking, IAM, persistence, and rollback in a non-production account before adoption.
 
 ## Configuration Merging
@@ -152,6 +169,8 @@ For `scim_config` with `provider = "okta"`, set `config.issuerUrl`, `config.clie
 | `service_url`      | URL to access the deployed Bifrost service       |
 | `health_check_url` | URL to the `/health` endpoint                    |
 | `config_json`      | Resolved configuration JSON (sensitive, for debugging) |
+| `setup_token`      | Generated first-admin token when `generate_secrets` is true (sensitive) |
+| `database_endpoint` | RDS `host:port` or Cloud SQL connection name when `create_database` is true |
 
 ## Testing
 
@@ -178,6 +197,7 @@ Test files are in `tests/` and cover all 7 deployment targets:
 | `azure_aci.tftest.hcl`      | ACI: compute, resource groups, VNets               |
 | `kubernetes.tftest.hcl`     | Generic K8s: storage class, ingress, annotations   |
 | `network_inputs.tftest.hcl` | GCP/Azure: existing VPC and subnets must pair      |
+| `aws_database.tftest.hcl`   | RDS: final snapshot independent of deletion protection |
 
 ## Examples
 

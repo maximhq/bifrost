@@ -100,3 +100,28 @@ variable "domain_name" {
   type        = string
   default     = null
 }
+
+# --- Managed database and extra runtime environment ---
+variable "cloud_sql_connection_name" {
+  description = "Cloud SQL instance connection name to mount under /cloudsql. Null disables the mount."
+  type        = string
+  default     = null
+}
+
+variable "extra_environment" {
+  description = "Additional plain environment variables for the Bifrost container (name/value)."
+  type = list(object({
+    name  = string
+    value = string
+  }))
+  default = []
+}
+
+variable "extra_secret_environment" {
+  description = "Additional environment variables sourced from Secret Manager (name/secret id). The latest version is used."
+  type = list(object({
+    name   = string
+    secret = string
+  }))
+  default = []
+}

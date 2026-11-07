@@ -128,6 +128,9 @@ terraform apply
 | `ingress_class_name` | `"nginx"` | Ingress controller class (generic K8s only) |
 | `ingress_annotations` | `{}` | Ingress annotations (generic K8s only) |
 | `ingress_path` | `"/"` | Ingress path prefix routed to Bifrost (EKS, GKE, AKS, generic K8s); match `server.base_path` to serve under a prefix |
+| `create_database` | `false` | Provision RDS (ECS) or Cloud SQL (Cloud Run) PostgreSQL 16 and point both stores at it |
+| `generate_secrets` | `false` | Generate and inject `BIFROST_ENCRYPTION_KEY` and `BIFROST_SETUP_TOKEN` (ECS, Cloud Run) |
+| `image_repository` | `"maximhq/bifrost"` | Image repository; set to your private registry path for Bifrost Enterprise |
 
 ## Outputs
 
@@ -135,3 +138,5 @@ terraform apply
 |--------|-------------|
 | `service_url` | URL to access Bifrost |
 | `health_check_url` | Health endpoint URL |
+| `setup_token` | Generated first-admin token (sensitive, with `generate_secrets`) |
+| `database_endpoint` | RDS `host:port` or Cloud SQL connection name (with `create_database`) |

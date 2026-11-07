@@ -27,6 +27,10 @@ terraform {
       source  = "hashicorp/kubernetes"
       version = ">= 2.0"
     }
+    random = {
+      source  = "hashicorp/random"
+      version = ">= 3.0"
+    }
   }
 }
 
@@ -42,6 +46,7 @@ module "bifrost" {
   config_json_file     = var.config_json_file
   schema_url           = var.schema_url
   encryption_key       = var.encryption_key
+  setup_token          = var.setup_token
   auth_config          = var.auth_config
   client               = var.client
   framework            = var.framework
@@ -107,4 +112,14 @@ module "bifrost" {
   ingress_class_name  = var.ingress_class_name
   ingress_annotations = var.ingress_annotations
   ingress_path        = var.ingress_path
+
+  # Managed database and generated secrets
+  create_database              = var.create_database
+  database_name                = var.database_name
+  database_user                = var.database_user
+  database_instance_class      = var.database_instance_class
+  database_storage_gb          = var.database_storage_gb
+  database_deletion_protection = var.database_deletion_protection
+  database_skip_final_snapshot = var.database_skip_final_snapshot
+  generate_secrets             = var.generate_secrets
 }

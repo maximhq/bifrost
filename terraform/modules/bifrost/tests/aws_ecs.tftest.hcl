@@ -27,6 +27,7 @@ mock_provider "azurerm" {
   }
 }
 mock_provider "kubernetes" {}
+mock_provider "random" {}
 
 run "ecs_basic" {
   command = plan
@@ -124,5 +125,92 @@ run "ecs_private_subnet" {
     region           = "us-east-1"
     config_json      = jsonencode({})
     assign_public_ip = false
+  }
+}
+
+# --- Managed database and generated secrets (the one-click AWS stack) ---
+
+run "ecs_with_managed_database" {
+  command = plan
+  module { source = "./tests/setup" }
+  variables {
+    cloud_provider       = "aws"
+    service              = "ecs"
+    region               = "us-east-1"
+    config_json          = jsonencode({})
+    create_database      = true
+    generate_secrets     = true
+    create_load_balancer = true
+  }
+
+  assert {
+    condition     = jsondecode(nonsensitive(output.config_json)).config_store.type == "postgres"
+    error_message = "create_database must inject a postgres config_store"
+  }
+
+  assert {
+    condition     = jsondecode(nonsensitive(output.config_json)).logs_store.config.ssl_mode == "env.PG_SSL_MODE"
+    error_message = "managed store must resolve ssl_mode from PG_SSL_MODE"
+  }
+
+  assert {
+    condition     = jsondecode(nonsensitive(output.config_json)).encryption_key == "env.BIFROST_ENCRYPTION_KEY"
+    error_message = "generate_secrets must reference BIFROST_ENCRYPTION_KEY"
+  }
+
+  assert {
+    condition     = jsondecode(nonsensitive(output.config_json)).setup_token == "env.BIFROST_SETUP_TOKEN"
+    error_message = "generate_secrets must reference BIFROST_SETUP_TOKEN"
+  }
+}
+
+run "ecs_explicit_store_wins_over_managed_database" {
+  command = plan
+  module { source = "./tests/setup" }
+  variables {
+    cloud_provider  = "aws"
+    service         = "ecs"
+    region          = "us-east-1"
+    config_json     = jsonencode({})
+    create_database = true
+    config_store = {
+      enabled = true
+      type    = "sqlite"
+      config  = { path = "/app/data/bifrost.db" }
+    }
+  }
+
+  assert {
+    condition     = jsondecode(nonsensitive(output.config_json)).config_store.type == "sqlite"
+    error_message = "an explicit config_store must not be replaced by the managed database"
+  }
+
+  assert {
+    condition     = jsondecode(nonsensitive(output.config_json)).logs_store.type == "postgres"
+    error_message = "logs_store without an explicit value must still use the managed database"
+  }
+}
+
+run "ecs_explicit_secrets_win_over_generated" {
+  command = plan
+  module { source = "./tests/setup" }
+  variables {
+    cloud_provider   = "aws"
+    service          = "ecs"
+    region           = "us-east-1"
+    config_json      = jsonencode({})
+    generate_secrets = true
+    encryption_key   = "env.MY_KEY"
+    setup_token      = "env.MY_TOKEN"
+  }
+
+  assert {
+    condition     = jsondecode(nonsensitive(output.config_json)).encryption_key == "env.MY_KEY"
+    error_message = "an explicit encryption_key must win over the generated one"
+  }
+
+  assert {
+    condition     = jsondecode(nonsensitive(output.config_json)).setup_token == "env.MY_TOKEN"
+    error_message = "an explicit setup_token must win over the generated one"
   }
 }

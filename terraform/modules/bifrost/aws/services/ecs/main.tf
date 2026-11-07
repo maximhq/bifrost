@@ -28,6 +28,15 @@ locals {
 
 # --- ECS Task Definition ---
 
+locals {
+  # Plain environment of the container. The config hash is not read by Bifrost;
+  # it only makes the task definition change with config.json.
+  container_environment = concat(
+    var.extra_environment,
+    var.config_hash == null ? [] : [{ name = "BIFROST_CONFIG_HASH", value = var.config_hash }],
+  )
+}
+
 resource "aws_ecs_task_definition" "bifrost" {
   family                   = "${var.name_prefix}-task"
   network_mode             = "awsvpc"
@@ -54,12 +63,17 @@ resource "aws_ecs_task_definition" "bifrost" {
         }
       ]
 
-      secrets = [
-        {
-          name      = "BIFROST_CONFIG"
-          valueFrom = var.secret_arn
-        }
-      ]
+      environment = local.container_environment
+
+      secrets = concat(
+        [
+          {
+            name      = "BIFROST_CONFIG"
+            valueFrom = var.secret_arn
+          }
+        ],
+        var.extra_secrets,
+      )
 
       healthCheck = {
         command     = ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:${var.container_port}${var.health_check_path} || exit 1"]
