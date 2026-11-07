@@ -1,11 +1,16 @@
 package bedrock
 
 import (
+	"context"
+	"fmt"
 	"reflect"
 	"testing"
 
 	"github.com/bytedance/sonic"
+	"github.com/maximhq/bifrost/core/providers/anthropic"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // encodeConverseStream runs each Bifrost stream event through the Converse stream
@@ -409,5 +414,121 @@ func BenchmarkConverseStreamEndTurn(b *testing.B) {
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
 		driveConverseStopStream(b, `{"stopReason":"end_turn"}`)
+	}
+}
+
+// The bf_so_* tool input deltas used to be forwarded as bare output_text.delta
+// events with no item id, output index or content index, and no item/part
+// start, so the anthropic egress opened a fresh block index for every delta and
+// never wrote content_block_start / content_block_stop (#8158). Rewriting them
+// as text deltas on the same content block must give one well-formed block.
+func TestStructuredOutputToolDeltasStreamAsSingleTextBlock(t *testing.T) {
+	// block 0: the tool is the first block. block 1: claude wrote a preamble
+	// text block first, which the structured-output filter suppresses.
+	for _, blockIndex := range []int{0, 1} {
+		t.Run(fmt.Sprintf("block%d", blockIndex), func(t *testing.T) {
+			testStructuredOutputToolDeltasStream(t, blockIndex)
+		})
+	}
+}
+
+func testStructuredOutputToolDeltasStream(t *testing.T, blockIndex int) {
+	state := NewBedrockResponsesStreamState()
+	state.UsedStructuredOutputTool = true
+
+	idx := func(i int) *int { return &i }
+	role := "assistant"
+	pieces := []string{`{"answer":`, `"Paris",`, `"confident":true}`}
+
+	soIndex := structuredOutputContentBlockIndex(&BedrockStreamEvent{ContentBlockIndex: idx(blockIndex)}, state)
+
+	var events []BedrockStreamEvent
+	events = append(events, BedrockStreamEvent{Role: &role})
+	for _, p := range pieces {
+		raw := BedrockStreamEvent{
+			ContentBlockIndex: idx(blockIndex),
+			Delta:             &BedrockContentBlockDelta{ToolUse: &BedrockToolUseDelta{Input: p}},
+		}
+		events = append(events, structuredOutputTextDeltaEvent(&raw, soIndex))
+	}
+	stop := "end_turn"
+	events = append(events, BedrockStreamEvent{StopReason: &stop})
+
+	var stream []*schemas.BifrostResponsesStreamResponse
+	seq := 0
+	for i := range events {
+		out, bErr, _ := events[i].ToBifrostResponsesStream(seq, state)
+		require.Nil(t, bErr)
+		for _, r := range out {
+			if r != nil {
+				stream = append(stream, r)
+				seq++
+			}
+		}
+	}
+	stream = append(stream, FinalizeBedrockStream(state, seq, &schemas.ResponsesResponseUsage{}, nil)...)
+
+	for _, r := range stream {
+		if r.Type == schemas.ResponsesStreamResponseTypeOutputTextDelta {
+			require.NotNil(t, r.ItemID, "text delta without item id")
+			require.NotNil(t, r.OutputIndex, "text delta without output index")
+			require.NotNil(t, r.ContentIndex, "text delta without content index")
+			assert.Equal(t, 0, *r.ContentIndex, "the single text part must be content_index 0")
+		}
+	}
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	starts := map[int]int{}
+	stops := map[int]int{}
+	deltaIdx := map[int]bool{}
+	text := ""
+	for _, r := range stream {
+		for _, ev := range anthropic.ToAnthropicResponsesStreamResponse(ctx, r) {
+			switch ev.Type {
+			case anthropic.AnthropicStreamEventTypeContentBlockStart:
+				require.NotNil(t, ev.Index)
+				starts[*ev.Index]++
+			case anthropic.AnthropicStreamEventTypeContentBlockStop:
+				require.NotNil(t, ev.Index)
+				stops[*ev.Index]++
+			case anthropic.AnthropicStreamEventTypeContentBlockDelta:
+				require.NotNil(t, ev.Index)
+				deltaIdx[*ev.Index] = true
+				if ev.Delta != nil && ev.Delta.Text != nil {
+					text += *ev.Delta.Text
+				}
+			}
+		}
+	}
+
+	require.Len(t, deltaIdx, 1, "all deltas should share one block index, got %v", deltaIdx)
+	for i := range deltaIdx {
+		assert.Equal(t, 1, starts[i], "content_block_start count for index %d", i)
+		assert.Equal(t, 1, stops[i], "content_block_stop count for index %d", i)
+	}
+	assert.Equal(t, `{"answer":"Paris","confident":true}`, text)
+}
+
+// BenchmarkStructuredOutputTextDeltaEvent measures the per-delta work on the
+// structured-output stream path: rewriting the tool input delta and
+// converting it through ToBifrostResponsesStream once the text item is open.
+func BenchmarkStructuredOutputTextDeltaEvent(b *testing.B) {
+	state := NewBedrockResponsesStreamState()
+	state.UsedStructuredOutputTool = true
+	role := "assistant"
+	_, _, _ = (&BedrockStreamEvent{Role: &role}).ToBifrostResponsesStream(0, state)
+	i := 0
+	ev := BedrockStreamEvent{
+		ContentBlockIndex: &i,
+		Delta:             &BedrockContentBlockDelta{ToolUse: &BedrockToolUseDelta{Input: `{"answer":"Paris"}`}},
+	}
+	first := structuredOutputTextDeltaEvent(&ev, 0)
+	_, _, _ = first.ToBifrostResponsesStream(1, state)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for n := 0; n < b.N; n++ {
+		out := structuredOutputTextDeltaEvent(&ev, 0)
+		_, _, _ = out.ToBifrostResponsesStream(n+2, state)
 	}
 }
