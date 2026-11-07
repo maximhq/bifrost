@@ -14,6 +14,7 @@ import {
 	Construction,
 	Database,
 	DatabaseZap,
+	FileSpreadsheet,
 	Flag,
 	FolderGit,
 	Gavel,
@@ -50,8 +51,8 @@ import {
 	Users,
 	Wallet,
 	WalletCards,
-	Webhook,
 	Waypoints,
+	Webhook,
 } from "lucide-react";
 
 import { WarpIcon } from "@/components/ui/icons";
@@ -124,6 +125,7 @@ export function useNavItems(): NavItem[] {
 	const hasAlertingAccess = useRbac(RbacResource.Governance, RbacOperation.View);
 	const hasDashboardAccess = useRbac(RbacResource.Dashboard, RbacOperation.View);
 	const hasModelProvidersAccess = useRbac(RbacResource.ModelProvider, RbacOperation.View);
+	const hasDatasheetAccess = useRbac(RbacResource.Datasheet, RbacOperation.View);
 	const hasMCPGatewayAccess = useRbac(RbacResource.MCPGateway, RbacOperation.View);
 	const hasAgentGatewayAccess = useRbac(RbacResource.AgentGateway, RbacOperation.View);
 	const hasAgentLogsAccess = useRbac(RbacResource.AgentLogs, RbacOperation.View);
@@ -312,6 +314,14 @@ export function useNavItems(): NavItem[] {
 						url: "/workspace/custom-pricing/overrides",
 						icon: SlidersHorizontal,
 						hasAccess: hasSettingsAccess,
+					},
+					{
+						id: "models.datasheet",
+						testId: "datasheet",
+						title: t("nav.datasheet"),
+						url: "/workspace/datasheet-editor",
+						icon: FileSpreadsheet,
+						hasAccess: hasDatasheetAccess,
 					},
 					{
 						id: "models.settings",
