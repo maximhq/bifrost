@@ -369,6 +369,8 @@
 		"privateKeyMustBeAnRsaOrEcPemBlock": "私钥必须是 RSA 或 EC PEM 块",
 		"issuerIsRequiredForJwtBearer": "JWT bearer 需要填写 Issuer",
 		"audienceIsRequiredForJwtBearer": "JWT bearer 需要填写 Audience",
+		"subjectTokenFileIsRequiredForTokenExchange": "令牌交换需要主体令牌文件",
+		"subjectTokenFileMustBeAnAbsolutePath": "主体令牌文件必须是绝对路径",
 		"assertionLifetimeMustBeBetween1And3600Seconds0": "断言有效期必须在 1 到 3600 秒之间（0 表示使用默认值）",
 		"federationRuleIdIsRequired": "联合规则 ID 为必填项",
 		"organizationIdIsRequired": "组织 ID 为必填项",

@@ -387,6 +387,8 @@
 		"privateKeyMustBeAnRsaOrEcPemBlock": "Закрытый ключ должен быть блоком PEM формата RSA или EC",
 		"issuerIsRequiredForJwtBearer": "Для JWT bearer необходимо указать издателя",
 		"audienceIsRequiredForJwtBearer": "Для JWT bearer необходимо указать аудиторию",
+		"subjectTokenFileIsRequiredForTokenExchange": "Для обмена токенами требуется файл токена субъекта",
+		"subjectTokenFileMustBeAnAbsolutePath": "Файл токена субъекта должен быть указан абсолютным путём",
 		"assertionLifetimeMustBeBetween1And3600Seconds0": "Срок действия assertion должен составлять от 1 до 3600 секунд (0 — значение по умолчанию)",
 		"federationRuleIdIsRequired": "Укажите ID правила федерации",
 		"organizationIdIsRequired": "Укажите ID организации",

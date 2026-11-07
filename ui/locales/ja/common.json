@@ -369,6 +369,8 @@
 		"privateKeyMustBeAnRsaOrEcPemBlock": "秘密鍵は RSA または EC の PEM ブロックにしてください",
 		"issuerIsRequiredForJwtBearer": "JWT bearer には発行者が必要です",
 		"audienceIsRequiredForJwtBearer": "JWT bearer にはオーディエンスが必要です",
+		"subjectTokenFileIsRequiredForTokenExchange": "トークン交換にはサブジェクトトークンファイルが必要です",
+		"subjectTokenFileMustBeAnAbsolutePath": "サブジェクトトークンファイルは絶対パスで指定してください",
 		"assertionLifetimeMustBeBetween1And3600Seconds0": "アサーションの有効期間は 1 〜 3600 秒の間で指定してください (0 でデフォルト)",
 		"federationRuleIdIsRequired": "フェデレーションルール ID は必須です",
 		"organizationIdIsRequired": "組織 ID は必須です",

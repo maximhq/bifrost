@@ -369,6 +369,8 @@
 		"privateKeyMustBeAnRsaOrEcPemBlock": "Der private Schlüssel muss ein RSA- oder EC-PEM-Block sein",
 		"issuerIsRequiredForJwtBearer": "Issuer ist für JWT Bearer erforderlich",
 		"audienceIsRequiredForJwtBearer": "Audience ist für JWT Bearer erforderlich",
+		"subjectTokenFileIsRequiredForTokenExchange": "Für den Token-Austausch ist eine Subject-Token-Datei erforderlich",
+		"subjectTokenFileMustBeAnAbsolutePath": "Die Subject-Token-Datei muss ein absoluter Pfad sein",
 		"assertionLifetimeMustBeBetween1And3600Seconds0": "Die Lebensdauer der Assertion muss zwischen 1 und 3600 Sekunden liegen (0 für den Standardwert)",
 		"federationRuleIdIsRequired": "Federation-Regel-ID ist erforderlich",
 		"organizationIdIsRequired": "Organisations-ID ist erforderlich",

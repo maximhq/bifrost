@@ -3,6 +3,7 @@
 - feat: mcp - relay input_required to gateway callers, forward callers' declared capabilities upstream, and log rounds by round_trip_id and MCP Apps use
 - feat: mcp - dial boot MCP clients in the background
 - feat: anthropic - workload identity federation for Anthropic and Anthropic-based keys
+- feat: oauth_key_config token_exchange grant (RFC 8693) for workload identity federation: the subject token is read from subject_token_file on every exchange, and request_encoding json covers OpenAI's token endpoint. The file must be inside a directory listed in BIFROST_SUBJECT_TOKEN_DIRS and token_url must be listed in BIFROST_TOKEN_EXCHANGE_URLS
 - feat: accept SOCKS5 global proxies, trust the global proxy's CA, and always verify targets through a proxy
 - feat: record caller IP and user email on LLM, MCP and relay logs; bring relay logging to LLM log parity
 - feat: count containers started by OpenAI and Azure code interpreter and hosted shell and by Anthropic code execution on `usage.tool_usage.container_sessions`, including under `previous_response_id` and `conversation`
