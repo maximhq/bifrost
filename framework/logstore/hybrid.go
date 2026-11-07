@@ -1698,6 +1698,11 @@ func (h *HybridLogStore) GetMCPHistogram(ctx context.Context, filters MCPToolLog
 	return h.inner.GetMCPHistogram(ctx, filters, bucketSizeSeconds)
 }
 
+// GetMCPLatencyHistogram delegates to the inner store.
+func (h *HybridLogStore) GetMCPLatencyHistogram(ctx context.Context, filters MCPToolLogSearchFilters, bucketSizeSeconds int64) (*LatencyHistogramResult, error) {
+	return h.inner.GetMCPLatencyHistogram(ctx, filters, bucketSizeSeconds)
+}
+
 // GetMCPCostHistogram returns the cost histogram for MCP tool logs.
 func (h *HybridLogStore) GetMCPCostHistogram(ctx context.Context, filters MCPToolLogSearchFilters, bucketSizeSeconds int64) (*MCPCostHistogramResult, error) {
 	return h.inner.GetMCPCostHistogram(ctx, filters, bucketSizeSeconds)

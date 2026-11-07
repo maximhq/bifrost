@@ -6452,23 +6452,32 @@ func (s *RDBLogStore) GetMCPToolLogStats(ctx context.Context, filters MCPToolLog
 		var result struct {
 			CompletedCount sql.NullInt64   `gorm:"column:completed_count"`
 			SuccessCount   sql.NullInt64   `gorm:"column:success_count"`
+			ErrorCount     sql.NullInt64   `gorm:"column:error_count"`
+			CancelledCount sql.NullInt64   `gorm:"column:cancelled_count"`
 			AvgLatency     sql.NullFloat64 `gorm:"column:avg_latency"`
 			TotalCost      sql.NullFloat64 `gorm:"column:total_cost"`
 		}
 
+		// A cancelled call is a finished call, as on the LLM and Relay logs stats: it counts against
+		// the success rate and toward the average latency and the cost.
 		statsQuery := s.ScopedDB(ctx).Model(&MCPToolLog{})
 		statsQuery = s.applyMCPFilters(statsQuery, filters)
-		statsQuery = statsQuery.Where("status IN ?", []string{"success", "error"})
+		statsQuery = statsQuery.Where("status IN ?", terminalLogStatuses)
 
 		if err := statsQuery.Select(`
 			COUNT(*) as completed_count,
 			SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as success_count,
+			SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) as error_count,
+			SUM(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END) as cancelled_count,
 			AVG(latency) as avg_latency,
 			SUM(cost) as total_cost
 		`).Scan(&result).Error; err != nil {
 			return nil, err
 		}
 
+		stats.SuccessCount = result.SuccessCount.Int64
+		stats.ErrorCount = result.ErrorCount.Int64
+		stats.CancelledCount = result.CancelledCount.Int64
 		completedCount := result.CompletedCount.Int64
 		if completedCount > 0 {
 			stats.SuccessRate = float64(result.SuccessCount.Int64) / float64(completedCount) * 100
@@ -6657,20 +6666,22 @@ func (s *RDBLogStore) GetMCPHistogram(ctx context.Context, filters MCPToolLogSea
 
 	baseQuery := s.ScopedDB(ctx).Model(&MCPToolLog{})
 	baseQuery = s.applyMCPFilters(baseQuery, filters)
-	baseQuery = baseQuery.Where("status IN ?", []string{"success", "error"})
+	baseQuery = baseQuery.Where("status IN ?", terminalLogStatuses)
 
 	var results []struct {
 		BucketTimestamp int64 `gorm:"column:bucket_timestamp"`
 		Count           int64 `gorm:"column:count"`
 		Success         int64 `gorm:"column:success"`
 		Error           int64 `gorm:"column:error"`
+		Cancelled       int64 `gorm:"column:cancelled"`
 	}
 
 	selectClause := fmt.Sprintf(`
 			%s as bucket_timestamp,
 			COUNT(*) as count,
 			SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as success,
-			SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) as error
+			SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) as error,
+			SUM(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END) as cancelled
 		`, unixBucketExpr(dialect, bucketSizeSeconds))
 
 	if err := baseQuery.
@@ -6682,16 +6693,18 @@ func (s *RDBLogStore) GetMCPHistogram(ctx context.Context, filters MCPToolLogSea
 	}
 
 	resultMap := make(map[int64]struct {
-		Count   int64
-		Success int64
-		Error   int64
+		Count     int64
+		Success   int64
+		Error     int64
+		Cancelled int64
 	})
 	for _, r := range results {
 		resultMap[r.BucketTimestamp] = struct {
-			Count   int64
-			Success int64
-			Error   int64
-		}{Count: r.Count, Success: r.Success, Error: r.Error}
+			Count     int64
+			Success   int64
+			Error     int64
+			Cancelled int64
+		}{Count: r.Count, Success: r.Success, Error: r.Error, Cancelled: r.Cancelled}
 	}
 
 	allTimestamps := generateBucketTimestamps(filters.StartTime, filters.EndTime, bucketSizeSeconds)
@@ -6704,6 +6717,7 @@ func (s *RDBLogStore) GetMCPHistogram(ctx context.Context, filters MCPToolLogSea
 				Count:     r.Count,
 				Success:   r.Success,
 				Error:     r.Error,
+				Cancelled: r.Cancelled,
 			}
 		}
 		return &MCPHistogramResult{Buckets: buckets, BucketSizeSeconds: bucketSizeSeconds}, nil
@@ -6717,6 +6731,7 @@ func (s *RDBLogStore) GetMCPHistogram(ctx context.Context, filters MCPToolLogSea
 				Count:     data.Count,
 				Success:   data.Success,
 				Error:     data.Error,
+				Cancelled: data.Cancelled,
 			}
 		} else {
 			buckets[i] = MCPHistogramBucket{Timestamp: time.Unix(ts, 0).UTC()}
@@ -6724,6 +6739,42 @@ func (s *RDBLogStore) GetMCPHistogram(ctx context.Context, filters MCPToolLogSea
 	}
 
 	return &MCPHistogramResult{Buckets: buckets, BucketSizeSeconds: bucketSizeSeconds}, nil
+}
+
+// GetMCPLatencyHistogram returns per-bucket average and p90/p95/p99 latency of finished MCP tool calls,
+// the shape GetLatencyHistogram and GetRelayLatencyHistogram return. MCP tool calls record no Bifrost
+// overhead, so the overhead percentiles are always zero.
+func (s *RDBLogStore) GetMCPLatencyHistogram(ctx context.Context, filters MCPToolLogSearchFilters, bucketSizeSeconds int64) (*LatencyHistogramResult, error) {
+	if bucketSizeSeconds <= 0 {
+		bucketSizeSeconds = 3600
+	}
+	dialect := s.db.Dialector.Name()
+	// The dialect queries shared with the LLM and Relay histograms read overhead_latency, which
+	// mcp_tool_logs does not have, so they read a derived table that supplies it as a typed NULL.
+	nullOverhead := "NULL"
+	switch dialect {
+	case "postgres":
+		nullOverhead = "CAST(NULL AS DOUBLE PRECISION)"
+	case "clickhouse":
+		nullOverhead = "CAST(NULL AS Nullable(Float64))"
+	}
+	timed := s.applyMCPFilters(s.ScopedDB(ctx).Model(&MCPToolLog{}), filters).
+		Where("status IN ?", terminalLogStatuses).
+		Where("latency IS NOT NULL").
+		Select("timestamp, latency, " + nullOverhead + " AS overhead_latency")
+	query := s.db.WithContext(ctx).Table("(?) AS mcp_latency", timed)
+	// The dialect queries read only the window from the LLM filters, to lay out empty buckets.
+	window := SearchFilters{StartTime: filters.StartTime, EndTime: filters.EndTime}
+	switch dialect {
+	case "sqlite":
+		return s.getLatencyHistogramSQLite(ctx, query, window, bucketSizeSeconds)
+	case "mysql":
+		return s.getLatencyHistogramMySQL(ctx, query, window, bucketSizeSeconds)
+	case "clickhouse":
+		return s.getLatencyHistogramClickHouse(ctx, query, window, bucketSizeSeconds)
+	default:
+		return s.getLatencyHistogramPercentileCont(ctx, query, window, bucketSizeSeconds)
+	}
 }
 
 // GetMCPCostHistogram returns time-bucketed MCP cost data for the given filters.

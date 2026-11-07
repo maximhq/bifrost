@@ -1776,10 +1776,9 @@ mcp-logs-stats:
           type: string
       - name: status
         in: query
-        description: Comma-separated list of statuses to filter by
+        description: Comma-separated list of statuses to filter by (processing, success, error, cancelled, input_required)
         schema:
           type: string
-          enum: [processing, success, error]
       - name: virtual_key_ids
         in: query
         description: Comma-separated list of virtual key IDs to filter by
@@ -1819,6 +1818,19 @@ mcp-logs-stats:
         description: Search in tool arguments and results
         schema:
           type: string
+      - name: compare_to_previous
+        in: query
+        description: >-
+          When true, also return the same statistics for the immediately
+          preceding window of equal length, so callers can render
+          change-vs-previous-period. Requires a bounded window (start_time and
+          end_time, or period); an unbounded all-time filter has no preceding
+          window, and the response then omits `previous` with
+          `has_previous_period` false. A failure to compute the previous period
+          degrades to `has_previous_period` false rather than failing the request.
+        schema:
+          type: boolean
+          default: false
     security:
       - ManagementBearerAuth: []
       - BasicAuth: []
@@ -1828,7 +1840,7 @@ mcp-logs-stats:
         content:
           application/json:
             schema:
-              $ref: "../../schemas/management/logging.yaml#/MCPToolLogStats"
+              $ref: "../../schemas/management/logging.yaml#/MCPLogStatsResponse"
       "400":
         $ref: "../../openapi.yaml#/components/responses/BadRequest"
       "500":
@@ -2491,7 +2503,7 @@ mcp-logs-histogram:
         [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get MCP tool call volume histogram
     description: |
-      Returns time-bucketed MCP tool call volume with success/error breakdown.
+      Returns time-bucketed volume of finished MCP tool calls with a success, error and cancelled breakdown.
     tags:
       - Logging
     parameters:
@@ -2507,7 +2519,7 @@ mcp-logs-histogram:
           type: string
       - name: status
         in: query
-        description: Comma-separated list of statuses to filter by (processing, success, error)
+        description: Comma-separated list of statuses to filter by (processing, success, error, cancelled, input_required)
         schema:
           type: string
       - name: virtual_key_ids
@@ -2559,6 +2571,95 @@ mcp-logs-histogram:
           application/json:
             schema:
               $ref: "../../schemas/management/logging.yaml#/MCPHistogramResult"
+      "400":
+        $ref: "../../openapi.yaml#/components/responses/BadRequest"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
+
+mcp-logs-histogram-latency:
+  get:
+    operationId: getMCPLogsLatencyHistogram
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `MCPLogs:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Get MCP tool call latency histogram
+    description: |
+      Returns time-bucketed latency percentiles (avg, p90, p95, p99) of finished MCP tool calls, in the
+      shape of `/api/logs/histogram/latency`. MCP tool calls record no Bifrost overhead, so the overhead
+      fields are always 0.
+    tags:
+      - Logging
+    parameters:
+      - name: tool_names
+        in: query
+        description: Comma-separated list of tool names to filter by
+        schema:
+          type: string
+      - name: server_labels
+        in: query
+        description: Comma-separated list of server labels to filter by
+        schema:
+          type: string
+      - name: status
+        in: query
+        description: Comma-separated list of statuses to filter by (processing, success, error, cancelled, input_required)
+        schema:
+          type: string
+      - name: virtual_key_ids
+        in: query
+        description: Comma-separated list of virtual key IDs to filter by
+        schema:
+          type: string
+      - name: llm_request_ids
+        in: query
+        description: Comma-separated list of LLM request IDs to filter by
+        schema:
+          type: string
+      - name: start_time
+        in: query
+        description: Start time filter (RFC3339 format)
+        schema:
+          type: string
+          format: date-time
+      - name: end_time
+        in: query
+        description: End time filter (RFC3339 format)
+        schema:
+          type: string
+          format: date-time
+      - $ref: "#/_histogram-parameters/period"
+      - $ref: "#/_histogram-parameters/timezone"
+      - name: min_latency
+        in: query
+        description: Minimum latency filter (milliseconds)
+        schema:
+          type: number
+      - name: max_latency
+        in: query
+        description: Maximum latency filter (milliseconds)
+        schema:
+          type: number
+      - name: content_search
+        in: query
+        description: Search in tool arguments and results
+        schema:
+          type: string
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      "200":
+        description: MCP latency histogram retrieved successfully
+        content:
+          application/json:
+            schema:
+              $ref: "../../schemas/management/logging.yaml#/LatencyHistogramResult"
       "400":
         $ref: "../../openapi.yaml#/components/responses/BadRequest"
       "500":

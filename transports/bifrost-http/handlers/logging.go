@@ -472,6 +472,7 @@ func (h *LoggingHandler) RegisterRoutes(r *router.Router, middlewares ...schemas
 	r.GET("/api/mcp-logs/filterdata", lib.ChainMiddlewares(h.getMCPLogsFilterData, middlewares...))
 	r.GET("/api/mcp-logs/histogram", lib.ChainMiddlewares(h.getMCPHistogram, middlewares...))
 	r.GET("/api/mcp-logs/histogram/cost", lib.ChainMiddlewares(h.getMCPCostHistogram, middlewares...))
+	r.GET("/api/mcp-logs/histogram/latency", lib.ChainMiddlewares(h.getMCPLatencyHistogram, middlewares...))
 	r.GET("/api/mcp-logs/histogram/top-tools", lib.ChainMiddlewares(h.getMCPTopTools, middlewares...))
 	r.GET("/api/mcp-logs/{id}", lib.ChainMiddlewares(h.getMCPLogByID, middlewares...))
 	r.DELETE("/api/mcp-logs", lib.ChainMiddlewares(h.deleteMCPLogs, middlewares...))
@@ -3404,8 +3405,52 @@ func (h *LoggingHandler) getMCPLogsStats(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Stats calculation failed: %v", err))
 		return
 	}
+	if stats == nil {
+		logger.Error("MCP tool log stats returned no result")
+		SendError(ctx, fasthttp.StatusInternalServerError, "Stats calculation returned no result")
+		return
+	}
 
-	SendJSON(ctx, stats)
+	response := &MCPLogStatsResponse{MCPToolLogStats: *stats}
+
+	// compare_to_previous adds the same stats for the immediately preceding window of equal length, as
+	// /api/logs/stats does, so the metric strip can show the change against it. A window with no start
+	// and end has nothing before it, and a failed comparison degrades to none.
+	if compare := string(ctx.QueryArgs().Peek("compare_to_previous")); compare != "" {
+		if enabled, parseErr := strconv.ParseBool(compare); parseErr == nil && enabled && filters.StartTime != nil && filters.EndTime != nil && filters.EndTime.After(*filters.StartTime) {
+			previous, prevErr := h.logManager.GetMCPToolLogStats(ctx, previousMCPPeriodFilters(filters))
+			switch {
+			case prevErr != nil:
+				logger.Warn("failed to get previous period MCP tool log stats: %v", prevErr)
+			case previous != nil:
+				response.Previous = previous
+				response.HasPreviousPeriod = true
+			}
+		}
+	}
+
+	SendJSON(ctx, response)
+}
+
+// MCPLogStatsResponse is the GET /api/mcp-logs/stats payload: the current period's stats at the top level,
+// with the preceding period's beside them when compare_to_previous was asked for, as LogStatsResponse.
+type MCPLogStatsResponse struct {
+	logstore.MCPToolLogStats
+	Previous          *logstore.MCPToolLogStats `json:"previous,omitempty"`
+	HasPreviousPeriod bool                      `json:"has_previous_period"`
+}
+
+// previousMCPPeriodFilters is previousPeriodFilters for MCP tool log filters: the same filter over the
+// window of equal length that ends just before this one starts.
+func previousMCPPeriodFilters(filters *logstore.MCPToolLogSearchFilters) *logstore.MCPToolLogSearchFilters {
+	duration := filters.EndTime.Sub(*filters.StartTime)
+	prevStart := filters.StartTime.Add(-duration)
+	prevEnd := filters.StartTime.Add(-time.Nanosecond)
+
+	prev := *filters
+	prev.StartTime = &prevStart
+	prev.EndTime = &prevEnd
+	return &prev
 }
 
 // getMCPLogsFilterData handles GET /api/mcp-logs/filterdata - Get all unique filter data from MCP tool logs
@@ -3706,6 +3751,26 @@ func (h *LoggingHandler) getMCPHistogram(ctx *fasthttp.RequestCtx) {
 	if err != nil {
 		logger.Error("failed to get MCP histogram: %v", err)
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("MCP histogram calculation failed: %v", err))
+		return
+	}
+
+	SendJSON(ctx, result)
+}
+
+// getMCPLatencyHistogram handles GET /api/mcp-logs/histogram/latency - Get time-bucketed latency percentiles
+// of finished MCP tool calls, in the /api/logs/histogram/latency shape
+func (h *LoggingHandler) getMCPLatencyHistogram(ctx *fasthttp.RequestCtx) {
+	filters, err := parseMCPHistogramFilters(ctx)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
+	bucketSizeSeconds := calculateBucketSize(filters.StartTime, filters.EndTime)
+
+	result, err := h.logManager.GetMCPLatencyHistogram(ctx, *filters, bucketSizeSeconds)
+	if err != nil {
+		logger.Error("failed to get MCP latency histogram: %v", err)
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("MCP latency histogram calculation failed: %v", err))
 		return
 	}
 
