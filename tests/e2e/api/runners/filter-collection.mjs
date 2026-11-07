@@ -342,6 +342,12 @@ const itemMatchesProvider = (item, ancestorNames, provider = PROVIDER) => {
   const isRunware = haystack.includes("runware");
   if (provider === "runware") return isRunware;
   if (isRunware) return false;
+  // Wally rows name the upstream vendor in the model id ("wally/deepseek-v4.1-flash",
+  // "wally/minimax-m3"), so they'd otherwise be claimed by the deepseek or minimax partitions.
+  // Route them exclusively to wally.
+  const isWally = haystack.includes("wally/");
+  if (provider === "wally") return isWally;
+  if (isWally) return false;
   // bedrock_openai rows (token-parity-matrix.mjs's "one more model per provider" addition -
   // gpt-oss-family models on Bedrock) contain "openai" in the backend key/model, so they'd
   // otherwise be claimed by the openai partition too - same collision class as above. Route

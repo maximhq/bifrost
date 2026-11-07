@@ -40,6 +40,7 @@ ModelProvider:
     - typesafe
     - minimax
     - byteplus
+    - wally
 
 Fallback:
   type: object

@@ -337,7 +337,7 @@
           "  // JSON or multipart body, or from the path on the Gemini-shaped routes, up to the last colon since",
           "  // a Bedrock id can contain one. Only standard provider names count as a prefix: a namespaced",
           "  // model such as meta-llama/Llama-3.1-8B names no provider, and a custom provider is not known here.",
-          "  var __standard = ['openai', 'azure', 'anthropic', 'bedrock', 'bedrock_mantle', 'cohere', 'vertex', 'mistral', 'ollama', 'opencode-go', 'opencode-zen', 'groq', 'sgl', 'parasail', 'perplexity', 'cerebras', 'deepseek', 'gemini', 'openrouter', 'elevenlabs', 'huggingface', 'nebius', 'xai', 'replicate', 'vllm', 'runway', 'runware', 'fireworks', 'sarvam', 'wafer', 'github-copilot', 'databricks', 'cloudflare', 'typesafe', 'minimax', 'byteplus'];",
+          "  var __standard = ['openai', 'azure', 'anthropic', 'bedrock', 'bedrock_mantle', 'cohere', 'vertex', 'mistral', 'ollama', 'opencode-go', 'opencode-zen', 'groq', 'sgl', 'parasail', 'perplexity', 'cerebras', 'deepseek', 'gemini', 'openrouter', 'elevenlabs', 'huggingface', 'nebius', 'xai', 'replicate', 'vllm', 'runway', 'runware', 'fireworks', 'sarvam', 'wafer', 'github-copilot', 'databricks', 'cloudflare', 'typesafe', 'minimax', 'byteplus', 'wally'];",
           "  var __model = null;",
           "  try {",
           "    var __raw = pm.request && pm.request.body && pm.request.body.mode === 'raw' ? pm.request.body.raw : '';",
@@ -313253,6 +313253,276 @@
               "path": [
                 "v1",
                 "responses"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "323. Wally provider (wally provider)",
+      "description": "Wally (RunAnywhere) serves open-weight models through an OpenAI-compatible chat API at https://inference.runanywhere.ai/v1. Bifrost reaches it through the shared OpenAI chat handlers, serves /v1/responses by converting to chat, and lists models from /models. Wally has no /completions, /embeddings or /responses endpoint, so text completion and embeddings are declared unsupported in provider-capabilities.json and covered by the shared documented-unsupported checks. Model ids name upstream vendors (deepseek-v4.1-flash, minimax-m3), so filter-collection.mjs routes these rows exclusively to the wally partition.",
+      "item": [
+        {
+          "name": "/v1/chat/completions - answer served by wally with usage - wally/deepseek-v4.1-flash",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('answer served by wally with usage', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var j = pm.response.json();",
+                  "  var msg = j.choices[0].message;",
+                  "  pm.expect(msg.content, 'empty content: ' + pm.response.text()).to.be.a('string').and.not.empty;",
+                  "  pm.expect(msg.content).to.include('391');",
+                  "  pm.expect(j.extra_fields.provider).to.eql('wally');",
+                  "  pm.expect(j.usage.total_tokens, 'usage missing').to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"wally/deepseek-v4.1-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What is 17 * 23? Answer with just the number.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/chat/completions stream - SSE chunks end with a finish_reason - wally/deepseek-v4.1-flash",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('stream completes with a finish_reason', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var text = pm.response.text();",
+                  "  pm.expect(text, 'no SSE data lines').to.include('data:');",
+                  "  pm.expect(text, 'no finish_reason in stream').to.match(/\"finish_reason\":\"(stop|length)\"/);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"wally/deepseek-v4.1-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say hello in one short sentence.\"\n    }\n  ],\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/chat/completions - reasoning_effort none turns thinking off - wally/deepseek-v4.1-flash",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('effort none is accepted and thinking is off', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var msg = pm.response.json().choices[0].message;",
+                  "  pm.expect(msg.content, 'empty content: ' + pm.response.text()).to.be.a('string').and.not.empty;",
+                  "  pm.expect(msg.reasoning || '', 'thinking still ran with effort none').to.eql('');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"wally/deepseek-v4.1-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the word ok.\"\n    }\n  ],\n  \"reasoning_effort\": \"none\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/chat/completions - function tool call - wally/deepseek-v4.1-flash",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('tool call comes back in OpenAI shape', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var choice = pm.response.json().choices[0];",
+                  "  var calls = (choice.message || {}).tool_calls || [];",
+                  "  pm.expect(calls.length, 'no tool call: ' + pm.response.text().slice(0, 500)).to.be.above(0);",
+                  "  pm.expect(calls[0].function.name).to.eql('get_weather');",
+                  "  pm.expect(JSON.parse(calls[0].function.arguments).city).to.be.a('string');",
+                  "  pm.expect(choice.finish_reason).to.eql('tool_calls');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"wally/deepseek-v4.1-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What's the weather in San Francisco? Use the get_weather tool.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"get_weather\",\n        \"description\": \"Get current weather\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"city\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"city\"\n          ]\n        }\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/responses - Responses shape via chat - wally/deepseek-v4.1-flash",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('responses output carries a message', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.output, 'output not an array').to.be.an('array');",
+                  "  var msg = j.output.filter(function (o) { return o.type === 'message'; })[0];",
+                  "  pm.expect(msg, 'no message item: ' + pm.response.text().slice(0, 500)).to.exist;",
+                  "  pm.expect(msg.content[0].text).to.be.a('string').and.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"wally/deepseek-v4.1-flash\",\n  \"input\": \"Name one primary color.\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/openai/v1/chat/completions - OpenAI drop-in route - wally/deepseek-v4.1-flash",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('openai drop-in reaches wally', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  pm.expect(pm.response.json().choices[0].message.content).to.be.a('string').and.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"wally/deepseek-v4.1-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Hello\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "chat",
+                "completions"
               ]
             }
           }

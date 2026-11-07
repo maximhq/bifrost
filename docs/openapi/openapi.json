@@ -117291,7 +117291,8 @@
           "cloudflare",
           "typesafe",
           "minimax",
-          "byteplus"
+          "byteplus",
+          "wally"
         ]
       },
       "Fallback": {

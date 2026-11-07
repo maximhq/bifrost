@@ -59,6 +59,38 @@ func TestValidateConfigSchema_ValidConfig(t *testing.T) {
 	}
 }
 
+func TestValidateConfigSchema_WallyProvider(t *testing.T) {
+	// providers allows any key, so only the explicit wally entry applies the provider shape.
+	validConfig := `{
+		"providers": {
+			"wally": {
+				"keys": [
+					{
+						"name": "wally-key-1",
+						"value": "env.WALLY_API_KEY",
+						"weight": 1.0,
+						"models": ["*"]
+					}
+				]
+			}
+		}
+	}`
+	if err := ValidateConfigSchema([]byte(validConfig), loadLocalSchema(t)); err != nil {
+		t.Errorf("expected wally provider config to pass validation, got error: %v", err)
+	}
+
+	invalidConfig := `{
+		"providers": {
+			"wally": {
+				"keys": "env.WALLY_API_KEY"
+			}
+		}
+	}`
+	if err := ValidateConfigSchema([]byte(invalidConfig), loadLocalSchema(t)); err == nil {
+		t.Error("expected wally provider config with non-array keys to fail validation")
+	}
+}
+
 func TestValidateConfigSchema_AgentOAuthRequiresCompleteConfig(t *testing.T) {
 	validConfig := `{
 		"agents": [{
