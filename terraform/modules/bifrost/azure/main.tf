@@ -5,8 +5,11 @@
 terraform {
   required_providers {
     azurerm = {
-      source  = "hashicorp/azurerm"
-      version = ">= 3.0"
+      source = "hashicorp/azurerm"
+      # 4.0 renamed skip_provider_registration (used by the root module's
+      # default provider block) and 5.0 removed azurerm_subnet.service_endpoints.
+      # A fresh init without this cap resolves 5.x and fails validation.
+      version = ">= 3.0, < 4.0"
     }
   }
 }

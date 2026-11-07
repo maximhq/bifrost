@@ -42,7 +42,11 @@ module "bifrost" {
 
 ## Provider Configuration
 
-You only need to configure the Terraform providers for the cloud you are deploying to. Unused cloud modules are skipped automatically (`count = 0`).
+Unused cloud modules create nothing (`count = 0`), but Terraform still configures every provider referenced in the tree during `plan`. Through this root module a plan needs credentials for AWS, Google, and Azure at once: the `aws` provider wants a credential chain, `google` wants Application Default Credentials, and `azurerm` wants an `az login` or service principal. The `kubernetes` provider is lenient and needs nothing until a cluster resource is used.
+
+If you only have one cloud's credentials, call that cloud's platform module directly (`./aws`, `./gcp`, `./azure`, `./kubernetes`) and pass it the resolved `config_json`; `examples/aws-ecs-postgres` and `examples/gcp-cloud-run-postgres` do exactly that.
+
+The blocks below show the provider each cloud needs for its own resources.
 
 **AWS (ECS / EKS):**
 
