@@ -114,3 +114,17 @@ variable "ingress_annotations" {
   default = {}
 }
 variable "ingress_path" { default = "/" }
+
+variable "setup_token" {
+  type      = string
+  default   = null
+  sensitive = true
+}
+
+variable "create_database" { default = false }
+variable "database_name" { default = "bifrost" }
+variable "database_user" { default = "bifrost" }
+variable "database_instance_class" { default = null }
+variable "database_storage_gb" { default = 20 }
+variable "database_deletion_protection" { default = false }
+variable "generate_secrets" { default = false }

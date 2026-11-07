@@ -206,7 +206,199 @@ module "cloud_run" {
   # Scaling
   max_capacity = var.max_capacity
 
+  # Managed database and generated secrets
+  cloud_sql_connection_name = local.manage_database ? google_sql_database_instance.bifrost[0].connection_name : null
+  extra_environment         = local.managed_environment
+  extra_secret_environment  = local.managed_secret_environment
+
   # Optional features
   create_load_balancer = var.create_load_balancer
   domain_name          = var.domain_name
+
+  depends_on = [
+    google_sql_database.bifrost,
+    google_sql_user.bifrost,
+    google_project_iam_member.bifrost_cloudsql_client,
+    google_secret_manager_secret_version.database_password,
+    google_secret_manager_secret_version.encryption_key,
+    google_secret_manager_secret_version.setup_token,
+  ]
+}
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Managed PostgreSQL (Cloud SQL) and generated runtime secrets (Cloud Run only)
+#
+# Cloud Run reaches the instance through its built-in Cloud SQL connection:
+# the instance is mounted as a unix socket under /cloudsql, so no VPC
+# connector, private IP or authorized network is needed. The socket path is
+# the PG_HOST and TLS is handled by the connector, hence PG_SSL_MODE=disable.
+# ──────────────────────────────────────────────────────────────────────────────
+
+locals {
+  is_cloud_run     = var.service == "cloud-run"
+  manage_database  = local.is_cloud_run && var.create_database
+  generate_secrets = local.is_cloud_run && var.generate_secrets
+
+  database_tier = coalesce(var.database_instance_class, "db-custom-1-3840")
+
+  managed_environment = local.manage_database ? [
+    { name = "PG_HOST", value = "/cloudsql/${google_sql_database_instance.bifrost[0].connection_name}" },
+    { name = "PG_PORT", value = "5432" },
+    { name = "PG_USER", value = var.database_user },
+    { name = "PG_DATABASE", value = var.database_name },
+    { name = "PG_SSL_MODE", value = "disable" },
+  ] : []
+
+  managed_secret_environment = concat(
+    local.manage_database ? [
+      { name = "PG_PASSWORD", secret = google_secret_manager_secret.database_password[0].secret_id },
+    ] : [],
+    local.generate_secrets ? [
+      { name = "BIFROST_ENCRYPTION_KEY", secret = google_secret_manager_secret.encryption_key[0].secret_id },
+      { name = "BIFROST_SETUP_TOKEN", secret = google_secret_manager_secret.setup_token[0].secret_id },
+    ] : [],
+  )
+}
+
+resource "random_password" "database" {
+  count = local.manage_database ? 1 : 0
+
+  length  = 32
+  special = false
+}
+
+resource "random_password" "encryption_key" {
+  count = local.generate_secrets ? 1 : 0
+
+  length  = 48
+  special = false
+}
+
+resource "random_password" "setup_token" {
+  count = local.generate_secrets ? 1 : 0
+
+  length  = 40
+  special = false
+}
+
+# Cloud SQL instance names cannot be reused for about a week after deletion;
+# the suffix lets a destroyed stack be recreated immediately.
+resource "random_id" "database_suffix" {
+  count = local.manage_database ? 1 : 0
+
+  byte_length = 2
+}
+
+resource "google_sql_database_instance" "bifrost" {
+  count = local.manage_database ? 1 : 0
+
+  name             = "${var.name_prefix}-db-${random_id.database_suffix[0].hex}"
+  project          = var.project_id
+  region           = var.region
+  database_version = "POSTGRES_16"
+
+  deletion_protection = var.database_deletion_protection
+
+  settings {
+    tier              = local.database_tier
+    availability_type = "ZONAL"
+    disk_type         = "PD_SSD"
+    disk_size         = var.database_storage_gb
+    disk_autoresize   = true
+
+    # Public IP with no authorized networks: only connector traffic
+    # (Cloud Run's /cloudsql mount) and IAM-authorized tooling can reach it.
+    ip_configuration {
+      ipv4_enabled = true
+    }
+
+    backup_configuration {
+      enabled                        = true
+      point_in_time_recovery_enabled = true
+    }
+
+    user_labels = var.tags
+  }
+}
+
+resource "google_sql_database" "bifrost" {
+  count = local.manage_database ? 1 : 0
+
+  name     = var.database_name
+  project  = var.project_id
+  instance = google_sql_database_instance.bifrost[0].name
+}
+
+resource "google_sql_user" "bifrost" {
+  count = local.manage_database ? 1 : 0
+
+  name     = var.database_user
+  project  = var.project_id
+  instance = google_sql_database_instance.bifrost[0].name
+  password = random_password.database[0].result
+}
+
+resource "google_project_iam_member" "bifrost_cloudsql_client" {
+  count = local.manage_database ? 1 : 0
+
+  project = var.project_id
+  role    = "roles/cloudsql.client"
+  member  = "serviceAccount:${google_service_account.bifrost.email}"
+}
+
+resource "google_secret_manager_secret" "database_password" {
+  count = local.manage_database ? 1 : 0
+
+  secret_id = "${var.name_prefix}-db-password"
+  project   = var.project_id
+  labels    = var.tags
+
+  replication {
+    auto {}
+  }
+}
+
+resource "google_secret_manager_secret_version" "database_password" {
+  count = local.manage_database ? 1 : 0
+
+  secret      = google_secret_manager_secret.database_password[0].id
+  secret_data = random_password.database[0].result
+}
+
+resource "google_secret_manager_secret" "encryption_key" {
+  count = local.generate_secrets ? 1 : 0
+
+  secret_id = "${var.name_prefix}-encryption-key"
+  project   = var.project_id
+  labels    = var.tags
+
+  replication {
+    auto {}
+  }
+}
+
+resource "google_secret_manager_secret_version" "encryption_key" {
+  count = local.generate_secrets ? 1 : 0
+
+  secret      = google_secret_manager_secret.encryption_key[0].id
+  secret_data = random_password.encryption_key[0].result
+}
+
+resource "google_secret_manager_secret" "setup_token" {
+  count = local.generate_secrets ? 1 : 0
+
+  secret_id = "${var.name_prefix}-setup-token"
+  project   = var.project_id
+  labels    = var.tags
+
+  replication {
+    auto {}
+  }
+}
+
+resource "google_secret_manager_secret_version" "setup_token" {
+  count = local.generate_secrets ? 1 : 0
+
+  secret      = google_secret_manager_secret.setup_token[0].id
+  secret_data = random_password.setup_token[0].result
 }

@@ -54,12 +54,17 @@ resource "aws_ecs_task_definition" "bifrost" {
         }
       ]
 
-      secrets = [
-        {
-          name      = "BIFROST_CONFIG"
-          valueFrom = var.secret_arn
-        }
-      ]
+      environment = var.extra_environment
+
+      secrets = concat(
+        [
+          {
+            name      = "BIFROST_CONFIG"
+            valueFrom = var.secret_arn
+          }
+        ],
+        var.extra_secrets,
+      )
 
       healthCheck = {
         command     = ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:${var.container_port}${var.health_check_path} || exit 1"]

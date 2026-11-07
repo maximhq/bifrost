@@ -262,6 +262,10 @@ module "ecs" {
   secret_arn         = aws_secretsmanager_secret.bifrost_config[0].arn
   log_group_name     = aws_cloudwatch_log_group.bifrost[0].name
 
+  # Managed database and generated secrets
+  extra_environment = local.managed_environment
+  extra_secrets     = local.managed_secrets
+
   # Features
   create_cluster               = var.create_cluster
   create_load_balancer         = var.create_load_balancer
@@ -318,4 +322,180 @@ module "eks" {
   max_capacity                 = var.max_capacity
   autoscaling_cpu_threshold    = var.autoscaling_cpu_threshold
   autoscaling_memory_threshold = var.autoscaling_memory_threshold
+}
+
+# =============================================================================
+# Managed PostgreSQL (RDS) and generated runtime secrets (ECS only)
+#
+# The one-click AWS path provisions these so a fresh account gets a durable
+# config store, a durable log store, a stable encryption key and a setup token
+# without any manual secret handling. Everything sensitive lands in one
+# Secrets Manager secret; the ECS task reads individual JSON keys from it.
+# =============================================================================
+
+locals {
+  manage_database       = local.is_ecs && var.create_database
+  generate_secrets      = local.is_ecs && var.generate_secrets
+  create_runtime_secret = local.manage_database || local.generate_secrets
+
+  database_instance_class = coalesce(var.database_instance_class, "db.t4g.small")
+
+  runtime_secret_payload = merge(
+    local.manage_database ? { PG_PASSWORD = random_password.database[0].result } : {},
+    local.generate_secrets ? {
+      BIFROST_ENCRYPTION_KEY = random_password.encryption_key[0].result
+      BIFROST_SETUP_TOKEN    = random_password.setup_token[0].result
+    } : {},
+  )
+
+  # Plain environment for the task. Host and port are only known after apply.
+  managed_environment = local.manage_database ? [
+    { name = "PG_HOST", value = aws_db_instance.bifrost[0].address },
+    { name = "PG_PORT", value = tostring(aws_db_instance.bifrost[0].port) },
+    { name = "PG_USER", value = var.database_user },
+    { name = "PG_DATABASE", value = var.database_name },
+    { name = "PG_SSL_MODE", value = "require" },
+  ] : []
+
+  # Secret environment for the task: "<secret arn>:<json key>::" selects one
+  # key of the JSON secret.
+  managed_secrets = concat(
+    local.manage_database ? [
+      { name = "PG_PASSWORD", valueFrom = "${aws_secretsmanager_secret.runtime[0].arn}:PG_PASSWORD::" },
+    ] : [],
+    local.generate_secrets ? [
+      { name = "BIFROST_ENCRYPTION_KEY", valueFrom = "${aws_secretsmanager_secret.runtime[0].arn}:BIFROST_ENCRYPTION_KEY::" },
+      { name = "BIFROST_SETUP_TOKEN", valueFrom = "${aws_secretsmanager_secret.runtime[0].arn}:BIFROST_SETUP_TOKEN::" },
+    ] : [],
+  )
+}
+
+resource "random_password" "database" {
+  count = local.manage_database ? 1 : 0
+
+  length  = 32
+  special = false
+}
+
+resource "random_password" "encryption_key" {
+  count = local.generate_secrets ? 1 : 0
+
+  length  = 48
+  special = false
+}
+
+resource "random_password" "setup_token" {
+  count = local.generate_secrets ? 1 : 0
+
+  length  = 40
+  special = false
+}
+
+resource "aws_secretsmanager_secret" "runtime" {
+  count = local.create_runtime_secret ? 1 : 0
+
+  name                    = "${var.name_prefix}/runtime"
+  description             = "Bifrost runtime secrets (database password, encryption key, setup token)"
+  recovery_window_in_days = var.secret_recovery_window_days
+
+  tags = merge(var.tags, {
+    Name = "${var.name_prefix}-runtime"
+  })
+}
+
+resource "aws_secretsmanager_secret_version" "runtime" {
+  count = local.create_runtime_secret ? 1 : 0
+
+  secret_id     = aws_secretsmanager_secret.runtime[0].id
+  secret_string = jsonencode(local.runtime_secret_payload)
+}
+
+resource "aws_iam_role_policy" "bifrost_runtime_secret" {
+  count = local.create_runtime_secret ? 1 : 0
+
+  name = "${var.name_prefix}-runtime-secret-access"
+  role = aws_iam_role.ecs_execution[0].id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid      = "AllowGetBifrostRuntimeSecret"
+        Effect   = "Allow"
+        Action   = ["secretsmanager:GetSecretValue"]
+        Resource = [aws_secretsmanager_secret.runtime[0].arn]
+      }
+    ]
+  })
+}
+
+resource "aws_db_subnet_group" "bifrost" {
+  count = local.manage_database ? 1 : 0
+
+  name       = "${var.name_prefix}-db"
+  subnet_ids = local.subnet_ids
+
+  tags = merge(var.tags, {
+    Name = "${var.name_prefix}-db"
+  })
+}
+
+resource "aws_security_group" "database" {
+  count = local.manage_database ? 1 : 0
+
+  name        = "${var.name_prefix}-db-sg"
+  description = "Allow PostgreSQL from the Bifrost ECS service"
+  vpc_id      = local.vpc_id
+
+  tags = merge(var.tags, {
+    Name = "${var.name_prefix}-db-sg"
+  })
+}
+
+# One rule per service security group. count (not for_each) because the
+# created group's id is unknown until apply, while the list length is known.
+resource "aws_vpc_security_group_ingress_rule" "database_from_service" {
+  count = local.manage_database ? length(local.security_group_ids) : 0
+
+  security_group_id            = aws_security_group.database[0].id
+  description                  = "PostgreSQL from Bifrost service"
+  referenced_security_group_id = local.security_group_ids[count.index]
+  from_port                    = 5432
+  to_port                      = 5432
+  ip_protocol                  = "tcp"
+
+  tags = var.tags
+}
+
+resource "aws_db_instance" "bifrost" {
+  count = local.manage_database ? 1 : 0
+
+  identifier     = "${var.name_prefix}-db"
+  engine         = "postgres"
+  engine_version = "16"
+  instance_class = local.database_instance_class
+
+  allocated_storage = var.database_storage_gb
+  storage_type      = "gp3"
+  storage_encrypted = true
+
+  db_name  = var.database_name
+  username = var.database_user
+  password = random_password.database[0].result
+
+  db_subnet_group_name   = aws_db_subnet_group.bifrost[0].name
+  vpc_security_group_ids = [aws_security_group.database[0].id]
+  publicly_accessible    = false
+  multi_az               = false
+
+  backup_retention_period    = 7
+  auto_minor_version_upgrade = true
+  apply_immediately          = true
+
+  deletion_protection       = var.database_deletion_protection
+  skip_final_snapshot       = !var.database_deletion_protection
+  final_snapshot_identifier = var.database_deletion_protection ? "${var.name_prefix}-db-final" : null
+
+  tags = merge(var.tags, {
+    Name = "${var.name_prefix}-db"
+  })
 }
