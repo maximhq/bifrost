@@ -32,7 +32,7 @@ func Synthesize(doc *Document, opts SynthesizeOptions) (*Synthesis, error) {
 			unsupported("deprecated (set openapi_config.include_deprecated to expose it)")
 			continue
 		}
-		schema, args, body, warnings, err := FlattenInputSchema(op)
+		schema, args, body, warnings, err := flattenInputSchema(op, opts.TemplateParams)
 		if err != nil {
 			unsupported(err.Error())
 			continue

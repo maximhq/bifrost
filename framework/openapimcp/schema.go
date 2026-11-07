@@ -3,6 +3,7 @@ package openapimcp
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 )
@@ -352,7 +353,18 @@ func isObjectSchema(s map[string]any) bool {
 // collides with a body property or another parameter is suffixed "__<in>".
 // Non-object bodies (arrays, primitives, oneOf/anyOf, text) travel as one
 // "body" property.
+//
+// Templated query names (metadata_<key>) are left as plain parameters under a
+// valid argument name; Synthesize expands them only with TemplateParams.
 func FlattenInputSchema(op Operation) (json.RawMessage, []ArgBinding, *BodyBinding, []string, error) {
+	return flattenInputSchema(op, false)
+}
+
+// flattenInputSchema is FlattenInputSchema with templated query names expanded
+// into object arguments when templates is set. Expansion reads a convention
+// (a <placeholder> in the name), so only a caller that knows its spec follows
+// it turns it on; a spec a user adds is never reinterpreted.
+func flattenInputSchema(op Operation, templates bool) (json.RawMessage, []ArgBinding, *BodyBinding, []string, error) {
 	props := map[string]any{}
 	requiredSet := map[string]bool{}
 	var warnings []string
@@ -369,7 +381,7 @@ func FlattenInputSchema(op Operation) (json.RawMessage, []ArgBinding, *BodyBindi
 		default:
 			schema := NormalizeSchema(op.Body.Schema)
 			bodyProps := asMap(schema["properties"])
-			if isObjectSchema(schema) && len(bodyProps) > 0 && !hasFreeFormOnly(schema) {
+			if isObjectSchema(schema) && len(bodyProps) > 0 && !hasFreeFormOnly(schema) && allValidArgNames(bodyProps) {
 				names := sortedKeys(bodyProps)
 				for _, name := range names {
 					props[name] = bodyProps[name]
@@ -425,12 +437,22 @@ func FlattenInputSchema(op Operation) (json.RawMessage, []ArgBinding, *BodyBindi
 			warnings = append(warnings, fmt.Sprintf("parameter %q has unsupported location %q and was skipped", p.Name, p.In))
 			continue
 		}
-		argName := p.Name
-		if _, taken := props[argName]; taken || nameCount[p.Name] > 1 {
-			argName = uniqueArgName(props, p.Name+"__"+p.In)
-		}
+		argName := argNameFor(p.Name)
 		schema := NormalizeSchema(p.Schema)
-		schema["description"] = joinDescription(p.Description, fmt.Sprintf("(%s parameter)", p.In))
+		where := fmt.Sprintf("(%s parameter)", p.In)
+		template := ""
+		if base, ok := templateArgName(p.Name); ok && templates && p.In == InQuery && p.ContentType == "" {
+			// metadata_<key> names a family of parameters: the argument maps each
+			// key to its value, and each entry is sent under the name with the key
+			// in place of the placeholder.
+			argName, template = base, p.Name
+			schema = map[string]any{"type": "object", "additionalProperties": schema}
+			where = fmt.Sprintf("(query parameters: each entry is sent as %s, the key replacing the placeholder)", p.Name)
+		}
+		if _, taken := props[argName]; taken || nameCount[p.Name] > 1 {
+			argName = uniqueArgName(props, argName+"__"+p.In)
+		}
+		schema["description"] = joinDescription(p.Description, where)
 		props[argName] = schema
 		if p.Required {
 			requiredSet[argName] = true
@@ -439,6 +461,7 @@ func FlattenInputSchema(op Operation) (json.RawMessage, []ArgBinding, *BodyBindi
 			ArgName:     argName,
 			Location:    p.In,
 			Name:        p.Name,
+			Template:    template,
 			Required:    p.Required,
 			Explode:     explodeFor(p),
 			Style:       p.Style,
@@ -505,9 +528,9 @@ func flattenQuerystring(p Parameter, props map[string]any, requiredSet map[strin
 					prop = map[string]any{"type": "string"}
 				}
 			}
-			argName := name
+			argName := argNameFor(name)
 			if _, taken := props[argName]; taken {
-				argName = uniqueArgName(props, name+"__querystring")
+				argName = uniqueArgName(props, argName+"__querystring")
 			}
 			prop["description"] = joinDescription(asString(prop["description"]), "(query parameter)")
 			props[argName] = prop
@@ -525,8 +548,8 @@ func flattenQuerystring(p Parameter, props map[string]any, requiredSet map[strin
 		}
 		return args, warnings, nil
 	}
-	argName := p.Name
-	if argName == "" {
+	argName := argNameFor(p.Name)
+	if p.Name == "" {
 		argName = "querystring"
 	}
 	if _, taken := props[argName]; taken {
@@ -582,15 +605,71 @@ func hasFreeFormOnly(schema map[string]any) bool {
 // uniqueArgName returns name, or name with the first free "_2", "_3", ...
 // suffix when a body property or an earlier parameter already took it.
 func uniqueArgName(props map[string]any, name string) string {
+	name = clampArgName(name)
 	if _, taken := props[name]; !taken {
 		return name
 	}
 	for i := 2; ; i++ {
-		candidate := fmt.Sprintf("%s_%d", name, i)
+		suffix := fmt.Sprintf("_%d", i)
+		candidate := clampArgName(name[:min(len(name), maxArgNameLen-len(suffix))] + suffix)
 		if _, taken := props[candidate]; !taken {
 			return candidate
 		}
 	}
+}
+
+// maxArgNameLen and argNameInvalid are the property-name rule clients apply to a
+// tool's input schema (the Anthropic API's ^[a-zA-Z0-9_.-]{1,64}$). A client
+// relaying a tool drops it whole when one property breaks the rule.
+const maxArgNameLen = 64
+
+var argNameInvalid = regexp.MustCompile(`[^a-zA-Z0-9_.-]`)
+
+// argNamePlaceholder matches the <placeholder> in a templated parameter name.
+var argNamePlaceholder = regexp.MustCompile(`<[^<>]+>`)
+
+// argNameFor is the argument a wire name travels under: the name with every
+// character outside the rule replaced by "_", cut to the length limit. The wire
+// name itself is kept on the binding and sent unchanged.
+func argNameFor(wire string) string {
+	name := argNameInvalid.ReplaceAllString(wire, "_")
+	if name == "" {
+		name = "param"
+	}
+	return clampArgName(name)
+}
+
+func clampArgName(name string) string {
+	if len(name) > maxArgNameLen {
+		return name[:maxArgNameLen]
+	}
+	return name
+}
+
+// templateArgName reports whether a parameter name is a template with exactly
+// one <placeholder> (metadata_<key>), and the argument it becomes: the name
+// without the placeholder and the separators beside it ("metadata").
+func templateArgName(wire string) (string, bool) {
+	if len(argNamePlaceholder.FindAllStringIndex(wire, -1)) != 1 {
+		return "", false
+	}
+	base := strings.Trim(argNamePlaceholder.ReplaceAllString(wire, ""), "_.-")
+	if base == "" {
+		return "", false
+	}
+	return argNameFor(base), true
+}
+
+// allValidArgNames reports whether every body property can be an argument as
+// it is. A flattened body sends each argument under its own name, so a name the
+// rule rejects keeps the body whole as one "body" argument instead.
+func allValidArgNames(props map[string]any) bool {
+	for name := range props {
+		if argNameFor(name) != name {
+			return false
+		}
+	}
+	return true
 }
 
 func explodeFor(p Parameter) bool {

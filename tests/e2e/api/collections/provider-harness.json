@@ -265214,6 +265214,229 @@
           }
         },
         {
+          "name": "openai mcp-openapi-spec preview gives every argument a name clients accept: a user spec's metadata_<key> and filter[status] are renamed, not reinterpreted - #9460",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('openapi preview is a 200', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "var tool = (body.tools || []).filter(function (t) { return t.name === 'listLogs'; })[0];",
+                  "pm.test('listLogs is a tool', function () {",
+                  "  pm.expect(tool, pm.response.text()).to.be.an('object');",
+                  "});",
+                  "var props = ((tool && tool.input_schema) || {}).properties || {};",
+                  "pm.test('every argument name matches the Anthropic API rule, or clients drop the tool', function () {",
+                  "  var bad = Object.keys(props).filter(function (n) { return !/^[a-zA-Z0-9_.-]{1,64}$/.test(n); });",
+                  "  pm.expect(bad, JSON.stringify(Object.keys(props))).to.eql([]);",
+                  "});",
+                  "pm.test('a user spec is not reinterpreted: metadata_<key> stays one string argument under a valid name', function () {",
+                  "  pm.expect(props, JSON.stringify(Object.keys(props))).to.have.property('metadata__key_');",
+                  "  pm.expect(props.metadata__key_.type).to.eql('string');",
+                  "  pm.expect(props, JSON.stringify(Object.keys(props))).to.not.have.property('metadata');",
+                  "});",
+                  "pm.test('filter[status] is offered as filter_status_', function () {",
+                  "  pm.expect(props, JSON.stringify(Object.keys(props))).to.have.property('filter_status_');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"spec\": \"{\\n  \\\"openapi\\\": \\\"3.0.3\\\",\\n  \\\"info\\\": {\\n    \\\"title\\\": \\\"Harness Log API\\\",\\n    \\\"version\\\": \\\"1.0.0\\\"\\n  },\\n  \\\"servers\\\": [\\n    {\\n      \\\"url\\\": \\\"https://logs.example.com\\\"\\n    }\\n  ],\\n  \\\"paths\\\": {\\n    \\\"/logs\\\": {\\n      \\\"get\\\": {\\n        \\\"operationId\\\": \\\"listLogs\\\",\\n        \\\"summary\\\": \\\"List logs\\\",\\n        \\\"parameters\\\": [\\n          {\\n            \\\"name\\\": \\\"metadata_<key>\\\",\\n            \\\"in\\\": \\\"query\\\",\\n            \\\"description\\\": \\\"Filter on custom metadata; replace <key> with the metadata key.\\\",\\n            \\\"schema\\\": {\\n              \\\"type\\\": \\\"string\\\"\\n            }\\n          },\\n          {\\n            \\\"name\\\": \\\"filter[status]\\\",\\n            \\\"in\\\": \\\"query\\\",\\n            \\\"schema\\\": {\\n              \\\"type\\\": \\\"string\\\"\\n            }\\n          }\\n        ],\\n        \\\"responses\\\": {\\n          \\\"200\\\": {\\n            \\\"description\\\": \\\"ok\\\"\\n          }\\n        }\\n      }\\n    }\\n  }\\n}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/openapi/preview",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "openapi",
+                "preview"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "openai mcp-openapi-spec wire names: create a client whose listLogs calls the local echo upstream - #9460",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Run-unique identity (timestamp plus a random suffix): harness shards and parallel runs never collide on this client.",
+                  "var run = Date.now() + '_' + Math.random().toString(36).slice(2, 8);",
+                  "pm.collectionVariables.set('openapiWireNamesId', 'harness-openapi-wirenames-' + run.replace('_', '-'));",
+                  "pm.collectionVariables.set('openapiWireNamesName', 'harness_openapi_wirenames_' + run);",
+                  "// A run that stopped before its cleanup leaves its client behind. Remove this case's own leftovers once they are over an hour old,",
+                  "// which no run still in progress can own.",
+                  "pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/mcp/clients?search=harness_openapi_wirenames_&limit=100', method: 'GET' }, function (err, res) {",
+                  "  pm.test('leftover wire-names clients listed', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code, res.text()).to.eql(200);",
+                  "  });",
+                  "  if (err || res.code !== 200) { return; }",
+                  "  var cutoff = Date.now() - 3600000;",
+                  "  (res.json().clients || []).forEach(function (c) {",
+                  "    var name = (c.config && c.config.name) || '';",
+                  "    var m = /^harness_openapi_wirenames_(\\d{13})(?:_|$)/.exec(name);",
+                  "    if (!m || Number(m[1]) >= cutoff) { return; }",
+                  "    pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/mcp/client/' + encodeURIComponent(c.config.client_id), method: 'DELETE' }, function (derr, dres) {",
+                  "      pm.test('leftover wire-names client ' + name + ' removed', function () {",
+                  "        pm.expect(derr, String(derr)).to.equal(null);",
+                  "        var gone = dres.code === 500 && dres.text().indexOf('not found') !== -1;",
+                  "        pm.expect(dres.code === 200 || gone, 'status ' + dres.code + ': ' + dres.text()).to.equal(true);",
+                  "      });",
+                  "    });",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('wire-names openapi client is created', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"client_id\": \"{{openapiWireNamesId}}\",\n  \"name\": \"{{openapiWireNamesName}}\",\n  \"connection_type\": \"openapi\",\n  \"auth_type\": \"none\",\n  \"tools_to_execute\": [\n    \"listLogs\"\n  ],\n  \"openapi_config\": {\n    \"spec\": \"{\\n  \\\"openapi\\\": \\\"3.0.3\\\",\\n  \\\"info\\\": {\\n    \\\"title\\\": \\\"Harness Log API\\\",\\n    \\\"version\\\": \\\"1.0.0\\\"\\n  },\\n  \\\"servers\\\": [\\n    {\\n      \\\"url\\\": \\\"http://127.0.0.1:8783/v1\\\"\\n    }\\n  ],\\n  \\\"paths\\\": {\\n    \\\"/echo\\\": {\\n      \\\"get\\\": {\\n        \\\"operationId\\\": \\\"listLogs\\\",\\n        \\\"summary\\\": \\\"List logs\\\",\\n        \\\"parameters\\\": [\\n          {\\n            \\\"name\\\": \\\"metadata_<key>\\\",\\n            \\\"in\\\": \\\"query\\\",\\n            \\\"description\\\": \\\"Filter on custom metadata; replace <key> with the metadata key.\\\",\\n            \\\"schema\\\": {\\n              \\\"type\\\": \\\"string\\\"\\n            }\\n          },\\n          {\\n            \\\"name\\\": \\\"filter[status]\\\",\\n            \\\"in\\\": \\\"query\\\",\\n            \\\"schema\\\": {\\n              \\\"type\\\": \\\"string\\\"\\n            }\\n          }\\n        ],\\n        \\\"responses\\\": {\\n          \\\"200\\\": {\\n            \\\"description\\\": \\\"ok\\\"\\n          }\\n        }\\n      }\\n    }\\n  }\\n}\",\n    \"base_url\": \"http://127.0.0.1:8783/v1\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/client",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "client"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai mcp-openapi-spec wire names: executing listLogs sends metadata_<key> and filter[status] upstream under their spec names, not the renamed argument names - #9460",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The relay fixture's /v1/echo answers with the method, path and query it received, and the openapi",
+                  "// tool returns that body as its content: the assertions below read the upstream boundary itself.",
+                  "pm.test('listLogs executes with a 200 and no tool error', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+                  "  pm.expect(pm.response.json().is_error, pm.response.text()).to.not.equal(true);",
+                  "});",
+                  "var echoed = null;",
+                  "try { echoed = JSON.parse(String(pm.response.json().content || '')); } catch (e) { echoed = null; }",
+                  "pm.test('the tool result is the upstream echo', function () {",
+                  "  pm.expect(echoed, 'content is not the echo JSON: ' + pm.response.text()).to.be.an('object');",
+                  "  pm.expect(echoed.method, pm.response.text()).to.eql('GET');",
+                  "  pm.expect(echoed.path, pm.response.text()).to.eql('/v1/echo');",
+                  "});",
+                  "pm.test('metadata__key_ and filter_status_ reach the upstream as metadata_<key> and filter[status]', function () {",
+                  "  var query = (echoed && echoed.query) || {};",
+                  "  pm.expect(query, JSON.stringify(query)).to.eql({ 'filter[status]': 'open', 'metadata_<key>': 'search' });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": \"openapi-wire-names\",\n  \"type\": \"function\",\n  \"function\": {\n    \"name\": \"{{openapiWireNamesName}}-listLogs\",\n    \"arguments\": \"{\\\"metadata__key_\\\":\\\"search\\\",\\\"filter_status_\\\":\\\"open\\\"}\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/mcp/tool/execute",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "mcp",
+                "tool",
+                "execute"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai mcp-openapi-spec wire names: cleanup deletes the client - #9460",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('wire-names openapi client is deleted', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+                  "});",
+                  "pm.collectionVariables.unset('openapiWireNamesId');",
+                  "pm.collectionVariables.unset('openapiWireNamesName');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/client/{{openapiWireNamesId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "client",
+                "{{openapiWireNamesId}}"
+              ]
+            }
+          }
+        },
+        {
           "name": "[EXPECT-400] openai mcp-openapi-spec preview of a non-OpenAPI document is a 400",
           "event": [
             {
