@@ -32,3 +32,4 @@
 - fix: mcp - call upstream tools by exact name, keep tool error flags, log every code mode call in agent mode, apply tool_execution_timeout to code mode and in-process clients, and report the caller's deadline in timeout errors
 - fix: mcp - stop retrying permanent connect errors, refresh per-call credentials once on 401, keep failed enables unstable with the checker retrying, apply TLS/SSE/ping edits live, and check sooner after a failed reconnect
 - fix: mcp - return 400, 404 and 409 instead of 500 for client create, rename and reconnect mistakes
+- fix: Perplexity, Cohere and HuggingFace converters no longer remove the keys they map from the caller's ExtraParams, so a retry or a fallback converts the same request, and HuggingFace speech no longer panics when the request has no params

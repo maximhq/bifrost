@@ -1,6 +1,8 @@
 package perplexity
 
 import (
+	"maps"
+
 	schemas "github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -52,7 +54,7 @@ func ToPerplexityChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) *
 
 		// Handle extra parameters for Perplexity-specific fields
 		if bifrostReq.Params.ExtraParams != nil {
-			perplexityReq.ExtraParams = bifrostReq.Params.ExtraParams
+			perplexityReq.ExtraParams = maps.Clone(bifrostReq.Params.ExtraParams)
 			// Search-related parameters
 			if searchMode, ok := schemas.SafeExtractStringPointer(bifrostReq.Params.ExtraParams["search_mode"]); ok {
 				delete(perplexityReq.ExtraParams, "search_mode")

@@ -2,6 +2,7 @@ package cohere
 
 import (
 	"fmt"
+	"maps"
 	"time"
 
 	"github.com/maximhq/bifrost/core/providers/anthropic"
@@ -166,9 +167,10 @@ func ToCohereChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) (*Coh
 		// Convert extra params
 		if bifrostReq.Params.ExtraParams != nil {
 			// Handle thinking parameter
-			cohereReq.ExtraParams = bifrostReq.Params.ExtraParams
+			cohereReq.ExtraParams = maps.Clone(bifrostReq.Params.ExtraParams)
 			if thinkingParam, ok := schemas.SafeExtractFromMap(bifrostReq.Params.ExtraParams, "thinking"); ok {
 				if thinkingMap, ok := thinkingParam.(map[string]interface{}); ok {
+					thinkingMap = maps.Clone(thinkingMap)
 					thinking := &CohereThinking{}
 					if typeStr, ok := schemas.SafeExtractString(thinkingMap["type"]); ok {
 						delete(thinkingMap, "type")
