@@ -23,6 +23,33 @@ Cloud Run can run a Bifrost HTTP gateway. This page shows how to configure its c
 
 Cloud Run supports `linux/amd64` for a multi-architecture image, matching the Bifrost release manifest.
 
+## One-click deploy
+
+<a className="deploy-btn deploy-btn-gcp" href="https://shell.cloud.google.com/?show=terminal" target="_blank" rel="noopener noreferrer">Deploy on GCP</a>
+
+The button opens Google Cloud Shell, already signed in as you. Paste one line into it:
+
+```bash
+git clone --depth 1 https://github.com/maximhq/bifrost && bifrost/deploy/gcp/deploy.sh
+```
+
+The script uses your current `gcloud` project (it asks when none is set), enables the Cloud Run, Cloud SQL, Secret Manager, IAM, and Compute APIs, and applies [`terraform/examples/gcp-cloud-run-postgres`](https://github.com/maximhq/bifrost/tree/main/terraform/examples/gcp-cloud-run-postgres) with the Terraform that Cloud Shell ships:
+
+| Resource | What it is |
+|---|---|
+| Service account | Secret Manager accessor, log writer, Cloud SQL client |
+| Cloud SQL PostgreSQL 16 (`db-custom-1-3840`, 20 GB SSD, backups with point-in-time recovery) | Configuration store and log store |
+| Secret Manager `<prefix>-config`, `<prefix>-db-password`, `<prefix>-encryption-key`, `<prefix>-setup-token` | `config.json` and the runtime secrets |
+| Cloud Run v2 service, public, 1 vCPU and 2 GB, one instance | The Bifrost image behind Google-managed TLS |
+
+Bifrost reaches Cloud SQL through Cloud Run's built-in connector, mounted as a unix socket under `/cloudsql`, so the instance needs no authorized networks, private IP, or VPC connector. Apply takes about ten minutes, most of it Cloud SQL. The script then prints the service URL and the setup token. Open the URL, [create the first admin account](/quickstart/gateway/setting-up-auth) with the token, add a provider key, and [create a virtual key](/features/governance/virtual-keys); inference routes require one because the service is public.
+
+Terraform state stays in the example directory inside Cloud Shell's persistent home. Keep that clone to change or destroy the stack, or move the state to a GCS backend.
+
+Environment overrides for the script: `GOOGLE_CLOUD_PROJECT`, `GCP_REGION`, `BIFROST_NAME_PREFIX`, `BIFROST_IMAGE_TAG` (pin a release), `BIFROST_IMAGE_REPOSITORY`, and `BIFROST_AUTO_APPROVE=1`. Tear down with `terraform destroy` in the example directory.
+
+**Enterprise:** set `BIFROST_IMAGE_REPOSITORY` to the Artifact Registry path issued for your organization before running the script, and grant the created service account `roles/artifactregistry.reader` on that repository; see the [enterprise GCP guide](/deployment-guides/enterprise/gcp).
+
 ## Deploy Bifrost
 
 This path stores both Bifrost stores in PostgreSQL 16 or later. It mounts `config.json` from Secret Manager outside `/app/data`, copies it into the writable application directory, and starts one Cloud Run instance.

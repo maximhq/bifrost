@@ -30,6 +30,13 @@ npx -y @maximhq/bifrost
 docker run -p 8080:8080 maximhq/bifrost
 ```
 
+Or deploy to the cloud in one click. Railway and Render host the gateway and PostgreSQL for you; AWS and GCP open Cloud Shell and deploy ECS + RDS or Cloud Run + Cloud SQL into your account with Terraform (see [deploy/](deploy/README.md)):
+
+[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/new/template/RAILWAY_TEMPLATE_CODE?utm_medium=integration&utm_source=button&utm_campaign=bifrost)
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/maximhq/bifrost)
+[![Deploy on AWS](https://img.shields.io/badge/Deploy%20on-AWS-FF9900?style=for-the-badge&logo=amazonwebservices&logoColor=white)](https://console.aws.amazon.com/cloudshell/home)
+[![Deploy on GCP](https://img.shields.io/badge/Deploy%20on-GCP-4285F4?style=for-the-badge&logo=googlecloud&logoColor=white)](https://shell.cloud.google.com/?show=terminal)
+
 **Step 2:** Configure via Web UI
 
 ```bash
