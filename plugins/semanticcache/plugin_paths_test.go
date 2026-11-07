@@ -189,6 +189,22 @@ func TestPreLLMHook_FallsBackToDirectWhenExecutorMissing(t *testing.T) {
 // Expired-entry full lifecycle
 // -----------------------------------------------------------------------------
 
+func TestIsExpiredEntry_AtDeadline(t *testing.T) {
+	// Avoid relying on a wall-clock second transition to exercise equality.
+	for range 10 {
+		now := time.Now().Unix()
+		expired, invalid := isExpiredEntry(map[string]interface{}{"expires_at": now})
+		if time.Now().Unix() != now {
+			continue
+		}
+		if invalid || !expired {
+			t.Fatalf("entry must expire at its deadline: expired=%t, invalid=%t", expired, invalid)
+		}
+		return
+	}
+	t.Fatal("could not check expiry within one wall-clock second")
+}
+
 func TestExpiredEntry_DetectedAndDeleted(t *testing.T) {
 	store := newObservableStore()
 	plugin := newTestPlugin(t, store)

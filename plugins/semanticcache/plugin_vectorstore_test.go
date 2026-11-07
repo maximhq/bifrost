@@ -51,6 +51,7 @@ func getVectorStoreTestCases() []VectorStoreTestCase {
 // directly without going through Init.
 func getDefaultTestConfig() *Config {
 	return &Config{
+		TTL:                          DefaultCacheTTL,
 		Provider:                     schemas.OpenAI,
 		EmbeddingModel:               "text-embedding-3-small",
 		Dimension:                    1536,
