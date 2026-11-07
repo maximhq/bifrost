@@ -105,8 +105,10 @@ The container has defaults for its basic runtime settings:
 | `GOMEMLIMIT` | Unset | Go runtime memory target; a common starting point is about 90% of the container memory limit |
 | `BIFROST_ENCRYPTION_KEY` | No generated value | Stable secret used to protect persisted sensitive configuration |
 | `BIFROST_SETUP_TOKEN` | Unset | Bootstrap secret used only to create the first admin account; `setup_token` in `config.json` can reference this variable |
+| `BIFROST_CONFIG_JSON` | Unset | Full `config.json` document. The entrypoint writes it to `APP_DIR/config.json` on first boot when no file exists yet; an existing file is never overwritten |
+| `BIFROST_CONFIG_B64` | Unset | Same document, base64-encoded, for platforms whose variable editors mangle quotes or newlines. `BIFROST_CONFIG_JSON` wins when both are set |
 
-The official container entrypoint uses `APP_HOST`, `APP_PORT`, and `APP_DIR`. Use those names when configuring a container platform.
+The official container entrypoint uses `APP_HOST`, `APP_PORT`, `APP_DIR`, `BIFROST_CONFIG_JSON`, and `BIFROST_CONFIG_B64`. Use those names when configuring a container platform. Platforms that cannot mount a file (Railway, Render) hand `config.json` over through `BIFROST_CONFIG_JSON`; because the document can hold only `env.` references, it carries no secrets itself.
 
 Provider keys and integration credentials can be referenced from `config.json` with `env.VARIABLE_NAME`. For example:
 

@@ -70,6 +70,35 @@ ensure_app_dir() {
 # Prepare the app directory before starting the application
 ensure_app_dir
 
+# Materialize config.json from the environment when the platform cannot mount
+# a file (Railway, Render, one-click templates). BIFROST_CONFIG_JSON holds the
+# raw document; BIFROST_CONFIG_B64 holds the same document base64-encoded for
+# platforms whose variable editors mangle quotes or newlines. JSON wins when
+# both are set. An existing config.json is never overwritten, so a persisted
+# APP_DIR keeps whatever the dashboard has written since first boot.
+write_config_from_env() {
+    CONFIG_FILE="$APP_DIR/config.json"
+    if [ -f "$CONFIG_FILE" ]; then
+        return 0
+    fi
+    if [ -n "$BIFROST_CONFIG_JSON" ]; then
+        printf '%s\n' "$BIFROST_CONFIG_JSON" > "$CONFIG_FILE" || {
+            echo "Error: Could not write $CONFIG_FILE from BIFROST_CONFIG_JSON"
+            exit 1
+        }
+        echo "Wrote $CONFIG_FILE from BIFROST_CONFIG_JSON"
+    elif [ -n "$BIFROST_CONFIG_B64" ]; then
+        printf '%s' "$BIFROST_CONFIG_B64" | base64 -d > "$CONFIG_FILE" || {
+            echo "Error: Could not decode BIFROST_CONFIG_B64 into $CONFIG_FILE"
+            rm -f "$CONFIG_FILE"
+            exit 1
+        }
+        echo "Wrote $CONFIG_FILE from BIFROST_CONFIG_B64"
+    fi
+}
+
+write_config_from_env
+
 # Parse command line arguments and set environment variables
 parse_args() {
     while [ $# -gt 0 ]; do
