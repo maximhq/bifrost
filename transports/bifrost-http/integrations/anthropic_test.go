@@ -1020,3 +1020,23 @@ func TestAnthropicMessagesStreamDeclaresItsCleanup(t *testing.T) {
 	}
 	require.NotZero(t, streaming, "expected at least one streaming Anthropic messages route")
 }
+
+// TestAnthropicRouterServesMessagesAtRootAndPrefix pins the root aliases: a client whose base
+// URL is the bare gateway (ANTHROPIC_BASE_URL=https://host) reaches /v1/messages, while the
+// root /v1/models stays Bifrost's own listing and is not claimed by the Anthropic router.
+func TestAnthropicRouterServesMessagesAtRootAndPrefix(t *testing.T) {
+	router := NewAnthropicRouter(nil, nil, nil, nil)
+	have := map[string]bool{}
+	for _, route := range router.routes {
+		have[route.Method+" "+route.Path] = true
+	}
+	for _, want := range []string{
+		"POST /anthropic/v1/messages",
+		"POST /v1/messages",
+		"POST /anthropic/v1/messages/count_tokens",
+		"POST /v1/messages/count_tokens",
+	} {
+		require.True(t, have[want], "missing route %s", want)
+	}
+	require.False(t, have["GET /v1/models"], "root /v1/models must stay Bifrost's native listing")
+}

@@ -95,6 +95,12 @@ func ToAnthropicListModelsResponse(response *schemas.BifrostListModelsResponse) 
 			MaxTokens:      model.MaxOutputTokens,
 			Capabilities:   model.ProviderExtra,
 		}
+		// Many providers only report ContextLength; clients such as Claude Code read
+		// max_input_tokens to size the context window, so fall back to it (the OpenAI
+		// converter does the same in the other direction).
+		if anthropicModel.MaxInputTokens == nil && model.ContextLength != nil {
+			anthropicModel.MaxInputTokens = model.ContextLength
+		}
 		if model.Name != nil {
 			anthropicModel.DisplayName = *model.Name
 		}
