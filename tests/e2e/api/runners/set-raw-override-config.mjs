@@ -17,6 +17,12 @@ if (mode !== "enable" && mode !== "disable") {
   process.exit(1);
 }
 
+// Isolated fixtures that do not inspect raw payloads must not mutate gateway config.
+if (process.env.BIFROST_E2E_SKIP_RAW_OVERRIDE === "1") {
+  console.log("Skipping raw override preflight (BIFROST_E2E_SKIP_RAW_OVERRIDE=1)");
+  process.exit(0);
+}
+
 async function request(method, path, body) {
   const headers = { "content-type": "application/json" };
   if (authHeader) {
