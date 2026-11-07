@@ -553,25 +553,61 @@ func assertA2AAttributionFilters(t *testing.T, store *RDBLogStore, create func(c
 	}
 }
 
-// TestMCPAttributionFiltersApplyToRowsAndStats checks each stored scope filters both records and aggregates.
+// TestMCPAttributionFiltersApplyToRowsAndStats checks each stored scope filters records, stats and the histogram.
 func TestMCPAttributionFiltersApplyToRowsAndStats(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
 	require.NoError(t, err)
 	require.NoError(t, db.AutoMigrate(&MCPToolLog{}))
 	store := &RDBLogStore{db: db, logger: bifrost.NewDefaultLogger(schemas.LogLevelInfo)}
+	assertMCPAttributionFilters(t, store, store.BatchCreateMCPToolLogsIfNotExists)
+}
+
+// assertMCPAttributionFilters pins every attribution filter on MCP tool logs, including ids held only
+// in the team, customer and business-unit arrays, as assertA2AAttributionFilters does for agent logs.
+// create is the store's own writer, since ClickHouse writes MCP tool logs its own way.
+func assertMCPAttributionFilters(t *testing.T, store *RDBLogStore, create func(context.Context, []*MCPToolLog) error) {
+	t.Helper()
 	ctx := context.Background()
 	a, b := "a", "b"
-	now := time.Now()
-	require.NoError(t, db.Create(&MCPToolLog{ID: a, ToolName: "Read", Timestamp: now, Status: "success", UserID: &a, TeamID: &a, CustomerID: &a, BusinessUnitID: &a, ProjectID: &a, DeviceID: &a}).Error)
-	require.NoError(t, db.Create(&MCPToolLog{ID: b, ToolName: "Read", Timestamp: now, Status: "error", UserID: &b, TeamID: &b, CustomerID: &b, BusinessUnitID: &b, ProjectID: &b, DeviceID: &b}).Error)
-	for _, filters := range []MCPToolLogSearchFilters{{UserIDs: []string{a}}, {TeamIDs: []string{a}}, {CustomerIDs: []string{a}}, {BusinessUnitIDs: []string{a}}, {ProjectIDs: []string{a}}, {DeviceIDs: []string{a}}} {
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	require.NoError(t, create(ctx, []*MCPToolLog{
+		{
+			ID: a, ToolName: "Read", Timestamp: now, Status: "success", UserID: &a, TeamID: &a, CustomerID: &a, BusinessUnitID: &a, ProjectID: &a, DeviceID: &a,
+			TeamIDsParsed: []string{"team-shared", a}, CustomerIDsParsed: []string{"customer-shared", a}, BusinessUnitIDsParsed: []string{"bu-shared", a},
+		},
+		{ID: b, ToolName: "Read", Timestamp: now.Add(time.Second), Status: "error", UserID: &b, TeamID: &b, CustomerID: &b, BusinessUnitID: &b, ProjectID: &b, DeviceID: &b},
+	}))
+	start, end := now.Add(-time.Minute), now.Add(time.Minute)
+	for _, filters := range []MCPToolLogSearchFilters{
+		{UserIDs: []string{a}},
+		{TeamIDs: []string{a}},
+		{TeamIDs: []string{"team-shared"}},
+		// Two ids, one matching: ClickHouse bound a list inside hasAny's brackets as one tuple.
+		{TeamIDs: []string{"team-shared", "team-none"}},
+		{CustomerIDs: []string{a}},
+		{CustomerIDs: []string{"customer-shared"}},
+		{CustomerIDs: []string{"customer-shared", "customer-none"}},
+		{BusinessUnitIDs: []string{a}},
+		{BusinessUnitIDs: []string{"bu-shared"}},
+		{BusinessUnitIDs: []string{"bu-shared", "bu-none"}},
+		{ProjectIDs: []string{a}},
+		{DeviceIDs: []string{a}},
+	} {
+		filters.StartTime, filters.EndTime = &start, &end
 		result, err := store.SearchMCPToolLogs(ctx, filters, PaginationOptions{Limit: 10, SortBy: "timestamp", Order: "desc"})
 		require.NoError(t, err)
-		require.Len(t, result.Logs, 1)
+		require.Len(t, result.Logs, 1, "filters %+v", filters)
 		require.Equal(t, a, result.Logs[0].ID)
 		stats, err := store.GetMCPToolLogStats(ctx, filters)
 		require.NoError(t, err)
 		require.EqualValues(t, 1, stats.TotalExecutions)
 		require.EqualValues(t, 100, stats.SuccessRate)
+		histogram, err := store.GetMCPHistogram(ctx, filters, 60)
+		require.NoError(t, err)
+		var histogramCount int64
+		for _, bucket := range histogram.Buckets {
+			histogramCount += bucket.Count
+		}
+		require.EqualValues(t, 1, histogramCount, "filters %+v", filters)
 	}
 }
