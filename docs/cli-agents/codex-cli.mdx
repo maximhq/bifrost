@@ -9,6 +9,10 @@ coding agent. Bifrost connects it through a named custom provider backed by the
 OpenAI-compatible Responses API.
 
 <Tip>
+Using Bifrost Edge? Gateway mode maintains the Codex route and governed model settings described below. Subscription pass-through preserves the native ChatGPT credential and model catalog while routing captured inference through Bifrost. See [Supported applications](/edge/supported-applications#edge-routing-modes).
+</Tip>
+
+<Tip>
 Codex CLI sends a `session-id` header on every request, so a session sticks to
 the provider and key that served it and keeps hitting the same prompt cache,
 with nothing to configure. See [Session Affinity](/providers/session-affinity).

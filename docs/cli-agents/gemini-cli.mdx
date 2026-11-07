@@ -8,6 +8,10 @@ icon: "diamond"
 coding agent. Bifrost exposes the GenAI-compatible endpoint it uses in API-key
 mode.
 
+<Tip>
+Using Bifrost Edge? Gateway mode maintains the Gemini CLI gateway URL, Bifrost identity, and allowed model picker. Subscription pass-through preserves the user's Gemini API key and sends captured inference through `/genai_passthrough`; Google OAuth/Code Assist and Vertex endpoints are not adapted by this mode. Without Edge, the manual `/genai` setup below applies only to Gemini API-key mode. See [Supported applications](/edge/supported-applications#supported-application-configuration).
+</Tip>
+
 ## Install Gemini CLI
 
 ```bash
