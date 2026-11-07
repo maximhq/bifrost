@@ -347,6 +347,15 @@ const roundTripLogs = [
   },
 ]
 
+// One option per scope dimension, as /api/mcp-logs/filterdata lists them.
+const SCOPE_OPTIONS = {
+  users: [{ id: 'user-1', name: 'Ada' }],
+  teams: [{ id: 'team-1', name: 'Platform' }],
+  customers: [{ id: 'customer-1', name: 'Acme' }],
+  business_units: [{ id: 'bu-1', name: 'Advisory' }],
+  projects: [{ id: 'project-1', name: 'Apollo' }],
+}
+
 // stubRoundTripLogs serves roundTripLogs, narrowed by round_trip_id like the API, and records each list request's round_trip_id.
 async function stubRoundTripLogs(page: Page, listedRoundTrips: string[]) {
   await page.route('**/api/mcp-logs**', async (route) => {
@@ -367,7 +376,7 @@ async function stubRoundTripLogs(page: Page, listedRoundTrips: string[]) {
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
-        body: JSON.stringify({ tool_names: ['ask_environment', 'busy', 'refresh'], server_labels: ['deploy', 'dash'], virtual_keys: [] }),
+        body: JSON.stringify({ tool_names: ['ask_environment', 'busy', 'refresh'], server_labels: ['deploy', 'dash'], virtual_keys: [], ...SCOPE_OPTIONS }),
       })
       return
     }
@@ -482,6 +491,33 @@ test.describe('MCP Log Round Trips and MCP Apps', () => {
     await expect(card).toContainText('invalid params: Invalid tools/call request:')
     await expect(card).not.toContainText('MCP tool call failed for')
     await expect(card).not.toContainText(': mcp tool call failed')
+  })
+
+  test('the sidebar lists users, teams, customers, business units and projects and filters by the one picked', async ({ mcpLogsPage, page }) => {
+    await stubRoundTripLogs(page, [])
+    await mcpLogsPage.goto()
+    await expect(mcpLogsPage.logsTable).toBeVisible()
+
+    for (const [prefix, option] of [
+      ['mcp-user-filter', SCOPE_OPTIONS.users[0]],
+      ['mcp-teams-filter', SCOPE_OPTIONS.teams[0]],
+      ['mcp-customers-filter', SCOPE_OPTIONS.customers[0]],
+      ['mcp-business-units-filter', SCOPE_OPTIONS.business_units[0]],
+      ['mcp-projects-filter', SCOPE_OPTIONS.projects[0]],
+    ] as const) {
+      const toggle = page.getByTestId(`${prefix}-toggle`)
+      await expect(toggle).toBeVisible()
+      if ((await toggle.getAttribute('data-state')) !== 'open') await toggle.click()
+      await expect(page.getByTestId(`${prefix}-checkbox-${option.id}`)).toContainText(option.name)
+    }
+
+    const listedWithTeam = page.waitForRequest((request) => {
+      const url = new URL(request.url())
+      return url.pathname === '/api/mcp-logs' && url.searchParams.get('team_ids') === 'team-1'
+    })
+    await page.getByTestId('mcp-teams-filter-checkbox-team-1').click()
+    await listedWithTeam
+    await expect(page).toHaveURL(/team_ids=team-1/)
   })
 
   test('the sidebar filters by round trip ID and labels every status', async ({ mcpLogsPage, page }) => {
