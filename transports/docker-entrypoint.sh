@@ -70,6 +70,51 @@ ensure_app_dir() {
 # Prepare the app directory before starting the application
 ensure_app_dir
 
+# Materialize config.json from the environment when the platform cannot mount
+# a file (Railway, Render, one-click templates). BIFROST_CONFIG_JSON holds the
+# raw document; BIFROST_CONFIG_B64 holds the same document base64-encoded for
+# platforms whose variable editors mangle quotes or newlines. JSON wins when
+# both are set. An existing config.json is never overwritten, so a persisted
+# APP_DIR keeps whatever the dashboard has written since first boot.
+write_config_from_env() {
+    CONFIG_FILE="$APP_DIR/config.json"
+    if [ -f "$CONFIG_FILE" ]; then
+        return 0
+    fi
+    if [ -z "$BIFROST_CONFIG_JSON" ] && [ -z "$BIFROST_CONFIG_B64" ]; then
+        return 0
+    fi
+
+    # Stage the document in a temp file created with mode 0600 (it may carry
+    # literal secrets even though env. references are recommended), then move
+    # it into place. A failed decode or a partial write therefore never leaves
+    # a config.json behind for the next boot to keep.
+    CONFIG_TMP="$CONFIG_FILE.tmp.$$"
+    if [ -n "$BIFROST_CONFIG_JSON" ]; then
+        CONFIG_SOURCE=BIFROST_CONFIG_JSON
+        (umask 077 && printf '%s\n' "$BIFROST_CONFIG_JSON" > "$CONFIG_TMP") || {
+            rm -f "$CONFIG_TMP"
+            echo "Error: Could not write $CONFIG_FILE from BIFROST_CONFIG_JSON"
+            exit 1
+        }
+    else
+        CONFIG_SOURCE=BIFROST_CONFIG_B64
+        (umask 077 && printf '%s' "$BIFROST_CONFIG_B64" | base64 -d > "$CONFIG_TMP") || {
+            rm -f "$CONFIG_TMP"
+            echo "Error: Could not decode BIFROST_CONFIG_B64 into $CONFIG_FILE"
+            exit 1
+        }
+    fi
+    mv -f "$CONFIG_TMP" "$CONFIG_FILE" || {
+        rm -f "$CONFIG_TMP"
+        echo "Error: Could not move the decoded configuration into $CONFIG_FILE"
+        exit 1
+    }
+    echo "Wrote $CONFIG_FILE from $CONFIG_SOURCE"
+}
+
+write_config_from_env
+
 # Parse command line arguments and set environment variables
 parse_args() {
     while [ $# -gt 0 ]; do
