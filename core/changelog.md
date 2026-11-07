@@ -32,3 +32,4 @@
 - fix: mcp - call upstream tools by exact name, keep tool error flags, log every code mode call in agent mode, apply tool_execution_timeout to code mode and in-process clients, and report the caller's deadline in timeout errors
 - fix: mcp - stop retrying permanent connect errors, refresh per-call credentials once on 401, keep failed enables unstable with the checker retrying, apply TLS/SSE/ping edits live, and check sooner after a failed reconnect
 - fix: mcp - return 400, 404 and 409 instead of 500 for client create, rename and reconnect mistakes
+- [fix]: Gemini chat completions send `{}` as the arguments of a function call without `args`. Gemini omits `args` for a tool without parameters, so the tool call's arguments were an empty string, in the final response and in the stream, and OpenAI-shaped clients failed to parse them as JSON

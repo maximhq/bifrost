@@ -211,6 +211,9 @@ func (response *GenerateContentResponse) ToBifrostChatResponse() *schemas.Bifros
 					Name: &part.FunctionCall.Name,
 				}
 
+				// Gemini omits args for a tool without parameters; clients parse
+				// the arguments string as JSON, so send an empty object.
+				function.Arguments = "{}"
 				if len(part.FunctionCall.Args) > 0 {
 					function.Arguments = string(part.FunctionCall.Args)
 				}
@@ -588,7 +591,7 @@ func (response *GenerateContentResponse) toBifrostChatCompletionStreamDelta(stat
 
 			case part.FunctionCall != nil:
 				// Function call
-				jsonArgs := ""
+				jsonArgs := "{}"
 				if len(part.FunctionCall.Args) > 0 {
 					jsonArgs = string(part.FunctionCall.Args)
 				}
