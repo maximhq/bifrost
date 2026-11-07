@@ -468,6 +468,21 @@ func dropChatReasoningDetails(details []schemas.ChatReasoningDetails) ([]schemas
 // calls to reach a payload the upstream accepts.
 var contentBlockReasoningCarriers = []string{"signature", "encrypted_content"}
 
+// contentBlockTypeEncryptedContent is the block type Codex multi_agent v1 uses to carry a
+// subagent task's ciphertext on an agent_message: {"type":"encrypted_content",
+// "encrypted_content":"..."}. The block holds nothing but that field.
+const contentBlockTypeEncryptedContent = "encrypted_content"
+
+// dropsWholeContentBlock reports whether the strip must remove a content block rather than
+// clear its encrypted_content. An "encrypted_content" block is nothing but the field, so a
+// blanked one is refused with "Missing required parameter:
+// 'input[N].content[M].encrypted_content'" (ticket 11340: a Codex subagent turn moved from
+// Azure East to Azure West). It carries no text, so dropping it loses nothing visible. Every
+// other block keeps its text and loses only the field.
+func dropsWholeContentBlock(blockType string) bool {
+	return blockType == contentBlockTypeEncryptedContent
+}
+
 // dropsWholeReasoningBlocks reports whether the upstream this request is bound for
 // requires a replayed thinking block to be deleted outright rather than emptied.
 //
@@ -625,7 +640,8 @@ func joinRawJSONArray(parts [][]byte, sizeHint int) []byte {
 
 // stripContentBlockReasoningPayloads returns the message's content blocks with every
 // unverifiable reasoning payload removed -- signature and encrypted_content -- and
-// whether anything was removed. Anthropic thinking replayed over the Responses shape
+// whether anything was removed. A block of type "encrypted_content" is dropped whole (see
+// dropsWholeContentBlock). Anthropic thinking replayed over the Responses shape
 // carries its signature here rather than on the reasoning item, so clearing the
 // reasoning item's encrypted_content alone left the unverifiable half in place; the
 // block models encrypted_content too, so a block-only ciphertext survived the same way.
@@ -633,18 +649,22 @@ func stripContentBlockReasoningPayloads(content *schemas.ResponsesMessageContent
 	if content == nil || len(content.ContentBlocks) == 0 {
 		return nil, false
 	}
-	blocks := make([]schemas.ResponsesMessageContentBlock, len(content.ContentBlocks))
-	copy(blocks, content.ContentBlocks)
+	blocks := make([]schemas.ResponsesMessageContentBlock, 0, len(content.ContentBlocks))
 	changed := false
-	for i := range blocks {
-		if blocks[i].Signature != nil {
-			blocks[i].Signature = nil
+	for _, block := range content.ContentBlocks {
+		if dropsWholeContentBlock(string(block.Type)) {
+			changed = true
+			continue
+		}
+		if block.Signature != nil {
+			block.Signature = nil
 			changed = true
 		}
-		if blocks[i].EncryptedContent != nil {
-			blocks[i].EncryptedContent = nil
+		if block.EncryptedContent != nil {
+			block.EncryptedContent = nil
 			changed = true
 		}
+		blocks = append(blocks, block)
 	}
 	if !changed {
 		return nil, false
@@ -930,6 +950,10 @@ func stripRawResponsesEncryptedContent(rawBody *[]byte, dropItemIDs, clearIDs bo
 			var rebuiltBlocks [][]byte
 			contentChanged := false
 			for _, block := range contentResult.Array() {
+				if dropsWholeContentBlock(block.Get("type").Str) {
+					contentChanged = true
+					continue
+				}
 				blockRaw := []byte(block.Raw)
 				for _, field := range contentBlockReasoningCarriers {
 					if !gjson.GetBytes(blockRaw, field).Exists() {
@@ -943,7 +967,13 @@ func stripRawResponsesEncryptedContent(rawBody *[]byte, dropItemIDs, clearIDs bo
 				}
 				rebuiltBlocks = append(rebuiltBlocks, blockRaw)
 			}
-			if contentChanged {
+			if contentChanged && len(rebuiltBlocks) == 0 {
+				// Every block was dropped. Remove content so the empty-item check below drops
+				// the item: providers reject an empty content array outright.
+				if updated, err := sjson.Delete(rest, "content"); err == nil {
+					rest, itemChanged = updated, true
+				}
+			} else if contentChanged {
 				if updated, err := sjson.SetRawBytes([]byte(rest), "content", joinRawJSONArray(rebuiltBlocks, len(rest))); err == nil {
 					rest, itemChanged = string(updated), true
 				}

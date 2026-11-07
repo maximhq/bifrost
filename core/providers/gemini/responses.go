@@ -3087,15 +3087,8 @@ func convertGeminiContentsToResponsesMessages(contents []Content) []schemas.Resp
 					}
 				}
 
-				// Convert response to string — extract output field if present
-				responseStr := ""
-				if part.FunctionResponse.Response != nil {
-					if r := providerUtils.GetJSONField(part.FunctionResponse.Response, "output"); r.Exists() {
-						responseStr = r.String()
-					} else {
-						responseStr = string(part.FunctionResponse.Response)
-					}
-				}
+				// Convert response to string: unwrap a sole "output" key, keep sibling fields otherwise
+				responseStr := extractFunctionResponseOutput(part.FunctionResponse)
 
 				output := &schemas.ResponsesToolMessageOutputStruct{}
 				if len(part.FunctionResponse.Parts) > 0 {
