@@ -107,7 +107,22 @@ func TestGeminiURLContextMetadataStreamRoundTrip(t *testing.T) {
 		{
 			ResponseID:   "resp-url",
 			ModelVersion: "gemini-2.5-flash",
-			Candidates:   []*Candidate{{FinishReason: FinishReasonStop}},
+			Candidates: []*Candidate{{
+				FinishReason: FinishReasonStop,
+				GroundingMetadata: &GroundingMetadata{
+					RetrievalQueries: []string{"cats policy"},
+					GroundingChunks: []*GroundingChunk{{
+						RetrievedContext: &GroundingChunkRetrievedContext{
+							URI:   "gs://corp-rag-bucket/cats.pdf",
+							Title: "Cat Handbook",
+							Text:  "The page is about cats.",
+						},
+					}},
+				},
+				CitationMetadata: &CitationMetadata{Citations: []*Citation{
+					{StartIndex: 0, EndIndex: 23, URI: "gs://corp-rag-bucket/cats.pdf", License: "CC-BY-4.0"},
+				}},
+			}},
 		},
 	}
 
@@ -116,6 +131,8 @@ func TestGeminiURLContextMetadataStreamRoundTrip(t *testing.T) {
 	reverse := NewBifrostToGeminiStreamState()
 
 	var restored *URLContextMetadata
+	var restoredGrounding *GroundingMetadata
+	var restoredCitations *CitationMetadata
 	seq := 0
 	for _, chunk := range chunks {
 		events, bifrostErr := chunk.ToBifrostResponsesStream(seq, forward)
@@ -130,6 +147,12 @@ func TestGeminiURLContextMetadataStreamRoundTrip(t *testing.T) {
 				if candidate.URLContextMetadata != nil {
 					restored = candidate.URLContextMetadata
 				}
+				if candidate.GroundingMetadata != nil {
+					restoredGrounding = candidate.GroundingMetadata
+				}
+				if candidate.CitationMetadata != nil {
+					restoredCitations = candidate.CitationMetadata
+				}
 			}
 		}
 	}
@@ -138,9 +161,17 @@ func TestGeminiURLContextMetadataStreamRoundTrip(t *testing.T) {
 	require.Len(t, restored.URLMetadata, 1)
 	assert.Equal(t, "https://example.com/cats", restored.URLMetadata[0].RetrievedURL)
 	assert.Equal(t, "URL_RETRIEVAL_STATUS_SUCCESS", restored.URLMetadata[0].URLRetrievalStatus)
+	require.NotNil(t, restoredGrounding)
+	assert.Equal(t, []string{"cats policy"}, restoredGrounding.RetrievalQueries)
+	require.Len(t, restoredGrounding.GroundingChunks, 1)
+	require.NotNil(t, restoredGrounding.GroundingChunks[0].RetrievedContext)
+	assert.Equal(t, "The page is about cats.", restoredGrounding.GroundingChunks[0].RetrievedContext.Text)
+	require.NotNil(t, restoredCitations)
+	require.Len(t, restoredCitations.Citations, 1)
+	assert.Equal(t, "CC-BY-4.0", restoredCitations.Citations[0].License)
 
 	// A pooled state is flushed and reused: the next stream, which fetched no URL, must not
-	// inherit the previous stream's urlContextMetadata.
+	// inherit the previous stream's metadata.
 	forward.flush()
 	reverse = NewBifrostToGeminiStreamState()
 	seq = 0
@@ -155,6 +186,8 @@ func TestGeminiURLContextMetadataStreamRoundTrip(t *testing.T) {
 			}
 			for _, candidate := range out.Candidates {
 				assert.Nil(t, candidate.URLContextMetadata, "urlContextMetadata leaked across a flushed stream state")
+				assert.Nil(t, candidate.GroundingMetadata, "groundingMetadata leaked across a flushed stream state")
+				assert.Nil(t, candidate.CitationMetadata, "citationMetadata leaked across a flushed stream state")
 			}
 		}
 	}

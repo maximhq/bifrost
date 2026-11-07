@@ -388,6 +388,12 @@ func (response *GenerateContentResponse) ToResponsesBifrostResponsesResponse() *
 		if candidate.URLContextMetadata != nil {
 			extraFields["urlContextMetadata"] = candidate.URLContextMetadata
 		}
+		if candidate.GroundingMetadata != nil {
+			extraFields["groundingMetadata"] = candidate.GroundingMetadata
+		}
+		if candidate.CitationMetadata != nil {
+			extraFields["citationMetadata"] = candidate.CitationMetadata
+		}
 		if candidate.ContinuationToken != "" {
 			extraFields["continuationToken"] = candidate.ContinuationToken
 		}
@@ -764,6 +770,9 @@ func ToGeminiResponsesResponse(bifrostResp *schemas.BifrostResponsesResponse) *G
 			if target.GroundingMetadata == nil {
 				target.GroundingMetadata = terminal.GroundingMetadata
 			}
+			if target.CitationMetadata == nil {
+				target.CitationMetadata = terminal.CitationMetadata
+			}
 			if target.SafetyRatings == nil {
 				target.SafetyRatings = terminal.SafetyRatings
 			}
@@ -900,13 +909,8 @@ func buildGeminiTerminalCandidate(
 
 	candidate.FinishReason = geminiFinishReasonFromResponses(bifrostResp)
 
-	// Attach grounding metadata if web search was used
-	if lastWebSearchCall != nil {
-		candidate.GroundingMetadata = buildGroundingMetadataFromWebSearch(lastWebSearchCall, webSearchAnnotations, lastRenderedContent)
-	}
-
-	// Restore safetyRatings/avgLogprobs preserved by ToResponsesBifrostResponsesResponse
-	// (they have no field in Bifrost's OpenAI-shaped Responses schema).
+	// Restore Gemini candidate metadata from ProviderExtraFields; rebuild groundingMetadata
+	// from web_search_call only when ProviderExtraFields["groundingMetadata"] is absent.
 	if bifrostResp.ProviderExtraFields != nil {
 		if ratings := extractGeminiSafetyRatings(bifrostResp.ProviderExtraFields["safetyRatings"]); ratings != nil {
 			candidate.SafetyRatings = ratings
@@ -920,12 +924,59 @@ func buildGeminiTerminalCandidate(
 		if urlContext := extractGeminiURLContextMetadata(bifrostResp.ProviderExtraFields["urlContextMetadata"]); urlContext != nil {
 			candidate.URLContextMetadata = urlContext
 		}
+		if grounding := extractGeminiGroundingMetadata(bifrostResp.ProviderExtraFields["groundingMetadata"]); grounding != nil {
+			candidate.GroundingMetadata = grounding
+		}
+		if citations := extractGeminiCitationMetadata(bifrostResp.ProviderExtraFields["citationMetadata"]); citations != nil {
+			candidate.CitationMetadata = citations
+		}
 		if token, ok := bifrostResp.ProviderExtraFields["continuationToken"].(string); ok {
 			candidate.ContinuationToken = token
 		}
 	}
+	if candidate.GroundingMetadata == nil && lastWebSearchCall != nil {
+		candidate.GroundingMetadata = buildGroundingMetadataFromWebSearch(lastWebSearchCall, webSearchAnnotations, lastRenderedContent)
+	}
 
 	return candidate
+}
+
+// extractGeminiGroundingMetadata decodes a *GroundingMetadata value from ProviderExtraFields.
+func extractGeminiGroundingMetadata(v interface{}) *GroundingMetadata {
+	if v == nil {
+		return nil
+	}
+	if meta, ok := v.(*GroundingMetadata); ok {
+		return meta
+	}
+	b, err := providerUtils.MarshalSorted(v)
+	if err != nil {
+		return nil
+	}
+	var meta GroundingMetadata
+	if err := sonic.Unmarshal(b, &meta); err != nil {
+		return nil
+	}
+	return &meta
+}
+
+// extractGeminiCitationMetadata decodes a *CitationMetadata value from ProviderExtraFields.
+func extractGeminiCitationMetadata(v interface{}) *CitationMetadata {
+	if v == nil {
+		return nil
+	}
+	if meta, ok := v.(*CitationMetadata); ok {
+		return meta
+	}
+	b, err := providerUtils.MarshalSorted(v)
+	if err != nil {
+		return nil
+	}
+	var meta CitationMetadata
+	if err := sonic.Unmarshal(b, &meta); err != nil {
+		return nil
+	}
+	return &meta
 }
 
 // extractGeminiURLContextMetadata recovers *URLContextMetadata from
@@ -1095,7 +1146,9 @@ func ToGeminiResponsesStreamResponse(bifrostResp *schemas.BifrostResponsesStream
 		bifrostResp.Item != nil &&
 		bifrostResp.Item.Type != nil &&
 		*bifrostResp.Item.Type == schemas.ResponsesMessageTypeWebSearchCall {
-		state.WebSearchCall = bifrostResp.Item
+		if state.WebSearchCall == nil || !webSearchCallHasSources(state.WebSearchCall) {
+			state.WebSearchCall = bifrostResp.Item
+		}
 		state.HasWebSearch = true
 		return nil // Don't emit yet, wait for completion
 	}
@@ -1341,13 +1394,8 @@ func ToGeminiResponsesStreamResponse(bifrostResp *schemas.BifrostResponsesStream
 
 			candidate.FinishReason = geminiFinishReasonFromResponses(bifrostResp.Response)
 
-			// Attach grounding metadata if we buffered web search data
-			if state.HasWebSearch && state.WebSearchCall != nil {
-				candidate.GroundingMetadata = buildGroundingMetadataFromWebSearch(state.WebSearchCall, state.Annotations, state.RenderedContent)
-			}
-
-			// Restore safetyRatings/avgLogprobs/responseId preserved by closeGeminiOpenItems
-			// (they have no field in Bifrost's OpenAI-shaped Responses schema).
+			// Restore Gemini candidate metadata from ProviderExtraFields; rebuild groundingMetadata
+			// from buffered web search events only when ProviderExtraFields["groundingMetadata"] is absent.
 			if bifrostResp.Response.ProviderExtraFields != nil {
 				if ratings := extractGeminiSafetyRatings(bifrostResp.Response.ProviderExtraFields["safetyRatings"]); ratings != nil {
 					candidate.SafetyRatings = ratings
@@ -1358,12 +1406,21 @@ func ToGeminiResponsesStreamResponse(bifrostResp *schemas.BifrostResponsesStream
 				if urlContext := extractGeminiURLContextMetadata(bifrostResp.Response.ProviderExtraFields["urlContextMetadata"]); urlContext != nil {
 					candidate.URLContextMetadata = urlContext
 				}
+				if grounding := extractGeminiGroundingMetadata(bifrostResp.Response.ProviderExtraFields["groundingMetadata"]); grounding != nil {
+					candidate.GroundingMetadata = grounding
+				}
+				if citations := extractGeminiCitationMetadata(bifrostResp.Response.ProviderExtraFields["citationMetadata"]); citations != nil {
+					candidate.CitationMetadata = citations
+				}
 				if token, ok := bifrostResp.Response.ProviderExtraFields["continuationToken"].(string); ok {
 					candidate.ContinuationToken = token
 				}
 				if responseID, ok := bifrostResp.Response.ProviderExtraFields["responseId"].(string); ok && responseID != "" {
 					streamResp.ResponseID = responseID
 				}
+			}
+			if candidate.GroundingMetadata == nil && state.HasWebSearch && state.WebSearchCall != nil {
+				candidate.GroundingMetadata = buildGroundingMetadataFromWebSearch(state.WebSearchCall, state.Annotations, state.RenderedContent)
 			}
 		}
 
@@ -1439,6 +1496,8 @@ type GeminiResponsesStreamState struct {
 	SafetyRatings      []*SafetyRating
 	AvgLogprobs        float64
 	URLContextMetadata *URLContextMetadata // may arrive on any chunk, not only the terminal one
+	GroundingMetadata  *GroundingMetadata  // full grounding metadata for lossless GenAI stream restore
+	CitationMetadata   *CitationMetadata   // citation metadata for lossless GenAI stream restore
 	ContinuationToken  string              // latest long-decode token; the terminal one is the next hop's
 
 	// Finish reason from a chunk that could not close the stream (no item opened yet);
@@ -1561,6 +1620,8 @@ func (state *GeminiResponsesStreamState) flush() {
 	state.SafetyRatings = nil
 	state.AvgLogprobs = 0
 	state.URLContextMetadata = nil
+	state.GroundingMetadata = nil
+	state.CitationMetadata = nil
 	state.ContinuationToken = ""
 	state.PendingFinishReason = ""
 	state.PendingFinishMessage = ""
@@ -1687,6 +1748,12 @@ func (response *GenerateContentResponse) toBifrostResponsesStream(sequenceNumber
 		}
 		if candidate.URLContextMetadata != nil {
 			state.URLContextMetadata = candidate.URLContextMetadata
+		}
+		if candidate.GroundingMetadata != nil {
+			state.GroundingMetadata = candidate.GroundingMetadata
+		}
+		if candidate.CitationMetadata != nil {
+			state.CitationMetadata = candidate.CitationMetadata
 		}
 		if candidate.ContinuationToken != "" {
 			state.ContinuationToken = candidate.ContinuationToken
@@ -2847,6 +2914,14 @@ func closeGeminiOpenItems(state *GeminiResponsesStreamState, groundingMetadata *
 	if state.URLContextMetadata != nil {
 		extraFields["urlContextMetadata"] = state.URLContextMetadata
 	}
+	if groundingMetadata != nil {
+		extraFields["groundingMetadata"] = groundingMetadata
+	} else if state.GroundingMetadata != nil {
+		extraFields["groundingMetadata"] = state.GroundingMetadata
+	}
+	if state.CitationMetadata != nil {
+		extraFields["citationMetadata"] = state.CitationMetadata
+	}
 	if state.ContinuationToken != "" {
 		extraFields["continuationToken"] = state.ContinuationToken
 	}
@@ -3366,19 +3441,21 @@ const geminiNativeToolsExtraParamKey = "gemini_native_tools"
 
 // geminiNativeOnlyTools returns, for each tools[] entry, a copy holding only the tool kinds
 // convertGeminiToolsToResponsesTools cannot express (retrieval with vertexAiSearch /
-// vertexRagStore / externalApi, googleSearchRetrieval, enterpriseWebSearch, googleMaps,
-// urlContext, computerUse). Dropping them silently turned a grounded /genai request into an
-// ungrounded 200, so they are carried verbatim and Google judges them. Returns nil when there
-// are none, so requests without such tools pay nothing.
+// vertexRagStore / externalApi, fileSearch, googleSearchRetrieval, enterpriseWebSearch,
+// googleMaps, urlContext, computerUse). Dropping them silently turned a grounded /genai
+// request into an ungrounded 200, so they are carried verbatim and Google judges them.
+// Returns nil when there are none, so requests without such tools pay nothing.
 func geminiNativeOnlyTools(tools []Tool) []Tool {
 	var native []Tool
 	for _, tool := range tools {
-		if tool.Retrieval == nil && tool.GoogleSearchRetrieval == nil && tool.EnterpriseWebSearch == nil &&
-			tool.GoogleMaps == nil && tool.URLContext == nil && tool.ComputerUse == nil {
+		if tool.Retrieval == nil && tool.FileSearch == nil && tool.GoogleSearchRetrieval == nil &&
+			tool.EnterpriseWebSearch == nil && tool.GoogleMaps == nil && tool.URLContext == nil &&
+			tool.ComputerUse == nil {
 			continue
 		}
 		native = append(native, Tool{
 			Retrieval:             tool.Retrieval,
+			FileSearch:            tool.FileSearch,
 			GoogleSearchRetrieval: tool.GoogleSearchRetrieval,
 			EnterpriseWebSearch:   tool.EnterpriseWebSearch,
 			GoogleMaps:            tool.GoogleMaps,
@@ -3785,6 +3862,14 @@ func groundingChunkSource(chunk *GroundingChunk) (schemas.ResponsesWebSearchTool
 		}
 		if chunk.Image.Domain != "" {
 			source.Domain = schemas.Ptr(chunk.Image.Domain)
+		}
+	case chunk.RetrievedContext != nil && (chunk.RetrievedContext.URI != "" || chunk.RetrievedContext.DocumentName != ""):
+		source.URL = chunk.RetrievedContext.URI
+		if source.URL == "" {
+			source.URL = chunk.RetrievedContext.DocumentName
+		}
+		if chunk.RetrievedContext.Title != "" {
+			source.Title = schemas.Ptr(chunk.RetrievedContext.Title)
 		}
 	default:
 		return source, false
@@ -4227,8 +4312,12 @@ func convertGeminiCandidatesToResponsesOutput(candidates []*Candidate, messageID
 			}
 		}
 
-		// check if gemini used google search tool
+		// check if gemini used google search or retrieval tool
 		if candidate.GroundingMetadata != nil {
+			groundingQueries := candidate.GroundingMetadata.WebSearchQueries
+			if len(groundingQueries) == 0 {
+				groundingQueries = candidate.GroundingMetadata.RetrievalQueries
+			}
 			webSearchmessage := schemas.ResponsesMessage{
 				ID:     schemas.Ptr(generateItemID(&messageID, "ws", len(messages))),
 				Type:   schemas.Ptr(schemas.ResponsesMessageTypeWebSearchCall),
@@ -4237,21 +4326,24 @@ func convertGeminiCandidatesToResponsesOutput(candidates []*Candidate, messageID
 					Action: &schemas.ResponsesToolMessageActionStruct{
 						ResponsesWebSearchToolCallAction: &schemas.ResponsesWebSearchToolCallAction{
 							Type:    "search",
-							Queries: candidate.GroundingMetadata.WebSearchQueries,
+							Queries: groundingQueries,
 						},
 					},
 				},
 			}
-			if len(candidate.GroundingMetadata.WebSearchQueries) > 0 {
-				webSearchmessage.ResponsesToolMessage.Action.ResponsesWebSearchToolCallAction.Query = schemas.Ptr(candidate.GroundingMetadata.WebSearchQueries[0])
+			if len(groundingQueries) > 0 {
+				webSearchmessage.ResponsesToolMessage.Action.ResponsesWebSearchToolCallAction.Query = schemas.Ptr(groundingQueries[0])
 			}
 			if len(candidate.GroundingMetadata.ImageSearchQueries) > 0 {
 				webSearchmessage.ResponsesToolMessage.Action.ResponsesWebSearchToolCallAction.ImageQueries = candidate.GroundingMetadata.ImageSearchQueries
 			}
 
 			sources := []schemas.ResponsesWebSearchToolCallActionSearchSource{}
-			for _, chunk := range candidate.GroundingMetadata.GroundingChunks {
+			chunkToSourceIdx := make([]int, len(candidate.GroundingMetadata.GroundingChunks))
+			for i, chunk := range candidate.GroundingMetadata.GroundingChunks {
+				chunkToSourceIdx[i] = -1
 				if source, ok := groundingChunkSource(chunk); ok {
+					chunkToSourceIdx[i] = len(sources)
 					sources = append(sources, source)
 				}
 			}
@@ -4271,7 +4363,7 @@ func convertGeminiCandidatesToResponsesOutput(candidates []*Candidate, messageID
 							action.Sources = sources
 						}
 						if len(action.Queries) == 0 {
-							action.Queries = candidate.GroundingMetadata.WebSearchQueries
+							action.Queries = groundingQueries
 							if len(action.Queries) > 0 {
 								action.Query = schemas.Ptr(action.Queries[0])
 							}
@@ -4294,15 +4386,17 @@ func convertGeminiCandidatesToResponsesOutput(candidates []*Candidate, messageID
 					}
 					// One annotation per (support, chunk) pair so multi-source segments keep every source.
 					for _, chunkIdx := range support.GroundingChunkIndices {
-						if chunkIdx < 0 || int(chunkIdx) >= len(candidate.GroundingMetadata.GroundingChunks) {
+						if chunkIdx < 0 || int(chunkIdx) >= len(chunkToSourceIdx) {
 							continue
 						}
-						source, ok := groundingChunkSource(candidate.GroundingMetadata.GroundingChunks[chunkIdx])
-						if !ok {
+						sourceIdx := chunkToSourceIdx[chunkIdx]
+						if sourceIdx < 0 {
 							continue
 						}
+						source := sources[sourceIdx]
 						annotation := schemas.ResponsesOutputMessageContentTextAnnotation{
 							Type:       "url_citation",
+							Index:      schemas.Ptr(sourceIdx),
 							Text:       schemas.Ptr(support.Segment.Text),
 							StartIndex: schemas.Ptr(int(support.Segment.StartIndex)),
 							EndIndex:   schemas.Ptr(int(support.Segment.EndIndex)),
@@ -5644,7 +5738,7 @@ func buildGroundingMetadataFromWebSearch(webSearchCall *schemas.ResponsesMessage
 
 	// Extract grounding chunks from sources
 	var groundingChunks []*GroundingChunk
-	urlToIndexMap := make(map[string]int32) // Map URL to chunk index for annotation processing
+	urlToIndexMap := make(map[string][]int32) // Map URL to chunk indices (multiple RAG chunks may share a document URL)
 
 	for _, source := range action.Sources {
 		if source.URL == "" {
@@ -5674,7 +5768,7 @@ func buildGroundingMetadataFromWebSearch(webSearchCall *schemas.ResponsesMessage
 			}
 		}
 		groundingChunks = append(groundingChunks, chunk)
-		urlToIndexMap[source.URL] = int32(len(groundingChunks) - 1)
+		urlToIndexMap[source.URL] = append(urlToIndexMap[source.URL], int32(len(groundingChunks)-1))
 	}
 
 	if len(groundingChunks) > 0 {
@@ -5705,29 +5799,52 @@ func buildGroundingMetadataFromWebSearch(webSearchCall *schemas.ResponsesMessage
 			segment.EndIndex = int32(*annotation.EndIndex)
 		}
 
-		// Map annotation URL to chunk indices
-		var chunkIndices []int32
-		if annotation.URL != nil {
-			if chunkIdx, exists := urlToIndexMap[*annotation.URL]; exists {
-				chunkIndices = []int32{chunkIdx}
+		// Map annotation to chunk indices, preferring explicit source index, then (URL, Title), then URL.
+		var candidateIndices []int32
+		if annotation.Index != nil && *annotation.Index >= 0 && *annotation.Index < len(groundingChunks) {
+			candidateIndices = []int32{int32(*annotation.Index)}
+		} else if annotation.URL != nil {
+			candidateIndices = urlToIndexMap[*annotation.URL]
+			if annotation.Title != nil && *annotation.Title != "" && len(candidateIndices) > 1 {
+				var titleMatches []int32
+				for _, idx := range candidateIndices {
+					chunk := groundingChunks[idx]
+					chunkTitle := ""
+					if chunk.Web != nil {
+						chunkTitle = chunk.Web.Title
+					} else if chunk.Image != nil {
+						chunkTitle = chunk.Image.Title
+					}
+					if chunkTitle == *annotation.Title {
+						titleMatches = append(titleMatches, idx)
+					}
+				}
+				if len(titleMatches) > 0 {
+					candidateIndices = titleMatches
+				}
 			}
 		}
 
 		// Only add support if we have valid segment or chunk indices
-		if segment.Text == "" && len(chunkIndices) == 0 {
+		if segment.Text == "" && len(candidateIndices) == 0 {
 			continue
 		}
 
 		key := fmt.Sprintf("%d|%d|%s", segment.StartIndex, segment.EndIndex, segment.Text)
 		if support, exists := supportBySegment[key]; exists {
-			for _, chunkIdx := range chunkIndices {
+			for _, chunkIdx := range candidateIndices {
 				if !slices.Contains(support.GroundingChunkIndices, chunkIdx) {
 					support.GroundingChunkIndices = append(support.GroundingChunkIndices, chunkIdx)
+					break
 				}
 			}
 			continue
 		}
 
+		var chunkIndices []int32
+		if len(candidateIndices) > 0 {
+			chunkIndices = []int32{candidateIndices[0]}
+		}
 		support := &GroundingSupport{Segment: segment, GroundingChunkIndices: chunkIndices}
 		supportBySegment[key] = support
 		groundingSupports = append(groundingSupports, support)
@@ -5739,7 +5856,8 @@ func buildGroundingMetadataFromWebSearch(webSearchCall *schemas.ResponsesMessage
 
 	// Return nil if no meaningful data was extracted
 	if len(groundingMetadata.WebSearchQueries) == 0 && len(groundingMetadata.ImageSearchQueries) == 0 &&
-		len(groundingMetadata.GroundingChunks) == 0 {
+		len(groundingMetadata.GroundingChunks) == 0 && len(groundingMetadata.GroundingSupports) == 0 &&
+		groundingMetadata.SearchEntryPoint == nil {
 		return nil
 	}
 
@@ -5755,8 +5873,12 @@ func emitWebSearchFromGroundingMetadata(
 	var responses []*schemas.BifrostResponsesStreamResponse
 
 	// A server-side toolCall is enough to emit an item even when grounding metadata is
-	// absent or query-less: the model told us it searched.
-	hasGroundingQueries := metadata != nil && (len(metadata.WebSearchQueries) > 0 || len(metadata.ImageSearchQueries) > 0)
+	// absent or query-less: the model told us it searched. RAG / File Search grounding
+	// often populates retrievalQueries and/or groundingChunks without webSearchQueries.
+	hasGroundingQueries := metadata != nil && (len(metadata.WebSearchQueries) > 0 ||
+		len(metadata.ImageSearchQueries) > 0 ||
+		len(metadata.RetrievalQueries) > 0 ||
+		len(metadata.GroundingChunks) > 0)
 	if !hasGroundingQueries && len(state.ServerSearchRounds) == 0 {
 		return responses
 	}
@@ -5800,7 +5922,11 @@ func emitWebSearchFromGroundingMetadata(
 		}
 		if i == 0 && metadata != nil {
 			if len(action.Queries) == 0 {
-				action.Queries = metadata.WebSearchQueries
+				if len(metadata.WebSearchQueries) > 0 {
+					action.Queries = metadata.WebSearchQueries
+				} else if len(metadata.RetrievalQueries) > 0 {
+					action.Queries = metadata.RetrievalQueries
+				}
 			}
 			if len(action.ImageQueries) == 0 {
 				action.ImageQueries = metadata.ImageSearchQueries
@@ -5947,6 +6073,16 @@ func emitAnnotationsFromGroundingSupports(
 
 	itemID := state.ItemIDs[state.TextOutputIndex]
 
+	chunkToSourceIdx := make([]int, len(metadata.GroundingChunks))
+	sourceCount := 0
+	for i, chunk := range metadata.GroundingChunks {
+		chunkToSourceIdx[i] = -1
+		if _, ok := groundingChunkSource(chunk); ok {
+			chunkToSourceIdx[i] = sourceCount
+			sourceCount++
+		}
+	}
+
 	emmitedIndex := 0
 	// Convert each grounding support to an annotation event
 	for _, support := range metadata.GroundingSupports {
@@ -5956,17 +6092,19 @@ func emitAnnotationsFromGroundingSupports(
 
 		// One annotation per (support, chunk) pair so multi-source segments keep every source.
 		for _, chunkIdx := range support.GroundingChunkIndices {
-			if chunkIdx < 0 || int(chunkIdx) >= len(metadata.GroundingChunks) {
+			if chunkIdx < 0 || int(chunkIdx) >= len(chunkToSourceIdx) {
 				continue
 			}
-			source, ok := groundingChunkSource(metadata.GroundingChunks[chunkIdx])
-			if !ok {
+			sourceIdx := chunkToSourceIdx[chunkIdx]
+			if sourceIdx < 0 {
 				continue
 			}
+			source, _ := groundingChunkSource(metadata.GroundingChunks[chunkIdx])
 
 			annotation := schemas.ResponsesOutputMessageContentTextAnnotation{
-				Type: "url_citation",
-				URL:  &source.URL,
+				Type:  "url_citation",
+				Index: schemas.Ptr(sourceIdx),
+				URL:   &source.URL,
 			}
 			if support.Segment.Text != "" {
 				annotation.Text = &support.Segment.Text

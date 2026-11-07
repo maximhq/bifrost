@@ -112,6 +112,12 @@ func ToGeminiChatCompletionRequestWithImageURLSchemes(ctx *schemas.BifrostContex
 					geminiReq.Labels = labelMap
 				}
 			}
+
+			// Gemini-native tools with no neutral form.
+			if nativeTools, ok := bifrostReq.Params.ExtraParams[geminiNativeToolsExtraParamKey]; ok {
+				delete(geminiReq.ExtraParams, geminiNativeToolsExtraParamKey)
+				geminiReq.Tools = append(geminiReq.Tools, extractGeminiNativeTools(nativeTools)...)
+			}
 		}
 	}
 	// Convert chat completion messages to Gemini format.
@@ -771,17 +777,21 @@ func convertGroundingMetadataToChatAnnotations(metadata *GroundingMetadata) []sc
 			if chunkIdx < 0 || int(chunkIdx) >= len(metadata.GroundingChunks) {
 				continue
 			}
-			chunk := metadata.GroundingChunks[chunkIdx]
-			if chunk.Web == nil || chunk.Web.URI == "" {
+			source, ok := groundingChunkSource(metadata.GroundingChunks[chunkIdx])
+			if !ok {
 				continue
+			}
+			title := ""
+			if source.Title != nil {
+				title = *source.Title
 			}
 			annotation := schemas.ChatAssistantMessageAnnotation{
 				Type: "url_citation",
 				URLCitation: schemas.ChatAssistantMessageAnnotationCitation{
 					StartIndex: int(support.Segment.StartIndex),
 					EndIndex:   int(support.Segment.EndIndex),
-					Title:      chunk.Web.Title,
-					URL:        schemas.Ptr(chunk.Web.URI),
+					Title:      title,
+					URL:        schemas.Ptr(source.URL),
 				},
 			}
 			if support.Segment.Text != "" {
