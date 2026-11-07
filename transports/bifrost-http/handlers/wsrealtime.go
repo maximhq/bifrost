@@ -258,7 +258,7 @@ func (h *WSRealtimeHandler) handleUpgrade(ctx *fasthttp.RequestCtx) {
 	// WebSocket session outlives it.
 	middlewareContextValues := snapshotRealtimeMiddlewareValues(ctx)
 
-	upgrader := h.websocketUpgrader(realtimeClientProtocol(rtProvider).RealtimeWebSocketSubprotocol())
+	upgrader := h.websocketUpgrader(realtimeClientProtocol(rtProvider, model, "").RealtimeWebSocketSubprotocol())
 	err = upgrader.Upgrade(ctx, func(conn *ws.Conn) {
 		defer conn.Close()
 		defer recoverWebSocketSession(conn)
@@ -570,12 +570,12 @@ func (h *WSRealtimeHandler) runRealtimeSession(
 	var translator schemas.RealtimeTranslator
 	if !clientConn.native {
 		var translatorErr *schemas.BifrostError
-		if translator, translatorErr = newRealtimeTranslator(rtProvider, key, model); translatorErr != nil {
+		if translator, translatorErr = newRealtimeTranslator(rtProvider, key, model, intent); translatorErr != nil {
 			clientConn.writeRealtimeError(translatorErr)
 			return
 		}
 	}
-	upstream, releaseUpstream, upstreamErr := h.openRealtimeUpstream(bifrostCtx, rtProvider, providerKey, key, model, intent)
+	upstream, releaseUpstream, upstreamErr := h.openRealtimeUpstream(bifrostCtx, rtProvider, providerKey, key, model, intent, buffered)
 	if upstreamErr != nil {
 		clientConn.writeRealtimeError(upstreamErr)
 		return
@@ -584,7 +584,7 @@ func (h *WSRealtimeHandler) runRealtimeSession(
 
 	// A translated connection speaks OpenAI Realtime to the client, so OpenAI's rules govern the relays.
 	// A native one speaks the provider's own protocol, which the provider governs as it does for itself.
-	protocol := realtimeClientProtocol(rtProvider)
+	protocol := realtimeClientProtocol(rtProvider, model, intent)
 	if clientConn.native {
 		protocol = rtProvider
 	}
@@ -622,6 +622,7 @@ func (h *WSRealtimeHandler) openRealtimeUpstream(
 	key schemas.Key,
 	model string,
 	intent string,
+	buffered []realtimeWebSocketFrame,
 ) (schemas.RealtimeUpstream, func(), *schemas.BifrostError) {
 	if connector, ok := rtProvider.(schemas.RealtimeConnector); ok {
 		upstream, bifrostErr := connector.ConnectRealtime(bifrostCtx, key, model, intent)
@@ -631,7 +632,19 @@ func (h *WSRealtimeHandler) openRealtimeUpstream(
 		return upstream, func() { _ = upstream.Close() }, nil
 	}
 
-	wsURL, urlErr := rtProvider.RealtimeWebSocketURL(bifrostCtx, key, model, intent)
+	var wsURL string
+	var urlErr *schemas.BifrostError
+	if dialer, ok := rtProvider.(schemas.RealtimeBootstrapDialer); ok && len(buffered) > 0 {
+		frames := make([][]byte, 0, len(buffered))
+		for _, frame := range buffered {
+			if frame.messageType == ws.TextMessage {
+				frames = append(frames, frame.data)
+			}
+		}
+		wsURL, urlErr = dialer.RealtimeWebSocketURLForBootstrap(bifrostCtx, key, model, intent, frames)
+	} else {
+		wsURL, urlErr = rtProvider.RealtimeWebSocketURL(bifrostCtx, key, model, intent)
+	}
 	if urlErr != nil {
 		return nil, nil, urlErr
 	}
