@@ -158,14 +158,14 @@ func generateTypeDefinitions(clientName string, tools []schemas.ChatTool, isTool
 	}
 	sb.WriteString("#\n")
 	sb.WriteString("# USAGE INSTRUCTIONS:\n")
-	sb.WriteString(fmt.Sprintf("# Call tools using: result = %s.tool_name(param=value)\n", clientName))
+	sb.WriteString(fmt.Sprintf("# Call tools using: r = %s.tool_name(param=value)\n", clientName))
 	sb.WriteString("# No async/await needed - calls are synchronous.\n")
 	sb.WriteString("#\n")
 	sb.WriteString("# CRITICAL - HANDLING RESPONSES:\n")
 	sb.WriteString("# A tool returns the decoded JSON when the server sends JSON: a dict or list,\n")
 	sb.WriteString("# or a number, bool or None. Any other text arrives as a str.\n")
 	sb.WriteString("# 1. Check the shape, not the whole value: print(type(r)), and print(sorted(r.keys())) for a dict.\n")
-	sb.WriteString("#    Printing a whole response puts all of it into your context.\n")
+	sb.WriteString("#    Printing a whole response, or assigning it to result, puts all of it into your context.\n")
 	sb.WriteString("# 2. dict: r[\"key\"] or r.get(\"key\", default), never r.key. list: r[0].\n")
 	if jsonModuleAvailable {
 		sb.WriteString("# 3. str holding JSON, often a field: data = json.decode(r[\"body\"]); plain text raises.\n")
@@ -267,14 +267,14 @@ func generateTypeDefinitions(clientName string, tools []schemas.ChatTool, isTool
 		sb.WriteString("    Returns:\n")
 		sb.WriteString("        The decoded JSON (usually a dict or list; a number, bool or None for a\n")
 		sb.WriteString("        bare value), or a str when the server's text is not JSON.\n")
-		sb.WriteString("        Check type(result) before indexing it.\n")
+		sb.WriteString("        Check its type before indexing it.\n")
 		sb.WriteString("\n")
 
 		// Example section
 		sb.WriteString("    Example:\n")
-		sb.WriteString(fmt.Sprintf("        result = %s.%s(%s)\n", clientName, toolName, getExampleParams(tool.Function.Parameters)))
-		sb.WriteString("        print(type(result))  # check the shape before indexing it\n")
-		sb.WriteString("        value = result.get(\"key\") if type(result) == \"dict\" else result\n")
+		sb.WriteString(fmt.Sprintf("        r = %s.%s(%s)\n", clientName, toolName, getExampleParams(tool.Function.Parameters)))
+		sb.WriteString("        print(type(r))  # check the shape before indexing it\n")
+		sb.WriteString("        result = r.get(\"key\") if type(r) == \"dict\" else type(r)\n")
 		sb.WriteString("    \"\"\"\n")
 		sb.WriteString("    ...\n\n")
 	}

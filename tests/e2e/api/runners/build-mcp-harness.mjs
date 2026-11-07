@@ -2963,6 +2963,9 @@ const INF53 = folder("INF-53 executeToolCode reply shapes", `Setup: ${CM_TEXT}.`
   ...cmSetup("INF-53"),
   code("INF-53", "result = 6*7", "result = 6*7", [A.status(200), contentEquals("Execution completed successfully.\nReturn value: 42"), noIsError()]),
   code("INF-53", "print('a')", "print('a')", [A.status(200), contentEquals("Print output:\na\n\nExecution completed successfully.")]),
+  // The return value follows the print output as compact JSON with sorted keys and no HTML escaping.
+  code("INF-53", "print a note and return a dict", "print('fetched 2 rows')\nresult = {'url': 'https://example.com/?a=1&b=<2>', 'rows': [{'id': 1}, {'id': 2}]}", [A.status(200),
+    contentEquals("Print output:\nfetched 2 rows\n\nExecution completed successfully.\nReturn value: {\"rows\":[{\"id\":1},{\"id\":2}],\"url\":\"https://example.com/?a=1&b=<2>\"}"), noIsError()]),
   code("INF-53", "x = 1", "x = 1", [A.status(200), isError(), contentHas("Execution completed but produced no data")]),
   cmTeardown("INF-53"),
 ]);
