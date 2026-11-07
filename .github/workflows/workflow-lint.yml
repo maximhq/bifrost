@@ -75,6 +75,9 @@ jobs:
       - name: Check apt HTTPS source rewriter
         run: bash ./.github/workflows/scripts/apt-sources-https.test.sh
 
+      - name: Check deploy template tag bump
+        run: bash ./.github/workflows/scripts/bump-deploy-image-tags.test.sh
+
       - name: Check Docker entrypoint config bootstrap
         run: bash ./transports/docker-entrypoint.test.sh
 
