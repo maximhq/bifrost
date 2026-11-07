@@ -131,6 +131,73 @@ func TestToChatMessages_AttachesReasoningToNextAssistantMessage(t *testing.T) {
 	}
 }
 
+func TestToChatMessages_KeepsReasoningThatClosesTheTurn(t *testing.T) {
+	text := "closing thought"
+	signature := "sig_last"
+
+	chatMessages := ToChatMessages([]ResponsesMessage{
+		{Role: Ptr(ResponsesInputMessageRoleUser), Content: &ResponsesMessageContent{ContentStr: Ptr("hi")}},
+		{Role: Ptr(ResponsesInputMessageRoleAssistant), Content: &ResponsesMessageContent{ContentStr: Ptr("Hello!")}},
+		{
+			Type: Ptr(ResponsesMessageTypeReasoning),
+			Role: Ptr(ResponsesInputMessageRoleAssistant),
+			Content: &ResponsesMessageContent{
+				ContentBlocks: []ResponsesMessageContentBlock{
+					{Type: ResponsesOutputMessageContentTypeReasoning, Text: &text, Signature: &signature},
+				},
+			},
+		},
+	})
+
+	if len(chatMessages) != 2 {
+		t.Fatalf("expected user + assistant, got %d messages", len(chatMessages))
+	}
+	assistant := chatMessages[1].ChatAssistantMessage
+	if assistant == nil || assistant.Reasoning == nil || *assistant.Reasoning != text {
+		t.Fatalf("trailing reasoning was dropped: %#v", assistant)
+	}
+	if len(assistant.ReasoningDetails) != 1 || assistant.ReasoningDetails[0].Signature == nil || *assistant.ReasoningDetails[0].Signature != signature {
+		t.Fatalf("trailing reasoning signature not kept: %#v", assistant.ReasoningDetails)
+	}
+}
+
+func TestToChatMessages_MergesClosingReasoningIntoExistingReasoning(t *testing.T) {
+	reasoning := func(text, signature string) ResponsesMessage {
+		return ResponsesMessage{
+			Type: Ptr(ResponsesMessageTypeReasoning),
+			Role: Ptr(ResponsesInputMessageRoleAssistant),
+			Content: &ResponsesMessageContent{
+				ContentBlocks: []ResponsesMessageContentBlock{
+					{Type: ResponsesOutputMessageContentTypeReasoning, Text: &text, Signature: &signature},
+				},
+			},
+		}
+	}
+
+	chatMessages := ToChatMessages([]ResponsesMessage{
+		{Role: Ptr(ResponsesInputMessageRoleUser), Content: &ResponsesMessageContent{ContentStr: Ptr("hi")}},
+		reasoning("opening", "sig_a"),
+		{Role: Ptr(ResponsesInputMessageRoleAssistant), Content: &ResponsesMessageContent{ContentStr: Ptr("Hello!")}},
+		reasoning("closing", "sig_b"),
+	})
+
+	if len(chatMessages) != 2 {
+		t.Fatalf("expected user + assistant, got %d messages", len(chatMessages))
+	}
+	assistant := chatMessages[1].ChatAssistantMessage
+	if assistant == nil || assistant.Reasoning == nil || *assistant.Reasoning != "opening\nclosing" {
+		t.Fatalf("closing reasoning missing from Reasoning: %#v", assistant)
+	}
+	if len(assistant.ReasoningDetails) != 2 {
+		t.Fatalf("expected both reasoning runs in ReasoningDetails, got %#v", assistant.ReasoningDetails)
+	}
+	for i, d := range assistant.ReasoningDetails {
+		if d.Index != i {
+			t.Fatalf("reasoning detail %d has index %d, want sequential indexes: %#v", i, d.Index, assistant.ReasoningDetails)
+		}
+	}
+}
+
 func TestToChatMessages_AttachesReasoningToToolCallAssistantMessage(t *testing.T) {
 	reasoningText := "I need to call the search tool."
 
