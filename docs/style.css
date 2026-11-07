@@ -134,3 +134,87 @@ nav[aria-label="Main"] .navbar-link a[href*="#free-license"]:hover {
         white-space: nowrap !important;
     }
 }
+
+/* "Deploy to the cloud in one click" card on the gateway quickstart. */
+/* One-click deploy buttons (quickstart and deployment guides). They follow the
+   docs theme rather than vendor badges: outlined, tinted with the theme color
+   on hover, and carrying a single-color platform mark from
+   docs/snippets/deploy-marks.jsx that inherits the text color. One hover
+   state for every button, no transforms or filters. */
+.deploy-cloud {
+    margin: 1.5rem 0;
+    padding: 1.25rem 1.5rem;
+    border: 1px solid rgb(var(--gray-200, 229 231 235));
+    border-radius: 0.75rem;
+}
+
+.dark .deploy-cloud {
+    border-color: rgb(255 255 255 / 0.12);
+}
+
+.deploy-cloud > strong {
+    display: block;
+    font-size: 1.125rem;
+    margin-bottom: 0.5rem;
+}
+
+.deploy-cloud > p {
+    margin: 0 0 1rem 0;
+}
+
+.deploy-buttons {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.625rem;
+}
+
+a.deploy-btn,
+a.deploy-btn:hover,
+a.deploy-btn:focus-visible {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.5rem 0.875rem;
+    border: 1px solid rgb(var(--gray-200, 229 231 235));
+    border-radius: 0.625rem;
+    background-color: rgb(var(--gray-50, 249 250 251));
+    color: rgb(var(--gray-800, 31 41 55)) !important;
+    font-size: 0.875rem;
+    font-weight: 500;
+    line-height: 1.25rem;
+    text-decoration: none !important;
+    transform: none;
+    filter: none;
+    transition: border-color 120ms ease, background-color 120ms ease, color 120ms ease;
+}
+
+a.deploy-btn:hover,
+a.deploy-btn:focus-visible {
+    border-color: rgb(var(--primary-dark));
+    background-color: rgb(var(--primary-dark) / 0.08);
+    color: rgb(var(--primary-dark)) !important;
+}
+
+.dark a.deploy-btn {
+    border-color: rgb(255 255 255 / 0.12);
+    background-color: rgb(255 255 255 / 0.04);
+    color: rgb(var(--gray-200, 229 231 235)) !important;
+}
+
+.dark a.deploy-btn:hover,
+.dark a.deploy-btn:focus-visible {
+    border-color: rgb(var(--primary-light));
+    background-color: rgb(var(--primary-light) / 0.12);
+    color: rgb(var(--primary-light)) !important;
+}
+
+.deploy-btn-mark {
+    width: 1.125rem;
+    height: 1.125rem;
+    flex: none;
+    fill: currentColor;
+}
+
+.deploy-btn-mark-wide {
+    width: 1.875rem;
+}
