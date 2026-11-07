@@ -850,12 +850,14 @@ func TestConvertResponsesToolsToGeminiCodeExecution(t *testing.T) {
 // alongside the neutral tools, on every retry attempt.
 func TestGenAINativeRetrievalToolsSurviveNeutralRoundTrip(t *testing.T) {
 	threshold := float32(0.3)
+	topK := int32(5)
 	in := &GeminiGenerationRequest{
 		Model:    "vertex/gemini-2.5-flash",
 		Contents: []Content{{Role: "user", Parts: []*Part{{Text: "What does the index say?"}}}},
 		Tools: []Tool{
 			{Retrieval: &Retrieval{VertexAISearch: &VertexAISearch{Datastore: "projects/p/locations/global/collections/default_collection/dataStores/ds"}}},
 			{Retrieval: &Retrieval{VertexRAGStore: &VertexRAGStore{RAGResources: []*VertexRAGStoreRAGResource{{RAGCorpus: "projects/p/locations/us-central1/ragCorpora/c"}}}}},
+			{FileSearch: &FileSearch{FileSearchStoreNames: []string{"fileSearchStores/store-1"}, TopK: &topK, MetadataFilter: `category="docs"`}},
 			{GoogleSearchRetrieval: &GoogleSearchRetrieval{DynamicRetrievalConfig: &DynamicRetrievalConfig{Mode: "MODE_DYNAMIC", DynamicThreshold: &threshold}}},
 			{Retrieval: &Retrieval{}},
 			{CodeExecution: &ToolCodeExecution{}},
@@ -871,7 +873,7 @@ func TestGenAINativeRetrievalToolsSurviveNeutralRoundTrip(t *testing.T) {
 		if err != nil {
 			t.Fatalf("attempt %d: ToGeminiResponsesRequest error: %v", attempt, err)
 		}
-		var vertexSearch, ragStore, emptyRetrieval, searchRetrieval, codeExecution int
+		var vertexSearch, ragStore, emptyRetrieval, fileSearch, searchRetrieval, codeExecution int
 		for _, tool := range out.Tools {
 			if tool.Retrieval != nil {
 				switch {
@@ -886,6 +888,13 @@ func TestGenAINativeRetrievalToolsSurviveNeutralRoundTrip(t *testing.T) {
 					emptyRetrieval++
 				}
 			}
+			if tool.FileSearch != nil {
+				if len(tool.FileSearch.FileSearchStoreNames) != 1 || tool.FileSearch.FileSearchStoreNames[0] != "fileSearchStores/store-1" ||
+					tool.FileSearch.TopK == nil || *tool.FileSearch.TopK != topK {
+					t.Fatalf("attempt %d: fileSearch config lost: %+v", attempt, tool.FileSearch)
+				}
+				fileSearch++
+			}
 			if tool.GoogleSearchRetrieval != nil {
 				cfg := tool.GoogleSearchRetrieval.DynamicRetrievalConfig
 				if cfg == nil || cfg.Mode != "MODE_DYNAMIC" || cfg.DynamicThreshold == nil || *cfg.DynamicThreshold != threshold {
@@ -897,8 +906,8 @@ func TestGenAINativeRetrievalToolsSurviveNeutralRoundTrip(t *testing.T) {
 				codeExecution++
 			}
 		}
-		if vertexSearch != 1 || ragStore != 1 || emptyRetrieval != 1 || searchRetrieval != 1 || codeExecution != 1 {
-			t.Fatalf("attempt %d: tools = %+v, want vertexAiSearch, vertexRagStore, bare retrieval, googleSearchRetrieval and codeExecution each once", attempt, out.Tools)
+		if vertexSearch != 1 || ragStore != 1 || emptyRetrieval != 1 || fileSearch != 1 || searchRetrieval != 1 || codeExecution != 1 {
+			t.Fatalf("attempt %d: tools = %+v, want vertexAiSearch, vertexRagStore, bare retrieval, fileSearch, googleSearchRetrieval and codeExecution each once", attempt, out.Tools)
 		}
 		for key := range out.GetExtraParams() {
 			if strings.Contains(key, "tool") {
@@ -915,9 +924,11 @@ func TestGenAINativeRetrievalToolsSurviveNeutralRoundTrip(t *testing.T) {
 // including googleSearchRetrieval.dynamicRetrievalConfig, which Gemini does define.
 func TestGenAINativeToolUnknownSubFieldsReachEgressUnchanged(t *testing.T) {
 	retrieval := `{"dynamicRetrievalConfig":{"mode":"MODE_DYNAMIC","dynamicThreshold":0.7}}`
+	fileSearch := `{"file_search_store_names":["fileSearchStores/store-snake"],"top_k":3,"futureKnob":true}`
 	searchRetrieval := `{"dynamicRetrievalConfig":{"mode":"MODE_DYNAMIC","dynamicThreshold":0.3},"futureKnob":{"z":1,"a":2}}`
 	body := `{"contents":[{"role":"user","parts":[{"text":"hi"}]}],"tools":[` +
 		`{"retrieval":` + retrieval + `},` +
+		`{"file_search":` + fileSearch + `},` +
 		`{"googleSearchRetrieval":` + searchRetrieval + `},` +
 		`{"urlContext":{"futureKnob":true}},` +
 		`{"functionDeclarations":[{"name":"lookup","description":"look up"}]}]}`
@@ -941,10 +952,13 @@ func TestGenAINativeToolUnknownSubFieldsReachEgressUnchanged(t *testing.T) {
 		if err != nil {
 			t.Fatalf("attempt %d: marshal egress: %v", attempt, err)
 		}
-		var gotRetrieval, gotSearchRetrieval, gotURLContext, gotFunction string
+		var gotRetrieval, gotFileSearch, gotSearchRetrieval, gotURLContext, gotFunction string
 		for _, tool := range gjson.GetBytes(wire, "tools").Array() {
 			if v := tool.Get("retrieval"); v.Exists() {
 				gotRetrieval = v.Raw
+			}
+			if v := tool.Get("fileSearch"); v.Exists() {
+				gotFileSearch = v.Raw
 			}
 			if v := tool.Get("googleSearchRetrieval"); v.Exists() {
 				gotSearchRetrieval = v.Raw
@@ -958,6 +972,9 @@ func TestGenAINativeToolUnknownSubFieldsReachEgressUnchanged(t *testing.T) {
 		}
 		if gotRetrieval != retrieval {
 			t.Fatalf("attempt %d: retrieval = %s, want %s (body %s)", attempt, gotRetrieval, retrieval, wire)
+		}
+		if gotFileSearch != fileSearch {
+			t.Fatalf("attempt %d: fileSearch = %s, want %s (body %s)", attempt, gotFileSearch, fileSearch, wire)
 		}
 		if gotSearchRetrieval != searchRetrieval {
 			t.Fatalf("attempt %d: googleSearchRetrieval = %s, want %s (body %s)", attempt, gotSearchRetrieval, searchRetrieval, wire)
@@ -997,11 +1014,11 @@ func TestGenAINativeToolUnknownSubFieldsReachEgressUnchanged(t *testing.T) {
 	}
 }
 
-// urlContextMetadata has no field in Bifrost's OpenAI-shaped Responses schema. A /genai
-// generateContent answer routed through the Responses path came back with groundingMetadata
-// but without candidates[0].urlContextMetadata, so a client could not see which URLs the
-// urlContext tool fetched. It must survive Gemini -> Bifrost Responses -> GenAI, in memory
-// and after the ProviderExtraFields have been through JSON.
+// urlContextMetadata, groundingMetadata (with retrievedContext / ragChunk), and
+// citationMetadata have no lossless field in Bifrost's OpenAI-shaped Responses schema.
+// They must survive Gemini -> Bifrost Responses -> GenAI, in memory and after
+// ProviderExtraFields have been through JSON, while falling back to
+// buildGroundingMetadataFromWebSearch when ProviderExtraFields is absent.
 func TestGeminiURLContextMetadataSurvivesResponsesRoundTrip(t *testing.T) {
 	native := &GenerateContentResponse{
 		ResponseID:   "resp-url",
@@ -1012,6 +1029,35 @@ func TestGeminiURLContextMetadataSurvivesResponsesRoundTrip(t *testing.T) {
 			URLContextMetadata: &URLContextMetadata{URLMetadata: []*URLMetadata{
 				{RetrievedURL: "https://example.com/cats", URLRetrievalStatus: "URL_RETRIEVAL_STATUS_SUCCESS"},
 			}},
+			GroundingMetadata: &GroundingMetadata{
+				RetrievalQueries: []string{"company leave policy"},
+				GroundingChunks: []*GroundingChunk{
+					{RetrievedContext: &GroundingChunkRetrievedContext{
+						URI:          "gs://corp-rag-bucket/handbook.pdf",
+						Title:        "Employee Handbook",
+						Text:         "Cats are welcome.",
+						DocumentName: "projects/p1/locations/us-central1/ragCorpora/c1/ragFiles/f1",
+						RAGChunk:     &RAGChunk{Text: "Cats are welcome.", PageSpan: &RAGChunkPageSpan{FirstPage: 2, LastPage: 4}},
+					}},
+					{RetrievedContext: &GroundingChunkRetrievedContext{
+						DocumentName: "projects/p1/locations/global/collections/default_collection/dataStores/ds1/branches/0/documents/doc-42",
+						Title:        "Policy 42",
+						Text:         "More about cats.",
+					}},
+					{RetrievedContext: &GroundingChunkRetrievedContext{
+						URI:   "gs://corp-rag-bucket/handbook.pdf",
+						Title: "Employee Handbook",
+						Text:  "Appendix on cats.",
+					}},
+				},
+				GroundingSupports: []*GroundingSupport{{
+					Segment:               &Segment{StartIndex: 0, EndIndex: 23, Text: "The page is about cats."},
+					GroundingChunkIndices: []int32{1, 2},
+				}},
+			},
+			CitationMetadata: &CitationMetadata{Citations: []*Citation{
+				{StartIndex: 0, EndIndex: 23, URI: "gs://corp-rag-bucket/handbook.pdf", License: "CC-BY-4.0"},
+			}},
 		}},
 	}
 
@@ -1021,13 +1067,28 @@ func TestGeminiURLContextMetadataSurvivesResponsesRoundTrip(t *testing.T) {
 		if out == nil || len(out.Candidates) == 0 {
 			t.Fatalf("no candidates restored")
 		}
-		meta := out.Candidates[0].URLContextMetadata
+		cand := out.Candidates[0]
+		meta := cand.URLContextMetadata
 		if meta == nil || len(meta.URLMetadata) != 1 {
 			t.Fatalf("candidates[0].urlContextMetadata = %+v, want one entry", meta)
 		}
 		if meta.URLMetadata[0].RetrievedURL != "https://example.com/cats" || meta.URLMetadata[0].URLRetrievalStatus != "URL_RETRIEVAL_STATUS_SUCCESS" {
 			t.Fatalf("urlMetadata = %+v", meta.URLMetadata[0])
 		}
+		require.NotNil(t, cand.GroundingMetadata)
+		assert.Equal(t, []string{"company leave policy"}, cand.GroundingMetadata.RetrievalQueries)
+		require.Len(t, cand.GroundingMetadata.GroundingChunks, 3)
+		rc0 := cand.GroundingMetadata.GroundingChunks[0].RetrievedContext
+		require.NotNil(t, rc0)
+		assert.Equal(t, "Cats are welcome.", rc0.Text)
+		assert.Equal(t, "projects/p1/locations/us-central1/ragCorpora/c1/ragFiles/f1", rc0.DocumentName)
+		require.NotNil(t, rc0.RAGChunk)
+		require.NotNil(t, rc0.RAGChunk.PageSpan)
+		assert.Equal(t, int32(2), rc0.RAGChunk.PageSpan.FirstPage)
+		assert.Equal(t, int32(4), rc0.RAGChunk.PageSpan.LastPage)
+		require.NotNil(t, cand.CitationMetadata)
+		require.Len(t, cand.CitationMetadata.Citations, 1)
+		assert.Equal(t, "CC-BY-4.0", cand.CitationMetadata.Citations[0].License)
 	}
 
 	t.Run("in memory", func(t *testing.T) {
@@ -1045,6 +1106,21 @@ func TestGeminiURLContextMetadataSurvivesResponsesRoundTrip(t *testing.T) {
 		}
 		bifrostResp.ProviderExtraFields = decoded
 		check(t, bifrostResp)
+	})
+	t.Run("fallback without extra fields", func(t *testing.T) {
+		bifrostResp := native.ToResponsesBifrostResponsesResponse()
+		bifrostResp.ProviderExtraFields = nil
+		out := ToGeminiResponsesResponse(bifrostResp)
+		require.NotNil(t, out)
+		require.Len(t, out.Candidates, 1)
+		gm := out.Candidates[0].GroundingMetadata
+		require.NotNil(t, gm)
+		require.Len(t, gm.GroundingChunks, 3)
+		assert.Equal(t, "gs://corp-rag-bucket/handbook.pdf", gm.GroundingChunks[0].Web.URI)
+		assert.Equal(t, "projects/p1/locations/global/collections/default_collection/dataStores/ds1/branches/0/documents/doc-42", gm.GroundingChunks[1].Web.URI)
+		assert.Equal(t, "gs://corp-rag-bucket/handbook.pdf", gm.GroundingChunks[2].Web.URI)
+		require.Len(t, gm.GroundingSupports, 1)
+		assert.Equal(t, []int32{1, 2}, gm.GroundingSupports[0].GroundingChunkIndices)
 	})
 }
 
