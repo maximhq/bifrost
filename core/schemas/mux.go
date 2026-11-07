@@ -873,6 +873,12 @@ func ToChatMessages(rms []ResponsesMessage) []ChatMessage {
 		if rm.Type != nil && *rm.Type == ResponsesMessageTypeConfigurationUpdate {
 			continue
 		}
+		// Chat Completions has no MCP call item either. An mcp_call (which an Anthropic
+		// mcp_tool_use or mcp_tool_result block becomes) carries no role, and a roleless
+		// chat message is rejected with a 400 by every OpenAI-compatible upstream.
+		if rm.Type != nil && *rm.Type == ResponsesMessageTypeMCPCall {
+			continue
+		}
 		if rm.Type != nil && *rm.Type == ResponsesMessageTypeReasoning {
 			// Buffer reasoning so it attaches to the next assistant message.
 			if rm.Content != nil {

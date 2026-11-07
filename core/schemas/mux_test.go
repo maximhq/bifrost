@@ -2596,6 +2596,31 @@ func TestToChatMessages_DropsConfigurationUpdateItem(t *testing.T) {
 	}
 }
 
+// TestToChatMessages_DropsMCPCallItems pins #9721 on the Responses->Chat fallback: the
+// mcp_call items an Anthropic mcp_tool_use / mcp_tool_result block becomes have no chat
+// equivalent and no role, so they must be dropped rather than emitted as roleless messages.
+func TestToChatMessages_DropsMCPCallItems(t *testing.T) {
+	var input []ResponsesMessage
+	if err := Unmarshal([]byte(`[
+		{"role":"user","content":"look"},
+		{"type":"mcp_call","id":"call_1","name":"analyze_image","arguments":"{}","server_label":"4_5v_mcp"},
+		{"type":"mcp_call","status":"completed","call_id":"call_1","output":"a red pixel"},
+		{"role":"user","content":"reply OK"}
+	]`), &input); err != nil {
+		t.Fatalf("unmarshal input: %v", err)
+	}
+
+	got := ToChatMessages(input)
+	if len(got) != 2 {
+		t.Fatalf("expected only the two user messages, got %d messages: %+v", len(got), got)
+	}
+	for i, msg := range got {
+		if msg.Role != ChatMessageRoleUser {
+			t.Fatalf("chat[%d] role = %q, want %q", i, msg.Role, ChatMessageRoleUser)
+		}
+	}
+}
+
 func TestUsageConvertersKeepIterations(t *testing.T) {
 	pass := ResponsesResponseUsage{Type: Ptr("advisor_message"), Model: Ptr("claude-opus-4-8"), InputTokens: 2000, OutputTokens: 900}
 	responses := &ResponsesResponseUsage{InputTokens: 10, OutputTokens: 1, TotalTokens: 11, Iterations: []ResponsesResponseUsage{pass}}
