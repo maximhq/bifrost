@@ -21,6 +21,7 @@ type opencodeProvider struct {
 	client              *fasthttp.Client
 	streamingClient     *fasthttp.Client
 	networkConfig       schemas.NetworkConfig
+	listModelsHeaders   map[string]schemas.SecretVar // static ExtraHeaders minus x-opencode-session
 	sendBackRawRequest  bool
 	sendBackRawResponse bool
 	// fallbackResponsesToChat routes Responses API calls through Chat
@@ -78,10 +79,36 @@ func newOpencodeProvider(
 		client:                  client,
 		streamingClient:         streamingClient,
 		networkConfig:           config.NetworkConfig,
+		listModelsHeaders:       withoutOpencodeSessionHeader(config.NetworkConfig.ExtraHeaders),
 		sendBackRawRequest:      config.SendBackRawRequest,
 		sendBackRawResponse:     config.SendBackRawResponse,
 		fallbackResponsesToChat: fallbackResponsesToChat,
 	}, nil
+}
+
+// withoutOpencodeSessionHeader returns the static extra headers with every case
+// variant of x-opencode-session removed, for ListModels: the gateway only takes
+// the header on inference calls, where the resolved value replaces any static
+// one. It is built once per provider, so ListModels pays nothing per call; the
+// original map is returned as-is when it carries no such header.
+func withoutOpencodeSessionHeader(headers map[string]schemas.SecretVar) map[string]schemas.SecretVar {
+	found := false
+	for name := range headers {
+		if strings.EqualFold(name, OpencodeSessionHeader) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return headers
+	}
+	filtered := make(map[string]schemas.SecretVar, len(headers))
+	for name, value := range headers {
+		if !strings.EqualFold(name, OpencodeSessionHeader) {
+			filtered[name] = value
+		}
+	}
+	return filtered
 }
 
 // GetProviderKey returns the provider identifier stored at construction time.
@@ -117,7 +144,7 @@ func (p *opencodeProvider) ListModels(ctx *schemas.BifrostContext, keys []schema
 		request,
 		p.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/models"),
 		keys,
-		p.networkConfig.ExtraHeaders,
+		p.listModelsHeaders,
 		p.providerKey,
 		providerUtils.ShouldSendBackRawRequest(ctx, p.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, p.sendBackRawResponse),

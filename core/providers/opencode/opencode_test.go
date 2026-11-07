@@ -537,6 +537,7 @@ type wireCapture struct {
 	method          string
 	path            string
 	opencodeSession string
+	staticProbe     string
 }
 
 // newOpencodeWireCtx builds a BifrostContext carrying the request headers the
@@ -714,6 +715,7 @@ func newOpencodeWireProvider(t *testing.T, newProvider func(*schemas.ProviderCon
 			method:          r.Method,
 			path:            r.URL.Path,
 			opencodeSession: r.Header.Get(OpencodeSessionHeader),
+			staticProbe:     r.Header.Get("X-Static-Probe"),
 		})
 		mu.Unlock()
 
@@ -973,25 +975,53 @@ func TestOpencodeSessionHeaderOnWire(t *testing.T) {
 }
 
 // TestOpencodeSessionHeaderNotOnListModels pins that ListModels requests never
-// carry the header, even when the client sent one.
+// carry the header, whether the client sent one or the provider config sets one
+// statically under any case variant, while other static headers still go out.
 func TestOpencodeSessionHeaderNotOnListModels(t *testing.T) {
-	provider, captures := newOpencodeWireProvider(t, func(config *schemas.ProviderConfig) (*opencodeProvider, error) {
-		return NewOpencodeGoProvider(config, nil)
-	})
-	ctx := newOpencodeWireCtx(t, map[string]string{OpencodeSessionHeader: "client-sess-abc"})
-	setOpencodeVirtualKey(ctx, "vk-1")
-
-	runOpencodeOp(t, provider, ctx, schemas.Key{Value: *schemas.NewSecretVar(wireTestAPIKey)}, opListModels)
-
-	got := captures()
-	if len(got) != 1 {
-		t.Fatalf("upstream request count = %d, want 1", len(got))
+	tests := []struct {
+		name         string
+		configMutate func(*schemas.ProviderConfig)
+	}{
+		{name: "client header only"},
+		{
+			name: "case-variant static config header",
+			configMutate: func(config *schemas.ProviderConfig) {
+				config.NetworkConfig.ExtraHeaders = schemas.NewSecretVarMap(map[string]string{
+					"X-Opencode-Session": "static-sess",
+					"x-opencode-session": "static-sess-lower",
+					"X-Static-Probe":     "kept",
+				})
+			},
+		},
 	}
-	if got[0].path != "/v1/models" {
-		t.Fatalf("request path = %q, want /v1/models", got[0].path)
-	}
-	if got[0].opencodeSession != "" {
-		t.Errorf("ListModels request carried x-opencode-session = %q, want none", got[0].opencodeSession)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var mutators []func(*schemas.ProviderConfig)
+			if tt.configMutate != nil {
+				mutators = append(mutators, tt.configMutate)
+			}
+			provider, captures := newOpencodeWireProvider(t, func(config *schemas.ProviderConfig) (*opencodeProvider, error) {
+				return NewOpencodeGoProvider(config, nil)
+			}, mutators...)
+			ctx := newOpencodeWireCtx(t, map[string]string{OpencodeSessionHeader: "client-sess-abc"})
+			setOpencodeVirtualKey(ctx, "vk-1")
+
+			runOpencodeOp(t, provider, ctx, schemas.Key{Value: *schemas.NewSecretVar(wireTestAPIKey)}, opListModels)
+
+			got := captures()
+			if len(got) != 1 {
+				t.Fatalf("upstream request count = %d, want 1", len(got))
+			}
+			if got[0].path != "/v1/models" {
+				t.Fatalf("request path = %q, want /v1/models", got[0].path)
+			}
+			if got[0].opencodeSession != "" {
+				t.Errorf("ListModels request carried x-opencode-session = %q, want none", got[0].opencodeSession)
+			}
+			if tt.configMutate != nil && got[0].staticProbe != "kept" {
+				t.Errorf("ListModels request carried X-Static-Probe = %q, want other static headers kept", got[0].staticProbe)
+			}
+		})
 	}
 }
 
