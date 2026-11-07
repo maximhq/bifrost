@@ -62,6 +62,12 @@ variable "security_group_ids" {
   type        = list(string)
 }
 
+variable "load_balancer_security_group_ids" {
+  description = "Security group IDs for the Application Load Balancer. Defaults to security_group_ids."
+  type        = list(string)
+  default     = null
+}
+
 # --- IAM & Secrets ---
 variable "execution_role_arn" {
   description = "ARN of the ECS task execution IAM role."

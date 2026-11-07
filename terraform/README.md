@@ -73,7 +73,7 @@ terraform init
 terraform test
 ```
 
-Tests cover all 7 deployment targets across 11 test files. See the [module README](modules/bifrost/README.md#testing) for details.
+Tests cover all 7 deployment targets across 13 test files. See the [module README](modules/bifrost/README.md#testing) for details.
 
 ## Directory Structure
 
@@ -92,7 +92,9 @@ terraform/
     kubernetes/                 # Generic K8s (any cluster, no cloud APIs)
   examples/
     aws-ecs/                    # Deploy on ECS Fargate
+    aws-ecs-postgres/           # ECS Fargate + RDS + ALB (the one-click AWS stack)
     gcp-gke/                    # Deploy on GKE
+    gcp-cloud-run-postgres/     # Cloud Run + Cloud SQL (the one-click GCP stack)
     azure-aks/                  # Deploy on AKS
     kubernetes/                 # Deploy on any K8s cluster
 ```

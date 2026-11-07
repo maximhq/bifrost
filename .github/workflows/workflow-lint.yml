@@ -12,6 +12,7 @@ on:
       - "**/version"
       - "transports/docker-entrypoint.sh"
       - "transports/docker-entrypoint.test.sh"
+      - "deploy/**"
 
 permissions:
   contents: read
@@ -76,3 +77,9 @@ jobs:
 
       - name: Check Docker entrypoint config bootstrap
         run: bash ./transports/docker-entrypoint.test.sh
+
+      - name: Check the AWS one-click deploy script
+        run: bash ./deploy/aws/deploy.test.sh
+
+      - name: Check the GCP one-click deploy script
+        run: bash ./deploy/gcp/deploy.test.sh

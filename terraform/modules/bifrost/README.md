@@ -198,7 +198,8 @@ Test files are in `tests/` and cover all 7 deployment targets:
 | `kubernetes.tftest.hcl`     | Generic K8s: storage class, ingress, annotations   |
 | `network_inputs.tftest.hcl` | GCP/Azure: existing VPC and subnets must pair      |
 | `aws_database.tftest.hcl`   | RDS: final snapshot independent of deletion protection |
+| `aws_load_balancer.tftest.hcl` | ECS: ALB security group admits allowed_cidr, tasks admit only the ALB |
 
 ## Examples
 
-See the [`examples/`](../../examples/) directory for complete deployment examples for each cloud provider and service combination.
+See the [`examples/`](../../examples/) directory for complete deployment examples for each cloud provider and service combination. [`aws-ecs-postgres`](../../examples/aws-ecs-postgres/) and [`gcp-cloud-run-postgres`](../../examples/gcp-cloud-run-postgres/) are the one-click stacks driven by `deploy/aws/deploy.sh` and `deploy/gcp/deploy.sh`.

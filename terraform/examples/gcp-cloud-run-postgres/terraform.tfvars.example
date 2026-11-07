@@ -1,0 +1,39 @@
+# =============================================================================
+# GCP Cloud Run + Cloud SQL Example — terraform.tfvars
+# WARNING: Do NOT commit this file with real secrets (API keys, passwords).
+# =============================================================================
+
+project_id  = "my-gcp-project"
+region      = "us-central1"
+name_prefix = "bifrost"
+
+# Pin a released version for production.
+image_tag = "latest"
+
+# Enterprise: use the Artifact Registry path issued for your organization.
+# image_repository = "us-west1-docker.pkg.dev/bifrost-enterprise/your-org/bifrost"
+
+# -----------------------------------------------------------------------------
+# Database
+# -----------------------------------------------------------------------------
+database_instance_class      = "db-custom-1-3840"
+database_storage_gb          = 20
+database_deletion_protection = false
+
+# -----------------------------------------------------------------------------
+# Access
+# -----------------------------------------------------------------------------
+enforce_auth_on_inference = true
+
+# Optional: seed providers now instead of through the dashboard.
+# providers_config = {
+#   vertex = { project_id = "my-gcp-project", region = "us-central1" }
+# }
+
+# -----------------------------------------------------------------------------
+# Compute
+# -----------------------------------------------------------------------------
+min_instances = 1
+max_instances = 1
+cpu           = 1000
+memory        = 2048

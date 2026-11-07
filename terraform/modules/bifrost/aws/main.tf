@@ -31,6 +31,12 @@ locals {
   subnet_ids         = local.create_subnets ? aws_subnet.public[*].id : var.existing_subnet_ids
   security_group_ids = local.create_security_groups ? [aws_security_group.this[0].id] : var.existing_security_group_ids
 
+  # With an ALB in front of ECS the load balancer gets its own security group:
+  # allowed_cidr reaches the listener, and the tasks accept the container port
+  # only from that group. Without one, allowed_cidr reaches the tasks directly.
+  create_load_balancer_sg          = local.create_security_groups && local.is_ecs && var.create_load_balancer
+  load_balancer_security_group_ids = local.create_load_balancer_sg ? [aws_security_group.load_balancer[0].id] : local.security_group_ids
+
   azs = slice(data.aws_availability_zones.available.names, 0, 2)
 }
 
@@ -114,12 +120,49 @@ resource "aws_security_group" "this" {
 resource "aws_vpc_security_group_ingress_rule" "container_port" {
   count = local.create_security_groups ? 1 : 0
 
-  security_group_id = aws_security_group.this[0].id
-  description       = "Allow inbound traffic on container port"
+  security_group_id            = aws_security_group.this[0].id
+  description                  = local.create_load_balancer_sg ? "Allow the load balancer to reach the container port" : "Allow inbound traffic on container port"
+  cidr_ipv4                    = local.create_load_balancer_sg ? null : var.allowed_cidr
+  referenced_security_group_id = local.create_load_balancer_sg ? aws_security_group.load_balancer[0].id : null
+  from_port                    = var.container_port
+  to_port                      = var.container_port
+  ip_protocol                  = "tcp"
+
+  tags = var.tags
+}
+
+resource "aws_security_group" "load_balancer" {
+  count = local.create_load_balancer_sg ? 1 : 0
+
+  name        = "${var.name_prefix}-alb-sg"
+  description = "Security group for the Bifrost load balancer"
+  vpc_id      = local.vpc_id
+
+  tags = merge(var.tags, {
+    Name = "${var.name_prefix}-alb-sg"
+  })
+}
+
+resource "aws_vpc_security_group_ingress_rule" "load_balancer_http" {
+  count = local.create_load_balancer_sg ? 1 : 0
+
+  security_group_id = aws_security_group.load_balancer[0].id
+  description       = "Allow inbound HTTP to the load balancer listener"
   cidr_ipv4         = var.allowed_cidr
-  from_port         = var.container_port
-  to_port           = var.container_port
+  from_port         = 80
+  to_port           = 80
   ip_protocol       = "tcp"
+
+  tags = var.tags
+}
+
+resource "aws_vpc_security_group_egress_rule" "load_balancer_all_outbound" {
+  count = local.create_load_balancer_sg ? 1 : 0
+
+  security_group_id = aws_security_group.load_balancer[0].id
+  description       = "Allow all outbound traffic"
+  cidr_ipv4         = "0.0.0.0/0"
+  ip_protocol       = "-1"
 
   tags = var.tags
 }
@@ -253,9 +296,10 @@ module "ecs" {
   memory        = var.memory
 
   # Networking
-  vpc_id             = local.vpc_id
-  subnet_ids         = local.subnet_ids
-  security_group_ids = local.security_group_ids
+  vpc_id                           = local.vpc_id
+  subnet_ids                       = local.subnet_ids
+  security_group_ids               = local.security_group_ids
+  load_balancer_security_group_ids = local.load_balancer_security_group_ids
 
   # IAM & secrets
   execution_role_arn = aws_iam_role.ecs_execution[0].arn
