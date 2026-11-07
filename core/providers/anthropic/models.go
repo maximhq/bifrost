@@ -68,6 +68,8 @@ func (response *AnthropicListModelsResponse) ToBifrostListModelsResponse(provide
 	return bifrostResponse
 }
 
+// ToAnthropicListModelsResponse converts a Bifrost list-models response to the Anthropic Models API shape.
+// max_input_tokens falls back to context_length for providers that only report the latter.
 func ToAnthropicListModelsResponse(response *schemas.BifrostListModelsResponse) *AnthropicListModelsResponse {
 	if response == nil {
 		return nil
