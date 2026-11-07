@@ -1501,7 +1501,7 @@ func BenchmarkGenAIToolsResponsesEgress(b *testing.B) {
 }
 
 // BenchmarkGeminiResponsesResponseRoundTrip measures Gemini -> Bifrost Responses -> GenAI for
-// a plain answer (common case) and one carrying urlContextMetadata.
+// a plain answer (common case), urlContextMetadata, and Maps grounding metadata.
 func BenchmarkGeminiResponsesResponseRoundTrip(b *testing.B) {
 	plain := &GenerateContentResponse{
 		ResponseID:   "resp",
@@ -1528,6 +1528,38 @@ func BenchmarkGeminiResponsesResponseRoundTrip(b *testing.B) {
 			b.ReportAllocs()
 			for i := 0; i < b.N; i++ {
 				_ = ToGeminiResponsesResponse(resp.ToResponsesBifrostResponsesResponse())
+			}
+		})
+	}
+
+	mapsResponse := &GenerateContentResponse{
+		ResponseID:   "resp",
+		ModelVersion: "gemini-2.5-flash",
+		Candidates: []*Candidate{{
+			Content:           &Content{Role: "model", Parts: []*Part{{Text: "Blue Bottle Coffee"}}},
+			FinishReason:      FinishReasonStop,
+			GroundingMetadata: mapsGroundingMetadata(),
+		}},
+	}
+	mapsBifrostResponse := mapsResponse.ToResponsesBifrostResponsesResponse()
+	mapsExtraFieldsJSON, err := json.Marshal(mapsBifrostResponse.ProviderExtraFields)
+	if err != nil {
+		b.Fatal(err)
+	}
+	var mapsJSONExtraFields map[string]interface{}
+	if err := json.Unmarshal(mapsExtraFieldsJSON, &mapsJSONExtraFields); err != nil {
+		b.Fatal(err)
+	}
+	for name, jsonDecoded := range map[string]bool{"mapsPointer": false, "mapsJSONDecoded": true} {
+		jsonDecoded := jsonDecoded
+		b.Run(name, func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				bifrostResponse := mapsResponse.ToResponsesBifrostResponsesResponse()
+				if jsonDecoded {
+					bifrostResponse.ProviderExtraFields = mapsJSONExtraFields
+				}
+				_ = ToGeminiResponsesResponse(bifrostResponse)
 			}
 		})
 	}
