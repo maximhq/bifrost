@@ -222,6 +222,7 @@
                   "mcp/auth/cross-app-access"
                 ]
               },
+              "mcp/per-caller-discovery",
               "mcp/sessions",
               "mcp/tool-execution",
               "mcp/resources-and-prompts",

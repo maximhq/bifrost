@@ -446,10 +446,15 @@ client-refresh-tools:
       10 minutes by default).
 
       Use it after adding, removing, or re-describing a tool on the upstream
-      MCP server. Unlike reconnect, this applies to every client type,
+      MCP server. Unlike reconnect, this applies to every connection mode,
       including per-call clients (any per-user auth type, and any shared http
       client with needs_session_stickiness false/omitted), which hold no
-      persistent connection and so have no other on-demand refresh path.
+      persistent connection and so have no other on-demand refresh path. The
+      exception is a client with per_user_discovery on, which keeps no tool
+      list of its own: refresh a per_user_oauth or per_user_headers caller's
+      tools with POST /api/mcp/sessions/{id}/refresh instead. A
+      token_exchange caller has no session, so their discovery is made again
+      only after it is deleted.
 
       How the refresh runs depends on the client: a sticky client with a live
       connection is re-listed over it; a per-call client goes through an
@@ -468,7 +473,8 @@ client-refresh-tools:
       means anything: disabled (enable it first), needs_reauth (reauthorize
       it first), or still pending_verification (complete the one-time admin
       verification instead — refreshing a client awaiting that flow would
-      bypass it). 404 if no client is registered under the given ID.
+      bypass it), and for a client with per_user_discovery on. 404 if no
+      client is registered under the given ID.
     tags:
       - MCP
     parameters:
@@ -679,7 +685,10 @@ client-reauthorize:
         in on the client's existing OAuth registration.
 
       A client still in its first sign-in (declared in config.json and not
-      yet verified) gets 400: use initiate-verification instead.
+      yet verified) gets 400: use initiate-verification instead. So does a
+      per_user_oauth client with per_user_discovery on, which keeps no admin
+      credential to refresh; POST /api/mcp/client/{id}/reregister still
+      applies to it.
 
       Complete the returned flow like any other admin OAuth flow: open
       authorize_url in a browser, poll status_url until "authorized", then
@@ -705,14 +714,11 @@ client-reauthorize:
             schema:
               $ref: '../../schemas/management/oauth.yaml#/OAuthFlowInitiation'
       '400':
-        description: Client is not an OAuth-based auth type (oauth, per_user_oauth), or has never completed initial OAuth authorization (use initiate-verification instead)
+        description: Client is not an OAuth-based auth type (oauth, per_user_oauth), has never completed initial OAuth authorization (use initiate-verification instead), or has per_user_discovery on and so keeps no admin credential
         $ref: '../../openapi.yaml#/components/responses/BadRequest'
       '404':
         description: MCP client not found
         $ref: '../../openapi.yaml#/components/responses/NotFound'
-      '409':
-        description: The admin discovery credential for this per_user_oauth client does not need repair or does not exist
-        $ref: '../../openapi.yaml#/components/responses/Conflict'
       '503':
         description: OAuth provider not configured
         content:
@@ -855,6 +861,12 @@ client-verify-headers:
       verification and upserts the credential back to active, whether or not
       it currently needs repair (mirrors POST /reauthorize for OAuth-based
       clients).
+
+      A client with per_user_discovery on is verified the same way, but
+      keeps neither the sample values nor the tools they discover: each
+      caller's tools are discovered with their own values. Once it is
+      verified it has no admin credential to refresh, and a repeat call gets
+      400.
     tags:
       - MCP
     parameters:
@@ -900,9 +912,9 @@ client-verify-headers:
                   type: string
                 tools_count:
                   type: integer
-                  description: Number of tools discovered during verification
+                  description: Number of tools discovered during verification. A client with per_user_discovery on does not keep them.
       '400':
-        description: Client is not auth_type "per_user_headers", has no per_user_header_keys declared, or user_headers is missing required keys
+        description: Client is not auth_type "per_user_headers", has no per_user_header_keys declared, user_headers is missing required keys, or the client has per_user_discovery on and is already verified
         $ref: '../../openapi.yaml#/components/responses/BadRequest'
       '404':
         $ref: '../../openapi.yaml#/components/responses/NotFound'
@@ -952,6 +964,12 @@ client-verify-exchange:
       resubmitting always re-runs verification and retains a fresh
       credential, whether or not it currently needs repair (mirrors POST
       /reauthorize for OAuth-based clients).
+
+      A client with per_user_discovery on is verified the same way, but
+      keeps neither the exchanged token nor the tools it discovers: each
+      caller's tools are discovered with their own exchanged token. Once it
+      is verified it has no admin credential to refresh, and a repeat call
+      gets 400.
     tags:
       - MCP
     parameters:
@@ -979,15 +997,16 @@ client-verify-exchange:
                   type: string
                 tools_count:
                   type: integer
-                  description: Number of tools discovered during verification
+                  description: Number of tools discovered during verification. A client with per_user_discovery on does not keep them.
       '400':
         description: |
           Client is not auth_type "token_exchange", token exchange is
           unavailable (no identity-provider integration configured), the
           request has nothing to exchange (no identity-provider token and no
           sign-in of the admin's own, as with an API key: sign in with your
-          identity provider and retry), or the admin's Bifrost sign-in has
-          expired (sign in to Bifrost again and retry)
+          identity provider and retry), the admin's Bifrost sign-in has
+          expired (sign in to Bifrost again and retry), or the client has
+          per_user_discovery on and is already verified
         $ref: '../../openapi.yaml#/components/responses/BadRequest'
       '404':
         $ref: '../../openapi.yaml#/components/responses/NotFound'
@@ -1060,6 +1079,10 @@ session-by-id:
         callback that has not yet claimed it can no longer mint a token. A
         callback already completing at that moment can still save its token,
         which then appears as a session that can be revoked
+
+      Revoking a user or virtual-key credential on an MCP client with
+      `per_user_discovery` on also deletes the caller's discovery made with
+      it, so their next request offers the client's `<name>-connect` tool.
 
       Bifrost does **not** call the upstream provider's revoke endpoint —
       revocation is local. Per-user-headers credentials never call upstream.
@@ -1214,6 +1237,12 @@ session-refresh:
         $ref: '../../openapi.yaml#/components/responses/InternalError'
       '502':
         description: Discovery with the stored credential failed; the caller keeps their existing discovery
+      '503':
+        description: The config store is disabled
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
 
 # ─── Per-User Headers submission flow ────────────────────────────────────────
 
