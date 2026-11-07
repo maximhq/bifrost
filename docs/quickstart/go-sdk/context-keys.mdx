@@ -153,6 +153,8 @@ bfCtx.SetValue(schemas.BifrostContextKeyRequestTimeout, 10*time.Minute)
 
 The override is a per-attempt limit, the same as the provider timeout it replaces: an attempt that exceeds it fails as a provider timeout, and Bifrost moves on to the next fallback. The context deadline is separate: it is the budget for the whole request across retries and fallbacks, and it still caps every attempt. A context deadline alone does not lift the provider timeout, so set this key when a request needs longer. For streaming requests the timeout bounds the wait for the response headers; once streaming starts, the stream idle timeout below applies instead.
 
+Gateway callers set the same timeout with the `x-bf-request-timeout` header, once the server sets `client.max_request_timeout_in_seconds`. See [Request Timeout](/providers/request-options#request-timeout).
+
 ### Stream Idle Timeout
 
 Set a per-chunk idle timeout for streaming responses. If no chunk arrives within this duration, the stream is considered stalled and cancelled.

@@ -41,6 +41,7 @@ type testHandlerStore struct {
 	allowDirectKeys      bool
 	extraFieldsInHeaders bool
 	captureClientIP      bool
+	maxRequestTimeout    time.Duration
 }
 
 func (s testHandlerStore) GetHeaderMatcher() *HeaderMatcher                      { return s.matcher }
@@ -55,6 +56,7 @@ func (s testHandlerStore) GetMCPHeaderCombinedAllowlist() schemas.WhiteList {
 func (s testHandlerStore) ShouldAllowPerRequestStorageOverride() bool      { return false }
 func (s testHandlerStore) ShouldAllowPerRequestRawOverride() bool          { return false }
 func (s testHandlerStore) ShouldAllowDirectKeys() bool                     { return s.allowDirectKeys }
+func (s testHandlerStore) GetMaxRequestTimeout() time.Duration             { return s.maxRequestTimeout }
 func (s testHandlerStore) ShouldSendExtraFieldsInHeaders() bool            { return s.extraFieldsInHeaders }
 func (s testHandlerStore) ShouldCaptureClientIP() bool                     { return s.captureClientIP }
 func (s testHandlerStore) IsProviderConfigured(schemas.ModelProvider) bool { return false }
@@ -546,6 +548,89 @@ func TestConvertToBifrostContext_SessionTTLAndAffinityHeaders(t *testing.T) {
 				t.Fatalf("session affinity = %#v, want %#v", got, tc.wantAffinity)
 			}
 		})
+	}
+}
+
+// TestConvertToBifrostContext_RequestTimeoutHeader pins x-bf-request-timeout: a Go duration or
+// whole seconds, clamped to client.max_request_timeout_in_seconds, and ignored outright while no
+// cap is configured so the header changes nothing until an operator opts in.
+// warnRecordingLogger keeps Warn messages so tests can check what the server logged.
+type warnRecordingLogger struct {
+	testLogger
+	warnings []string
+}
+
+func (l *warnRecordingLogger) Warn(msg string, args ...any) {
+	l.warnings = append(l.warnings, fmt.Sprintf(msg, args...))
+}
+
+func TestConvertToBifrostContext_RequestTimeoutHeader(t *testing.T) {
+	previous := logger
+	t.Cleanup(func() { logger = previous })
+	for _, tc := range []struct {
+		name  string
+		cap   time.Duration
+		value string
+		want  any
+		warns bool
+	}{
+		{"no cap ignores the header with a warning", 0, "10m", nil, true},
+		{"a duration under the cap", 15 * time.Minute, "10m", 10 * time.Minute, false},
+		{"whole seconds", 15 * time.Minute, " 600 ", 10 * time.Minute, false},
+		{"shorter than the provider default", 15 * time.Minute, "500ms", 500 * time.Millisecond, false},
+		{"over the cap is clamped", 15 * time.Minute, "1h", 15 * time.Minute, false},
+		{"seconds that would overflow a duration are clamped", 15 * time.Minute, "99999999999999999", 15 * time.Minute, false},
+		{"zero", 15 * time.Minute, "0", nil, false},
+		{"negative seconds", 15 * time.Minute, "-5", nil, false},
+		{"negative seconds that would overflow into a positive duration", 15 * time.Minute, "-18446744073", nil, false},
+		{"a negative duration", 15 * time.Minute, "-1m", nil, false},
+		{"neither a duration nor seconds", 15 * time.Minute, "soon", nil, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			logs := &warnRecordingLogger{}
+			logger = logs
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.Header.Set("x-bf-request-timeout", tc.value)
+			bifrostCtx, cancel := ConvertToBifrostContext(ctx, testHandlerStore{maxRequestTimeout: tc.cap})
+			defer cancel()
+			if got := bifrostCtx.Value(schemas.BifrostContextKeyRequestTimeout); got != tc.want {
+				t.Fatalf("request timeout = %#v, want %#v", got, tc.want)
+			}
+			warned := len(logs.warnings) == 1 && strings.Contains(logs.warnings[0], "max_request_timeout_in_seconds")
+			if warned != tc.warns || len(logs.warnings) > 1 {
+				t.Fatalf("warnings = %q, want the max_request_timeout_in_seconds warning: %v", logs.warnings, tc.warns)
+			}
+		})
+	}
+}
+
+func TestConvertToBifrostContext_NoRequestTimeoutHeaderNoWarning(t *testing.T) {
+	previous := logger
+	t.Cleanup(func() { logger = previous })
+	logs := &warnRecordingLogger{}
+	logger = logs
+	bifrostCtx, cancel := ConvertToBifrostContext(&fasthttp.RequestCtx{}, testHandlerStore{})
+	defer cancel()
+	if got := bifrostCtx.Value(schemas.BifrostContextKeyRequestTimeout); got != nil {
+		t.Fatalf("request timeout = %#v, want nil", got)
+	}
+	if len(logs.warnings) != 0 {
+		t.Fatalf("unexpected warnings without the header: %q", logs.warnings)
+	}
+}
+
+// TestConvertToBifrostContext_RequestTimeoutHeaderNilLogger pins that the "header ignored"
+// warning is skipped, not dereferenced, when ConvertToBifrostContext runs before SetLogger.
+func TestConvertToBifrostContext_RequestTimeoutHeaderNilLogger(t *testing.T) {
+	previous := logger
+	t.Cleanup(func() { logger = previous })
+	logger = nil
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.Set("x-bf-request-timeout", "60")
+	bifrostCtx, cancel := ConvertToBifrostContext(ctx, testHandlerStore{})
+	defer cancel()
+	if got := bifrostCtx.Value(schemas.BifrostContextKeyRequestTimeout); got != nil {
+		t.Fatalf("request timeout = %#v, want nil (no cap set)", got)
 	}
 }
 
@@ -1046,6 +1131,22 @@ func BenchmarkConvertToBifrostContextClientIP(b *testing.B) {
 				ctx.ResetUserValues()
 			}
 		})
+	}
+}
+
+// BenchmarkConvertToBifrostContextRequestTimeoutHeader measures the header walk on a request that
+// sets x-bf-request-timeout against a configured cap, the only path that pays for the header.
+func BenchmarkConvertToBifrostContextRequestTimeoutHeader(b *testing.B) {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.Set("Content-Type", "application/json")
+	ctx.Request.Header.Set("User-Agent", "OpenAI/Python 2.8.1")
+	ctx.Request.Header.Set("x-bf-vk", "sk-bf-benchmark-vk")
+	ctx.Request.Header.Set("x-bf-request-timeout", "10m")
+	store := testHandlerStore{maxRequestTimeout: 15 * time.Minute}
+	b.ReportAllocs()
+	for b.Loop() {
+		_, cancel := ConvertToBifrostContext(ctx, store)
+		cancel()
 	}
 }
 

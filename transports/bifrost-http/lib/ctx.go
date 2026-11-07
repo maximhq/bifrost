@@ -277,6 +277,11 @@ func ExtraFieldsInHeaders(ctx *fasthttp.RequestCtx) bool {
 //     schemas.HarnessSessionHeaders (Claude Code, Codex CLI, OpenCode).
 //   - x-bf-session-ttl: Per-request TTL override (duration string e.g. "30m" or seconds integer)
 //
+// 8a. Request Timeout Header:
+//   - x-bf-request-timeout: per-attempt upstream timeout for this request (duration string e.g.
+//     "10m" or seconds integer), replacing the provider's default_request_timeout_in_seconds.
+//     Ignored with a warning unless client.max_request_timeout_in_seconds is set, and clamped to it.
+//
 // 9. Raw Capture Headers (per-request override of provider config; accepts "true" or "false"):
 //   - x-bf-send-back-raw-request: include raw provider request in the BifrostResponse returned to the caller
 //   - x-bf-prompt-cache-auto-inject: override prompt_cache.auto_inject for this request
@@ -648,6 +653,18 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 			}
 			if err == nil && ttlDuration > 0 {
 				bifrostCtx.SetValue(schemas.BifrostContextKeySessionTTL, ttlDuration)
+			}
+			return true
+		}
+		if keyStr == "x-bf-request-timeout" {
+			if store == nil || store.GetMaxRequestTimeout() <= 0 {
+				if logger != nil {
+					logger.Warn("x-bf-request-timeout ignored: set client.max_request_timeout_in_seconds to honor it")
+				}
+				return true
+			}
+			if timeout := parseRequestTimeoutHeader(value, store); timeout > 0 {
+				bifrostCtx.SetValue(schemas.BifrostContextKeyRequestTimeout, timeout)
 			}
 			return true
 		}
@@ -1033,4 +1050,39 @@ func BuildHTTPResponseFromFastHTTP(ctx *fasthttp.RequestCtx) *schemas.HTTPRespon
 		resp.Headers[string(key)] = string(value)
 	}
 	return resp
+}
+
+// parseRequestTimeoutHeader reads x-bf-request-timeout (a duration string such as "10m", or
+// whole seconds) and clamps it to client.max_request_timeout_in_seconds. It returns 0, leaving
+// the provider's default_request_timeout_in_seconds in force, when the value is not a positive
+// duration or when no cap is configured: the header stays inert until an operator opts in.
+func parseRequestTimeoutHeader(value []byte, store HandlerStore) time.Duration {
+	if store == nil {
+		return 0
+	}
+	maxTimeout := store.GetMaxRequestTimeout()
+	if maxTimeout <= 0 {
+		return 0
+	}
+	valueStr := strings.TrimSpace(string(value))
+	timeout, err := time.ParseDuration(valueStr)
+	if err != nil {
+		seconds, parseErr := strconv.Atoi(valueStr)
+		if parseErr != nil {
+			return 0
+		}
+		// Reject and clamp before converting: a large value of either sign overflows the
+		// multiplication, and a negative one can wrap into a short positive duration.
+		if seconds <= 0 {
+			return 0
+		}
+		if seconds > int(maxTimeout/time.Second) {
+			return maxTimeout
+		}
+		timeout = time.Duration(seconds) * time.Second
+	}
+	if timeout <= 0 {
+		return 0
+	}
+	return min(timeout, maxTimeout)
 }

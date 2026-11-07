@@ -26,6 +26,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Trans, useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { withBasePath } from "@/lib/utils/basePath";
+import { isMaxRequestTimeoutChanged, parseMaxRequestTimeoutInput } from "./securityView.utils";
 
 // Go duration string: one or more <number><unit> segments, e.g. "5m", "1h30m".
 const COOLDOWN_PATTERN = /^(\d+(\.\d+)?(ns|us|µs|ms|s|m|h))+$/;
@@ -53,12 +54,14 @@ export default function SecurityView() {
 		required_headers: string;
 		whitelisted_routes: string;
 		vk_rotation_cooldown: string;
+		max_request_timeout_in_seconds: string;
 	}>({
 		allowed_origins: "",
 		allowed_headers: "",
 		required_headers: "",
 		whitelisted_routes: "",
 		vk_rotation_cooldown: "",
+		max_request_timeout_in_seconds: "0",
 	});
 
 	const [authConfig, setAuthConfig] = useState<AuthConfig>({
@@ -109,6 +112,7 @@ export default function SecurityView() {
 				required_headers: config?.required_headers?.join(", ") || "",
 				whitelisted_routes: config?.whitelisted_routes?.join(", ") || "",
 				vk_rotation_cooldown: formatCooldown(config?.vk_rotation_cooldown),
+				max_request_timeout_in_seconds: String(config?.max_request_timeout_in_seconds ?? 0),
 			});
 		}
 		if (bifrostConfig?.auth_config) {
@@ -153,6 +157,10 @@ export default function SecurityView() {
 
 		const enforceAuthOnInferenceChanged = localConfig.enforce_auth_on_inference !== config.enforce_auth_on_inference;
 		const allowDirectKeysChanged = localConfig.allow_direct_keys !== config.allow_direct_keys;
+		const maxRequestTimeoutChanged = isMaxRequestTimeoutChanged(
+			localValues.max_request_timeout_in_seconds,
+			config.max_request_timeout_in_seconds,
+		);
 		const deleteExpiredVirtualKeysChanged = localConfig.delete_expired_virtual_keys !== config.delete_expired_virtual_keys;
 		const enforceVKObjectOwnershipChanged =
 			(localConfig.enforce_vk_object_ownership ?? true) !== (config.enforce_vk_object_ownership ?? true);
@@ -177,6 +185,7 @@ export default function SecurityView() {
 			authChanged ||
 			enforceAuthOnInferenceChanged ||
 			allowDirectKeysChanged ||
+			maxRequestTimeoutChanged ||
 			deleteExpiredVirtualKeysChanged ||
 			enforceVKObjectOwnershipChanged ||
 			skipAccessProfileUserVirtualKeyCreationChanged ||
@@ -185,7 +194,7 @@ export default function SecurityView() {
 			vkRotationCooldownChanged ||
 			issuerURLChanged
 		);
-	}, [config, localConfig, authConfig, bifrostConfig, showPasswordSection, credentialsChanged]);
+	}, [config, localConfig, localValues.max_request_timeout_in_seconds, authConfig, bifrostConfig, showPasswordSection, credentialsChanged]);
 
 	const requiresProofOfControl = isAuthDisabledWithStoredAccount && (authConfig.is_enabled || credentialsChanged);
 
@@ -228,6 +237,15 @@ export default function SecurityView() {
 	const handleConfigChange = useCallback((field: keyof CoreConfig, value: boolean) => {
 		if (field === "enforce_auth_on_inference") inferenceAuthTouchedRef.current = true;
 		setLocalConfig((prev) => ({ ...prev, [field]: value }));
+	}, []);
+
+	const handleMaxRequestTimeoutChange = useCallback((value: string) => {
+		setLocalValues((prev) => ({ ...prev, max_request_timeout_in_seconds: value }));
+		// Empty input means 0 (header ignored); anything that is not a whole number is caught on save.
+		const seconds = parseMaxRequestTimeoutInput(value);
+		if (seconds !== null) {
+			setLocalConfig((prev) => ({ ...prev, max_request_timeout_in_seconds: seconds }));
+		}
 	}, []);
 
 	const handleVkRotationCooldownChange = useCallback((value: string) => {
@@ -290,6 +308,10 @@ export default function SecurityView() {
 			const oauthModeActive = localConfig.mcp_server_auth_mode === "both" || localConfig.mcp_server_auth_mode === "oauth";
 			if (oauthModeActive && !isSecretVarSet(localConfig.oauth2_server_config?.issuer_url)) {
 				toast.error(t("security.toastIssuerUrlRequired"));
+				return;
+			}
+			if (parseMaxRequestTimeoutInput(localValues.max_request_timeout_in_seconds) === null) {
+				toast.error(t("security.toastInvalidMaxRequestTimeout"));
 				return;
 			}
 			const cooldownInput = localValues.vk_rotation_cooldown.trim();
@@ -368,6 +390,7 @@ export default function SecurityView() {
 		bifrostConfig,
 		localConfig,
 		localValues.vk_rotation_cooldown,
+		localValues.max_request_timeout_in_seconds,
 		authConfig,
 		showPasswordSection,
 		updateCoreConfig,
@@ -617,6 +640,27 @@ export default function SecurityView() {
 						onCheckedChange={(checked) => handleConfigChange("allow_direct_keys", checked)}
 					/>
 				</div>
+				{/* Max Per-Request Timeout */}
+				<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
+					<div className="space-y-0.5">
+						<label htmlFor="max-request-timeout" className="text-sm font-medium">
+							{t("security.maxRequestTimeout")}
+						</label>
+						<p className="text-muted-foreground text-sm">
+							<Trans t={t} i18nKey="security.maxRequestTimeoutHelp" components={{ b0: <b />, b1: <b /> }} />
+						</p>
+					</div>
+					<Input
+						id="max-request-timeout"
+						data-testid="security-max-request-timeout-input"
+						className="w-[180px]"
+						type="number"
+						min="0"
+						placeholder="0"
+						value={localValues.max_request_timeout_in_seconds}
+						onChange={(e) => handleMaxRequestTimeoutChange(e.target.value)}
+					/>
+				</div>
 				{/* Cooldown After Virtual Key Rotation */}
 				<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
 					<div className="space-y-0.5">
@@ -731,9 +775,7 @@ export default function SecurityView() {
 						!secretVarEquals(localConfig.oauth2_server_config?.issuer_url, config?.oauth2_server_config?.issuer_url) && (
 							<Alert variant="warning" data-testid="oauth2-issuer-url-change-warning">
 								<AlertTriangle className="size-4" />
-								<AlertDescription>
-									{t("security.issuerChangeWarning")}
-								</AlertDescription>
+								<AlertDescription>{t("security.issuerChangeWarning")}</AlertDescription>
 							</Alert>
 						)}
 				</div>

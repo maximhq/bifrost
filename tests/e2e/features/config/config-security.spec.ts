@@ -598,6 +598,78 @@ test.describe("Security Settings", () => {
       await expect(configSettingsPage.vkRotationCooldownInput).toHaveValue("");
     });
   });
+
+  test.describe("Max Per-Request Timeout", () => {
+    // Each test restores the operator's original cap itself, so a failure
+    // midway never leaves x-bf-request-timeout enabled on the instance.
+    let originalMaxRequestTimeout: string;
+
+    test.beforeEach(async ({ configSettingsPage }) => {
+      await configSettingsPage.dismissOnboardingWidget();
+      originalMaxRequestTimeout = await configSettingsPage.getMaxRequestTimeout();
+    });
+
+    test.afterEach(async ({ configSettingsPage }) => {
+      await configSettingsPage.goto("security");
+      await configSettingsPage.dismissOnboardingWidget();
+      const current = await configSettingsPage.getMaxRequestTimeout();
+      if (current !== originalMaxRequestTimeout) {
+        await configSettingsPage.setMaxRequestTimeout(originalMaxRequestTimeout);
+        if (await configSettingsPage.hasPendingChanges()) {
+          await configSettingsPage.saveSettings();
+        }
+      }
+    });
+
+    test("should display the cap input", async ({ configSettingsPage }) => {
+      await expect(configSettingsPage.maxRequestTimeoutInput).toBeVisible();
+      await expect(configSettingsPage.maxRequestTimeoutInput).toHaveAttribute(
+        "type",
+        "number",
+      );
+    });
+
+    test("should persist a cap across a reload", async ({
+      configSettingsPage,
+    }) => {
+      await configSettingsPage.setMaxRequestTimeout("900");
+      await configSettingsPage.saveSettings();
+
+      await configSettingsPage.goto("security");
+      await expect(configSettingsPage.maxRequestTimeoutInput).toHaveValue(
+        "900",
+      );
+    });
+
+    test("should reject a fractional cap without saving it", async ({
+      configSettingsPage,
+    }) => {
+      await configSettingsPage.setMaxRequestTimeout("1.5");
+      await configSettingsPage.saveBtn.click();
+      await configSettingsPage.waitForErrorToast();
+
+      await configSettingsPage.goto("security");
+      await expect(configSettingsPage.maxRequestTimeoutInput).not.toHaveValue(
+        "1.5",
+      );
+    });
+
+    test("should turn the header off again with 0", async ({
+      configSettingsPage,
+    }) => {
+      await configSettingsPage.setMaxRequestTimeout("600");
+      await configSettingsPage.saveSettings();
+      await configSettingsPage.goto("security");
+      await expect(configSettingsPage.maxRequestTimeoutInput).toHaveValue(
+        "600",
+      );
+
+      await configSettingsPage.setMaxRequestTimeout("0");
+      await configSettingsPage.saveSettings();
+      await configSettingsPage.goto("security");
+      await expect(configSettingsPage.maxRequestTimeoutInput).toHaveValue("0");
+    });
+  });
 });
 
 test.describe("OSS setup lock", () => {

@@ -504,6 +504,9 @@ false
 {{- if .Values.bifrost.client.routingChainMaxDepth }}
 {{- $_ := set $client "routing_chain_max_depth" .Values.bifrost.client.routingChainMaxDepth }}
 {{- end }}
+{{- if hasKey .Values.bifrost.client "maxRequestTimeoutInSeconds" }}
+{{- $_ := set $client "max_request_timeout_in_seconds" .Values.bifrost.client.maxRequestTimeoutInSeconds }}
+{{- end }}
 {{- if hasKey .Values.bifrost.client "allowDirectKeys" }}
 {{- $_ := set $client "allow_direct_keys" .Values.bifrost.client.allowDirectKeys }}
 {{- end }}
