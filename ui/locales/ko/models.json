@@ -159,6 +159,8 @@
 			"maxConnsHelp": "공급자 호스트당 최대 TCP 연결이에요. HTTP/2 공급자(예: Bedrock)의 경우 각 연결은 최대 100개의 동시 스트림을 지원해요.",
 			"keepAliveTimeout": "연결 유지 시간 초과(초)",
 			"keepAliveHelp": "풀링된 연결에 대한 유휴 연결 유지. 이미 닫힌 연결을 재사용하지 않으려면 업스트림 서버의 연결 유지 아래에 설정하세요.",
+			"streamReadBufferSize": "스트림 읽기 버퍼 크기 (KB)",
+			"streamReadBufferHelp": "스트리밍 응답의 읽기 버퍼 크기(KB)입니다. Azure 음성 스트리밍과 Gemini 및 Vertex Gemini 모델 스트리밍에 적용되며, 다른 공급자와 Vertex Anthropic 스트림은 이 값을 무시합니다. 스트림마다 할당되므로 값이 크면 동시 스트림마다 메모리를 사용합니다. 기본값: 64. 범위: 1–16384.",
 			"enforceHttp2": "HTTP/2 시행",
 			"enforceHttp2Help": "공급자 연결에 HTTP/2를 강제 적용해요. 각 HTTP/2 연결이 최대 100개의 동시 스트림을 지원하는 net/http 기반 공급자(예: Bedrock)에 적합해요.",
 			"http2PingInterval": "HTTP/2 핑 간격(초)",

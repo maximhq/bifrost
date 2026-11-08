@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/bytedance/sonic"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
@@ -474,6 +475,7 @@ func (provider *GeminiProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 		nil,
 		provider.logger,
 		postHookSpanFinalizer,
+		provider.networkConfig.StreamReadBufferSize(),
 	)
 }
 
@@ -494,6 +496,7 @@ func HandleGeminiChatCompletionStream(
 	postResponseConverter func(*schemas.BifrostChatResponse) *schemas.BifrostChatResponse,
 	logger schemas.Logger,
 	postHookSpanFinalizer func(context.Context),
+	streamReadBufferSize int,
 ) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	providerUtils.SetStreamIdleTimeoutIfEmpty(ctx, streamIdleTimeoutInSeconds)
 	req := fasthttp.AcquireRequest()
@@ -605,9 +608,9 @@ func HandleGeminiChatCompletionStream(
 		var lineReader *bufio.Reader
 		var sseReader providerUtils.SSEDataReader
 		if skipInlineData {
-			lineReader = bufio.NewReaderSize(decompressedReader, 64*1024)
+			lineReader = bufio.NewReaderSize(decompressedReader, streamReadBufferSize)
 		} else {
-			sseReader = providerUtils.GetSSEDataReader(ctx, decompressedReader)
+			sseReader = providerUtils.GetSSEDataReaderSize(ctx, decompressedReader, streamReadBufferSize)
 		}
 
 		chunkIndex := 0
@@ -1010,6 +1013,7 @@ func (provider *GeminiProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 		nil,
 		provider.logger,
 		postHookSpanFinalizer,
+		provider.networkConfig.StreamReadBufferSize(),
 	)
 }
 
@@ -1030,6 +1034,7 @@ func HandleGeminiResponsesStream(
 	postResponseConverter func(*schemas.BifrostResponsesStreamResponse) *schemas.BifrostResponsesStreamResponse,
 	logger schemas.Logger,
 	postHookSpanFinalizer func(context.Context),
+	streamReadBufferSize int,
 ) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	providerUtils.SetStreamIdleTimeoutIfEmpty(ctx, streamIdleTimeoutInSeconds)
 	req := fasthttp.AcquireRequest()
@@ -1148,9 +1153,9 @@ func HandleGeminiResponsesStream(
 		var lineReader *bufio.Reader
 		var sseReader providerUtils.SSEDataReader
 		if skipInlineData {
-			lineReader = bufio.NewReaderSize(decompressedReader, 64*1024)
+			lineReader = bufio.NewReaderSize(decompressedReader, streamReadBufferSize)
 		} else {
-			sseReader = providerUtils.GetSSEDataReader(ctx, decompressedReader)
+			sseReader = providerUtils.GetSSEDataReaderSize(ctx, decompressedReader, streamReadBufferSize)
 		}
 
 		chunkIndex := 0
@@ -1675,7 +1680,7 @@ func (provider *GeminiProvider) SpeechStream(ctx *schemas.BifrostContext, postHo
 		stopCancellation := providerUtils.SetupStreamCancellation(ctx, resp.BodyStream(), provider.logger)
 		defer stopCancellation()
 
-		sseReader := providerUtils.GetSSEDataReader(ctx, reader)
+		sseReader := providerUtils.GetSSEDataReaderSize(ctx, reader, provider.networkConfig.StreamReadBufferSize())
 		chunkIndex := -1
 		usage := &schemas.SpeechUsage{}
 		lastChunkTime := startTime
@@ -1961,7 +1966,7 @@ func (provider *GeminiProvider) TranscriptionStream(ctx *schemas.BifrostContext,
 		stopCancellation := providerUtils.SetupStreamCancellation(ctx, resp.BodyStream(), provider.logger)
 		defer stopCancellation()
 
-		sseReader := providerUtils.GetSSEDataReader(ctx, reader)
+		sseReader := providerUtils.GetSSEDataReaderSize(ctx, reader, provider.networkConfig.StreamReadBufferSize())
 		chunkIndex := -1
 		usage := &schemas.TranscriptionUsage{}
 		lastChunkTime := startTime
@@ -3367,6 +3372,31 @@ func extractSSEJSONData(line []byte) ([]byte, bool) {
 	return data, true
 }
 
+var inlineDataMarker = []byte(`"inlineData"`)
+
+// appendInlineDataTail appends to dst the last len(inlineDataMarker)-1 bytes of
+// fragment, enough to detect the marker split across the next fragment boundary.
+func appendInlineDataTail(dst, fragment []byte) []byte {
+	if n := len(inlineDataMarker) - 1; len(fragment) > n {
+		fragment = fragment[len(fragment)-n:]
+	}
+	return append(dst, fragment...)
+}
+
+// markerSpansBoundary reports whether inlineDataMarker starts in tail and ends in head.
+func markerSpansBoundary(tail, head []byte) bool {
+	if len(tail) == 0 {
+		return false
+	}
+	if n := len(inlineDataMarker) - 1; len(head) > n {
+		head = head[:n]
+	}
+	joined := make([]byte, 0, len(tail)+len(head))
+	joined = append(joined, tail...)
+	joined = append(joined, head...)
+	return bytes.Contains(joined, inlineDataMarker)
+}
+
 // readNextSSEDataLine reads the next SSE `data:` line from a streaming response.
 // It avoids scanner growth on oversized lines by reading fragments and discarding
 // inlineData lines when skipInlineData is enabled.
@@ -3377,7 +3407,14 @@ func readNextSSEDataLine(reader *bufio.Reader, skipInlineData bool) ([]byte, err
 			return nil, err
 		}
 
-		trimmed := bytes.TrimSpace(fragment)
+		// A fragment that ends mid-line stops at the reader's buffer boundary, not at
+		// the end of the payload, so a space there is payload and must be kept.
+		var trimmed []byte
+		if isPrefix {
+			trimmed = bytes.TrimLeftFunc(fragment, unicode.IsSpace)
+		} else {
+			trimmed = bytes.TrimSpace(fragment)
+		}
 		if len(trimmed) == 0 || trimmed[0] == ':' || !bytes.HasPrefix(trimmed, []byte("data:")) {
 			for isPrefix {
 				_, isPrefix, err = reader.ReadLine()
@@ -3400,7 +3437,7 @@ func readNextSSEDataLine(reader *bufio.Reader, skipInlineData bool) ([]byte, err
 		}
 
 		// Large mocked stream chunks encode binary inlineData; skip those lines entirely.
-		if skipInlineData && bytes.Contains(data, []byte(`"inlineData"`)) {
+		if skipInlineData && bytes.Contains(data, inlineDataMarker) {
 			for isPrefix {
 				_, isPrefix, err = reader.ReadLine()
 				if err != nil {
@@ -3419,15 +3456,24 @@ func readNextSSEDataLine(reader *bufio.Reader, skipInlineData bool) ([]byte, err
 		collected := make([]byte, 0, len(data)+1024)
 		collected = append(collected, data...)
 		dropLine := false
+		// The marker can straddle a fragment boundary, so keep the last few bytes of
+		// the previous fragment and check them together with the next one.
+		var tail []byte
+		if skipInlineData {
+			tail = appendInlineDataTail(nil, data)
+		}
 
 		for isPrefix {
 			fragment, isPrefix, err = reader.ReadLine()
 			if err != nil {
 				return nil, err
 			}
-			if skipInlineData && bytes.Contains(fragment, []byte(`"inlineData"`)) {
-				dropLine = true
-				continue
+			if skipInlineData && !dropLine {
+				if bytes.Contains(fragment, inlineDataMarker) || markerSpansBoundary(tail, fragment) {
+					dropLine = true
+					continue
+				}
+				tail = appendInlineDataTail(tail[:0], fragment)
 			}
 			if dropLine || len(collected)+len(fragment) > maxJSONLineBytes {
 				dropLine = true
