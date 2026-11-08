@@ -1,3 +1,7 @@
+## ✨ Features
+
+- **Nace (Drex) Decision Provider** - The new `nace` provider calls Drex decision models through `/v1/decisions` with typed answers, probabilities and request IDs. Drex Max models accept ordered images, the model list shows Drex pricing, and Drex models can be the Complexity Router decision model
+
 ## 🐞 Fixed
 
 - **Empty Chat Messages** - A chat completion request with missing or empty `messages` returns a 400 instead of crashing the gateway

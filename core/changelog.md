@@ -1,3 +1,4 @@
+- feat: nace - add the Nace provider for Drex decision models: native decisions, ordered Drex Max images, model list with pricing, and an `X-Nace-Client` header on every request
 - fix: chat completion requests with no messages return a 400 instead of crashing the gateway, and a converter that returns a nil request body yields an error on every provider
 - fix: gemini - skip null entries in `parts` and `functionDeclarations` on Gemini and Vertex requests and responses instead of panicking
 - fix: recover panics on provider stream goroutines and in plugin post-hooks; the stream ends with one terminal 500 error chunk, and the remaining post-hooks still run
