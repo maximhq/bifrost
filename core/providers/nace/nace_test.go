@@ -27,7 +27,8 @@ func TestNace(t *testing.T) {
 		Provider:      schemas.Nace,
 		DecisionModel: "drex-v2.0",
 		Scenarios: llmtests.TestScenarios{
-			Decision: true,
+			Decision:   true,
+			ListModels: true,
 		},
 	}
 	// Wait for parallel scenarios before the deferred client shutdown.
