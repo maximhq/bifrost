@@ -575,3 +575,23 @@ func TestValidateComplexityAnalyzerConfig_Decision(t *testing.T) {
 		require.NoError(t, plugin.ValidateComplexityAnalyzerConfig(config))
 	})
 }
+
+func TestPreRequestHook_NaceFailurePreservesOriginalModel(t *testing.T) {
+	analyzerConfig := decisionFallbackAnalyzerTestConfig()
+	analyzerConfig.Decision = &complexity.DecisionConfig{Provider: schemas.Nace, Model: "drex-v2.0"}
+	analyzerConfig.Semantic.MinSimilarity = 0.9
+	decision := &decisionRecorder{err: &schemas.BifrostError{Error: &schemas.ErrorField{Message: "nace unavailable"}}}
+	plugin := decisionTestPlugin(t, nil, analyzerConfig, decision)
+	failOnChatClassifier(t, plugin)
+	installSemanticEmbeddingFake(t, plugin)
+
+	req := llmComplexityChatRequest("prove the scheduler is deadlock-free")
+	bfCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	require.NoError(t, plugin.PreRequestHook(bfCtx, req))
+
+	require.Equal(t, 1, decision.calls())
+	require.Nil(t, bfCtx.Value(schemas.BifrostContextKeyGovernanceComplexityTier))
+	require.Equal(t, complexity.MechanismSkipped, bfCtx.Value(schemas.BifrostContextKeyGovernanceComplexityMechanism))
+	_, modelOut, _ := req.GetRequestFields()
+	require.Equal(t, "gpt-4o", modelOut)
+}
