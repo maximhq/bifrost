@@ -4,6 +4,7 @@ import {
 	CLOUDFLARE_DECISION_MODEL,
 	DATABRICKS_DECISION_MODEL,
 	DEFAULT_DECISION_MODEL,
+	NACE_DECISION_MODEL,
 	OPENAI_DECISION_MODEL,
 	OPENROUTER_DECISION_MODEL,
 	PERPLEXITY_DECISION_MODEL,
@@ -72,6 +73,7 @@ export function decisionProviderIconKey(provider: ModelProvider): ProviderIconTy
 export function isDecisionProvider(provider: ModelProvider): boolean {
 	return (
 		provider.name === "typesafe" ||
+		provider.name === "nace" ||
 		provider.name === "openrouter" ||
 		provider.name === "cloudflare" ||
 		provider.name === "perplexity" ||
@@ -109,6 +111,7 @@ export function selfHostedModelGroups(providerName: string): SelfHostedModelGrou
 // the operator knows which model it runs.
 export function defaultDecisionModel(provider: ModelProvider | undefined): string {
 	if (provider?.name === "typesafe") return DEFAULT_DECISION_MODEL;
+	if (provider?.name === "nace") return NACE_DECISION_MODEL;
 	if (provider?.name === "openrouter") return OPENROUTER_DECISION_MODEL;
 	if (provider?.name === "cloudflare") return CLOUDFLARE_DECISION_MODEL;
 	if (provider?.name === "perplexity") return PERPLEXITY_DECISION_MODEL;
@@ -129,5 +132,5 @@ export function defaultDecisionModel(provider: ModelProvider | undefined): strin
 // is one.
 export function listsDecisionModels(provider: ModelProvider | undefined, providerName: string): boolean {
 	if (provider ? isOpenAIDecisionProvider(provider) : providerName === "openai") return true;
-	return ["openrouter", "cloudflare", "perplexity", "ollama", "azure", "databricks", "vllm", "sgl"].includes(providerName);
+	return ["nace", "openrouter", "cloudflare", "perplexity", "ollama", "azure", "databricks", "vllm", "sgl"].includes(providerName);
 }

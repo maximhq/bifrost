@@ -146,3 +146,14 @@ describe("decision model provider helpers", () => {
 		expect(defaultDecisionModel(undefined)).toBe("");
 	});
 });
+
+describe("Nace decision provider", () => {
+	test("offers Drex without changing the Typesafe default", () => {
+		const provider = { name: "nace", provider_status: "active" } as ModelProvider;
+		expect(isDecisionProvider(provider)).toBe(true);
+		expect(isDecisionProvider(custom("my-nace", "nace"))).toBe(false);
+		expect(defaultDecisionModel(provider)).toBe("drex-v2.0");
+		expect(listsDecisionModels(provider, "nace")).toBe(true);
+		expect(defaultDecisionModel({ name: "typesafe" } as ModelProvider)).toBe("jev-latest");
+	});
+});

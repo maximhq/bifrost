@@ -48,7 +48,7 @@ test.describe('Complexity Router', () => {
           const body = await response.json()
           body.providers = [
             ...(body.providers ?? []).filter(
-              (p: { name: string }) => ![CUSTOM_OPENAI, 'openrouter', 'cloudflare', 'perplexity', 'ollama', 'azure', 'databricks'].includes(p.name),
+              (p: { name: string }) => ![CUSTOM_OPENAI, 'openrouter', 'cloudflare', 'perplexity', 'ollama', 'azure', 'databricks', 'nace'].includes(p.name),
             ),
             { name: 'openrouter', provider_status: 'active', keys: [] },
             { name: 'cloudflare', provider_status: 'active', keys: [] },
@@ -56,6 +56,7 @@ test.describe('Complexity Router', () => {
             { name: 'ollama', provider_status: 'active', keys: [] },
             { name: 'azure', provider_status: 'active', keys: [] },
             { name: 'databricks', provider_status: 'active', keys: [] },
+            { name: 'nace', provider_status: 'active', keys: [] },
             {
               name: CUSTOM_OPENAI,
               provider_status: 'active',
@@ -99,6 +100,12 @@ test.describe('Complexity Router', () => {
         saved: '~typesafe/jev-latest',
         decisions: ['~typesafe/jev-latest', 'typesafe/jev-1.13', 'cloudflare/clef'],
         chat: ['typesafe/jev-router'],
+      },
+      {
+        provider: 'nace',
+        saved: 'drex-v2.0',
+        decisions: ['drex-v2.0', 'drex-max'],
+        chat: [],
       },
       // Cloudflare's catalog is mostly chat and embedding models; only Clef is offered.
       {
