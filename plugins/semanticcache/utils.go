@@ -952,6 +952,7 @@ func (plugin *Plugin) extractChatParametersToMetadata(params *schemas.ChatParame
 		putIfSet(metadata, "reasoning_enabled", params.Reasoning.Enabled)
 		putIfSet(metadata, "reasoning_effort", params.Reasoning.Effort)
 		putIfSet(metadata, "reasoning_max_tokens", params.Reasoning.MaxTokens)
+		putIfSet(metadata, "reasoning_summary", params.Reasoning.Summary)
 	}
 	if params.ResponseFormat != nil {
 		// ResponseFormat is a struct pointer that callers expect to round-trip
