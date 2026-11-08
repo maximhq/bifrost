@@ -117,6 +117,7 @@ With `convert_decision_to_responses` on, Bifrost instead:
 1. Checks whether the model is a native decisions model: its `supports_decisions` datasheet entry, or without one the models Bifrost recognizes by name:
    - OpenAI's `gpt-6-luna` family on `openai` and `azure` (another provider hosting it, such as OpenRouter, serves it as a chat model)
    - Typesafe's `typesafe/` models, and every model on the `typesafe` provider
+   - Every model on the [Nace](/providers/supported-providers/nace) provider
    - `clef` models (`clef`, `clef-flash`, `clef-omni`, by bare name or `@cf/cloudflare/` ID) on `cloudflare`
    - `pplx-decider-*` on `perplexity`
    - `nimble`, `tev1`, `clef`, `clef-flash`, and `laya` (any tag) on `ollama`
