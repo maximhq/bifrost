@@ -12,11 +12,20 @@ import (
 )
 
 // ToNaceDecisionRequest reuses System One question and state conversion.
-func ToNaceDecisionRequest(request *schemas.BifrostDecisionRequest) (*typesafe.TypesafeDecisionRequest, error) {
+func ToNaceDecisionRequest(request *schemas.BifrostDecisionRequest) (*NaceDecisionRequest, error) {
 	if request == nil {
 		return nil, providerUtils.InvalidRequestErrorf("decision request is required")
 	}
-	native, err := typesafe.ToTypesafeDecisionRequest(request)
+	input, images, err := splitImages(request.Input)
+	if err != nil {
+		return nil, err
+	}
+	if len(images) > 0 && !readsImages(request.Model) {
+		return nil, providerUtils.InvalidRequestErrorf("images require a drex-max model; %q is text-only", request.Model)
+	}
+	textOnly := *request
+	textOnly.Input = input
+	native, err := typesafe.ToTypesafeDecisionRequest(&textOnly)
 	if err != nil {
 		return nil, err
 	}
@@ -56,7 +65,7 @@ func ToNaceDecisionRequest(request *schemas.BifrostDecisionRequest) (*typesafe.T
 			return nil, providerUtils.InvalidRequestErrorf("nace does not support box questions")
 		}
 	}
-	return native, nil
+	return &NaceDecisionRequest{TypesafeDecisionRequest: native, Images: images}, nil
 }
 
 // naceDecisionText renders structured descriptions losslessly as readable, sorted JSON.
@@ -80,7 +89,10 @@ func naceDecisionText(value any) (any, error) {
 
 // ToBifrostDecisionResponse adapts only Drex's array legend before using the shared converter.
 func ToBifrostDecisionResponse(native *NaceDecisionResponse, request *schemas.BifrostDecisionRequest) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
-	shared := &typesafe.TypesafeDecisionResponse{Model: native.Model, Usage: native.Usage, Answers: make(map[string]typesafe.TypesafeAnswer, len(native.Answers))}
+	shared := &typesafe.TypesafeDecisionResponse{Model: native.Model, Answers: make(map[string]typesafe.TypesafeAnswer, len(native.Answers))}
+	if native.Usage != nil {
+		shared.Usage = &native.Usage.TypesafeUsage
+	}
 	for name, answer := range native.Answers {
 		converted := answer.TypesafeAnswer
 		if answer.Legend != nil {
@@ -94,6 +106,9 @@ func ToBifrostDecisionResponse(native *NaceDecisionResponse, request *schemas.Bi
 	response, err := typesafe.ToBifrostDecisionResponse(shared, request)
 	if err == nil {
 		response.ID = native.RequestID
+		if native.Usage != nil && native.Usage.ImageTokens > 0 {
+			response.Usage.PromptTokensDetails = &schemas.ChatPromptTokensDetails{ImageTokens: native.Usage.ImageTokens}
+		}
 	}
 	return response, err
 }
@@ -106,22 +121,31 @@ func (provider *NaceProvider) Decision(ctx *schemas.BifrostContext, key schemas.
 	rawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
 	rawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
 	// Predicate and choice replies have no wire differences: use the shared handler.
-	hasScore := false
+	needsNative := false
 	if request != nil {
 		for _, q := range request.Questions {
 			if q.Type == schemas.DecisionTypeScore {
-				hasScore = true
+				needsNative = true
 				break
 			}
 		}
 	}
 	var response *schemas.BifrostDecisionResponse
 	var err *schemas.BifrostError
-	if !hasScore {
+	if request != nil && request.Input.NonTextPartType() == schemas.DecisionInputPartTypeImage {
+		needsNative = true
+	}
+	if !needsNative {
 		headers := map[string]string{"Authorization": "Bearer " + key.Value.GetValue(), "X-Nace-Client": provider.clientID, "User-Agent": provider.clientID}
-		response, err = typesafe.HandleTypesafeDecisionRequest(ctx, provider.client, provider.buildRequestURL(ctx, "/v1/systemone", schemas.DecisionRequest), request, ToNaceDecisionRequest, headers, provider.networkConfig.ExtraHeaders, provider.GetProviderKey(), parseNaceError, rawRequest, rawResponse, false)
+		response, err = typesafe.HandleTypesafeDecisionRequest(ctx, provider.client, provider.buildRequestURL(ctx, "/v1/systemone", schemas.DecisionRequest), request, func(r *schemas.BifrostDecisionRequest) (*typesafe.TypesafeDecisionRequest, error) {
+			native, err := ToNaceDecisionRequest(r)
+			if err != nil {
+				return nil, err
+			}
+			return native.TypesafeDecisionRequest, nil
+		}, headers, provider.networkConfig.ExtraHeaders, provider.GetProviderKey(), parseNaceError, rawRequest, rawResponse, false)
 	} else {
-		response, err = provider.scoreDecision(ctx, key, request, rawRequest, rawResponse)
+		response, err = provider.nativeDecision(ctx, key, request, rawRequest, rawResponse)
 	}
 	if response != nil {
 		for name, value := range response.ExtraFields.ProviderResponseHeaders {
@@ -133,8 +157,8 @@ func (provider *NaceProvider) Decision(ctx *schemas.BifrostContext, key schemas.
 	return response, err
 }
 
-// scoreDecision uses the usual HTTP utilities, with Drex's distinct score decoder.
-func (provider *NaceProvider) scoreDecision(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostDecisionRequest, rawRequest, rawResponse bool) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
+// nativeDecision handles Drex images and its distinct score decoder.
+func (provider *NaceProvider) nativeDecision(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostDecisionRequest, rawRequest, rawResponse bool) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
 	body, err := providerUtils.CheckContextAndGetRequestBody(ctx, request, func() (*NaceDecisionRequest, error) { return ToNaceDecisionRequest(request) })
 	if err != nil {
 		return nil, err

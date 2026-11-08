@@ -10,7 +10,22 @@ import (
 
 const defaultBaseURL = "https://console.nace.ai"
 
-// clientIdentity is bounded to the API's 64-byte attribution limit.
+// resolveModelAlias follows the public aliases and retired IDs served by Drex.
+func resolveModelAlias(model string) string {
+	switch model {
+	case "drex-latest", "nacedm-latest":
+		return "drex-v2.0"
+	case "drex-v1.0":
+		return "drex-max"
+	case "drex-v1.1":
+		return "drex-v1.5"
+	default:
+		return model
+	}
+}
+
+// clientIdentity is bounded to the API's 64-byte attribution limit and keeps only
+// the version characters the API accepts (letters, digits and ._@+-).
 func clientIdentity(version string) string {
 	version = strings.TrimSpace(version)
 	if version == "" {
@@ -22,7 +37,8 @@ func clientIdentity(version string) string {
 		if clean.Len() >= 64 {
 			break
 		}
-		if c >= '!' && c <= '~' {
+		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+			strings.ContainsRune("._@+-", c) {
 			clean.WriteByte(byte(c))
 		}
 	}

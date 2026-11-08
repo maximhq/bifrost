@@ -75,8 +75,3 @@ func (provider *NaceProvider) buildRequestURL(ctx *schemas.BifrostContext, defau
 	}
 	return provider.networkConfig.BaseURL + path
 }
-
-// ListModels is unsupported until the native model catalog is enabled.
-func (provider *NaceProvider) ListModels(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.ListModelsRequest, provider.GetProviderKey())
-}
