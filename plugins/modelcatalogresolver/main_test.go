@@ -286,3 +286,99 @@ func TestPreRequestHook(t *testing.T) {
 		})
 	}
 }
+
+// TestKeySelectionBypass pins the resolution of a request that skips key selection (Claude Code
+// OAuth passthrough, issue #5792). Such a request is pinned to the provider of the route it came in
+// on without consulting the catalog, because a zero-key passthrough provider never appears in the
+// catalog. Without the flag, or on a route with no canonical provider, resolution is unchanged.
+func TestKeySelectionBypass(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		model          string
+		skip           bool
+		integration    string
+		wantSelected   schemas.ModelProvider
+		wantCandidates []schemas.ModelProvider
+	}{
+		{
+			name:         "a bare model on the anthropic route resolves to anthropic although the catalog has no provider for it",
+			model:        "claude-sonnet-4-6",
+			skip:         true,
+			integration:  "anthropic",
+			wantSelected: schemas.Anthropic,
+		},
+		{
+			name:         "the route's provider wins even when the catalog has candidates, and none become fallbacks",
+			model:        "shared-model",
+			skip:         true,
+			integration:  "openai",
+			wantSelected: schemas.OpenAI,
+		},
+		{
+			name:        "without the flag a model the catalog does not serve still resolves to nothing",
+			model:       "claude-sonnet-4-6",
+			integration: "anthropic",
+		},
+		{
+			name:        "a route with no canonical provider falls through to the catalog",
+			model:       "claude-sonnet-4-6",
+			skip:        true,
+			integration: "langchain",
+		},
+		{
+			name:           "a request with no route falls through to the catalog",
+			model:          "shared-model",
+			skip:           true,
+			wantSelected:   schemas.Anthropic,
+			wantCandidates: []schemas.ModelProvider{schemas.Anthropic, schemas.Azure, schemas.OpenAI},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := newTestContext()
+			if tc.skip {
+				ctx.SetValue(schemas.BifrostContextKeySkipKeySelection, true)
+			}
+			if tc.integration != "" {
+				ctx.SetValue(schemas.BifrostContextKeyIntegrationType, tc.integration)
+			}
+			selected, candidates := ResolveProviderFromCatalog(ctx, testCatalog(), tc.model)
+			if selected != tc.wantSelected {
+				t.Fatalf("selected %q, want %q", selected, tc.wantSelected)
+			}
+			if !slices.Equal(candidates, tc.wantCandidates) {
+				t.Fatalf("candidates %v, want %v", candidates, tc.wantCandidates)
+			}
+		})
+	}
+
+	t.Run("the hook sets the provider, adds no fallbacks and logs the bypass rather than a catalog lookup", func(t *testing.T) {
+		plugin, err := Init(testCatalog(), nil)
+		if err != nil {
+			t.Fatalf("Init: %v", err)
+		}
+		ctx := newTestContext()
+		ctx.SetValue(schemas.BifrostContextKeySkipKeySelection, true)
+		ctx.SetValue(schemas.BifrostContextKeyIntegrationType, "anthropic")
+		req := &schemas.BifrostRequest{
+			RequestType: schemas.ChatCompletionRequest,
+			ChatRequest: &schemas.BifrostChatRequest{Model: "claude-sonnet-4-6"},
+		}
+		if err := plugin.PreRequestHook(ctx, req); err != nil {
+			t.Fatalf("PreRequestHook: %v", err)
+		}
+		provider, _, fallbacks := req.GetRequestFields()
+		if provider != schemas.Anthropic || len(fallbacks) != 0 {
+			t.Fatalf("got provider %q with fallbacks %v, want anthropic with none", provider, fallbacks)
+		}
+		requireLog(t, ctx, "key selection is bypassed: pinned to the integration's provider anthropic without a catalog lookup")
+		for _, message := range catalogLogs(ctx) {
+			if strings.Contains(message, "options in model catalog") {
+				t.Fatalf("the bypass was logged as a catalog lookup: %q", message)
+			}
+		}
+		engines, _ := ctx.Value(schemas.BifrostContextKeyRoutingEnginesUsed).([]string)
+		if !slices.Contains(engines, schemas.RoutingEngineModelCatalog) {
+			t.Fatalf("model-catalog not recorded as a routing engine used: %v", engines)
+		}
+	})
+}

@@ -88,6 +88,17 @@ func (p *Plugin) PreRequestHook(ctx *schemas.BifrostContext, req *schemas.Bifros
 	}
 	req.SetProvider(selected)
 
+	// A selection with no candidates only comes from the key-selection-bypass branch, which never
+	// consults the catalog; say so instead of reporting zero catalog options.
+	if len(candidates) == 0 {
+		ctx.AppendRoutingEngineLog(schemas.RoutingEngineModelCatalog, schemas.LogLevelInfo, fmt.Sprintf(
+			"No provider specified for model %s, key selection is bypassed: pinned to the integration's provider %s without a catalog lookup",
+			model, selected,
+		))
+		schemas.AppendToContextList(ctx, schemas.BifrostContextKeyRoutingEnginesUsed, schemas.RoutingEngineModelCatalog)
+		return nil
+	}
+
 	candidateStrs := make([]string, len(candidates))
 	for i, prov := range candidates {
 		candidateStrs[i] = string(prov)
