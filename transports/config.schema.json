@@ -742,6 +742,9 @@
         "cloudflare": {
           "$ref": "#/$defs/provider_with_cloudflare_config"
         },
+        "nace": {
+          "$ref": "#/$defs/provider"
+        },
         "typesafe": {
           "$ref": "#/$defs/provider"
         },
@@ -14334,7 +14337,8 @@
             "sarvam",
             "wafer",
             "cloudflare",
-            "typesafe"
+            "typesafe",
+            "nace"
           ],
           "description": "Base provider type to extend"
         },

@@ -263,7 +263,7 @@ func TestConfigForceReasoningOnlyModelsToResponsesDefaultsOn(t *testing.T) {
 // models on Ollama and Microsoft's decision models and gpt-6-luna on Azure are native. Typesafe and other
 // request types are never marked.
 func TestDecisionToResponsesEmulationOptIn(t *testing.T) {
-	rows := map[string]bool{"microsoft/decision-1": true, "typesafe/jev-router": false, "clef": false}
+	rows := map[string]bool{"microsoft/decision-1": true, "typesafe/jev-router": false, "clef": false, "drex-v2.0": false}
 	schemas.SetCapabilityResolver(func(provider schemas.ModelProvider, model string) *schemas.ModelCapabilities {
 		if provider == schemas.Groq && model == "clef" {
 			return &schemas.ModelCapabilities{SupportsDecisions: schemas.Ptr(true)}
@@ -334,6 +334,8 @@ func TestDecisionToResponsesEmulationOptIn(t *testing.T) {
 		{name: "serving endpoint model on databricks marked", enabled: true, req: decision(schemas.Databricks, "databricks-claude-sonnet-4"), wantConverted: true},
 		{name: "ai_decide on openai marked", enabled: true, req: decision(schemas.OpenAI, "ai_decide"), wantConverted: true},
 		{name: "typesafe provider never marked", enabled: true, req: decision(schemas.Typesafe, "jev-latest")},
+		{name: "nace provider native despite false row", enabled: true, req: decision(schemas.Nace, "drex-v2.0")},
+		{name: "nace provider never marked by header", override: true, req: decision(schemas.Nace, "drex-max")},
 		{name: "vllm provider never marked", enabled: true, req: decision(schemas.VLLM, "Qwen/Qwen3-0.6B")},
 		{name: "vllm provider never marked by header", override: true, req: decision(schemas.VLLM, "clef-flash")},
 		{name: "sgl provider never marked", enabled: true, req: decision(schemas.SGL, "clef-flash")},
@@ -503,6 +505,19 @@ func BenchmarkPreLLMHookDropParams(b *testing.B) {
 				if _, _, err := p.PreLLMHook(ctx, newStopChatRequest(schemas.Bedrock, model)); err != nil {
 					b.Fatal(err)
 				}
+			}
+		})
+	}
+}
+
+func BenchmarkMarkNativeDecision(b *testing.B) {
+	for _, provider := range []schemas.ModelProvider{schemas.Typesafe, schemas.Nace, schemas.VLLM, schemas.SGL} {
+		b.Run(string(provider), func(b *testing.B) {
+			p := &CompatPlugin{}
+			ctx := newTestContext()
+			b.ReportAllocs()
+			for b.Loop() {
+				p.markDecisionForEmulation(ctx, provider, "native-model")
 			}
 		})
 	}

@@ -211,6 +211,7 @@ func (account *ComprehensiveTestAccount) GetConfiguredProviders() ([]schemas.Mod
 		schemas.Cloudflare,
 		schemas.GithubCopilot,
 		schemas.Typesafe,
+		schemas.Nace,
 		ProviderOpenAICustom,
 	}, nil
 }
@@ -654,6 +655,16 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 				Value:          *schemas.NewSecretVar("env.RUNWARE_API_KEY"),
 				Models:         []string{"*"},
 				Weight:         1.0,
+				UseForBatchAPI: bifrost.Ptr(true),
+			},
+		}, nil
+	case schemas.Nace:
+		return []schemas.Key{
+			{
+				Value:  *schemas.NewSecretVar("env.NACE_API_KEY"),
+				Models: []string{"*"},
+				Weight: 1.0,
+				// Let unsupported batch/file tests reach the provider stubs.
 				UseForBatchAPI: bifrost.Ptr(true),
 			},
 		}, nil
@@ -1179,7 +1190,7 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 				BufferSize:  10,
 			},
 		}, nil
-	case schemas.Typesafe:
+	case schemas.Typesafe, schemas.Nace:
 		return &schemas.ProviderConfig{
 			NetworkConfig: schemas.NetworkConfig{
 				DefaultRequestTimeoutInSeconds: 300,

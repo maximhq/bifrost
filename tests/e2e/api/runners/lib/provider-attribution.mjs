@@ -25,6 +25,7 @@ export const PROVIDER_KEYWORDS = {
   passthrough: ["_passthrough", "passthrough"],
   openrouter: ["openrouter"],
   "github-copilot": ["github-copilot"],
+  nace: ["nace", "drex-"],
   huggingface: ["huggingface", "hugging face"],
   replicate: ["replicate", "/replicate", "flux", "black-forest-labs"],
 };
@@ -38,6 +39,7 @@ export const MATCH_ORDER = [
   "passthrough",
   "openrouter",
   "github-copilot",
+  "nace",
   "huggingface",
   "replicate",
   "vertex",
