@@ -3375,21 +3375,21 @@ func FilterBetaHeadersForProvider(headers []string, provider schemas.ModelProvid
 	var overrideMap map[string]bool
 	if len(overrides) > 0 {
 		overrideMap = overrides[0]
-	}
-	var overrideFalseItem []string
-	for prefix, allowed := range overrideMap {
-		if !allowed {
-			overrideFalseItem = append(overrideFalseItem, prefix)
-		}
-	}
-	headers = slices.DeleteFunc(headers, func(header string) bool {
-		for _, prefix := range overrideFalseItem {
-			if strings.HasPrefix(header, prefix) {
-				return true
+		var overrideFalseItem []string
+		for prefix, allowed := range overrideMap {
+			if !allowed {
+				overrideFalseItem = append(overrideFalseItem, prefix)
 			}
 		}
-		return false
-	})
+		headers = slices.DeleteFunc(headers, func(header string) bool {
+			for _, prefix := range overrideFalseItem {
+				if strings.HasPrefix(header, prefix) {
+					return true
+				}
+			}
+			return false
+		})
+	}
 	features, hasProvider := ProviderFeatures[provider]
 	if !hasProvider {
 		// Unknown provider — allow all headers (safe default for custom providers)

@@ -3527,6 +3527,47 @@ func TestStripUnsupportedFieldsFromRawBody_ToolChangeBlocks(t *testing.T) {
 	}
 }
 
+// BenchmarkFilterBetaHeadersForProvider measures the request-path hot path in the common
+// no-overrides case and the override-deletion path when client-provided beta headers are
+// explicitly disabled for a provider.
+func BenchmarkFilterBetaHeadersForProvider(b *testing.B) {
+	headers := []string{
+		AnthropicComputerUseBetaHeader20251124,
+		AnthropicStructuredOutputsBetaHeader,
+		AnthropicMCPClientBetaHeader,
+		AnthropicPromptCachingScopeBetaHeader,
+		AnthropicCompactionBetaHeader,
+		AnthropicContextManagementBetaHeader,
+		AnthropicAdvancedToolUseBetaHeader,
+		AnthropicFilesAPIBetaHeader,
+		AnthropicInterleavedThinkingBetaHeader,
+		AnthropicSkillsBetaHeader,
+		AnthropicContext1MBetaHeader,
+		AnthropicFastModeBetaHeader,
+		AnthropicRedactThinkingBetaHeader,
+		AnthropicToolSearchBetaHeader,
+		AnthropicEagerInputStreamingBetaHeader,
+	}
+	for _, tc := range []struct {
+		name      string
+		overrides map[string]bool
+	}{
+		{name: "no overrides", overrides: nil},
+		{name: "disabled prefixes", overrides: map[string]bool{
+			AnthropicStructuredOutputsBetaHeaderPrefix: false,
+			AnthropicToolSearchBetaHeaderPrefix:         false,
+			AnthropicFastModeBetaHeaderPrefix:           false,
+		}},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				_ = FilterBetaHeadersForProvider(headers, schemas.Vertex, tc.overrides)
+			}
+		})
+	}
+}
+
 // BenchmarkStripUnsupportedFieldsFromRawBody_ToolChangeBlocks measures the strip on a
 // 400-turn Claude Code body for Vertex: the common case (nothing to strip, which pays only
 // the byte prefilter) and one carrying a system message with a tool_addition block.
