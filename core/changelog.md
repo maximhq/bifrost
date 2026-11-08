@@ -52,5 +52,6 @@
 - fix: gemini - audio `fileData` parts are no longer treated as transcription
 - fix: vertex - model listing on `us` and `eu` keys uses the regional endpoint host, and token errors show the underlying cause
 - fix: streams cancelled before the upstream's first byte run their terminal post-hooks
+- fix: streaming chat-to-responses conversion closes each tool call before the next one starts, so /anthropic streams emit content_block_stop for a tool_use block before the next block's content_block_start
 - chore: brotli 1.2.8 and dependency updates
 - chore: upgraded Go to 1.27.4
