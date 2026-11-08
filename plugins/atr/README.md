@@ -22,7 +22,8 @@ python -m pyatr.moderation --port 8000   # POST http://127.0.0.1:8000/v1/moderat
 
 By default it flags only matches from ATR rules marked stable, at severity
 high or above, because lower-maturity rules produce false positives on benign
-text. `--lane hunt` flags on every rule at that cost. The reference server has
+text. `--lane hunt` evaluates every rule, at that cost, but the server still flags
+only matches at or above `block_severity` (high by default). The reference server has
 no authentication and binds to `127.0.0.1`; run it next to the gateway.
 
 ## Usage
@@ -44,17 +45,18 @@ Or construct directly: `atr.New(endpoint, failClosed)` (no logging).
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `endpoint` | string | — (required) | OpenAI-compatible `/v1/moderations` URL backed by ATR. |
-| `fail_closed` | bool | `false` | When the moderation endpoint is unreachable: `true` blocks the request, `false` lets it through. |
+| `fail_closed` | bool | `false` | When the moderation call fails (unreachable, non-2xx, unreadable body, or no boolean `flagged`): `true` blocks the request, `false` lets it through. |
 
 ## Behavior
 
-- `PreLLMHook` flattens the chat messages, POSTs `{"input": "<text>"}` to the
-  endpoint, and reads the standard `{"results":[{"flagged":bool,"categories":{…}}]}`
+- `PreLLMHook` flattens the chat messages and function tool descriptions, POSTs
+  `{"input": "<text>"}` to the endpoint, and reads the standard `{"results":[{"flagged":bool,"categories":{…}}]}`
   response (read up to 1 MiB). If `flagged`, it returns an `LLMPluginShortCircuit`
   carrying a `403` `BifrostError` whose message lists the matched categories in
   sorted order.
-- An unreachable endpoint, a non-2xx status or an unreadable response is logged
-  as a warning (without the prompt) and handled by `fail_closed`.
+- An unreachable endpoint, a non-2xx status, an unreadable response or a missing
+  or null `flagged` is logged as a warning (without the prompt) and handled by
+  `fail_closed`.
 - Empty prompts and benign prompts pass through untouched.
 - `PreRequestHook` / `PostLLMHook` are pass-throughs.
 

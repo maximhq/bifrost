@@ -33,6 +33,29 @@ func TestPromptText(t *testing.T) {
 	}
 }
 
+func TestPromptTextIncludesToolDescriptions(t *testing.T) {
+	req := &schemas.BifrostRequest{
+		ChatRequest: &schemas.BifrostChatRequest{
+			Params: &schemas.ChatParameters{
+				Tools: []schemas.ChatTool{
+					{Function: &schemas.ChatToolFunction{Name: "lookup", Description: strptr("prompt injection in a tool description")}},
+					{Function: &schemas.ChatToolFunction{Name: "bare"}},
+				},
+			},
+		},
+	}
+	if got := promptText(req); got != "prompt injection in a tool description\n" {
+		t.Fatalf("promptText = %q", got)
+	}
+
+	srv := mockEndpoint(t)
+	defer srv.Close()
+	_, sc, _ := New(srv.URL, false).PreLLMHook(nil, req)
+	if sc == nil || sc.Error == nil || *sc.Error.StatusCode != http.StatusForbidden {
+		t.Fatalf("a flagged tool description should be blocked with 403, got %+v", sc)
+	}
+}
+
 // mockEndpoint returns a moderation server that flags any request whose prompt
 // contains "injection".
 func mockEndpoint(t *testing.T) *httptest.Server {
@@ -172,6 +195,34 @@ func TestOversizedResponseRoutesThroughFailPolicy(t *testing.T) {
 	_, sc, _ := New(srv.URL, true).PreLLMHook(nil, chatRequest("anything"))
 	if sc == nil || sc.Error == nil {
 		t.Fatal("an oversized response with fail-closed should short-circuit")
+	}
+}
+
+func TestMissingFlaggedRoutesThroughFailPolicy(t *testing.T) {
+	for _, body := range []string{`{"results":[{}]}`, `{"results":[{"flagged":null}]}`} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_, _ = w.Write([]byte(body))
+		}))
+		_, closed, _ := New(srv.URL, true).PreLLMHook(nil, chatRequest("anything"))
+		_, open, _ := New(srv.URL, false).PreLLMHook(nil, chatRequest("anything"))
+		srv.Close()
+		if closed == nil || closed.Error == nil {
+			t.Fatalf("%s with fail-closed should short-circuit", body)
+		}
+		if open != nil {
+			t.Fatalf("%s with fail-open should pass through, got %+v", body, open)
+		}
+	}
+}
+
+func TestNonBooleanFlaggedIsAnError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"results":[{"flagged":"yes"}]}`))
+	}))
+	defer srv.Close()
+	_, sc, _ := New(srv.URL, true).PreLLMHook(nil, chatRequest("anything"))
+	if sc == nil || sc.Error == nil {
+		t.Fatal("a non-boolean flagged value with fail-closed should short-circuit")
 	}
 }
 

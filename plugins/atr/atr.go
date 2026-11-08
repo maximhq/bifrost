@@ -147,7 +147,9 @@ func blockShortCircuit(message string) *schemas.LLMPluginShortCircuit {
 	}
 }
 
-// promptText flattens the chat request's messages into scannable text.
+// promptText flattens the chat request's messages and function tool
+// descriptions into scannable text. Tool descriptions reach the provider and
+// can carry tool-poisoning instructions, so they are screened with the prompt.
 func promptText(req *schemas.BifrostRequest) string {
 	if req == nil || req.ChatRequest == nil {
 		return ""
@@ -169,12 +171,20 @@ func promptText(req *schemas.BifrostRequest) string {
 			}
 		}
 	}
+	if req.ChatRequest.Params != nil {
+		for _, tool := range req.ChatRequest.Params.Tools {
+			if tool.Function != nil && tool.Function.Description != nil {
+				sb.WriteString(*tool.Function.Description)
+				sb.WriteString("\n")
+			}
+		}
+	}
 	return sb.String()
 }
 
 type moderationResponse struct {
 	Results []struct {
-		Flagged    bool            `json:"flagged"`
+		Flagged    *bool           `json:"flagged"`
 		Categories map[string]bool `json:"categories"`
 	} `json:"results"`
 }
@@ -182,7 +192,8 @@ type moderationResponse struct {
 // moderate POSTs the text to the ATR moderation endpoint and reports whether it
 // was flagged plus the truthy category names. A non-2xx status or a malformed
 // (resultless) body is returned as an error so the caller's fail-closed policy
-// applies rather than silently allowing the request.
+// applies rather than silently allowing the request; so is a result whose
+// flagged value is missing or null.
 func (p *Plugin) moderate(ctx context.Context, text string) (bool, string, error) {
 	payload, err := json.Marshal(map[string]string{"input": text})
 	if err != nil {
@@ -214,7 +225,10 @@ func (p *Plugin) moderate(ctx context.Context, text string) (bool, string, error
 	if len(out.Results) == 0 {
 		return false, "", errors.New("atr: moderation response contained no results")
 	}
-	if !out.Results[0].Flagged {
+	if out.Results[0].Flagged == nil {
+		return false, "", errors.New("atr: moderation result has no flagged value")
+	}
+	if !*out.Results[0].Flagged {
 		return false, "", nil
 	}
 
