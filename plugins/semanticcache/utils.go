@@ -944,10 +944,14 @@ func (plugin *Plugin) extractChatParametersToMetadata(params *schemas.ChatParame
 	putIfSet(metadata, "logit_bias", params.LogitBias)
 	putIfSet(metadata, "logprobs", params.LogProbs)
 	putSortedSetIfNonEmpty(metadata, "modalities", params.Modalities)
+	putIfSet(metadata, "audio", params.Audio)
+	putIfSet(metadata, "n", params.N)
+	putIfSet(metadata, "top_k", params.TopK)
 	putIfSet(metadata, "prompt_cache_key", params.PromptCacheKey)
 	if params.Reasoning != nil {
 		putIfSet(metadata, "reasoning_enabled", params.Reasoning.Enabled)
 		putIfSet(metadata, "reasoning_effort", params.Reasoning.Effort)
+		putIfSet(metadata, "reasoning_max_tokens", params.Reasoning.MaxTokens)
 	}
 	if params.ResponseFormat != nil {
 		// ResponseFormat is a struct pointer that callers expect to round-trip
@@ -1015,9 +1019,7 @@ func (plugin *Plugin) extractResponsesParametersToMetadata(params *schemas.Respo
 	putIfSet(metadata, "store", params.Store)
 	if params.Text != nil {
 		putIfSet(metadata, "text_verbosity", params.Text.Verbosity)
-		if params.Text.Format != nil {
-			metadata["text_format_type"] = params.Text.Format.Type
-		}
+		putIfSet(metadata, "text_format", params.Text.Format)
 	}
 	putIfSet(metadata, "top_logprobs", params.TopLogProbs)
 	putIfSet(metadata, "truncation", params.Truncation)

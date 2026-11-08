@@ -1,1 +1,2 @@
+- fix: requests that differ only in text.format schema, n, audio, top_k or reasoning.max_tokens no longer share a cache entry [@kunalgoesbyken](https://github.com/kunalgoesbyken)
 - chore: upgraded core to v1.15.2 and framework to v1.12.2
