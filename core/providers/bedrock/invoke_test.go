@@ -1982,8 +1982,9 @@ const toolReferenceInvokeBody = `{
 }`
 
 const (
-	toolReferenceOnlyContent    = `[{"type": "tool_reference", "tool_name": "fetch_weather_report"}]`
-	toolReferenceAndTextContent = `[{"type": "text", "text": "Found 1 tool"}, {"type": "tool_reference", "tool_name": "fetch_weather_report"}]`
+	toolReferenceOnlyContent     = `[{"type": "tool_reference", "tool_name": "fetch_weather_report"}]`
+	toolReferenceAndTextContent  = `[{"type": "text", "text": "Found 1 tool"}, {"type": "tool_reference", "tool_name": "fetch_weather_report"}]`
+	toolReferenceAndImageContent = `[{"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "iVBORw0KGgo="}}, {"type": "tool_reference", "tool_name": "fetch_weather_report"}]`
 )
 
 func toolReferenceResponsesRequest(tb testing.TB, ctx *schemas.BifrostContext, toolResultContent string) *schemas.BifrostResponsesRequest {
@@ -2034,6 +2035,17 @@ func TestToBedrockConverseRequest_InvokeToolResultKeepsToolReference(t *testing.
 		assert.Equal(t, schemas.ResponsesInputMessageContentBlockTypeToolReference, ref.Type)
 		require.NotNil(t, ref.ToolName)
 		assert.Equal(t, "fetch_weather_report", *ref.ToolName)
+	})
+
+	t.Run("image and reference keep their order", func(t *testing.T) {
+		out := toolReferenceFunctionCallOutput(t, toolReferenceResponsesRequest(t, ctx, toolReferenceAndImageContent))
+		require.Len(t, out.ResponsesFunctionToolCallOutputBlocks, 2, "got %+v", out)
+		image, ref := out.ResponsesFunctionToolCallOutputBlocks[0], out.ResponsesFunctionToolCallOutputBlocks[1]
+		assert.Equal(t, schemas.ResponsesInputMessageContentBlockTypeImage, image.Type)
+		require.NotNil(t, image.ResponsesInputMessageContentBlockImage)
+		require.NotNil(t, image.ResponsesInputMessageContentBlockImage.ImageURL)
+		assert.Equal(t, "data:image/png;base64,iVBORw0KGgo=", *image.ResponsesInputMessageContentBlockImage.ImageURL)
+		assert.Equal(t, schemas.ResponsesInputMessageContentBlockTypeToolReference, ref.Type)
 	})
 
 	t.Run("plain string result stays a string", func(t *testing.T) {

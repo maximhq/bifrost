@@ -5323,6 +5323,12 @@ func convertSingleBedrockMessageToBifrostMessages(ctx *schemas.BifrostContext, m
 							Type: schemas.ResponsesInputMessageContentBlockTypeText,
 							Text: c.Text,
 						})
+					} else if c.Image != nil && c.Image.Source.Bytes != nil {
+						dataURL := bedrockImageDataURL(c.Image.Format, *c.Image.Source.Bytes)
+						outputBlocks = append(outputBlocks, schemas.ResponsesMessageContentBlock{
+							Type:                                   schemas.ResponsesInputMessageContentBlockTypeImage,
+							ResponsesInputMessageContentBlockImage: &schemas.ResponsesInputMessageContentBlockImage{ImageURL: &dataURL},
+						})
 					}
 				}
 			}
