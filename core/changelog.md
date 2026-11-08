@@ -1,3 +1,4 @@
+- feat: omlx - first-class oMLX provider for Apple Silicon inference: chat, text, embeddings, speech, transcription, list/retrieve models with automatic extra-param passthrough (chat_template_kwargs and friends always reach the backend), native System One decisions on /v1/systemone, per-key server URLs via omlx_key_config.url, and keyless local auth (thanks [@johnkim4u](https://github.com/johnkim4u)!)
 - feat: mcp - per-user tool discovery: pluggable discovery store, per-caller tools, prompts and resources on the gateway, per-caller connect tool, Refresh tools, and an explicit pending_verification flag
 - feat: mcp - serve MCP Apps tools and ui:// resources on the gateway, keep app-only tools away from models, and accept tools by their upstream names
 - feat: mcp - relay input_required to gateway callers, forward callers' declared capabilities upstream, and log rounds by round_trip_id and MCP Apps use

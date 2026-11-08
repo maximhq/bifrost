@@ -1,0 +1,352 @@
+---
+title: "oMLX"
+description: "oMLX API conversion guide - Apple Silicon local inference, OpenAI-compatible format, native extra-param passthrough, System One decisions, streaming"
+icon: "o"
+---
+
+## Overview
+
+oMLX is an **OpenAI-compatible inference server for Apple Silicon** ([jundot/omlx](https://github.com/jundot/omlx)), built on MLX. Bifrost's omlx provider delegates to the OpenAI implementation for standard endpoints while adding what a plain OpenAI-compatible shim cannot express: guaranteed passthrough of oMLX-native request fields and oMLX's native System One decisions endpoint. Key characteristics:
+
+- **Local-first deployment** - Runs on a single Apple Silicon Mac (M-series unified memory); no external API dependency
+- **OpenAI API compatibility** - Identical request/response format for chat, text, embeddings, audio, and streaming
+- **Native passthrough** - Provider-specific fields (`chat_template_kwargs`, `repetition_penalty`, ...) always reach the backend
+- **Native decisions** - any served model answers `/v1/systemone` decision requests (openai-compatible providers cannot express this endpoint at all)
+- **Per-key server URL** - Each key targets its own oMLX instance (`omlx_key_config.url`), like Ollama, vLLM, and SGL
+- **Keyless by default** - No API key required for local servers; a key value, when set, is sent as a bearer token
+
+### Supported Operations
+
+| Operation | Non-Streaming | Streaming | Endpoint |
+|-----------|---------------|-----------|----------|
+| Chat Completions | ✅ | ✅ | `/v1/chat/completions` |
+| Responses API | ✅ | ✅ | `/v1/chat/completions` |
+| Text Completions | ✅ | ✅ | `/v1/completions` |
+| Embeddings | ✅ | - | `/v1/embeddings` |
+| List Models | ✅ | - | `/v1/models` |
+| Model Retrieve | ✅ | - | `/v1/models/{model}` |
+| Decisions | ✅ | - | `/v1/systemone` |
+| Speech (TTS) | ✅ | - | `/v1/audio/speech` |
+| Transcriptions (STT) | ✅ | - | `/v1/audio/transcriptions` |
+| Image Generation | ❌ | ❌ | - |
+| Files | ❌ | ❌ | - |
+| Batch | ❌ | ❌ | - |
+| Cached Contents | ❌ | - | - |
+
+<Note>
+**Unsupported Operations** (❌): Image Generation, Files, Batch, and Cached Contents return `UnsupportedOperationError` instead of hitting the network. Cached contents are intentionally not delegated to the OpenAI provider: delegation would dial `api.openai.com`, not your local server — the same parity precedent Ollama and SGL follow.
+
+oMLX is self-hosted. Ensure an oMLX instance is running (it listens on `http://localhost:8000` by default) and point each key's `omlx_key_config.url` — or the provider `network_config.base_url` — at it.
+</Note>
+
+---
+
+## Why a standalone provider (not an OpenAI-compatible shim)
+
+You can already point Bifrost's openai-compatible providers at an oMLX server. Three things break or fall apart when you do, and they are the reason this provider exists.
+
+**1. The typed OpenAI converter silently drops non-OpenAI-spec fields.** OpenAI-compatible conversion rebuilds the chat payload from a parsed, typed struct. Anything the struct does not model — most importantly `chat_template_kwargs`, e.g. `{"enable_thinking": false}` to switch off thinking on Qwen reasoning models — is dropped from the outgoing body without an error unless the caller opts into the extra-params passthrough header on every request. The omlx provider sets passthrough itself, so oMLX-native sampling fields reach the backend verbatim, always. The conversion is covered by `TestOmlxChatCompletion_PassesChatTemplateKwargsThrough` and the negative control `TestOpenAIConverterDropsExtraParamsWithoutPassthrough` in `core/providers/omlx/omlx_test.go`.
+
+**2. oMLX serves a native decision endpoint.** `/v1/systemone` accepts decision requests for **any loaded model** and is not expressible through `SupportedBaseProviders`: emulating it via Responses forces full text generation. Measured on our stack (chat model served on oMLX):
+
+| Path | Latency | Tokens generated |
+|------|---------|------------------|
+| Emulated (Responses full generation) | 1–1.9 s | 66–126 reasoning tokens, `completion_tokens` absent |
+| Native `/v1/systemone` | 79–380 ms | classification readout, no generation |
+
+**3. Three provider rows became one.** Before this provider, serving a single oMLX instance well required three Bifrost providers: an openai-compat entry for chat, a typesafe entry for decisions, and a vllm entry for kwargs passthrough. The omlx provider collapses that to one provider with one key per server.
+
+---
+
+# 1. Chat Completions
+
+## Request Parameters
+
+oMLX supports all standard OpenAI chat completion parameters. For full parameter reference and behavior, see [OpenAI Chat Completions](/providers/supported-providers/openai#1-chat-completions).
+
+### Filtered Parameters
+
+Removed for Ollama/openai-compat parity:
+- `prompt_cache_key` - Not supported
+- `verbosity` - Anthropic-specific
+- `store` - Not supported
+- `service_tier` - Not supported
+
+### oMLX-native extra params (always passed through)
+
+Unmodeled fields in `extra_params` are merged onto the wire verbatim for both unary and streaming chat, and for text completions — no passthrough header needed:
+
+| Field | Notes |
+|-------|-------|
+| `chat_template_kwargs` | Chat-template switches, e.g. `{"enable_thinking": false}` for Qwen thinking models |
+| `repetition_penalty` | MLX sampling extension |
+| `min_p`, `top_k` | MLX sampling extensions |
+
+On conflict, an extra param overwrites the modeled field of the same name — passthrough merging is last.
+
+Ollama-compatible message types, tools, responses, and streaming formats apply. For details on message handling, tool conversion, responses, and streaming, refer to [OpenAI Chat Completions](/providers/supported-providers/openai#1-chat-completions).
+
+---
+
+# 2. Responses API
+
+Converted internally to Chat Completions:
+
+```
+ResponsesRequest → ChatRequest → ChatCompletion → ResponsesResponse
+```
+
+Same parameter support as Chat Completions, including native extra-param passthrough. Responses-only fields with no chat equivalent (`background`, `store`) are dropped in conversion, same as on Ollama.
+
+---
+
+# 3. Text Completions
+
+oMLX supports the legacy text completion format:
+
+| Parameter | Mapping |
+|-----------|---------|
+| `prompt` | Direct pass-through |
+| `max_tokens` | max_tokens |
+| `temperature`, `top_p` | Direct pass-through |
+| `stop` | Stop sequences |
+
+Extra params pass through here as well (`/v1/completions` accepts MLX-native sampling fields).
+
+---
+
+# 4. Embeddings
+
+oMLX supports text embeddings when an embedding model is served:
+
+| Parameter | Notes |
+|-----------|-------|
+| `input` | Text or array of texts |
+| `model` | Embedding model name (HF repo id, e.g. `Qwen/Qwen3-Embedding-0.6B`) |
+| `encoding_format` | "float" or "base64" |
+| `dimensions` | Custom output dimensions (optional) |
+
+Response returns embedding vectors with token usage.
+
+---
+
+# 5. List Models
+
+Lists models available on the target oMLX server (`/v1/models`), each keyed by its HF-style id. With multiple keys, the request fans out concurrently and every key's own `omlx_key_config.url` is queried.
+
+<Note>
+Model Retrieve (`/v1/models/{model}`) accepts Hugging Face-style ids containing `/` (e.g. `Qwen/Qwen3-4B`): each path segment is validated and escaped individually, so the id maps to `/v1/models/Qwen/Qwen3-4B` on the wire. Empty, `.` and `..` segments are still rejected as path-shaping ids, matching the shared resource-id safety rules.
+</Note>
+
+---
+
+# 6. Decisions
+
+oMLX answers decision requests natively on its `/v1/systemone` endpoint — any model loaded in oMLX can serve them. Load the model in oMLX, then call [`/v1/decisions`](/quickstart/gateway/decisions).
+
+```bash
+curl http://localhost:8080/v1/decisions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "omlx/<model-id>",
+    "input": "Customer message: I was double charged and nobody replied to my two emails.",
+    "questions": [
+      { "type": "predicate", "name": "is_frustrated", "instructions": "Is the customer frustrated?" }
+    ]
+  }'
+```
+
+Bifrost calls oMLX's `/v1/systemone`, which uses TypeSafe's System One format, so questions are converted as on [TypeSafe](/providers/supported-providers/typesafe#field-mapping-reference). oMLX-specific behavior:
+
+- **Images** are taken inline in the OpenAI-style content parts; oMLX has no separate top-level `images` array like Ollama's route.
+- **No `keep_alive`** - oMLX manages model residency in its own console; the field is not part of the systemone body.
+- **Extra params need the passthrough header** - Unlike chat, decisions do not force passthrough on, mirroring the Typesafe/Ollama decision surface. Set `x-bifrost-passthrough-extra-params` to merge oMLX-native fields onto the systemone body.
+- **No key needed** for a local server. If the key has a value, it is sent as a bearer token.
+
+A model that is not loaded, or cannot answer decisions, returns oMLX's own error (both its native `{"error": "..."}` string shape and the OpenAI-shaped error object are surfaced with the original status). The [complexity router](/features/complexity-router#choosing-the-decision-model) lists the System One models you have available.
+
+---
+
+# 7. Speech & Transcription
+
+Standard OpenAI audio endpoints (`/v1/audio/speech`, `/v1/audio/transcriptions`) are delegated to the OpenAI implementation and require the corresponding models to be served by your oMLX instance. Streaming variants (`SpeechStream`, `TranscriptionStream`) return `UnsupportedOperationError`.
+
+---
+
+## Unsupported Features
+
+| Feature | Reason |
+|---------|--------|
+| Image Generation / Edit / Variation | Not offered by the oMLX API |
+| Video operations | Not offered by the oMLX API |
+| Batch Operations | Not offered by the oMLX API |
+| File Management | Not offered by the oMLX API |
+| Cached Contents | Google-only lifecycle; delegating to openai would dial api.openai.com (ollama/sgl parity) |
+| CountTokens / Compaction / Containers / Passthrough | Not offered by the oMLX API |
+
+<Note>
+oMLX follows the OpenAI API specification for request format and error handling. Authentication is optional and depends on deployment (no authentication required for local access, optional Bearer token for protected instances).
+
+**Critical**: A base URL must be configured — per key via `omlx_key_config.url` (recommended, like Ollama/SGL) or provider-wide via `network_config.base_url`. `http://localhost:8000` is oMLX's own default listening address.
+</Note>
+
+---
+
+## Setup & Configuration
+
+Configure oMLX as a provider.
+
+<Tabs>
+<Tab title="Web UI">
+
+1. Navigate to **Models** > **Model Providers**. Look for **oMLX** under **Configured Providers**. If it is missing, click on **Add New Provider** and select **oMLX**.
+2. Click **Add New Server** or edit an existing key.
+3. Set a name for your key.
+4. Leave **API Key** blank for local servers. If your endpoint requires auth, paste a bearer token directly or use an environment variable.
+5. Set **oMLX URL** to `http://localhost:8000` or your remote oMLX endpoint.
+6. Set **Allowed Models** to **All Models** (default) or the specific model allowlist you want this key to serve.
+7. Save the provider configuration.
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "providers": {
+    "omlx": {
+      "keys": [
+        {
+          "name": "omlx-studio",
+          "value": "",
+          "models": [
+            "*"
+          ],
+          "weight": 1.0,
+          "omlx_key_config": {
+            "url": "http://localhost:8000"
+          }
+        }
+      ]
+    }
+  }
+}
+```
+
+</Tab>
+<Tab title="API">
+Refer to the API documentation for [Provider Keys Management](https://docs.getbifrost.ai/api-reference/providers/create-a-key-for-a-provider).
+</Tab>
+<Tab title="Go SDK">
+
+```go
+case schemas.Omlx:
+    return []schemas.Key{{
+        Name:   "omlx-studio",
+        Value:  *schemas.NewSecretVar(""),
+        Models: []string{"*"},
+        Weight: 1.0,
+        OmlxKeyConfig: &schemas.OmlxKeyConfig{
+            URL: *schemas.NewSecretVar("http://localhost:8000"),
+        },
+    }}, nil
+```
+
+</Tab>
+</Tabs>
+
+**Environment Setup:**
+
+1. Install oMLX from https://github.com/jundot/omlx (requires an Apple Silicon Mac)
+2. Start the server (defaults to port 8000):
+   ```bash
+   omlx server
+   ```
+3. Download/serve a model from the oMLX console, then verify:
+   ```bash
+   curl http://localhost:8000/v1/models
+   ```
+
+---
+
+## Performance Considerations
+
+**Streaming for Long Generations:**
+Use streaming for interactive latency on chat models:
+
+```json
+{
+  "model": "Qwen/Qwen3-4B",
+  "messages": [...],
+  "stream": true
+}
+```
+
+**Thinking models:**
+To skip the thinking phase on a Qwen reasoning chat model (which otherwise generates 60-100+ reasoning tokens before any answer), pass:
+
+```json
+{
+  "extra_params": {
+    "chat_template_kwargs": { "enable_thinking": false }
+  }
+}
+```
+
+This arrives at oMLX verbatim through the omlx provider; a plain OpenAI-compatible shim drops it silently.
+
+**Decisions over generation:**
+For classification-style routing, native `/v1/systemone` decisions answer in logit readout (measured 79-380 ms) instead of generating verdict text (measured 1-1.9 s for the emulated Responses path).
+
+**GPU/Metal:**
+oMLX uses Apple Silicon unified memory through MLX; a model swap or cold load can exceed default timeouts — raise `network_config.default_request_timeout_in_seconds` for first-call-heavy deployments.
+
+---
+
+## Popular Models
+
+| Model | Type | Notes |
+|-------|------|-------|
+| Qwen/Qwen3-4B | Chat | Supports `enable_thinking` toggle via chat_template_kwargs |
+| mistralai/Mistral-7B-Instruct | Chat | Fast local chat |
+| openai/gpt-oss-20b | Chat/MoE | Served natively by oMLX |
+| Qwen/Qwen3-Embedding-0.6B | Embedding | For `/v1/embeddings` and semantic cache |
+| any loaded model | Decisions | Native `/v1/systemone`; dedicated System One models (TypeSafe family) return logit-readout classifications |
+
+---
+
+## Caveats
+
+<Accordion title="BaseURL Configuration Required">
+**Severity**: High
+**Behavior**: A URL must be set through `omlx_key_config.url` or `network_config.base_url` - no default in code
+**Impact**: Requests fail with a configuration error before contacting any server
+**Code**: Every operation resolves via `baseURLOrError`; with neither set it returns "no base URL configured"
+</Accordion>
+
+<Accordion title="Extra params override modeled fields">
+**Severity**: Low
+**Behavior**: Chat/text-completion passthrough merging happens after typed marshaling, so an extra param named like an OpenAI field wins
+**Impact**: `{"temperature": 0.2}` in extra_params overrides the modeled temperature
+**Code**: MergeExtraParamsIntoJSON is applied last when `BifrostContextKeyPassthroughExtraParams` is on (automatic for chat/text)
+</Accordion>
+
+<Accordion title="Decisions need the passthrough header for native fields">
+**Severity**: Low
+**Behavior**: Unlike chat, the decision route does not force extra-param passthrough
+**Impact**: Unmodeled systemone fields are dropped unless `x-bifrost-passthrough-extra-params` is set
+**Code**: CheckContextAndGetRequestBody merges extra params only when the context flag is true
+</Accordion>
+
+<Accordion title="Model Retrieve escapes slashed ids segment by segment">
+**Severity**: Info
+**Behavior**: `/v1/models/{model}` splits ids on `/` and validates + escapes each segment; `\`, `?`, `#`, `%` and control characters within a segment, and empty / `.` / `..` segments, are refused
+**Impact**: HF-style ids like `Qwen/Qwen3-4B` retrieve correctly; path-shaping ids still return a 400
+**Code**: providerUtils.EscapeResourcePath segment-wise validation in ModelRetrieve
+</Accordion>
+
+<Accordion title="Cached contents unsupported on purpose">
+**Severity**: Low
+**Behavior**: CachedContent operations return `UnsupportedOperationError` rather than delegating to openai
+**Impact**: No named-cache lifecycle on oMLX (caching is implicit on-device)
+**Code**: OmlxProvider cachedcontents.go, following the ollama/sgl parity precedent
+</Accordion>
