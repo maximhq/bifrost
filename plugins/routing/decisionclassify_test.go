@@ -803,12 +803,16 @@ func TestNaceRouterQuestionWireContract(t *testing.T) {
 		}
 		originalQuestion := original.Questions[0]
 		expected, err := providerUtils.MarshalSortedIndent(originalQuestion.Instructions.Value(), "", "  ")
-		require.NoError(t, err)
-		require.Equal(t, string(expected), instruction)
-		require.Len(t, question.Criteria, 3)
+		if !assert.NoError(t, err) || !assert.Equal(t, string(expected), instruction) || !assert.Len(t, question.Criteria, 3) {
+			w.WriteHeader(422)
+			return
+		}
 		for _, choice := range originalQuestion.Choices {
 			key, err := choice.Key()
-			require.NoError(t, err)
+			if !assert.NoError(t, err) {
+				w.WriteHeader(422)
+				return
+			}
 			description := question.Criteria[key]
 			text, ok := description.(string)
 			if description != nil && !ok {
@@ -816,8 +820,10 @@ func TestNaceRouterQuestionWireContract(t *testing.T) {
 				return
 			}
 			expected, err := providerUtils.MarshalSortedIndent(choice.Description.Value(), "", "  ")
-			require.NoError(t, err)
-			require.Equal(t, string(expected), text)
+			if !assert.NoError(t, err) || !assert.Equal(t, string(expected), text) {
+				w.WriteHeader(422)
+				return
+			}
 		}
 		w.Header().Set("Content-Type", "application/json")
 		err = json.NewEncoder(w).Encode(map[string]any{
@@ -825,7 +831,7 @@ func TestNaceRouterQuestionWireContract(t *testing.T) {
 			"answers": map[string]any{decisionComplexityQuestion: map[string]any{"type": "choice", "choice": "COMPLEX", "confidence": 0.9, "probabilities": map[string]float64{"SIMPLE": 0.02, "MEDIUM": 0.03, "COMPLEX": 0.95}}},
 			"usage":   map[string]int{"input_tokens": 42, "output_tokens": 0},
 		})
-		require.NoError(t, err)
+		assert.NoError(t, err)
 	}))
 	defer server.Close()
 	provider, err := nace.NewNaceProvider(&schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL, AllowPrivateNetwork: true}}, bifrost.NewNoOpLogger(), "2.5.0")
