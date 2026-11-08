@@ -47548,7 +47548,7 @@
       "post": {
         "operationId": "refreshMCPClientTools",
         "summary": "Refresh MCP client tools",
-        "description": "Re-discovers an MCP client's tools from its upstream server immediately,\ninstead of waiting for the periodic connection checker's next tick (the\nclient's tool_sync_interval, or the global mcp_tool_sync_interval —\n10 minutes by default).\n\nUse it after adding, removing, or re-describing a tool on the upstream\nMCP server. Unlike reconnect, this applies to every client type,\nincluding per-call clients (any per-user auth type, and any shared http\nclient with needs_session_stickiness false/omitted), which hold no\npersistent connection and so have no other on-demand refresh path.\n\nHow the refresh runs depends on the client: a sticky client with a live\nconnection is re-listed over it; a per-call client goes through an\nephemeral connect-discover-close cycle; a sticky client whose connection\nis currently down is reconnected, which re-discovers as part of the dial.\n\nThe freshly discovered set is persisted and the hosted /mcp surface is\nre-synced automatically, exactly as for every other discovery path.\nA refresh also re-reads the server's instructions, which costs one extra\nhandshake for a sticky http or sse client because tools/list cannot\ncarry that field. STDIO clients are skipped: Bifrost owns the\nsubprocess, so its instructions cannot change without a reconnect. This\nis the only way to pick up instructions edited upstream without\nrestarting, since MCP defines no change notification for them.\nRejected with 400 when the client is not in a state where discovery\nmeans anything: disabled (enable it first), needs_reauth (reauthorize\nit first), or still pending_verification (complete the one-time admin\nverification instead — refreshing a client awaiting that flow would\nbypass it). 404 if no client is registered under the given ID.\n",
+        "description": "Re-discovers an MCP client's tools from its upstream server immediately,\ninstead of waiting for the periodic connection checker's next tick (the\nclient's tool_sync_interval, or the global mcp_tool_sync_interval —\n10 minutes by default).\n\nUse it after adding, removing, or re-describing a tool on the upstream\nMCP server. Unlike reconnect, this applies to every connection mode,\nincluding per-call clients (any per-user auth type, and any shared http\nclient with needs_session_stickiness false/omitted), which hold no\npersistent connection and so have no other on-demand refresh path. The\nexception is a client with per_user_discovery on, which keeps no tool\nlist of its own: refresh a per_user_oauth or per_user_headers caller's\ntools with POST /api/mcp/sessions/{id}/refresh instead. A\ntoken_exchange caller has no session, so their discovery is made again\nonly after it is deleted.\n\nHow the refresh runs depends on the client: a sticky client with a live\nconnection is re-listed over it; a per-call client goes through an\nephemeral connect-discover-close cycle; a sticky client whose connection\nis currently down is reconnected, which re-discovers as part of the dial.\n\nThe freshly discovered set is persisted and the hosted /mcp surface is\nre-synced automatically, exactly as for every other discovery path.\nA refresh also re-reads the server's instructions, which costs one extra\nhandshake for a sticky http or sse client because tools/list cannot\ncarry that field. STDIO clients are skipped: Bifrost owns the\nsubprocess, so its instructions cannot change without a reconnect. This\nis the only way to pick up instructions edited upstream without\nrestarting, since MCP defines no change notification for them.\nRejected with 400 when the client is not in a state where discovery\nmeans anything: disabled (enable it first), needs_reauth (reauthorize\nit first), or still pending_verification (complete the one-time admin\nverification instead — refreshing a client awaiting that flow would\nbypass it), and for a client with per_user_discovery on. 404 if no\nclient is registered under the given ID.\n",
         "tags": [
           "MCP"
         ],
@@ -47794,7 +47794,7 @@
           "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `MCPGateway:Create` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "Reauthorize an MCP client",
-        "description": "Redoes the OAuth consent flow for an already-authorized OAuth-based MCP\nclient, without delete-and-recreate. The flow always runs against the\ncredentials currently stored on the client's OAuth config.\n\n- auth_type \"oauth\": serves both a standalone admin-triggered reauth\n  (e.g. the upstream provider revoked the credential and the client sits\n  in needs_reauth) and the follow-up to rotating oauth_config via\n  PUT /api/mcp/client/{id} (which cascades every bound token to\n  needs_reauth).\n- auth_type \"per_user_oauth\": refreshes the retained admin discovery\n  credential used for periodic tool-list refresh, whether or not it\n  needs repair; end-user credentials are untouched either way. It also\n  verifies a client back in pending_verification because\n  per_user_discovery was turned off, the same way\n  POST /api/mcp/client/{id}/initiate-verification does: the admin signs\n  in on the client's existing OAuth registration.\n\nA client still in its first sign-in (declared in config.json and not\nyet verified) gets 400: use initiate-verification instead.\n\nComplete the returned flow like any other admin OAuth flow: open\nauthorize_url in a browser, poll status_url until \"authorized\", then\nPOST complete_url.\n",
+        "description": "Redoes the OAuth consent flow for an already-authorized OAuth-based MCP\nclient, without delete-and-recreate. The flow always runs against the\ncredentials currently stored on the client's OAuth config.\n\n- auth_type \"oauth\": serves both a standalone admin-triggered reauth\n  (e.g. the upstream provider revoked the credential and the client sits\n  in needs_reauth) and the follow-up to rotating oauth_config via\n  PUT /api/mcp/client/{id} (which cascades every bound token to\n  needs_reauth).\n- auth_type \"per_user_oauth\": refreshes the retained admin discovery\n  credential used for periodic tool-list refresh, whether or not it\n  needs repair; end-user credentials are untouched either way. It also\n  verifies a client back in pending_verification because\n  per_user_discovery was turned off, the same way\n  POST /api/mcp/client/{id}/initiate-verification does: the admin signs\n  in on the client's existing OAuth registration.\n\nA client still in its first sign-in (declared in config.json and not\nyet verified) gets 400: use initiate-verification instead. So does a\nper_user_oauth client with per_user_discovery on, which keeps no admin\ncredential to refresh; POST /api/mcp/client/{id}/reregister still\napplies to it.\n\nComplete the returned flow like any other admin OAuth flow: open\nauthorize_url in a browser, poll status_url until \"authorized\", then\nPOST complete_url.\n",
         "tags": [
           "MCP",
           "OAuth"
@@ -47830,7 +47830,7 @@
             }
           },
           "400": {
-            "description": "Client is not an OAuth-based auth type (oauth, per_user_oauth), or has never completed initial OAuth authorization (use initiate-verification instead)",
+            "description": "Client is not an OAuth-based auth type (oauth, per_user_oauth), has never completed initial OAuth authorization (use initiate-verification instead), or has per_user_discovery on and so keeps no admin credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -47841,16 +47841,6 @@
           },
           "404": {
             "description": "MCP client not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/BifrostError"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "The admin discovery credential for this per_user_oauth client does not need repair or does not exist",
             "content": {
               "application/json": {
                 "schema": {
@@ -47971,7 +47961,7 @@
           "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `MCPGateway:Create` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "Verify a pending per-user-headers MCP client",
-        "description": "Completes the admin verification for an MCP client with auth_type\n\"per_user_headers\". The admin supplies sample values for every declared\nper_user_header_keys entry; Bifrost opens an upstream connection with\nthem, discovers the tool list, persists it, and transitions the client\nto connected. The sample values are retained as the admin discovery\ncredential the periodic tool syncer uses to refresh the tool list; each\nend-user still submits their own values at runtime. Synchronous; no\nbrowser flow.\n\nServes two situations: the one-time bootstrap verification for a client\nsitting in pending_verification (declared via config.json), and a\nvoluntary refresh of an already-verified client's retained admin\ndiscovery credential — resubmitting sample values always re-runs\nverification and upserts the credential back to active, whether or not\nit currently needs repair (mirrors POST /reauthorize for OAuth-based\nclients).\n",
+        "description": "Completes the admin verification for an MCP client with auth_type\n\"per_user_headers\". The admin supplies sample values for every declared\nper_user_header_keys entry; Bifrost opens an upstream connection with\nthem, discovers the tool list, persists it, and transitions the client\nto connected. The sample values are retained as the admin discovery\ncredential the periodic tool syncer uses to refresh the tool list; each\nend-user still submits their own values at runtime. Synchronous; no\nbrowser flow.\n\nServes two situations: the one-time bootstrap verification for a client\nsitting in pending_verification (declared via config.json), and a\nvoluntary refresh of an already-verified client's retained admin\ndiscovery credential — resubmitting sample values always re-runs\nverification and upserts the credential back to active, whether or not\nit currently needs repair (mirrors POST /reauthorize for OAuth-based\nclients).\n\nA client with per_user_discovery on is verified the same way, but\nkeeps neither the sample values nor the tools they discover: each\ncaller's tools are discovered with their own values. Once it is\nverified it has no admin credential to refresh, and a repeat call gets\n400.\n",
         "tags": [
           "MCP"
         ],
@@ -48035,7 +48025,7 @@
                     },
                     "tools_count": {
                       "type": "integer",
-                      "description": "Number of tools discovered during verification"
+                      "description": "Number of tools discovered during verification. A client with per_user_discovery on does not keep them."
                     }
                   }
                 }
@@ -48043,7 +48033,7 @@
             }
           },
           "400": {
-            "description": "Client is not auth_type \"per_user_headers\", has no per_user_header_keys declared, or user_headers is missing required keys",
+            "description": "Client is not auth_type \"per_user_headers\", has no per_user_header_keys declared, user_headers is missing required keys, or the client has per_user_discovery on and is already verified",
             "content": {
               "application/json": {
                 "schema": {
@@ -48092,7 +48082,7 @@
           "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `MCPGateway:Create` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "Verify a pending or repair a needs_reauth token_exchange MCP client",
-        "description": "Completes admin verification for an MCP client with auth_type\n\"token_exchange\". No request body: the subject of the exchange is\nalways the signed-in admin's own identity-provider token, either the\none an identity-authenticated bearer request carries or, when the\nrequest carries none, the access token from the admin's own Bifrost\nsign-in (an SSO dashboard session), refreshed first when it has\nexpired or is about to. There is no manual token input. Bifrost\nexchanges it exactly like a real caller's\ntoken would be exchanged, opens an upstream connection with the result,\ndiscovers the tool list, persists it, and transitions the client to\nconnected. The exchanged token (and any refresh token the identity\nprovider issued alongside it) is retained as the admin discovery\ncredential the periodic tool syncer uses to refresh the tool list;\nend-user tool calls always exchange the caller's own token or Bifrost\nsign-in instead.\nSynchronous; no browser flow.\n\nServes two situations: the one-time bootstrap verification for a client\nsitting in pending_verification, and a voluntary refresh of an\nalready-verified client's retained admin discovery credential —\nresubmitting always re-runs verification and retains a fresh\ncredential, whether or not it currently needs repair (mirrors POST\n/reauthorize for OAuth-based clients).\n",
+        "description": "Completes admin verification for an MCP client with auth_type\n\"token_exchange\". No request body: the subject of the exchange is\nalways the signed-in admin's own identity-provider token, either the\none an identity-authenticated bearer request carries or, when the\nrequest carries none, the access token from the admin's own Bifrost\nsign-in (an SSO dashboard session), refreshed first when it has\nexpired or is about to. There is no manual token input. Bifrost\nexchanges it exactly like a real caller's\ntoken would be exchanged, opens an upstream connection with the result,\ndiscovers the tool list, persists it, and transitions the client to\nconnected. The exchanged token (and any refresh token the identity\nprovider issued alongside it) is retained as the admin discovery\ncredential the periodic tool syncer uses to refresh the tool list;\nend-user tool calls always exchange the caller's own token or Bifrost\nsign-in instead.\nSynchronous; no browser flow.\n\nServes two situations: the one-time bootstrap verification for a client\nsitting in pending_verification, and a voluntary refresh of an\nalready-verified client's retained admin discovery credential —\nresubmitting always re-runs verification and retains a fresh\ncredential, whether or not it currently needs repair (mirrors POST\n/reauthorize for OAuth-based clients).\n\nA client with per_user_discovery on is verified the same way, but\nkeeps neither the exchanged token nor the tools it discovers: each\ncaller's tools are discovered with their own exchanged token. Once it\nis verified it has no admin credential to refresh, and a repeat call\ngets 400.\n",
         "tags": [
           "MCP"
         ],
@@ -48134,7 +48124,7 @@
                     },
                     "tools_count": {
                       "type": "integer",
-                      "description": "Number of tools discovered during verification"
+                      "description": "Number of tools discovered during verification. A client with per_user_discovery on does not keep them."
                     }
                   }
                 }
@@ -48142,7 +48132,7 @@
             }
           },
           "400": {
-            "description": "Client is not auth_type \"token_exchange\", token exchange is\nunavailable (no identity-provider integration configured), the\nrequest has nothing to exchange (no identity-provider token and no\nsign-in of the admin's own, as with an API key: sign in with your\nidentity provider and retry), or the admin's Bifrost sign-in has\nexpired (sign in to Bifrost again and retry)\n",
+            "description": "Client is not auth_type \"token_exchange\", token exchange is\nunavailable (no identity-provider integration configured), the\nrequest has nothing to exchange (no identity-provider token and no\nsign-in of the admin's own, as with an API key: sign in with your\nidentity provider and retry), the admin's Bifrost sign-in has\nexpired (sign in to Bifrost again and retry), or the client has\nper_user_discovery on and is already verified\n",
             "content": {
               "application/json": {
                 "schema": {
@@ -48366,7 +48356,7 @@
     "/api/mcp/sessions/{id}": {
       "delete": {
         "summary": "Revoke an MCP session",
-        "description": "Revokes a session by primary key. Accepts these row kinds:\n- OAuth token rows → hard-deletes the token plus any pending OAuth flow\n  for the same binding, so a callback that has not yet claimed that flow\n  cannot undo the revoke\n- Header credential rows → hard-deletes the credential plus any pending\n  header submission flow for the same binding\n- Pending per-user-headers flow rows → hard-deletes just the flow\n- Pending per-user OAuth flow rows → hard-deletes just the flow, so a\n  callback that has not yet claimed it can no longer mint a token. A\n  callback already completing at that moment can still save its token,\n  which then appears as a session that can be revoked\n\nBifrost does **not** call the upstream provider's revoke endpoint —\nrevocation is local. Per-user-headers credentials never call upstream.\n",
+        "description": "Revokes a session by primary key. Accepts these row kinds:\n- OAuth token rows → hard-deletes the token plus any pending OAuth flow\n  for the same binding, so a callback that has not yet claimed that flow\n  cannot undo the revoke\n- Header credential rows → hard-deletes the credential plus any pending\n  header submission flow for the same binding\n- Pending per-user-headers flow rows → hard-deletes just the flow\n- Pending per-user OAuth flow rows → hard-deletes just the flow, so a\n  callback that has not yet claimed it can no longer mint a token. A\n  callback already completing at that moment can still save its token,\n  which then appears as a session that can be revoked\n\nRevoking a user or virtual-key credential on an MCP client with\n`per_user_discovery` on also deletes the caller's discovery made with\nit, so their next request offers the client's `<name>-connect` tool.\n\nBifrost does **not** call the upstream provider's revoke endpoint —\nrevocation is local. Per-user-headers credentials never call upstream.\n",
         "operationId": "revokeMcpSession",
         "x-mint": {
           "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `MCPGateway:Delete` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
@@ -48614,6 +48604,16 @@
           },
           "502": {
             "description": "Discovery with the stored credential failed; the caller keeps their existing discovery"
+          },
+          "503": {
+            "description": "The config store is disabled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       }
