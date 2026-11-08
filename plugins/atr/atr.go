@@ -138,10 +138,14 @@ func (p *Plugin) PostLLMHook(
 
 func blockShortCircuit(message string) *schemas.LLMPluginShortCircuit {
 	code := http.StatusForbidden
+	// A nil AllowFallbacks counts as true, which would retry a blocked prompt
+	// against the request's fallback providers.
+	allowFallbacks := false
 	return &schemas.LLMPluginShortCircuit{
 		Error: &schemas.BifrostError{
 			StatusCode:     &code,
 			IsBifrostError: true,
+			AllowFallbacks: &allowFallbacks,
 			Error:          &schemas.ErrorField{Message: message},
 		},
 	}

@@ -98,6 +98,9 @@ func TestPreLLMHookBlocksFlagged(t *testing.T) {
 	if sc.Error.StatusCode == nil || *sc.Error.StatusCode != http.StatusForbidden {
 		t.Fatalf("expected 403 short-circuit, got %+v", sc.Error)
 	}
+	if sc.Error.AllowFallbacks == nil || *sc.Error.AllowFallbacks {
+		t.Fatal("a blocked prompt must not be retried against fallback providers")
+	}
 }
 
 func TestPreLLMHookAllowsBenign(t *testing.T) {
