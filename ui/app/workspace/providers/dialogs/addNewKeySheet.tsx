@@ -18,7 +18,7 @@ export default function AddNewKeySheet({ show, onCancel, provider, keyId, provid
 	const isEditing = keyId !== null;
 	const resolvedProviderName = (providerName ?? provider.name).toLowerCase();
 	const isVLLM = resolvedProviderName === "vllm";
-	const isOllamaOrSGL = resolvedProviderName === "ollama" || resolvedProviderName === "sgl";
+	const isOllamaOrSGL = resolvedProviderName === "ollama" || resolvedProviderName === "sgl" || resolvedProviderName === "omlx";
 	const entityLabelKey = isVLLM ? "entityModel" : isOllamaOrSGL ? "entityServer" : "entityKey";
 	const entityLabelCapKey = isVLLM ? "entityModelCap" : isOllamaOrSGL ? "entityServerCap" : "entityKeyCap";
 	const entityLabel = t(`providers.${entityLabelKey}`);

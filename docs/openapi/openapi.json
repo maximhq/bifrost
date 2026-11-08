@@ -117268,6 +117268,7 @@
           "groq",
           "mistral",
           "ollama",
+          "omlx",
           "opencode-go",
           "opencode-zen",
           "openai",

@@ -1200,7 +1200,7 @@ func toPricingOverrideSummary(o modelcatalog.PricingOverride) ModelPricingOverri
 // a model the datasheet marks supports_decisions, or without a row the
 // provider's name-based fallback (the gpt-6-luna family on OpenAI, a TypeSafe
 // System One model on OpenRouter, a Clef model on Cloudflare, a decider model on
-// Perplexity, a System One model on Ollama, a Microsoft decision model or the
+// Perplexity, a System One model on Ollama or oMLX, a Microsoft decision model or the
 // gpt-6-luna family on Azure, which serves it on /openai/v1/decisions). vLLM
 // and SGLang serve decisions for every model they load, so every listed model qualifies.
 // Any other provider hosting gpt-6-luna serves it as a chat model (OpenRouter
@@ -1236,6 +1236,10 @@ func (h *ProviderHandler) supportsDecisions(provider schemas.ModelProvider, mode
 		fallback = schemas.IsOllamaDecisionModel(model)
 	case provider == schemas.Databricks:
 		fallback = schemas.IsDatabricksDecisionModel(model)
+	case provider == schemas.Omlx:
+		// oMLX serves the same System One families as Ollama (nimble, tev1,
+		// clef, laya) on its /v1/systemone, so the name rule is shared.
+		fallback = schemas.IsOllamaDecisionModel(model)
 	}
 	return schemas.ResolveModelCaps(provider, model).SupportsDecisions(fallback)
 }

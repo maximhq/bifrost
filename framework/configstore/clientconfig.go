@@ -907,6 +907,13 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 			redactedConfig.Keys[i].OllamaKeyConfig = ollamaConfig
 		}
 
+		if key.OmlxKeyConfig != nil {
+			omlxConfig := &schemas.OmlxKeyConfig{}
+			// The URL is a service address, not a credential — surface it in plaintext.
+			omlxConfig.URL = *key.OmlxKeyConfig.URL.RedactedIfSecret()
+			redactedConfig.Keys[i].OmlxKeyConfig = omlxConfig
+		}
+
 		if key.SGLKeyConfig != nil {
 			sglConfig := &schemas.SGLKeyConfig{}
 			// The URL is a service address, not a credential — surface it in plaintext.
@@ -1323,6 +1330,14 @@ func generateKeyHash(key schemas.Key, aliases []byte) (string, error) {
 	// Hash OllamaKeyConfig
 	if key.OllamaKeyConfig != nil {
 		data, err := sonic.Marshal(key.OllamaKeyConfig)
+		if err != nil {
+			return "", err
+		}
+		hash.Write(data)
+	}
+	// Hash OmlxKeyConfig
+	if key.OmlxKeyConfig != nil {
+		data, err := sonic.Marshal(key.OmlxKeyConfig)
 		if err != nil {
 			return "", err
 		}

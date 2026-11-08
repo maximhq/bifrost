@@ -185,6 +185,7 @@ func (account *ComprehensiveTestAccount) GetConfiguredProviders() ([]schemas.Mod
 		schemas.Azure,
 		schemas.Vertex,
 		schemas.Ollama,
+		schemas.Omlx,
 		schemas.Mistral,
 		schemas.Groq,
 		schemas.SGL,
@@ -686,6 +687,18 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 				},
 			},
 		}, nil
+	case schemas.Omlx:
+		// Keyless local oMLX; bearer token is picked up from OMLX_API_KEY when set.
+		return []schemas.Key{
+			{
+				Value:  *schemas.NewSecretVar("env.OMLX_API_KEY"), // empty when the local instance has no auth
+				Models: []string{"*"},
+				Weight: 1.0,
+				OmlxKeyConfig: &schemas.OmlxKeyConfig{
+					URL: *schemas.NewSecretVar("env.OMLX_BASE_URL"),
+				},
+			},
+		}, nil
 	case schemas.VLLM:
 		apiKeyValue := *schemas.NewSecretVar("env.VLLM_API_KEY") // empty when the vLLM instance has no auth (e.g. local/unprotected)
 		keys := []schemas.Key{
@@ -869,6 +882,20 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 				RetryBackoffInitial:            250 * time.Millisecond,
 				RetryBackoffMax:                4 * time.Second,
 				BaseURL:                        os.Getenv("OLLAMA_BASE_URL"),
+			},
+			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
+				Concurrency: Concurrency,
+				BufferSize:  10,
+			},
+		}, nil
+	case schemas.Omlx:
+		return &schemas.ProviderConfig{
+			NetworkConfig: schemas.NetworkConfig{
+				DefaultRequestTimeoutInSeconds: 120,
+				MaxRetries:                     8, // Local service, fewer retries needed
+				RetryBackoffInitial:            250 * time.Millisecond,
+				RetryBackoffMax:                4 * time.Second,
+				BaseURL:                        os.Getenv("OMLX_BASE_URL"),
 			},
 			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
 				Concurrency: Concurrency,
@@ -1572,6 +1599,40 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			ImageEditStream:            false, // Ollama does not support streaming image editing
 			ImageVariation:             false, // Ollama does not support image variation
 			ImageVariationStream:       false, // Ollama does not support streaming image variation
+			ListModels:                 true,
+		},
+		Fallbacks: []schemas.Fallback{
+			{Provider: schemas.OpenAI, Model: "gpt-4o-mini"},
+		},
+	},
+	{
+		Provider:       schemas.Omlx,
+		ChatModel:      "Qwen/Qwen3-4B",
+		TextModel:      "", // server-dependent; enable per deployment
+		EmbeddingModel: "", // server-dependent; enable per deployment
+		Scenarios: TestScenarios{
+			TextCompletion:             false,
+			SimpleChat:                 true,
+			CompletionStream:           true,
+			MultiTurnConversation:      true,
+			ToolCalls:                  true,
+			ToolCallsStreaming:         true,
+			MultipleToolCalls:          true,
+			MultipleToolCallsStreaming: true,
+			End2EndToolCalling:         true,
+			AutomaticFunctionCall:      true,
+			ImageURL:                   false, // deployment-dependent (vision model must be served)
+			ImageBase64:                false,
+			MultipleImages:             false,
+			FileBase64:                 false,
+			FileURL:                    false,
+			CompleteEnd2End:            true,
+			SpeechSynthesis:            false, // deployment-dependent (TTS model must be served)
+			Transcription:              false, // deployment-dependent (STT model must be served)
+			Embedding:                  false,
+			ImageGeneration:            false, // Not offered by the oMLX API
+			ImageEdit:                  false,
+			ImageVariation:             false,
 			ListModels:                 true,
 		},
 		Fallbacks: []schemas.Fallback{

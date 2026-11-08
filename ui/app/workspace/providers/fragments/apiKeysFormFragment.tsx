@@ -167,6 +167,7 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 	const isVLLM = effectiveProvider === "vllm";
 	const isOllama = effectiveProvider === "ollama";
 	const isSGL = effectiveProvider === "sgl";
+	const isOmlx = effectiveProvider === "omlx";
 	const isDeepseek = effectiveProvider === "deepseek";
 	const isFireworks = effectiveProvider === "fireworks";
 	const isDatabricks = effectiveProvider === "databricks";
@@ -178,7 +179,7 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 	// anthropic, and every custom provider built on the anthropic base, may federate its credential
 	// through anthropic_key_config.workload_identity instead of carrying a static API key.
 	const isAnthropic = effectiveProvider === "anthropic";
-	const isKeylessProvider = isOllama || isSGL;
+	const isKeylessProvider = isOllama || isSGL || isOmlx;
 	const supportsBatchAPI = BATCH_SUPPORTED_PROVIDERS.includes(effectiveProvider);
 
 	// Auth type state for Azure: 'api_key', 'entra_id', or 'default_credential'
@@ -1276,21 +1277,21 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 				<div className="space-y-4">
 					<FormField
 						control={control}
-						name={`key.${isOllama ? "ollama_key_config" : "sgl_key_config"}.url`}
+						name={`key.${isOllama ? "ollama_key_config" : isSGL ? "sgl_key_config" : "omlx_key_config"}.url`}
 						render={({ field }) => (
 							<FormItem>
 								<FormLabel>{t("providers.keys.serverUrlRequired")}</FormLabel>
 								<FormDescription>
 									{t("providers.keys.serverUrlHelp", {
-										server: isOllama ? "Ollama" : "SGLang",
-										example: isOllama ? "http://localhost:11434" : "http://localhost:30000",
-										envVar: isOllama ? "env.OLLAMA_URL" : "env.SGL_URL",
+										server: isOllama ? "Ollama" : isSGL ? "SGLang" : "oMLX",
+										example: isOllama ? "http://localhost:11434" : isSGL ? "http://localhost:30000" : "http://localhost:8000",
+										envVar: isOllama ? "env.OLLAMA_URL" : isSGL ? "env.SGL_URL" : "env.OMLX_URL",
 									})}
 								</FormDescription>
 								<FormControl>
 									<SecretVarInput
-										data-testid={`key-input-${isOllama ? "ollama" : "sgl"}-url`}
-										placeholder={isOllama ? "http://localhost:11434" : "http://localhost:30000"}
+										data-testid={`key-input-${isOllama ? "ollama" : isSGL ? "sgl" : "omlx"}-url`}
+										placeholder={isOllama ? "http://localhost:11434" : isSGL ? "http://localhost:30000" : "http://localhost:8000"}
 										{...field}
 									/>
 								</FormControl>
