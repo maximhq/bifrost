@@ -63,7 +63,7 @@ export function decisionProviderIconKey(provider: ModelProvider): ProviderIconTy
 }
 
 // isDecisionProvider reports a provider that answers /v1/decisions natively:
-// Typesafe, OpenRouter, Cloudflare (Clef), Perplexity, Ollama, Azure
+// Typesafe, OpenRouter, Cloudflare (Clef), Perplexity, Ollama, oMLX, Azure
 // (Microsoft-Decision-1), Databricks (ai_decide, System One), vLLM and SGLang (every
 // model they load), OpenAI or a custom provider built on it (their decision models,
 // such as gpt-6-luna), or a custom provider built on the Typesafe base (Laya, Nimble,
@@ -76,6 +76,7 @@ export function isDecisionProvider(provider: ModelProvider): boolean {
 		provider.name === "cloudflare" ||
 		provider.name === "perplexity" ||
 		provider.name === "ollama" ||
+		provider.name === "omlx" ||
 		provider.name === "azure" ||
 		provider.name === "databricks" ||
 		provider.name === "vllm" ||
@@ -112,7 +113,7 @@ export function defaultDecisionModel(provider: ModelProvider | undefined): strin
 	if (provider?.name === "openrouter") return OPENROUTER_DECISION_MODEL;
 	if (provider?.name === "cloudflare") return CLOUDFLARE_DECISION_MODEL;
 	if (provider?.name === "perplexity") return PERPLEXITY_DECISION_MODEL;
-	if (provider?.name === "ollama") return "";
+	if (provider?.name === "ollama" || provider?.name === "omlx") return "";
 	if (provider?.name === "vllm" || provider?.name === "sgl") return "";
 	if (provider?.name === "azure") return AZURE_DECISION_MODEL;
 	if (provider?.name === "databricks") return DATABRICKS_DECISION_MODEL;

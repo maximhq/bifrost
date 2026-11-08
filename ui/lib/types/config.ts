@@ -282,6 +282,16 @@ export const DefaultOllamaKeyConfig: OllamaKeyConfig = {
 	url: { value: "", ref: "" },
 } as const satisfies Required<OllamaKeyConfig>;
 
+// OmlxKeyConfig matching Go's schemas.OmlxKeyConfig
+export interface OmlxKeyConfig {
+	url: SecretVar;
+}
+
+// Default OmlxKeyConfig
+export const DefaultOmlxKeyConfig: OmlxKeyConfig = {
+	url: { value: "", ref: "" },
+} as const satisfies Required<OmlxKeyConfig>;
+
 // SGLKeyConfig matching Go's schemas.SGLKeyConfig
 export interface SGLKeyConfig {
 	url: SecretVar;
@@ -454,6 +464,7 @@ export interface ModelProviderKey {
 	vllm_key_config?: VLLMKeyConfig;
 	replicate_key_config?: ReplicateKeyConfig;
 	ollama_key_config?: OllamaKeyConfig;
+	omlx_key_config?: OmlxKeyConfig;
 	sgl_key_config?: SGLKeyConfig;
 	databricks_key_config?: DatabricksKeyConfig;
 	cloudflare_key_config?: CloudflareKeyConfig;

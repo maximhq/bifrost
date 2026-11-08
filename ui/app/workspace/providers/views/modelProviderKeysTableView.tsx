@@ -101,7 +101,7 @@ export default function ModelProviderKeysTableView({ provider, className, header
 	const { t: tc } = useTranslation("common");
 	const providerName = provider.name?.toLowerCase() ?? "";
 	const isVLLM = providerName === "vllm";
-	const isOllamaOrSGL = providerName === "ollama" || providerName === "sgl";
+	const isOllamaOrSGL = providerName === "ollama" || providerName === "sgl" || providerName === "omlx";
 	const entityLabel = t(isVLLM ? "providers.entityModel" : isOllamaOrSGL ? "providers.entityServer" : "providers.entityKey");
 	const entityLabelPlural = t(isVLLM ? "providers.entityModels" : isOllamaOrSGL ? "providers.entityServers" : "providers.entityKeys");
 	const EntityLabel = t(isVLLM ? "providers.entityModelCap" : isOllamaOrSGL ? "providers.entityServerCap" : "providers.entityKeyCap");
@@ -315,6 +315,7 @@ export default function ModelProviderKeysTableView({ provider, className, header
 															(key.bedrock_mantle_key_config?.region?.type && key.bedrock_mantle_key_config.region.type !== "plain_text") ||
 															(key.sagemaker_key_config?.region?.type && key.sagemaker_key_config.region.type !== "plain_text") ||
 															(key.vllm_key_config?.url?.type && key.vllm_key_config.url.type !== "plain_text") ||
+															(key.omlx_key_config?.url?.type && key.omlx_key_config.url.type !== "plain_text") ||
 															(key.value?.type && key.value.type !== "plain_text");
 														const isEnvResolutionError =
 															hasSecretVarConfig && key.description && /not set|empty|missing/i.test(key.description);
