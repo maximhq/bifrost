@@ -1219,7 +1219,7 @@ func (h *ProviderHandler) supportsDecisions(provider schemas.ModelProvider, mode
 			(custom.BaseProviderType == schemas.Typesafe || custom.BaseProviderType == schemas.OpenAI ||
 				custom.BaseProviderType == schemas.VLLM || custom.BaseProviderType == schemas.SGL)
 	}
-	if provider == schemas.Typesafe || provider == schemas.VLLM || provider == schemas.SGL {
+	if provider == schemas.Typesafe || provider == schemas.Nace || provider == schemas.VLLM || provider == schemas.SGL {
 		return true
 	}
 	listed := model

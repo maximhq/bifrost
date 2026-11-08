@@ -14337,8 +14337,7 @@
             "sarvam",
             "wafer",
             "cloudflare",
-            "typesafe",
-            "nace"
+            "typesafe"
           ],
           "description": "Base provider type to extend"
         },
@@ -14897,11 +14896,11 @@
       "properties": {
         "provider": {
           "type": "string",
-          "description": "Provider serving the decision model, e.g. typesafe, or a custom provider with base_provider_type typesafe (Laya, Nimble, Clef). Set together with model; leave both empty for typesafe/jev-latest."
+          "description": "Provider serving the decision model, e.g. typesafe or nace, or a custom provider with base_provider_type typesafe (Laya, Nimble, Clef). Set together with model; leave both empty for typesafe/jev-latest."
         },
         "model": {
           "type": "string",
-          "description": "Decision model to call on the provider, e.g. jev-latest, nimble-latest, english, clef. Set together with provider; leave both empty for typesafe/jev-latest."
+          "description": "Decision model to call on the provider, e.g. jev-latest, drex-v2.0, nimble-latest, english, clef. Set together with provider; leave both empty for typesafe/jev-latest."
         },
         "previous_message_count": {
           "type": "integer",
