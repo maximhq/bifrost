@@ -102,4 +102,9 @@ func TestResponsesParamsHashIncludesTextFormatSchema(t *testing.T) {
 	if invoice == hashFor(jsonSchema("due_date", "vendor", "total")) {
 		t.Error("text.format name change must change the cache identity")
 	}
+	nonStrict := jsonSchema("invoice", "vendor", "total")
+	nonStrict.Strict = schemas.Ptr(false)
+	if invoice == hashFor(nonStrict) {
+		t.Error("text.format strict change must change the cache identity")
+	}
 }
