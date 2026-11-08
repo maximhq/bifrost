@@ -828,5 +828,17 @@ test("Soniox rows run only in the soniox partition", () => {
   assert.deepEqual(runFilter(["--provider", "soniox"], { source }), ["soniox-speech-native", "soniox-speech-openai-route", "soniox-transcription-openai-route", "soniox-models"]);
 });
 
+test("Nace SDK routes stay out of forks that do not carry Nace credentials", () => {
+  const source = join(WORK, "nace-ingress.json");
+  const row = (provider, path) => ({
+    name: `${provider} decision`,
+    request: { method: "POST", url: `http://localhost:8080/${path}/v1/decisions`, body: { mode: "raw", raw: JSON.stringify({ model: `${provider}/model` }) } },
+  });
+  writeFileSync(source, JSON.stringify({ info: { name: "provider isolation" }, item: [row("nace", "openai"), row("nace", "typesafe"), row("openai", "openai"), row("typesafe", "typesafe")] }));
+  assert.deepEqual(runFilter(["--provider", "nace"], { source }), ["nace decision", "nace decision"]);
+  assert.deepEqual(runFilter(["--provider", "openai"], { source }), ["openai decision"]);
+  assert.deepEqual(runFilter(["--provider", "typesafe"], { source }), ["typesafe decision"]);
+});
+
 rmSync(WORK, { recursive: true, force: true });
 console.log(`\n${passed} passed`);
