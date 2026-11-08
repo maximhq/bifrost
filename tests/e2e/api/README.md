@@ -223,7 +223,7 @@ make run-provider-harness-test PROVIDER=openai FEATURE="extra content deltas" BA
 
 ## Configured stream read buffer
 
-Folder 322 pins `stream_read_buffer_size_kb` through the Gemini chat stream route. The fixture
+Folder 323 pins `stream_read_buffer_size_kb` through the Gemini chat stream route. The fixture
 model `upstream-oversized-line` streams one 11 MB SSE line, above the gateway's default 10 MB line
 limit. The `gemini` provider in the fixture profile sets the buffer to 16384 KB and must return the
 whole text. The `gemini_default_buffer` provider serves the same model without the setting and must
