@@ -708,6 +708,19 @@ export const ProviderIcons = {
 			/>
 		);
 	},
+	runcrate: ({ className = "" }: IconProps) => {
+		return (
+			<img
+				src={withBasePath("/images/runcrate.png")}
+				alt="runcrate"
+				width={14}
+				height={14}
+				loading="lazy"
+				decoding="async"
+				className={cn("object-contain", className)}
+			/>
+		);
+	},
 	// Laya, Nimble, and Clef (on Cloudflare Workers AI) are decision models reached through
 	// custom providers, so they have no provider name of their own to match. The complexity
 	// router picks these marks by model family.

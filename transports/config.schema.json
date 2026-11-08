@@ -760,6 +760,9 @@
         "nebius": {
           "$ref": "#/$defs/provider"
         },
+        "runcrate": {
+          "$ref": "#/$defs/provider"
+        },
         "xai": {
           "$ref": "#/$defs/provider"
         },
@@ -14345,6 +14348,7 @@
             "elevenlabs",
             "huggingface",
             "nebius",
+            "runcrate",
             "xai",
             "replicate",
             "vllm",

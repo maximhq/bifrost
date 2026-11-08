@@ -524,6 +524,10 @@ func ModifyExpectationsForProvider(expectations ResponseExpectations, provider s
 		expectations.ShouldHaveUsageStats = true
 		expectations.ShouldHaveLatency = true
 
+	case schemas.Runcrate:
+		expectations.ShouldHaveUsageStats = true
+		expectations.ShouldHaveLatency = true
+
 	case schemas.SGL:
 		// SGLang local inference — may not return all fields
 		expectations.ShouldHaveUsageStats = false

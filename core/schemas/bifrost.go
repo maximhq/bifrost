@@ -77,6 +77,7 @@ const (
 	Elevenlabs    ModelProvider = "elevenlabs"
 	HuggingFace   ModelProvider = "huggingface"
 	Nebius        ModelProvider = "nebius"
+	Runcrate      ModelProvider = "runcrate"
 	XAI           ModelProvider = "xai"
 	Replicate     ModelProvider = "replicate"
 	VLLM          ModelProvider = "vllm"
@@ -131,6 +132,7 @@ var StandardProviders = []ModelProvider{
 	Elevenlabs,
 	HuggingFace,
 	Nebius,
+	Runcrate,
 	XAI,
 	Replicate,
 	VLLM,
