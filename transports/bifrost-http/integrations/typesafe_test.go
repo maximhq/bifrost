@@ -169,10 +169,10 @@ func TestTypesafeSystemOneMultipartParser(t *testing.T) {
 				t.Fatalf("to shared: %v", err)
 			}
 			door := shared.Input.Messages[0].Content.Parts[1]
-			if *door.ID != "r-door" || door.Name == nil || *door.Name != "door" || string(door.Data) != "JPEG" {
+			if *door.ID != "r-door" || door.Name == nil || *door.Name != "door" || string(door.Data.File) != "JPEG" {
 				t.Errorf("door part = %+v", door)
 			}
-			if note := shared.Input.Messages[0].Content.Parts[2]; note.Name != nil || string(note.Data) != "NOTE" {
+			if note := shared.Input.Messages[0].Content.Parts[2]; note.Name != nil || string(note.Data.File) != "NOTE" {
 				t.Errorf("base64 asset in a multipart request changed: %+v", note)
 			}
 		})

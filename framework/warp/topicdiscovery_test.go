@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"math/rand"
+	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -15,6 +17,7 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/queryscope"
+	"github.com/maximhq/bifrost/framework/sidekiq"
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
 )
@@ -131,7 +134,10 @@ func TestWarpDiscoveryMakesTopicsOfThePool(t *testing.T) {
 	require.Contains(t, topics, "Password resets")
 	for label, topic := range topics {
 		require.Equal(t, embeddingConfigSignature(configFromRow(assignTestRow())), topic.EmbeddingSignature, label)
-		require.Len(t, topic.ExampleLogIDs(), topicsLabelSamples, label)
+		// The samples nearest the centre and the members drawn, some of which
+		// may be the same request.
+		require.Greater(t, len(topic.ExampleLogIDs()), topicsLabelSamples, "%s keeps its drawn members, for a later merge to name from", label)
+		require.LessOrEqual(t, len(topic.ExampleLogIDs()), topicsLabelSamples+topicsLabelDrawn, label)
 		require.Greater(t, topic.Cohesion, 0.8, label)
 		require.Greater(t, topic.AssignFloor, 0.5, label)
 	}
@@ -425,6 +431,8 @@ func TestWarpUpkeepMergesTopicsThatMeanTheSameThing(t *testing.T) {
 	store := reader.topics
 	ctx := context.Background()
 	signature := embeddingConfigSignature(configFromRow(assignTestRow()))
+	threshold := 0.98
+	service.backfillJobs = seedRun(t, tables.SidekiqStatusCompleted, signature, &threshold)
 	now := time.Now().UTC()
 	tight := func(axis int, lean float32) []float32 {
 		vector := []float32{0, 0, 0}
@@ -502,6 +510,312 @@ func TestWarpUpkeepMergesTopicsThatMeanTheSameThing(t *testing.T) {
 	require.Equal(t, 68, int(listed[0].Requests))
 }
 
+// A topic merged with topics of other names is named again, from examples of
+// all of them and with their names as hints. Kept under its old name, a
+// topic of coding sessions went on being listed as one session's subject
+// after three topics about docs, releases and a desktop app were merged into
+// it.
+func TestWarpUpkeepRenamesTopicsMergedFromOtherNames(t *testing.T) {
+	var mu sync.Mutex
+	var prompts []string
+	chat := func(_ context.Context, req *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+		text := responsesInputText(req.Input)
+		mu.Lock()
+		prompts = append(prompts, text)
+		mu.Unlock()
+		if strings.Contains(text, "Topics:") {
+			return TextTurn(`{"themes":[]}`), nil
+		}
+		return TextTurn("Gateway Engineering Work"), nil
+	}
+	service, reader := discoveryTestService(t, chat)
+	store := reader.topics
+	ctx := context.Background()
+	signature := embeddingConfigSignature(configFromRow(assignTestRow()))
+	threshold := 0.98
+	service.backfillJobs = seedRun(t, tables.SidekiqStatusCompleted, signature, &threshold)
+	now := time.Now().UTC()
+	near := func(lean float32) []float32 { return unitVector([]float32{1, lean, 0}) }
+	topic := func(id, label string, lean float32, examples ...string) logstore.WarpTopic {
+		row := logstore.WarpTopic{ID: id, Label: label, Centroid: logstore.EncodeWarpVector(near(lean)), Cohesion: 0.98, EmbeddingSignature: signature}
+		require.NoError(t, row.SetExampleLogIDs(examples))
+		for _, example := range examples {
+			reader.logs[example] = logstore.Log{ID: example, ContentSummary: "question from " + example}
+		}
+		return row
+	}
+	require.NoError(t, store.UpsertWarpTopics(ctx, []logstore.WarpTopic{
+		topic("big", "Graviton Token Compression", 0, "big-a", "big-b", "big-c", "big-d"),
+		topic("docs", "Documentation Updates", 0.05, "docs-a", "docs-b", "docs-c", "docs-d"),
+		{ID: "apart", Label: "Password resets", Centroid: logstore.EncodeWarpVector([]float32{0, 0, 1}), Cohesion: 0.98, EmbeddingSignature: signature},
+	}))
+	var rows []logstore.WarpTopicAssignment
+	for topic, count := range map[string]int{"big": 30, "docs": 10, "apart": 20} {
+		for index := range count {
+			rows = append(rows, logstore.WarpTopicAssignment{LogID: fmt.Sprintf("%s-%d", topic, index), TopicID: topic, Timestamp: now.Add(-time.Hour)})
+		}
+	}
+	require.NoError(t, store.UpsertWarpTopicAssignments(ctx, rows))
+
+	done, err := service.MaintainTopics(ctx)
+	require.NoError(t, err)
+	require.Equal(t, 1, done.Merged)
+	topics := activeTopics(t, store)
+	require.Contains(t, topics, "Gateway Engineering Work", "the survivor is named for what it now holds")
+	require.Contains(t, topics, "Password resets", "a topic no merge touched keeps its name")
+	survivor := topics["Gateway Engineering Work"]
+	require.Equal(t, "big", survivor.ID)
+	examples := strings.Join(survivor.ExampleLogIDs(), ",")
+	require.Contains(t, examples, "big-")
+	require.Contains(t, examples, "docs-", "its examples now span the topics merged")
+
+	var naming string
+	for _, prompt := range prompts {
+		if strings.Contains(prompt, "Topic name:") {
+			naming = prompt
+		}
+	}
+	require.Contains(t, naming, "Graviton Token Compression; Documentation Updates")
+	require.Contains(t, naming, "question from big-a")
+	require.Contains(t, naming, "question from docs-a")
+}
+
+// A model that hangs must cost the merged topics their new names and nothing
+// else. Naming ran before the merges were written and shared the pass's
+// deadline, so a model that never answered left the write an expired
+// context: the merges and retirements were lost and the next pass asked the
+// same model again.
+func TestWarpUpkeepWritesMergesWhenNamingHangs(t *testing.T) {
+	chat := func(ctx context.Context, req *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+		if strings.Contains(responsesInputText(req.Input), "Topics:") {
+			return TextTurn(`{"themes":[]}`), nil
+		}
+		<-ctx.Done()
+		return nil, &schemas.BifrostError{Error: &schemas.ErrorField{Message: "model did not answer"}}
+	}
+	service, reader := discoveryTestService(t, chat)
+	store := reader.topics
+	signature := embeddingConfigSignature(configFromRow(assignTestRow()))
+	threshold := 0.98
+	service.backfillJobs = seedRun(t, tables.SidekiqStatusCompleted, signature, &threshold)
+	now := time.Now().UTC()
+	topic := func(id, label string, lean float32) logstore.WarpTopic {
+		row := logstore.WarpTopic{ID: id, Label: label, Centroid: logstore.EncodeWarpVector(unitVector([]float32{1, lean, 0})), Cohesion: 0.98, EmbeddingSignature: signature}
+		require.NoError(t, row.SetExampleLogIDs([]string{id + "-example"}))
+		reader.logs[id+"-example"] = logstore.Log{ID: id + "-example", ContentSummary: "question about " + label}
+		return row
+	}
+	require.NoError(t, store.UpsertWarpTopics(context.Background(), []logstore.WarpTopic{
+		topic("big", "Graviton Token Compression", 0), topic("docs", "Documentation Updates", 0.05),
+	}))
+	var rows []logstore.WarpTopicAssignment
+	for topic, count := range map[string]int{"big": 30, "docs": 10} {
+		for index := range count {
+			rows = append(rows, logstore.WarpTopicAssignment{LogID: fmt.Sprintf("%s-%d", topic, index), TopicID: topic, Timestamp: now.Add(-time.Hour)})
+		}
+	}
+	require.NoError(t, store.UpsertWarpTopicAssignments(context.Background(), rows))
+
+	// The pass has a second past the time it keeps back for the themes, so
+	// naming gets a second however long its own budget.
+	ctx, cancel := context.WithTimeout(context.Background(), topicsGroupTimeout+time.Second)
+	defer cancel()
+	started := time.Now()
+	done, err := service.MaintainTopics(ctx)
+	require.NoError(t, err)
+	require.Less(t, time.Since(started), 30*time.Second, "naming gave up at its budget")
+	require.Equal(t, 1, done.Merged)
+	merged, err := store.ListWarpTopics(context.Background(), logstore.WarpTopicFilter{IDs: []string{"docs"}})
+	require.NoError(t, err)
+	require.Len(t, merged, 1)
+	require.Equal(t, logstore.WarpTopicStatusMerged, merged[0].Status, "the merge is written")
+	require.Contains(t, activeTopics(t, store), "Graviton Token Compression", "the survivor keeps its name")
+}
+
+// renameTestTopics writes a large topic and a smaller one alike enough to be
+// merged into it at the seed's threshold, each with one example to name from.
+func renameTestTopics(t *testing.T, service *Service, reader *semanticLogReader) {
+	t.Helper()
+	store := reader.topics
+	signature := embeddingConfigSignature(configFromRow(assignTestRow()))
+	threshold := 0.98
+	service.backfillJobs = seedRun(t, tables.SidekiqStatusCompleted, signature, &threshold)
+	topic := func(id, label string, lean float32) logstore.WarpTopic {
+		row := logstore.WarpTopic{ID: id, Label: label, Centroid: logstore.EncodeWarpVector(unitVector([]float32{1, lean, 0})), Cohesion: 0.98, EmbeddingSignature: signature}
+		require.NoError(t, row.SetExampleLogIDs([]string{id + "-example"}))
+		reader.logs[id+"-example"] = logstore.Log{ID: id + "-example", ContentSummary: "question about " + label}
+		return row
+	}
+	require.NoError(t, store.UpsertWarpTopics(context.Background(), []logstore.WarpTopic{
+		topic("big", "Graviton Token Compression", 0), topic("docs", "Documentation Updates", 0.05),
+	}))
+	now := time.Now().UTC()
+	var rows []logstore.WarpTopicAssignment
+	for topic, count := range map[string]int{"big": 30, "docs": 10} {
+		for index := range count {
+			rows = append(rows, logstore.WarpTopicAssignment{LogID: fmt.Sprintf("%s-%d", topic, index), TopicID: topic, Timestamp: now.Add(-time.Hour)})
+		}
+	}
+	require.NoError(t, store.UpsertWarpTopicAssignments(context.Background(), rows))
+}
+
+// A model whose answer holds no name leaves the survivor its name. Renaming
+// through labelTopic put a name made of the examples' common words in its
+// place, which is what renaming a merged topic is meant to avoid.
+func TestWarpUpkeepKeepsTheNameWhenTheModelGivesNone(t *testing.T) {
+	chat := func(_ context.Context, req *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+		if strings.Contains(responsesInputText(req.Input), "Topics:") {
+			return TextTurn(`{"themes":[]}`), nil
+		}
+		return TextTurn("   "), nil
+	}
+	service, reader := discoveryTestService(t, chat)
+	renameTestTopics(t, service, reader)
+
+	done, err := service.MaintainTopics(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, 1, done.Merged)
+	topics := activeTopics(t, reader.topics)
+	require.Len(t, topics, 1)
+	require.Contains(t, topics, "Graviton Token Compression")
+}
+
+// Another instance's upkeep can change a survivor while this one waits for its
+// new name. The rename must not write back the copy it took before naming: a
+// topic the other instance merged away came back active.
+func TestWarpUpkeepRenameDoesNotUndoAnotherInstance(t *testing.T) {
+	var reader *semanticLogReader
+	chat := func(_ context.Context, req *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+		if strings.Contains(responsesInputText(req.Input), "Topics:") {
+			return TextTurn(`{"themes":[]}`), nil
+		}
+		// While the name is being written, another instance merges the
+		// survivor into a topic of its own.
+		rows, err := reader.topics.ListWarpTopics(context.Background(), logstore.WarpTopicFilter{IDs: []string{"big"}})
+		if err != nil || len(rows) != 1 {
+			return nil, &schemas.BifrostError{Error: &schemas.ErrorField{Message: "read survivor"}}
+		}
+		rows[0].Status, rows[0].MergedInto = logstore.WarpTopicStatusMerged, "elsewhere"
+		if err := reader.topics.UpsertWarpTopics(context.Background(), rows); err != nil {
+			return nil, &schemas.BifrostError{Error: &schemas.ErrorField{Message: err.Error()}}
+		}
+		return TextTurn("Gateway Engineering Work"), nil
+	}
+	service, topicsReader := discoveryTestService(t, chat)
+	reader = topicsReader
+	renameTestTopics(t, service, reader)
+	// The topic the other instance merges into: live, and like neither.
+	require.NoError(t, reader.topics.UpsertWarpTopics(context.Background(), []logstore.WarpTopic{{
+		ID: "elsewhere", Label: "Password resets", Centroid: logstore.EncodeWarpVector([]float32{0, 0, 1}), Cohesion: 0.98,
+		EmbeddingSignature: embeddingConfigSignature(configFromRow(assignTestRow())),
+	}}))
+
+	done, err := service.MaintainTopics(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, 1, done.Merged)
+	rows, err := reader.topics.ListWarpTopics(context.Background(), logstore.WarpTopicFilter{IDs: []string{"big"}})
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	require.Equal(t, logstore.WarpTopicStatusMerged, rows[0].Status, "the other instance's merge stands")
+	require.Equal(t, "elsewhere", rows[0].MergedInto)
+	require.Equal(t, "Graviton Token Compression", rows[0].Label, "nor is it renamed over the other instance's row")
+}
+
+// Upkeep merges at the threshold the seed run merged at, not one it derives
+// from the stored topics. Those are already merged and looser than the
+// clusters a run measures, so a derived threshold sat below the seed's and
+// upkeep merged, within the hour, four topics about different coding work
+// that the seed had just kept apart.
+func TestWarpUpkeepKeepsApartWhatTheSeedKeptApart(t *testing.T) {
+	service, reader := discoveryTestService(t, topicTestNaming)
+	store := reader.topics
+	ctx := context.Background()
+	signature := embeddingConfigSignature(configFromRow(assignTestRow()))
+	threshold := 0.95
+	service.backfillJobs = seedRun(t, tables.SidekiqStatusCompleted, signature, &threshold)
+	now := time.Now().UTC()
+	// Four topics leaning off one shared direction: each pair about 0.89
+	// alike, below the seed's 0.95 but far above their own cohesion of 0.7.
+	var topics []logstore.WarpTopic
+	var rows []logstore.WarpTopicAssignment
+	for index, label := range []string{"Graviton Token Compression", "Documentation Updates", "Release Delay Management", "Claude Desktop Troubleshooting"} {
+		vector := make([]float32, 5)
+		vector[0], vector[index+1] = 1, 0.35
+		id := fmt.Sprintf("t-%d", index)
+		topics = append(topics, logstore.WarpTopic{ID: id, Label: label, Centroid: logstore.EncodeWarpVector(unitVector(vector)), Cohesion: 0.7, EmbeddingSignature: signature})
+		for request := range 10 * (index + 1) {
+			rows = append(rows, logstore.WarpTopicAssignment{LogID: fmt.Sprintf("%s-%d", id, request), TopicID: id, Timestamp: now.Add(-time.Hour)})
+		}
+	}
+	require.NoError(t, store.UpsertWarpTopics(ctx, topics))
+	require.NoError(t, store.UpsertWarpTopicAssignments(ctx, rows))
+
+	done, err := service.MaintainTopics(ctx)
+	require.NoError(t, err)
+	require.Zero(t, done.Merged, "none is as alike as the seed required")
+	require.Len(t, activeTopics(t, store), 4)
+
+	done, err = service.MaintainTopics(ctx)
+	require.NoError(t, err)
+	require.Zero(t, done.Merged, "nor on the next pass")
+}
+
+// Without the threshold of a seed run that finished over this embedding
+// model, upkeep does not guess one: it merges topics by name and nothing
+// else.
+func TestWarpUpkeepMergesByNameAloneWithoutASeedThreshold(t *testing.T) {
+	signature := embeddingConfigSignature(configFromRow(assignTestRow()))
+	threshold := 0.5
+	for name, jobs := range map[string]BackfillJobStore{
+		"no job store":          nil,
+		"no run":                seedRunJobs{},
+		"run failed":            seedRun(t, tables.SidekiqStatusFailed, signature, &threshold),
+		"run cancelled":         seedRun(t, tables.SidekiqStatusCancelled, signature, &threshold),
+		"other embedding model": seedRun(t, tables.SidekiqStatusCompleted, "other", &threshold),
+		"run derived none":      seedRun(t, tables.SidekiqStatusCompleted, signature, nil),
+		"metadata unreadable":   seedRunJobs{latest: &tables.TableSidekiqJob{Kind: TopicsJobKind, Status: tables.SidekiqStatusCompleted, Metadata: "{"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			service, reader := discoveryTestService(t, topicTestNaming)
+			service.backfillJobs = jobs
+			store := reader.topics
+			ctx := context.Background()
+			now := time.Now().UTC()
+			require.NoError(t, store.UpsertWarpTopics(ctx, []logstore.WarpTopic{
+				{ID: "a", Label: "Refund requests", Centroid: logstore.EncodeWarpVector([]float32{1, 0, 0}), Cohesion: 0.9, EmbeddingSignature: signature},
+				{ID: "b", Label: "Refunds", Centroid: logstore.EncodeWarpVector(unitVector([]float32{1, 0.05, 0})), Cohesion: 0.9, EmbeddingSignature: signature},
+				{ID: "c", Label: " refund requests", Centroid: logstore.EncodeWarpVector([]float32{0, 0, 1}), Cohesion: 0.9, EmbeddingSignature: signature},
+			}))
+			var rows []logstore.WarpTopicAssignment
+			for topic, count := range map[string]int{"a": 30, "b": 10, "c": 5} {
+				for index := range count {
+					rows = append(rows, logstore.WarpTopicAssignment{LogID: fmt.Sprintf("%s-%d", topic, index), TopicID: topic, Timestamp: now.Add(-time.Hour)})
+				}
+			}
+			require.NoError(t, store.UpsertWarpTopicAssignments(ctx, rows))
+
+			done, err := service.MaintainTopics(ctx)
+			require.NoError(t, err)
+			require.Equal(t, 1, done.Merged, "only the namesake is merged")
+			topics := activeTopics(t, store)
+			require.Contains(t, topics, "Refund requests")
+			require.Contains(t, topics, "Refunds", "alike, but not merged on a guessed threshold")
+		})
+	}
+}
+
+// A merged topic is named from examples in proportion to how many requests
+// each of its topics holds, the smallest still shown at least once, and each
+// name it had is offered once however it was cased.
+func TestMergedTopicExamplesFollowSize(t *testing.T) {
+	topics := []logstore.WarpTopic{{ID: "small"}, {ID: "large"}}
+	require.NoError(t, topics[0].SetExampleLogIDs([]string{"s1", "s2", "s3", "s4"}))
+	require.NoError(t, topics[1].SetExampleLogIDs([]string{"l1", "l2", "l3", "l4"}))
+	picked := mergedTopicExamples(topics, map[string]int64{"small": 10, "large": 1000}, 4)
+	require.Equal(t, []string{"l1", "s1", "l2", "l3"}, picked, "the larger topic first and most, the smaller at least once")
+	require.Equal(t, []string{"Graviton", "Docs"}, distinctTopicNames([]logstore.WarpTopic{{Label: "Graviton"}, {Label: " graviton "}, {Label: "Docs"}}))
+}
+
 // Requests filed under a topic since merged count for the topic it was merged
 // into: a survivor whose recent traffic is all under a merged id is not
 // silent, and its size covers them when it is rebuilt as a cluster.
@@ -553,6 +867,29 @@ func (q *discoveryQueue) EnqueuePartitioned(_ context.Context, _, kind, key, _, 
 	q.kinds = append(q.kinds, kind)
 	q.keys = append(q.keys, key)
 	return nil
+}
+
+// seedRunJobs is a job store whose latest topics run is the one given.
+type seedRunJobs struct{ latest *tables.TableSidekiqJob }
+
+func (seedRunJobs) GetInFlightSidekiqJobByKind(context.Context, string) (*tables.TableSidekiqJob, error) {
+	return nil, nil
+}
+
+func (j seedRunJobs) GetLatestSidekiqJobByKind(_ context.Context, kind string) (*tables.TableSidekiqJob, error) {
+	if kind != TopicsJobKind {
+		return nil, nil
+	}
+	return j.latest, nil
+}
+
+// seedRun is a topics run that ended with status, over signature, having
+// merged its clusters at threshold.
+func seedRun(t *testing.T, status, signature string, threshold *float64) seedRunJobs {
+	t.Helper()
+	metadata, err := sonic.MarshalString(BackfillJobMeta{ConfigSignature: signature, MergeThreshold: threshold})
+	require.NoError(t, err)
+	return seedRunJobs{latest: &tables.TableSidekiqJob{ID: "seed", Kind: TopicsJobKind, Status: status, Metadata: metadata}}
 }
 
 // discoveryJobs is a job store that reports one in-flight job of a kind.
@@ -685,10 +1022,13 @@ func TestWarpDiscoveryClustersAPoolAtTheConfiguredSize(t *testing.T) {
 	require.Contains(t, final.Message, "Clustered 20 pooled request(s)")
 }
 
-// Upkeep rewrites topic rows whole, as the runs and discoveries that write
-// topics do, so it stands aside while one of those is in flight - and when it
-// cannot tell, rather than guess.
-func TestWarpUpkeepWaitsForTopicJobs(t *testing.T) {
+// Every node that shares a job store keeps topics through its queue, so no
+// two passes ever overlap. A node that can see the job store but has no runner
+// to queue on does not keep them inline instead: inline upkeep holds no lock,
+// and another node could start a queued pass the moment after it looked. Only
+// a node with no job store at all - nothing to coordinate through - keeps
+// them in this process.
+func TestWarpUpkeepRunsInlineOnlyWithoutAJobStore(t *testing.T) {
 	service, reader := discoveryTestService(t, topicTestNaming)
 	store := reader.topics
 	ctx := context.Background()
@@ -697,19 +1037,145 @@ func TestWarpUpkeepWaitsForTopicJobs(t *testing.T) {
 		ID: "silent", Label: "Silent", Centroid: logstore.EncodeWarpVector([]float32{0, 1, 0}),
 		EmbeddingSignature: embeddingConfigSignature(configFromRow(assignTestRow())), CreatedAt: old,
 	}}))
+	require.Nil(t, service.topicJobs, "no runner to queue on")
 
-	for _, kind := range []string{TopicsJobKind, TopicDiscoveryJobKind} {
-		service.backfillJobs = discoveryJobs{inFlight: map[string]*tables.TableSidekiqJob{kind: {ID: kind}}}
-		service.topicUpkeepTick(ctx)
-		require.Contains(t, activeTopics(t, store), "Silent", "upkeep waits while a %s job is in flight", kind)
-	}
-	service.backfillJobs = failingJobs{}
-	service.topicUpkeepTick(ctx)
-	require.Contains(t, activeTopics(t, store), "Silent", "upkeep waits when it cannot tell whether a job is in flight")
-
+	// Nothing in flight, so an inline pass would run and retire the topic.
 	service.backfillJobs = discoveryJobs{inFlight: map[string]*tables.TableSidekiqJob{}}
 	service.topicUpkeepTick(ctx)
-	require.NotContains(t, activeTopics(t, store), "Silent", "with nothing in flight, upkeep runs")
+	require.Contains(t, activeTopics(t, store), "Silent", "a node that shares a job store never keeps topics inline")
+
+	service.backfillJobs = nil
+	service.topicUpkeepTick(ctx)
+	require.NotContains(t, activeTopics(t, store), "Silent", "with no job store, upkeep runs in this process")
+}
+
+// upkeepQueue records what was queued, and refuses ids it has seen as a
+// shared job store refuses a duplicate primary key.
+type upkeepQueue struct {
+	ids, kinds, keys []string
+}
+
+func (q *upkeepQueue) EnqueuePartitioned(_ context.Context, id, kind, key, _, _ string) error {
+	if slices.Contains(q.ids, id) {
+		return errors.New(`ERROR: duplicate key value violates unique constraint "sidekiq_pkey"`)
+	}
+	q.ids, q.kinds, q.keys = append(q.ids, id), append(q.kinds, kind), append(q.keys, key)
+	return nil
+}
+
+// With a job runner, the timer queues upkeep in the topics partition rather
+// than running it: that partition runs one topics job at a time across every
+// instance, which is what keeps two instances from rewriting a topic at once.
+// Instances queuing in the same hour make one job, and none is queued while
+// one waits.
+func TestWarpUpkeepIsQueuedInTheTopicsPartition(t *testing.T) {
+	service, reader := discoveryTestService(t, topicTestNaming)
+	store := reader.topics
+	ctx := context.Background()
+	old := time.Now().UTC().Add(-2 * topicsRetireAfter)
+	require.NoError(t, store.UpsertWarpTopics(ctx, []logstore.WarpTopic{{
+		ID: "silent", Label: "Silent", Centroid: logstore.EncodeWarpVector([]float32{0, 1, 0}),
+		EmbeddingSignature: embeddingConfigSignature(configFromRow(assignTestRow())), CreatedAt: old,
+	}}))
+	queue := &upkeepQueue{}
+	service.topicJobs, service.backfillJobs = queue, discoveryJobs{inFlight: map[string]*tables.TableSidekiqJob{}}
+
+	service.topicUpkeepTick(ctx)
+	require.Equal(t, []string{TopicUpkeepJobKind}, queue.kinds)
+	require.Equal(t, []string{TopicsJobPartition}, queue.keys)
+	require.Contains(t, activeTopics(t, store), "Silent", "queued, not run in this process")
+
+	// The ids, at fixed times: the timer's own call above reads the clock,
+	// and a test that compared it with a second reading would fail whenever
+	// the two fell either side of an hour.
+	queue = &upkeepQueue{}
+	hour := time.Date(2026, 10, 27, 10, 0, 0, 0, time.UTC)
+	require.NoError(t, service.enqueueTopicUpkeep(ctx, queue, hour.Add(5*time.Minute)))
+	require.NoError(t, service.enqueueTopicUpkeep(ctx, queue, hour.Add(55*time.Minute)), "a duplicate is another instance's job, not a failure")
+	require.Len(t, queue.ids, 1, "instances queuing in the same hour make one job")
+	require.NoError(t, service.enqueueTopicUpkeep(ctx, queue, hour.Add(topicsDiscoveryInterval)))
+	require.Len(t, queue.ids, 2, "the next hour is a new job")
+
+	service.backfillJobs = discoveryJobs{inFlight: map[string]*tables.TableSidekiqJob{TopicUpkeepJobKind: {ID: "waiting"}}}
+	require.NoError(t, service.enqueueTopicUpkeep(ctx, queue, hour.Add(2*topicsDiscoveryInterval)))
+	require.Len(t, queue.ids, 2, "none is queued while one waits")
+
+	service.backfillJobs = failingJobs{}
+	require.Error(t, service.enqueueTopicUpkeep(ctx, queue, hour.Add(3*topicsDiscoveryInterval)), "a job store that cannot be read is reported")
+	require.Len(t, queue.ids, 2)
+
+	// With no job store to ask, upkeep is still queued, or it would never run:
+	// a service with a queue does not run it inline. The hourly id keeps it
+	// to one job an hour.
+	service.backfillJobs = nil
+	require.NoError(t, service.enqueueTopicUpkeep(ctx, queue, hour.Add(4*topicsDiscoveryInterval)))
+	require.NoError(t, service.enqueueTopicUpkeep(ctx, queue, hour.Add(4*topicsDiscoveryInterval+time.Minute)))
+	require.Len(t, queue.ids, 3, "queued once for the hour without a job store")
+}
+
+// The upkeep job is one pass of MaintainTopics, and reports what it did.
+// Warp being off is nothing to keep, not a failed job.
+func TestWarpUpkeepJobMaintainsTopics(t *testing.T) {
+	service, reader := discoveryTestService(t, topicTestNaming)
+	store := reader.topics
+	ctx := context.Background()
+	old := time.Now().UTC().Add(-2 * topicsRetireAfter)
+	require.NoError(t, store.UpsertWarpTopics(ctx, []logstore.WarpTopic{{
+		ID: "silent", Label: "Silent", Centroid: logstore.EncodeWarpVector([]float32{0, 1, 0}),
+		EmbeddingSignature: embeddingConfigSignature(configFromRow(assignTestRow())), CreatedAt: old,
+	}}))
+	final, err := service.RunTopicUpkeepJob(ctx, tables.TableSidekiqJob{ID: "upkeep", Metadata: "{}"}, func(string) error { return nil })
+	require.NoError(t, err)
+	require.NotContains(t, activeTopics(t, store), "Silent")
+	var meta topicUpkeepJobMeta
+	require.NoError(t, sonic.UnmarshalString(final, &meta))
+	require.Equal(t, 1, meta.Retired)
+	require.Equal(t, meta.Message, SummarizeTopicUpkeepMeta(final).Message)
+	require.Contains(t, meta.Message, "Retired 1 topic(s)")
+
+	off := NewService(nil, WithConfigStore(&recordingStore{row: assignTestRow()}))
+	t.Cleanup(off.Shutdown)
+	final, err = off.RunTopicUpkeepJob(ctx, tables.TableSidekiqJob{ID: "upkeep", Metadata: "{}"}, func(string) error { return nil })
+	require.NoError(t, err, "no topic store is nothing to keep")
+	require.Contains(t, SummarizeTopicUpkeepMeta(final).Message, "not available")
+}
+
+// RegisterTopics binds the upkeep job beside discovery, and marks it routine
+// so its completed runs stay out of the jobs listing.
+func TestRegisterTopicsBindsTheUpkeepJob(t *testing.T) {
+	service, _ := discoveryTestService(t, topicTestNaming)
+	runner := sidekiq.New(nil, nil, 1, "")
+	t.Cleanup(runner.Shutdown)
+	service.RegisterTopics(runner)
+	_, summarized := runner.Summarize(TopicUpkeepJobKind, "{}")
+	require.True(t, summarized)
+	require.Equal(t, []string{TopicUpkeepJobKind}, runner.QuietOnSuccessKinds())
+	require.NotContains(t, TopicsJobKinds, TopicUpkeepJobKind, "a waiting upkeep must not refuse a seed run")
+}
+
+// A deployment that turns logging on after startup gets its log reader late.
+// The topic jobs must already be bound by then, or the node has a job store
+// and no queue, and upkeep is skipped on it until restart. Bound before the
+// reader arrives, they find no topic store and do nothing, and the timer queues
+// nothing while there is none.
+func TestRegisterTopicsBindsTheJobsBeforeTheLogReader(t *testing.T) {
+	service := NewService(nil, WithConfigStore(&recordingStore{row: assignTestRow()}))
+	t.Cleanup(service.Shutdown)
+	runner := sidekiq.New(nil, nil, 1, "")
+	t.Cleanup(runner.Shutdown)
+	service.RegisterTopics(runner)
+	require.NotNil(t, service.topicJobs, "the queue is bound with no log reader yet")
+	_, summarized := runner.Summarize(TopicUpkeepJobKind, "{}")
+	require.True(t, summarized)
+
+	queue := &upkeepQueue{}
+	service.topicJobs, service.backfillJobs = queue, discoveryJobs{inFlight: map[string]*tables.TableSidekiqJob{}}
+	service.topicUpkeepTick(context.Background())
+	require.Empty(t, queue.ids, "nothing is queued while there is no topic store")
+
+	service.SetLogReader(topicTestReader(t, map[string]logstore.Log{}))
+	service.topicUpkeepTick(context.Background())
+	require.Equal(t, []string{TopicUpkeepJobKind}, queue.kinds, "once logging is on, upkeep is queued")
 }
 
 // failingJobs is a job store that cannot be read.
@@ -729,6 +1195,12 @@ type stallingTopicStore struct {
 	entered  chan struct{}
 	once     sync.Once
 	finished chan error
+}
+
+// ListWarpVectorDeletes reports nothing to retry, so a tick reaches the topic
+// read this store stalls on.
+func (s *stallingTopicStore) ListWarpVectorDeletes(context.Context, int) ([]logstore.WarpVectorDelete, error) {
+	return nil, nil
 }
 
 func (s *stallingTopicStore) ListWarpTopics(ctx context.Context, _ logstore.WarpTopicFilter) ([]logstore.WarpTopic, error) {

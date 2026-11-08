@@ -221,3 +221,86 @@ func mcpToolReq(client, tool string) *schemas.BifrostMCPRequest {
 		},
 	}
 }
+
+// TestPostMCPHookRecordsPromptAndResourceReads verifies prompts/get and resources/read record a
+// sample under their own method; a resource read carries no name, since URIs are unbounded.
+func TestPostMCPHookRecordsPromptAndResourceReads(t *testing.T) {
+	p := newTestPlugin(t)
+	for _, req := range []*schemas.BifrostMCPRequest{
+		{RequestType: schemas.MCPRequestTypeGetPrompt, ClientName: "docs", BifrostMCPGetPromptRequest: &schemas.BifrostMCPGetPromptRequest{Name: "docs-review"}},
+		{RequestType: schemas.MCPRequestTypeReadResource, ClientName: "docs", BifrostMCPReadResourceRequest: &schemas.BifrostMCPReadResourceRequest{URI: "repo://acme/widgets"}},
+	} {
+		ctx := mcpHookContext()
+		if _, _, err := p.PreMCPHook(ctx, req); err != nil {
+			t.Fatalf("PreMCPHook: %v", err)
+		}
+		resp := &schemas.BifrostMCPResponse{ExtraFields: schemas.BifrostMCPResponseExtraFields{MCPRequestType: req.RequestType, ClientName: "docs", Latency: 5}}
+		if _, _, err := p.PostMCPHook(ctx, resp, nil); err != nil {
+			t.Fatalf("PostMCPHook: %v", err)
+		}
+	}
+
+	got := map[string]string{}
+	for _, s := range gatherMCP(t, p.registry) {
+		if s.labels["mcp_client"] != "docs" {
+			t.Fatalf("mcp_client = %q, want docs", s.labels["mcp_client"])
+		}
+		got[s.labels["mcp_method"]] = s.labels["mcp_tool_name"]
+	}
+	want := map[string]string{"prompts/get": "review", "resources/read": ""}
+	if len(got) != len(want) || got["prompts/get"] != want["prompts/get"] || got["resources/read"] != want["resources/read"] {
+		t.Fatalf("series = %v, want %v", got, want)
+	}
+}
+
+// TestPostMCPHookRecordsReadUnderTheServerThatAnswered verifies a resource read core moved to
+// another server after the pre-hooks is recorded under the server the response names.
+func TestPostMCPHookRecordsReadUnderTheServerThatAnswered(t *testing.T) {
+	p := newTestPlugin(t)
+	req := &schemas.BifrostMCPRequest{RequestType: schemas.MCPRequestTypeReadResource, ClientName: "a", BifrostMCPReadResourceRequest: &schemas.BifrostMCPReadResourceRequest{URI: "file:///handbook.md"}}
+	ctx := mcpHookContext()
+	if _, _, err := p.PreMCPHook(ctx, req); err != nil {
+		t.Fatalf("PreMCPHook: %v", err)
+	}
+	resp := &schemas.BifrostMCPResponse{ExtraFields: schemas.BifrostMCPResponseExtraFields{MCPRequestType: req.RequestType, ClientName: "b", Latency: 5}}
+	if _, _, err := p.PostMCPHook(ctx, resp, nil); err != nil {
+		t.Fatalf("PostMCPHook: %v", err)
+	}
+
+	samples := gatherMCP(t, p.registry)
+	if len(samples) != 1 || samples[0].labels["mcp_client"] != "b" {
+		t.Fatalf("samples = %v, want one under mcp_client b", samples)
+	}
+}
+
+// BenchmarkMCPHooks measures recording one MCP call's duration: a tool call, the baseline, beside the
+// prompt and resource reads now recorded too.
+func BenchmarkMCPHooks(b *testing.B) {
+	p, err := Init(&Config{}, nil, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	if err != nil {
+		b.Fatal(err)
+	}
+	tool := "ctx7-query-docs"
+	for _, tc := range []struct {
+		name string
+		req  *schemas.BifrostMCPRequest
+	}{
+		{"tool-call", &schemas.BifrostMCPRequest{RequestType: schemas.MCPRequestTypeChatToolCall, ClientName: "ctx7", ChatAssistantMessageToolCall: &schemas.ChatAssistantMessageToolCall{Function: schemas.ChatAssistantMessageToolCallFunction{Name: &tool}}}},
+		{"prompt-get", &schemas.BifrostMCPRequest{RequestType: schemas.MCPRequestTypeGetPrompt, ClientName: "ctx7", BifrostMCPGetPromptRequest: &schemas.BifrostMCPGetPromptRequest{Name: "ctx7-review"}}},
+		{"resource-read", &schemas.BifrostMCPRequest{RequestType: schemas.MCPRequestTypeReadResource, ClientName: "ctx7", BifrostMCPReadResourceRequest: &schemas.BifrostMCPReadResourceRequest{URI: "file:///handbook.md"}}},
+	} {
+		resp := &schemas.BifrostMCPResponse{ExtraFields: schemas.BifrostMCPResponseExtraFields{MCPRequestType: tc.req.RequestType, ClientName: "ctx7", ToolName: "query-docs", Latency: 12}}
+		b.Run(tc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				ctx := mcpHookContext()
+				if _, _, err := p.PreMCPHook(ctx, tc.req); err != nil {
+					b.Fatal(err)
+				}
+				if _, _, err := p.PostMCPHook(ctx, resp, nil); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}

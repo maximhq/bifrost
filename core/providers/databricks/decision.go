@@ -2,6 +2,7 @@ package databricks
 
 import (
 	"net/http"
+	"strings"
 
 	"github.com/maximhq/bifrost/core/providers/typesafe"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
@@ -11,6 +12,10 @@ import (
 
 // databricksDecisionPath is the AI Functions endpoint that serves ai_decide.
 const databricksDecisionPath = "/api/2.0/ai-functions/ai-decide"
+
+// databricksSystemOnePath is where a workspace's Unity Gateway serves System One models
+// (system.ai.openjev-qwen35-4b, system.ai.typesafeai-jev-1-14-0) in Typesafe's systemone shapes.
+const databricksSystemOnePath = "/ai-gateway/typesafe/v1/systemone"
 
 // databricksDecisionVersion pins the ai_decide function API version, so a change to
 // Databricks' default cannot change the response shape parsed here.
@@ -53,14 +58,19 @@ func ToBifrostDecisionResponse(resp *DatabricksDecisionResponse, request *schema
 	return typesafe.ToBifrostDecisionResponse(&typesafe.TypesafeDecisionResponse{Model: request.Model, Answers: answers}, request)
 }
 
-// Decision runs a decision on Databricks' ai_decide AI Function. ai_decide is a workspace
-// function, not a serving endpoint, so it is the only model served natively: a datasheet
-// supports_decisions row decides, and without one the ai_decide name does. Any other model
-// is reported as unsupported; the compat plugin emulates it on the model's Responses API.
+// Decision runs a decision on Databricks' ai_decide AI Function, or on a System One model
+// through the workspace's Unity Gateway (see systemOneDecision). Neither is a serving
+// endpoint, so only they are served natively: a datasheet supports_decisions row decides,
+// and without one the model's name does (schemas.IsDatabricksDecisionModel). Any other
+// model is reported as unsupported; the compat plugin emulates it on the model's
+// Responses API.
 func (provider *DatabricksProvider) Decision(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostDecisionRequest) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
 	capModel := schemas.ResolveCanonicalModel(ctx, request.Model)
 	if !schemas.ResolveModelCaps(request.Provider, capModel).SupportsDecisions(schemas.IsDatabricksDecisionModel(capModel)) {
 		return nil, providerUtils.NewUnsupportedOperationError(schemas.DecisionRequest, provider.GetProviderKey())
+	}
+	if !strings.EqualFold(capModel, "ai_decide") {
+		return provider.systemOneDecision(ctx, key, request)
 	}
 	url, bifrostErr := provider.workspaceAPIURL(key, providerUtils.GetPathFromContext(ctx, databricksDecisionPath))
 	if bifrostErr != nil {
@@ -149,4 +159,35 @@ func (provider *DatabricksProvider) Decision(ctx *schemas.BifrostContext, key sc
 		bifrostResp.ExtraFields.RawResponse = rawResponse
 	}
 	return bifrostResp, nil
+}
+
+// systemOneDecision runs a decision on a System One model through the workspace's Unity
+// Gateway. Its body and response are Typesafe's systemone shapes, so Typesafe's handler is
+// reused; the model is the Unity Catalog name, sent as is, and a model service the gateway
+// does not serve is rejected by Databricks with its own error. Images by reference and box
+// questions carry Typesafe's images header, which the gateway forwards and Jev requires.
+func (provider *DatabricksProvider) systemOneDecision(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostDecisionRequest) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
+	url, bifrostErr := provider.workspaceAPIURL(key, providerUtils.GetPathFromContext(ctx, databricksSystemOnePath))
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+	authHeaders, bifrostErr := provider.authHeader(ctx, key)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+	typesafe.SetImagesHeader(authHeaders, request, provider.networkConfig.BetaHeaderOverrides)
+	return typesafe.HandleTypesafeDecisionRequest(
+		ctx,
+		provider.client,
+		url,
+		request,
+		typesafe.ToTypesafeDecisionRequest,
+		authHeaders,
+		provider.networkConfig.ExtraHeaders,
+		provider.GetProviderKey(),
+		parseDatabricksError,
+		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
+		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+		false,
+	)
 }

@@ -706,6 +706,37 @@ func TestWarpIndexTextSkipsAgentReminders(t *testing.T) {
 	}))
 }
 
+// Codex sends its context as user turns too, in envelopes of its own: the
+// project's AGENTS.md, the environment. Read as the opening, every Codex
+// session embedded alike and was named for the project's AGENTS.md - "AI
+// Platform Integrations" for a gateway's repo - whatever was worked on.
+func TestWarpIndexTextSkipsCodexEnvelopes(t *testing.T) {
+	entry := codexLog("log-codex")
+	entry.Object = string(schemas.ResponsesRequest)
+	item, ok := buildLogIndexItem(&entry)
+	require.True(t, ok)
+	require.Equal(t, "user: Fix the flaky retry backoff test in core/bifrost.go\nuser: also add a benchmark for it\nassistant: Added BenchmarkRetryBackoff to core/bifrost_test.go.", item.text)
+	require.Equal(t, "Fix the flaky retry backoff test in core/bifrost.go (later: also add a benchmark for it)", logUserText(&entry))
+
+	// A request whose history holds only Codex's setup has nothing of the
+	// person's. The stored summary is not read in its place: it is that same
+	// setup, and capped short enough to cut an envelope before it closes, so
+	// it would be filed as though the person had written it.
+	setupOnly := codexLog("log-codex-setup")
+	setupOnly.Object = string(schemas.ResponsesRequest)
+	setupOnly.ResponsesInputHistoryParsed = setupOnly.ResponsesInputHistoryParsed[:3]
+	setupOnly.ContentSummary = setupOnly.BuildContentSummary()[:2048]
+	_, ok = buildLogIndexItem(&setupOnly)
+	require.False(t, ok)
+	require.Empty(t, logUserText(&setupOnly))
+
+	// The envelopes are Codex's, so another client's turn keeps them.
+	entry.UserAgent = schemas.Ptr("python-requests/2.32")
+	item, ok = buildLogIndexItem(&entry)
+	require.True(t, ok)
+	require.Contains(t, item.text, "# AGENTS.md instructions")
+}
+
 // An opening message can be a pasted file. It gets at most half of what is
 // embedded, so it cannot push out the exchange the request is actually about.
 func TestWarpIndexTextBoundsTheOpeningQuestion(t *testing.T) {

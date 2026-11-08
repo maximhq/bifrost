@@ -302,7 +302,7 @@ resource "kubernetes_ingress_v1" "bifrost" {
 
       http {
         path {
-          path      = "/"
+          path      = var.ingress_path
           path_type = "Prefix"
 
           backend {

@@ -1,1 +1,2 @@
-- chore: upgraded Go to 1.27.3, core to v1.13.1 and framework to v1.10.1
+- fix: drop-params resolves key aliases when looking up supported params
+- chore: upgraded core to v1.15.0 and framework to v1.12.0

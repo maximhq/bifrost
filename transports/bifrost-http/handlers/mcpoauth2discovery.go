@@ -27,6 +27,8 @@ import (
 // Discoverability is the feature toggle.
 type OAuth2DiscoveryHandler struct {
 	store *lib.Config
+	// extensions may add to the authorization server metadata; nil when none.
+	extensions OAuth2Extensions
 }
 
 // NewOAuth2DiscoveryHandler creates a new discovery handler.
@@ -89,9 +91,12 @@ func (h *OAuth2DiscoveryHandler) handlePRM(ctx *fasthttp.RequestCtx) {
 }
 
 // handleASMetadata serves GET /.well-known/oauth-authorization-server[/{path}].
-// RFC 8414 Authorization Server Metadata.
+// RFC 8414 Authorization Server Metadata. It advertises only what is on: the
+// MCP OAuth login endpoints and grants with MCP OAuth, an extension's grants
+// with the extension.
 func (h *OAuth2DiscoveryHandler) handleASMetadata(ctx *fasthttp.RequestCtx) {
-	if !h.discoveryEnabled() {
+	mcpOAuth, extension := h.discoveryEnabled(), extensionServing(h.extensions, h.store)
+	if !mcpOAuth && !extension {
 		ctx.SetStatusCode(fasthttp.StatusNotFound)
 		return
 	}
@@ -101,17 +106,28 @@ func (h *OAuth2DiscoveryHandler) handleASMetadata(ctx *fasthttp.RequestCtx) {
 	base := oauth2IssuerURL(ctx, h.store)
 	doc := map[string]any{
 		"issuer":                                base,
-		"authorization_endpoint":                base + "/oauth2/authorize",
 		"token_endpoint":                        base + "/oauth2/token",
-		"registration_endpoint":                 base + "/oauth2/register",
 		"jwks_uri":                              base + "/.well-known/jwks.json",
-		"response_types_supported":              []string{"code"},
-		"grant_types_supported":                 []string{"authorization_code", "refresh_token"},
-		"code_challenge_methods_supported":      []string{"S256"},
-		"token_endpoint_auth_methods_supported": []string{"none"},
-		"scopes_supported":                      []string{"mcp"},
+		"response_types_supported":              []string{},
+		"grant_types_supported":                 []string{},
+		"token_endpoint_auth_methods_supported": []string{},
+		"scopes_supported":                      []string{},
+	}
+	if mcpOAuth {
+		doc["authorization_endpoint"] = base + "/oauth2/authorize"
+		doc["registration_endpoint"] = base + "/oauth2/register"
+		doc["response_types_supported"] = []string{"code"}
+		doc["grant_types_supported"] = []string{"authorization_code", "refresh_token"}
+		doc["code_challenge_methods_supported"] = []string{"S256"}
+		doc["token_endpoint_auth_methods_supported"] = []string{"none"}
+		doc["scopes_supported"] = []string{"mcp"}
 		// RFC 9207: we include iss in authorization responses.
-		"authorization_response_iss_parameter_supported": true,
+		doc["authorization_response_iss_parameter_supported"] = true
+		// MCP 2025-11-25+: CIMD URLs are accepted as client_id.
+		doc["client_id_metadata_document_supported"] = true
+	}
+	if extension {
+		h.extensions.ExtendASMetadata(ctx, doc)
 	}
 	data, err := sonic.Marshal(doc)
 	if err != nil {
@@ -122,9 +138,10 @@ func (h *OAuth2DiscoveryHandler) handleASMetadata(ctx *fasthttp.RequestCtx) {
 	ctx.SetBody(data)
 }
 
-// handleJWKS serves GET /.well-known/jwks.json (RFC 7517).
+// handleJWKS serves GET /.well-known/jwks.json (RFC 7517) while MCP OAuth or
+// an extension issues tokens.
 func (h *OAuth2DiscoveryHandler) handleJWKS(ctx *fasthttp.RequestCtx) {
-	if !h.discoveryEnabled() {
+	if !h.discoveryEnabled() && !extensionServing(h.extensions, h.store) {
 		ctx.SetStatusCode(fasthttp.StatusNotFound)
 		return
 	}

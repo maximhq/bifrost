@@ -84,6 +84,20 @@ type RDBLogStore struct {
 	// Lazily built shared probe behind MigrationInProgress (see maintenancegate.go).
 	migrationProbeOnce sync.Once
 	migrationProbeInst *migrationLockProbe
+	// matViewLimits are the session bounds every matview create/refresh applies.
+	matViewLimits matViewSessionLimits
+	// matViewTempLimitWarned backs matViewLimits.deniedWarned.
+	matViewTempLimitWarned atomic.Bool
+	// matViewClientCheckWarned backs matViewLimits.clientCheckWarned.
+	matViewClientCheckWarned atomic.Bool
+	// Matview maintenance lifecycle (see goMaintenance). Close cancels
+	// maintenanceCtx so an in-flight REFRESH is cancelled on the server instead
+	// of outliving this process. Nil on stores built without newPostgresLogStore.
+	maintenanceMu     sync.Mutex
+	maintenanceCtx    context.Context
+	maintenanceCancel context.CancelFunc
+	maintenanceClosed bool
+	maintenanceWG     sync.WaitGroup
 }
 
 // generateBucketTimestamps generates all bucket timestamps for a time range.
@@ -603,47 +617,73 @@ func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *g
 	}
 	if len(filters.MetadataFilters) > 0 {
 		dialect := s.db.Dialector.Name()
-		// Guard must match the partial-index predicate so the planner uses the GIN index.
-		// SQLite does not support IS JSON OBJECT, so fall back to the equivalent json_type check.
-		switch dialect {
-		case "postgres":
-			baseQuery = baseQuery.Where("metadata IS NOT NULL AND metadata IS JSON OBJECT")
-		case "clickhouse":
-			baseQuery = baseQuery.Where("metadata IS NOT NULL AND isValidJSON(metadata)")
-		default:
-			baseQuery = baseQuery.Where("metadata IS NOT NULL AND json_valid(metadata) AND json_type(metadata) = 'object'")
-		}
-		for key, value := range filters.MetadataFilters {
-			if !isValidMetadataKey(key) {
+		// Values for one key are alternatives (OR); separate keys must all match (AND). Invalid keys
+		// are dropped before anything is added, so a filter that ends up empty adds no guard either.
+		var metadataConds []string
+		var metadataArgs [][]interface{}
+		for key, values := range filters.MetadataFilters {
+			if !isValidMetadataKey(key) || len(values) == 0 {
 				continue
 			}
+			if len(values) > MaxMetadataFilterValuesPerKey {
+				values = values[:MaxMetadataFilterValuesPerKey]
+			}
+			conds := make([]string, 0, len(values))
+			args := make([]interface{}, 0, len(values)*4)
+			for _, value := range values {
+				cond, condArgs := metadataValueCondition(dialect, key, value)
+				conds = append(conds, cond)
+				args = append(args, condArgs...)
+			}
+			metadataConds = append(metadataConds, "("+strings.Join(conds, " OR ")+")")
+			metadataArgs = append(metadataArgs, args)
+		}
+		if len(metadataConds) > 0 {
+			// Guard must match the partial-index predicate so the planner uses the GIN index.
+			// SQLite does not support IS JSON OBJECT, so fall back to the equivalent json_type check.
 			switch dialect {
 			case "postgres":
-				// Use @> containment operator to leverage GIN index on metadata::jsonb.
-				// Metadata values always originate from HTTP headers and are stored as JSON
-				// strings — always match as a string to avoid type mismatch with jsonb.
-				jsonFragment := fmt.Sprintf(`{%q: %q}`, key, value)
-				baseQuery = baseQuery.Where("metadata::jsonb @> ?::jsonb", jsonFragment)
+				baseQuery = baseQuery.Where("metadata IS NOT NULL AND metadata IS JSON OBJECT")
 			case "clickhouse":
-				// Metadata values are stored as JSON strings (see postgres note);
-				// match them as strings via JSONExtractString.
-				baseQuery = baseQuery.Where("JSONExtractString(metadata, ?) = ?", key, value)
+				baseQuery = baseQuery.Where("metadata IS NOT NULL AND isValidJSON(metadata)")
 			default:
-				// SQLite: quote the member name so dots/hyphens stay part of the key
-				path := `$."` + key + `"`
-				if value == "true" {
-					// json_extract returns 1 for true, but json_type returns 'true'
-					baseQuery = baseQuery.Where("json_type(metadata, ?) = 'true'", path)
-				} else if value == "false" {
-					baseQuery = baseQuery.Where("json_type(metadata, ?) = 'false'", path)
-				} else {
-					// Numeric and string values: compare both as-is and as text
-					baseQuery = baseQuery.Where("json_extract(metadata, ?) = ? OR CAST(json_extract(metadata, ?) AS TEXT) = ?", path, value, path, value)
-				}
+				baseQuery = baseQuery.Where("metadata IS NOT NULL AND json_valid(metadata) AND json_type(metadata) = 'object'")
+			}
+			for i, cond := range metadataConds {
+				baseQuery = baseQuery.Where(cond, metadataArgs[i]...)
 			}
 		}
 	}
 	return baseQuery
+}
+
+// metadataValueCondition is the SQL predicate (with its args) matching rows whose metadata holds
+// value under key. key must already have passed isValidMetadataKey.
+func metadataValueCondition(dialect, key, value string) (string, []interface{}) {
+	switch dialect {
+	case "postgres":
+		// Use @> containment operator to leverage GIN index on metadata::jsonb.
+		// Metadata values always originate from HTTP headers and are stored as JSON
+		// strings — always match as a string to avoid type mismatch with jsonb.
+		return "metadata::jsonb @> ?::jsonb", []interface{}{fmt.Sprintf(`{%q: %q}`, key, value)}
+	case "clickhouse":
+		// Metadata values are stored as JSON strings (see postgres note);
+		// match them as strings via JSONExtractString.
+		return "JSONExtractString(metadata, ?) = ?", []interface{}{key, value}
+	default:
+		// SQLite: quote the member name so dots/hyphens stay part of the key
+		path := `$."` + key + `"`
+		switch value {
+		case "true":
+			// json_extract returns 1 for true, but json_type returns 'true'
+			return "json_type(metadata, ?) = 'true'", []interface{}{path}
+		case "false":
+			return "json_type(metadata, ?) = 'false'", []interface{}{path}
+		default:
+			// Numeric and string values: compare both as-is and as text
+			return "(json_extract(metadata, ?) = ? OR CAST(json_extract(metadata, ?) AS TEXT) = ?)", []interface{}{path, value, path, value}
+		}
+	}
 }
 
 // Guardrail outcome values accepted by SearchFilters.GuardrailOutcomes.
@@ -1390,6 +1430,12 @@ func applyKeysetCursor(query *gorm.DB, dialect string, pagination PaginationOpti
 // whose children all fail the filters reports ChildCount 0 and offers nothing
 // to expand.
 func (s *RDBLogStore) attachChildAggregates(ctx context.Context, logs []Log, filters SearchFilters) error {
+	return s.attachChildAggregatesWhere(ctx, logs, filters, nil)
+}
+
+// attachChildAggregatesWhere is attachChildAggregates with an extra predicate
+// (nil for none) that narrows which child rows the rollup reads.
+func (s *RDBLogStore) attachChildAggregatesWhere(ctx context.Context, logs []Log, filters SearchFilters, narrow func(*gorm.DB) *gorm.DB) error {
 	if len(logs) == 0 {
 		return nil
 	}
@@ -1413,7 +1459,11 @@ func (s *RDBLogStore) attachChildAggregates(ctx context.Context, logs []Log, fil
 	childFilters.GroupSessions = false
 	childFilters.ParentRequestID = ""
 
-	err := s.applyFilters(s.scopedLogsDB(ctx).Model(&Log{}), childFilters).
+	query := s.applyFilters(s.scopedLogsDB(ctx).Model(&Log{}), childFilters)
+	if narrow != nil {
+		query = narrow(query)
+	}
+	err := query.
 		Select("parent_request_id, COUNT(*) AS child_count, COALESCE(SUM(cost), 0) AS children_cost, COALESCE(SUM(total_tokens), 0) AS children_tokens").
 		Where("parent_request_id IN ? AND id <> parent_request_id", ids).
 		Group("parent_request_id").
@@ -1681,11 +1731,11 @@ func (s *RDBLogStore) listSelectColumns() string {
 		"virtual_key_id", "virtual_key_name",
 		"routing_engines_used", "tool_call_names", "routing_rule_id", "routing_rule_name",
 		"complexity_tier", "complexity_mechanism", "session_id", "agent_correlation_id",
-		"user_id", "user_name", "team_id", "team_name", "customer_id", "customer_name",
+		"user_id", "user_name", "user_email", "team_id", "team_name", "customer_id", "customer_name",
 		"business_unit_id", "business_unit_name",
 		"team_ids", "team_names", "customer_ids", "customer_names", "business_unit_ids", "business_unit_names",
 		"project_id", "project_name",
-		"user_agent", "app",
+		"user_agent", "app", "client_ip",
 		"speech_input", "transcription_input", "image_generation_input", "video_generation_input",
 		// error_details is intentionally excluded from the list select: for status=error
 		// rows it can carry the provider's full (unbounded) error payload, and 25+ such
@@ -1693,7 +1743,7 @@ func (s *RDBLogStore) listSelectColumns() string {
 		// The full error is still served by the detail endpoint (GetLog / GET /api/logs/{id}).
 		// Only guardrail blocks, whose errors are bounded, are listed (see below).
 		"latency", "upstream_latency", "overhead_latency", "token_usage", "cost", "status", "stream",
-		fmt.Sprintf("substr(content_summary, 1, %d) AS content_summary", maxContentSummaryBytes),
+		fmt.Sprintf("substr(content_summary, 1, %d) AS content_summary", MaxContentSummaryBytes),
 		"metadata", "cache_debug",
 		"batch_debug",
 		// video_debug tells a settled video's aggregate cost row apart from the
@@ -4662,17 +4712,22 @@ func (s *RDBLogStore) FindByID(ctx context.Context, id string) (*Log, error) {
 		}
 		return nil, err
 	}
-	// The list rolls a row's children up into ChildrenCost, and a request whose cost
-	// was settled onto a child row has none of its own — so without this the detail
-	// view of a video generation or a batch shows no cost at all while the list
-	// beside it shows one. No filters here: a single row is addressed by id, so the
-	// rollup covers every child rather than only those in some window.
+	return s.withChildAggregates(ctx, log), nil
+}
+
+// withChildAggregates returns a single row found by id with its child rollup
+// attached. The list rolls a row's children up into ChildrenCost, and a request
+// whose cost was settled onto a child row has none of its own — so without this
+// the detail view of a video generation or a batch shows no cost at all while
+// the list beside it shows one. No filters here: a single row is addressed by
+// id, so the rollup covers every child rather than only those in some window.
+func (s *RDBLogStore) withChildAggregates(ctx context.Context, log Log) *Log {
 	rows := []Log{log}
 	if err := s.attachChildAggregates(ctx, rows, SearchFilters{}); err != nil {
-		s.logger.Warn(fmt.Sprintf("logstore: child aggregates unavailable for log %s, returning it without them: %s", id, err))
-		return &log, nil
+		s.logger.Warn(fmt.Sprintf("logstore: child aggregates unavailable for log %s, returning it without them: %s", log.ID, err))
+		return &log
 	}
-	return &rows[0], nil
+	return &rows[0]
 }
 
 // IsLogEntryPresent checks if a log entry is present in the database.
@@ -5254,9 +5309,12 @@ func (s *RDBLogStore) deleteExpiredBatchByKey(ctx context.Context, table, key, c
 		return 0, nil
 	}
 	var stmt string
-	if s.db.Dialector.Name() == "mysql" {
+	switch s.db.Dialector.Name() {
+	case "mysql":
 		stmt = fmt.Sprintf("DELETE FROM %s WHERE %s < ? ORDER BY %s LIMIT ?", table, column, column)
-	} else {
+	case "postgres":
+		return s.deleteExpiredBatchPostgres(ctx, table, key, column, cutoff, batchSize)
+	default:
 		stmt = fmt.Sprintf("DELETE FROM %s WHERE %s IN (SELECT %s FROM %s WHERE %s < ? ORDER BY %s LIMIT ?)", table, key, key, table, column, column)
 	}
 	result := s.db.WithContext(ctx).Exec(stmt, cutoff, batchSize)
@@ -5266,8 +5324,121 @@ func (s *RDBLogStore) deleteExpiredBatchByKey(ctx context.Context, table, key, c
 	return result.RowsAffected, nil
 }
 
-// Close closes the log store.
+// retentionAdvisoryLockKeys gives each retention table its own lock, so replicas can drain different tables at once.
+// 1000040-1000049 is reserved for retention: enterprise holds 1000031 and 1000032, so keep this block separate.
+var retentionAdvisoryLockKeys = map[string]int64{
+	"logs":                   1000040,
+	"mcp_tool_logs":          1000041,
+	"relay_logs":             1000042,
+	"warp_topic_assignments": 1000043,
+	"warp_topic_unmatched":   1000044,
+}
+
+// retentionAdvisoryLockKeyOther covers any retention table missing from retentionAdvisoryLockKeys.
+const retentionAdvisoryLockKeyOther int64 = 1000049
+
+// deleteExpiredBatchPostgres deletes one batch under the table's xact advisory lock (PgBouncer-safe), or returns ErrRetentionBusy.
+func (s *RDBLogStore) deleteExpiredBatchPostgres(ctx context.Context, table, key, column string, cutoff time.Time, batchSize int) (int64, error) {
+	lockKey, ok := retentionAdvisoryLockKeys[table]
+	if !ok {
+		lockKey = retentionAdvisoryLockKeyOther
+	}
+	// ARRAY(...) runs the locking subquery once, as an InitPlan. As "key IN (subquery)" the planner picks a nested-loop
+	// semi join that rescans it, and SKIP LOCKED then hands each rescan the next unlocked rows: one statement deleted
+	// 9999 rows for a LIMIT of 5000, and drainExpired read the oversized count as ClickHouse's whole-range delete and
+	// stopped with expired rows left.
+	stmt := fmt.Sprintf("DELETE FROM %s WHERE %s = ANY(ARRAY(SELECT %s FROM %s WHERE %s < ? ORDER BY %s LIMIT ? FOR UPDATE SKIP LOCKED))", table, key, key, table, column, column)
+	var deleted int64
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var acquired bool
+		if err := tx.Raw("SELECT pg_try_advisory_xact_lock(?)", lockKey).Row().Scan(&acquired); err != nil {
+			return err
+		}
+		if !acquired {
+			return ErrRetentionBusy
+		}
+		result := tx.Exec(stmt, cutoff, batchSize)
+		if result.Error != nil {
+			return result.Error
+		}
+		deleted = result.RowsAffected
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	return deleted, nil
+}
+
+// RetentionInterval is hourly on Postgres, where the advisory lock makes idle replicas' ticks one cheap probe.
+func (s *RDBLogStore) RetentionInterval() time.Duration {
+	if s.db.Dialector.Name() == "postgres" {
+		return postgresCleanupInterval
+	}
+	return cleanupInterval
+}
+
+// matViewShutdownWait bounds how long Close waits for cancelled matview
+// maintenance to wind down (cancel request, advisory unlock, session restore)
+// before it closes the pool anyway.
+const matViewShutdownWait = 15 * time.Second
+
+// maintenanceContext returns the context matview maintenance runs on: the
+// store's own, cancelled by Close, or Background for a store built without one.
+func (s *RDBLogStore) maintenanceContext() context.Context {
+	if s.maintenanceCtx == nil {
+		return context.Background()
+	}
+	return s.maintenanceCtx
+}
+
+// goMaintenance runs fn in a goroutine that Close waits for. It returns false
+// without running fn once Close has started, so no maintenance starts on a
+// store that is shutting down.
+func (s *RDBLogStore) goMaintenance(fn func()) bool {
+	s.maintenanceMu.Lock()
+	if s.maintenanceClosed {
+		s.maintenanceMu.Unlock()
+		return false
+	}
+	s.maintenanceWG.Add(1)
+	s.maintenanceMu.Unlock()
+	go func() {
+		defer s.maintenanceWG.Done()
+		fn()
+	}()
+	return true
+}
+
+// stopMaintenance cancels matview maintenance and waits up to
+// matViewShutdownWait for it to exit. Cancelling makes the driver send the
+// server a cancel request for a running REFRESH, so the statement and its
+// advisory lock end with this process rather than running on for hours.
+func (s *RDBLogStore) stopMaintenance() {
+	s.maintenanceMu.Lock()
+	s.maintenanceClosed = true
+	if s.maintenanceCancel != nil {
+		s.maintenanceCancel()
+	}
+	s.maintenanceMu.Unlock()
+
+	done := make(chan struct{})
+	go func() {
+		s.maintenanceWG.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(matViewShutdownWait):
+		if s.logger != nil {
+			s.logger.Warn(fmt.Sprintf("logstore: matview maintenance did not stop within %s; closing the pool anyway", matViewShutdownWait))
+		}
+	}
+}
+
+// Close stops matview maintenance and closes the log store.
 func (s *RDBLogStore) Close(ctx context.Context) error {
+	s.stopMaintenance()
 	sqlDB, err := s.db.WithContext(ctx).DB()
 	if err != nil {
 		return err
@@ -5309,14 +5480,19 @@ func (s *RDBLogStore) applyMCPFilters(baseQuery *gorm.DB, filters MCPToolLogSear
 	if len(filters.UserIDs) > 0 {
 		baseQuery = baseQuery.Where("user_id IN ?", filters.UserIDs)
 	}
+	// A call settled under several teams, customers or business units carries them in the JSON-array
+	// columns, often with the scalar left empty, so it matches on any of them, as on logs (applyFilters).
 	if len(filters.TeamIDs) > 0 {
-		baseQuery = baseQuery.Where("team_id IN ?", filters.TeamIDs)
+		sql, args := dimensionMembershipFilterSQL(s.db.Dialector.Name(), "team_id", "team_ids", filters.TeamIDs)
+		baseQuery = baseQuery.Where(sql, args...)
 	}
 	if len(filters.CustomerIDs) > 0 {
-		baseQuery = baseQuery.Where("customer_id IN ?", filters.CustomerIDs)
+		sql, args := dimensionMembershipFilterSQL(s.db.Dialector.Name(), "customer_id", "customer_ids", filters.CustomerIDs)
+		baseQuery = baseQuery.Where(sql, args...)
 	}
 	if len(filters.BusinessUnitIDs) > 0 {
-		baseQuery = baseQuery.Where("business_unit_id IN ?", filters.BusinessUnitIDs)
+		sql, args := dimensionMembershipFilterSQL(s.db.Dialector.Name(), "business_unit_id", "business_unit_ids", filters.BusinessUnitIDs)
+		baseQuery = baseQuery.Where(sql, args...)
 	}
 	if len(filters.ProjectIDs) > 0 {
 		baseQuery = baseQuery.Where("project_id IN ?", filters.ProjectIDs)
@@ -5348,6 +5524,9 @@ func (s *RDBLogStore) applyMCPFilters(baseQuery *gorm.DB, filters MCPToolLogSear
 	}
 	if filters.AgentCorrelationID != "" {
 		baseQuery = baseQuery.Where("agent_correlation_id = ?", filters.AgentCorrelationID)
+	}
+	if filters.RoundTripID != "" {
+		baseQuery = baseQuery.Where("round_trip_id = ?", filters.RoundTripID)
 	}
 	if len(filters.UserAgents) > 0 {
 		baseQuery = baseQuery.Where("user_agent IN ?", filters.UserAgents)
@@ -6273,23 +6452,32 @@ func (s *RDBLogStore) GetMCPToolLogStats(ctx context.Context, filters MCPToolLog
 		var result struct {
 			CompletedCount sql.NullInt64   `gorm:"column:completed_count"`
 			SuccessCount   sql.NullInt64   `gorm:"column:success_count"`
+			ErrorCount     sql.NullInt64   `gorm:"column:error_count"`
+			CancelledCount sql.NullInt64   `gorm:"column:cancelled_count"`
 			AvgLatency     sql.NullFloat64 `gorm:"column:avg_latency"`
 			TotalCost      sql.NullFloat64 `gorm:"column:total_cost"`
 		}
 
+		// A cancelled call is a finished call, as on the LLM and Relay logs stats: it counts against
+		// the success rate and toward the average latency and the cost.
 		statsQuery := s.ScopedDB(ctx).Model(&MCPToolLog{})
 		statsQuery = s.applyMCPFilters(statsQuery, filters)
-		statsQuery = statsQuery.Where("status IN ?", []string{"success", "error"})
+		statsQuery = statsQuery.Where("status IN ?", terminalLogStatuses)
 
 		if err := statsQuery.Select(`
 			COUNT(*) as completed_count,
 			SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as success_count,
+			SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) as error_count,
+			SUM(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END) as cancelled_count,
 			AVG(latency) as avg_latency,
 			SUM(cost) as total_cost
 		`).Scan(&result).Error; err != nil {
 			return nil, err
 		}
 
+		stats.SuccessCount = result.SuccessCount.Int64
+		stats.ErrorCount = result.ErrorCount.Int64
+		stats.CancelledCount = result.CancelledCount.Int64
 		completedCount := result.CompletedCount.Int64
 		if completedCount > 0 {
 			stats.SuccessRate = float64(result.SuccessCount.Int64) / float64(completedCount) * 100
@@ -6422,6 +6610,52 @@ func (s *RDBLogStore) GetAvailableMCPVirtualKeys(ctx context.Context, limit int,
 	return logs, nil
 }
 
+// GetDistinctMCPKeyPairs lists one MCP tool log dimension's id/name pairs for the filter sidebar,
+// built like the Relay Logs options (GetRelayFilterData): teams, customers and business units fan out
+// over their JSON-array columns, each id is listed once under one of its names, an id with no name is
+// still listed, and the dimension ceiling bounds the list. Rows older than the filter-data window,
+// which every other MCP filter dimension reads, are left out.
+func (s *RDBLogStore) GetDistinctMCPKeyPairs(ctx context.Context, idCol, nameCol string, limit int, query string) ([]KeyPairResult, error) {
+	if _, ok := allowedKeyPairColumns[idCol]; !ok {
+		return nil, fmt.Errorf("invalid id column: %s", idCol)
+	}
+	if _, ok := allowedKeyPairColumns[nameCol]; !ok {
+		return nil, fmt.Errorf("invalid name column: %s", nameCol)
+	}
+	cutoff := time.Now().UTC().AddDate(0, 0, -defaultFilterDataCutoffDays)
+	queryID, queryName := idCol, nameCol
+	q := s.ScopedDB(ctx).Model(&MCPToolLog{})
+	var src dimensionReadSource
+	if from, ok := mcpDimensionFanoutFrom(s.db.Dialector.Name(), idCol); ok {
+		q = s.ScopedDB(ctx).Table("?", gorm.Expr(from))
+		q.Statement.Table = "logs"
+		queryID, queryName = "dim_id", "dim_name"
+		src.FannedOut = true
+	}
+	q = q.Select(queryID+" AS id, MAX("+queryName+") AS name").
+		Where(queryID+" IS NOT NULL AND "+queryID+" <> '' AND timestamp >= ?", cutoff)
+	q = applyDimensionCeiling(ctx, q, src, idCol)
+	if query != "" {
+		// Backslash is the default LIKE escape on Postgres, MySQL and ClickHouse, and ClickHouse rejects an
+		// ESCAPE clause; only SQLite needs it declared, as in applyRelayLogFilters' search.
+		switch s.db.Dialector.Name() {
+		case "postgres":
+			q = q.Where(queryName+" ILIKE ?", "%"+escapeLike(query)+"%")
+		case "clickhouse":
+			q = q.Where("lowerUTF8("+queryName+") LIKE ?", "%"+strings.ToLower(escapeLike(query))+"%")
+		case "sqlite":
+			q = q.Where("LOWER("+queryName+") LIKE ? ESCAPE '\\'", "%"+strings.ToLower(escapeLike(query))+"%")
+		default:
+			q = q.Where("LOWER("+queryName+") LIKE ?", "%"+strings.ToLower(escapeLike(query))+"%")
+		}
+	}
+	results := []KeyPairResult{}
+	if err := q.Group(queryID).Order("name").Limit(limit).Scan(&results).Error; err != nil {
+		return nil, fmt.Errorf("failed to get distinct MCP key pairs (%s, %s): %w", idCol, nameCol, err)
+	}
+	return results, nil
+}
+
 // GetMCPHistogram returns time-bucketed MCP tool call volume for the given filters.
 func (s *RDBLogStore) GetMCPHistogram(ctx context.Context, filters MCPToolLogSearchFilters, bucketSizeSeconds int64) (*MCPHistogramResult, error) {
 	if bucketSizeSeconds <= 0 {
@@ -6432,20 +6666,22 @@ func (s *RDBLogStore) GetMCPHistogram(ctx context.Context, filters MCPToolLogSea
 
 	baseQuery := s.ScopedDB(ctx).Model(&MCPToolLog{})
 	baseQuery = s.applyMCPFilters(baseQuery, filters)
-	baseQuery = baseQuery.Where("status IN ?", []string{"success", "error"})
+	baseQuery = baseQuery.Where("status IN ?", terminalLogStatuses)
 
 	var results []struct {
 		BucketTimestamp int64 `gorm:"column:bucket_timestamp"`
 		Count           int64 `gorm:"column:count"`
 		Success         int64 `gorm:"column:success"`
 		Error           int64 `gorm:"column:error"`
+		Cancelled       int64 `gorm:"column:cancelled"`
 	}
 
 	selectClause := fmt.Sprintf(`
 			%s as bucket_timestamp,
 			COUNT(*) as count,
 			SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as success,
-			SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) as error
+			SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) as error,
+			SUM(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END) as cancelled
 		`, unixBucketExpr(dialect, bucketSizeSeconds))
 
 	if err := baseQuery.
@@ -6457,16 +6693,18 @@ func (s *RDBLogStore) GetMCPHistogram(ctx context.Context, filters MCPToolLogSea
 	}
 
 	resultMap := make(map[int64]struct {
-		Count   int64
-		Success int64
-		Error   int64
+		Count     int64
+		Success   int64
+		Error     int64
+		Cancelled int64
 	})
 	for _, r := range results {
 		resultMap[r.BucketTimestamp] = struct {
-			Count   int64
-			Success int64
-			Error   int64
-		}{Count: r.Count, Success: r.Success, Error: r.Error}
+			Count     int64
+			Success   int64
+			Error     int64
+			Cancelled int64
+		}{Count: r.Count, Success: r.Success, Error: r.Error, Cancelled: r.Cancelled}
 	}
 
 	allTimestamps := generateBucketTimestamps(filters.StartTime, filters.EndTime, bucketSizeSeconds)
@@ -6479,6 +6717,7 @@ func (s *RDBLogStore) GetMCPHistogram(ctx context.Context, filters MCPToolLogSea
 				Count:     r.Count,
 				Success:   r.Success,
 				Error:     r.Error,
+				Cancelled: r.Cancelled,
 			}
 		}
 		return &MCPHistogramResult{Buckets: buckets, BucketSizeSeconds: bucketSizeSeconds}, nil
@@ -6492,6 +6731,7 @@ func (s *RDBLogStore) GetMCPHistogram(ctx context.Context, filters MCPToolLogSea
 				Count:     data.Count,
 				Success:   data.Success,
 				Error:     data.Error,
+				Cancelled: data.Cancelled,
 			}
 		} else {
 			buckets[i] = MCPHistogramBucket{Timestamp: time.Unix(ts, 0).UTC()}
@@ -6499,6 +6739,42 @@ func (s *RDBLogStore) GetMCPHistogram(ctx context.Context, filters MCPToolLogSea
 	}
 
 	return &MCPHistogramResult{Buckets: buckets, BucketSizeSeconds: bucketSizeSeconds}, nil
+}
+
+// GetMCPLatencyHistogram returns per-bucket average and p90/p95/p99 latency of finished MCP tool calls,
+// the shape GetLatencyHistogram and GetRelayLatencyHistogram return. MCP tool calls record no Bifrost
+// overhead, so the overhead percentiles are always zero.
+func (s *RDBLogStore) GetMCPLatencyHistogram(ctx context.Context, filters MCPToolLogSearchFilters, bucketSizeSeconds int64) (*LatencyHistogramResult, error) {
+	if bucketSizeSeconds <= 0 {
+		bucketSizeSeconds = 3600
+	}
+	dialect := s.db.Dialector.Name()
+	// The dialect queries shared with the LLM and Relay histograms read overhead_latency, which
+	// mcp_tool_logs does not have, so they read a derived table that supplies it as a typed NULL.
+	nullOverhead := "NULL"
+	switch dialect {
+	case "postgres":
+		nullOverhead = "CAST(NULL AS DOUBLE PRECISION)"
+	case "clickhouse":
+		nullOverhead = "CAST(NULL AS Nullable(Float64))"
+	}
+	timed := s.applyMCPFilters(s.ScopedDB(ctx).Model(&MCPToolLog{}), filters).
+		Where("status IN ?", terminalLogStatuses).
+		Where("latency IS NOT NULL").
+		Select("timestamp, latency, " + nullOverhead + " AS overhead_latency")
+	query := s.db.WithContext(ctx).Table("(?) AS mcp_latency", timed)
+	// The dialect queries read only the window from the LLM filters, to lay out empty buckets.
+	window := SearchFilters{StartTime: filters.StartTime, EndTime: filters.EndTime}
+	switch dialect {
+	case "sqlite":
+		return s.getLatencyHistogramSQLite(ctx, query, window, bucketSizeSeconds)
+	case "mysql":
+		return s.getLatencyHistogramMySQL(ctx, query, window, bucketSizeSeconds)
+	case "clickhouse":
+		return s.getLatencyHistogramClickHouse(ctx, query, window, bucketSizeSeconds)
+	default:
+		return s.getLatencyHistogramPercentileCont(ctx, query, window, bucketSizeSeconds)
+	}
 }
 
 // GetMCPCostHistogram returns time-bucketed MCP cost data for the given filters.

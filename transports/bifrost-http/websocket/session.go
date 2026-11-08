@@ -55,6 +55,8 @@ type Session struct {
 
 	// realtimeVoice holds the voice from the latest session configuration.
 	realtimeVoice string
+	// realtimeVoiceType holds that voice's type, such as Azure Voice Live's "azure-standard".
+	realtimeVoiceType string
 
 	// realtimeTurnHooks tracks the active turn-scoped plugin pipeline between
 	// response.create and response.done.
@@ -241,6 +243,23 @@ func (s *Session) RealtimeVoice() string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.realtimeVoice
+}
+
+// SetRealtimeVoiceType updates the tracked voice type from session configuration.
+func (s *Session) SetRealtimeVoiceType(voiceType string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return
+	}
+	s.realtimeVoiceType = voiceType
+}
+
+// RealtimeVoiceType returns the current session voice's type, or empty string.
+func (s *Session) RealtimeVoiceType() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.realtimeVoiceType
 }
 
 // AppendRealtimeOutputText appends provider output content for the current realtime turn.
@@ -449,6 +468,7 @@ func (s *Session) Close() {
 	s.realtimeTurnInputs = nil
 	s.realtimeSessionTools = nil
 	s.realtimeVoice = ""
+	s.realtimeVoiceType = ""
 	s.realtimeOutputText = ""
 
 	if s.clientConn != nil {

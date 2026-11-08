@@ -1,10 +1,14 @@
 import { IS_ENTERPRISE } from "@/lib/constants/config";
+import i18n from "@/lib/i18n";
 import { BifrostErrorResponse } from "@/lib/types/config";
 import { getApiBaseUrl } from "@/lib/utils/port";
 import { createBaseQueryWithRefresh } from "@enterprise/lib/store/utils/baseQueryWithRefresh";
 import { clearOAuthStorage } from "@enterprise/lib/store/utils/tokenManager";
+import { getViewAsUserId } from "@enterprise/lib/store/utils/viewAs";
 import { createApi, fetchBaseQuery } from "@reduxjs/toolkit/query/react";
 import { getActiveTempToken, getSuppressGlobal401 } from "./tempToken";
+import { getCurrentAppPath, stripBasePath } from "@/lib/utils/basePath";
+import { buildLoginHref } from "@/lib/utils/loginGoto";
 
 // Auth tokens are now stored in HTTP-only cookies (set by server)
 // No client-side token needed — handled by credentials: "include"
@@ -62,6 +66,11 @@ const baseQuery = fetchBaseQuery({
 		if (tempToken) {
 			headers.set("X-Bifrost-Temp-Token", tempToken);
 		}
+		// While an admin views the gateway as another user, every call reads as that user.
+		const viewAsUserId = getViewAsUserId();
+		if (viewAsUserId) {
+			headers.set("X-Bifrost-View-As", viewAsUserId);
+		}
 		return headers;
 	},
 });
@@ -87,9 +96,9 @@ const baseQueryWithErrorHandling: typeof baseQueryWithRefresh = async (args: any
 				return result;
 			}
 			clearAuthStorage();
-			if (typeof window !== "undefined" && !window.location.pathname.includes("/login")) {
-				const goto = window.location.pathname + window.location.search;
-				window.location.href = `/login?goto=${encodeURIComponent(goto)}`;
+			if (typeof window !== "undefined" && !stripBasePath(window.location.pathname).includes("/login")) {
+				const goto = getCurrentAppPath();
+				window.location.href = buildLoginHref(goto);
 			}
 			return result;
 		}
@@ -103,7 +112,7 @@ const baseQueryWithErrorHandling: typeof baseQueryWithRefresh = async (args: any
 					...error,
 					data: {
 						error: {
-							message: "Network error: Unable to connect to the server",
+							message: i18n.t("apiErrors.networkUnreachable"),
 						},
 					},
 				},
@@ -125,7 +134,7 @@ const baseQueryWithErrorHandling: typeof baseQueryWithRefresh = async (args: any
 				...error,
 				data: {
 					error: {
-						message: "An unexpected error occurred",
+						message: i18n.t("apiErrors.unexpected"),
 					},
 				},
 			},
@@ -206,6 +215,8 @@ export const baseApi = createApi({
 		"ComplexityAnalyzerConfig",
 		"Skills",
 		"OAuth2Grants",
+		"IDJAGClients",
+		"WorkloadIdentities",
 		"UserAgentMappings",
 		"Branding",
 		"Devices",
@@ -229,6 +240,8 @@ export const baseApi = createApi({
 		"WarpConversations",
 		"Agents",
 		"AgentLogs",
+		"Relays",
+		"RelayLogs",
 	],
 	endpoints: () => ({}),
 });

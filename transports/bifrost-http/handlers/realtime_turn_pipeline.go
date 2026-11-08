@@ -239,13 +239,15 @@ func updateRealtimeSessionFromEvent(session *bfws.Session, event *schemas.Bifros
 		if event.Session.Tools != nil {
 			session.SetRealtimeSessionTools(event.Session.Tools)
 		}
-		if event.Session.Voice != "" {
-			session.SetRealtimeVoice(event.Session.Voice)
+		if voice := event.Session.Voice.GetName(); voice != "" {
+			session.SetRealtimeVoice(voice)
+			session.SetRealtimeVoiceType(event.Session.Voice.GetType())
 		} else if audioRaw, ok := event.Session.ExtraParams["audio"]; ok {
 			// New API format nests voice under session.audio.output.voice
 			// instead of the legacy top-level session.voice.
 			if voice := openaiProvider.ExtractNestedVoice(audioRaw); voice != "" {
 				session.SetRealtimeVoice(voice)
+				session.SetRealtimeVoiceType(openaiProvider.ExtractNestedVoiceType(audioRaw))
 			}
 		}
 	}
@@ -765,6 +767,9 @@ func finalizeRealtimeTurnHooks(
 			time.Since(activeHooks.StartedAt).Milliseconds(),
 			transcriptionSession,
 		)
+		if surface, _ := baseCtx.Value(schemas.BifrostContextKeyRealtimePricingSurface).(schemas.PricingSurface); surface == schemas.PricingSurfaceVoiceLive {
+			applyVoiceLivePricing(postResponse, session.RealtimeVoiceType(), model)
+		}
 		postCtx := newRealtimeTurnContext(baseCtx, activeHooks.RequestID, session.ID(), session.ProviderSessionID(), realtimeTurnSourceLM, terminalEventType, key)
 		applyRealtimeTurnContextValues(postCtx, activeHooks.PreHookValues)
 		restoreRealtimeTurnTraceContext(postCtx, activeHooks.TraceID, activeHooks.PreHookValues)
@@ -802,6 +807,9 @@ func finalizeRealtimeTurnHooks(
 		time.Since(startedAt).Milliseconds(),
 		transcriptionSession,
 	)
+	if surface, _ := baseCtx.Value(schemas.BifrostContextKeyRealtimePricingSurface).(schemas.PricingSurface); surface == schemas.PricingSurfaceVoiceLive {
+		applyVoiceLivePricing(postResponse, session.RealtimeVoiceType(), model)
+	}
 	postCtx := newRealtimeTurnContext(baseCtx, requestID, session.ID(), session.ProviderSessionID(), realtimeTurnSourceLM, terminalEventType, key)
 	applyRealtimeTurnContextValues(postCtx, preHookValues)
 	restoreRealtimeTurnTraceContext(postCtx, traceID, preHookValues)
@@ -1044,4 +1052,31 @@ func finalizeRealtimeTurnHooksOnTransportError(
 		nil,
 		newRealtimeWireBifrostError(status, code, message),
 	)
+}
+
+// applyVoiceLivePricing marks an Azure Voice Live turn for the model's _voice_live rates and records
+// which audio Azure Speech handled. A realtime model hears and speaks audio natively unless the voice
+// is an Azure voice; any other model hears through Azure speech to text and speaks through Azure
+// text to speech. Custom speech input is not detected and is priced as standard speech.
+func applyVoiceLivePricing(resp *schemas.BifrostResponse, voiceType, model string) {
+	if resp == nil || resp.ResponsesResponse == nil {
+		return
+	}
+	r := resp.ResponsesResponse
+	r.ExtraFields.PricingSurface = schemas.PricingSurfaceVoiceLive
+	if r.Usage == nil {
+		return
+	}
+	nativeAudio := strings.Contains(strings.ToLower(model), "realtime")
+	if d := r.Usage.InputTokensDetails; d != nil && !nativeAudio {
+		d.StandardSpeechAudioTokens = d.AudioTokens
+	}
+	if d := r.Usage.OutputTokensDetails; d != nil {
+		switch {
+		case voiceType == "azure-custom" || voiceType == "azure-personal":
+			d.CustomSpeechAudioTokens = d.AudioTokens
+		case voiceType == "azure-standard" || !nativeAudio:
+			d.StandardSpeechAudioTokens = d.AudioTokens
+		}
+	}
 }

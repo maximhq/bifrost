@@ -1,51 +1,35 @@
 - fix: Bedrock invoke keeps tool_reference blocks inside a client tool_result (#8976) [@kunalgoesbyken](https://github.com/kunalgoesbyken)
-- fix: omit synthetic reasoning signature on bridged Chat Completions thinking blocks (#8549)
-- feat: openapi MCP connection type, backed by an in-process server built through the new MCPConfig.InProcessServerFactory hook (#8307)
-- feat: cache_control on chat assistant tool_calls reaches the Anthropic and Bedrock tool_use block (#8494)
-- feat: native decisions on Azure (Microsoft-Decision-1) and Databricks (ai_decide), and Typesafe image assets by reference plus box questions (#8485, #8498, #8571)
-- feat: Vertex keys accept use_session_routing to send the prompt cache key as sessionId (#8650)
-- feat: NetworkConfig.ExtraHeaders values accept env. and vault. references and are fully redacted in API responses (#8618, #8619)
-- feat: Mistral streamed thinking blocks map to reasoning, and assistant reasoning is dropped before sending to avoid 422 extra_forbidden (#8567)
-- feat: code mode adds the json and math Starlark modules, returns failed tool calls as error values, trims replies to what the script prints and returns, and adds tracebacks and accurate error hints (#8605, #8606, #8607, #8692, #8693)
-- feat: spans carry the stored prompt (bifrost.prompt.id/name/version), MCP client name and bifrost.mcp.tool.is_error, and the inbound W3C tracestate; A2A operations export complete observability data (#8575, #8681, #8682, #8683)
-- feat: Antigravity CLI and Antigravity Desktop user agent detection (#8543)
-- fix: Anthropic tool_reference blocks in a client tool_result survive for custom tool search (thanks [@CMWR421](https://github.com/CMWR421)!) (#7813)
-- fix: Claude server tool search blocks replay unchanged (#8555)
-- fix: Bedrock creates a cache point for Anthropic automatic caching and emits a standalone cachePoint after toolResult (#8573, #8595)
-- fix: Bedrock Converse prompt_cache_options in additionalModelRequestFields reaches Params.PromptCacheOptions, so gpt-5.6 targets run in the caller's cache mode (#8554)
-- fix: OpenRouter clamps cache_control markers to four for Claude models (#8512)
-- fix: parallel_tool_calls false reaches Claude on every path (#8471)
-- fix: Responses instructions are merged ahead of system and developer messages instead of dropped (#8515)
-- fix: chat tool results convert to Responses input block types and keep an empty output (#8514, #8621)
-- fix: Responses lifecycle events no longer send output null or an invalid item object (#8563)
-- fix: configuration_update items are forwarded with their reasoning effort, and assistant messages with an id keep their status (#8599, #8634)
-- fix: converted chat streams keep id, model and created on every chunk (#8699)
-- fix: Gemini promptFeedback.blockReason returns an error instead of an empty completed response (#8564)
-- fix: SGLang top-level usage.reasoning_tokens maps to completion_tokens_details (#8600)
-- fix: Bedrock Converse responses keep stopReason and additionalModelResponseFields verbatim (#8704)
-- fix: Azure deployments route forwards unknown chat fields (#8703)
-- fix: custom OpenAI-base providers are gated on decisions by allowed requests alone, and stringified decision answer objects are recovered (#8617, #8626, #8705)
-- fix: no_key_supports_model no longer stops the inferred fallback chain (#8706)
-- fix: Agent Gateway OAuth caches bounded at 5,000 entries, A2A relay goroutine leak, destination permissions and credential boundaries (#8552, #8596, #8608, #8657)
-- fix: code mode stubs render restored tool schemas, and nested tool results arrive as structured values (#8603, #8604)
-- chore: Go 1.27.2 (#8570)
-- [fix]: Gemini and Vertex batch results include thinking tokens (thoughtsTokenCount) in completion_tokens and report reasoning_tokens (#8684) [@Shashank2985](https://github.com/Shashank2985)
-- [fix]: Gemini/Vertex tool-call ids reach the provider without the embedded thought signature - functionCall.id and functionResponse.id are sent as the base id Gemini issued, so the model no longer sees (and copies) a ~500-char id carrying the base64 signature as text; the signature still travels in thoughtSignature (#8546) [@Vivek1898](https://github.com/Vivek1898)
-- [fix]: Anthropic-compatible requests keep a client tool_use named web_search or web_fetch as a function call. Only server_tool_use blocks become web_search_call / web_fetch_call, so the tool_result is no longer orphaned and Bedrock stops rejecting the replay with "toolResult blocks ... exceeds the number of toolUse blocks" [@jacob-pattern](https://github.com/jacob-pattern)
-- fix: OpenAI tool_search_call / tool_search_output items reach /anthropic clients - a client-executed search becomes a tool_use for the client's own search function, a hosted search becomes server_tool_use plus tool_search_tool_result
-- fix: deferred tools on OpenAI gpt-5.4+ (and Azure / Bedrock gpt) get the tool_search OpenAI requires instead of a 400 - a client search function (Claude Code's ToolSearch) becomes a client-executed tool_search with its history replayed as tool_search_call / tool_search_output, otherwise the hosted tool_search is added (#8361)
-- feat: gateway-run tool search for deferred tools on models with no tool search of their own (Gemini, older GPT, Bedrock non-Claude, ...) - the deferred tools are held back behind a bifrost_tool_search function that Bifrost resolves in the gateway (select: or BM25), at most 3 model calls per request (non-streaming)
-- feat: the gateway-run tool search also serves streaming Responses requests, splicing the search turns into one client stream
-- fix: preserve xhigh reasoning effort for OpenAI-compatible destinations (vLLM, Ollama, SGL, and custom providers) instead of rewriting it to high using OpenAI model-name rules [@pranavthakur0-0](https://github.com/pranavthakur0-0) (#6193)
-- [fix]: Bedrock streams report a connection lost after the 200 as a 502 from upstream. The error carried no status and resolved to 400, so the Anthropic surface sent it as invalid_request_error, a type clients such as Claude Code do not retry mid-stream. It now reaches them as api_error (#8963) [@dinhxuanvu](https://github.com/dinhxuanvu)
-- [fix]: Bedrock requests that fail to connect report a 502 from upstream with type provider_connection_failed. The error carried no status and resolved to HTTP 400, which reads as a malformed request. The shared request path already reports these as 502 (#8970) [@dinhxuanvu](https://github.com/dinhxuanvu)
-- [fix]: OpenAI-compatible chat streams forward deltas that carry only extra_content [@Javtor](https://github.com/Javtor)
-- [fix]: Bedrock chat tool messages whose content is a single text block now render like the equivalent string. The block form was always sent as a Converse text block while the string form became a json block for JSON output, so clients that send the last message as an array (to carry cache_control) and earlier messages as strings changed the bytes of every earlier tool result on the next turn and missed the prompt cache each turn. The block's cache_control still becomes the cachePoint after the toolResult (#8801)
-- [fix]: Anthropic web search on chat completions. The streamed server_tool_use query (input_json_delta) was emitted as an orphan tool_calls delta with no id or name, which OpenAI clients treat as a real tool call; it now stays server-side. Text-block web_search_result_location citations were dropped; they now map to annotations[].url_citation (message and stream delta), the same shape Gemini grounding uses (#7656) [@brianhadley2026](https://github.com/brianhadley2026)
-- [fix]: map chat completion n to Gemini candidateCount (#7388) [@axelray-dev](https://github.com/axelray-dev)
-- [fix]: Bedrock InvokeModel keeps cache_control when any message's content is a plain string. BedrockMessage.Content is typed as content blocks, so one bare string anywhere in messages[] failed the standard unmarshal and diverted the whole request into the AI21 string fallback, which rebuilt the messages without calling applyMessageContentCacheControl. Every cache_control in the request was dropped rather than only the one on the string message, so prompt caching went off silently with just the system cachePoint surviving. The fallback now makes the same translation the standard path does (#7336) [@basil-k-aji-dev](https://github.com/basil-k-aji-dev)
-- [fix]: record output items before closing open items on Gemini streaming Responses. When parts (thoughts, function calls, text) and finishReason share a single upstream frame, response.completed now correctly populates the Output array instead of emitting empty output (#7341) [@wofiporia](https://github.com/wofiporia)
-- [fix]: web search action sources round-trip their name and no longer fabricate an empty url. OpenAI Responses web search can return specialized API sources ({"type":"api","name":"oai-weather"}) that carry a name and no URL; the typed source schema only modeled type and a required url, so decode dropped name and re-encode emitted "url":"", and the OpenAI request-side source sanitization rebuilt sources without name. url is now omitempty and name survives both the schema round-trip and the sanitization path (#7356) [@g-yixuan](https://github.com/g-yixuan)
-- [fix]: Bedrock invoke-with-response-stream ends a tool-call turn with stop_reason tool_use instead of end_turn, matching the non-streaming invoke response (thanks [@pcbeingused333](https://github.com/pcbeingused333)!) (#8550)
-- feat: MiniMax provider for chat, Responses, image generation, video generation, speech and transcription
-- feat: BytePlus ModelArk provider for Seed chat, native Responses, multimodal embeddings, Seedream image generation and editing, and Seedance video generation
+- feat: mcp - per-user tool discovery: pluggable discovery store, per-caller tools, prompts and resources on the gateway, per-caller connect tool, Refresh tools, and an explicit pending_verification flag
+- feat: mcp - serve MCP Apps tools and ui:// resources on the gateway, keep app-only tools away from models, and accept tools by their upstream names
+- feat: mcp - relay input_required to gateway callers, forward callers' declared capabilities upstream, and log rounds by round_trip_id and MCP Apps use
+- feat: mcp - dial boot MCP clients in the background
+- feat: anthropic - workload identity federation for Anthropic and Anthropic-based keys
+- feat: accept SOCKS5 global proxies, trust the global proxy's CA, and always verify targets through a proxy
+- feat: record caller IP and user email on LLM, MCP and relay logs; bring relay logging to LLM log parity
+- feat: count containers started by OpenAI and Azure code interpreter and hosted shell and by Anthropic code execution on `usage.tool_usage.container_sessions`, including under `previous_response_id` and `conversation`
+- feat: openai - keep `tool_usage.image_gen` on Responses output with the image tool's model, and support prompt cache breakpoint TTL
+- feat: gemini - treat the Interactions agent as the model on /genai_passthrough and name it on poll records
+- feat: schemas - raw response formats and raw request/response text rewriters so plugins can edit streamed and passthrough payloads
+- fix: anthropic - keep message-level cache_control on chat messages, and map prompt cache breakpoints to cache_control for Anthropic and Bedrock (thanks [@Atharva-Kanherkar](https://github.com/Atharva-Kanherkar)!)
+- fix: preserve explicitly reported zero token usage (thanks [@Constantine3](https://github.com/Constantine3)!)
+- fix: anthropic - Claude Haiku 5.x takes reasoning effort as adaptive thinking plus output_config.effort, drops sampling params, and Anthropic-based custom providers read their base provider's capabilities (thanks [@macdod](https://github.com/macdod)!)
+- fix: anthropic - Responses requests drop empty text blocks instead of failing with a 400 (thanks [@david-choi-querypie](https://github.com/david-choi-querypie)!)
+- fix: anthropic - preserve explicit web search and web fetch versions (thanks [@ykakade](https://github.com/ykakade)!)
+- fix: anthropic - keep source type on text documents with empty data; drop web_search and code_execution for Claude on Bedrock; run Codex's client tool search as the caller's own; replay invalid tool arguments as `{}`
+- fix: responses - merge re-declared additional tools instead of duplicating them after namespace flattening
+- fix: openai - keep content on Codex assistant messages with encrypted_content; keep the name on a function_call_output without call_id
+- fix: gemini - keep minted item ids under 64 characters and add ids to non-streamed reasoning items; bedrock mantle replay keeps them
+- fix: vllm and sglang - keep unsigned thinking blocks and replayed reasoning content; emit thinking deltas for raw reasoning_text events
+- fix: anthropic - streamed web_search blocks always carry the query
+- fix: bedrock - strip leaked DSML tags from DeepSeek V3.2; omit stopSequences for models that reject it
+- fix: databricks - strip the Anthropic-only safeguards param
+- fix: github copilot - serve tool search without the rejected beta header
+- fix: keep assistant text alongside tool calls when converting chat to Responses messages
+- fix: runware - poll the task when a sync request turns async
+- fix: multi-key providers - follow-up calls on a stored response, container or video find the key that created it; video list pages across every key
+- fix: routing rules fall back when the primary target returns 4xx
+- fix: run post-hooks for requests rejected before enqueue
+- fix: relays - match passthrough for headers and streams
+- fix: mcp - call upstream tools by exact name, keep tool error flags, log every code mode call in agent mode, apply tool_execution_timeout to code mode and in-process clients, and report the caller's deadline in timeout errors
+- fix: mcp - stop retrying permanent connect errors, refresh per-call credentials once on 401, keep failed enables unstable with the checker retrying, apply TLS/SSE/ping edits live, and check sooner after a failed reconnect
+- fix: mcp - return 400, 404 and 409 instead of 500 for client create, rename and reconnect mistakes

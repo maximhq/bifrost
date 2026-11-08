@@ -68,7 +68,7 @@ Reasoning models spend output tokens on reasoning before they write the decision
 
 Set `judge_type` to `decision` to judge with a [decision model](/quickstart/gateway/decisions) instead of an LLM. Decision models answer a typed question with a calibrated probability rather than generated text, so they are typically faster and cheaper per evaluation than an LLM judge, and the blocking point is a number you tune instead of a prompt you rewrite.
 
-For each evaluation, Bifrost sends one `predicate` question on the `/v1/decisions` path: the policy is the question's instructions, and its criteria define `true` as a clear violation of the policy. The extracted text is the input. Bifrost reads the answer's probability and:
+For each evaluation, Bifrost sends one `predicate` question on the `/v1/decisions` path: its instructions ask whether the text violates the policy, and its criteria define `true` as a violation and `false` as text that is unrelated to the policy or only breaks some other policy. How clear a violation must be is left to `block_threshold`. The extracted text is the input. Bifrost reads the answer's probability and:
 
 - Blocks when the probability is at or above `block_threshold` (default `0.9`).
 - Allows when it is below.

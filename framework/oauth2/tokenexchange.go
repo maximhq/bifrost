@@ -84,6 +84,26 @@ func (p *OAuth2Provider) TokenExchangeAvailable() bool {
 	return r != nil && r.Available()
 }
 
+// TokenExchangeConfigValidator is optionally implemented by a
+// TokenExchangeIdPResolver to check an MCP client's token_exchange settings
+// when the client is created or edited, without exchanging a token. An error
+// refuses the save, and its text is returned to the editor.
+type TokenExchangeConfigValidator interface {
+	ValidateTokenExchangeConfig(ctx context.Context, cfg *schemas.MCPTokenExchangeConfig) error
+}
+
+// ValidateTokenExchangeConfig checks cfg with the installed resolver when it
+// implements TokenExchangeConfigValidator, so the create and edit paths can
+// refuse settings before they are saved. With no resolver, or one that does
+// not validate, it returns nil.
+func (p *OAuth2Provider) ValidateTokenExchangeConfig(ctx context.Context, cfg *schemas.MCPTokenExchangeConfig) error {
+	v, ok := p.tokenExchangeIdPResolver().(TokenExchangeConfigValidator)
+	if !ok {
+		return nil
+	}
+	return v.ValidateTokenExchangeConfig(ctx, cfg)
+}
+
 // GetExchangedAccessToken returns an upstream access token for a
 // token_exchange client, exchanging the caller's identity-provider token for
 // one scoped to the client's audience. A request that carried no such token
@@ -96,6 +116,9 @@ func (p *OAuth2Provider) TokenExchangeAvailable() bool {
 func (p *OAuth2Provider) GetExchangedAccessToken(ctx *schemas.BifrostContext, config *schemas.MCPClientConfig) (string, error) {
 	if err := validateExchangeConfig(config); err != nil {
 		return "", err
+	}
+	if config.TokenExchange.IsIDJAG() {
+		return p.getIDJAGAccessToken(ctx, config)
 	}
 	mode := ctx.MCPAuthMode()
 	// Session identities are caller-asserted opaque strings with no
@@ -168,6 +191,9 @@ func (p *OAuth2Provider) ExchangeAdminCredential(ctx *schemas.BifrostContext, co
 	if err := validateExchangeConfig(config); err != nil {
 		return nil, err
 	}
+	if config.TokenExchange.IsIDJAG() {
+		return p.exchangeIDJAGAdminCredential(ctx, config, userID)
+	}
 	if subjectToken != "" {
 		return p.rawExchange(ctx, config, subjectExchangeForm(config, subjectToken))
 	}
@@ -194,6 +220,12 @@ func (p *OAuth2Provider) RetainExchangeAdminCredential(ctx context.Context, conf
 	if response.RefreshToken != "" {
 		token.RefreshToken = strings.TrimSpace(response.RefreshToken)
 	}
+	// id_jag renewal re-reads the verifying admin's SSO session, so remember who that was.
+	if config.TokenExchange.IsIDJAG() {
+		if userID, _ := ctx.Value(schemas.BifrostContextKeyUserID).(string); userID != "" {
+			token.UserID = &userID
+		}
+	}
 	if response.ExpiresIn > 0 {
 		exp := time.Now().Add(time.Duration(response.ExpiresIn) * time.Second)
 		token.ExpiresAt = &exp
@@ -201,6 +233,8 @@ func (p *OAuth2Provider) RetainExchangeAdminCredential(ctx context.Context, conf
 	if err := p.configStore.CreateOauthToken(ctx, token); err != nil {
 		return fmt.Errorf("failed to retain admin exchange credential: %w", err)
 	}
+	// CreateOauthToken rewrites token.ID to the reused row's ID on a repair.
+	p.tokenWritten(ctx, token.ID)
 	return nil
 }
 
@@ -229,6 +263,9 @@ func (p *OAuth2Provider) refreshExchangeAdminToken(ctx context.Context, token *t
 	}
 	if err := validateExchangeConfig(clientConfig); err != nil {
 		return err
+	}
+	if clientConfig.TokenExchange.IsIDJAG() {
+		return p.refreshIDJAGAdminToken(ctx, token, clientConfig)
 	}
 
 	if strings.TrimSpace(token.RefreshToken) == "" {
@@ -274,7 +311,7 @@ func (p *OAuth2Provider) refreshExchangeAdminToken(ctx context.Context, token *t
 	if err := p.configStore.UpdateOauthToken(ctx, token); err != nil {
 		return fmt.Errorf("failed to update admin exchange credential: %w", err)
 	}
-	p.EvictUserTokenByID(token.ID)
+	p.tokenWritten(ctx, token.ID)
 	logger.Debug("admin exchange credential renewed: token_id=%s mcp_client=%s", token.ID, token.MCPClientID)
 	return nil
 }
@@ -287,7 +324,7 @@ func (p *OAuth2Provider) markExchangeAdminNeedsReauth(token *tables.TableMCPOaut
 	if markErr := p.configStore.MarkOauthUserTokenNeedsReauthByID(context.Background(), token.ID, "admin token exchange failed: "+cause.Error()); markErr != nil {
 		return fmt.Errorf("admin exchange credential is dead but status update failed (mcp_client=%s): %w", token.MCPClientID, markErr)
 	}
-	p.EvictUserTokenByID(token.ID)
+	p.tokenWritten(context.Background(), token.ID)
 	logger.Debug("admin exchange credential marked needs_reauth: mcp_client=%s cause=%v", token.MCPClientID, cause)
 	return fmt.Errorf("admin exchange credential requires re-verification: %v: %w", cause, schemas.ErrOAuth2TokenExpired)
 }
@@ -299,6 +336,11 @@ func (p *OAuth2Provider) markExchangeAdminNeedsReauth(token *tables.TableMCPOaut
 // fingerprint.
 func (p *OAuth2Provider) EvictExchangedToken(mode schemas.MCPAuthMode, identity, mcpClientID string) {
 	p.userTokens.EvictByBinding(mode, identity, mcpClientID)
+	// A forced refresh follows an upstream rejection: drop the held ID-JAG too
+	// so the identity provider re-evaluates its policy on the next call.
+	if mode == schemas.MCPAuthModeUser {
+		p.idjagGrants.delete(idjagGrantKey{userID: identity, clientID: mcpClientID})
+	}
 }
 
 // subjectTokenFingerprint derives a stable, non-reversible cache-key
@@ -480,7 +522,7 @@ func validateExchangeConfig(config *schemas.MCPClientConfig) error {
 	if config.TokenExchange == nil || config.TokenExchange.Audience == "" {
 		return fmt.Errorf("MCP client %s is missing its token_exchange audience", config.Name)
 	}
-	if config.TokenExchange.UseIdPCredentials {
+	if config.TokenExchange.ExchangesAsSSOApplication() {
 		return nil
 	}
 	if strings.TrimSpace(config.TokenExchange.ClientID.GetValue()) == "" {
@@ -499,7 +541,7 @@ func validateExchangeConfig(config *schemas.MCPClientConfig) error {
 // without this check the caller would silently send client_id= (empty) to
 // the identity provider instead of a clear, actionable failure.
 func exchangeClientCredentials(idp *schemas.TokenExchangeIdP, cfg *schemas.MCPTokenExchangeConfig) (clientID, clientSecret string, err error) {
-	if cfg.UseIdPCredentials {
+	if cfg.ExchangesAsSSOApplication() {
 		if idp == nil || strings.TrimSpace(idp.IdPClientID) == "" {
 			return "", "", fmt.Errorf("token_exchange.use_idp_credentials is set, but the identity-provider integration has no client ID configured")
 		}

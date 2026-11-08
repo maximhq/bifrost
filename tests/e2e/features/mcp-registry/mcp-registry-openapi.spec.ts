@@ -193,7 +193,7 @@ test.describe("MCP Registry - OpenAPI servers", () => {
       ).toBe(true);
     });
 
-    test("creates through the shared createClient helper and shows the stored document on the edit sheet", async ({
+    test("creates through the shared createClient helper and shows the stored document on the view sheet", async ({
       mcpRegistryPage,
     }) => {
       const clientData = createOpenAPIClientData({
@@ -216,6 +216,10 @@ test.describe("MCP Registry - OpenAPI servers", () => {
 
       const toolCount = await mcpRegistryPage.getToolsCount();
       expect(toolCount).toBe(3);
+      // Replacing the document is a settings change, made from the edit sheet only.
+      await expect(
+        mcpRegistryPage.viewSheet.getByTestId("openapi-replace-spec-btn"),
+      ).toHaveCount(0);
       await mcpRegistryPage.closeDetailSheet();
     });
 
@@ -464,7 +468,7 @@ test.describe("MCP Registry - OpenAPI servers", () => {
         "1/3",
       );
 
-      await mcpRegistryPage.viewClientDetails(clientData.name);
+      await mcpRegistryPage.openClientEditor(clientData.name);
       await mcpRegistryPage.openReplaceSpec();
 
       // The replacement drops createPet and adds deletePet.
@@ -472,18 +476,11 @@ test.describe("MCP Registry - OpenAPI servers", () => {
         "openapi-replace-spec-panel",
       );
       await panel.getByTestId("openapi-spec-source-tab-paste").click();
-      const editor = panel.getByTestId("openapi-spec-paste-editor");
-      await editor
-        .locator("textarea.inputarea")
-        .waitFor({ state: "attached", timeout: 10000 });
-      await editor.locator(".monaco-editor").first().click();
-      await mcpRegistryPage.page.keyboard.press(
-        process.platform === "darwin" ? "Meta+A" : "Control+A",
-      );
-      await mcpRegistryPage.page.keyboard.press("Backspace");
-      await mcpRegistryPage.page.keyboard.insertText(
-        PETSTORE_OPENAPI_SPEC_YAML,
-      );
+      // The stored document fills the editor once it has loaded; replace it only then.
+      await expect(
+        panel.getByTestId("openapi-spec-paste-editor").locator(".view-lines"),
+      ).toContainText("openapi", { timeout: 10000 });
+      await mcpRegistryPage.pasteOpenAPISpec(PETSTORE_OPENAPI_SPEC_YAML, panel);
 
       // The pasted replacement parses on its own.
       await expect(panel.getByTestId("openapi-preview-title")).toHaveText(
@@ -591,14 +588,17 @@ test.describe("MCP Registry - OpenAPI servers", () => {
           { timeout: 20000 },
         )
         .toBe("1/3");
+      // The view sheet follows the polled list, so it shows the new document once the refresh lands.
       await mcpRegistryPage.viewClientDetails(clientData.name);
       await expect
         .poll(async () => mcpRegistryPage.getOpenAPISummaryText(), {
           timeout: 20000,
         })
         .toContain("E2E Petstore YAML");
+      await mcpRegistryPage.closeDetailSheet();
       // Reopening the replacement shows the saved selection, getPetById still unchecked.
       // The stored document seeds the replacement and parses on its own.
+      await mcpRegistryPage.openClientEditor(clientData.name);
       await mcpRegistryPage.openReplaceSpec();
       await expect(
         panel.getByTestId("openapi-tool-checkbox-getPetById"),
@@ -625,7 +625,7 @@ test.describe("MCP Registry - OpenAPI servers", () => {
         await mcpRegistryPage.waitForClientInTable(clientData.name, 15000),
       ).toBe(true);
 
-      await mcpRegistryPage.viewClientDetails(clientData.name);
+      await mcpRegistryPage.openClientEditor(clientData.name);
       await mcpRegistryPage.openReplaceSpec();
       const panel = mcpRegistryPage.detailSheet.getByTestId(
         "openapi-replace-spec-panel",

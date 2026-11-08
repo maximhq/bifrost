@@ -28,10 +28,11 @@ func getActualToolsFromGoTestServer(t *testing.T) (tool1, tool2 string) {
 	require.NotEmpty(t, clients, "should have at least one client")
 
 	client := clients[0]
-	require.NotEmpty(t, client.ToolMap, "should have at least 2 tools")
+	toolMap := clientTools(manager, client.ExecutionConfig.ID)
+	require.NotEmpty(t, toolMap, "should have at least 2 tools")
 
 	toolList := make([]string, 0)
-	for toolName := range client.ToolMap {
+	for toolName := range toolMap {
 		toolList = append(toolList, toolName)
 		if len(toolList) >= 2 {
 			break

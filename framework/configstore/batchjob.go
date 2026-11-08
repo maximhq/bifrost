@@ -71,13 +71,27 @@ func (s *RDBConfigStore) UpsertProviderJob(ctx context.Context, job *tables.Tabl
 	if job.PollAttempts > 0 {
 		updates["poll_attempts"] = job.PollAttempts
 	}
-	if tables.IsTerminalBatchProviderStatus(job.ProviderStatus) &&
+	// Relay and interaction statuses are the upstream's own word, so "failed" or "cancelled"
+	// there is no batch state: a failed run can still owe for the work it did, so the sweeper
+	// settles it and retries a failed settlement at next_check_at.
+	if job.Kind != tables.ProviderJobKindRelay &&
+		job.Kind != tables.ProviderJobKindInteraction &&
+		tables.IsTerminalBatchProviderStatus(job.ProviderStatus) &&
 		job.ProviderStatus != string(schemas.BatchStatusCompleted) &&
 		job.ProviderStatus != string(schemas.BatchStatusEnded) {
 		updates["next_check_at"] = nil
 	}
 
-	return db.Model(&tables.TableProviderJob{}).Where("id = ?", job.ID).Updates(updates).Error
+	update := db.Model(&tables.TableProviderJob{}).Where("id = ?", job.ID)
+	if job.Kind == tables.ProviderJobKindInteraction {
+		// A read can load an interaction while it is pending and land its upsert after the run was
+		// settled; the condition sits in the UPDATE so no interleaving rewrites a settled row.
+		update = update.Where("accounting_status NOT IN ?", []string{
+			tables.ProviderJobAccountingStatusAccounted,
+			tables.ProviderJobAccountingStatusUnpriceable,
+		})
+	}
+	return update.Updates(updates).Error
 }
 
 // GetProviderJobsByIDs returns the provider jobs among jobIDs that exist, in no

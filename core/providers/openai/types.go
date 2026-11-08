@@ -169,16 +169,20 @@ type OpenAIDecisionRequest struct {
 	SafetyIdentifier *string                  `json:"safety_identifier,omitempty"`
 	Fallbacks        []string                 `json:"fallbacks,omitempty"` // Bifrost routing only; never sent upstream
 	ExtraParams      map[string]interface{}   `json:"-"`                   // native extensions, merged onto the wire under the passthrough flag
+
+	PromptCacheKey     *string                     `json:"prompt_cache_key,omitempty"`
+	PromptCacheOptions *schemas.PromptCacheOptions `json:"prompt_cache_options,omitempty"`
 }
 
-// OpenAIDecisionQuestion is one question of OpenAI's decisions request: text
-// instructions and, by type, choices or levels described in text. Unlike the
-// shared question it has no criteria and no structured values, so
-// ToOpenAIDecisionRequest renders both as text.
+// OpenAIDecisionQuestion is one question of OpenAI's decisions request:
+// instructions as text or as a list of text, image, and JSON parts, and, by
+// type, choices or levels described in text. Unlike the shared question it
+// has no criteria and no other structured values, so ToOpenAIDecisionRequest
+// renders both as text.
 type OpenAIDecisionQuestion struct {
 	Type         schemas.DecisionType   `json:"type"`
 	Name         *string                `json:"name,omitempty"`
-	Instructions string                 `json:"instructions"`
+	Instructions *schemas.DecisionText  `json:"instructions"`
 	Choices      []OpenAIDecisionChoice `json:"choices,omitempty"`
 	Levels       []OpenAIDecisionLevel  `json:"levels,omitempty"`
 
@@ -258,6 +262,9 @@ var openAIDecisionRequestKnownFields = map[string]bool{
 	"questions":         true,
 	"safety_identifier": true,
 	"fallbacks":         true,
+
+	"prompt_cache_key":     true,
+	"prompt_cache_options": true,
 }
 
 // UnmarshalJSON decodes the modelled fields and keeps every other top-level
@@ -478,6 +485,11 @@ type OpenAIMessage struct {
 	Role    schemas.ChatMessageRole     `json:"role,omitempty"`
 	Content *schemas.ChatMessageContent `json:"content,omitempty"`
 
+	// CacheControl is a breakpoint set on the message object itself, the shape
+	// OpenAI-compatible SDKs send. Read on ingress only; outgoing messages carry
+	// their markers on content blocks.
+	CacheControl *schemas.CacheControl `json:"cache_control,omitempty"`
+
 	// Embedded pointer structs - when non-nil, their exported fields are flattened into the top-level JSON object
 	// IMPORTANT: Only one of the following can be non-nil at a time, otherwise the JSON marshalling will override the common fields
 	*schemas.ChatToolMessage
@@ -586,10 +598,14 @@ func (req *OpenAIChatRequest) MarshalJSON() ([]byte, error) {
 			// Strip CacheControl and FileType from content blocks if needed
 			if msg.Content != nil && msg.Content.ContentBlocks != nil {
 				contentCopy := *msg.Content
-				contentCopy.ContentBlocks = make([]schemas.ChatContentBlock, len(msg.Content.ContentBlocks))
-				for j, block := range msg.Content.ContentBlocks {
+				contentCopy.ContentBlocks = make([]schemas.ChatContentBlock, 0, len(msg.Content.ContentBlocks))
+				dropEmptyTextFiles := chatEmptyTextFilesToDrop(msg.Content.ContentBlocks)
+				for _, block := range msg.Content.ContentBlocks {
+					if dropEmptyTextFiles && isEmptyChatTextFile(block.File) {
+						continue
+					}
 					stripBlockCacheControl := block.CacheControl != nil && !keepCacheControl
-					needsBlockCopy := stripBlockCacheControl || block.Citations != nil || (block.File != nil && (block.File.FileType != nil || block.File.FileURL != nil || fileDataNeedsDataURL(block.File.FileData)))
+					needsBlockCopy := stripBlockCacheControl || block.Citations != nil || (block.File != nil && (block.File.FileURL != nil || fileNeedsWireRewrite(block.File.FileData, block.File.Filename, block.File.FileType)))
 					if needsBlockCopy {
 						blockCopy := block
 						if stripBlockCacheControl {
@@ -604,18 +620,16 @@ func (req *OpenAIChatRequest) MarshalJSON() ([]byte, error) {
 						// name, and any OpenAI-compatible endpoint that does accept one
 						// keeps working without a Bifrost change.
 						// Fold it into file_data first: the wire has nowhere else to carry
-						// the media type, and bare base64 is rejected (fileDataAsDataURL).
-						if blockCopy.File != nil && (blockCopy.File.FileType != nil || fileDataNeedsDataURL(blockCopy.File.FileData)) {
+						// the media type, and bare base64 or a nameless inline file is rejected (openAIWireFile).
+						if blockCopy.File != nil && fileNeedsWireRewrite(blockCopy.File.FileData, blockCopy.File.Filename, blockCopy.File.FileType) {
 							fileCopy := *blockCopy.File
-							if fileCopy.FileData != nil {
-								fileCopy.FileData = schemas.Ptr(fileDataAsDataURL(*fileCopy.FileData, fileCopy.FileType))
-							}
+							fileCopy.FileData, fileCopy.Filename = openAIWireFile(fileCopy.FileData, fileCopy.Filename, fileCopy.FileType)
 							fileCopy.FileType = nil
 							blockCopy.File = &fileCopy
 						}
-						contentCopy.ContentBlocks[j] = blockCopy
+						contentCopy.ContentBlocks = append(contentCopy.ContentBlocks, blockCopy)
 					} else {
-						contentCopy.ContentBlocks[j] = block
+						contentCopy.ContentBlocks = append(contentCopy.ContentBlocks, block)
 					}
 				}
 				processedMessages[i].Content = &contentCopy
@@ -919,14 +933,20 @@ func (r *OpenAIResponsesRequestInput) MarshalJSON() ([]byte, error) {
 				contentCopy := *msg.Content
 				contentCopy.ContentBlocks = make([]schemas.ResponsesMessageContentBlock, 0, len(msg.Content.ContentBlocks))
 				hasContentModification := false
+				dropEmptyTextFiles := responsesEmptyTextFilesToDrop(msg.Content.ContentBlocks)
 				for _, block := range msg.Content.ContentBlocks {
 					// Skip rendered_content blocks entirely - OpenAI doesn't support them
 					if block.Type == schemas.ResponsesOutputMessageContentTypeRenderedContent {
 						hasContentModification = true
 						continue
 					}
+					// An empty text document has nothing to send, and its empty data URL is rejected.
+					if dropEmptyTextFiles && isEmptyResponsesTextFile(&block) {
+						hasContentModification = true
+						continue
+					}
 
-					needsBlockCopy := block.CacheControl != nil || block.Citations != nil || block.MediaResolution != nil || (block.ResponsesInputMessageContentBlockFile != nil && (block.ResponsesInputMessageContentBlockFile.FileType != nil || fileDataNeedsDataURL(block.ResponsesInputMessageContentBlockFile.FileData))) || (block.ResponsesOutputMessageContentText != nil && len(block.ResponsesOutputMessageContentText.Annotations) > 0)
+					needsBlockCopy := block.CacheControl != nil || block.Citations != nil || block.MediaResolution != nil || (block.ResponsesInputMessageContentBlockFile != nil && fileNeedsWireRewrite(block.ResponsesInputMessageContentBlockFile.FileData, block.ResponsesInputMessageContentBlockFile.Filename, block.ResponsesInputMessageContentBlockFile.FileType)) || (block.ResponsesOutputMessageContentText != nil && len(block.ResponsesOutputMessageContentText.Annotations) > 0)
 					if needsBlockCopy {
 						hasContentModification = true
 						blockCopy := block
@@ -950,12 +970,10 @@ func (r *OpenAIResponsesRequestInput) MarshalJSON() ([]byte, error) {
 
 						// Strip FileType from file block
 						// Fold it into file_data first: the wire has nowhere else to carry
-						// the media type, and bare base64 is rejected (fileDataAsDataURL).
-						if blockCopy.ResponsesInputMessageContentBlockFile != nil && (blockCopy.ResponsesInputMessageContentBlockFile.FileType != nil || fileDataNeedsDataURL(blockCopy.ResponsesInputMessageContentBlockFile.FileData)) {
+						// the media type, and bare base64 or a nameless inline file is rejected (openAIWireFile).
+						if blockCopy.ResponsesInputMessageContentBlockFile != nil && fileNeedsWireRewrite(blockCopy.ResponsesInputMessageContentBlockFile.FileData, blockCopy.ResponsesInputMessageContentBlockFile.Filename, blockCopy.ResponsesInputMessageContentBlockFile.FileType) {
 							fileCopy := *blockCopy.ResponsesInputMessageContentBlockFile
-							if fileCopy.FileData != nil {
-								fileCopy.FileData = schemas.Ptr(fileDataAsDataURL(*fileCopy.FileData, fileCopy.FileType))
-							}
+							fileCopy.FileData, fileCopy.Filename = openAIWireFile(fileCopy.FileData, fileCopy.Filename, fileCopy.FileType)
 							fileCopy.FileType = nil
 							blockCopy.ResponsesInputMessageContentBlockFile = &fileCopy
 						}
@@ -1038,7 +1056,7 @@ func (r *OpenAIResponsesRequestInput) MarshalJSON() ([]byte, error) {
 					// Strip CacheControl and FileType from tool message output blocks if needed
 					hasToolModification := hadToolReferences
 					for _, block := range outputBlocks {
-						if block.CacheControl != nil || block.Citations != nil || block.MediaResolution != nil || (block.ResponsesInputMessageContentBlockFile != nil && block.ResponsesInputMessageContentBlockFile.FileType != nil) {
+						if block.CacheControl != nil || block.Citations != nil || block.MediaResolution != nil || (block.ResponsesInputMessageContentBlockFile != nil && fileNeedsWireRewrite(block.ResponsesInputMessageContentBlockFile.FileData, block.ResponsesInputMessageContentBlockFile.Filename, block.ResponsesInputMessageContentBlockFile.FileType)) {
 							hasToolModification = true
 							break
 						}
@@ -1048,15 +1066,17 @@ func (r *OpenAIResponsesRequestInput) MarshalJSON() ([]byte, error) {
 						outputCopy := *msg.ResponsesToolMessage.Output
 						outputCopy.ResponsesFunctionToolCallOutputBlocks = make([]schemas.ResponsesMessageContentBlock, len(outputBlocks))
 						for j, block := range outputBlocks {
-							needsBlockCopy := block.CacheControl != nil || block.Citations != nil || block.MediaResolution != nil || (block.ResponsesInputMessageContentBlockFile != nil && block.ResponsesInputMessageContentBlockFile.FileType != nil)
+							needsBlockCopy := block.CacheControl != nil || block.Citations != nil || block.MediaResolution != nil || (block.ResponsesInputMessageContentBlockFile != nil && fileNeedsWireRewrite(block.ResponsesInputMessageContentBlockFile.FileData, block.ResponsesInputMessageContentBlockFile.Filename, block.ResponsesInputMessageContentBlockFile.FileType))
 							if needsBlockCopy {
 								blockCopy := block
 								blockCopy.CacheControl = nil
 								blockCopy.Citations = nil
 								blockCopy.MediaResolution = nil
-								// Strip FileType from file block
-								if blockCopy.ResponsesInputMessageContentBlockFile != nil && blockCopy.ResponsesInputMessageContentBlockFile.FileType != nil {
+								// Strip FileType from file block, folding it into file_data first as for input
+								// messages: bare base64 or a nameless inline file is rejected (openAIWireFile).
+								if blockCopy.ResponsesInputMessageContentBlockFile != nil && fileNeedsWireRewrite(blockCopy.ResponsesInputMessageContentBlockFile.FileData, blockCopy.ResponsesInputMessageContentBlockFile.Filename, blockCopy.ResponsesInputMessageContentBlockFile.FileType) {
 									fileCopy := *blockCopy.ResponsesInputMessageContentBlockFile
+									fileCopy.FileData, fileCopy.Filename = openAIWireFile(fileCopy.FileData, fileCopy.Filename, fileCopy.FileType)
 									fileCopy.FileType = nil
 									blockCopy.ResponsesInputMessageContentBlockFile = &fileCopy
 								}
@@ -1166,6 +1186,7 @@ func hasAnthropicOnlyResponsesToolFlags(t schemas.ResponsesTool, keepDeferLoadin
 		len(t.InputExamples) > 0 ||
 		t.EagerInputStreaming != nil ||
 		(t.ResponsesToolCodeInterpreter != nil && t.ResponsesToolCodeInterpreter.Version != nil) ||
+		(t.ResponsesToolWebSearch != nil && t.ResponsesToolWebSearch.Version != nil) ||
 		hasAnthropicMCPToolsetConfig(t)
 }
 
@@ -1257,9 +1278,13 @@ func hasFieldsToStripInChatMessage(msg OpenAIMessage, keepCacheControl bool) boo
 			if block.Citations != nil {
 				return true
 			}
-			if block.File != nil && (block.File.FileType != nil || fileDataNeedsDataURL(block.File.FileData)) {
+			if block.File != nil && fileNeedsWireRewrite(block.File.FileData, block.File.Filename, block.File.FileType) {
 				return true
 			}
+		}
+		// An empty text document needs no wire rewrite of its own, but is dropped beside other content.
+		if chatEmptyTextFilesToDrop(msg.Content.ContentBlocks) {
+			return true
 		}
 	}
 	if msg.OpenAIChatAssistantMessage != nil {
@@ -1297,7 +1322,7 @@ func hasFieldsToStripInResponsesMessage(msg schemas.ResponsesMessage) bool {
 			if block.MediaResolution != nil {
 				return true
 			}
-			if block.ResponsesInputMessageContentBlockFile != nil && (block.ResponsesInputMessageContentBlockFile.FileType != nil || fileDataNeedsDataURL(block.ResponsesInputMessageContentBlockFile.FileData)) {
+			if block.ResponsesInputMessageContentBlockFile != nil && fileNeedsWireRewrite(block.ResponsesInputMessageContentBlockFile.FileData, block.ResponsesInputMessageContentBlockFile.Filename, block.ResponsesInputMessageContentBlockFile.FileType) {
 				return true
 			}
 			if block.ResponsesOutputMessageContentText != nil && len(block.ResponsesOutputMessageContentText.Annotations) > 0 {
@@ -1307,6 +1332,10 @@ func hasFieldsToStripInResponsesMessage(msg schemas.ResponsesMessage) bool {
 			if block.Type == schemas.ResponsesOutputMessageContentTypeRenderedContent {
 				return true
 			}
+		}
+		// An empty text document needs no wire rewrite of its own, but is dropped beside other content.
+		if responsesEmptyTextFilesToDrop(msg.Content.ContentBlocks) {
+			return true
 		}
 	}
 	if msg.ResponsesToolMessage != nil {
@@ -1342,7 +1371,7 @@ func hasFieldsToStripInResponsesMessage(msg schemas.ResponsesMessage) bool {
 				if block.MediaResolution != nil {
 					return true
 				}
-				if block.ResponsesInputMessageContentBlockFile != nil && block.ResponsesInputMessageContentBlockFile.FileType != nil {
+				if block.ResponsesInputMessageContentBlockFile != nil && fileNeedsWireRewrite(block.ResponsesInputMessageContentBlockFile.FileData, block.ResponsesInputMessageContentBlockFile.Filename, block.ResponsesInputMessageContentBlockFile.FileType) {
 					return true
 				}
 			}
@@ -1532,6 +1561,11 @@ func (resp *OpenAIResponsesRequest) MarshalJSON() ([]byte, error) {
 					ciCopy := *toolCopy.ResponsesToolCodeInterpreter
 					ciCopy.Version = nil
 					toolCopy.ResponsesToolCodeInterpreter = &ciCopy
+				}
+				if toolCopy.ResponsesToolWebSearch != nil && toolCopy.ResponsesToolWebSearch.Version != nil {
+					searchCopy := *toolCopy.ResponsesToolWebSearch
+					searchCopy.Version = nil
+					toolCopy.ResponsesToolWebSearch = &searchCopy
 				}
 				processedTools = append(processedTools, toolCopy)
 			}

@@ -105,6 +105,32 @@ func TestRotateMCPOAuthConfig_ChangedCredentialsCascadesAllAuthModes(t *testing.
 	assert.Equal(t, "needs_reauth", tokenStatus(t, s, "tok-user"), "user-mode token must be cascaded too, since rotation has no auth_mode filter")
 }
 
+// TestRotateMCPOAuthConfig_ExpectedClientIDClaimsTheRow: with ExpectedClientID set, a rotation from a
+// copy loaded before another caller rotated the row is refused with ErrOAuthConfigChanged and writes
+// nothing, so it cannot sign out the token issued after the first rotation.
+func TestRotateMCPOAuthConfig_ExpectedClientIDClaimsTheRow(t *testing.T) {
+	s := setupRDBTestStore(t)
+	ctx := context.Background()
+	first := seedRotateOauthConfig(t, s, "cfg-claim", "old-client-id", "secret")
+	stale, err := s.GetOauthConfigByID(ctx, first.ID)
+	require.NoError(t, err)
+
+	fields := baseRotateFields("new-client-id", "secret")
+	fields.ExpectedClientID = schemas.Ptr("old-client-id")
+	rotated, err := s.RotateMCPOAuthConfig(ctx, first, fields)
+	require.NoError(t, err)
+	require.True(t, rotated)
+	seedRotateToken(t, s, "tok-fresh", first.ID, "shared", "active")
+
+	rotated, err = s.RotateMCPOAuthConfig(ctx, stale, fields)
+	require.ErrorIs(t, err, ErrOAuthConfigChanged)
+	assert.False(t, rotated)
+	assert.Equal(t, "active", tokenStatus(t, s, "tok-fresh"), "the refused rotation must not cascade")
+	stored, err := s.GetOauthConfigByID(ctx, first.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "new-client-id", stored.GetResolvedClientID())
+}
+
 // TestRotateMCPOAuthConfig_ChangedSecondaryFieldsCascadesToo proves the
 // widened scope: authorize_url/token_url/registration_url/resource/scopes
 // drift is treated exactly like client_id/client_secret drift — any of them
@@ -306,4 +332,208 @@ func TestMCPOAuthConfigFields_DiffersFrom(t *testing.T) {
 		}
 		assert.True(t, fields.DiffersFrom(stored))
 	})
+}
+
+// The issuer binding is stored with rotated credentials, and differing only in it is no rotation:
+// a resubmission that does not carry it (a manual edit) leaves the stored binding alone.
+func TestRotateMCPOAuthConfig_StoresIssuerBinding(t *testing.T) {
+	s := setupRDBTestStore(t)
+	ctx := context.Background()
+	cfg := seedRotateOauthConfig(t, s, "cfg-issuer", "old-client", "secret")
+	cfg.Issuer, cfg.IssParameterSupported = "https://auth.example.com", true
+	require.NoError(t, s.UpdateOauthConfig(ctx, cfg))
+	stored, err := s.GetOauthConfigByID(ctx, cfg.ID)
+	require.NoError(t, err)
+
+	rotated, err := s.RotateMCPOAuthConfig(ctx, stored, baseRotateFields("old-client", "secret"))
+	require.NoError(t, err)
+	assert.False(t, rotated)
+	stored, err = s.GetOauthConfigByID(ctx, cfg.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "https://auth.example.com", stored.Issuer)
+
+	fields := baseRotateFields("new-client", "secret")
+	fields.Issuer, fields.IssParameterSupported, fields.DynamicallyRegistered = "https://moved.example.com", true, true
+	rotated, err = s.RotateMCPOAuthConfig(ctx, stored, fields)
+	require.NoError(t, err)
+	assert.True(t, rotated)
+	stored, err = s.GetOauthConfigByID(ctx, cfg.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "https://moved.example.com", stored.Issuer)
+	assert.True(t, stored.IssParameterSupported)
+	assert.True(t, stored.DynamicallyRegistered)
+}
+
+// A new issuer is a change on its own: the authorization server moved even when its URLs did not, so
+// the binding is stored and tokens from the previous server must re-authenticate.
+func TestRotateMCPOAuthConfig_IssuerOnlyChangeRotates(t *testing.T) {
+	s := setupRDBTestStore(t)
+	ctx := context.Background()
+	cfg := seedRotateOauthConfig(t, s, "cfg-issuer-only", "client", "secret")
+	cfg.Issuer = "https://auth.example.com"
+	require.NoError(t, s.UpdateOauthConfig(ctx, cfg))
+	seedRotateToken(t, s, "tok-issuer-only", cfg.ID, "user", "active")
+	stored, err := s.GetOauthConfigByID(ctx, cfg.ID)
+	require.NoError(t, err)
+
+	fields := baseRotateFields("client", "secret")
+	fields.Issuer = "https://moved.example.com"
+	assert.True(t, fields.DiffersFrom(stored))
+	rotated, err := s.RotateMCPOAuthConfig(ctx, stored, fields)
+	require.NoError(t, err)
+	assert.True(t, rotated)
+	stored, err = s.GetOauthConfigByID(ctx, cfg.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "https://moved.example.com", stored.Issuer)
+	assert.Equal(t, "needs_reauth", tokenStatus(t, s, "tok-issuer-only"))
+}
+
+// KeepBinding carries the stored binding into an edit that does not set it: the issuer stays while the
+// endpoints stay, and the dynamic-registration flag stays with its client_id.
+func TestMCPOAuthConfigFields_KeepBinding(t *testing.T) {
+	stored := &tables.TableOauthConfig{
+		ClientID:     schemas.NewSecretVar("client"),
+		AuthorizeURL: "https://auth.example.com/authorize",
+		TokenURL:     "https://auth.example.com/token",
+		Issuer:       "https://auth.example.com", IssParameterSupported: true, DynamicallyRegistered: true,
+	}
+	t.Run("scope-only edit keeps everything", func(t *testing.T) {
+		fields := baseRotateFields("client", "secret")
+		fields.Scopes = []string{"read", "write"}
+		fields.KeepBinding(stored)
+		assert.Equal(t, "https://auth.example.com", fields.Issuer)
+		assert.True(t, fields.IssParameterSupported)
+		assert.True(t, fields.DynamicallyRegistered)
+	})
+	t.Run("a new client_id drops the binding", func(t *testing.T) {
+		fields := baseRotateFields("entered-by-admin", "secret")
+		fields.KeepBinding(stored)
+		assert.False(t, fields.DynamicallyRegistered)
+		assert.Empty(t, fields.Issuer, "replacement credentials re-bind at the next sign-in")
+		assert.False(t, fields.IssParameterSupported)
+	})
+	t.Run("a new token endpoint drops the issuer", func(t *testing.T) {
+		fields := baseRotateFields("client", "secret")
+		fields.TokenURL = "https://other.example.com/token"
+		fields.KeepBinding(stored)
+		assert.Empty(t, fields.Issuer)
+		assert.False(t, fields.IssParameterSupported)
+	})
+}
+
+// A rebind applies only while the stored issuer is still the one it moved from: of two replicas
+// rebinding at once, the second loses and keeps the first one's client.
+func TestRotateMCPOAuthConfig_RebindLosesToConcurrentRebind(t *testing.T) {
+	s := setupRDBTestStore(t)
+	ctx := context.Background()
+	cfg := seedRotateOauthConfig(t, s, "cfg-rebind-race", "old-client", "secret")
+	cfg.Issuer = "https://auth.example.com"
+	require.NoError(t, s.UpdateOauthConfig(ctx, cfg))
+	from := "https://auth.example.com"
+	rebind := func(clientID string) error {
+		stored, err := s.GetOauthConfigByID(ctx, cfg.ID)
+		require.NoError(t, err)
+		stored.Issuer = from // both replicas read the old issuer
+		fields := baseRotateFields(clientID, "secret")
+		fields.Issuer, fields.DynamicallyRegistered, fields.ExpectedIssuer = "https://moved.example.com", true, &from
+		_, err = s.RotateMCPOAuthConfig(ctx, stored, fields)
+		return err
+	}
+	require.NoError(t, rebind("first-client"))
+	require.ErrorIs(t, rebind("second-client"), ErrOAuthConfigChanged)
+	stored, err := s.GetOauthConfigByID(ctx, cfg.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "first-client", stored.GetResolvedClientID())
+}
+
+// BindOAuthConfigIssuer writes only the binding, and only while the row is still the one the caller
+// reasoned about: an edit that landed meanwhile is neither overwritten nor bound.
+func TestBindOAuthConfigIssuer(t *testing.T) {
+	s := setupRDBTestStore(t)
+	ctx := context.Background()
+	seedRotateOauthConfig(t, s, "cfg-bind", "client", "secret")
+
+	bound, err := s.BindOAuthConfigIssuer(ctx, "cfg-bind", "", "https://auth.example.com/token", "https://auth.example.com", true)
+	require.NoError(t, err)
+	assert.True(t, bound)
+	stored, err := s.GetOauthConfigByID(ctx, "cfg-bind")
+	require.NoError(t, err)
+	assert.Equal(t, "https://auth.example.com", stored.Issuer)
+	assert.True(t, stored.IssParameterSupported)
+	assert.Equal(t, "client", stored.GetResolvedClientID(), "credentials are not written")
+
+	// An admin edit moved the token endpoint after the caller read the row.
+	stored.TokenURL = "https://moved.example.com/token"
+	stored.ClientID = schemas.NewSecretVar("edited")
+	require.NoError(t, s.UpdateOauthConfig(ctx, stored))
+	bound, err = s.BindOAuthConfigIssuer(ctx, "cfg-bind", "https://auth.example.com", "https://auth.example.com/token", "https://auth.example.com", false)
+	require.NoError(t, err)
+	assert.False(t, bound)
+	stored, err = s.GetOauthConfigByID(ctx, "cfg-bind")
+	require.NoError(t, err)
+	assert.True(t, stored.IssParameterSupported, "nothing is written once the row moved on")
+	assert.Equal(t, "edited", stored.GetResolvedClientID())
+}
+
+// RecordOAuthFlowIssuer writes only the issuer, and only while the flow is still pending with the
+// state the caller read: a renewed or completed flow is left alone.
+func TestRecordOAuthFlowIssuer(t *testing.T) {
+	s := setupRDBTestStore(t)
+	ctx := context.Background()
+	seedRotateOauthConfig(t, s, "cfg-flow", "client", "secret")
+	flow := &tables.TableMCPOauthFlow{
+		ID: "flow-1", MCPClientID: "mcp-1", OauthConfigID: "cfg-flow", State: "state-1", CodeVerifier: "verifier-1",
+		FlowMode: "admin", Status: "pending", ExpiresAt: time.Now().Add(time.Minute),
+	}
+	require.NoError(t, s.CreateOauthUserSession(ctx, flow))
+
+	recorded, err := s.RecordOAuthFlowIssuer(ctx, "flow-1", "state-1", "https://auth.example.com", true)
+	require.NoError(t, err)
+	assert.True(t, recorded)
+	stored, err := s.GetOauthUserSessionByState(ctx, "state-1")
+	require.NoError(t, err)
+	assert.Equal(t, "https://auth.example.com", stored.Issuer)
+	assert.True(t, stored.IssParameterSupported)
+
+	// A renewal gave the row a new state and verifier after the caller read it.
+	stored.State, stored.CodeVerifier, stored.Issuer = "state-2", "verifier-2", ""
+	require.NoError(t, s.UpdateOauthUserSession(ctx, stored))
+	recorded, err = s.RecordOAuthFlowIssuer(ctx, "flow-1", "state-1", "https://auth.example.com", true)
+	require.NoError(t, err)
+	assert.False(t, recorded)
+	stored, err = s.GetOauthUserSessionByState(ctx, "state-2")
+	require.NoError(t, err)
+	assert.Empty(t, stored.Issuer, "nothing is written once the flow moved on")
+	assert.Equal(t, "verifier-2", stored.CodeVerifier)
+
+	stored.Status = "authorized"
+	require.NoError(t, s.UpdateOauthUserSession(ctx, stored))
+	recorded, err = s.RecordOAuthFlowIssuer(ctx, "flow-1", "state-2", "https://auth.example.com", true)
+	require.NoError(t, err)
+	assert.False(t, recorded, "a completed flow is not written")
+}
+
+// A row from before the issuer columns holds NULL, not "": both conditional writes still read it as
+// unbound, so an upgraded config binds at its next sign-in.
+func TestOAuthIssuerClaims_MatchMigratedNullIssuer(t *testing.T) {
+	s := setupRDBTestStore(t)
+	ctx := context.Background()
+	migrated := func(id string) {
+		seedRotateOauthConfig(t, s, id, "client", "secret")
+		require.NoError(t, s.DB().Exec("UPDATE oauth_configs SET issuer = NULL WHERE id = ?", id).Error)
+	}
+
+	migrated("cfg-null-bind")
+	bound, err := s.BindOAuthConfigIssuer(ctx, "cfg-null-bind", "", "https://auth.example.com/token", "https://auth.example.com", true)
+	require.NoError(t, err)
+	assert.True(t, bound, "a NULL issuer is unbound")
+
+	migrated("cfg-null-rotate")
+	stored, err := s.GetOauthConfigByID(ctx, "cfg-null-rotate")
+	require.NoError(t, err)
+	unbound := ""
+	fields := baseRotateFields("moved-client", "secret")
+	fields.Issuer, fields.ExpectedIssuer = "https://moved.example.com", &unbound
+	_, err = s.RotateMCPOAuthConfig(ctx, stored, fields)
+	require.NoError(t, err, "a rebind from an unbound config applies to a NULL issuer")
 }

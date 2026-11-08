@@ -232,9 +232,7 @@ func (provider *TypesafeProvider) Decision(ctx *schemas.BifrostContext, key sche
 	if key.Value.GetValue() != "" {
 		headers["Authorization"] = "Bearer " + key.Value.GetValue()
 	}
-	if usesTypesafeImages(request) && typesafeImagesHeaderAllowed(provider.networkConfig.BetaHeaderOverrides) {
-		headers[typesafeImagesHeader] = "true"
-	}
+	SetImagesHeader(headers, request, provider.networkConfig.BetaHeaderOverrides)
 	return HandleTypesafeDecisionRequest(
 		ctx,
 		provider.client,

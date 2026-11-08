@@ -743,6 +743,36 @@ func TestToBifrostVideoGenerationResponseTerminalStatuses(t *testing.T) {
 	}
 }
 
+// Seedance bills on completion_tokens, so the converter must carry them for pricing.
+func TestToBifrostVideoGenerationResponseCarriesCompletionTokens(t *testing.T) {
+	var task byteplus.BytePlusVideoTask
+	if err := json.Unmarshal([]byte(`{"id":"t","status":"succeeded","resolution":"720p","duration":5,"content":{"video_url":"https://example.test/v.mp4"},"usage":{"completion_tokens":108900,"total_tokens":108900}}`), &task); err != nil {
+		t.Fatal(err)
+	}
+	resp, bifrostErr := byteplus.ToBifrostVideoGenerationResponse(&task)
+	if bifrostErr != nil {
+		t.Fatalf("unexpected error: %+v", bifrostErr)
+	}
+	if resp.Usage == nil || resp.Usage.OutputTokens != 108900 {
+		t.Fatalf("usage = %+v, want output_tokens 108900", resp.Usage)
+	}
+}
+
+// The actual output size decides Seedream's pixel tier, and a request may name only a tier like "2K".
+func TestToBifrostImageGenerationResponseKeepsOutputSize(t *testing.T) {
+	var raw byteplus.BytePlusImageGenerationResponse
+	if err := json.Unmarshal([]byte(`{"model":"dola-seedream-5-0-pro-260628","created":1,"data":[{"url":"https://example.test/a.jpeg","size":"2816x1584"}],"usage":{"generated_images":1,"output_tokens":17424,"total_tokens":17424}}`), &raw); err != nil {
+		t.Fatal(err)
+	}
+	resp, bifrostErr := byteplus.ToBifrostImageGenerationResponse(&raw, "dola-seedream-5-0-pro-260628")
+	if bifrostErr != nil {
+		t.Fatalf("unexpected error: %+v", bifrostErr)
+	}
+	if resp.ImageGenerationResponseParameters == nil || resp.Size != "2816x1584" {
+		t.Fatalf("size = %+v, want 2816x1584", resp.ImageGenerationResponseParameters)
+	}
+}
+
 func passthroughPostHook(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	return resp, err
 }

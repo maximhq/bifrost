@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -89,10 +90,10 @@ func TestRealtimeWebSocketURL(t *testing.T) {
 	t.Parallel()
 
 	provider := &OpenAIProvider{networkConfig: schemas.NetworkConfig{BaseURL: "https://api.openai.com"}}
-	if got, err := provider.RealtimeWebSocketURL(schemas.Key{}, "gpt-4o transcribe", ""); err != nil || got != "wss://api.openai.com/v1/realtime?model=gpt-4o+transcribe" {
+	if got, err := provider.RealtimeWebSocketURL(nil, schemas.Key{}, "gpt-4o transcribe", ""); err != nil || got != "wss://api.openai.com/v1/realtime?model=gpt-4o+transcribe" {
 		t.Fatalf("RealtimeWebSocketURL() = %q, %v", got, err)
 	}
-	if got, err := provider.RealtimeWebSocketURL(schemas.Key{}, "gpt-4o transcribe", "transcription"); err != nil || got != "wss://api.openai.com/v1/realtime?intent=transcription" {
+	if got, err := provider.RealtimeWebSocketURL(nil, schemas.Key{}, "gpt-4o transcribe", "transcription"); err != nil || got != "wss://api.openai.com/v1/realtime?intent=transcription" {
 		t.Fatalf("RealtimeWebSocketURL() = %q, %v", got, err)
 	}
 }
@@ -867,5 +868,36 @@ func TestRealtimeWebRTCUpstreamErrorCarriesRetryHint(t *testing.T) {
 	}
 	if bifrostErr.ExtraFields.RetryAfter != 7000 {
 		t.Fatalf("RetryAfter = %d, want 7000", bifrostErr.ExtraFields.RetryAfter)
+	}
+}
+
+// TestRealtimeSessionVoiceKeepsItsForm pins that a voice name goes upstream as a string, as before
+// the union type, and a custom voice object as an object.
+func TestRealtimeSessionVoiceKeepsItsForm(t *testing.T) {
+	t.Parallel()
+
+	provider := &OpenAIProvider{}
+	for raw, want := range map[string]string{
+		`{"type":"session.update","session":{"voice":"alloy"}}`:            `"voice":"alloy"`,
+		`{"type":"session.update","session":{"voice":{"id":"voice_123"}}}`: `"voice":{"id":"voice_123"}`,
+	} {
+		event, err := schemas.ParseRealtimeEvent([]byte(raw))
+		if err != nil {
+			t.Fatalf("ParseRealtimeEvent(%s) error = %v", raw, err)
+		}
+		out, err := provider.ToProviderRealtimeEvent(event)
+		if err != nil {
+			t.Fatalf("ToProviderRealtimeEvent(%s) error = %v", raw, err)
+		}
+		if !strings.Contains(string(out), want) {
+			t.Fatalf("upstream event = %s, want %s", out, want)
+		}
+	}
+
+	if got := ExtractNestedVoice(json.RawMessage(`{"output":{"voice":"marin"}}`)); got != "marin" {
+		t.Fatalf("ExtractNestedVoice(name) = %q, want marin", got)
+	}
+	if got := ExtractNestedVoice(json.RawMessage(`{"output":{"voice":{"id":"voice_123"}}}`)); got != "voice_123" {
+		t.Fatalf("ExtractNestedVoice(custom) = %q, want voice_123", got)
 	}
 }

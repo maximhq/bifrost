@@ -211,6 +211,10 @@ func TestWarpLogsViewLinkCarriesEveryFilter(t *testing.T) {
 	for i := range value.NumField() {
 		field := value.Field(i)
 		name := strings.Split(value.Type().Field(i).Tag.Get("json"), ",")[0]
+		if name == "-" {
+			// Internal lookups (RealtimeInputItemID), never sent as a filter.
+			continue
+		}
 		if _, skip := notInURL[name]; skip {
 			continue
 		}
@@ -228,8 +232,8 @@ func TestWarpLogsViewLinkCarriesEveryFilter(t *testing.T) {
 			field.Set(reflect.ValueOf(new(7)))
 		case *time.Time:
 			field.Set(reflect.ValueOf(new(time.Unix(1789112579, 0))))
-		case map[string]string:
-			field.Set(reflect.ValueOf(map[string]string{"env": "prod", "app": "web"}))
+		case logstore.MetadataFilterMap:
+			field.Set(reflect.ValueOf(logstore.MetadataFilterMap{"env": {"prod", "staging"}, "app": {"web"}}))
 		default:
 			t.Fatalf("SearchFilters.%s has a type this test cannot fill: teach it, and logsViewLink", value.Type().Field(i).Name)
 		}
@@ -243,9 +247,9 @@ func TestWarpLogsViewLinkCarriesEveryFilter(t *testing.T) {
 		require.Contains(t, logsPageParams, name, "the Logs page has no %s parameter, so the link repair would unlink it", name)
 	}
 	// In the forms the page parses: comma-joined arrays, a JSON object with
-	// stable key order, a bare true.
+	// stable key order (one value as a string, several as an array), a bare true.
 	require.Equal(t, "a,b", values.Get("stop_reasons"))
-	require.Equal(t, `{"app":"web","env":"prod"}`, values.Get("metadata_filters"))
+	require.Equal(t, `{"app":"web","env":["prod","staging"]}`, values.Get("metadata_filters"))
 	require.Equal(t, "true", values.Get("missing_cost_only"))
 	require.Equal(t, "7", values.Get("min_tokens"))
 

@@ -1,0 +1,16 @@
+{
+  "$schema": "https://www.getbifrost.ai/schema",
+  "logs_store": {
+    "enabled": true,
+    "type": "sqlite",
+    "config": {
+      "path": "../../examples/configs/withobjectstorageazure/logs.db"
+    },
+    "object_storage": {
+      "type": "azure",
+      "bucket": "env.AZURE_STORAGE_CONTAINER",
+      "connection_string": "env.AZURE_STORAGE_CONNECTION_STRING",
+      "prefix": "bifrost/logs"
+    }
+  }
+}

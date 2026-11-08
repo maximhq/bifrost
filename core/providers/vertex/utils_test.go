@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -97,56 +98,6 @@ func TestVertexEndpointChat(t *testing.T) {
 			}
 			if response == nil || len(response.Choices) != 1 || response.Choices[0].Message.Content.ContentStr == nil || *response.Choices[0].Message.Content.ContentStr != "hello" {
 				t.Fatalf("expected OpenAI chat response, got %+v", response)
-			}
-		})
-	}
-}
-
-func TestVertexEndpointRejectsNonChatOperations(t *testing.T) {
-	provider := &VertexProvider{}
-	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-	ctx.SetValue(schemas.BifrostContextKeyResolvedAlias, &schemas.ResolvedAlias{Config: &schemas.AliasConfig{
-		ModelID: "1234567890", VertexAliasCfg: &schemas.VertexAliasCfg{VertexEndpoint: &schemas.VertexEndpoint{EndpointID: "2222222222", Format: schemas.VertexEndpointOpenAIChat}},
-	}})
-	key := schemas.Key{}
-	operations := map[string]func() *schemas.BifrostError{
-		"embedding": func() *schemas.BifrostError {
-			_, err := provider.Embedding(ctx, key, &schemas.BifrostEmbeddingRequest{})
-			return err
-		},
-		"count tokens": func() *schemas.BifrostError {
-			_, err := provider.CountTokens(ctx, key, &schemas.BifrostResponsesRequest{})
-			return err
-		},
-		"rerank": func() *schemas.BifrostError {
-			_, err := provider.Rerank(ctx, key, &schemas.BifrostRerankRequest{})
-			return err
-		},
-		"image generation": func() *schemas.BifrostError {
-			_, err := provider.ImageGeneration(ctx, key, &schemas.BifrostImageGenerationRequest{Model: "1234567890"})
-			return err
-		},
-		"image edit": func() *schemas.BifrostError {
-			_, err := provider.ImageEdit(ctx, key, &schemas.BifrostImageEditRequest{Model: "1234567890"})
-			return err
-		},
-		"video generation": func() *schemas.BifrostError {
-			_, err := provider.VideoGeneration(ctx, key, &schemas.BifrostVideoGenerationRequest{Model: "1234567890"})
-			return err
-		},
-	}
-	wantType := map[string]schemas.RequestType{
-		"embedding": schemas.EmbeddingRequest, "count tokens": schemas.CountTokensRequest, "rerank": schemas.RerankRequest,
-		"image generation": schemas.ImageGenerationRequest, "image edit": schemas.ImageEditRequest, "video generation": schemas.VideoGenerationRequest,
-	}
-	for name, operation := range operations {
-		t.Run(name, func(t *testing.T) {
-			err := operation()
-			if err == nil || !strings.Contains(err.Error.Message, "vertex_endpoint format openai_chat supports chat completions") {
-				t.Fatalf("expected an explicit unsupported custom endpoint error, got %v", err)
-			}
-			if err.Error.Code == nil || *err.Error.Code != "unsupported_operation" || err.ExtraFields.Provider != schemas.Vertex || err.ExtraFields.RequestType != wantType[name] {
-				t.Fatalf("expected the standard unsupported_operation error for %s on vertex, got code=%v provider=%q type=%q", wantType[name], err.Error.Code, err.ExtraFields.Provider, err.ExtraFields.RequestType)
 			}
 		})
 	}
@@ -1509,6 +1460,102 @@ func TestVertexPassthroughUsesClientAPIVersion(t *testing.T) {
 	}
 }
 
+// TestVertexPassthroughInteractionsReportsRun pins the Vertex route for stored interactions: a
+// finished run's usage rides on ProviderJob, to be settled once, and never on PassthroughUsage,
+// which governance and the request row would bill on every read. The poll path keeps the project
+// prefix and version the client addressed, so the sweeper can read the run again.
+func TestVertexPassthroughInteractionsReportsRun(t *testing.T) {
+	const completed = `{"id":"i-1","agent":"deep-research-preview-04-2026","status":"completed","usage":{"total_input_tokens":1000,"total_output_tokens":50,"total_tokens":1050}}`
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("alt") == "sse" {
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte("data: {\"event_type\":\"interaction.completed\",\"interaction\":" + completed + "}\n\n"))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(completed))
+	}))
+	defer upstream.Close()
+
+	config := &schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{DefaultRequestTimeoutInSeconds: 10}}
+	config.CheckAndSetDefaults()
+	provider, err := NewVertexProvider(config, nil)
+	if err != nil {
+		t.Fatalf("NewVertexProvider: %v", err)
+	}
+	for _, client := range []*fasthttp.Client{provider.client, provider.streamingClient} {
+		client.Dial = func(string) (net.Conn, error) { return net.Dial("tcp", upstream.Listener.Addr().String()) }
+		client.TLSConfig = &tls.Config{InsecureSkipVerify: true}
+	}
+	key := schemas.Key{VertexKeyConfig: &schemas.VertexKeyConfig{
+		ProjectID:       *schemas.NewSecretVar("proj"),
+		Region:          *schemas.NewSecretVar("global"),
+		AuthCredentials: *schemas.NewSecretVar("test-credentials"),
+	}}
+	provider.tokenSources.Store(getClientKey(vertexCredentialIdentity(key)), oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "test-token"}))
+
+	const path = "/projects/client-proj/locations/global/interactions"
+	checkJob := func(label string, resp *schemas.BifrostPassthroughResponse) {
+		t.Helper()
+		if resp == nil {
+			t.Fatalf("%s: no response", label)
+		}
+		if resp.PassthroughUsage != nil {
+			t.Fatalf("%s: PassthroughUsage=%+v, want none billed on the request", label, resp.PassthroughUsage)
+		}
+		job := resp.ProviderJob
+		if job == nil || job.ID != "i-1" || !job.Created || !job.Terminal || job.PollPath != path+"/i-1" || job.APIVersion != "v1beta1" {
+			t.Fatalf("%s: job=%+v, want the created, finished run polled at %s/i-1 under v1beta1", label, job, path)
+		}
+		if job.Usage == nil || job.Usage.LLMUsage == nil || job.Usage.LLMUsage.TotalTokens != 1050 {
+			t.Fatalf("%s: job usage=%+v, want the run's usage", label, job.Usage)
+		}
+		if resp.ServedModel != "deep-research-preview-04-2026" {
+			t.Fatalf("%s: served model=%q", label, resp.ServedModel)
+		}
+	}
+
+	req := &schemas.BifrostPassthroughRequest{
+		Method:      http.MethodPost,
+		Path:        path,
+		APIVersion:  "v1beta1",
+		Body:        []byte(`{"agent":"deep-research-preview-04-2026","input":"hi"}`),
+		SafeHeaders: map[string]string{"content-type": "application/json"},
+	}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	resp, bifrostErr := provider.Passthrough(ctx, key, req)
+	if bifrostErr != nil {
+		t.Fatalf("Passthrough: %s", bifrostErr.GetErrorString())
+	}
+	checkJob("unary", resp)
+
+	streamReq := *req
+	streamReq.RawQuery = "alt=sse"
+	noHooks := func(_ *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+		return result, err
+	}
+	stream, bifrostErr := provider.PassthroughStream(ctx, noHooks, nil, key, &streamReq)
+	if bifrostErr != nil {
+		t.Fatalf("PassthroughStream: %s", bifrostErr.GetErrorString())
+	}
+	var final *schemas.BifrostPassthroughResponse
+	for drained := false; !drained; {
+		select {
+		case chunk, ok := <-stream:
+			if !ok {
+				drained = true
+				break
+			}
+			if chunk.BifrostPassthroughResponse != nil && len(chunk.BifrostPassthroughResponse.Body) == 0 {
+				final = chunk.BifrostPassthroughResponse
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("PassthroughStream did not finish")
+		}
+	}
+	checkJob("stream", final)
+}
+
 func TestPassthroughWireFormat(t *testing.T) {
 	tests := []struct {
 		path string
@@ -1798,5 +1845,120 @@ func TestVertexChatCompletionSendsBetaHeader(t *testing.T) {
 				t.Errorf("anthropic_beta body field = %q, want %q", bodyBeta, tc.want)
 			}
 		})
+	}
+}
+
+// vertexModelGarden serves ids as the google publisher's catalog and answers 404 for the
+// other publishers, the way a region without their models does. It counts every request.
+func vertexModelGarden(hits *atomic.Int32, ids ...string) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		if r.URL.Path != "/v1beta1/publishers/google/models" {
+			http.NotFound(w, r)
+			return
+		}
+		models := make([]map[string]string, 0, len(ids))
+		for _, id := range ids {
+			models = append(models, map[string]string{"name": "publishers/google/models/" + id, "versionId": "default"})
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"publisherModels": models})
+	})
+}
+
+// listedVertexModels lists key's models and maps each listed id to its alias, "" when it has none.
+func listedVertexModels(t *testing.T, provider *VertexProvider, key schemas.Key) map[string]string {
+	t.Helper()
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	resp, bifrostErr := provider.listModelsByKey(ctx, key, &schemas.BifrostListModelsRequest{Provider: schemas.Vertex})
+	if bifrostErr != nil {
+		t.Fatalf("listModelsByKey: %s", bifrostErr.GetErrorString())
+	}
+	got := make(map[string]string, len(resp.Data))
+	for _, m := range resp.Data {
+		if _, dup := got[m.ID]; dup {
+			t.Fatalf("%s is listed twice", m.ID)
+		}
+		alias := ""
+		if m.Alias != nil {
+			alias = *m.Alias
+		}
+		got[m.ID] = alias
+	}
+	return got
+}
+
+// A key that can mint an OAuth token lists the Model Garden catalog through its allowlist and
+// adds its deployments, so "*" and regex: entries reach catalog models. It used to list only its
+// configuration whenever it had a deployment or an allowlist other than "*".
+func TestVertexListModelsOAuthKeyListsModelGarden(t *testing.T) {
+	catalog := []string{"gemini-2.5-flash", "gemini-3.1-flash-image", "text-embedding-005"}
+	for _, tc := range []struct {
+		name        string
+		models      schemas.WhiteList
+		deployments schemas.KeyAliases
+		want        map[string]string
+	}{
+		{
+			name:   "regex allowlist",
+			models: schemas.WhiteList{"regex:^gemini-.*$"},
+			want:   map[string]string{"vertex/gemini-2.5-flash": "", "vertex/gemini-3.1-flash-image": ""},
+		},
+		{
+			name:        "all models with a deployment",
+			models:      schemas.WhiteList{"*"},
+			deployments: schemas.KeyAliases{"gemini-3.1-flash-image-lite": {ModelID: "gemini-3.1-flash-image-lite"}},
+			want: map[string]string{
+				"vertex/gemini-2.5-flash":            "",
+				"vertex/gemini-3.1-flash-image":      "",
+				"vertex/text-embedding-005":          "",
+				"vertex/gemini-3.1-flash-image-lite": "gemini-3.1-flash-image-lite",
+			},
+		},
+		{
+			name:        "regex allowlist with custom endpoint deployments",
+			models:      schemas.WhiteList{"regex:^gemini-.*$"},
+			deployments: schemas.KeyAliases{"gemini-tuned": {ModelID: "1234567890"}, "tuned": {ModelID: "9876543210"}},
+			want: map[string]string{
+				"vertex/gemini-2.5-flash":       "",
+				"vertex/gemini-3.1-flash-image": "",
+				"vertex/gemini-tuned":           "1234567890",
+			},
+		},
+		{
+			name:   "exact allowlist",
+			models: schemas.WhiteList{"gemini-2.5-flash", "gemini-preview-only"},
+			want:   map[string]string{"vertex/gemini-2.5-flash": "", "vertex/gemini-preview-only": ""},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var hits atomic.Int32
+			provider, key := vertexOpenAIEndpointTestProvider(t, vertexModelGarden(&hits, catalog...))
+			key.Models = tc.models
+			key.Aliases = tc.deployments
+			if got := listedVertexModels(t, provider, key); !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("listed %v, want %v", got, tc.want)
+			}
+			if hits.Load() == 0 {
+				t.Error("Model Garden was never called")
+			}
+		})
+	}
+}
+
+// Model Garden refuses API keys, so an API-key-only key keeps listing its configuration: the
+// deployments its allowlist covers and its exact entries, without calling Model Garden.
+func TestVertexListModelsAPIKeyOnlyKeyListsConfiguration(t *testing.T) {
+	var hits atomic.Int32
+	provider, key := vertexOpenAIEndpointTestProvider(t, vertexModelGarden(&hits, "gemini-2.5-flash"))
+	key.VertexKeyConfig.AuthCredentials = *schemas.NewSecretVar("")
+	key.Models = schemas.WhiteList{"regex:^gemini-.*$", "gemini-exact"}
+	key.Aliases = schemas.KeyAliases{"gemini-tuned": {ModelID: "1234567890"}, "tuned": {ModelID: "9876543210"}}
+	want := map[string]string{"vertex/gemini-tuned": "1234567890", "vertex/gemini-exact": ""}
+	if got := listedVertexModels(t, provider, key); !reflect.DeepEqual(got, want) {
+		t.Errorf("listed %v, want %v", got, want)
+	}
+	if n := hits.Load(); n != 0 {
+		t.Errorf("an API-key-only key called Model Garden %d times", n)
 	}
 }

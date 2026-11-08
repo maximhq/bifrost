@@ -1,1 +1,8 @@
-- chore: upgraded Go to 1.27.3, core to v1.13.1 and framework to v1.10.1
+- feat: record caller IP (opt-in) and user email on LLM, MCP and relay logs
+- feat: record MCP input_required rounds linked by round_trip_id and MCP Apps use
+- feat: relay logging matches LLM logs for capture, status and stale-row eviction
+- feat: bill each Gemini Interactions run once and name the agent on poll records
+- feat: multiple values per metadata filter key
+- fix: skip MCP log entries for sign-in prompts
+- fix: relays match passthrough for headers and streams
+- chore: upgraded core to v1.15.0 and framework to v1.12.0

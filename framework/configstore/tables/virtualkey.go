@@ -186,6 +186,17 @@ func (pc *TableVirtualKeyProviderConfig) AfterFind(tx *gorm.DB) error {
 			key.BedrockMantleRoleSessionName = nil
 			key.BedrockMantleKeyConfig = nil
 
+			// Clear all SageMaker-related sensitive fields
+			key.SageMakerAccessKey = nil
+			key.SageMakerSecretKey = nil
+			key.SageMakerSessionToken = nil
+			key.SageMakerRegion = nil
+			key.SageMakerRoleARN = nil
+			key.SageMakerExternalID = nil
+			key.SageMakerRoleSessionName = nil
+			key.SageMakerEndpointsJSON = nil
+			key.SageMakerKeyConfig = nil
+
 			pc.Keys[i] = *key
 		}
 	}
@@ -252,6 +263,7 @@ type TableVirtualKey struct {
 	ProviderConfigs   []TableVirtualKeyProviderConfig `gorm:"foreignKey:VirtualKeyID;constraint:OnDelete:CASCADE" json:"provider_configs"` // Empty means no providers allowed (deny-by-default)
 	MCPConfigs        []TableVirtualKeyMCPConfig      `gorm:"foreignKey:VirtualKeyID;constraint:OnDelete:CASCADE" json:"mcp_configs"`
 	AgentGrants       []TableVirtualKeyAgentGrant     `gorm:"foreignKey:VirtualKeyID;constraint:OnDelete:CASCADE" json:"agent_grants"`
+	RelayGrants       []TableVirtualKeyRelayGrant     `gorm:"foreignKey:VirtualKeyID;constraint:OnDelete:CASCADE" json:"relay_grants"`
 
 	// Foreign key relationships. TeamID, CustomerID and BusinessUnitID are mutually exclusive: a
 	// key belongs to at most one owner, which is what decides whose money it spends and whose

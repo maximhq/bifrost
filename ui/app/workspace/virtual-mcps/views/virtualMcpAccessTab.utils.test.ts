@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { virtualKeyOwner, resolvePickedVirtualKey } from "./virtualMcpAccessTab.utils";
 
 describe("virtualKeyOwner", () => {
@@ -37,51 +37,36 @@ describe("resolvePickedVirtualKey", () => {
 	// A resolved, unassigned key: the server sends assigned_user as null once it has settled who holds it.
 	const unowned = { assigned_user: null } as never;
 
-	it("uses the listed key without a lookup", async () => {
-		const fetchKey = vi.fn();
-		await expect(resolvePickedVirtualKey(owned, fetchKey)).resolves.toEqual({
+	it("reads the picked key to find its owner", async () => {
+		await expect(resolvePickedVirtualKey(async () => owned)).resolves.toEqual({
 			outcome: "owned",
 			owner: { kind: "team", name: "Platform" },
 		});
-		await expect(resolvePickedVirtualKey(unowned, fetchKey)).resolves.toEqual({ outcome: "unowned" });
-		expect(fetchKey).not.toHaveBeenCalled();
+		await expect(resolvePickedVirtualKey(async () => unowned)).resolves.toEqual({ outcome: "unowned" });
 	});
 
-	it("looks up a key past the listed page", async () => {
-		await expect(resolvePickedVirtualKey(undefined, async () => owned)).resolves.toEqual({
-			outcome: "owned",
-			owner: { kind: "team", name: "Platform" },
-		});
-		await expect(resolvePickedVirtualKey(undefined, async () => unowned)).resolves.toEqual({ outcome: "unowned" });
-	});
-
-	it("looks up a listed key whose assignee was not resolved, rather than reading it as unowned", async () => {
-		const unresolved = {} as never; // assigned_user omitted: the list's assignee lookup failed
-		const fetchKey = vi.fn(async () => ({ assigned_user: { id: "u1", name: "Ada", email: "ada@example.com" } }) as never);
-		await expect(resolvePickedVirtualKey(unresolved, fetchKey)).resolves.toEqual({
+	it("names the assignee the read returns", async () => {
+		const fetchKey = async () => ({ assigned_user: { id: "u1", name: "Ada", email: "ada@example.com" } }) as never;
+		await expect(resolvePickedVirtualKey(fetchKey)).resolves.toEqual({
 			outcome: "owned",
 			owner: { kind: "user", name: "Ada" },
 		});
-		expect(fetchKey).toHaveBeenCalledOnce();
 	});
 
-	it("reports a key whose assignee is still unresolved after the lookup as a failed lookup", async () => {
-		await expect(resolvePickedVirtualKey({} as never, async () => ({}) as never)).resolves.toEqual({ outcome: "lookupFailed" });
-		await expect(resolvePickedVirtualKey(undefined, async () => ({}) as never)).resolves.toEqual({ outcome: "lookupFailed" });
+	it("reports a key whose assignee is still unresolved after the read as a failed lookup", async () => {
+		await expect(resolvePickedVirtualKey(async () => ({}) as never)).resolves.toEqual({ outcome: "lookupFailed" });
 	});
 
-	it("needs no lookup for a key an entity owns, whatever its assignee", async () => {
-		const fetchKey = vi.fn();
-		await expect(resolvePickedVirtualKey({ customer_id: "c1" } as never, fetchKey)).resolves.toEqual({
+	it("treats a key an entity owns as owned, whatever its assignee", async () => {
+		await expect(resolvePickedVirtualKey(async () => ({ customer_id: "c1" }) as never)).resolves.toEqual({
 			outcome: "owned",
 			owner: { kind: "customer", name: "c1" },
 		});
-		expect(fetchKey).not.toHaveBeenCalled();
 	});
 
-	it("reports a failed lookup instead of treating the key as unowned", async () => {
+	it("reports a failed read instead of treating the key as unowned", async () => {
 		await expect(
-			resolvePickedVirtualKey(undefined, async () => {
+			resolvePickedVirtualKey(async () => {
 				throw new Error("network");
 			}),
 		).resolves.toEqual({ outcome: "lookupFailed" });

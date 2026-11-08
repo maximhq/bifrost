@@ -178,8 +178,26 @@ type LogManager interface {
 	// GetAvailableMCPVirtualKeys returns all unique virtual key ID-Name pairs from MCP tool logs
 	GetAvailableMCPVirtualKeys(ctx context.Context, limit int, query string) ([]KeyPair, error)
 
+	// GetAvailableMCPUsers returns the users ID-Name pairs from MCP tool logs
+	GetAvailableMCPUsers(ctx context.Context, limit int, query string) ([]KeyPair, error)
+
+	// GetAvailableMCPTeams returns the teams ID-Name pairs from MCP tool logs
+	GetAvailableMCPTeams(ctx context.Context, limit int, query string) ([]KeyPair, error)
+
+	// GetAvailableMCPCustomers returns the customers ID-Name pairs from MCP tool logs
+	GetAvailableMCPCustomers(ctx context.Context, limit int, query string) ([]KeyPair, error)
+
+	// GetAvailableMCPBusinessUnits returns the business units ID-Name pairs from MCP tool logs
+	GetAvailableMCPBusinessUnits(ctx context.Context, limit int, query string) ([]KeyPair, error)
+
+	// GetAvailableMCPProjects returns the projects ID-Name pairs from MCP tool logs
+	GetAvailableMCPProjects(ctx context.Context, limit int, query string) ([]KeyPair, error)
+
 	// GetMCPHistogram returns time-bucketed MCP tool call volume
 	GetMCPHistogram(ctx context.Context, filters logstore.MCPToolLogSearchFilters, bucketSizeSeconds int64) (*logstore.MCPHistogramResult, error)
+
+	// GetMCPLatencyHistogram returns time-bucketed latency percentiles of finished MCP tool calls
+	GetMCPLatencyHistogram(ctx context.Context, filters logstore.MCPToolLogSearchFilters, bucketSizeSeconds int64) (*logstore.LatencyHistogramResult, error)
 
 	// GetMCPCostHistogram returns time-bucketed MCP cost data
 	GetMCPCostHistogram(ctx context.Context, filters logstore.MCPToolLogSearchFilters, bucketSizeSeconds int64) (*logstore.MCPCostHistogramResult, error)
@@ -555,12 +573,55 @@ func (p *PluginLogManager) GetAvailableMCPVirtualKeys(ctx context.Context, limit
 	return p.plugin.GetAvailableMCPVirtualKeys(ctx, limit, query)
 }
 
+func (p *PluginLogManager) GetAvailableMCPUsers(ctx context.Context, limit int, query string) ([]KeyPair, error) {
+	if p == nil || p.plugin == nil {
+		return []KeyPair{}, nil
+	}
+	return p.plugin.GetAvailableMCPUsers(ctx, limit, query)
+}
+
+func (p *PluginLogManager) GetAvailableMCPTeams(ctx context.Context, limit int, query string) ([]KeyPair, error) {
+	if p == nil || p.plugin == nil {
+		return []KeyPair{}, nil
+	}
+	return p.plugin.GetAvailableMCPTeams(ctx, limit, query)
+}
+
+func (p *PluginLogManager) GetAvailableMCPCustomers(ctx context.Context, limit int, query string) ([]KeyPair, error) {
+	if p == nil || p.plugin == nil {
+		return []KeyPair{}, nil
+	}
+	return p.plugin.GetAvailableMCPCustomers(ctx, limit, query)
+}
+
+func (p *PluginLogManager) GetAvailableMCPBusinessUnits(ctx context.Context, limit int, query string) ([]KeyPair, error) {
+	if p == nil || p.plugin == nil {
+		return []KeyPair{}, nil
+	}
+	return p.plugin.GetAvailableMCPBusinessUnits(ctx, limit, query)
+}
+
+func (p *PluginLogManager) GetAvailableMCPProjects(ctx context.Context, limit int, query string) ([]KeyPair, error) {
+	if p == nil || p.plugin == nil {
+		return []KeyPair{}, nil
+	}
+	return p.plugin.GetAvailableMCPProjects(ctx, limit, query)
+}
+
 // GetMCPHistogram returns time-bucketed MCP tool call volume
 func (p *PluginLogManager) GetMCPHistogram(ctx context.Context, filters logstore.MCPToolLogSearchFilters, bucketSizeSeconds int64) (*logstore.MCPHistogramResult, error) {
 	if p.plugin == nil || p.plugin.store == nil {
 		return &logstore.MCPHistogramResult{}, nil
 	}
 	return p.plugin.store.GetMCPHistogram(ctx, filters, bucketSizeSeconds)
+}
+
+// GetMCPLatencyHistogram returns time-bucketed latency percentiles of finished MCP tool calls
+func (p *PluginLogManager) GetMCPLatencyHistogram(ctx context.Context, filters logstore.MCPToolLogSearchFilters, bucketSizeSeconds int64) (*logstore.LatencyHistogramResult, error) {
+	if p.plugin == nil || p.plugin.store == nil {
+		return &logstore.LatencyHistogramResult{}, nil
+	}
+	return p.plugin.store.GetMCPLatencyHistogram(ctx, filters, bucketSizeSeconds)
 }
 
 // GetMCPCostHistogram returns time-bucketed MCP cost data
@@ -772,8 +833,9 @@ func redactEmbeddingMediaData(items []schemas.EmbeddingInputItem) []schemas.Embe
 // decisionInputLog renders a decision input as chat messages for the log.
 // Text and a structured input (as JSON, the way a state was always logged)
 // are one user message; messages are logged the way chat requests are, so the
-// logs UI shows their text and inline images the same way. A part of a type
-// the schema does not model is kept as its type name, and a message without a
+// logs UI shows their text and inline images the same way. A tool call or
+// output is logged as its JSON (see decisionToolItemLog). A part of a type the
+// schema does not model is kept as its type name, and a message without a
 // role is the user's.
 func decisionInputLog(input schemas.DecisionInput) []schemas.ChatMessage {
 	if input.Messages == nil {
@@ -790,6 +852,10 @@ func decisionInputLog(input schemas.DecisionInput) []schemas.ChatMessage {
 	}
 	messages := make([]schemas.ChatMessage, 0, len(input.Messages))
 	for _, message := range input.Messages {
+		if message.Type != nil && *message.Type != schemas.DecisionInputItemTypeMessage {
+			messages = append(messages, decisionToolItemLog(message))
+			continue
+		}
 		role := schemas.ChatMessageRole(message.Role)
 		if role == "" {
 			role = schemas.ChatMessageRoleUser
@@ -804,14 +870,18 @@ func decisionInputLog(input schemas.DecisionInput) []schemas.ChatMessage {
 		blocks := make([]schemas.ChatContentBlock, 0, len(message.Content.Parts))
 		for _, part := range message.Content.Parts {
 			switch {
-			case part.Type == schemas.DecisionInputPartTypeText && part.Text != nil:
+			case (part.Type == schemas.DecisionInputPartTypeText || part.Type == schemas.DecisionInputPartTypeOutputText) && part.Text != nil:
 				blocks = append(blocks, schemas.ChatContentBlock{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr(decisionPartText(part.Text))})
-			case part.IsAsset() && part.Data != nil:
+			case part.Type == schemas.DecisionInputPartTypeRefusal && part.Refusal != nil:
+				blocks = append(blocks, schemas.ChatContentBlock{Type: schemas.ChatContentBlockTypeText, Text: part.Refusal})
+			case part.Type == schemas.DecisionInputPartTypeJSON && part.Data.Structured != nil:
+				blocks = append(blocks, schemas.ChatContentBlock{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr(decisionPartText(&schemas.DecisionText{Structured: part.Data.Structured}))})
+			case part.IsAsset() && part.Data.File != nil:
 				// An image sent by reference carries its file, not a URL: log it as an
 				// image the same way. Its ID is already in the text that references it.
 				blocks = append(blocks, schemas.ChatContentBlock{
 					Type:           schemas.ChatContentBlockTypeImage,
-					ImageURLStruct: &schemas.ChatInputImage{URL: decisionAssetDataURL(part.Data)},
+					ImageURLStruct: &schemas.ChatInputImage{URL: decisionAssetDataURL(part.Data.File)},
 				})
 			case part.Type == schemas.DecisionInputPartTypeImage && part.ImageURL != nil:
 				blocks = append(blocks, schemas.ChatContentBlock{
@@ -828,6 +898,22 @@ func decisionInputLog(input schemas.DecisionInput) []schemas.ChatMessage {
 		})
 	}
 	return messages
+}
+
+// decisionToolItemLog logs a tool call as the assistant's message and a tool
+// output as a tool message answering its call, each with the item's JSON as
+// its text, so the call ID, name, input, and output are all kept.
+func decisionToolItemLog(item schemas.DecisionInputMessage) schemas.ChatMessage {
+	raw, _ := sonic.Marshal(item)
+	text := string(raw)
+	if *item.Type == schemas.DecisionInputItemTypeFunctionCallOutput || *item.Type == schemas.DecisionInputItemTypeCustomToolCallOutput {
+		return schemas.ChatMessage{
+			Role:            schemas.ChatMessageRoleTool,
+			Content:         &schemas.ChatMessageContent{ContentStr: &text},
+			ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: item.CallID},
+		}
+	}
+	return schemas.ChatMessage{Role: schemas.ChatMessageRoleAssistant, Content: &schemas.ChatMessageContent{ContentStr: &text}}
 }
 
 // decisionAssetDataURL renders an asset's file as a data URL the logs UI shows as
@@ -1009,6 +1095,7 @@ func convertToProcessedStreamResponse(result *schemas.StreamAccumulatorResult, r
 		PassthroughOutput:     result.PassthroughOutput,
 		FinishReason:          result.FinishReason,
 		RawResponse:           result.RawResponse,
+		RawResponseFormat:     result.RawResponseFormat,
 	}
 
 	// Handle tool calls if present

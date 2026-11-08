@@ -407,6 +407,13 @@ type CreateVirtualKeyRequest struct {
 	AgentGrants []struct {
 		AgentName string `json:"agent_name" validate:"required"`
 	} `json:"agent_grants,omitempty"` // Empty means no agents allowed (deny-by-default)
+	// RelayGrants names the relays the key may call, one by one. Empty means no relay (deny-by-default).
+	RelayGrants []relayGrantBody `json:"relay_grants,omitempty"`
+}
+
+// relayGrantBody is one relay a virtual key may call.
+type relayGrantBody struct {
+	RelayName string `json:"relay_name" validate:"required"`
 }
 
 // vkModelBudgetRequest is one per-model budget/rate-limit group under a provider config
@@ -468,6 +475,7 @@ type UpdateVirtualKeyRequest struct {
 	AgentGrants []struct {
 		AgentName string `json:"agent_name" validate:"required"`
 	} `json:"agent_grants,omitempty"` // Omitted leaves grants unchanged; [] clears all grants
+	RelayGrants []relayGrantBody `json:"relay_grants,omitempty"` // Omitted leaves grants unchanged; [] clears them
 }
 
 var errVirtualKeyDualAssociation = errors.New("VirtualKey cannot be attached to more than one of Team, Customer or Business Unit")
@@ -2120,6 +2128,27 @@ func virtualKeyMatchesMetadataFilters(vk *configstoreTables.TableVirtualKey, fil
 	return true
 }
 
+// relayGrantNames turns the request's grants into names, refusing a name given twice.
+func relayGrantNames(grants []relayGrantBody) ([]string, error) {
+	seen := make(map[string]bool, len(grants))
+	names := make([]string, 0, len(grants))
+	for _, g := range grants {
+		if seen[g.RelayName] {
+			return nil, &badRequestError{err: fmt.Errorf("duplicate relay_name: %s", g.RelayName)}
+		}
+		seen[g.RelayName] = true
+		names = append(names, g.RelayName)
+	}
+	return names, nil
+}
+
+func classifyRelayGrantError(err error) error {
+	if errors.Is(err, configstore.ErrInvalidRelayGrant) {
+		return &badRequestError{err: err}
+	}
+	return err
+}
+
 func classifyAgentGrantReplacementError(err error) error {
 	if errors.Is(err, configstore.ErrInvalidAgentGrant) {
 		return &badRequestError{err: err}
@@ -2330,6 +2359,9 @@ func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 					return &badRequestError{err: fmt.Errorf("invalid tools_to_execute for mcp client %s: %w", mc.MCPClientName, err)}
 				}
 				mcpClient, err := h.configStore.GetMCPClientByName(ctx, mc.MCPClientName)
+				if errors.Is(err, configstore.ErrNotFound) {
+					return &badRequestError{err: fmt.Errorf("unknown mcp_client_name: %s", mc.MCPClientName)}
+				}
 				if err != nil {
 					return fmt.Errorf("failed to get MCP client: %w", err)
 				}
@@ -2358,6 +2390,15 @@ func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 			// names are the caller's fault and surface as 400.
 			if err := h.configStore.ReplaceVirtualKeyAgentGrants(ctx, vk.ID, agentNames, tx); err != nil {
 				return classifyAgentGrantReplacementError(err)
+			}
+		}
+		if req.RelayGrants != nil {
+			names, err := relayGrantNames(req.RelayGrants)
+			if err != nil {
+				return err
+			}
+			if err := h.configStore.ReplaceVirtualKeyRelayGrants(ctx, vk.ID, names, tx); err != nil {
+				return classifyRelayGrantError(err)
 			}
 		}
 		return nil
@@ -2797,7 +2838,7 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 					// Update existing provider config
 					existing, ok := existingConfigsMap[*pc.ID]
 					if !ok {
-						return fmt.Errorf("provider config %d does not belong to this virtual key", *pc.ID)
+						return &badRequestError{err: fmt.Errorf("provider config %d does not belong to this virtual key", *pc.ID)}
 					}
 					requestConfigsMap[*pc.ID] = true
 					if err := pc.AllowedModels.Validate(); err != nil {
@@ -2953,6 +2994,9 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 				}
 				if mc.ID == nil {
 					mcpClient, err := h.configStore.GetMCPClientByName(ctx, mc.MCPClientName)
+					if errors.Is(err, configstore.ErrNotFound) {
+						return &badRequestError{err: fmt.Errorf("unknown mcp_client_name: %s", mc.MCPClientName)}
+					}
 					if err != nil {
 						return fmt.Errorf("failed to get MCP client: %w", err)
 					}
@@ -2968,7 +3012,7 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 					// Update existing MCP config
 					existing, ok := existingMCPConfigsMap[*mc.ID]
 					if !ok {
-						return fmt.Errorf("MCP config %d does not belong to this virtual key", *mc.ID)
+						return &badRequestError{err: fmt.Errorf("MCP config %d does not belong to this virtual key", *mc.ID)}
 					}
 					requestMCPConfigsMap[*mc.ID] = true
 					existing.ToolsToExecute = mc.ToolsToExecute
@@ -3009,6 +3053,15 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 			// rest of the update, with validation performed before any deletion.
 			if err := h.configStore.ReplaceVirtualKeyAgentGrants(ctx, vk.ID, agentNames, tx); err != nil {
 				return classifyAgentGrantReplacementError(err)
+			}
+		}
+		if req.RelayGrants != nil {
+			names, err := relayGrantNames(req.RelayGrants)
+			if err != nil {
+				return err
+			}
+			if err := h.configStore.ReplaceVirtualKeyRelayGrants(ctx, vk.ID, names, tx); err != nil {
+				return classifyRelayGrantError(err)
 			}
 		}
 
