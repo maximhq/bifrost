@@ -239,6 +239,8 @@ type ImageTokenDetails struct {
 	NImages     int `json:"-"` // Number of images generated (used internally for bifrost)
 	ImageTokens int `json:"image_tokens,omitempty"`
 	TextTokens  int `json:"text_tokens,omitempty"`
+	// Thinking tokens, counted in the parent OutputTokens; output side only
+	ReasoningTokens int `json:"reasoning_tokens,omitempty"`
 }
 
 // DeepCopy returns an independent copy of u with no shared pointer fields,

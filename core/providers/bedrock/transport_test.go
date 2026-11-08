@@ -265,7 +265,6 @@ func TestChatCompletionStream_NetOpError_ChunkIsRetryable(t *testing.T) {
 		"net.OpError during EventStream decoding must use ErrProviderNetworkError message")
 }
 
-
 // newMidStreamResetServer returns a server that answers 200, writes a truncated
 // EventStream prelude (not a valid frame), then resets the TCP connection, which
 // produces a *net.OpError on the client's read side.
@@ -339,10 +338,10 @@ func TestStream_MidStreamDrop_IsUpstreamError(t *testing.T) {
 			require.NotNil(t, streamErr.StatusCode)
 			assert.Equal(t, http.StatusBadGateway, *streamErr.StatusCode)
 			assert.Equal(t, "api_error", anthropic.ToAnthropicChatCompletionError(streamErr).Error.Type)
-	})
+		})
 	}
 }
-       
+
 // TestRequest_ConnectionFailure_IsUpstreamError verifies that a connection the server
 // closes before responding reaches clients as a 502 upstream failure. Without a
 // status the error resolves to 400, which reads as a malformed request.
@@ -919,6 +918,50 @@ func TestBedrockTransportTLSInsecureSkipVerify(t *testing.T) {
 	assert.True(t, transport.ForceAttemptHTTP2)
 }
 
+// TestBedrockTransportInsecureTargetsStillVerifyHTTPSProxy pins that
+// network_config.insecure_skip_verify only reaches targets: net/http would handshake
+// with an https:// proxy using TLSClientConfig, so without the hop dialer the proxy's
+// certificate would go unchecked although proxy_config.skip_tls_verify is off.
+func TestBedrockTransportInsecureTargetsStillVerifyHTTPSProxy(t *testing.T) {
+	recorder := proxytest.NewHTTPSRecorder(t, "bedrock-tls")
+	for _, enforceHTTP2 := range []bool{true, false} {
+		recorder.Reset()
+		config := &schemas.ProviderConfig{
+			NetworkConfig: schemas.NetworkConfig{
+				DefaultRequestTimeoutInSeconds: 30,
+				InsecureSkipVerify:             true,
+				EnforceHTTP2:                   enforceHTTP2,
+			},
+			ProxyConfig: &schemas.ProxyConfig{
+				Type: schemas.HTTPProxy,
+				URL:  schemas.NewSecretVar("https://127.0.0.1:" + recorder.Port()),
+			},
+		}
+		config.CheckAndSetDefaults()
+
+		provider, err := NewBedrockProvider(config, noopLogger{})
+		require.NoError(t, err)
+
+		for name, client := range map[string]*http.Client{"client": provider.client, "realtime": provider.realtimeClient} {
+			resp, err := client.Get("http://bedrock-runtime.us-east-1.amazonaws.com/")
+			if err == nil {
+				resp.Body.Close()
+				t.Errorf("enforce_http2=%v %s: an https proxy whose certificate is not trusted was used", enforceHTTP2, name)
+			}
+		}
+		assert.Empty(t, recorder.Seen(), "enforce_http2=%v: the unverified proxy saw traffic", enforceHTTP2)
+
+		// With the proxy's CA in proxy_config, the same proxy is verified and used.
+		config.ProxyConfig.CACertPEM = schemas.NewSecretVar(recorder.CAPEM)
+		trusted, err := NewBedrockProvider(config, noopLogger{})
+		require.NoError(t, err)
+		resp, err := trusted.client.Get("http://bedrock-runtime.us-east-1.amazonaws.com/")
+		require.NoError(t, err, "enforce_http2=%v: the trusted https proxy was refused", enforceHTTP2)
+		resp.Body.Close()
+		assert.NotEmpty(t, recorder.Seen(), "enforce_http2=%v: the trusted proxy saw no traffic", enforceHTTP2)
+	}
+}
+
 func TestBedrockTransportTLSCACert(t *testing.T) {
 	testCACert := generateTestCACert(t)
 
@@ -979,6 +1022,9 @@ func TestBedrockTransportEnforceHTTP2(t *testing.T) {
 	assert.True(t, transport.ForceAttemptHTTP2)
 	// TLSNextProto should NOT be set when HTTP/2 is enforced, allowing ALPN negotiation
 	assert.Nil(t, transport.TLSNextProto)
+	// Nova Sonic needs HTTP/2, which this transport already speaks, so it shares the pool
+	assert.Same(t, transport, provider.realtimeClient.Transport)
+	assert.Zero(t, provider.realtimeClient.Timeout, "a realtime session outlives the request timeout")
 }
 
 func TestBedrockTransportEnforceHTTP2Disabled(t *testing.T) {
@@ -999,6 +1045,12 @@ func TestBedrockTransportEnforceHTTP2Disabled(t *testing.T) {
 	// TLSNextProto must be set to empty map to truly disable HTTP/2 ALPN negotiation
 	assert.NotNil(t, transport.TLSNextProto)
 	assert.Empty(t, transport.TLSNextProto)
+	// Nova Sonic's bidirectional stream is HTTP/2 only, so it gets a transport of its own
+	realtimeTransport, ok := provider.realtimeClient.Transport.(*http.Transport)
+	require.True(t, ok)
+	assert.NotSame(t, transport, realtimeTransport)
+	assert.True(t, realtimeTransport.ForceAttemptHTTP2)
+	assert.Nil(t, realtimeTransport.TLSNextProto)
 }
 
 // TestSignAWSRequest_ExcludesVolatileHeadersFromSignature locks in the fix for the
@@ -1161,6 +1213,186 @@ func TestBedrockTransportProxyMatrix(t *testing.T) {
 					proxytest.AssertRoute(t, set, want, hostPort, err)
 				})
 			}
+		}
+	}
+}
+
+// TestResponsesStreamAttachesEachRawEventOnce verifies a Converse event that expands into several Responses events
+// rides on exactly one of them, the one streaming its text, declared as Bedrock's format, so its raw text never
+// reaches the client ahead of (or apart from) the normalized text it backs.
+func TestResponsesStreamAttachesEachRawEventOnce(t *testing.T) {
+	events := []struct{ eventType, payload string }{
+		{"messageStart", `{"role":"assistant"}`},
+		{"contentBlockDelta", `{"contentBlockIndex":0,"delta":{"text":"mail alex@example.com"}}`},
+		{"contentBlockStop", `{"contentBlockIndex":0}`},
+		{"messageStop", `{"stopReason":"end_turn"}`},
+		{"metadata", `{"usage":{"inputTokens":3,"outputTokens":4,"totalTokens":7},"metrics":{"latencyMs":10}}`},
+	}
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/vnd.amazon.eventstream")
+		w.WriteHeader(http.StatusOK)
+		for _, event := range events {
+			writeEventStreamEvent(t, w, event.eventType, []byte(event.payload))
+		}
+	}))
+	defer ts.Close()
+
+	ctx := testBedrockCtx()
+	ctx.SetValue(schemas.BifrostContextKeyCaptureRawResponse, true)
+	req := testResponsesRequest()
+	req.Model = testConverseStreamModel
+	stream, bifrostErr := newTestProviderWithServer(t, ts).ResponsesStream(ctx, noopPostHookRunner, nil, testBedrockKey(), req)
+	require.Nil(t, bifrostErr)
+
+	carried := map[string]int{}
+	var textCarrier *schemas.BifrostResponsesStreamResponse
+	for chunk := range stream {
+		event := chunk.BifrostResponsesStreamResponse
+		if event == nil {
+			continue
+		}
+		if raw, ok := event.ExtraFields.RawResponse.(string); ok {
+			carried[raw]++
+			if raw == events[1].payload {
+				textCarrier = event
+			}
+		}
+	}
+	for _, event := range events {
+		assert.LessOrEqual(t, carried[event.payload], 1, "%s raw attached more than once", event.eventType)
+	}
+	require.NotNil(t, textCarrier, "the text event's raw payload was not attached")
+	assert.Equal(t, schemas.ResponsesStreamResponseTypeOutputTextDelta, textCarrier.Type)
+	assert.Equal(t, schemas.RawResponseFormatBedrockConverseStreamEvent, textCarrier.ExtraFields.RawResponseFormat)
+
+	redacted := *textCarrier
+	redacted.Delta = schemas.Ptr("mail [EMAIL]")
+	synced, err := schemas.SyncRawResponseText(textCarrier.ExtraFields.RawResponse, textCarrier.ExtraFields.RawResponseFormat, textCarrier, &redacted)
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"contentBlockIndex":0,"delta":{"text":"mail [EMAIL]"}}`, synced.(string))
+}
+
+// TestConverseStreamRecordsEveryUpstreamEventRaw pins that the raw response a converse stream
+// records carries every upstream event exactly once. Events that produce no Bifrost chunk of their
+// own (messageStop, metadata) used to be dropped from the raw record, and the chunks emitted at the
+// end of the stream carried a placeholder "{}" instead, so a logged stream lost its stop reason,
+// its additionalModelResponseFields and its usage, and a missing field could not be told apart from
+// one AWS never sent.
+func TestConverseStreamRecordsEveryUpstreamEventRaw(t *testing.T) {
+	cases := []struct {
+		name     string
+		payloads []string
+		ordered  bool // false where a held event may only find a payload-free chunk after a later event
+	}{
+		{"one text block", []string{
+			`{"p":"m0","role":"assistant"}`,
+			`{"contentBlockIndex":0,"delta":{"text":"one, two, "},"p":"m1"}`,
+			`{"contentBlockIndex":0,"p":"m2"}`,
+			`{"additionalModelResponseFields":{"stop_sequence":"three"},"p":"m3","stopReason":"stop_sequence"}`,
+			`{"metrics":{"latencyMs":760},"p":"m4","usage":{"inputTokens":32,"outputTokens":5,"totalTokens":37}}`,
+		}, true},
+		{"a held stop before more text", []string{
+			`{"p":"n0","role":"assistant"}`,
+			`{"contentBlockIndex":0,"delta":{"text":"first"},"p":"n1"}`,
+			`{"contentBlockIndex":0,"p":"n2"}`,
+			`{"contentBlockIndex":1,"delta":{"text":"second"},"p":"n3"}`,
+			`{"contentBlockIndex":1,"p":"n4"}`,
+			`{"p":"n5","stopReason":"end_turn"}`,
+			`{"p":"n6","usage":{"inputTokens":3,"outputTokens":2,"totalTokens":5}}`,
+		}, false},
+	}
+	for _, api := range []string{"chat", "responses"} {
+		for _, tc := range cases {
+			payloads := tc.payloads
+			t.Run(api+"/"+tc.name, func(t *testing.T) {
+				server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+					writer.Header().Set("Content-Type", "application/vnd.amazon.eventstream")
+					writer.WriteHeader(http.StatusOK)
+					encoder := eventstream.NewEncoder()
+					for _, payload := range payloads {
+						assert.NoError(t, encoder.Encode(writer, eventstream.Message{
+							Headers: eventstream.Headers{
+								{Name: ":message-type", Value: eventstream.StringValue("event")},
+								{Name: ":event-type", Value: eventstream.StringValue("testEvent")},
+							},
+							Payload: []byte(payload),
+						}))
+					}
+				}))
+				defer server.Close()
+				provider := newTestProviderWithServer(t, server)
+				provider.sendBackRawResponse = true
+				ctx := testBedrockCtx()
+				var stream chan *schemas.BifrostStreamChunk
+				var requestError *schemas.BifrostError
+				if api == "chat" {
+					request := testChatRequest()
+					request.Model = testConverseStreamModel
+					stream, requestError = provider.ChatCompletionStream(ctx, noopPostHookRunner, nil, testBedrockKey(), request)
+				} else {
+					request := testResponsesRequest()
+					request.Model = testConverseStreamModel
+					stream, requestError = provider.ResponsesStream(ctx, noopPostHookRunner, nil, testBedrockKey(), request)
+				}
+				require.Nil(t, requestError)
+				var raws []string
+				for chunk := range stream {
+					require.Nil(t, chunk.BifrostError, "stream error: %+v", chunk.BifrostError)
+					var raw interface{}
+					switch {
+					case chunk.BifrostChatResponse != nil:
+						raw = chunk.BifrostChatResponse.ExtraFields.RawResponse
+					case chunk.BifrostResponsesStreamResponse != nil:
+						raw = chunk.BifrostResponsesStreamResponse.ExtraFields.RawResponse
+					}
+					if s, ok := raw.(string); ok && s != "" {
+						raws = append(raws, s)
+						var format schemas.RawResponseFormat
+						if chunk.BifrostChatResponse != nil {
+							format = chunk.BifrostChatResponse.ExtraFields.RawResponseFormat
+						} else {
+							format = chunk.BifrostResponsesStreamResponse.ExtraFields.RawResponseFormat
+						}
+						// Raw text plugins edit a declared stream event in place, so a chunk that declares
+						// the format must carry exactly one event, the text it streams included.
+						if format == schemas.RawResponseFormatBedrockConverseStreamEvent {
+							assert.NotContains(t, s, "\n\n", "a chunk declaring one stream event carries several: %q", s)
+						}
+					}
+				}
+				recorded := strings.Join(raws, "\n")
+				assert.NotContains(t, raws, "{}", "a placeholder stands in for an upstream event: %q", raws)
+				last := -1
+				for _, payload := range payloads {
+					assert.Equal(t, 1, strings.Count(recorded, payload), "upstream event %s recorded %d times in %q", payload, strings.Count(recorded, payload), raws)
+					if idx := strings.Index(recorded, payload); idx >= 0 && tc.ordered {
+						assert.Greater(t, idx, last, "upstream event %s recorded out of order in %q", payload, raws)
+						last = idx
+					}
+				}
+			})
+		}
+	}
+}
+
+// BenchmarkHeldStreamRawStreamEnd measures what a converse stream with raw responses on now does
+// at its end: hold the three payload-free events (contentBlockStop, messageStop, metadata) and hand
+// them to the four closing chunks. With raw responses off none of this runs.
+func BenchmarkHeldStreamRawStreamEnd(b *testing.B) {
+	events := [][]byte{
+		[]byte(`{"contentBlockIndex":0,"p":"abcdefghij"}`),
+		[]byte(`{"additionalModelResponseFields":{"stop_sequence":"three"},"p":"abcdefghijklmnop","stopReason":"stop_sequence"}`),
+		[]byte(`{"metrics":{"latencyMs":760},"p":"abcdefghijklmnopqrstuvwxyzABCDEF","usage":{"inputTokens":32,"outputTokens":5,"totalTokens":37}}`),
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		var held heldStreamRaw
+		for _, e := range events {
+			held.hold(e)
+		}
+		for i := 0; i < 4; i++ {
+			var extra schemas.BifrostResponseExtraFields
+			held.attach(&extra, i == 3)
 		}
 	}
 }

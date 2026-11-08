@@ -33,6 +33,7 @@ test.describe('Complexity Router', () => {
                 model: savedModel,
                 previous_message_count: 2,
                 timeout: '3000ms',
+                min_confidence: 0.7,
               },
             },
           })
@@ -127,6 +128,13 @@ test.describe('Complexity Router', () => {
         decisions: ['Microsoft-Decision-1'],
         chat: ['gpt-4o'],
       },
+      // Databricks' catalog is mostly chat serving endpoints; only ai_decide and the System One models are offered.
+      {
+        provider: 'databricks',
+        saved: 'ai_decide',
+        decisions: ['ai_decide', 'system.ai.openjev-qwen35-4b'],
+        chat: ['databricks-claude-sonnet-4'],
+      },
     ]
 
     for (const { provider, saved, decisions, chat } of cases) {
@@ -153,23 +161,17 @@ test.describe('Complexity Router', () => {
       })
     }
 
-    // ai_decide is a workspace function, not a serving endpoint, so Databricks' listing never
-    // carries it: the model is shown fixed rather than picked from an empty list.
-    test('should show ai_decide as the fixed model for the databricks provider', async ({ page }) => {
-      decisionProvider = 'databricks'
-      savedModel = 'ai_decide'
-      decisionModels = []
-      chatModels = ['databricks-claude-sonnet-4']
+    test('should show the saved confidence threshold in the model configuration sheet', async ({ page }) => {
+      decisionProvider = 'openai'
+      savedModel = 'gpt-6-luna'
+      decisionModels = ['gpt-6-luna']
+      chatModels = ['gpt-4o-mini']
       await page.goto('/workspace/complexity-router')
       await page.getByTestId('complexity-router-decision-settings-button').click()
       await expect(page.getByTestId('complexity-router-decision-sheet')).toBeVisible({ timeout: 5000 })
 
-      const modelInput = page.getByTestId('complexity-router-decision-model-input')
-      await expect(modelInput).toBeVisible({ timeout: 10000 })
-      await expect(modelInput).toHaveValue('ai_decide')
-      await expect(modelInput).toBeDisabled()
-      await expect(page.getByTestId('complexity-router-decision-model-select')).toHaveCount(0)
-      expect(modelQueries).toHaveLength(0)
+      await expect(page.getByTestId('complexity-router-decision-sheet')).toContainText('Confidence threshold')
+      await expect(page.getByTestId('complexity-router-decision-min-confidence-input')).toHaveValue('0.7')
     })
   })
 })

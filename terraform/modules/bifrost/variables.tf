@@ -144,6 +144,18 @@ variable "websocket" {
   default     = null
 }
 
+variable "server" {
+  description = "HTTP server configuration (read_buffer_size, base_path, body_buffer_pool_limit_bytes, ...). Set base_path (e.g. \"/bifrost\") together with ingress_path to serve Bifrost under a URL prefix."
+  type        = any
+  default     = null
+}
+
+variable "ingress_path" {
+  description = "Path prefix the Kubernetes ingress routes to Bifrost (EKS, GKE, AKS, generic Kubernetes). Keep \"/\" to own the whole host; set it to the same value as server.base_path (e.g. \"/bifrost\") to serve under a prefix. Bifrost accepts requests with or without the prefix, so probes stay on /health."
+  type        = string
+  default     = "/"
+}
+
 # --- Image ---
 variable "image_tag" {
   description = "Bifrost Docker image tag."

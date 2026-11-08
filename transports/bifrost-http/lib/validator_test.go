@@ -147,6 +147,40 @@ func TestValidateConfigSchema_AgentOAuthRejectsUnknownFields(t *testing.T) {
 
 // TestValidateConfigSchema_WarpSection: the warp section takes every Warp settings field, topics
 // included, and refuses values the settings page would refuse.
+// TestValidateConfigSchema_GlobalProxyTypes: the file accepts the global proxy types the
+// settings endpoint accepts (http, socks5) and still refuses tcp, which has no dialer.
+func TestValidateConfigSchema_GlobalProxyTypes(t *testing.T) {
+	for _, tc := range []struct {
+		proxyType string
+		valid     bool
+	}{
+		{"http", true},
+		{"socks5", true},
+		{"tcp", false},
+	} {
+		t.Run(tc.proxyType, func(t *testing.T) {
+			config := `{"proxy_config": {"enabled": true, "type": "` + tc.proxyType + `", "url": "socks5://10.0.0.5:1080", "enable_for_inference": true}}`
+			err := ValidateConfigSchema([]byte(config), loadLocalSchema(t))
+			if tc.valid && err != nil {
+				t.Fatalf("expected proxy_config.type %q to pass validation: %v", tc.proxyType, err)
+			}
+			if !tc.valid && err == nil {
+				t.Fatalf("expected proxy_config.type %q to fail validation", tc.proxyType)
+			}
+		})
+	}
+}
+
+// TestValidateConfigSchema_NoWorkloadIdentityMappings pins that config.json holds no
+// workload identity mappings: workloads are mapped to service accounts in the dashboard or
+// through the API, and only the trusted issuers live in the file, on the SSO provider.
+func TestValidateConfigSchema_NoWorkloadIdentityMappings(t *testing.T) {
+	config := `{"workload_identity": {"mappings": [{"name": "CI", "platform": "entra", "object_id": "5b1e2c7a", "service_account": "svc-ci"}]}}`
+	if err := ValidateConfigSchema([]byte(config), loadLocalSchema(t)); err == nil {
+		t.Fatal("expected a top-level workload_identity section to fail validation")
+	}
+}
+
 func TestValidateConfigSchema_WarpSection(t *testing.T) {
 	validConfig := `{
 		"warp": {
@@ -995,6 +1029,32 @@ func TestValidateConfigSchema_MCPClientConfig_Valid_Sse(t *testing.T) {
 	}
 }
 
+// TestValidateConfigSchema_MCPClientOAuthUseClientMetadataDocument: oauth_config takes the
+// use_client_metadata_document toggle, and it reaches the client's pending OAuth config.
+func TestValidateConfigSchema_MCPClientOAuthUseClientMetadataDocument(t *testing.T) {
+	client := `{
+		"name": "linear",
+		"connection_type": "http",
+		"connection_string": "https://mcp.linear.app/mcp",
+		"auth_type": "oauth",
+		"oauth_config": {
+			"authorize_url": "https://linear.app/oauth/authorize",
+			"token_url": "https://api.linear.app/oauth/token",
+			"use_client_metadata_document": true
+		}
+	}`
+	if err := ValidateConfigSchema([]byte(`{"mcp": {"client_configs": [`+client+`]}}`), loadLocalSchema(t)); err != nil {
+		t.Fatalf("expected use_client_metadata_document to pass validation: %v", err)
+	}
+	var parsed schemas.MCPClientConfig
+	if err := json.Unmarshal([]byte(client), &parsed); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if parsed.PendingOAuthConfig == nil || !parsed.PendingOAuthConfig.UseClientMetadataDocument {
+		t.Fatal("use_client_metadata_document did not reach the pending OAuth config")
+	}
+}
+
 func TestValidateConfigSchema_MCPClientConfig_Valid_Http(t *testing.T) {
 	// Valid MCP client config with http connection type
 	validConfig := `{
@@ -1012,6 +1072,42 @@ func TestValidateConfigSchema_MCPClientConfig_Valid_Http(t *testing.T) {
 	err := ValidateConfigSchema([]byte(validConfig), loadLocalSchema(t))
 	if err != nil {
 		t.Errorf("expected valid MCP client config (http) to pass validation, got error: %v", err)
+	}
+}
+
+// TestValidateConfigSchema_MCPClientConfig_PerUserDiscovery: per_user_discovery
+// discovers each caller's tools with their own credential, so the schema accepts
+// it only on a per-user auth type, and not on an openapi client.
+func TestValidateConfigSchema_MCPClientConfig_PerUserDiscovery(t *testing.T) {
+	schema := loadLocalSchema(t)
+	for _, tc := range []struct {
+		name   string
+		client string
+		valid  bool
+	}{
+		{"per_user_headers", `"connection_type": "http", "connection_string": "http://localhost:3001/mcp", "auth_type": "per_user_headers", "per_user_header_keys": ["x-api-key"]`, true},
+		{"per_user_oauth", `"connection_type": "http", "connection_string": "http://localhost:3001/mcp", "auth_type": "per_user_oauth"`, true},
+		{"token_exchange", `"connection_type": "http", "connection_string": "http://localhost:3001/mcp", "auth_type": "token_exchange", "token_exchange": {"audience": "api://notes", "client_id": "exchange-app"}`, true},
+		{"headers", `"connection_type": "http", "connection_string": "http://localhost:3001/mcp", "auth_type": "headers"`, false},
+		{"oauth", `"connection_type": "http", "connection_string": "http://localhost:3001/mcp", "auth_type": "oauth"`, false},
+		{"no auth_type", `"connection_type": "http", "connection_string": "http://localhost:3001/mcp"`, false},
+		{"openapi per_user_headers", `"connection_type": "openapi", "auth_type": "per_user_headers", "per_user_header_keys": ["x-api-key"], "openapi_config": {"spec_url": "https://example.com/openapi.json"}`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			config := `{"mcp": {"client_configs": [{"name": "notes", ` + tc.client + `, "per_user_discovery": true}]}}`
+			err := ValidateConfigSchema([]byte(config), schema)
+			if tc.valid && err != nil {
+				t.Errorf("expected per_user_discovery to be accepted, got: %v", err)
+			}
+			if !tc.valid && err == nil {
+				t.Error("expected per_user_discovery to be rejected")
+			}
+		})
+	}
+
+	off := `{"mcp": {"client_configs": [{"name": "notes", "connection_type": "http", "connection_string": "http://localhost:3001/mcp", "auth_type": "headers", "per_user_discovery": false}]}}`
+	if err := ValidateConfigSchema([]byte(off), schema); err != nil {
+		t.Errorf("expected per_user_discovery false to be accepted on any auth type, got: %v", err)
 	}
 }
 
@@ -2291,6 +2387,116 @@ func postgresStoreConfig(storeName string, passwordFields string) string {
 	}`, storeName, passwordFields)
 }
 
+func TestSchemaObjectStorageAzure(t *testing.T) {
+	compiled := compileSchema(t)
+	tests := []struct {
+		name      string
+		storage   string
+		wantError bool
+	}{
+		{name: "identity", storage: `{"type":"azure","bucket":"logs","endpoint":"https://example.blob.core.windows.net"}`},
+		{name: "connection string", storage: `{"type":"azure","bucket":"logs","connection_string":"UseDevelopmentStorage=true"}`},
+		{name: "environment references", storage: `{"type":"azure","bucket":"env.AZURE_CONTAINER","connection_string":"env.AZURE_STORAGE_CONNECTION_STRING"}`},
+		{name: "structured secrets", storage: `{"type":"azure","bucket":{"value":"","ref":"env.AZURE_CONTAINER","type":"env"},"endpoint":{"value":"","ref":"env.AZURE_BLOB_ENDPOINT","type":"env"}}`},
+		{name: "structured connection string", storage: `{"type":"azure","bucket":"logs","connection_string":{"value":"","ref":"env.AZURE_STORAGE_CONNECTION_STRING","type":"env"}}`},
+		{name: "inferred structured env reference", storage: `{"type":"azure","bucket":"logs","endpoint":{"value":"","ref":"env.AZURE_BLOB_ENDPOINT"}}`},
+		{name: "structured vault references", storage: `{"type":"azure","bucket":{"value":"","ref":"vault.azure/container","type":"vault"},"connection_string":{"value":"","ref":"vault.azure/connection-string","type":"vault"}}`},
+		{name: "structured vault endpoint", storage: `{"type":"azure","bucket":"logs","endpoint":{"value":"","ref":"vault.azure/endpoint","type":"vault"}}`},
+		{name: "legacy env references", storage: `{"type":"azure","bucket":{"value":"","env_var":"AZURE_CONTAINER","from_env":true},"endpoint":{"value":"","env_var":"AZURE_BLOB_ENDPOINT","from_env":true}}`},
+		{name: "legacy connection string reference", storage: `{"type":"azure","bucket":"logs","connection_string":{"value":"","env_var":"AZURE_STORAGE_CONNECTION_STRING","from_env":true}}`},
+		{name: "reference-only env identity", storage: `{"type":"azure","bucket":{"ref":"env.AZURE_CONTAINER","type":"env"},"endpoint":{"ref":"env.AZURE_BLOB_ENDPOINT","type":"env"}}`},
+		{name: "reference-only env connection string", storage: `{"type":"azure","bucket":"logs","connection_string":{"ref":"env.AZURE_STORAGE_CONNECTION_STRING","type":"env"}}`},
+		{name: "reference-only vault identity", storage: `{"type":"azure","bucket":{"ref":"vault.azure/container","type":"vault"},"endpoint":{"ref":"vault.azure/endpoint","type":"vault"}}`},
+		{name: "reference-only vault connection string", storage: `{"type":"azure","bucket":"logs","connection_string":{"ref":"vault.azure/connection-string","type":"vault"}}`},
+		{name: "reference-only legacy identity", storage: `{"type":"azure","bucket":{"env_var":"AZURE_CONTAINER","from_env":true},"endpoint":{"env_var":"AZURE_BLOB_ENDPOINT","from_env":true}}`},
+		{name: "reference-only legacy connection string", storage: `{"type":"azure","bucket":"logs","connection_string":{"env_var":"AZURE_STORAGE_CONNECTION_STRING","from_env":true}}`},
+		{name: "gzip", storage: `{"type":"azure","bucket":"logs","connection_string":"UseDevelopmentStorage=true","compress":true}`},
+		{name: "missing container", storage: `{"type":"azure","endpoint":"https://example.blob.core.windows.net"}`, wantError: true},
+		{name: "empty container", storage: `{"type":"azure","bucket":"","endpoint":"https://example.blob.core.windows.net"}`, wantError: true},
+		{name: "empty structured container", storage: `{"type":"azure","bucket":{"value":""},"endpoint":"https://example.blob.core.windows.net"}`, wantError: true},
+		{name: "missing authentication", storage: `{"type":"azure","bucket":"logs"}`, wantError: true},
+		{name: "conflicting authentication", storage: `{"type":"azure","bucket":"logs","endpoint":"https://example.blob.core.windows.net","connection_string":"UseDevelopmentStorage=true"}`, wantError: true},
+		{name: "empty endpoint", storage: `{"type":"azure","bucket":"logs","endpoint":""}`, wantError: true},
+		{name: "empty connection string", storage: `{"type":"azure","bucket":"logs","connection_string":""}`, wantError: true},
+		{name: "empty structured endpoint", storage: `{"type":"azure","bucket":"logs","endpoint":{"value":""}}`, wantError: true},
+		{name: "empty structured connection string", storage: `{"type":"azure","bucket":"logs","connection_string":{"value":""}}`, wantError: true},
+		{name: "empty reference rejected", storage: `{"type":"azure","bucket":"logs","connection_string":{"value":"","ref":"","type":"env"}}`, wantError: true},
+		{name: "empty legacy env name rejected", storage: `{"type":"azure","bucket":"logs","endpoint":{"value":"","env_var":"","from_env":true}}`, wantError: true},
+		{name: "inactive legacy env reference rejected", storage: `{"type":"azure","bucket":"logs","endpoint":{"value":"","env_var":"AZURE_BLOB_ENDPOINT","from_env":false}}`, wantError: true},
+		{name: "legacy name without flag rejected", storage: `{"type":"azure","bucket":"logs","connection_string":{"value":"","env_var":"AZURE_STORAGE_CONNECTION_STRING"}}`, wantError: true},
+		{name: "empty container object", storage: `{"type":"azure","bucket":{},"endpoint":"https://example.blob.core.windows.net"}`, wantError: true},
+		{name: "empty endpoint object", storage: `{"type":"azure","bucket":"logs","endpoint":{}}`, wantError: true},
+		{name: "empty connection string object", storage: `{"type":"azure","bucket":"logs","connection_string":{}}`, wantError: true},
+		{name: "reference without type or value", storage: `{"type":"azure","bucket":"logs","connection_string":{"ref":"env.AZURE_STORAGE_CONNECTION_STRING"}}`, wantError: true},
+		{name: "reference-only empty reference", storage: `{"type":"azure","bucket":"logs","connection_string":{"ref":"","type":"env"}}`, wantError: true},
+		{name: "reference-only inactive legacy reference", storage: `{"type":"azure","bucket":"logs","endpoint":{"env_var":"AZURE_BLOB_ENDPOINT","from_env":false}}`, wantError: true},
+		{name: "null endpoint", storage: `{"type":"azure","bucket":"logs","endpoint":null}`, wantError: true},
+		{name: "S3 field rejected", storage: `{"type":"azure","bucket":"logs","endpoint":"https://example.blob.core.windows.net","access_key_id":"key"}`, wantError: true},
+		{name: "GCS field rejected", storage: `{"type":"azure","bucket":"logs","endpoint":"https://example.blob.core.windows.net","credentials_json":"{}"}`, wantError: true},
+		{name: "unknown field rejected", storage: `{"type":"azure","bucket":"logs","endpoint":"https://example.blob.core.windows.net","unknown":true}`, wantError: true},
+		{name: "S3 unchanged", storage: `{"type":"s3","bucket":"logs","region":"us-east-1","endpoint":"https://minio.example","access_key_id":"key","secret_access_key":"secret"}`},
+		{name: "GCS unchanged", storage: `{"type":"gcs","bucket":"logs","project_id":"project","credentials_json":{"value":"GCS_CREDENTIALS","type":"env"}}`},
+		{name: "S3 rejects Azure connection string", storage: `{"type":"s3","bucket":"logs","connection_string":"UseDevelopmentStorage=true"}`, wantError: true},
+		{name: "GCS rejects Azure endpoint", storage: `{"type":"gcs","bucket":"logs","endpoint":"https://example.blob.core.windows.net"}`, wantError: true},
+		{name: "S3 reference-only bucket unchanged", storage: `{"type":"s3","bucket":{"ref":"env.S3_BUCKET","type":"env"}}`, wantError: true},
+		{name: "GCS reference-only bucket unchanged", storage: `{"type":"gcs","bucket":{"ref":"env.GCS_BUCKET","type":"env"}}`, wantError: true},
+	}
+	for _, target := range []struct {
+		name   string
+		config string
+	}{
+		{name: "logs", config: `{"logs_store":{"enabled":true,"type":"sqlite","config":{"path":"/tmp/logs.db"},"object_storage":%s}}`},
+		{name: "audit", config: `{"audit_logs":{"object_storage":%s}}`},
+	} {
+		t.Run(target.name, func(t *testing.T) {
+			for _, tt := range tests {
+				t.Run(tt.name, func(t *testing.T) {
+					err := validateConfig(t, compiled, fmt.Sprintf(target.config, tt.storage))
+					if tt.wantError && err == nil {
+						t.Fatal("expected schema validation to fail")
+					}
+					if !tt.wantError && err != nil {
+						t.Fatalf("expected schema validation to pass: %v", err)
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestSchemaObjectStorageAzureFormats(t *testing.T) {
+	compiled := compileSchema(t)
+	for _, tt := range []struct {
+		name      string
+		target    string
+		fields    string
+		wantError bool
+	}{
+		{name: "Parquet snappy", target: "logs_store", fields: `"format":"parquet","compression":"snappy"`},
+		{name: "Parquet zstd", target: "logs_store", fields: `"format":"parquet","compression":"zstd"`},
+		{name: "JSON gzip", target: "logs_store", fields: `"format":"json","compression":"gzip"`},
+		{name: "JSON rejects snappy", target: "logs_store", fields: `"format":"json","compression":"snappy"`, wantError: true},
+		{name: "default JSON rejects zstd", target: "logs_store", fields: `"compression":"zstd"`, wantError: true},
+		{name: "audit keeps JSONL format contract", target: "audit_logs", fields: `"format":"parquet"`, wantError: true},
+		{name: "audit keeps gzip switch contract", target: "audit_logs", fields: `"compression":"zstd"`, wantError: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			storage := `{"type":"azure","bucket":"logs","connection_string":"UseDevelopmentStorage=true",` + tt.fields + `}`
+			config := `{"audit_logs":{"object_storage":` + storage + `}}`
+			if tt.target == "logs_store" {
+				config = `{"logs_store":{"enabled":true,"type":"sqlite","config":{"path":"/tmp/logs.db"},"object_storage":` + storage + `}}`
+			}
+			err := validateConfig(t, compiled, config)
+			if tt.wantError && err == nil {
+				t.Fatal("expected schema validation to fail")
+			}
+			if !tt.wantError && err != nil {
+				t.Fatalf("expected schema validation to pass: %v", err)
+			}
+		})
+	}
+}
+
 // compileSchema loads and compiles the config.schema.json for validation tests.
 func compileSchema(t *testing.T) *jsonschema.Schema {
 	t.Helper()
@@ -2600,6 +2806,93 @@ func TestSchemaSCIMConfigValidation(t *testing.T) {
 	}
 }
 
+// workloadIssuer returns the provider config suffix holding one trusted issuer at
+// https://idp.example for audience a, with fields added to it.
+func workloadIssuer(fields string) string {
+	return `,"workloadIdentity":{"additionalTrustedIssuers":[{"name":"IdP","issuerUrl":"https://idp.example","audiences":["a"],` + fields + `}]}`
+}
+
+// TestSchemaSCIMSharedProvisioningFields pins the fields every identity provider inherits from
+// the enterprise mapping.ProvisioningConfig: Cross App Access (crossAppAccess), workload
+// identity (workloadIdentity), the token exchange host allowlist (tokenExchangeHosts) and
+// accessProfileResolutionStrategy. Each
+// provider's config refuses unknown keys, so a provider missing one of them rejects a config
+// the loader accepts.
+func TestSchemaSCIMSharedProvisioningFields(t *testing.T) {
+	compiled := compileSchema(t)
+
+	providers := map[string]string{
+		"okta":      `"issuerUrl":"https://acme.okta.com/oauth2/default","clientId":"bifrost","clientSecret":"env.OKTA_CLIENT_SECRET"`,
+		"entra":     `"tenantId":"00000000-0000-0000-0000-000000000000","clientId":"bifrost"`,
+		"keycloak":  `"serverUrl":"https://keycloak.company.com","realm":"bifrost-prod","clientId":"bifrost","clientSecret":"env.KEYCLOAK_CLIENT_SECRET"`,
+		"zitadel":   `"domain":"acme.zitadel.cloud","clientId":"bifrost"`,
+		"google":    `"domain":"company.com","clientId":"bifrost"`,
+		"sailpoint": `"product":"isc","tenant":"acme"`,
+		"generic":   `"issuerUrl":"https://idp.company.com","clientId":"bifrost"`,
+	}
+	scimConfig := func(provider, extra string) string {
+		return `{"scim_config":{"enabled":true,"provider":"` + provider + `","config":{` + providers[provider] + extra + `}}}`
+	}
+
+	for provider := range providers {
+		t.Run(provider+" accepts the shared provisioning fields", func(t *testing.T) {
+			extra := `,"crossAppAccess":{"enabled":true,"accessTokenTtl":3600,"provisionUsers":false},` +
+				`"workloadIdentity":{"additionalTrustedIssuers":[{"name":"AWS prod","kind":"aws","issuerUrl":"https://abc.tokens.sts.global.api.aws","audiences":["https://bifrost.example"]}]},` +
+				`"tokenExchangeHosts":["auth.example.com","login.example.com:8443"],` +
+				`"accessProfileResolutionStrategy":"order"`
+			if err := validateConfig(t, compiled, scimConfig(provider, extra)); err != nil {
+				t.Fatalf("expected config to validate, got: %v", err)
+			}
+		})
+	}
+
+	tests := []struct {
+		name      string
+		extra     string
+		wantError bool
+	}{
+		{name: "okta syncAllUsers false is valid", extra: `,"syncAllUsers":false`},
+		{name: "crossAppAccess accessTokenTtl 0 means the default", extra: `,"crossAppAccess":{"enabled":true,"accessTokenTtl":0}`},
+		{name: "crossAppAccess accessTokenTtl at the 60 second floor", extra: `,"crossAppAccess":{"enabled":true,"accessTokenTtl":60}`},
+		{name: "crossAppAccess accessTokenTtl below the floor", extra: `,"crossAppAccess":{"enabled":true,"accessTokenTtl":59}`, wantError: true},
+		{name: "crossAppAccess accessTokenTtl above one day", extra: `,"crossAppAccess":{"enabled":true,"accessTokenTtl":86401}`, wantError: true},
+		{name: "crossAppAccess rejects unknown keys", extra: `,"crossAppAccess":{"enabled":true,"trustedIssuer":"https://acme.okta.com"}`, wantError: true},
+		{name: "generic trusted issuer with its claims", extra: workloadIssuer(`"kind":"generic","identityClaim":"client_id","machineCheck":{"kind":"sub_equals_claim","claim":"client_id"},"maxLifetimeSeconds":3600,"disabled":true`)},
+		{name: "generic trusted issuer taking only mapped IDs", extra: workloadIssuer(`"kind":"generic","identityClaim":"azp","machineCheck":{"kind":"any"}`)},
+		{name: "generic trusted issuer with a prefix rule", extra: workloadIssuer(`"kind":"generic","identityClaim":"azp","machineCheck":{"kind":"claim_prefix","claim":"preferred_username","value":"service-account-"}`)},
+		{name: "trusted issuer on localhost over http", extra: `,"workloadIdentity":{"additionalTrustedIssuers":[{"name":"Local","kind":"aws","issuerUrl":"http://localhost:8381/realms/acme","audiences":["a"]}]}`},
+		{name: "trusted issuer over plain http", extra: `,"workloadIdentity":{"additionalTrustedIssuers":[{"name":"X","kind":"aws","issuerUrl":"http://idp.example","audiences":["a"]}]}`, wantError: true},
+		{name: "trusted issuer URL with a query", extra: `,"workloadIdentity":{"additionalTrustedIssuers":[{"name":"X","kind":"aws","issuerUrl":"https://idp.example/?","audiences":["a"]}]}`, wantError: true},
+		{name: "trusted issuer URL with a fragment", extra: `,"workloadIdentity":{"additionalTrustedIssuers":[{"name":"X","kind":"aws","issuerUrl":"https://idp.example#","audiences":["a"]}]}`, wantError: true},
+		{name: "trusted issuer URL with user info", extra: `,"workloadIdentity":{"additionalTrustedIssuers":[{"name":"X","kind":"aws","issuerUrl":"https://u:p@idp.example","audiences":["a"]}]}`, wantError: true},
+		{name: "trusted issuer without an audience", extra: `,"workloadIdentity":{"additionalTrustedIssuers":[{"name":"X","kind":"aws","issuerUrl":"https://idp.example","audiences":[]}]}`, wantError: true},
+		{name: "trusted issuer of an unknown kind", extra: `,"workloadIdentity":{"additionalTrustedIssuers":[{"name":"X","kind":"okta","issuerUrl":"https://idp.example","audiences":["a"]}]}`, wantError: true},
+		{name: "trusted issuer without a name", extra: `,"workloadIdentity":{"additionalTrustedIssuers":[{"kind":"aws","issuerUrl":"https://idp.example","audiences":["a"]}]}`, wantError: true},
+		{name: "trusted issuer with a blank name", extra: `,"workloadIdentity":{"additionalTrustedIssuers":[{"name":"  ","kind":"aws","issuerUrl":"https://idp.example","audiences":["a"]}]}`, wantError: true},
+		{name: "trusted issuer with an id", extra: `,"workloadIdentity":{"additionalTrustedIssuers":[{"id":"x","name":"X","kind":"aws","issuerUrl":"https://idp.example","audiences":["a"]}]}`, wantError: true},
+		{name: "generic trusted issuer without an identity claim", extra: workloadIssuer(`"kind":"generic","machineCheck":{"kind":"any"}`), wantError: true},
+		{name: "generic trusted issuer without a machine check", extra: workloadIssuer(`"kind":"generic","identityClaim":"azp"`), wantError: true},
+		{name: "machine check prefix that is empty", extra: workloadIssuer(`"kind":"generic","identityClaim":"azp","machineCheck":{"kind":"claim_prefix","claim":"preferred_username","value":""}`), wantError: true},
+		{name: "machine check prefix without a value", extra: workloadIssuer(`"kind":"generic","identityClaim":"azp","machineCheck":{"kind":"claim_prefix","claim":"preferred_username"}`), wantError: true},
+		{name: "machine check equals without a claim", extra: workloadIssuer(`"kind":"generic","identityClaim":"azp","machineCheck":{"kind":"claim_equals","value":"client-credentials"}`), wantError: true},
+		{name: "machine check sub_equals_claim without a claim", extra: workloadIssuer(`"kind":"generic","identityClaim":"azp","machineCheck":{"kind":"sub_equals_claim"}`), wantError: true},
+		{name: "tokenExchangeHosts rejects a URL", extra: `,"tokenExchangeHosts":["https://auth.example.com"]`, wantError: true},
+		{name: "tokenExchangeHosts rejects a path", extra: `,"tokenExchangeHosts":["auth.example.com/oauth2"]`, wantError: true},
+		{name: "accessProfileResolutionStrategy rejects unknown values", extra: `,"accessProfileResolutionStrategy":"first"`, wantError: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateConfig(t, compiled, scimConfig("okta", tt.extra))
+			if tt.wantError && err == nil {
+				t.Fatal("expected validation error")
+			}
+			if !tt.wantError && err != nil {
+				t.Fatalf("expected config to validate, got: %v", err)
+			}
+		})
+	}
+}
+
 func TestSchemaKeyAliases(t *testing.T) {
 	schema := loadSchema(t)
 
@@ -2864,6 +3157,32 @@ func TestSchemaMCPToolSyncInterval(t *testing.T) {
 			t.Errorf("mcp with tool_sync_interval should be valid, got: %v", err)
 		}
 	})
+}
+
+// max_protocol_version is accepted globally (mcp) and per client, limited to the supported values.
+func TestSchemaMCPMaxProtocolVersion(t *testing.T) {
+	compiled := compileSchema(t)
+	config := func(global, client string) string {
+		return fmt.Sprintf(`{
+			"mcp": {
+				"max_protocol_version": %s,
+				"client_configs": [
+					{"name": "example", "connection_type": "http", "connection_string": "https://example.com/mcp", "max_protocol_version": %s}
+				]
+			}
+		}`, global, client)
+	}
+	for _, v := range []string{`"auto"`, `"2026-07-28"`, `"2025-11-25"`, `"2025-06-18"`} {
+		if err := validateConfig(t, compiled, config(v, v)); err != nil {
+			t.Errorf("max_protocol_version %s should be valid, got: %v", v, err)
+		}
+	}
+	if err := validateConfig(t, compiled, config(`"2024-11-05"`, `"auto"`)); err == nil {
+		t.Error("an unsupported global max_protocol_version must be rejected")
+	}
+	if err := validateConfig(t, compiled, config(`"auto"`, `"latest"`)); err == nil {
+		t.Error("an unsupported per-client max_protocol_version must be rejected")
+	}
 }
 
 func TestSchemaMCPClientEndpointSlug(t *testing.T) {
@@ -3896,6 +4215,70 @@ func TestSchemaOAuthKeyConfig(t *testing.T) {
 	}
 }
 
+// TestSchemaAnthropicKeyConfig pins that anthropic_key_config.workload_identity is accepted on
+// anthropic and anthropic-based custom provider keys, and that the schema demands the same
+// shape as AnthropicWorkloadIdentityConfig.Validate: the three IDs and exactly one token source.
+func TestSchemaAnthropicKeyConfig(t *testing.T) {
+	compiled := compileSchema(t)
+
+	providers := func(keyBody string) string {
+		return fmt.Sprintf(`{
+		"providers": {
+			"anthropic": {
+				"keys": [{%s}]
+			},
+			"acme": {
+				"keys": [{%s}],
+				"custom_provider_config": {"base_provider_type": "anthropic"},
+				"network_config": {"base_url": "https://llm.acme.example"}
+			}
+		}
+	}`, keyBody, keyBody)
+	}
+	const key = `"name": "k", "models": ["*"], "weight": 1.0, `
+	const ids = `"federation_rule_id": "fdrl_01abc", "organization_id": "env.ANTHROPIC_ORG_ID", "service_account_id": "svac_01def"`
+
+	valid := []struct {
+		name   string
+		config string
+	}{
+		{"token file", providers(key + `"anthropic_key_config": {"workload_identity": {` + ids + `, "identity_source": {"type": "file", "path": "/var/run/secrets/anthropic/token"}}}`)},
+		{"env token with workspace", providers(key + `"anthropic_key_config": {"workload_identity": {` + ids + `, "workspace_id": "wrkspc_01ghi", "identity_source": {"type": "inline", "token": "env.ANTHROPIC_IDENTITY_TOKEN"}}}`)},
+		{"alongside a value", providers(key + `"value": "sk-ant", "anthropic_key_config": {"workload_identity": {` + ids + `, "identity_source": {"type": "file", "path": "/f"}}}`)},
+		{"empty section", providers(key + `"value": "sk-ant", "anthropic_key_config": {}`)},
+	}
+	for _, tt := range valid {
+		t.Run("valid "+tt.name, func(t *testing.T) {
+			if err := validateConfig(t, compiled, tt.config); err != nil {
+				t.Fatalf("config should be valid: %v", err)
+			}
+		})
+	}
+
+	invalid := []struct {
+		name   string
+		config string
+	}{
+		{"a file source carrying a token", providers(key + `"anthropic_key_config": {"workload_identity": {` + ids + `, "identity_source": {"type": "file", "path": "/f", "token": "t"}}}`)},
+		{"an inline source carrying a path", providers(key + `"anthropic_key_config": {"workload_identity": {` + ids + `, "identity_source": {"type": "inline", "token": "t", "path": "/f"}}}`)},
+		{"a file source without a path", providers(key + `"anthropic_key_config": {"workload_identity": {` + ids + `, "identity_source": {"type": "file"}}}`)},
+		{"an unknown source type", providers(key + `"anthropic_key_config": {"workload_identity": {` + ids + `, "identity_source": {"type": "gcp_metadata"}}}`)},
+		{"no identity source", providers(key + `"anthropic_key_config": {"workload_identity": {` + ids + `}}`)},
+		{"the flat identity_token_file field", providers(key + `"anthropic_key_config": {"workload_identity": {` + ids + `, "identity_token_file": "/f"}}`)},
+		{"missing service account", providers(key + `"anthropic_key_config": {"workload_identity": {"federation_rule_id": "fdrl_01abc", "organization_id": "org", "identity_source": {"type": "file", "path": "/f"}}}`)},
+		{"blank federation rule", providers(key + `"anthropic_key_config": {"workload_identity": {"federation_rule_id": "", "organization_id": "org", "service_account_id": "svac_01def", "identity_source": {"type": "file", "path": "/f"}}}`)},
+		{"unknown field", providers(key + `"anthropic_key_config": {"workload_identity": {` + ids + `, "identity_source": {"type": "file", "path": "/f"}, "token_path": "/g"}}`)},
+		{"unknown section field", providers(key + `"anthropic_key_config": {"workload_identity_federation": {}}`)},
+	}
+	for _, tt := range invalid {
+		t.Run("invalid "+tt.name, func(t *testing.T) {
+			if err := validateConfig(t, compiled, tt.config); err == nil {
+				t.Fatal("config should be invalid")
+			}
+		})
+	}
+}
+
 // TestSchemaGithubCopilotCredentialRequired pins that the schema demands a token, as
 // core/utils.go does: every way to authenticate, including Sign in with GitHub, ends with one.
 func TestSchemaGithubCopilotCredentialRequired(t *testing.T) {
@@ -4287,6 +4670,41 @@ func TestValidateConfigSchema_MCPOpenAPIClient(t *testing.T) {
 		{"token exchange refused", `{"name":"petstore","connection_type":"openapi","auth_type":"token_exchange","token_exchange":{"audience":"a"},"openapi_config":{"spec":"x"}}`, true},
 		{"openapi_config on http client", `{"name":"remote","connection_type":"http","connection_string":"https://mcp.example.com","openapi_config":{"spec":"x"}}`, true},
 		{"http client unaffected", `{"name":"remote","connection_type":"http","connection_string":"https://mcp.example.com"}`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ValidateConfigSchema([]byte(mcpConfig(tc.client)), schema)
+			if tc.wantErr && err == nil {
+				t.Fatalf("expected %s to fail schema validation", tc.name)
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("expected %s to pass schema validation, got: %v", tc.name, err)
+			}
+		})
+	}
+}
+
+// TestValidateConfigSchema_MCPPerUserAuthTypeNeedsHTTP pins the config.schema.json
+// rule matching the boot check: the per-user auth types are refused on SSE and STDIO
+// clients, and the shared auth types stay allowed there.
+func TestValidateConfigSchema_MCPPerUserAuthTypeNeedsHTTP(t *testing.T) {
+	schema := loadLocalSchema(t)
+	mcpConfig := func(client string) string {
+		return `{"mcp": {"client_configs": [` + client + `]}}`
+	}
+	for _, tc := range []struct {
+		name    string
+		client  string
+		wantErr bool
+	}{
+		{"per_user_headers on http", `{"name":"remote","connection_type":"http","connection_string":"https://mcp.example.com","auth_type":"per_user_headers","per_user_header_keys":["x-key"]}`, false},
+		{"per_user_headers on sse", `{"name":"remote","connection_type":"sse","connection_string":"https://mcp.example.com/sse","auth_type":"per_user_headers","per_user_header_keys":["x-key"]}`, true},
+		{"per_user_oauth on sse", `{"name":"remote","connection_type":"sse","connection_string":"https://mcp.example.com/sse","auth_type":"per_user_oauth"}`, true},
+		{"token_exchange on http", `{"name":"remote","connection_type":"http","connection_string":"https://mcp.example.com","auth_type":"token_exchange","token_exchange":{"audience":"a","use_idp_credentials":true}}`, false},
+		{"token_exchange on sse", `{"name":"remote","connection_type":"sse","connection_string":"https://mcp.example.com/sse","auth_type":"token_exchange","token_exchange":{"audience":"a","use_idp_credentials":true}}`, true},
+		{"per_user_headers on stdio", `{"name":"local","connection_type":"stdio","stdio_config":{"command":"npx"},"auth_type":"per_user_headers","per_user_header_keys":["x-key"]}`, true},
+		{"oauth on sse", `{"name":"remote","connection_type":"sse","connection_string":"https://mcp.example.com/sse","auth_type":"oauth"}`, false},
+		{"headers on stdio", `{"name":"local","connection_type":"stdio","stdio_config":{"command":"npx"},"auth_type":"headers"}`, false},
+		{"sse without auth_type", `{"name":"remote","connection_type":"sse","connection_string":"https://mcp.example.com/sse"}`, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			err := ValidateConfigSchema([]byte(mcpConfig(tc.client)), schema)

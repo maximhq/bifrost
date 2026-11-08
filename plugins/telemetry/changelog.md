@@ -1,1 +1,3 @@
-- chore: upgraded Go to 1.27.3, core to v1.13.1 and framework to v1.10.1
+- fix: requests dropped before enqueue no longer count as upstream traffic
+- fix: relay metrics match passthrough for headers and streams
+- chore: upgraded core to v1.15.0 and framework to v1.12.0

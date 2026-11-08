@@ -10,7 +10,7 @@ import (
 
 // UpsertLive caches one (provider, keyID, unfiltered) list-models response.
 func (mc *ModelCatalog) UpsertLive(provider schemas.ModelProvider, keyID string, unfiltered bool, models []string) {
-	mc.live.Upsert(provider, keyID, unfiltered, models)
+	mc.live.Upsert(provider, keyID, unfiltered, models, nil)
 }
 
 // UpsertLiveFromResponse extracts model IDs from a BifrostListModelsResponse
@@ -22,7 +22,8 @@ func (mc *ModelCatalog) UpsertLiveFromResponse(provider schemas.ModelProvider, k
 	if resp == nil {
 		return
 	}
-	mc.live.Upsert(provider, keyID, unfiltered, extractModelIDs(resp, provider))
+	models, created := extractModelIDs(resp, provider)
+	mc.live.Upsert(provider, keyID, unfiltered, models, created)
 }
 
 // LiveGeneration returns the live cache's invalidation counter for the
@@ -42,7 +43,8 @@ func (mc *ModelCatalog) UpsertLiveFromResponseIfCurrent(provider schemas.ModelPr
 	if resp == nil {
 		return false
 	}
-	return mc.live.UpsertIfCurrent(provider, keyID, unfiltered, extractModelIDs(resp, provider), gen)
+	models, created := extractModelIDs(resp, provider)
+	return mc.live.UpsertIfCurrent(provider, keyID, unfiltered, models, created, gen)
 }
 
 // InvalidateLive drops both filtered + unfiltered live entries for one key.
@@ -126,17 +128,25 @@ func (mc *ModelCatalog) ConfiguredProviders() []schemas.ModelProvider {
 
 // extractModelIDs flattens a list-models response into bare model
 // identifiers, filtering entries whose ID prefix doesn't match the
-// requested provider.
-func extractModelIDs(resp *schemas.BifrostListModelsResponse, provider schemas.ModelProvider) []string {
+// requested provider. It also returns the creation time each model reports,
+// in Unix seconds; models without one are absent.
+func extractModelIDs(resp *schemas.BifrostListModelsResponse, provider schemas.ModelProvider) ([]string, map[string]int64) {
 	if resp == nil {
-		return nil
+		return nil, nil
 	}
 	seen := make(map[string]struct{}, len(resp.Data))
 	out := make([]string, 0, len(resp.Data))
+	var created map[string]int64
 	for _, m := range resp.Data {
 		parsedProvider, parsedModel := schemas.ParseModelString(m.ID, "")
 		if parsedProvider != "" && parsedProvider != provider {
 			continue
+		}
+		if m.Created != nil && *m.Created > created[parsedModel] {
+			if created == nil {
+				created = make(map[string]int64)
+			}
+			created[parsedModel] = *m.Created
 		}
 		if _, ok := seen[parsedModel]; ok {
 			continue
@@ -144,5 +154,5 @@ func extractModelIDs(resp *schemas.BifrostListModelsResponse, provider schemas.M
 		seen[parsedModel] = struct{}{}
 		out = append(out, parsedModel)
 	}
-	return out
+	return out, created
 }

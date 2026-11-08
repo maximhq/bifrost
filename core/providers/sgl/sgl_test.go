@@ -22,12 +22,17 @@ func TestSGL(t *testing.T) {
 	defer cancel()
 	defer client.Shutdown()
 
+	// A decision checkpoint (clef-flash, a Kev size, pplx-decider) must be what the
+	// server at SGL_BASE_URL serves; unset leaves the scenario off.
+	decisionModel := os.Getenv("SGL_DECISION_MODEL")
+
 	testConfig := llmtests.ComprehensiveTestConfig{
 		Provider:       schemas.SGL,
 		ChatModel:      "qwen/qwen2.5-0.5b-instruct",
 		VisionModel:    "Qwen/Qwen2.5-VL-7B-Instruct",
 		TextModel:      "qwen/qwen2.5-0.5b-instruct",
 		EmbeddingModel: "Alibaba-NLP/gte-Qwen2-1.5B-instruct",
+		DecisionModel:  decisionModel,
 		Scenarios: llmtests.TestScenarios{
 			TextCompletion:             true,
 			SimpleChat:                 true,
@@ -44,6 +49,7 @@ func TestSGL(t *testing.T) {
 			MultipleImages:             true,
 			CompleteEnd2End:            true,
 			Embedding:                  true,
+			Decision:                   decisionModel != "",
 			ListModels:                 true,
 			PassThroughExtraParams:     true,
 		},

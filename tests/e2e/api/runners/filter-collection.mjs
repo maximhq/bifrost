@@ -162,6 +162,9 @@ const PROVIDER_KEYWORDS = {
   replicate: ["replicate", "/replicate", "flux", "black-forest-labs"],
   runware: ["runware", "runware/"],
   typesafe: ["typesafe", "/typesafe", "jev-"],
+  // Not a provider: MCP management rows (OAuth discovery, client registration) name no model, so no
+  // provider fork selects them. PROVIDER=mcp runs them, together with FEATURE to narrow the set.
+  mcp: ["mcp"],
 };
 
 // Haystack = item JSON + ancestor folder names. Folder names encode the harness
@@ -346,6 +349,11 @@ const itemMatchesProvider = (item, ancestorNames, provider = PROVIDER) => {
   // keyword with no extra logic needed for that direction).
   const isBedrockOpenai = haystack.includes("bedrock_openai");
   if (isBedrockOpenai && provider === "openai") return false;
+  // Azure GPT Live rows create sessions on Azure, named by the model ("azure/gpt-live-1") or by the
+  // Azure OpenAI SDK user agent, but their route and model name also match the openai keywords, so
+  // an openai run would bill a second Azure session. Route them exclusively to azure.
+  const isAzureLive = haystack.includes("/live/sessions") && (/"model"\s*:\s*"azure\//.test(item.request?.body?.raw || "") || haystack.includes("azureopenai"));
+  if (isAzureLive && provider === "openai") return false;
   return keywords.some((k) => haystack.includes(k));
 };
 

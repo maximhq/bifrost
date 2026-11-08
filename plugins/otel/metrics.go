@@ -70,6 +70,10 @@ type MetricsExporter struct {
 
 	// A2A (Agent Gateway) metrics
 	a2aClientOperationDuration *syncFloat64Histogram
+	relayOperationDuration     *syncFloat64Histogram
+	relayUpstreamDuration      *syncFloat64Histogram
+	relayOverheadLatency       *syncFloat64Histogram
+	relayCostTotal             *syncFloat64Counter
 
 	// HTTP metrics
 	httpRequestsTotal     *syncInt64Counter
@@ -475,6 +479,40 @@ func (m *MetricsExporter) initMetrics() {
 		boundaries: mcpOperationDurationBuckets,
 	}
 
+	// Relay calls use the LLM latency buckets, as a passthrough call's metrics do, so a long stream
+	// is not folded into a 300s top bucket.
+	m.relayOperationDuration = &syncFloat64Histogram{
+		name:       "bifrost.relay.operation.duration",
+		desc:       "Duration of a relay call to a non-LLM upstream API as observed by Bifrost, from the gateway to the end of the reply",
+		unit:       "s",
+		meter:      m.meter,
+		boundaries: upstreamLatencyBuckets,
+	}
+	// The part of a relay call spent blocked on the upstream socket (the upstream half of the
+	// overhead split), so a slow API is told apart from Bifrost's own time.
+	m.relayUpstreamDuration = &syncFloat64Histogram{
+		name:       "bifrost.relay.upstream_socket.duration",
+		desc:       "Time a relay call spent blocked on its upstream API's socket",
+		unit:       "s",
+		meter:      m.meter,
+		boundaries: upstreamLatencyBuckets,
+	}
+	// Bifrost's own time on a relay call, as bifrost_overhead_latency_microseconds measures it for
+	// LLM calls.
+	m.relayOverheadLatency = &syncFloat64Histogram{
+		name:       "bifrost.relay.overhead_latency",
+		desc:       "Latency Bifrost added to a relay call, in microseconds: total call time minus time blocked on the upstream",
+		unit:       "us",
+		meter:      m.meter,
+		boundaries: overheadLatencyBuckets,
+	}
+	m.relayCostTotal = &syncFloat64Counter{
+		name:  "bifrost.relay.cost",
+		desc:  "USD charged for relay calls",
+		unit:  "{USD}",
+		meter: m.meter,
+	}
+
 	// HTTP metrics
 	m.httpRequestsTotal = &syncInt64Counter{
 		name:  "http_requests_total",
@@ -613,6 +651,26 @@ func (m *MetricsExporter) RecordMCPOperationDuration(ctx context.Context, durati
 // RecordA2AOperationDuration records the duration of one A2A (Agent Gateway) operation
 func (m *MetricsExporter) RecordA2AOperationDuration(ctx context.Context, durationSeconds float64, attrs ...attribute.KeyValue) {
 	m.a2aClientOperationDuration.Record(ctx, durationSeconds, metric.WithAttributes(attrs...))
+}
+
+// RecordRelayOperationDuration records the duration of one relay call.
+func (m *MetricsExporter) RecordRelayOperationDuration(ctx context.Context, durationSeconds float64, attrs ...attribute.KeyValue) {
+	m.relayOperationDuration.Record(ctx, durationSeconds, metric.WithAttributes(attrs...))
+}
+
+// RecordRelayUpstreamDuration records the upstream time of one relay call.
+func (m *MetricsExporter) RecordRelayUpstreamDuration(ctx context.Context, durationSeconds float64, attrs ...attribute.KeyValue) {
+	m.relayUpstreamDuration.Record(ctx, durationSeconds, metric.WithAttributes(attrs...))
+}
+
+// RecordRelayOverheadLatency records Bifrost's own time on one relay call, in microseconds.
+func (m *MetricsExporter) RecordRelayOverheadLatency(ctx context.Context, micros float64, attrs ...attribute.KeyValue) {
+	m.relayOverheadLatency.Record(ctx, micros, metric.WithAttributes(attrs...))
+}
+
+// RecordRelayCost adds the USD charged for one relay call.
+func (m *MetricsExporter) RecordRelayCost(ctx context.Context, cost float64, attrs ...attribute.KeyValue) {
+	m.relayCostTotal.Add(ctx, cost, metric.WithAttributes(attrs...))
 }
 
 // RecordHTTPRequest records an HTTP request metric

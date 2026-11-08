@@ -25,6 +25,7 @@ import (
 	"log"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -33,6 +34,9 @@ import (
 const (
 	defaultHTTPPort = "3011"
 	defaultSSEPort  = "3012"
+
+	// slowEchoDelay is how long slow_echo holds before answering.
+	slowEchoDelay = 1500 * time.Millisecond
 
 	httpEndpointPath    = "/mcp"
 	sseEndpointPath     = "/sse"
@@ -92,12 +96,66 @@ func main() {
 // specific tool semantics, but they do need every tool to carry a typed schema
 // (codemode_files_test.go asserts the generated servers/*.pyi files are
 // non-empty).
+// chartTool declares a title and an output schema and answers with structured content plus an image,
+// so results that are not plain text can be checked end to end.
+func chartTool() mcp.Tool {
+	return mcp.NewTool(
+		"chart",
+		mcp.WithDescription("Plot the points and return them with a chart image"),
+		mcp.WithTitleAnnotation("Chart"),
+		mcp.WithReadOnlyHintAnnotation(true),
+		mcp.WithDestructiveHintAnnotation(false),
+		mcp.WithOutputSchema[struct {
+			Points int `json:"points"`
+		}](),
+	)
+}
+
+func chartHandler(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	result := mcp.NewToolResultStructured(map[string]any{"points": 3}, "3 points")
+	// A 1x1 transparent PNG.
+	result.Content = append(result.Content, mcp.NewImageContent("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=", "image/png"))
+	return result, nil
+}
+
+// archiveHandler answers with a PDF, a zip and an SVG, so a gateway that sends only the media
+// every provider reads can be checked: the PDF is kept, the zip and the SVG are named instead.
+func archiveHandler(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	return &mcp.CallToolResult{Content: []mcp.Content{
+		mcp.NewTextContent("archive below"),
+		mcp.NewEmbeddedResource(mcp.BlobResourceContents{URI: "file:///fixture/report.pdf", MIMEType: "application/pdf", Blob: "JVBERi0xLjQK"}),
+		mcp.NewEmbeddedResource(mcp.BlobResourceContents{URI: "file:///fixture/notes.zip", MIMEType: "application/zip", Blob: "UEsDBAoAAAAAAA=="}),
+		mcp.NewEmbeddedResource(mcp.BlobResourceContents{URI: "file:///fixture/hello.txt", MIMEType: "text/plain", Blob: "SGVsbG8="}),
+		mcp.NewImageContent("PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciLz4=", "image/svg+xml"),
+	}}, nil
+}
+
 func newMCPServer(instructions string) *server.MCPServer {
 	opts := []server.ServerOption{}
 	if instructions != "" {
 		opts = append(opts, server.WithInstructions(instructions))
 	}
+	opts = append(opts, server.WithResourceCapabilities(false, true), server.WithPromptCapabilities(true))
 	s := server.NewMCPServer("remote-test-server", "1.0.0", opts...)
+
+	// Back the provider-harness resources and prompts discovery cases: one of each, plus a
+	// resource template, so Bifrost has something to list besides tools.
+	s.AddResource(mcp.NewResource("file:///fixture/handbook.md", "handbook",
+		mcp.WithResourceDescription("Fixture handbook"), mcp.WithMIMEType("text/markdown"),
+	), handbookHandler)
+	// A comma in a URI is legal; the MCP log filters must still find a read of it.
+	s.AddResource(mcp.NewResource("file:///fixture/report,2026.md", "report", mcp.WithMIMEType("text/markdown")),
+		func(context.Context, mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
+			return []mcp.ResourceContents{mcp.TextResourceContents{URI: "file:///fixture/report,2026.md", MIMEType: "text/markdown", Text: "# Report"}}, nil
+		})
+	s.AddResourceTemplate(mcp.NewResourceTemplate("fixture://notes/{id}", "note"), noteHandler)
+	s.AddPrompt(mcp.NewPrompt("review",
+		mcp.WithPromptDescription("Review a change"),
+		mcp.WithArgument("diff", mcp.ArgumentDescription("The change to review"), mcp.RequiredArgument()),
+	), reviewPromptHandler)
+
+	s.AddTool(chartTool(), chartHandler)
+	s.AddTool(mcp.NewTool("archive", mcp.WithDescription("Return a report, an archive, a text file and a diagram")), archiveHandler)
 
 	s.AddTool(mcp.NewTool(
 		"echo",
@@ -151,7 +209,38 @@ func newMCPServer(instructions string) *server.MCPServer {
 		mcp.WithDescription("Fail with isError and text that opens with \"Error: \""),
 	), prefixedErrorHandler)
 
+	// Backs the provider-harness agent-loop latency cases: a fixed wait between agent turns
+	// that must be counted as upstream time, not Bifrost overhead.
+	s.AddTool(mcp.NewTool(
+		"slow_echo",
+		mcp.WithDescription("Echo back the input message after a fixed delay"),
+		mcp.WithString("message", mcp.Required(), mcp.Description("Message to echo")),
+	), slowEchoHandler)
+
 	return s
+}
+
+func handbookHandler(context.Context, mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
+	return []mcp.ResourceContents{mcp.TextResourceContents{URI: "file:///fixture/handbook.md", MIMEType: "text/markdown", Text: "# Fixture handbook"}}, nil
+}
+
+func noteHandler(_ context.Context, req mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
+	return []mcp.ResourceContents{mcp.TextResourceContents{URI: req.Params.URI, Text: "note"}}, nil
+}
+
+func reviewPromptHandler(_ context.Context, req mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {
+	return mcp.NewGetPromptResult("Review a change", []mcp.PromptMessage{
+		mcp.NewPromptMessage(mcp.RoleUser, mcp.NewTextContent("Review this change: "+req.Params.Arguments["diff"])),
+	}), nil
+}
+
+func slowEchoHandler(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	select {
+	case <-time.After(slowEchoDelay):
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	return echoHandler(ctx, req)
 }
 
 func prefixedErrorHandler(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {

@@ -46,6 +46,7 @@ AWS Bedrock supports multiple model families (Claude, Nova, Mistral, Llama, Cohe
 | Count Tokens         | ✅            | -         | `count-tokens`         |
 | Speech (TTS)         | ❌            | ❌        | -                      |
 | Transcriptions (STT) | ❌            | ❌        | -                      |
+| Realtime (Nova Sonic) | -            | ✅        | `invoke-with-bidirectional-stream` |
 
 <Note>
 **Unsupported Operations** (❌): Speech (TTS) and Transcriptions (STT) are not supported by the upstream AWS Bedrock API. These return `UnsupportedOperationError`.
@@ -1684,7 +1685,57 @@ Supported image variation models: **Titan Image Generator v1**, **Titan Image Ge
 
 ---
 
-# 11. AWS Authentication & Configuration
+# 11. Realtime (Nova Sonic)
+
+Amazon Nova Sonic speech-to-speech models (for example `amazon.nova-2-sonic-v1:0`) are served on Bifrost's Realtime WebSocket endpoint. Clients speak the **OpenAI Realtime protocol**; Bifrost translates it to Bedrock's `InvokeModelWithBidirectionalStream` HTTP/2 event stream and signs every event with SigV4.
+
+```bash
+wscat -c "ws://localhost:8080/v1/realtime?model=bedrock/amazon.nova-2-sonic-v1:0" \
+  -H "Authorization: Bearer $BIFROST_KEY"
+```
+
+**Requirements**
+
+- The key must use IAM credentials (explicit keys, inherited credentials or `role_arn`). Bedrock API keys cannot sign bidirectional streams, so they are rejected when the session opens.
+- The model must be enabled for the key's region. The stream always negotiates HTTP/2, whatever `enforce_http2` is set to.
+
+**Session configuration** is read from `session.update` before the conversation starts, because Nova Sonic fixes it when the prompt opens. The session starts on the first `input_audio_buffer.append` or `response.create`; a `session.update` after that is answered with an `error` event.
+
+| OpenAI Realtime field                                         | Nova Sonic                                                  |
+| ------------------------------------------------------------- | ----------------------------------------------------------- |
+| `instructions`, `system` messages                             | `SYSTEM` text content                                       |
+| `audio.output.voice` / `voice`                                | `audioOutputConfiguration.voiceId` (default `matthew`)      |
+| `audio.input.format.rate` / `audio.output.format.rate`        | `sampleRateHertz` (8000, 16000 or 24000; default 24000)     |
+| `max_output_tokens` / `max_response_output_tokens`            | `inferenceConfiguration.maxTokens` (default 1024)           |
+| `temperature`                                                 | `inferenceConfiguration.temperature`                        |
+| `turn_detection.eagerness` (`low` / `medium` / `high`)        | `turnDetectionConfiguration.endpointingSensitivity`         |
+| `tools` (function tools)                                      | `toolConfiguration.tools[].toolSpec`                        |
+
+Audio must be base64 16-bit mono PCM (`audio/pcm` or `pcm16`); G.711 formats are rejected. Voice names are passed through unchanged, so use a [Nova Sonic voice ID](https://docs.aws.amazon.com/nova/latest/nova2-userguide/sonic-language-support.html) rather than an OpenAI voice.
+
+**Client events**
+
+| Client event                                           | Behaviour                                                                                                       |
+| ------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------- |
+| `input_audio_buffer.append`                            | Streamed into the session's single audio content block                                                          |
+| `conversation.item.create` (user / assistant text)     | Conversation history before the session starts; user text after it is sent as cross-modal input                 |
+| `conversation.item.create` (`function_call_output`)    | Tool result for the matching `call_id`                                                                          |
+| `response.create`                                      | Starts the session; a trailing user message is answered. Nova Sonic otherwise responds on its own               |
+| `input_audio_buffer.commit` / `clear`, `response.cancel` | Accepted and ignored: Nova Sonic detects turns and barge-in itself                                            |
+
+**Server events** follow the OpenAI GA names: `input_audio_buffer.committed`, `conversation.item.input_audio_transcription.delta` / `.completed` (the user's speech as text), `response.created`, `response.output_audio.delta`, `response.output_audio_transcript.delta` / `.done`, `response.function_call_arguments.done`, `response.output_item.added` / `.done` and `response.done`. When the user barges in, Bifrost sends `input_audio_buffer.speech_started` and closes the response as `cancelled`.
+
+**Usage**: Nova Sonic reports cumulative session token totals. Each `response.done` carries the growth since the previous response, split into text and audio tokens, so per-turn logs and costs add up to the session total.
+
+**Limitations**
+
+- `intent=transcription` is not supported. Nova Sonic always generates a spoken reply, so a transcription-only session would be billed for responses the client never sees. User transcripts are available in every session through the transcription events above.
+- WebRTC and realtime client secrets are not supported for Bedrock.
+- Bedrock limits a bidirectional stream to 8 minutes; the session ends with an error when the stream closes.
+
+---
+
+# 12. AWS Authentication & Configuration
 
 Bifrost signs every Bedrock request with AWS Signature Version 4 (SigV4). Credentials are resolved in the following priority order, and STS AssumeRole can be layered on top of any of them.
 
@@ -1950,7 +2001,7 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 
 ---
 
-# 12. Error Handling
+# 13. Error Handling
 
 **HTTP Status Mapping**:
 

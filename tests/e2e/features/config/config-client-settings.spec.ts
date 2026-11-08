@@ -56,7 +56,7 @@ test.describe('Skills marketplace URL settings', () => {
         await expect(register).toBeDisabled()
         if (state.git) {
           await page.getByTestId('skill-marketplace-disabled-trigger').hover()
-          await page.getByTestId('skill-marketplace-settings-link').filter({ visible: true }).click()
+          await page.getByTestId('skill-marketplace-settings-link').first().click()
           await expect(page).toHaveURL(/\/workspace\/config\/skills$/)
           await expect(page.getByTestId('skills-external-client-url-input')).toBeVisible()
           await page.goto('/workspace/skills-repo')

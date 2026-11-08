@@ -74,7 +74,7 @@ type WarpTopic struct {
 	Centroid           []byte    `json:"-"`
 	AssignFloor        float64   `gorm:"not null" json:"assign_floor"`
 	Cohesion           float64   `gorm:"not null" json:"cohesion"`
-	ExampleLogIDsJSON  string    `gorm:"column:example_log_ids;type:text" json:"-"` // JSON array; the requests the label was written from
+	ExampleLogIDsJSON  string    `gorm:"column:example_log_ids;type:text" json:"-"` // JSON array; the examples the label was written from, with members drawn at random
 	EmbeddingSignature string    `gorm:"type:varchar(255);not null" json:"embedding_signature"`
 	Status             string    `gorm:"type:varchar(16);not null;index:idx_warp_topics_status" json:"status"`
 	MergedInto         string    `gorm:"type:varchar(36);not null" json:"merged_into,omitempty"`
@@ -85,7 +85,7 @@ type WarpTopic struct {
 // TableName sets the table name for the Warp topic model.
 func (WarpTopic) TableName() string { return "warp_topics" }
 
-// ExampleLogIDs returns the requests the topic's label was written from.
+// ExampleLogIDs returns the topic's example requests.
 func (t *WarpTopic) ExampleLogIDs() []string {
 	if t.ExampleLogIDsJSON == "" {
 		return nil
@@ -97,7 +97,7 @@ func (t *WarpTopic) ExampleLogIDs() []string {
 	return ids
 }
 
-// SetExampleLogIDs records the requests the topic's label was written from.
+// SetExampleLogIDs records the topic's example requests.
 func (t *WarpTopic) SetExampleLogIDs(ids []string) error {
 	if len(ids) == 0 {
 		t.ExampleLogIDsJSON = ""
@@ -162,6 +162,20 @@ type WarpTopicUnmatched struct {
 
 // TableName sets the table name for the Warp unmatched-request model.
 func (WarpTopicUnmatched) TableName() string { return "warp_topic_unmatched" }
+
+// WarpVectorDelete is a deleted log whose Warp vector could not be removed
+// when the log was. The log store deletes a log and its topic rows in one
+// transaction, but the vector lives in the vector store, so its delete runs
+// after and can fail on its own; this row is what lets upkeep retry it. It is
+// written only when that delete fails, and removed once a retry succeeds.
+type WarpVectorDelete struct {
+	LogID     string    `gorm:"type:varchar(255);primaryKey" json:"log_id"`
+	Namespace string    `gorm:"type:varchar(255);not null" json:"namespace"` // empty: the configured one when retried
+	CreatedAt time.Time `gorm:"not null;index:idx_warp_vector_deletes_created_at" json:"created_at"`
+}
+
+// TableName sets the table name for the Warp pending vector delete model.
+func (WarpVectorDelete) TableName() string { return "warp_vector_deletes" }
 
 // WarpTopicFilter selects topics. A zero filter selects all of them.
 type WarpTopicFilter struct {
@@ -242,6 +256,10 @@ type WarpTopicStore interface {
 	// DeleteWarpTopicAssignments removes the given requests' assignments, for
 	// a run taking back the rows it wrote.
 	DeleteWarpTopicAssignments(ctx context.Context, logIDs []string) error
+	// DeleteWarpTopicAssignmentsUnmatchedSince removes the rows filed under no
+	// topic at or after since, for a failed seed run taking back what it filed
+	// there without keeping a list of every one.
+	DeleteWarpTopicAssignmentsUnmatchedSince(ctx context.Context, since time.Time) error
 	// BucketWarpTopicAssignments adds up the selected assignments per topic
 	// and per bucket of bucketSizeSeconds, oldest bucket first, within the
 	// caller's access scope. Buckets start at multiples of the size since the
@@ -279,6 +297,14 @@ type WarpTopicStore interface {
 	// DeleteWarpTopics removes topic and theme rows outright, for the upkeep
 	// that prunes rows retired long enough ago that nothing reads them.
 	DeleteWarpTopics(ctx context.Context, ids []string) error
+
+	// AddWarpVectorDeletes records deleted logs whose vector delete failed,
+	// replacing any row already there for the same log.
+	AddWarpVectorDeletes(ctx context.Context, rows []WarpVectorDelete) error
+	// ListWarpVectorDeletes returns up to limit of those, oldest first.
+	ListWarpVectorDeletes(ctx context.Context, limit int) ([]WarpVectorDelete, error)
+	// DeleteWarpVectorDeletes removes the rows of logs whose vector is gone.
+	DeleteWarpVectorDeletes(ctx context.Context, logIDs []string) error
 
 	// ListLogsForWarpTopics returns the assignment columns of the given logs:
 	// everything an assignment copies from its log, with TopicID, Similarity
@@ -549,6 +575,13 @@ func (s *RDBLogStore) ListWarpTopicAssignments(ctx context.Context, filter WarpT
 	return assignments, err
 }
 
+// DeleteWarpTopicAssignmentsUnmatchedSince removes the rows filed under no
+// topic at or after since.
+func (s *RDBLogStore) DeleteWarpTopicAssignmentsUnmatchedSince(ctx context.Context, since time.Time) error {
+	placeholder, arg := warpTopicTimeArg(s.db, since)
+	return s.db.WithContext(ctx).Where("topic_id = ? AND assigned_at >= "+placeholder, "", arg).Delete(&WarpTopicAssignment{}).Error
+}
+
 // DeleteWarpTopicAssignments removes the given requests' assignments.
 func (s *RDBLogStore) DeleteWarpTopicAssignments(ctx context.Context, logIDs []string) error {
 	for chunk := range slices.Chunk(logIDs, warpTopicWriteBatch) {
@@ -689,6 +722,54 @@ func (s *RDBLogStore) DeleteWarpTopicUnmatchedBatch(ctx context.Context, cutoff 
 func (s *RDBLogStore) DeleteWarpTopicUnmatchedExcept(ctx context.Context, embeddingSignature string) (int64, error) {
 	result := s.db.WithContext(ctx).Where("embedding_signature <> ?", embeddingSignature).Delete(&WarpTopicUnmatched{})
 	return result.RowsAffected, result.Error
+}
+
+// prepareWarpVectorDeletes checks rows and stamps when each was recorded.
+func prepareWarpVectorDeletes(rows []WarpVectorDelete, now time.Time) error {
+	for i := range rows {
+		if rows[i].LogID == "" {
+			return fmt.Errorf("warp vector delete has no log id")
+		}
+		if rows[i].CreatedAt.IsZero() {
+			rows[i].CreatedAt = now
+		}
+		rows[i].CreatedAt = rows[i].CreatedAt.UTC()
+	}
+	return nil
+}
+
+// AddWarpVectorDeletes records deleted logs whose vector delete failed.
+func (s *RDBLogStore) AddWarpVectorDeletes(ctx context.Context, rows []WarpVectorDelete) error {
+	if len(rows) == 0 {
+		return nil
+	}
+	if err := prepareWarpVectorDeletes(rows, time.Now()); err != nil {
+		return err
+	}
+	return s.db.WithContext(ctx).
+		Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "log_id"}}, UpdateAll: true}).
+		CreateInBatches(rows, warpTopicWriteBatch).Error
+}
+
+// ListWarpVectorDeletes returns up to limit pending vector deletes, oldest
+// first.
+func (s *RDBLogStore) ListWarpVectorDeletes(ctx context.Context, limit int) ([]WarpVectorDelete, error) {
+	if limit <= 0 {
+		return nil, fmt.Errorf("limit must be positive")
+	}
+	var rows []WarpVectorDelete
+	err := s.db.WithContext(ctx).Order("created_at ASC, log_id ASC").Limit(limit).Find(&rows).Error
+	return rows, err
+}
+
+// DeleteWarpVectorDeletes removes the rows of logs whose vector is gone.
+func (s *RDBLogStore) DeleteWarpVectorDeletes(ctx context.Context, logIDs []string) error {
+	for chunk := range slices.Chunk(logIDs, warpTopicWriteBatch) {
+		if err := s.db.WithContext(ctx).Where("log_id IN ?", chunk).Delete(&WarpVectorDelete{}).Error; err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // DeleteWarpTopics removes topic and theme rows outright.

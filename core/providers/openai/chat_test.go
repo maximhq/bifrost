@@ -3,6 +3,7 @@ package openai
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"maps"
 	"net/http"
 	"net/http/httptest"
@@ -10,12 +11,137 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/bytedance/sonic"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
+
+// Issue #8749: zero counts must survive the upstream parser and wire encoding,
+// for both custom and built-in OpenAI providers, including the final SSE usage.
+func TestChatCompletionPreservesZeroUsage(t *testing.T) {
+	for _, providerName := range []schemas.ModelProvider{schemas.OpenAI, "gemini-web"} {
+		for _, usage := range []string{
+			`{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0}`,
+			`{"total_tokens":12}`,
+			`{"prompt_tokens":204,"completion_tokens":2,"total_tokens":206}`,
+			`null`,
+		} {
+			for _, streaming := range []bool{false, true} {
+				// Streams already synthesize a final usage object; the nil control
+				// here pins unary responses, where missing usage stays absent.
+				if streaming && usage == "null" {
+					continue
+				}
+				name := string(providerName) + "/" + usage + "/unary"
+				if streaming {
+					name = string(providerName) + "/" + usage + "/stream"
+				}
+				t.Run(name, func(t *testing.T) {
+					server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+						if r.Method != http.MethodPost || r.URL.Path != "/v1/chat/completions" {
+							t.Errorf("unexpected upstream request: %s %s", r.Method, r.URL.Path)
+							w.WriteHeader(http.StatusNotFound)
+							return
+						}
+						if streaming {
+							w.Header().Set("Content-Type", "text/event-stream")
+							_, _ = io.WriteString(w, chatChunk("hello", nil)+chatChunk("", schemas.Ptr("stop")))
+							_, _ = io.WriteString(w, `data: {"id":"chatcmpl-usage","object":"chat.completion.chunk","created":1,"model":"repro-model","choices":[],"usage":`+usage+"}\n\n")
+							_, _ = io.WriteString(w, "data: [DONE]\n\n")
+						} else {
+							w.Header().Set("Content-Type", "application/json")
+							_, _ = io.WriteString(w, `{"id":"chatcmpl-usage","object":"chat.completion","created":1,"model":"repro-model","choices":[{"index":0,"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}],"usage":`+usage+`}`)
+						}
+					}))
+					defer server.Close()
+					config := &schemas.ProviderConfig{
+						NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL, AllowPrivateNetwork: true},
+					}
+					if providerName != schemas.OpenAI {
+						config.CustomProviderConfig = &schemas.CustomProviderConfig{
+							BaseProviderType: schemas.OpenAI, CustomProviderKey: string(providerName),
+						}
+					}
+					provider := NewOpenAIProvider(config, testNoopLogger{})
+					ctx, cancel := schemas.NewBifrostContextWithTimeout(context.Background(), 10*time.Second)
+					defer cancel()
+					req := basicChatRequest()
+					req.Provider = providerName
+					checkUsage := func(response *schemas.BifrostChatResponse) {
+						t.Helper()
+						assertCompletionUsage(t, response.WithPreservedUsage(), usage)
+					}
+					if !streaming {
+						response, bifrostErr := provider.ChatCompletion(ctx, testKey(), req)
+						require.Nil(t, bifrostErr)
+						require.NotNil(t, response)
+						checkUsage(response)
+						return
+					}
+					req.Params = &schemas.ChatParameters{StreamOptions: &schemas.ChatStreamOptions{IncludeUsage: schemas.Ptr(true)}}
+					stream, bifrostErr := provider.ChatCompletionStream(ctx, passthroughPostHook, nil, testKey(), req)
+					require.Nil(t, bifrostErr)
+					sawUsage := false
+					for _, chunk := range collectChunks(t, stream) {
+						require.Nil(t, chunk.BifrostError)
+						if response := chunk.BifrostChatResponse; response != nil && response.Usage != nil {
+							sawUsage = true
+							checkUsage(response)
+						}
+					}
+					require.Equal(t, usage != "null", sawUsage)
+				})
+			}
+		}
+	}
+}
+
+func assertCompletionUsage(t *testing.T, response any, want string) {
+	t.Helper()
+	wire, err := schemas.MarshalSorted(response)
+	require.NoError(t, err)
+	var body struct{ Usage json.RawMessage }
+	require.NoError(t, json.Unmarshal(wire, &body))
+	require.JSONEq(t, want, string(body.Usage))
+}
+
+// Includes response decoding, zero detection and output encoding so the JSON
+// lookups needed only by zero/unknown counts are included in the measured cost.
+func BenchmarkCompletionUsageDecodeAndMarshal(b *testing.B) {
+	for _, tc := range []struct{ name, usage string }{
+		{"nil", `null`}, {"nonzero", `{"prompt_tokens":204,"completion_tokens":2,"total_tokens":206}`},
+		{"zero", `{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0}`}, {"missing", `{"total_tokens":12}`},
+	} {
+		body := []byte(`{"id":"bench","object":"chat.completion","model":"fixture","choices":[{"index":0,"message":{"role":"assistant","content":"hello"}}],"usage":` + tc.usage + `}`)
+		for _, preserve := range []bool{false, true} {
+			name := tc.name + "/before"
+			if preserve {
+				name = tc.name + "/after"
+			}
+			b.Run(name, func(b *testing.B) {
+				b.ReportAllocs()
+				for b.Loop() {
+					var response schemas.BifrostChatResponse
+					if err := sonic.Unmarshal(body, &response); err != nil {
+						b.Fatal(err)
+					}
+					var wire any = &response
+					if preserve {
+						response.Usage.PreserveTokenCountZeros(body, "usage.prompt_tokens", "usage.completion_tokens")
+						wire = response.WithPreservedUsage()
+					}
+					if _, err := providerUtils.MarshalSorted(wire); err != nil {
+						b.Fatal(err)
+					}
+				}
+			})
+		}
+	}
+}
 
 func TestToOpenAIChatRequest_ToolNormalization(t *testing.T) {
 	// Create tool parameters with keys in non-alphabetical order:
@@ -148,6 +274,45 @@ func TestToOpenAIChatRequest_InvalidatesStaleSerializedCache(t *testing.T) {
 		"converted tool must marshal from normalized params, not the stale serialized cache")
 	require.NotEqual(t, string(staleJSON), string(gotJSON),
 		"converted tool must not emit the pre-normalized cached bytes")
+}
+
+// TestToOpenAIChatRequest_DisableStoreContextKey pins that the disable-store context flag forces
+// store=false on the converted request, including a passthrough extra_params store, without touching
+// the caller's request that fallbacks to other providers share.
+func TestToOpenAIChatRequest_DisableStoreContextKey(t *testing.T) {
+	newReq := func() *schemas.BifrostChatRequest {
+		return &schemas.BifrostChatRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-4o-mini",
+			Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}}},
+			Params:   &schemas.ChatParameters{Store: schemas.Ptr(true), ExtraParams: map[string]interface{}{"store": true}},
+		}
+	}
+
+	t.Run("flag_set_forces_store_false", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyDisableStore, true)
+		req := newReq()
+		out := ToOpenAIChatRequest(ctx, req)
+		require.False(t, *out.Store)
+		require.Equal(t, false, out.ExtraParams["store"])
+		require.True(t, *req.Params.Store)
+		require.Equal(t, true, req.Params.ExtraParams["store"])
+	})
+
+	t.Run("flag_set_without_params", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyDisableStore, true)
+		req := newReq()
+		req.Params = nil
+		require.False(t, *ToOpenAIChatRequest(ctx, req).Store)
+	})
+
+	t.Run("flag_unset_keeps_store", func(t *testing.T) {
+		out := ToOpenAIChatRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), newReq())
+		require.True(t, *out.Store)
+		require.Equal(t, true, out.ExtraParams["store"])
+	})
 }
 
 func TestToOpenAIChatRequest_PreservesN(t *testing.T) {
@@ -2399,6 +2564,51 @@ func TestToOpenAIChatRequest_DoesNotEmitReasoningType(t *testing.T) {
 	}
 }
 
+// Chat Completions rejects both the block and request-level ttl on OpenAI and Azure
+// (live 400); OpenRouter accepts it and bills the 12h rate.
+func TestToOpenAIChatRequest_CacheBreakpointTTL(t *testing.T) {
+	msgsJSON := `[{"role":"system","content":[{"type":"text","text":"STABLE","prompt_cache_breakpoint":{"mode":"explicit","ttl":"12h"}}]},` +
+		`{"role":"user","content":[{"type":"image_url","image_url":{"url":"https://example.com/a.png"},"prompt_cache_breakpoint":{"mode":"explicit"}},{"type":"text","text":"go"}]}]`
+	for _, tc := range []struct {
+		name     string
+		provider schemas.ModelProvider
+		model    string
+		wantTTL  bool
+	}{
+		{"openai", schemas.OpenAI, "gpt-5.6-sol", false},
+		{"azure", schemas.Azure, "gpt-6.1-luna", false},
+		{"openrouter", schemas.OpenRouter, "openai/gpt-5.6-luna", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var msgs []schemas.ChatMessage
+			require.NoError(t, sonic.Unmarshal([]byte(msgsJSON), &msgs))
+			ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+			defer cancel()
+			opts := &schemas.PromptCacheOptions{Mode: schemas.Ptr("implicit"), TTL: schemas.Ptr("12h")}
+			out := ToOpenAIChatRequest(ctx, &schemas.BifrostChatRequest{Provider: tc.provider, Model: tc.model, Input: msgs, Params: &schemas.ChatParameters{PromptCacheOptions: opts}})
+			require.NotNil(t, out)
+			b, err := out.MarshalJSON()
+			require.NoError(t, err)
+			raw := string(b)
+			bp := gjson.Get(raw, "messages.0.content.0.prompt_cache_breakpoint")
+			require.Equal(t, "explicit", bp.Get("mode").String(), raw)
+			if tc.wantTTL {
+				require.Equal(t, "12h", bp.Get("ttl").String(), raw)
+			} else {
+				require.False(t, bp.Get("ttl").Exists(), raw)
+			}
+			require.False(t, gjson.Get(raw, "messages.1.content.0.prompt_cache_breakpoint.ttl").Exists(), "no ttl must be invented; raw=%s", raw)
+			require.NotNil(t, msgs[0].Content.ContentBlocks[0].PromptCacheBreakpoint.TTL, "caller input must not be mutated")
+			// Request-level ttl: Responses accepts "12h", Chat rejects it (live 400 "Supported values are: '30m'").
+			if tc.provider != schemas.OpenRouter { // OpenRouter never receives prompt_cache_options
+				require.Equal(t, "implicit", gjson.Get(raw, "prompt_cache_options.mode").String(), raw)
+				require.False(t, gjson.Get(raw, "prompt_cache_options.ttl").Exists(), raw)
+			}
+			require.NotNil(t, opts.TTL, "caller params must not be mutated")
+		})
+	}
+}
+
 // TestToOpenAIChatRequest_GPT56CacheBreakpoint is the Chat Completions counterpart
 // of TestToOpenAIResponsesRequest_GPT56CacheBreakpoint. gpt-5.6 and later take an
 // explicit boundary as prompt_cache_breakpoint on a text part; a cache_control
@@ -3034,6 +3244,320 @@ func BenchmarkOpenAIChatRequestUnknownFields(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		_ = OpenAIChatRequestUnknownFields(body)
 	}
+}
+
+// TestToOpenAIChatRequest_MidConversationSystemFromDatasheet pins that a datasheet row with
+// supports_mid_conversation_system_messages=false turns system/developer messages after the
+// leading run into <system-reminder> user turns, and that a silent row leaves them alone.
+func TestToOpenAIChatRequest_MidConversationSystemFromDatasheet(t *testing.T) {
+	const model = "accounts/fireworks/models/qwen3p8-max"
+	input := []schemas.ChatMessage{
+		{Role: schemas.ChatMessageRoleSystem, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("be brief")}},
+		{Role: schemas.ChatMessageRoleDeveloper, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("no emoji")}},
+		{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}},
+		{Role: schemas.ChatMessageRoleAssistant, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")}},
+		{Role: schemas.ChatMessageRoleSystem, Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{
+			{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr("answer in french"), CacheControl: &schemas.CacheControl{Type: "ephemeral"}},
+		}}},
+		{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("how are you")}},
+	}
+	newReq := func() *schemas.BifrostChatRequest {
+		return &schemas.BifrostChatRequest{Provider: schemas.Fireworks, Model: model, Input: slices.Clone(input)}
+	}
+
+	t.Run("datasheet_false_inlines_mid_conversation_system", func(t *testing.T) {
+		installCapabilityRecord(t, model, &schemas.ModelCapabilities{SupportsMidConversationSystem: schemas.Ptr(false)})
+		req := newReq()
+		out := ToOpenAIChatRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), req)
+		require.Len(t, out.Messages, 6)
+		require.Equal(t, schemas.ChatMessageRoleSystem, out.Messages[0].Role)
+		require.Equal(t, schemas.ChatMessageRoleDeveloper, out.Messages[1].Role)
+		inlined := out.Messages[4]
+		require.Equal(t, schemas.ChatMessageRoleUser, inlined.Role)
+		require.Len(t, inlined.Content.ContentBlocks, 1)
+		require.Equal(t, "<system-reminder>\nanswer in french\n</system-reminder>\n", *inlined.Content.ContentBlocks[0].Text)
+		require.NotNil(t, inlined.Content.ContentBlocks[0].CacheControl)
+		// The caller's input is not rewritten.
+		require.Equal(t, schemas.ChatMessageRoleSystem, req.Input[4].Role)
+		require.Equal(t, "answer in french", *req.Input[4].Content.ContentBlocks[0].Text)
+	})
+
+	t.Run("datasheet_silent_keeps_mid_conversation_system", func(t *testing.T) {
+		installCapabilityRecord(t, model, nil)
+		out := ToOpenAIChatRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), newReq())
+		require.Equal(t, schemas.ChatMessageRoleSystem, out.Messages[4].Role)
+	})
+
+	// A custom provider has no row of its own, so it reads the base provider's row.
+	t.Run("custom_provider_falls_back_to_base_row", func(t *testing.T) {
+		installProviderCapabilityRecords(t, model, map[schemas.ModelProvider]*schemas.ModelCapabilities{
+			schemas.Fireworks: {SupportsMidConversationSystem: schemas.Ptr(false)},
+		})
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyBaseProviderType, schemas.Fireworks)
+		req := newReq()
+		req.Provider = "my-fireworks"
+		out := ToOpenAIChatRequest(ctx, req)
+		require.Equal(t, schemas.ChatMessageRoleUser, out.Messages[4].Role)
+	})
+}
+
+// installProviderCapabilityRecords installs a capability resolver keyed by provider for one model.
+func installProviderCapabilityRecords(t *testing.T, model string, records map[schemas.ModelProvider]*schemas.ModelCapabilities) {
+	t.Helper()
+	schemas.SetCapabilityResolver(func(p schemas.ModelProvider, m string) *schemas.ModelCapabilities {
+		if m != model {
+			return nil
+		}
+		return records[p]
+	})
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+}
+
+// stubDeveloperRoleDatasheet marks glm-5 as rejecting the developer role and
+// qwen3-dev as accepting it; every other model has no row.
+func stubDeveloperRoleDatasheet(t *testing.T) {
+	rows := map[string]bool{"glm-5": false, "qwen3-dev": true}
+	schemas.SetCapabilityResolver(func(_ schemas.ModelProvider, model string) *schemas.ModelCapabilities {
+		supported, ok := rows[model]
+		if !ok {
+			return nil
+		}
+		return &schemas.ModelCapabilities{SupportsDeveloperRole: schemas.Ptr(supported)}
+	})
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+}
+
+func developerChatRequest(provider schemas.ModelProvider, model string) *schemas.BifrostChatRequest {
+	return &schemas.BifrostChatRequest{
+		Provider: provider,
+		Model:    model,
+		Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleDeveloper, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Be brief.")}},
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}},
+		},
+	}
+}
+
+func TestToOpenAIChatRequest_DeveloperRoleAsSystem(t *testing.T) {
+	stubDeveloperRoleDatasheet(t)
+	req := developerChatRequest(schemas.Fireworks, "glm-5")
+	result := ToOpenAIChatRequest(nil, req)
+	require.NotNil(t, result)
+	require.Equal(t, schemas.ChatMessageRoleSystem, result.Messages[0].Role)
+	require.Equal(t, schemas.ChatMessageRoleUser, result.Messages[1].Role)
+	require.Equal(t, schemas.ChatMessageRoleDeveloper, req.Input[0].Role)
+
+	result = ToOpenAIChatRequest(nil, developerChatRequest(schemas.Fireworks, "qwen3-dev"))
+	require.Equal(t, schemas.ChatMessageRoleDeveloper, result.Messages[0].Role)
+}
+
+// TestToOpenAIChatRequest_DeveloperRoleAndMidConversationSystem pins that the two gates act
+// independently and compose: developer unsupported sends every developer message as system,
+// mid-conversation system unsupported turns every system/developer message after the leading
+// run into a <system-reminder> user turn.
+func TestToOpenAIChatRequest_DeveloperRoleAndMidConversationSystem(t *testing.T) {
+	const model = "test-model"
+	text := func(role schemas.ChatMessageRole, s string) schemas.ChatMessage {
+		return schemas.ChatMessage{Role: role, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr(s)}}
+	}
+	input := []schemas.ChatMessage{
+		text(schemas.ChatMessageRoleDeveloper, "lead dev"),
+		text(schemas.ChatMessageRoleSystem, "lead sys"),
+		text(schemas.ChatMessageRoleUser, "hi"),
+		text(schemas.ChatMessageRoleDeveloper, "mid dev"),
+		text(schemas.ChatMessageRoleSystem, "mid sys"),
+		text(schemas.ChatMessageRoleUser, "bye"),
+	}
+	const (
+		dev  = schemas.ChatMessageRoleDeveloper
+		sys  = schemas.ChatMessageRoleSystem
+		user = schemas.ChatMessageRoleUser
+	)
+	tests := []struct {
+		name           string
+		developerRole  bool
+		midConvSystem  bool
+		wantRoles      []schemas.ChatMessageRole
+		wantMidInlined bool
+	}{
+		{"both_supported", true, true, []schemas.ChatMessageRole{dev, sys, user, dev, sys, user}, false},
+		{"developer_unsupported", false, true, []schemas.ChatMessageRole{sys, sys, user, sys, sys, user}, false},
+		{"mid_conversation_unsupported", true, false, []schemas.ChatMessageRole{dev, sys, user, user, user, user}, true},
+		{"both_unsupported", false, false, []schemas.ChatMessageRole{sys, sys, user, user, user, user}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			installCapabilityRecord(t, model, &schemas.ModelCapabilities{
+				SupportsDeveloperRole:         schemas.Ptr(tt.developerRole),
+				SupportsMidConversationSystem: schemas.Ptr(tt.midConvSystem),
+			})
+			req := &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: model, Input: slices.Clone(input)}
+			out := ToOpenAIChatRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), req)
+			require.Len(t, out.Messages, len(tt.wantRoles))
+			for i, want := range tt.wantRoles {
+				require.Equal(t, want, out.Messages[i].Role, "message %d", i)
+			}
+			require.Equal(t, "lead dev", *out.Messages[0].Content.ContentStr)
+			if tt.wantMidInlined {
+				require.Equal(t, "<system-reminder>\nmid dev\n</system-reminder>\n", *out.Messages[3].Content.ContentStr)
+				require.Equal(t, "<system-reminder>\nmid sys\n</system-reminder>\n", *out.Messages[4].Content.ContentStr)
+			} else {
+				require.Equal(t, "mid dev", *out.Messages[3].Content.ContentStr)
+			}
+			require.Equal(t, dev, req.Input[0].Role)
+			require.Equal(t, dev, req.Input[3].Role)
+		})
+	}
+}
+
+// TestInlineChatMidConversationSystem_NilContent pins that a mid-conversation system or developer
+// message without content still becomes a user turn, while the leading run is left alone.
+func TestInlineChatMidConversationSystem_NilContent(t *testing.T) {
+	out := inlineChatMidConversationSystem([]OpenAIMessage{
+		{Role: schemas.ChatMessageRoleSystem},
+		{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}},
+		{Role: schemas.ChatMessageRoleDeveloper, Name: schemas.Ptr("ops")},
+	})
+	require.Equal(t, schemas.ChatMessageRoleSystem, out[0].Role)
+	require.Equal(t, schemas.ChatMessageRoleUser, out[2].Role)
+	require.Equal(t, "ops", *out[2].Name)
+	require.Nil(t, out[2].Content)
+}
+
+// A tool result's explicit prompt-cache breakpoint survives the media in it being named instead of
+// sent: the tool message stays a part array carrying the breakpoint.
+func TestToOpenAIChatRequest_ToolResultBreakpointSurvivesMediaPlaceholder(t *testing.T) {
+	req := &schemas.BifrostChatRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-5.6-sol",
+		Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Plot it.")}},
+			{Role: schemas.ChatMessageRoleAssistant, ChatAssistantMessage: &schemas.ChatAssistantMessage{ToolCalls: []schemas.ChatAssistantMessageToolCall{{
+				ID: schemas.Ptr("call_1"), Type: schemas.Ptr("function"),
+				Function: schemas.ChatAssistantMessageToolCallFunction{Name: schemas.Ptr("plot"), Arguments: `{}`},
+			}}}},
+			{
+				Role: schemas.ChatMessageRoleTool, ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: schemas.Ptr("call_1")},
+				Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{
+					{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr("chart below"), PromptCacheBreakpoint: &schemas.PromptCacheBreakpoint{Mode: schemas.Ptr("explicit")}},
+					{Type: schemas.ChatContentBlockTypeImage, ImageURLStruct: &schemas.ChatInputImage{URL: "data:image/png;base64,iVBORw0KGgo="}},
+				}},
+			},
+		},
+		Params: &schemas.ChatParameters{},
+	}
+	ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+	defer cancel()
+	out := ToOpenAIChatRequest(ctx, req)
+	require.NotNil(t, out)
+	b, err := out.MarshalJSON()
+	require.NoError(t, err)
+	var m map[string]any
+	require.NoError(t, sonic.Unmarshal(b, &m), string(b))
+	msgs, _ := m["messages"].([]any)
+	require.Len(t, msgs, 3, string(b))
+	tool, _ := msgs[2].(map[string]any)
+	parts, ok := tool["content"].([]any)
+	require.True(t, ok, "the tool message must stay a part array; raw=%s", string(b))
+	first, _ := parts[0].(map[string]any)
+	require.NotNil(t, first["prompt_cache_breakpoint"], "raw=%s", string(b))
+}
+
+// Measure decoding, presence capture and the Responses-to-Chat wire conversion together.
+func BenchmarkResponsesUsageToChat(b *testing.B) {
+	for _, tc := range []struct{ name, usage string }{
+		{"nonzero", `{"input_tokens":10,"output_tokens":2,"total_tokens":12}`},
+		{"zero", `{"input_tokens":0,"output_tokens":0,"total_tokens":0}`},
+		{"missing", `{"total_tokens":12}`},
+	} {
+		body := []byte(`{"id":"bench","model":"fixture","output":[],"usage":` + tc.usage + `}`)
+		for _, after := range []bool{false, true} {
+			version := "before"
+			if after {
+				version = "after"
+			}
+			b.Run(tc.name+"/"+version, func(b *testing.B) {
+				b.ReportAllocs()
+				for b.Loop() {
+					var response schemas.BifrostResponsesResponse
+					if err := sonic.Unmarshal(body, &response); err != nil {
+						b.Fatal(err)
+					}
+					if after {
+						response.Usage.PreserveTokenCountZeros(body, "usage.input_tokens", "usage.output_tokens")
+					}
+					if _, err := schemas.MarshalSorted(response.ToBifrostChatResponse().WithPreservedUsage()); err != nil {
+						b.Fatal(err)
+					}
+				}
+			})
+		}
+	}
+}
+
+// TestToOpenAIChatRequest_MessageLevelCacheControl_OpenRouter — a cache_control the
+// client set on the message object reaches OpenRouter as a block marker, and is still
+// stripped for a provider that does not take one.
+func TestToOpenAIChatRequest_MessageLevelCacheControl_OpenRouter(t *testing.T) {
+	var input []schemas.ChatMessage
+	require.NoError(t, schemas.Unmarshal([]byte(`[
+	  {"role":"system","content":"You are a coding agent.","cache_control":{"type":"ephemeral"}},
+	  {"role":"user","content":"Create notes.txt","cache_control":{"type":"ephemeral"}}
+	]`), &input))
+
+	for _, tc := range []struct {
+		name     string
+		provider schemas.ModelProvider
+		model    string
+		want     int
+	}{
+		{name: "openrouter keeps both breakpoints", provider: schemas.OpenRouter, model: "google/gemini-2.5-flash", want: 2},
+		{name: "openai drops them as before", provider: schemas.OpenAI, model: "gpt-4o", want: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+			defer cancel()
+			req := ToOpenAIChatRequest(ctx, &schemas.BifrostChatRequest{Provider: tc.provider, Model: tc.model, Input: input})
+			body, err := sonic.Marshal(req)
+			require.NoError(t, err)
+			require.Equal(t, tc.want, strings.Count(string(body), `"cache_control"`), "%s", body)
+		})
+	}
+}
+
+// TestOpenAIChatRequest_MessageLevelCacheControlIngress — the /openai chat route
+// decodes into OpenAIChatRequest. A cache_control the client set on the message
+// object must reach the Bifrost request as a block marker, without changing the
+// decoded request it came from.
+func TestOpenAIChatRequest_MessageLevelCacheControlIngress(t *testing.T) {
+	var req OpenAIChatRequest
+	require.NoError(t, sonic.Unmarshal([]byte(`{"model":"openrouter/google/gemini-2.5-flash","messages":[
+	  {"role":"system","content":"You are a coding agent.","cache_control":{"type":"ephemeral"}},
+	  {"role":"user","content":[{"type":"text","text":"a"},{"type":"text","text":"b"}],"cache_control":{"type":"ephemeral"}},
+	  {"role":"assistant","content":"","tool_calls":[{"id":"call_1","type":"function","function":{"name":"write","arguments":"{}"}}],"cache_control":{"type":"ephemeral"}},
+	  {"role":"tool","tool_call_id":"call_1","content":"Wrote notes.txt"}
+	]}`), &req))
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	bifrostReq := req.ToBifrostChatRequest(ctx)
+	in := bifrostReq.Input
+
+	require.Len(t, in[0].Content.ContentBlocks, 1)
+	require.NotNil(t, in[0].Content.ContentBlocks[0].CacheControl, "system string must become a marked block")
+	require.Nil(t, in[1].Content.ContentBlocks[0].CacheControl)
+	require.NotNil(t, in[1].Content.ContentBlocks[1].CacheControl, "marker belongs on the last block")
+	require.NotNil(t, in[2].ChatAssistantMessage.ToolCalls[0].CacheControl, "an assistant with content \"\" marks its last tool call")
+	require.NotNil(t, in[3].Content.ContentStr, "unmarked messages are untouched")
+
+	require.NotNil(t, req.Messages[0].Content.ContentStr, "the decoded request must not be mutated")
+	require.Nil(t, req.Messages[1].Content.ContentBlocks[1].CacheControl, "the decoded request must not be mutated")
+	require.Nil(t, req.Messages[2].OpenAIChatAssistantMessage.ToolCalls[0].CacheControl, "the decoded request must not be mutated")
+
+	body, err := sonic.Marshal(ToOpenAIChatRequest(ctx, bifrostReq))
+	require.NoError(t, err)
+	require.Equal(t, 3, strings.Count(string(body), `"cache_control"`), "all three breakpoints must reach OpenRouter: %s", body)
 }
 
 func zeroCostUpstream(t *testing.T) *httptest.Server {

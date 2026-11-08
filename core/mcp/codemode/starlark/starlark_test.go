@@ -23,36 +23,59 @@ import (
 )
 
 type testClientManager struct {
-	perClientCap int
-	clients      map[string]*schemas.MCPClientState
-	tools        map[string][]schemas.ChatTool
+	perClientCap       int
+	clients            map[string]*schemas.MCPClientState
+	tools              map[string][]schemas.ChatTool
+	instructions       map[string]string            // client ID -> instructions every caller sees
+	callerInstructions map[string]map[string]string // caller -> client ID -> that caller's own instructions
 }
 
-func (m *testClientManager) GetClientForTool(toolName string) *schemas.MCPClientState {
+// testCallerKey names the caller on a test context for testClientManager.
+type testCallerKey struct{}
+
+func (m *testClientManager) GetClientForTool(_ context.Context, toolName string) (*schemas.MCPClientState, *schemas.MCPDiscovery) {
 	for clientName, tools := range m.tools {
 		for _, tool := range tools {
 			if tool.Function != nil && tool.Function.Name == toolName {
-				return m.clients[clientName]
+				return m.clients[clientName], &schemas.MCPDiscovery{}
 			}
 		}
 	}
-	return nil
+	return nil, nil
 }
 
 func (m *testClientManager) GetClientByName(clientName string) *schemas.MCPClientState {
 	return m.clients[clientName]
 }
 
+func (m *testClientManager) GetToolsForClient(_ context.Context, clientID string) map[string]schemas.ChatTool {
+	return nil
+}
+
+func (m *testClientManager) GetInstructionsForClient(ctx context.Context, clientID string) string {
+	if caller, ok := ctx.Value(testCallerKey{}).(string); ok {
+		if text, ok := m.callerInstructions[caller][clientID]; ok {
+			return text
+		}
+	}
+	return m.instructions[clientID]
+}
+
 func (m *testClientManager) GetToolPerClient(ctx context.Context) map[string][]schemas.ChatTool {
 	return m.tools
 }
 
-func (m *testClientManager) InstructionCaps() codemcp.InstructionCaps {
-	return codemcp.InstructionCaps{PerClient: m.perClientCap}
+// GetCallerDiscovery serves the fake's tools, with no connect tools or instructions.
+func (m *testClientManager) GetCallerDiscovery(ctx context.Context, _ bool) codemcp.CallerDiscovery {
+	return codemcp.CallerDiscovery{ToolsPerClient: m.GetToolPerClient(ctx)}
 }
 
-func (m *testClientManager) GetServerInstructions(_ context.Context) []schemas.MCPServerInstructions {
+func (m *testClientManager) ConnectToolClient(context.Context, string) *schemas.MCPClientState {
 	return nil
+}
+
+func (m *testClientManager) InstructionCaps() codemcp.InstructionCaps {
+	return codemcp.InstructionCaps{PerClient: m.perClientCap}
 }
 
 func (m *testClientManager) GetPluginPipeline() codemcp.PluginPipeline {
@@ -647,7 +670,7 @@ func TestExtractTextFromMCPResponseResultShapes(t *testing.T) {
 		{
 			name:   "text next to an image keeps its own line",
 			result: &mcp.CallToolResult{Content: []mcp.Content{mcp.NewTextContent("Found 2 files"), mcp.ImageContent{Data: "AAAA", MIMEType: "image/png"}}},
-			want:   "Found 2 files\n[Image Response: AAAA, MIME: image/png]",
+			want:   "Found 2 files\n[image/png, 3 bytes returned by the tool, not shown]",
 		},
 		{
 			name:   "a single block is passed through",
@@ -1257,8 +1280,6 @@ func TestCodeModeToolResponseSize(t *testing.T) {
 	oversized := strings.Repeat("x", schemas.DefaultCodeModeMaxValueBytes+1)
 	for _, content := range [][]mcp.Content{
 		{mcp.TextContent{Text: oversized}},
-		{mcp.ImageContent{Data: oversized}},
-		{mcp.AudioContent{Data: oversized}},
 		{mcp.ResourceLink{URI: oversized}},
 		{&mcp.TextContent{Text: oversized}},
 		{mcp.TextContent{Text: oversized[:schemas.DefaultCodeModeMaxValueBytes/2]}, mcp.TextContent{Text: oversized[:schemas.DefaultCodeModeMaxValueBytes/2+1]}},
@@ -1266,6 +1287,13 @@ func TestCodeModeToolResponseSize(t *testing.T) {
 		_, err := extractTextFromMCPResponse(&mcp.CallToolResult{Content: content}, "echo", schemas.DefaultCodeModeMaxValueBytes)
 		if err == nil {
 			t.Fatal("oversized tool response accepted")
+		}
+	}
+	// Media reaches a script as a short placeholder, never as base64, so its size does not count.
+	for _, content := range []mcp.Content{mcp.ImageContent{Data: oversized, MIMEType: "image/png"}, mcp.AudioContent{Data: oversized, MIMEType: "audio/wav"}} {
+		text, err := extractTextFromMCPResponse(&mcp.CallToolResult{Content: []mcp.Content{content}}, "echo", schemas.DefaultCodeModeMaxValueBytes)
+		if err != nil || len(text) > 100 || !strings.Contains(text, "not shown") {
+			t.Fatalf("media should become a placeholder, got %q (%v)", text, err)
 		}
 	}
 	thread := newSandboxThread(context.Background(), schemas.MCPCodeModeLimits{}.WithDefaults())
@@ -1559,19 +1587,19 @@ func newInstructionsCodeMode(level schemas.CodeModeBindingLevel) *StarlarkCodeMo
 	mode.clientManager = &testClientManager{
 		clients: map[string]*schemas.MCPClientState{
 			"codey": {
-				Name:               "codey",
-				ExecutionConfig:    &schemas.MCPClientConfig{Name: "codey", IsCodeModeClient: true},
-				ServerInstructions: probeInstructions,
+				Name:            "codey",
+				ExecutionConfig: &schemas.MCPClientConfig{ID: "codey-id", Name: "codey", IsCodeModeClient: true},
 			},
 			"plain": {
 				Name:            "plain",
-				ExecutionConfig: &schemas.MCPClientConfig{Name: "plain", IsCodeModeClient: true},
+				ExecutionConfig: &schemas.MCPClientConfig{ID: "plain-id", Name: "plain", IsCodeModeClient: true},
 			},
 		},
 		tools: map[string][]schemas.ChatTool{
 			"codey": {{Function: &schemas.ChatToolFunction{Name: "codey-add", Description: schemas.Ptr("Adds two numbers")}}},
 			"plain": {{Function: &schemas.ChatToolFunction{Name: "plain-echo"}}},
 		},
+		instructions: map[string]string{"codey-id": probeInstructions},
 	}
 	return mode
 }
@@ -1664,10 +1692,10 @@ func TestListToolFilesOmitsNonCodeModeServersFromInstructionPointer(t *testing.T
 	mode := newInstructionsCodeMode(schemas.CodeModeBindingLevelServer)
 	manager := mode.clientManager.(*testClientManager)
 	manager.clients["direct"] = &schemas.MCPClientState{
-		Name:               "direct",
-		ExecutionConfig:    &schemas.MCPClientConfig{Name: "direct", IsCodeModeClient: false},
-		ServerInstructions: "Direct-only rule.",
+		Name:            "direct",
+		ExecutionConfig: &schemas.MCPClientConfig{ID: "direct-id", Name: "direct", IsCodeModeClient: false},
 	}
+	manager.instructions["direct-id"] = "Direct-only rule."
 	manager.tools["direct"] = []schemas.ChatTool{{Function: &schemas.ChatToolFunction{Name: "direct-ping"}}}
 
 	msg, err := mode.handleListToolFiles(context.Background(), schemas.ChatAssistantMessageToolCall{
@@ -1677,6 +1705,29 @@ func TestListToolFilesOmitsNonCodeModeServersFromInstructionPointer(t *testing.T
 
 	if strings.Contains(content, "direct") {
 		t.Fatalf("listing named a non-code-mode server, got:\n%s", content)
+	}
+}
+
+// The stub carries the instructions from the caller's own discovery, the same one its tools
+// come from, not a text shared by every caller of the server.
+func TestReadToolFileCarriesTheCallersOwnInstructions(t *testing.T) {
+	mode := newInstructionsCodeMode(schemas.CodeModeBindingLevelServer)
+	mode.clientManager.(*testClientManager).callerInstructions = map[string]map[string]string{
+		"alice": {"codey-id": "Alice may only read."},
+	}
+
+	alice := context.WithValue(context.Background(), testCallerKey{}, "alice")
+	msg, err := mode.handleReadToolFile(alice, schemas.ChatAssistantMessageToolCall{
+		ID:       schemas.Ptr("tool-call-1"),
+		Function: schemas.ChatAssistantMessageToolCallFunction{Arguments: `{"fileName":"servers/codey.pyi"}`},
+	})
+	content := instructionsToolResponse(t, msg, err)
+
+	if !strings.Contains(content, "# Alice may only read.") {
+		t.Fatalf("stub did not carry the caller's own instructions, got:\n%s", content)
+	}
+	if strings.Contains(content, "Always call list_items") {
+		t.Fatalf("stub carried the shared text instead of the caller's, got:\n%s", content)
 	}
 }
 

@@ -1,0 +1,393 @@
+---
+title: "Routes"
+description: "Choose which operations of the API callers may use, which ones are charged, and which ones stream."
+icon: "route"
+---
+
+A **route** is one operation of the API that callers may use: a method and a path, such as `POST /search`. A relay only forwards calls that match one of its routes. Anything else is refused with `404`, so callers can reach exactly what you listed and nothing more.
+
+Each route also decides three things for the calls that match it:
+
+- whether the call is **charged** (see [Which calls are charged](#which-calls-are-charged))
+- whether the reply is **streamed** (see [Streaming](#streaming))
+- whether it uses a **different price** from the rest of the relay (see [Pricing](./pricing#price-one-route-differently))
+
+<Frame>
+  <img src="/media/relays/ui-routes-table.png" alt="The route table of the web-search relay" />
+</Frame>
+
+---
+
+## Add a route
+
+<Tabs group="config-method">
+<Tab title="Web UI">
+
+1. Open **Relays**, select the relay, and select **Add Route**.
+2. Pick the **Method** and enter the **Path**, such as `/search`.
+3. Check **Billable**. It is on by default for `POST` and off for every other method.
+4. Select **Add Route**.
+
+<Frame>
+  <img
+    src="/media/relays/ui-route-sheet.png"
+    alt="The Add route sheet with the method, path, header matchers, streaming, billable and pricing override fields"
+    style={{ maxHeight: "600px", maxWidth: "100%", width: "auto", margin: "0 auto" }}
+  />
+</Frame>
+
+The route table lists each route with its method, path, price and an **Enabled** switch. Use the **⋯** menu on a row to edit or delete the route.
+
+Routes are part of the relay, so over the API you send the whole relay with its `routes` list. See [Update relay](/api-reference/relays/update-relay) in the API reference.
+
+</Tab>
+<Tab title="config.json">
+
+This gives the `web-search` relay four routes: search, extract, read a result, and a delete route that is switched off:
+
+```json
+{
+  "relays": [
+    {
+      "name": "web-search",
+      "base_url": "https://api.example.com",
+      "auth": { "type": "bearer" },
+      "credential": { "value": "env.WEB_SEARCH_API_KEY" },
+      "routes": [
+        { "method": "POST", "path": "/search" },
+        { "method": "POST", "path": "/extract" },
+        { "method": "GET", "path": "/results/*" },
+        { "method": "DELETE", "path": "/results/*", "enabled": false }
+      ]
+    }
+  ]
+}
+```
+
+| Field | Required | Description |
+| --- | --- | --- |
+| `method` | Yes | `GET`, `POST`, `PUT`, `PATCH`, `DELETE` or `HEAD`. |
+| `path` | Yes | The path below the base URL. Can use wildcards; see [Path patterns](#path-patterns). |
+| `headers` | No | Headers the call must also carry. See [Match on a header](#match-on-a-header). |
+| `enabled` | No | `false` refuses matching calls. Default `true`. |
+| `billable` | No | Whether a successful call is charged. Default `true` for `POST`, `false` for the rest. |
+| `stream` | No | `true` always streams, `false` never streams. Leave it out for **Auto**. |
+| `usage` | No | A different price for this route. See [Pricing](./pricing#price-one-route-differently). |
+
+</Tab>
+<Tab title="Helm">
+
+The same four routes under `bifrost.relays`:
+
+```yaml
+bifrost:
+  relays:
+    - name: web-search
+      base_url: "https://api.example.com"
+      auth:
+        type: bearer
+      credential:
+        value: "env.WEB_SEARCH_API_KEY"
+      routes:
+        - method: POST
+          path: /search
+        - method: POST
+          path: /extract
+        - method: GET
+          path: "/results/*"
+        - method: DELETE
+          path: "/results/*"
+          enabled: false
+```
+
+</Tab>
+</Tabs>
+
+---
+
+## Path patterns
+
+A path is compared one segment (the part between two `/`) at a time.
+
+| Pattern | Matches | Does not match |
+| --- | --- | --- |
+| `/search` | `/search` | `/search/`, `/v1/search` |
+| `/results/*` | `/results/abc`, `/results/123` | `/results`, `/results/abc/pages` |
+| `/v1/*/predict` | `/v1/vision/predict` | `/v1/a/b/predict` |
+| `/v1/**` | `/v1`, `/v1/x`, `/v1/x/y/z` | `/v2/x` |
+| `/` | `/` only | anything else |
+
+- `*` matches anything inside one segment. `?` and `[abc]` work as they do in a shell.
+- `**` matches everything below a path. It can only be the last segment.
+- The path is matched after URL decoding, so `/files/a%2Fb` is treated as `/files/a/b`.
+
+### Route order
+
+Routes are checked from top to bottom, and the first match wins. Put a specific path above a wildcard that also covers it: `GET /results/latest` before `GET /results/*`.
+
+---
+
+## Match on a header
+
+Some APIs send every operation to the same path and name the operation in a header instead. AWS APIs do this: every Amazon Translate call is `POST /`, and the `X-Amz-Target` header says whether it is `TranslateText` or `ListLanguages`. To tell those apart, a route can also require headers.
+
+<Tabs group="config-method">
+<Tab title="Web UI">
+
+1. Open the route, or select **Add Route**.
+2. Under **Header Matchers**, enter the header **Name** (`X-Amz-Target`) and the **Value** it must have (`AWSShineFrontendService_20170701.TranslateText`). Add more rows if the call must carry more than one header.
+3. Select **Save Route**.
+
+<Frame>
+  <img
+    src="/media/relays/ui-route-header-matchers.png"
+    alt="The route sheet with Header Matchers highlighted, matching X-Amz-Target"
+    style={{ maxHeight: "480px", maxWidth: "100%", width: "auto", margin: "0 auto" }}
+  />
+</Frame>
+
+</Tab>
+<Tab title="config.json">
+
+This `translate` relay has two routes on the same path. Translating text is charged; listing languages is free:
+
+```json
+{
+  "relays": [
+    {
+      "name": "translate",
+      "base_url": "https://translate.us-east-1.amazonaws.com",
+      "auth": { "type": "aws_sigv4", "aws": { "service": "translate" } },
+      "credential": { "aws": { "region": "us-east-1" } },
+      "routes": [
+        {
+          "method": "POST",
+          "path": "/",
+          "headers": { "X-Amz-Target": "AWSShineFrontendService_20170701.TranslateText" }
+        },
+        {
+          "method": "POST",
+          "path": "/",
+          "headers": { "X-Amz-Target": "AWSShineFrontendService_20170701.List*" },
+          "billable": false
+        }
+      ]
+    }
+  ]
+}
+```
+
+</Tab>
+<Tab title="Helm">
+
+The same two routes under `bifrost.relays`:
+
+```yaml
+bifrost:
+  relays:
+    - name: translate
+      base_url: "https://translate.us-east-1.amazonaws.com"
+      auth:
+        type: aws_sigv4
+        aws:
+          service: translate
+      credential:
+        aws:
+          region: us-east-1
+      routes:
+        - method: POST
+          path: /
+          headers:
+            X-Amz-Target: "AWSShineFrontendService_20170701.TranslateText"
+        - method: POST
+          path: /
+          headers:
+            X-Amz-Target: "AWSShineFrontendService_20170701.List*"
+          billable: false
+```
+
+</Tab>
+</Tabs>
+
+How header matching works:
+
+- Header names ignore case. Values are case-sensitive and can use `*` and `?`, as in `...List*` above.
+- The call must carry every listed header. A route without header matchers matches on method and path alone.
+- If the relay sets the same header under [Extra headers](./configuration#extra-headers), the route sees the relay's value, since that is what reaches the API.
+- A call that sends the same header twice with different capitalization (`X-Amz-Target` and `x-amz-target`) is refused with `400`.
+
+Some headers are removed before the route check, so a route can never match on them: credential headers (`Authorization`, `x-api-key` and similar), Bifrost's own `x-bf-*` headers, `Host`, `Content-Length` and connection headers.
+
+---
+
+## Which calls are charged
+
+A call is charged only when both of these are true:
+
+1. Its route is **billable**.
+2. The API answers with a `2xx` status.
+
+By default only `POST` routes are billable. For most APIs, `GET` and `HEAD` read or list things, and `PUT`, `PATCH` and `DELETE` change settings or clean up, so they are usually free. Turn on **Billable** (`billable: true`) for any other method the API charges for, and turn it off to forward a `POST` for free.
+
+A call that is not charged still counts as one request against the caller's request rate limit. A call that never reached the API (for example, the API could not be reached) counts nothing.
+
+---
+
+## Turn a route off
+
+Switch off **Enabled** in the route table (`enabled: false` in `config.json` and Helm) to refuse a route without deleting it.
+
+<Frame>
+  <img
+    src="/media/relays/ui-route-off.png"
+    alt="The route table with the disabled DELETE /results/* route highlighted"
+    style={{ maxHeight: "380px", maxWidth: "100%", width: "auto", margin: "0 auto" }}
+  />
+</Frame>
+
+A disabled route still matches, so its calls are refused with `404` instead of falling through to a broader route below it. Here, callers can read results with `GET /results/*` but cannot delete them, because `DELETE /results/*` is switched off.
+
+---
+
+## Relay any path
+
+**Relay Any Path** on the **General** tab (`skip_route_check: true`) forwards calls that match no route instead of refusing them. Those calls use the relay's default price, and only `POST` calls are charged. Disabled routes still refuse their calls.
+
+<Frame>
+  <img
+    src="/media/relays/ui-relay-any-path.png"
+    alt="The General tab with the Relay Any Path switch highlighted"
+    style={{ maxHeight: "380px", maxWidth: "100%", width: "auto", margin: "0 auto" }}
+  />
+</Frame>
+
+<Warning>
+With Relay Any Path on, callers can reach every endpoint of the API using the relay's credential. Prefer listing routes. Use this only for an API you fully trust, or while you are still finding out which endpoints you need.
+</Warning>
+
+---
+
+## Streaming
+
+A relay sends back a reply in one of two ways:
+
+- **Normal:** Bifrost waits for the whole reply, prices it, then returns it. This is how most calls work.
+- **Streamed:** Bifrost passes the reply to the caller piece by piece as it arrives, and prices it when it ends. Use this for server-sent events, live search results or audio.
+
+The caller cannot choose. Sending `Accept: text/event-stream` or `"stream": true` changes nothing on its own. The relay decides, in this order:
+
+1. The route's **Streaming** setting: **Always stream** (`stream: true`) or **Never stream** (`stream: false`).
+2. **Always-Stream Paths** on the **Advanced** tab (`streaming.paths`): calls whose path matches one of these patterns always stream.
+3. Otherwise (**Auto**), the API's reply decides. A reply with `Content-Type: text/event-stream` is streamed, and anything else is handled normally.
+
+<Tabs group="config-method">
+<Tab title="Web UI">
+
+- **For one route:** open the route and set **Streaming** to **Always stream** or **Never stream**.
+- **For a group of paths:** open **Edit Relay Config → Advanced** and add one pattern per line under **Always-Stream Paths**, such as `/v1/speech/*/stream`.
+- **How long a stream may stay quiet:** set **Stream Idle Timeout** on the [Network](./configuration#network) tab.
+
+<Frame>
+  <img
+    src="/media/relays/ui-always-stream.png"
+    alt="The Advanced tab with Always-Stream Paths highlighted"
+    style={{ maxHeight: "340px", maxWidth: "100%", width: "auto", margin: "0 auto" }}
+  />
+</Frame>
+
+</Tab>
+<Tab title="config.json">
+
+This `text-to-speech` relay returns ordinary audio on `/v1/speech/<voice>` and streams audio on `/v1/speech/<voice>/stream`. The `streaming.paths` pattern makes every `.../stream` call stream, and the idle timeout lets a stream pause for up to 2 minutes:
+
+```json
+{
+  "relays": [
+    {
+      "name": "text-to-speech",
+      "base_url": "https://speech.example.com",
+      "auth": { "type": "header", "header_name": "X-Api-Key" },
+      "credential": { "value": "env.TTS_API_KEY" },
+      "streaming": { "paths": ["/v1/speech/*/stream"] },
+      "network": { "stream_idle_timeout_in_seconds": 120 },
+      "routes": [
+        { "method": "POST", "path": "/v1/speech/*" },
+        { "method": "POST", "path": "/v1/speech/*/stream" }
+      ]
+    }
+  ]
+}
+```
+
+To force one route instead, set `"stream": true` (or `false`) on that route.
+
+</Tab>
+<Tab title="Helm">
+
+The same relay under `bifrost.relays`:
+
+```yaml
+bifrost:
+  relays:
+    - name: text-to-speech
+      base_url: "https://speech.example.com"
+      auth:
+        type: header
+        header_name: X-Api-Key
+      credential:
+        value: "env.TTS_API_KEY"
+      streaming:
+        paths:
+          - "/v1/speech/*/stream"
+      network:
+        stream_idle_timeout_in_seconds: 120
+      routes:
+        - method: POST
+          path: "/v1/speech/*"
+        - method: POST
+          path: "/v1/speech/*/stream"
+```
+
+</Tab>
+</Tabs>
+
+What the caller receives:
+
+- The API's status, headers and bytes, unchanged. Bifrost adds `Cache-Control: no-cache` and `X-Accel-Buffering: no` so proxies in between do not hold the stream back.
+- The API has **Timeout** seconds to start replying. After that, the stream is closed only if it goes quiet for longer than **Stream Idle Timeout** (both on the [Network](./configuration#network) tab).
+
+A stream is charged when it ends, including when the caller disconnects early: what was already sent is still charged, and the log row is marked `cancelled`. See [Streamed replies](./pricing#streamed-replies) for how a stream is priced.
+
+---
+
+## Import routes from OpenAPI
+
+If the API publishes an OpenAPI (or Swagger) file, you can turn it into routes instead of typing them.
+
+1. In the route table, select **Import OpenAPI**.
+2. Paste the file (JSON or YAML), enter its URL and select **Fetch**, or upload it.
+3. Check the preview: the API's name, version, the number of routes found, and a suggested base URL and authentication method.
+4. Select **Import N routes**, then **Apply import** to confirm.
+
+<Frame>
+  <img
+    src="/media/relays/ui-import-openapi.png"
+    alt="Import routes from OpenAPI with a pasted document and its preview highlighted"
+    style={{ maxHeight: "520px", maxWidth: "100%", width: "auto", margin: "0 auto" }}
+  />
+</Frame>
+
+What the import does:
+
+- Every operation in the file becomes a route. Path parameters such as `{id}` become `*`.
+- More specific routes are placed above broader ones, so the [order](#route-order) is right.
+- The imported list **replaces** the current routes. Routes that the file still lists keep their settings. New routes use the relay's default price.
+- Only the routes change. The suggested base URL and authentication are shown for you to copy, not applied.
+- A URL is fetched by Bifrost, not your browser, with a size limit and protection against private-network addresses. The file is read once and not stored.
+
+---
+
+## Next steps
+
+- **[Pricing](./pricing)**: set the price of the routes you listed.
+- **[Troubleshooting](./troubleshooting)**: a call is refused with `404` and you are not sure why.

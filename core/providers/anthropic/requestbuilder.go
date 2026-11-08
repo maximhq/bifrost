@@ -103,6 +103,9 @@ type AnthropicProviderRequestDefaults struct {
 	// for this model". Native Anthropic accepts URLs and fetches them itself, so
 	// it leaves this off and avoids a redundant download.
 	InlineURLSources bool
+
+	// KeepUnsignedThinking replays thinking blocks with an empty signature (self-hosted servers never sign).
+	KeepUnsignedThinking bool
 }
 
 // AnthropicProviderRequestDefaultsMap maps each Anthropic-family provider to
@@ -156,7 +159,10 @@ var AnthropicProviderRequestDefaultsMap = map[schemas.ModelProvider]AnthropicPro
 		RemapToolVersions:         true,
 		InjectBetaHeadersIntoBody: true,
 	},
-	schemas.SGL: {},
+	// vLLM and SGLang serve /v1/messages without signing their thinking; the model
+	// needs its own unsigned reasoning back on the next turn.
+	schemas.SGL:  {KeepUnsignedThinking: true},
+	schemas.VLLM: {KeepUnsignedThinking: true},
 }
 
 // BuildAnthropicResponsesRequestBody is the single implementation of the
@@ -411,6 +417,24 @@ func BuildAnthropicResponsesRequestBody(ctx *schemas.BifrostContext, request *sc
 		stripUnsupportedAnthropicFields(reqBody, cfg.Provider, capModel)
 		applyDefaultEagerInputStreaming(reqBody, cfg.Provider, capModel)
 
+		// stripUnsupportedAnthropicFields above rewrites thinking for the whole
+		// adaptive-only family one pass AFTER the conversion, so a
+		// converter-only restore of a caller's own thinking mode would be
+		// silently undone here. Re-assert it -- scoped exactly as the converter
+		// scopes it, to a recorded native Anthropic Messages ingress plus the
+		// model -- and leave that shared strip itself untouched, so every other
+		// caller of it keeps its existing behaviour, including the
+		// OpenAI-shaped chat path that promotes thinking out of ExtraParams.
+		//
+		// This runs BEFORE AddMissingBetaHeadersToContext, which DERIVES beta
+		// headers by reading this very body: deriving them first would describe
+		// a body that is about to be replaced, and would disagree with the raw
+		// path, whose derivation already reads a body the raw-body strip
+		// exemption left alone. Restoring first is what keeps one request's
+		// body and the headers describing it decided from the same bytes on
+		// both paths.
+		restoreNativeAnthropicRequestSurface(ctx, reqBody, request.Params, cfg.Provider, capModel)
+
 		AddMissingBetaHeadersToContext(ctx, reqBody, cfg.Provider)
 
 		mt, mh := providerUtils.StartPhaseSpan(ctx, "request-marshal")
@@ -481,7 +505,7 @@ func BuildAnthropicResponsesRequestBody(ctx *schemas.BifrostContext, request *sc
 		}
 	}
 
-	jsonBody, err = StripEmptyThinkingBlocks(jsonBody)
+	jsonBody, err = StripEmptyThinkingBlocks(jsonBody, defaults.KeepUnsignedThinking)
 	if err != nil {
 		return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
 	}
@@ -790,7 +814,7 @@ func BuildAnthropicChatRequestBody(ctx *schemas.BifrostContext, request *schemas
 		}
 	}
 
-	jsonBody, err = StripEmptyThinkingBlocks(jsonBody)
+	jsonBody, err = StripEmptyThinkingBlocks(jsonBody, defaults.KeepUnsignedThinking)
 	if err != nil {
 		return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
 	}

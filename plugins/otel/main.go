@@ -960,6 +960,7 @@ func (p *OtelPlugin) Inject(ctx context.Context, trace *schemas.Trace) error {
 				p.recordMetricsFromTrace(ctx, t.metricsExporter, trace, t.overheadBreakdownEnabled)
 				p.recordMCPMetricsFromTrace(ctx, t.metricsExporter, trace)
 				p.recordA2AMetricsFromTrace(ctx, t.metricsExporter, trace)
+				p.recordRelayMetricsFromTrace(ctx, t.metricsExporter, trace)
 			}
 			if t.client == nil || t.breakerOpen() {
 				return
@@ -1368,6 +1369,75 @@ func (p *OtelPlugin) recordA2AMetricsFromTrace(ctx context.Context, exporter *Me
 	}
 }
 
+// buildRelaySpanAttrs builds the metric dimensions of one relay span: the relay, the HTTP
+// method and matched route, the status code, and the governance identity. The path itself is
+// not a dimension, since an unmatched path is caller input of unbounded cardinality.
+func buildRelaySpanAttrs(span *schemas.Span) []attribute.KeyValue {
+	attrs := span.Attributes
+	out := []attribute.KeyValue{
+		attribute.String(schemas.AttrBifrostRelayName, schemas.GetStringAttr(attrs, schemas.AttrBifrostRelayName)),
+		attribute.String(schemas.AttrHTTPRequestMethod, schemas.RelayMethodLabel(schemas.GetStringAttr(attrs, schemas.AttrHTTPRequestMethod))),
+	}
+	if route := schemas.GetStringAttr(attrs, schemas.AttrBifrostRelayRoutePath); route != "" {
+		out = append(out, attribute.String(schemas.AttrBifrostRelayRoutePath, route))
+	}
+	if code := schemas.GetIntAttr(attrs, schemas.AttrHTTPResponseStatusCode); code > 0 {
+		out = append(out, attribute.Int(schemas.AttrHTTPResponseStatusCode, int(code)))
+	}
+	for spanKey, labelKey := range mcpGovernanceLabelMap {
+		if v := schemas.GetStringAttr(attrs, spanKey); v != "" {
+			out = append(out, attribute.String(labelKey, v))
+		}
+	}
+	return out
+}
+
+// recordRelayMetricsFromTrace records the duration and cost metrics once per relay span.
+// Called from Inject alongside recordMCPMetricsFromTrace and recordA2AMetricsFromTrace.
+func (p *OtelPlugin) recordRelayMetricsFromTrace(ctx context.Context, exporter *MetricsExporter, trace *schemas.Trace) {
+	if trace == nil || exporter == nil {
+		return
+	}
+	for _, span := range trace.Spans {
+		if span == nil || span.Kind != schemas.SpanKindRelay {
+			continue
+		}
+		if schemas.GetStringAttr(span.Attributes, schemas.AttrBifrostRelayName) == "" {
+			continue
+		}
+		relayAttrs := buildRelaySpanAttrs(span)
+		if span.Status == schemas.SpanStatusError {
+			errorType := schemas.GetStringAttr(span.Attributes, schemas.AttrErrorTypeSpec)
+			if errorType == "" {
+				errorType = "_OTHER"
+			}
+			relayAttrs = append(relayAttrs, attribute.String(schemas.AttrErrorTypeSpec, errorType))
+		}
+		exporter.RecordRelayOperationDuration(ctx, schemas.RelaySpanDurationSeconds(span), relayAttrs...)
+		if upstreamMs, ok := schemas.GetFloat64AttrOK(span.Attributes, schemas.AttrBifrostRelayUpstreamDurationMs); ok && upstreamMs > 0 {
+			exporter.RecordRelayUpstreamDuration(ctx, upstreamMs/1000, relayAttrs...)
+		}
+		if trace.RootSpan != nil {
+			if overheadMs, ok := schemas.GetFloat64AttrOK(trace.RootSpan.Attributes, schemas.AttrBifrostOverheadDurationMs); ok && overheadMs >= 0 {
+				exporter.RecordRelayOverheadLatency(ctx, overheadMs*1000, relayAttrs...)
+			}
+		}
+		if cost, ok := schemas.GetFloat64AttrOK(span.Attributes, schemas.AttrBifrostRelayCost); ok && cost > 0 {
+			exporter.RecordRelayCost(ctx, cost, relayAttrs...)
+		}
+	}
+}
+
+// hasRelaySpan reports whether the trace carries a relay call.
+func hasRelaySpan(trace *schemas.Trace) bool {
+	for _, span := range trace.Spans {
+		if span != nil && span.Kind == schemas.SpanKindRelay {
+			return true
+		}
+	}
+	return false
+}
+
 // recordMetricsFromTrace extracts metrics data from a completed trace and records them
 // via the OTEL metrics exporter. This is called from Inject after trace emission.
 //
@@ -1429,7 +1499,9 @@ func (p *OtelPlugin) recordMetricsFromTrace(ctx context.Context, exporter *Metri
 	// transport work no llm.call span sees). Labelled off the final attempt span so
 	// provider/model dimensions match the other per-request metrics; the root span
 	// carries only HTTP attributes.
-	if overheadMicros, ok := overheadMicrosFromTrace(trace); ok {
+	// A relay trace has no LLM attempt to label the overhead with: recorded here it would land in
+	// the LLM overhead histogram with empty provider and model labels, keyed by the raw URL path.
+	if overheadMicros, ok := overheadMicrosFromTrace(trace); ok && (finalSpan != nil || !hasRelaySpan(trace)) {
 		labelSpan := finalSpan
 		if labelSpan == nil {
 			labelSpan = trace.RootSpan

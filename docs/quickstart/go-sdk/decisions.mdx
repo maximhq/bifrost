@@ -14,7 +14,7 @@ Provider/model examples:
 - Perplexity: `Provider: schemas.Perplexity`, `Model: "pplx-decider-v1.1-27b"` or `"pplx-decider-v1-27b"`
 - Ollama: `Provider: schemas.Ollama`, `Model: "nimble"` (any pulled System One model)
 - Azure: `Provider: schemas.Azure`, `Model: "Microsoft-Decision-1"` (a key alias maps it to your deployment)
-- Databricks: `Provider: schemas.Databricks`, `Model: "ai_decide"` (the key needs `DatabricksKeyConfig.WorkspaceURL`)
+- Databricks: `Provider: schemas.Databricks`, `Model: "ai_decide"` or a System One model such as `"system.ai.openjev-qwen35-4b"` or `"system.ai.typesafeai-jev-1-14-0"` (the key needs `DatabricksKeyConfig.WorkspaceURL`)
 - Laya or Nimble: the name of your [custom provider](/providers/self-hosted-decision-models), for example `Provider: "laya"`, `Model: "english"`
 
 See [Decisions](/quickstart/gateway/decisions#providers) for which providers read image parts.

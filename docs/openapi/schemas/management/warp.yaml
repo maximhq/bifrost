@@ -457,8 +457,8 @@ WarpTopicsStatus:
     capped:
       type: boolean
       description: |
-        Set when the window held more requests than one run takes in. The
-        requests that were read are drawn from across the window.
+        Set when a run stopped at a read limit before the end of the window.
+        Runs read the whole window, so this is not set.
     merged:
       type: integer
       format: int64

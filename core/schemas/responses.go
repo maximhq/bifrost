@@ -339,6 +339,7 @@ func (r BifrostResponsesResponse) MarshalJSON() ([]byte, error) {
 		usage.ToolUsage = nil
 		r.Usage = &usage
 	}
+	r.ToolUsage = r.ToolUsage.withoutDerivedFields()
 	return Marshal(alias(r))
 }
 
@@ -495,9 +496,11 @@ func (resp *BifrostResponsesResponse) WithDefaults() *BifrostResponsesResponse {
 		}
 	}
 
-	// Usage - ensure token details exist
-	result.Usage = resp.Usage
-	if result.Usage != nil {
+	// Usage - ensure token details exist. Shaped on a copy: governance prices the caller's
+	// response concurrently, and its iterations carry the advisor passes.
+	if resp.Usage != nil {
+		usage := *resp.Usage
+		result.Usage = &usage
 		result.Usage.Iterations = nil
 		result.Usage.Type = nil
 		if result.Usage.InputTokensDetails == nil {
@@ -532,6 +535,7 @@ type PromptCacheOptions struct {
 // block (OpenAI gpt-5.6+). Only "explicit" is valid for Mode.
 type PromptCacheBreakpoint struct {
 	Mode *string `json:"mode,omitempty"`
+	TTL  *string `json:"ttl,omitempty"` // "30m" or "12h"; defaults to prompt_cache_options.ttl
 }
 
 type ResponsesParameters struct {
@@ -1352,6 +1356,21 @@ type ResponsesResponseUsage struct {
 	CostInUsdTicks             *int64                               `json:"cost_in_usd_ticks,omitempty"`
 	ServerSideToolUsageDetails *ResponsesServerSideToolUsageDetails `json:"server_side_tool_usage_details,omitempty"`
 	ContextDetails             *ResponsesContextDetails             `json:"context_details,omitempty"`
+
+	InputTokensExplicitZero  bool `json:"-"` // Preserve reported zeros when converting back to Chat.
+	OutputTokensExplicitZero bool `json:"-"`
+}
+
+// PreserveTokenCountZeros retains presence for Responses-to-Chat conversion without
+// changing the Responses wire format or keeping the provider response buffer.
+func (u *ResponsesResponseUsage) PreserveTokenCountZeros(data []byte, inputPath, outputPath string) {
+	if u == nil {
+		return
+	}
+	counts := BifrostLLMUsage{PromptTokens: u.InputTokens, CompletionTokens: u.OutputTokens}
+	counts.PreserveTokenCountZeros(data, inputPath, outputPath)
+	u.InputTokensExplicitZero = counts.PromptTokensExplicitZero
+	u.OutputTokensExplicitZero = counts.CompletionTokensExplicitZero
 }
 
 // NormalizeProviderCost mirrors BifrostLLMUsage.NormalizeProviderCost for the responses path.
@@ -1387,19 +1406,33 @@ type ResponsesResponseInputTokens struct {
 	CachedReadTokens        int                          `json:"cached_read_tokens"`
 	CachedWriteTokens       int                          `json:"cached_write_tokens"`
 	CachedWriteTokenDetails *ChatCachedWriteTokenDetails `json:"cached_write_token_details,omitempty"`
+
+	// Parts of AudioTokens that Azure Voice Live handled with Azure Speech, which it bills at their own rates.
+	StandardSpeechAudioTokens int `json:"standard_speech_audio_tokens,omitempty"`
+	CustomSpeechAudioTokens   int `json:"custom_speech_audio_tokens,omitempty"`
+}
+
+// openAICacheWriteTokensDetails is OpenAI's per-lifetime cache write split.
+type openAICacheWriteTokensDetails struct {
+	TTL30mTokens int `json:"ttl_30m_tokens"`
+	TTL12hTokens int `json:"ttl_12h_tokens"`
 }
 
 // UnmarshalJSON maps OpenAI's cached_tokens into CachedReadTokens for compatibility.
 func (d *ResponsesResponseInputTokens) UnmarshalJSON(data []byte) error {
 	var raw struct {
-		TextTokens              int                          `json:"text_tokens"`
-		AudioTokens             int                          `json:"audio_tokens"`
-		ImageTokens             int                          `json:"image_tokens"`
-		CachedReadTokens        int                          `json:"cached_read_tokens"`
-		CachedWriteTokens       int                          `json:"cached_write_tokens"`
-		CachedWriteTokenDetails *ChatCachedWriteTokenDetails `json:"cached_write_token_details"`
-		CachedTokens            *int                         `json:"cached_tokens"`
-		CacheWriteTokens        *int                         `json:"cache_write_tokens"`
+		TextTokens              int                            `json:"text_tokens"`
+		AudioTokens             int                            `json:"audio_tokens"`
+		ImageTokens             int                            `json:"image_tokens"`
+		CachedReadTokens        int                            `json:"cached_read_tokens"`
+		CachedWriteTokens       int                            `json:"cached_write_tokens"`
+		CachedWriteTokenDetails *ChatCachedWriteTokenDetails   `json:"cached_write_token_details"`
+		CachedTokens            *int                           `json:"cached_tokens"`
+		CacheWriteTokens        *int                           `json:"cache_write_tokens"`
+		CacheWriteTokensDetails *openAICacheWriteTokensDetails `json:"cache_write_tokens_details"`
+
+		StandardSpeechAudioTokens int `json:"standard_speech_audio_tokens"`
+		CustomSpeechAudioTokens   int `json:"custom_speech_audio_tokens"`
 	}
 	if err := Unmarshal(data, &raw); err != nil {
 		return err
@@ -1410,6 +1443,8 @@ func (d *ResponsesResponseInputTokens) UnmarshalJSON(data []byte) error {
 	d.CachedReadTokens = raw.CachedReadTokens
 	d.CachedWriteTokens = raw.CachedWriteTokens
 	d.CachedWriteTokenDetails = raw.CachedWriteTokenDetails
+	d.StandardSpeechAudioTokens = raw.StandardSpeechAudioTokens
+	d.CustomSpeechAudioTokens = raw.CustomSpeechAudioTokens
 	// OpenAI spec providers send just cached_tokens, not separate read and write tokens and we handle them as read tokens in pricing calculations.
 	if raw.CachedTokens != nil && raw.CachedReadTokens == 0 && raw.CachedWriteTokens == 0 {
 		d.CachedReadTokens = *raw.CachedTokens
@@ -1418,6 +1453,15 @@ func (d *ResponsesResponseInputTokens) UnmarshalJSON(data []byte) error {
 	if raw.CacheWriteTokens != nil && d.CachedWriteTokens == 0 {
 		d.CachedWriteTokens = *raw.CacheWriteTokens
 	}
+	// OpenAI gpt-5.6+ splits writes by lifetime; fill Bifrost's buckets unless already set.
+	if s := raw.CacheWriteTokensDetails; s != nil && (s.TTL30mTokens > 0 || s.TTL12hTokens > 0) {
+		if d.CachedWriteTokenDetails == nil {
+			d.CachedWriteTokenDetails = &ChatCachedWriteTokenDetails{}
+		}
+		if wd := d.CachedWriteTokenDetails; wd.CachedWriteTokens30m == 0 && wd.CachedWriteTokens12h == 0 {
+			wd.CachedWriteTokens30m, wd.CachedWriteTokens12h = s.TTL30mTokens, s.TTL12hTokens
+		}
+	}
 	return nil
 }
 
@@ -1425,6 +1469,10 @@ func (d *ResponsesResponseInputTokens) UnmarshalJSON(data []byte) error {
 // Cache writes are reported separately via cached_write_tokens and are excluded from cached_tokens so that
 // OpenAI-spec consumers do not price cache writes as cache reads.
 func (d ResponsesResponseInputTokens) MarshalJSON() ([]byte, error) {
+	var split *openAICacheWriteTokensDetails // only OpenAI lifetimes; Anthropic 5m/1h are never relabelled
+	if wd := d.CachedWriteTokenDetails; wd != nil && (wd.CachedWriteTokens30m > 0 || wd.CachedWriteTokens12h > 0) {
+		split = &openAICacheWriteTokensDetails{TTL30mTokens: wd.CachedWriteTokens30m, TTL12hTokens: wd.CachedWriteTokens12h}
+	}
 	type raw struct {
 		TextTokens              int                          `json:"text_tokens,omitempty"`
 		AudioTokens             int                          `json:"audio_tokens,omitempty"`
@@ -1435,7 +1483,11 @@ func (d ResponsesResponseInputTokens) MarshalJSON() ([]byte, error) {
 		CachedTokens            int                          `json:"cached_tokens"`
 		// OpenAI's field name for cache writes (mirrors cached_tokens for reads) so the
 		// OpenAI SDK — which reads cache_write_tokens, not cached_write_tokens — finds it.
-		CacheWriteTokens int `json:"cache_write_tokens"`
+		CacheWriteTokens        int                            `json:"cache_write_tokens"`
+		CacheWriteTokensDetails *openAICacheWriteTokensDetails `json:"cache_write_tokens_details,omitempty"`
+
+		StandardSpeechAudioTokens int `json:"standard_speech_audio_tokens,omitempty"`
+		CustomSpeechAudioTokens   int `json:"custom_speech_audio_tokens,omitempty"`
 	}
 	return MarshalSorted(raw{
 		TextTokens:              d.TextTokens,
@@ -1446,6 +1498,10 @@ func (d ResponsesResponseInputTokens) MarshalJSON() ([]byte, error) {
 		CachedWriteTokenDetails: d.CachedWriteTokenDetails,
 		CachedTokens:            d.CachedReadTokens,
 		CacheWriteTokens:        d.CachedWriteTokens,
+		CacheWriteTokensDetails: split,
+
+		StandardSpeechAudioTokens: d.StandardSpeechAudioTokens,
+		CustomSpeechAudioTokens:   d.CustomSpeechAudioTokens,
 	})
 }
 
@@ -1459,6 +1515,10 @@ type ResponsesResponseOutputTokens struct {
 	CitationTokens           *int `json:"citation_tokens,omitempty"`
 	// Deprecated: use ResponsesResponseUsage.ToolUsage.WebSearch. Populated, will be removed in 3.0.0.
 	NumSearchQueries *int `json:"num_search_queries,omitempty"`
+
+	// Parts of AudioTokens that Azure Voice Live handled with Azure Speech, which it bills at their own rates.
+	StandardSpeechAudioTokens int `json:"standard_speech_audio_tokens,omitempty"`
+	CustomSpeechAudioTokens   int `json:"custom_speech_audio_tokens,omitempty"`
 }
 
 // =============================================================================
@@ -1803,6 +1863,16 @@ func (m ResponsesMessage) MarshalJSON() ([]byte, error) {
 			aux.Arguments = json.RawMessage(*m.Arguments)
 		}
 		return MarshalSorted(aux)
+	}
+
+	// summary is a reasoning-item field; OpenAI rejects it on a message item.
+	if m.ResponsesReasoning != nil && len(m.ResponsesReasoning.Summary) == 0 && m.Type != nil && *m.Type == ResponsesMessageTypeMessage {
+		return MarshalSorted(&struct {
+			Summary json.RawMessage `json:"summary,omitempty"`
+			*Alias
+		}{
+			Alias: (*Alias)(&m),
+		})
 	}
 
 	aux := &struct {
@@ -2217,6 +2287,30 @@ func (m *ResponsesMessage) IsVerbatimItem() bool {
 // the caller executes itself (execution "client").
 func (m *ResponsesMessage) IsClientToolSearchItem() bool {
 	return m.ResponsesToolMessage != nil && m.Execution != nil && *m.Execution == ToolSearchExecutionClient
+}
+
+// IsClientToolSearch reports whether t is a tool_search the caller runs itself.
+func (t *ResponsesTool) IsClientToolSearch() bool {
+	return t.Type == ResponsesToolTypeToolSearch && t.ResponsesToolToolSearch != nil &&
+		t.ResponsesToolToolSearch.Execution != nil && *t.ResponsesToolToolSearch.Execution == ToolSearchExecutionClient
+}
+
+// ForEachInlineToolDefinition calls fn with every tool a tool_addition block in input
+// defines by value, stopping when fn returns false. Compaction tool_changes are not
+// visited: the provider writes them, and they go back unchanged.
+func ForEachInlineToolDefinition(input []ResponsesMessage, fn func(def *ResponsesTool) bool) {
+	for i := range input {
+		if input[i].Content == nil {
+			continue
+		}
+		for j := range input[i].Content.ContentBlocks {
+			block := &input[i].Content.ContentBlocks[j]
+			if block.Type == ResponsesInputMessageContentBlockTypeToolAddition && block.ToolChange != nil &&
+				block.ToolChange.Definition != nil && !fn(block.ToolChange.Definition) {
+				return
+			}
+		}
+	}
 }
 
 // ToolSearchOutputToolNames returns the names of the tools a tool_search_output
@@ -4027,7 +4121,8 @@ type ResponsesToolWebSearch struct {
 	UserLocation       *ResponsesToolWebSearchUserLocation `json:"user_location,omitempty"`        // The approximate location of the user
 
 	// Anthropic only
-	MaxUses *int `json:"max_uses,omitempty"` // Maximum number of uses for the search
+	MaxUses *int    `json:"max_uses,omitempty"`           // Maximum number of uses for the search
+	Version *string `json:"web_search_version,omitempty"` // Preserve an explicit Anthropic tool version
 }
 
 // ResponsesToolWebSearchFilters represents filters for web search
@@ -4369,6 +4464,7 @@ type ResponsesToolToolSearch struct {
 
 // ResponsesToolWebFetch represents a web fetch tool
 type ResponsesToolWebFetch struct {
+	Version           *string                        `json:"web_fetch_version,omitempty"` // Preserve an explicit Anthropic tool version
 	MaxUses           *int                           `json:"max_uses,omitempty"`
 	Filters           *ResponsesToolWebSearchFilters `json:"filters,omitempty"`
 	MaxContentTokens  *int                           `json:"max_content_tokens,omitempty"`
@@ -4478,6 +4574,8 @@ const (
 	ResponsesStreamResponseTypeReasoningSummaryPartDone  ResponsesStreamResponseType = "response.reasoning_summary_part.done"
 	ResponsesStreamResponseTypeReasoningSummaryTextDelta ResponsesStreamResponseType = "response.reasoning_summary_text.delta"
 	ResponsesStreamResponseTypeReasoningSummaryTextDone  ResponsesStreamResponseType = "response.reasoning_summary_text.done"
+	ResponsesStreamResponseTypeReasoningTextDelta        ResponsesStreamResponseType = "response.reasoning_text.delta"
+	ResponsesStreamResponseTypeReasoningTextDone         ResponsesStreamResponseType = "response.reasoning_text.done"
 
 	ResponsesStreamResponseTypeImageGenerationCallCompleted    ResponsesStreamResponseType = "response.image_generation_call.completed"
 	ResponsesStreamResponseTypeImageGenerationCallGenerating   ResponsesStreamResponseType = "response.image_generation_call.generating"
@@ -4602,8 +4700,13 @@ type ResponsesShellCallOutputDelta struct {
 // MarshalJSON omits event-scoped fields that are nil so strict Responses
 // clients do not see explicit nulls on unrelated event types. Some event types
 // still intentionally emit empty arrays after WithDefaults populates them.
+// resp is a copy, so defaults set here never reach the caller's event.
 func (resp BifrostResponsesStreamResponse) MarshalJSON() ([]byte, error) {
 	type alias BifrostResponsesStreamResponse
+	// Anthropic/Bedrock carry the thinking signature on a text-less delta; delta is required on the wire.
+	if resp.Type == ResponsesStreamResponseTypeReasoningSummaryTextDelta && resp.Delta == nil {
+		resp.Delta = new("")
+	}
 	encoded, err := Marshal(alias(resp))
 	if err != nil {
 		return nil, err

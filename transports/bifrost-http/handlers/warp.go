@@ -305,7 +305,7 @@ type warpBackfillStatus struct {
 	Clustered  int `json:"clustered,omitempty"`
 	Assigned   int `json:"assigned,omitempty"`
 	Unassigned int `json:"unassigned,omitempty"`
-	// Capped is set when the window held more than one run takes in.
+	// Capped is set when a run stopped at a read limit; default runs have none.
 	Capped         bool                `json:"capped,omitempty"`
 	MergeThreshold *float64            `json:"merge_threshold,omitempty"`
 	Topics         []warp.TopicSummary `json:"topics,omitempty"`

@@ -42,6 +42,14 @@ var reservedKeys = map[BifrostContextKey]struct{}{
 	BifrostContextKeyStreamAttemptAbort:      {},
 	BifrostContextKeyStreamCommitWatch:       {},
 	BifrostContextKeyMCPHealthCheckRequest:   {},
+	BifrostContextKeyMCPCallerCapabilities:   {},
+	BifrostContextKeyMCPInputResumption:      {},
+	BifrostContextKeyMCPRoundTripID:          {},
+	BifrostContextKeyMCPRequestedToolName:    {},
+	BifrostContextKeyMCPToolUIResourceURI:    {},
+	BifrostContextKeyMCPToolAppOnly:          {},
+	BifrostContextKeyMCPGatewayClient:        {},
+	BifrostContextKeyMCPToolListing:          {},
 	BifrostContextKeyMCPUnattendedExecution:  {},
 	BifrostContextKeyInjectedToolsExecuted:   {},
 	BifrostContextKeyUpstreamLatency:         {},
@@ -51,9 +59,11 @@ var reservedKeys = map[BifrostContextKey]struct{}{
 	BifrostContextKeyRequestedModel:          {},
 	BifrostContextKeyProviderProxyConfig:     {},
 	BifrostContextKeyMCPInboundBearer:        {},
+	BifrostContextKeyOpencodeSession:         {},
 	BifrostContextKeyAuthCredential:          {},
 	BifrostContextKeyMCPAgentServedRoute:     {},
 	BifrostContextKeyMCPInstructionsText:     {},
+	BifrostContextKeyClientIP:                {},
 }
 
 // isReservedKey reports whether key is a reserved context key whose writes are
@@ -105,6 +115,7 @@ type BifrostContext struct {
 	pluginScope   *string                        // Non-nil when this is a scoped plugin context
 	pluginLogs    atomic.Pointer[pluginLogStore] // Shared log store; lazily initialized on root, shared by scoped contexts
 	valueDelegate *BifrostContext                // For scoped contexts: delegate Value/SetValue to this root context
+	scopeSpanID   string                         // For scoped contexts: parent span for spans the plugin starts, read in place of the root's
 }
 
 // NewBifrostContext creates a new BifrostContext with the given parent context and deadline.
@@ -425,6 +436,9 @@ func (bc *BifrostContext) Err() error {
 // Otherwise checks the internal userValues map, then delegates to the parent context.
 func (bc *BifrostContext) Value(key any) any {
 	if bc.valueDelegate != nil {
+		if bc.scopeSpanID != "" && key == BifrostContextKeySpanID {
+			return bc.scopeSpanID
+		}
 		return bc.valueDelegate.Value(key)
 	}
 	// A scoped context never reaches this line - it returned via its delegate above - so bc is
@@ -605,6 +619,54 @@ func (bc *BifrostContext) setReservedValue(key, value any) {
 		bc.userValues = make(map[any]any, 16)
 	}
 	bc.userValues[key] = value
+}
+
+// getOrStoreReservedValue loads key if it is already set, otherwise calls
+// supplier and stores its result. Like setReservedValue it bypasses
+// blockRestrictedWrites, so it stays unexported and is reached only through
+// narrowly named helpers such as GetOrStoreOpencodeSession.
+//
+// The supplier runs outside the lock, because suppliers read the context and
+// valuesMu is not reentrant. Two first callers racing on an empty key may
+// therefore both run it, but only the first result is stored and every caller
+// returns that stored value.
+func (bc *BifrostContext) getOrStoreReservedValue(key BifrostContextKey, supplier func() any) any {
+	if bc.valueDelegate != nil {
+		return bc.valueDelegate.getOrStoreReservedValue(key, supplier)
+	}
+	bc.valuesMu.RLock()
+	if val, ok := bc.userValues[key]; ok {
+		bc.valuesMu.RUnlock()
+		return val
+	}
+	bc.valuesMu.RUnlock()
+
+	val := supplier()
+
+	bc.valuesMu.Lock()
+	defer bc.valuesMu.Unlock()
+	// Re-check: a concurrent caller may have stored a value while we computed.
+	if stored, ok := bc.userValues[key]; ok {
+		return stored
+	}
+	if bc.userValues == nil {
+		bc.userValues = make(map[any]any, 16)
+	}
+	bc.userValues[key] = val
+	return val
+}
+
+// GetOrStoreOpencodeSession returns the request's resolved x-opencode-session
+// value, calling supplier and caching its result under the reserved
+// BifrostContextKeyOpencodeSession on the first call. The write bypasses
+// blockRestrictedWrites so a value resolved during a streaming post-hook still
+// lands and retries see the same session. Bifrost-internal (called by the
+// OpenCode provider - DO NOT CALL THIS MANUALLY).
+func (bc *BifrostContext) GetOrStoreOpencodeSession(supplier func() string) string {
+	value, _ := bc.getOrStoreReservedValue(BifrostContextKeyOpencodeSession, func() any {
+		return supplier()
+	}).(string)
+	return value
 }
 
 // ReadyStreamCommitWatch records that a held stream attempt produced the chunk its first-chunk
@@ -1109,6 +1171,15 @@ func (bc *BifrostContext) WithPluginScope(name *string) *BifrostContext {
 		valueDelegate: bc,
 	}
 	scoped.pluginLogs.Store(bc.pluginLogs.Load())
+	return scoped
+}
+
+// WithPluginScopeSpan is WithPluginScope with spanID as the parent of spans the plugin
+// starts. Only this scoped context sees it, so the root's active span is untouched for
+// other goroutines sharing the request context.
+func (bc *BifrostContext) WithPluginScopeSpan(name *string, spanID string) *BifrostContext {
+	scoped := bc.WithPluginScope(name)
+	scoped.scopeSpanID = spanID
 	return scoped
 }
 

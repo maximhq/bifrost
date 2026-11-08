@@ -211,6 +211,10 @@ export class VirtualKeysPage extends BasePage {
 
     await expect(this.sheet).toBeVisible({ timeout: 10000 });
     await this.waitForSheetAnimation();
+    // The row menu closes with an animation and then returns focus to the row's actions button.
+    // A popover opened inside the sheet before that lands is closed by the focus change, so wait
+    // for the menu to be gone.
+    await this.page.locator('[role="menu"]').waitFor({ state: "detached", timeout: 10000 });
     await expect(this.nameInput).toHaveValue(name, { timeout: 10000 });
   }
 

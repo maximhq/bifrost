@@ -15,7 +15,7 @@ import (
 )
 
 // warpTopicTables are the tables this file's tests own on every backend.
-var warpTopicTables = []string{"warp_topics", "warp_topic_assignments", "warp_topic_unmatched"}
+var warpTopicTables = []string{"warp_topics", "warp_topic_assignments", "warp_topic_unmatched", "warp_vector_deletes"}
 
 // forEachWarpTopicStore runs test against every backend there is. SQLite
 // always runs. Postgres and ClickHouse run when reachable, and skip their own
@@ -752,6 +752,65 @@ func TestWarpTopicUnmatchedPool(t *testing.T) {
 		assert.EqualValues(t, 1, count, "deletes by id leave other rows alone")
 
 		require.Error(t, store.AddWarpTopicUnmatched(ctx, []WarpTopicUnmatched{{LogID: "no-vector", Timestamp: base, EmbeddingSignature: sig}}))
+	})
+}
+
+// A failed seed run takes back the rows it filed under no topic by when it
+// filed them: every row with no topic assigned at or after its start, and no
+// row under a topic or from before it.
+func TestWarpTopicAssignmentsDeleteUnmatchedSince(t *testing.T) {
+	forEachWarpTopicStore(t, func(t *testing.T, store LogStore) {
+		ctx := context.Background()
+		base := warpTopicTestTime()
+		row := func(logID, topicID string, assigned time.Time) WarpTopicAssignment {
+			assignment := warpTestAssignment(logID, topicID, base)
+			assignment.AssignedAt = assigned
+			return assignment
+		}
+		require.NoError(t, store.UpsertWarpTopicAssignments(ctx, []WarpTopicAssignment{
+			row("before", "", base.Add(-time.Millisecond)),
+			row("at", "", base),
+			row("after", "", base.Add(time.Second)),
+			row("in-topic", "t-1", base.Add(time.Second)),
+		}))
+		require.NoError(t, store.DeleteWarpTopicAssignmentsUnmatchedSince(ctx, base))
+		left, err := store.ListWarpTopicAssignments(ctx, WarpTopicAssignmentFilter{}, 10)
+		require.NoError(t, err)
+		assert.ElementsMatch(t, []string{"before", "in-topic"}, warpAssignmentLogIDs(left))
+	})
+}
+
+// A vector delete that failed is recorded, listed oldest first for the retry,
+// and removed once it succeeds. Recording a log again replaces its row.
+func TestWarpVectorDeletes(t *testing.T) {
+	forEachWarpTopicStore(t, func(t *testing.T, store LogStore) {
+		ctx := context.Background()
+		base := warpTopicTestTime()
+		require.NoError(t, store.AddWarpVectorDeletes(ctx, []WarpVectorDelete{
+			{LogID: "late", Namespace: "WarpLogs", CreatedAt: base.Add(time.Minute)},
+			{LogID: "early", Namespace: "", CreatedAt: base},
+		}))
+		rows, err := store.ListWarpVectorDeletes(ctx, 10)
+		require.NoError(t, err)
+		require.Len(t, rows, 2)
+		assert.Equal(t, "early", rows[0].LogID, "oldest first")
+		assert.Empty(t, rows[0].Namespace, "an unknown namespace is kept as unknown")
+		assert.Equal(t, "WarpLogs", rows[1].Namespace)
+		assert.True(t, rows[0].CreatedAt.Equal(base))
+
+		first, err := store.ListWarpVectorDeletes(ctx, 1)
+		require.NoError(t, err)
+		require.Len(t, first, 1)
+		_, err = store.ListWarpVectorDeletes(ctx, 0)
+		require.Error(t, err, "an unbounded read is refused")
+		require.Error(t, store.AddWarpVectorDeletes(ctx, []WarpVectorDelete{{Namespace: "WarpLogs"}}), "a row needs a log id")
+
+		require.NoError(t, store.DeleteWarpVectorDeletes(ctx, []string{"early", "missing"}))
+		require.NoError(t, store.DeleteWarpVectorDeletes(ctx, nil))
+		rows, err = store.ListWarpVectorDeletes(ctx, 10)
+		require.NoError(t, err)
+		require.Len(t, rows, 1)
+		assert.Equal(t, "late", rows[0].LogID)
 	})
 }
 
