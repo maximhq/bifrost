@@ -97,6 +97,9 @@ type TableKey struct {
 	// Ollama config fields (embedded)
 	OllamaUrl *schemas.SecretVar `gorm:"type:text" json:"ollama_url,omitempty"`
 
+	// oMLX config fields (embedded)
+	OmlxUrl *schemas.SecretVar `gorm:"type:text" json:"omlx_url,omitempty"`
+
 	// SGL config fields (embedded)
 	SGLUrl *schemas.SecretVar `gorm:"type:text" json:"sgl_url,omitempty"`
 
@@ -152,6 +155,7 @@ type TableKey struct {
 	VLLMKeyConfig          *schemas.VLLMKeyConfig          `gorm:"-" json:"vllm_key_config,omitempty"`
 	ReplicateKeyConfig     *schemas.ReplicateKeyConfig     `gorm:"-" json:"replicate_key_config,omitempty"`
 	OllamaKeyConfig        *schemas.OllamaKeyConfig        `gorm:"-" json:"ollama_key_config,omitempty"`
+	OmlxKeyConfig          *schemas.OmlxKeyConfig          `gorm:"-" json:"omlx_key_config,omitempty"`
 	SGLKeyConfig           *schemas.SGLKeyConfig           `gorm:"-" json:"sgl_key_config,omitempty"`
 	DatabricksKeyConfig    *schemas.DatabricksKeyConfig    `gorm:"-" json:"databricks_key_config,omitempty"`
 	CloudflareKeyConfig    *schemas.CloudflareKeyConfig    `gorm:"-" json:"cloudflare_key_config,omitempty"`
@@ -573,6 +577,13 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 		k.OllamaUrl = &u
 	} else {
 		k.OllamaUrl = nil
+	}
+
+	if k.OmlxKeyConfig != nil && k.OmlxKeyConfig.URL.IsSet() {
+		u := k.OmlxKeyConfig.URL
+		k.OmlxUrl = &u
+	} else {
+		k.OmlxUrl = nil
 	}
 
 	if k.SGLKeyConfig != nil && k.SGLKeyConfig.URL.IsSet() {
@@ -1253,6 +1264,14 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 		}
 	} else {
 		k.OllamaKeyConfig = nil
+	}
+	// Reconstruct oMLX config if fields are present
+	if k.OmlxUrl != nil {
+		k.OmlxKeyConfig = &schemas.OmlxKeyConfig{
+			URL: *k.OmlxUrl,
+		}
+	} else {
+		k.OmlxKeyConfig = nil
 	}
 	// Reconstruct SGL config if fields are present
 	if k.SGLUrl != nil {

@@ -589,6 +589,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_mcp_per_user_discoveries"}, run: migrationAddMCPPerUserDiscoveries},
 	{IDs: []string{"add_mcp_client_pending_verification_column"}, run: migrationAddMCPClientPendingVerificationColumn},
 	{IDs: []string{"add_cache_creation_above_12hr_pricing_columns"}, run: migrationAddCacheCreationAbove12hrPricingColumns},
+	{IDs: []string{"add_omlx_key_config_column"}, run: migrationAddOmlxKeyConfigColumn},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -6929,6 +6930,34 @@ func migrationAddVLLMKeyConfigColumns(ctx context.Context, db *gorm.DB, logger s
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while running vllm key config columns migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddOmlxKeyConfigColumn adds the omlx_url column to the key table
+func migrationAddOmlxKeyConfigColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_omlx_key_config_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := addColumnIfNotExists(tx, logger, &tables.TableKey{}, "omlx_url"); err != nil {
+				return err
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := dropColumnIfExists(tx, logger, &tables.TableKey{}, "omlx_url"); err != nil {
+				return err
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running omlx key config column migration: %s", err.Error())
 	}
 	return nil
 }

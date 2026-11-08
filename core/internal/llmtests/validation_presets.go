@@ -463,6 +463,11 @@ func ModifyExpectationsForProvider(expectations ResponseExpectations, provider s
 		expectations.ShouldHaveTimestamps = false
 		expectations.ShouldHaveLatency = true
 
+	case schemas.Omlx:
+		// oMLX local inference — OpenAI-compatible, returns usage and created
+		expectations.ShouldHaveUsageStats = true
+		expectations.ShouldHaveLatency = true
+
 	case schemas.Groq:
 		expectations.ShouldHaveUsageStats = true
 		expectations.ShouldHaveLatency = true

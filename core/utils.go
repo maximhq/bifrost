@@ -76,9 +76,11 @@ func providerRequiresKey(customConfig *schemas.CustomProviderConfig) bool {
 
 // CanProviderKeyValueBeEmpty returns true if the given provider allows the API key to be empty.
 // Some providers like Vertex and Bedrock have their credentials in additional key configs.
-// Ollama and SGL are keyless (API Key is optional) but use per-key server URLs.
+// Ollama, SGL and oMLX are keyless (API Key is optional) but use per-key server URLs.
+// GitHub Copilot may authenticate with a GitHub App bundle in github_copilot_key_config
+// instead of a Copilot API token in value; validateKey checks that one of the two is present.
 func CanProviderKeyValueBeEmpty(providerKey schemas.ModelProvider) bool {
-	return providerKey == schemas.Vertex || providerKey == schemas.Bedrock || providerKey == schemas.BedrockMantle || providerKey == schemas.SageMaker || providerKey == schemas.VLLM || providerKey == schemas.Azure || providerKey == schemas.Ollama || providerKey == schemas.SGL || providerKey == schemas.Databricks
+	return providerKey == schemas.Vertex || providerKey == schemas.Bedrock || providerKey == schemas.BedrockMantle || providerKey == schemas.SageMaker || providerKey == schemas.VLLM || providerKey == schemas.Azure || providerKey == schemas.Ollama || providerKey == schemas.Omlx || providerKey == schemas.SGL || providerKey == schemas.Databricks || providerKey == schemas.GithubCopilot
 }
 
 // isKeySkippingAllowed gates SkipKeySelection on the provider this attempt resolved to. The flag
@@ -175,6 +177,13 @@ func validateKey(providerKey schemas.ModelProvider, key *schemas.Key) error {
 		}
 		if key.OllamaKeyConfig.URL.GetValue() == "" {
 			return fmt.Errorf("ollama_key_config.url is required")
+		}
+	case schemas.Omlx:
+		if key.OmlxKeyConfig == nil {
+			return fmt.Errorf("omlx_key_config is required")
+		}
+		if key.OmlxKeyConfig.URL.GetValue() == "" {
+			return fmt.Errorf("omlx_key_config.url is required")
 		}
 	case schemas.SGL:
 		if key.SGLKeyConfig == nil {
