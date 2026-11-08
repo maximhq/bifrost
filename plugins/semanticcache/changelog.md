@@ -1,3 +1,3 @@
 - chore: upgraded Go to 1.27.4, core to v1.16.0 and framework to v1.13.0
 - fix: a follow-up turn no longer matches an earlier turn of the same conversation; earlier messages must match exactly and only the newest message is compared by meaning
-- fix: requests that differ only in text.format schema, n, audio, top_k or reasoning.max_tokens no longer share a cache entry [@kunalgoesbyken](https://github.com/kunalgoesbyken)
+- fix: requests that differ only in text.format schema, n, audio, top_k, reasoning.max_tokens or reasoning.summary no longer share a cache entry [@kunalgoesbyken](https://github.com/kunalgoesbyken)

@@ -53,6 +53,7 @@ func TestChatParamsHashIncludesOutputShapingParams(t *testing.T) {
 		"audio":                {audio("alloy", "wav"), audio("verse", "mp3")},
 		"top_k":                {{TopK: schemas.Ptr(1)}, {TopK: schemas.Ptr(200)}},
 		"reasoning.max_tokens": {{Reasoning: &schemas.ChatReasoning{MaxTokens: schemas.Ptr(1024)}}, {Reasoning: &schemas.ChatReasoning{MaxTokens: schemas.Ptr(16000)}}},
+		"reasoning.summary":    {{Reasoning: &schemas.ChatReasoning{Summary: schemas.Ptr("concise")}}, {Reasoning: &schemas.ChatReasoning{Summary: schemas.Ptr("detailed")}}},
 	}
 	for name, pair := range pairs {
 		if hashFor(pair[0]) != hashFor(pair[0]) {
