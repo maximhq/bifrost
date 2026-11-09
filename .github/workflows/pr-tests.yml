@@ -95,6 +95,7 @@ jobs:
             api.parasail.io:443
             api.perplexity.ai:443
             api.replicate.com:443
+            api.runcrate.ai:443
             api.x.ai:443
             archive.ubuntu.com:443
             esm.ubuntu.com:443
