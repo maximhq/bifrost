@@ -183,6 +183,7 @@ export interface VirtualKeyMCPConfig {
 	mcp_client_id?: number;
 	mcp_client?: {
 		id: number;
+		client_id?: string;
 		name: string;
 		connection_type: string;
 		connection_string?: string;

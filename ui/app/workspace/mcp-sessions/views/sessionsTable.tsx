@@ -41,7 +41,8 @@ import { ChevronLeft, ChevronRight, Info, Search } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { getErrorMessage, useReauthMCPSessionMutation, useRefreshMCPSessionMutation, useRevokeMCPSessionMutation } from "@/lib/store";
 import { MCPSessionRow } from "@/lib/types/mcpSessions";
-import { formatRelativePast, formatTokenExpiry } from "@/lib/utils/mcpCredential";
+import { formatRelativePast, formatTokenExpiry, sessionRowRights } from "@/lib/utils/mcpCredential";
+import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { sessionDiscoveryCell } from "@/lib/utils/mcpPerUserDiscovery";
 import { RefreshTokenStatus } from "@/components/refreshTokenStatus";
 import { ScopeChips } from "@/components/scopeChips";
@@ -459,19 +460,26 @@ interface RowActionsProps {
 function RowActions({ row, reauthing, revoking, refreshing, isPendingRow, onReauth, onRevoke, onRefresh }: RowActionsProps) {
 	const { t } = useTranslation("mcp");
 	const busy = reauthing || revoking || refreshing;
+	const canDelete = useRbac(RbacResource.MCPGateway, RbacOperation.Delete);
+	const canCreate = useRbac(RbacResource.MCPGateway, RbacOperation.Create);
+	// A caller's own sign-ins are theirs to revoke and refresh; anyone else's
+	// need the matching permission, so the menu never offers an action that 403s.
+	const rights = sessionRowRights(row, { canDelete, canCreate });
+	const canReauth = row.status !== "orphaned" && row.can_reauth;
 	// Discovers the caller's tools again with the stored credential; the server
 	// decides who may (can_refresh), the same callers as re-authentication.
-	const refreshItem = row.can_refresh && (
-		<DropdownMenuItem
-			className="cursor-pointer"
-			disabled={busy}
-			data-testid="mcp-session-refresh-menu-item"
-			onSelect={onRefresh}
-		>
+	const refreshItem = rights.refresh && (
+		<DropdownMenuItem className="cursor-pointer" disabled={busy} data-testid="mcp-session-refresh-menu-item" onSelect={onRefresh}>
 			<RefreshCw className="h-4 w-4" />
 			{t("sessions.actions.refreshTools")}
 		</DropdownMenuItem>
 	);
+	// A credential row of someone else's that the caller may neither re-authenticate,
+	// refresh nor revoke offers nothing, so it shows no menu. A pending flow always
+	// offers its completion link.
+	if (row.kind !== "flow" && !canReauth && !rights.refresh && !rights.revoke) {
+		return null;
+	}
 	return (
 		<DropdownMenu>
 			<DropdownMenuTrigger asChild>
@@ -517,23 +525,25 @@ function RowActions({ row, reauthing, revoking, refreshing, isPendingRow, onReau
 							</DropdownMenuItem>
 						)}
 						{/* A pending flow holds no credential yet: revoking it drops the row and its link. */}
-						<DropdownMenuItem
-							variant="destructive"
-							className="cursor-pointer"
-							disabled={busy}
-							data-testid="mcp-session-revoke-menu-item"
-							onSelect={(e) => {
-								e.preventDefault();
-								onRevoke();
-							}}
-						>
-							<Trash2 className="h-4 w-4" />
-							{t("sessions.actions.revoke")}
-						</DropdownMenuItem>
+						{rights.revoke && (
+							<DropdownMenuItem
+								variant="destructive"
+								className="cursor-pointer"
+								disabled={busy}
+								data-testid="mcp-session-revoke-menu-item"
+								onSelect={(e) => {
+									e.preventDefault();
+									onRevoke();
+								}}
+							>
+								<Trash2 className="h-4 w-4" />
+								{t("sessions.actions.revoke")}
+							</DropdownMenuItem>
+						)}
 					</>
 				) : row.kind === "header" ? (
 					<>
-						{row.status !== "orphaned" && row.can_reauth && (
+						{canReauth && (
 							// "Edit values" hits reauth server-side: the handler mints a
 							// fresh header submission flow + temp token and returns the
 							// auth-landing URL. Same single-click → redirect dance as the
@@ -554,23 +564,25 @@ function RowActions({ row, reauthing, revoking, refreshing, isPendingRow, onReau
 							</DropdownMenuItem>
 						)}
 						{refreshItem}
-						<DropdownMenuItem
-							variant="destructive"
-							className="cursor-pointer"
-							disabled={busy}
-							data-testid="mcp-session-revoke-menu-item"
-							onSelect={(e) => {
-								e.preventDefault();
-								onRevoke();
-							}}
-						>
-							<Trash2 className="h-4 w-4" />
-							{t("sessions.actions.revoke")}
-						</DropdownMenuItem>
+						{rights.revoke && (
+							<DropdownMenuItem
+								variant="destructive"
+								className="cursor-pointer"
+								disabled={busy}
+								data-testid="mcp-session-revoke-menu-item"
+								onSelect={(e) => {
+									e.preventDefault();
+									onRevoke();
+								}}
+							>
+								<Trash2 className="h-4 w-4" />
+								{t("sessions.actions.revoke")}
+							</DropdownMenuItem>
+						)}
 					</>
 				) : (
 					<>
-						{row.status !== "orphaned" && row.can_reauth && (
+						{canReauth && (
 							// Re-auth on an orphaned row wouldn't help: the upstream
 							// credential is intact, the user just no longer has any
 							// granting VK. Surface guidance instead of an action.
@@ -590,19 +602,21 @@ function RowActions({ row, reauthing, revoking, refreshing, isPendingRow, onReau
 							</DropdownMenuItem>
 						)}
 						{refreshItem}
-						<DropdownMenuItem
-							variant="destructive"
-							className="cursor-pointer"
-							disabled={busy}
-							data-testid="mcp-session-revoke-menu-item"
-							onSelect={(e) => {
-								e.preventDefault();
-								onRevoke();
-							}}
-						>
-							<Trash2 className="h-4 w-4" />
-							{t("sessions.actions.revoke")}
-						</DropdownMenuItem>
+						{rights.revoke && (
+							<DropdownMenuItem
+								variant="destructive"
+								className="cursor-pointer"
+								disabled={busy}
+								data-testid="mcp-session-revoke-menu-item"
+								onSelect={(e) => {
+									e.preventDefault();
+									onRevoke();
+								}}
+							>
+								<Trash2 className="h-4 w-4" />
+								{t("sessions.actions.revoke")}
+							</DropdownMenuItem>
+						)}
 					</>
 				)}
 			</DropdownMenuContent>
