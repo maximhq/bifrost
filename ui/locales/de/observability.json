@@ -945,6 +945,9 @@
 		"copyToClipboard": "In die Zwischenablage kopieren",
 		"stats": {
 			"totalExecutions": "Ausführungen insgesamt",
+			"executions": "Ausführungen",
+			"ofAllExecutions": "Von allen MCP-Tool-Aufrufen in diesem Zeitraum",
+			"perExecution": "{{value}}/Aufruf",
 			"successRate": "Erfolgsrate",
 			"avgLatency": "Durchschn. Latenz",
 			"totalCost": "Gesamtkosten"
@@ -974,7 +977,6 @@
 			"toolName": "Tool-Name",
 			"server": "Server",
 			"virtualKey": "Virtueller Schlüssel",
-			"llmRequestId": "LLM-Request-ID",
 			"metadata": "Metadaten",
 			"deleteFailed": "Fehler beim Löschen des Protokolls",
 			"invalidDate": "Ungültiges Datum",
@@ -1025,6 +1027,7 @@
 		"rounds": "Runden",
 		"execution": "Ausführung",
 		"errorDetails": "Fehlerdetails",
+		"errorNoMessage": "Der Tool-Aufruf ist ohne Fehlermeldung fehlgeschlagen.",
 		"pluginLogs": "Plugin-Protokolle",
 		"loading": "MCP-Protokolle werden geladen...",
 		"native": "Nativ",
@@ -1046,8 +1049,7 @@
 			"blockedDescription": "Vor der Ausführung blockiert.",
 			"observedDescription": "Tool-Aktivität wurde erfasst, das Ausführungsergebnis ist jedoch nicht bekannt.",
 			"inputRequiredDescription": "Der MCP-Server hat den Aufrufer vor dem Abschluss um eine Eingabe gebeten. Der Wiederholungsversuch mit der Antwort ist ein eigener Eintrag.",
-			"retryLaterDescription": "Der MCP-Server hat den Aufrufer gebeten, es später erneut zu versuchen, ohne eine Eingabe anzufordern. Der erneute Versuch ist ein separater Eintrag.",
-			"executionDescription": "Aufgezeichnetes Tool-Ausführungsergebnis."
+			"retryLaterDescription": "Der MCP-Server hat den Aufrufer gebeten, es später erneut zu versuchen, ohne eine Eingabe anzufordern. Der erneute Versuch ist ein separater Eintrag."
 		},
 		"noResults": "Keine Ergebnisse gefunden. Passe deine Filter und/oder den Zeitraum an.",
 		"observedRoundTrip": "Beobachtete Roundtrip-Zeit"

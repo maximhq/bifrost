@@ -96,7 +96,9 @@ case schemas.Wally:
 
 ## Request Parameters
 
-Wally supports OpenAI-compatible chat completion parameters. For the full parameter reference and message conversion behavior, see [OpenAI Chat Completions](/providers/supported-providers/openai#1-chat-completions).
+The [Wally public API contract](https://docs.runanywhere.ai/wally-cloud/api#body-parameters) documents `model`, `messages`, `stream`, `temperature`, `max_tokens`, `tools`, `tool_choice`, and `stream_options`. Fields outside that contract may be rejected; support for the full OpenAI parameter set is not implied.
+
+For message format and Bifrost's conversion behavior, see [OpenAI Chat Completions](/providers/supported-providers/openai#1-chat-completions).
 
 Bifrost serves every model Wally exposes, for example `deepseek-v4.1-flash`, `glm-5.3-flash`, and `kimi-k3`. Call [List Models](#3-list-models) for the current catalog, or see [Wally pricing](https://www.runwally.com/pricing).
 

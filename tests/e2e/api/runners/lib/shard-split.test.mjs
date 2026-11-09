@@ -731,5 +731,22 @@ test("Azure live session rows run only in the azure partition", () => {
   assert.deepEqual(runFilter(["--provider", "azure"], { source }), ["azure-live-native", "azure-live-openai-route", "azure-sdk-live", "azure-sdk-bare-ua-live", "azure-chat-openai-route"]);
 });
 
+// Provider ownership comes from the model, never prompt text. Keep name-only listing rows.
+{
+  const source = join(WORK, "wally-routing.json");
+  const chat = (name, model, text) => ({ name, request: { method: "POST",
+    url: "{{baseUrl}}/v1/chat/completions",
+    body: { mode: "raw", raw: JSON.stringify({ model, messages: [{ role: "user", content: text }] }) } } });
+  writeFileSync(source, JSON.stringify({ item: [
+    chat("openai prompt mentions wally/", "openai/gpt-4o-mini", "Explain wally/deepseek"),
+    chat("Wally model", "wally/minimax-m3", "hi"),
+    { name: "wally list models", request: { method: "GET", url: "{{baseUrl}}/v1/models?provider=wally" } },
+  ] }));
+  test("Wally prompt text does not steal an OpenAI row", () => {
+    assert.deepStrictEqual(runFilter(["--provider", "wally"], { source }).sort(), ["Wally model", "wally list models"].sort());
+    assert.deepStrictEqual(runFilter(["--provider", "openai"], { source }), ["openai prompt mentions wally/"]);
+  });
+}
+
 rmSync(WORK, { recursive: true, force: true });
 console.log(`\n${passed} passed`);
