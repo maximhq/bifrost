@@ -3047,6 +3047,9 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 				traceCompleter(nil)
 			}
 		}()
+		// Registered after the teardown above so it runs first: a panic while converting a
+		// chunk is logged, upstream is cancelled and drained, then the teardown closes the stream.
+		defer lib.RecoverStreamProducer(cancel, streamChan)
 
 		// sendConvertedStreamError converts a sanitized BifrostError through the
 		// integration's error converter and emits it in the route's native SSE

@@ -22,6 +22,9 @@ func (request *GeminiGenerationRequest) ToBifrostSpeechRequest(ctx *schemas.Bifr
 	var textInput string
 	for _, content := range request.Contents {
 		for _, part := range content.Parts {
+			if part == nil {
+				continue
+			}
 			if part.Text != "" {
 				textInput += part.Text
 			}
@@ -133,6 +136,9 @@ func (response *GenerateContentResponse) ToBifrostSpeechResponse(ctx context.Con
 			var audioData []byte
 			// Extract audio data from all parts
 			for _, part := range candidate.Content.Parts {
+				if part == nil {
+					continue
+				}
 				if part.InlineData != nil && len(part.InlineData.Data) > 0 {
 					// Check if this is audio data
 					if strings.HasPrefix(part.InlineData.MIMEType, "audio/") {

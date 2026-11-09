@@ -1,9 +1,15 @@
 package lib
 
 import (
+	"context"
+	"fmt"
 	"io"
+	"runtime"
+	"runtime/debug"
 	"sync"
 	"time"
+
+	"github.com/maximhq/bifrost/core/schemas"
 )
 
 // SSEStreamReader is an io.ReadCloser that delivers one event per Read call,
@@ -281,4 +287,39 @@ func StopSSEHeartbeat(reader *SSEStreamReader, done chan struct{}, exited <-chan
 	close(done)
 	reader.Close()
 	<-exited
+}
+
+// RecoverStreamProducer is deferred by the goroutine that turns a provider stream into
+// SSE frames. That goroutine runs after the HTTP handler has returned, outside
+// RecoveryMiddleware, so a panic in a chunk converter or a stream-chunk plugin hook would
+// otherwise end the whole process. It logs the panic, cancels the upstream request and
+// drains stream so the provider goroutine is not left blocked on a send, then returns so
+// the producer's own deferred teardown closes the client stream. The client sees the
+// stream end without a terminal frame.
+//
+// Defer it after the producer's teardown defer, so it runs first and the drain finishes
+// before the trace completes, the same order the client-disconnect path uses.
+func RecoverStreamProducer(cancel context.CancelFunc, stream <-chan *schemas.BifrostStreamChunk) {
+	r := recover()
+	if r == nil {
+		return
+	}
+	if logger != nil {
+		logger.Error(fmt.Sprintf("recovered from panic in stream producer: %s\n%s", PanicSummary(r), debug.Stack()))
+	}
+	if cancel != nil {
+		cancel()
+	}
+	for range stream {
+	}
+}
+
+// PanicSummary describes a recovered panic value without echoing arbitrary content.
+// Runtime errors keep their message (runtime-generated, no request data); any other
+// value is reduced to its type.
+func PanicSummary(r any) string {
+	if rerr, ok := r.(runtime.Error); ok {
+		return rerr.Error()
+	}
+	return fmt.Sprintf("%T", r)
 }

@@ -11,6 +11,9 @@ import (
 	"testing"
 	"testing/synctest"
 	"time"
+
+	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/stretchr/testify/require"
 )
 
 // TestSSEStreamReaderHeartbeatNeverSplitsDataLine is the regression test for #5905.
@@ -1373,4 +1376,46 @@ func TestSSEStreamReaderSendHeartbeatNone(t *testing.T) {
 	if closed.SendHeartbeatWithFraming(SSEHeartbeatNone) {
 		t.Error("SendHeartbeatWithFraming(SSEHeartbeatNone) after Close = true, want false (disconnect must still be reported)")
 	}
+}
+
+// TestRecoverStreamProducerCancelsAndDrains pins that a panic in a stream producer is
+// recovered, cancels upstream, and drains the provider channel so its sender is not left
+// blocked. A nil panic value path (no panic) must leave the channel and cancel untouched.
+func TestRecoverStreamProducerCancelsAndDrains(t *testing.T) {
+	stream := make(chan *schemas.BifrostStreamChunk)
+	cancelled := make(chan struct{})
+	cancel := func() { close(cancelled) }
+
+	sendDone := make(chan struct{})
+	go func() {
+		defer close(sendDone)
+		for i := 0; i < 3; i++ {
+			stream <- &schemas.BifrostStreamChunk{}
+		}
+		close(stream)
+	}()
+
+	require.NotPanics(t, func() {
+		defer RecoverStreamProducer(cancel, stream)
+		var chunk *schemas.BifrostStreamChunk
+		_ = chunk.BifrostChatResponse
+	})
+
+	select {
+	case <-sendDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("sender stayed blocked: the stream was not drained")
+	}
+	select {
+	case <-cancelled:
+	case <-time.After(5 * time.Second):
+		t.Fatal("cancel was not called")
+	}
+
+	untouched := make(chan *schemas.BifrostStreamChunk, 1)
+	untouched <- &schemas.BifrostStreamChunk{}
+	func() {
+		defer RecoverStreamProducer(func() { t.Fatal("cancel called without a panic") }, untouched)
+	}()
+	require.Len(t, untouched, 1, "no panic must leave the stream unread")
 }
