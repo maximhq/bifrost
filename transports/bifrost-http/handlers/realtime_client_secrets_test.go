@@ -635,6 +635,10 @@ func (m *mockRealtimeMintingGovernancePlugin) LoadBalanceProvider(_ *schemas.Bif
 	return nil
 }
 
+func (m *mockRealtimeMintingGovernancePlugin) IsMCPAllowedForUser(_ context.Context, _, _ string) bool {
+	return false
+}
+
 func TestRealtimeClientSecretsEvaluateMintingGovernance_RequiresAccess(t *testing.T) {
 	t.Parallel()
 

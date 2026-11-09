@@ -480,7 +480,7 @@ func dcrFixture(t *testing.T, as *evictableAuthServer, store *dcrConfigStore, pr
 func reauthorize(t *testing.T, provider *OAuth2Provider, oauthConfigID string) (string, error) {
 	t.Helper()
 	ctx := context.Background()
-	_, flowID, err := provider.InitiateUserOAuthFlow(ctx, oauthConfigID, dcrMCPClientID, dcrRedirectURI, schemas.MCPAuthModeAdmin)
+	_, flowID, err := provider.InitiateUserOAuthFlow(ctx, oauthConfigID, dcrMCPClientID, dcrRedirectURI, schemas.MCPAuthModeAdmin, "")
 	if err != nil {
 		return "", err
 	}
@@ -712,7 +712,7 @@ func TestReregisterDynamicClient_RegistersTheRedirectURIConsentWillPresent(t *te
 	require.NoError(t, err)
 
 	// What the consent following it presents, built the way the handler does.
-	_, flowID, err := provider.InitiateUserOAuthFlow(ctx, oauthConfigID, dcrMCPClientID, movedRedirectURI, schemas.MCPAuthModeAdmin)
+	_, flowID, err := provider.InitiateUserOAuthFlow(ctx, oauthConfigID, dcrMCPClientID, movedRedirectURI, schemas.MCPAuthModeAdmin, "")
 	require.NoError(t, err)
 	authorizeURL, err := provider.BuildAdminUpstreamAuthorizeURL(ctx, flowID)
 	require.NoError(t, err)
@@ -1202,7 +1202,7 @@ func TestSignIn_ClientIDMetadataDocumentFollowsBaseURL(t *testing.T) {
 				Status: "active", AccessToken: "at", TokenType: "Bearer",
 			}).Error)
 
-			_, flowID, err := provider.InitiateUserOAuthFlow(ctx, initiation.OauthConfigID, dcrMCPClientID, tc.signInBase+"/api/oauth/callback", schemas.MCPAuthModeAdmin)
+			_, flowID, err := provider.InitiateUserOAuthFlow(ctx, initiation.OauthConfigID, dcrMCPClientID, tc.signInBase+"/api/oauth/callback", schemas.MCPAuthModeAdmin, "")
 			require.NoError(t, err)
 			authorizeURL, err := provider.BuildAdminUpstreamAuthorizeURL(ctx, flowID)
 			require.NoError(t, err)
@@ -1282,7 +1282,7 @@ func TestSignIn_ClientIDMetadataDocumentFollowsEveryMove(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, store.db.Create(&tables.TableMCPClient{ClientID: dcrMCPClientID, Name: "grafana", OauthConfigID: bifrost.Ptr(initiation.OauthConfigID)}).Error)
 	for _, base := range []string{"https://gateway.example.com", "https://edge.example.com"} {
-		_, flowID, err := provider.InitiateUserOAuthFlow(ctx, initiation.OauthConfigID, dcrMCPClientID, base+"/api/oauth/callback", schemas.MCPAuthModeAdmin)
+		_, flowID, err := provider.InitiateUserOAuthFlow(ctx, initiation.OauthConfigID, dcrMCPClientID, base+"/api/oauth/callback", schemas.MCPAuthModeAdmin, "")
 		require.NoError(t, err)
 		authorizeURL, err := provider.BuildAdminUpstreamAuthorizeURL(ctx, flowID)
 		require.NoError(t, err)
@@ -1369,7 +1369,7 @@ func TestSignIn_AuthorizationServerChanged(t *testing.T) {
 			var changed []string
 			provider.SetCredentialsRotatedHook(func(_ context.Context, mcpClientID string) { changed = append(changed, mcpClientID) })
 			mcp.pointTo(moved.server.URL)
-			_, flowID, err := provider.InitiateUserOAuthFlow(ctx, initiation.OauthConfigID, dcrMCPClientID, dcrRedirectURI, schemas.MCPAuthModeAdmin)
+			_, flowID, err := provider.InitiateUserOAuthFlow(ctx, initiation.OauthConfigID, dcrMCPClientID, dcrRedirectURI, schemas.MCPAuthModeAdmin, "")
 			require.NoError(t, err)
 			untouched, err := store.GetOauthConfigByID(ctx, initiation.OauthConfigID)
 			require.NoError(t, err)
@@ -1536,7 +1536,7 @@ func TestSignIn_AuthorizationServerChanged_RegistersTheFlowsRedirectURI(t *testi
 	require.NoError(t, err)
 
 	mcp.pointTo(moved.server.URL)
-	_, flowID, err := provider.InitiateUserOAuthFlow(ctx, initiation.OauthConfigID, dcrMCPClientID, currentRedirectURI, schemas.MCPAuthModeAdmin)
+	_, flowID, err := provider.InitiateUserOAuthFlow(ctx, initiation.OauthConfigID, dcrMCPClientID, currentRedirectURI, schemas.MCPAuthModeAdmin, "")
 	require.NoError(t, err)
 	_, err = provider.BuildAdminUpstreamAuthorizeURL(ctx, flowID)
 	require.NoError(t, err)
@@ -1565,7 +1565,7 @@ func TestSignIn_AuthorizationServerChanged_LosesToConcurrentRebind(t *testing.T)
 		require.NoError(t, store.UpdateOauthConfig(ctx, winner))
 	}
 	mcp.pointTo(moved.server.URL)
-	_, flowID, err := provider.InitiateUserOAuthFlow(ctx, initiation.OauthConfigID, dcrMCPClientID, dcrRedirectURI, schemas.MCPAuthModeAdmin)
+	_, flowID, err := provider.InitiateUserOAuthFlow(ctx, initiation.OauthConfigID, dcrMCPClientID, dcrRedirectURI, schemas.MCPAuthModeAdmin, "")
 	require.NoError(t, err)
 	authorizeURL, err := provider.BuildAdminUpstreamAuthorizeURL(ctx, flowID)
 	require.NoError(t, err)
@@ -1668,12 +1668,12 @@ func TestSignIn_RenewedDuringDiscoveryKeepsNewState(t *testing.T) {
 		ID: "legacy", ClientID: schemas.NewSecretVar("preset"), AuthorizeURL: as.server.URL + "/authorize", TokenURL: as.server.URL + "/token",
 		RedirectURI: dcrRedirectURI, ServerURL: as.server.URL + "/mcp", Status: "authorized",
 	}).Error)
-	_, flowID, err := provider.InitiateUserOAuthFlow(ctx, "legacy", dcrMCPClientID, dcrRedirectURI, schemas.MCPAuthModeAdmin)
+	_, flowID, err := provider.InitiateUserOAuthFlow(ctx, "legacy", dcrMCPClientID, dcrRedirectURI, schemas.MCPAuthModeAdmin, "")
 	require.NoError(t, err)
 
 	var renewed tables.TableMCPOauthFlow
 	as.onDiscover = func() {
-		_, renewedID, err := provider.InitiateUserOAuthFlow(ctx, "legacy", dcrMCPClientID, dcrRedirectURI, schemas.MCPAuthModeAdmin)
+		_, renewedID, err := provider.InitiateUserOAuthFlow(ctx, "legacy", dcrMCPClientID, dcrRedirectURI, schemas.MCPAuthModeAdmin, "")
 		require.NoError(t, err)
 		require.Equal(t, flowID, renewedID, "fixture check: the pending row is renewed in place")
 		require.NoError(t, store.db.Where("id = ?", flowID).First(&renewed).Error)
@@ -1697,7 +1697,7 @@ func TestSignIn_ConfigDeletedDuringDiscovery(t *testing.T) {
 		ID: "legacy", ClientID: schemas.NewSecretVar("preset"), AuthorizeURL: as.server.URL + "/authorize", TokenURL: as.server.URL + "/token",
 		RedirectURI: dcrRedirectURI, ServerURL: as.server.URL + "/mcp", Status: "authorized",
 	}).Error)
-	_, flowID, err := provider.InitiateUserOAuthFlow(ctx, "legacy", dcrMCPClientID, dcrRedirectURI, schemas.MCPAuthModeAdmin)
+	_, flowID, err := provider.InitiateUserOAuthFlow(ctx, "legacy", dcrMCPClientID, dcrRedirectURI, schemas.MCPAuthModeAdmin, "")
 	require.NoError(t, err)
 
 	as.onDiscover = func() { require.NoError(t, store.db.Delete(&tables.TableOauthConfig{}, "id = ?", "legacy").Error) }
