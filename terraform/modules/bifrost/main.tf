@@ -42,9 +42,9 @@ locals {
   # setup provided via config_json/config_json_file is never silently rewritten.
   schema_url = coalesce(var.schema_url, try(local.base_config["$schema"], null), "https://www.getbifrost.ai/schema")
 
-  # Managed database and generated secrets are only wired for the two
-  # container services that read PG_* / BIFROST_* from their task environment.
-  managed_runtime_supported = contains(["aws/ecs", "gcp/cloud-run"], "${var.cloud_provider}/${var.service}")
+  # Managed database and generated secrets are only wired for the container
+  # services that read PG_* / BIFROST_* from their task environment.
+  managed_runtime_supported = contains(["aws/ecs", "gcp/cloud-run", "azure/aci"], "${var.cloud_provider}/${var.service}")
 
   # Store definition injected when create_database is on. Every value is an
   # env reference resolved inside the container, so the same config.json works
@@ -124,11 +124,11 @@ resource "terraform_data" "validate_service_combination" {
     }
     precondition {
       condition     = !var.create_database || local.managed_runtime_supported
-      error_message = "create_database is supported for aws/ecs and gcp/cloud-run only. Point config_store and logs_store at your own PostgreSQL for '${var.cloud_provider}/${var.service}'."
+      error_message = "create_database is supported for aws/ecs, gcp/cloud-run and azure/aci only. Point config_store and logs_store at your own PostgreSQL for '${var.cloud_provider}/${var.service}'."
     }
     precondition {
       condition     = !var.generate_secrets || local.managed_runtime_supported
-      error_message = "generate_secrets is supported for aws/ecs and gcp/cloud-run only. Pass encryption_key and setup_token explicitly for '${var.cloud_provider}/${var.service}'."
+      error_message = "generate_secrets is supported for aws/ecs, gcp/cloud-run and azure/aci only. Pass encryption_key and setup_token explicitly for '${var.cloud_provider}/${var.service}'."
     }
   }
 }
@@ -253,6 +253,17 @@ module "azure" {
   node_machine_type            = var.node_machine_type
   volume_size_gb               = var.volume_size_gb
   resource_group_name          = var.azure_resource_group_name
+  create_database              = var.create_database
+  database_name                = var.database_name
+  database_user                = var.database_user
+  database_instance_class      = var.database_instance_class
+  database_storage_gb          = var.database_storage_gb
+  database_deletion_protection = var.database_deletion_protection
+  generate_secrets             = var.generate_secrets
+
+  # Azure-only settings
+  key_vault_network_default_action = var.key_vault_network_default_action
+  image_registry_credentials       = var.image_registry_credentials
 }
 
 # --- Generic Kubernetes ---

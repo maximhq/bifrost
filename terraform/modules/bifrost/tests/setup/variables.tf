@@ -116,3 +116,8 @@ variable "database_storage_gb" { default = 20 }
 variable "database_deletion_protection" { default = false }
 variable "database_skip_final_snapshot" { default = true }
 variable "generate_secrets" { default = false }
+variable "key_vault_network_default_action" { default = "Deny" }
+variable "image_registry_credentials" {
+  default   = []
+  sensitive = true
+}

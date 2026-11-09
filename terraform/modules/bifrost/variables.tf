@@ -358,7 +358,7 @@ variable "ingress_annotations" {
 
 # --- Managed database and generated secrets (AWS ECS and GCP Cloud Run) ---
 variable "create_database" {
-  description = "Provision a managed PostgreSQL 16 database (RDS on AWS, Cloud SQL on GCP) and point both Bifrost stores at it through PG_* environment variables. Supported for aws/ecs and gcp/cloud-run. Explicit config_store or logs_store values, and stores already present in config_json or config_json_file, still win."
+  description = "Provision a managed PostgreSQL 16 database (RDS on AWS, Cloud SQL on GCP, Flexible Server on Azure) and point both Bifrost stores at it through PG_* environment variables. Supported for aws/ecs, gcp/cloud-run and azure/aci. Explicit config_store or logs_store values, and stores already present in config_json or config_json_file, still win."
   type        = bool
   default     = false
 }
@@ -376,13 +376,13 @@ variable "database_user" {
 }
 
 variable "database_instance_class" {
-  description = "Managed database size. AWS: an RDS instance class (default db.t4g.small). GCP: a Cloud SQL tier (default db-custom-1-3840)."
+  description = "Managed database size. AWS: an RDS instance class (default db.t4g.small). GCP: a Cloud SQL tier (default db-custom-1-3840). Azure: a Flexible Server SKU (default B_Standard_B1ms)."
   type        = string
   default     = null
 }
 
 variable "database_storage_gb" {
-  description = "Managed database disk size in GB."
+  description = "Managed database disk size in GB. Azure raises values below its 32 GB minimum."
   type        = number
   default     = 20
 }
@@ -400,7 +400,7 @@ variable "database_skip_final_snapshot" {
 }
 
 variable "generate_secrets" {
-  description = "Generate BIFROST_ENCRYPTION_KEY and BIFROST_SETUP_TOKEN, store them in the cloud secret manager, inject them into the container, and reference them from config.json. Explicit encryption_key or setup_token values, and values already present in config_json or config_json_file, still win. Supported for aws/ecs and gcp/cloud-run."
+  description = "Generate BIFROST_ENCRYPTION_KEY and BIFROST_SETUP_TOKEN, store them in the cloud secret manager (secure environment variables on ACI), inject them into the container, and reference them from config.json. Explicit encryption_key or setup_token values, and values already present in config_json or config_json_file, still win. Supported for aws/ecs, gcp/cloud-run and azure/aci."
   type        = bool
   default     = false
 }
@@ -410,4 +410,30 @@ variable "setup_token" {
   type        = string
   default     = null
   sensitive   = true
+}
+
+variable "key_vault_network_default_action" {
+  description = "Azure only. Key Vault network ACL default: Deny limits data-plane access to the service subnet and trusted Azure services; Allow lets the Terraform runner (for example Azure Cloud Shell) write the config secret from any network."
+  type        = string
+  default     = "Deny"
+  validation {
+    condition     = contains(["Allow", "Deny"], var.key_vault_network_default_action)
+    error_message = "key_vault_network_default_action must be Allow or Deny"
+  }
+}
+
+variable "image_registry_credentials" {
+  description = "Azure Container Instances only. Registry credentials for a private image (Bifrost Enterprise); each entry becomes an image_registry_credential block on the container group."
+  type = list(object({
+    server   = string
+    username = string
+    password = string
+  }))
+  default   = []
+  sensitive = true
+
+  validation {
+    condition     = alltrue([for c in var.image_registry_credentials : c.server != null && c.server != "" && c.username != null && c.username != "" && c.password != null && c.password != ""])
+    error_message = "Each image_registry_credentials entry needs a non-empty server, username and password; a partial credential would only fail when the container group pulls the image."
+  }
 }

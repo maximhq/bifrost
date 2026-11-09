@@ -86,3 +86,6 @@ jobs:
 
       - name: Check the GCP one-click deploy script
         run: bash ./deploy/gcp/deploy.test.sh
+
+      - name: Check the Azure one-click deploy script
+        run: bash ./deploy/azure/deploy.test.sh

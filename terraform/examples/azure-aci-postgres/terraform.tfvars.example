@@ -1,0 +1,44 @@
+# =============================================================================
+# Azure Container Instances + PostgreSQL Flexible Server Example — terraform.tfvars
+# WARNING: Do NOT commit this file with real secrets (API keys, passwords).
+# =============================================================================
+
+region      = "eastus"
+name_prefix = "bifrost"
+
+# Pin a released version for production.
+image_tag = "latest"
+
+# Enterprise: use the registry path issued for your organization.
+# image_repository = "us-west1-docker.pkg.dev/bifrost-enterprise/your-org/bifrost"
+# Enterprise images are private: add the pull credential too.
+# registry_server   = "myorg.azurecr.io"
+# registry_username = "pull-token-name"
+# registry_password = "pull-token-secret"
+
+# Deploy into an existing resource group instead of creating <name_prefix>-rg.
+# resource_group_name = "my-rg"
+
+# -----------------------------------------------------------------------------
+# Database
+# -----------------------------------------------------------------------------
+database_instance_class      = "B_Standard_B1ms"
+database_storage_gb          = 32
+database_deletion_protection = false
+
+# -----------------------------------------------------------------------------
+# Access
+# -----------------------------------------------------------------------------
+enforce_auth_on_inference = true
+allowed_cidr              = "*"
+
+# Optional: seed providers now instead of through the dashboard.
+# providers_config = {
+#   azure = { keys = [{ value = "...", weight = 1 }] }
+# }
+
+# -----------------------------------------------------------------------------
+# Compute
+# -----------------------------------------------------------------------------
+cpu    = 1000
+memory = 2048

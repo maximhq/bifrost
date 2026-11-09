@@ -161,3 +161,76 @@ variable "resource_group_name" {
   type        = string
   default     = null
 }
+
+# --- Managed database and generated secrets (ACI only) ---
+variable "create_database" {
+  description = "Provision an Azure Database for PostgreSQL Flexible Server (PostgreSQL 16) and wire PG_* into the container group."
+  type        = bool
+  default     = false
+}
+
+variable "database_name" {
+  description = "Database name created on the Flexible Server."
+  type        = string
+  default     = "bifrost"
+}
+
+variable "database_user" {
+  description = "Administrator login created on the Flexible Server."
+  type        = string
+  default     = "bifrost"
+}
+
+variable "database_instance_class" {
+  description = "Flexible Server SKU. Defaults to B_Standard_B1ms."
+  type        = string
+  default     = null
+}
+
+variable "database_storage_gb" {
+  description = "Flexible Server storage in GB. Azure only offers fixed tiers (32, 64, 128, 256, 512, 1024, 2048, 4095, 4096, 8192, 16384, 32767); the value is rounded up to the next tier, so smaller values are raised to 32."
+  type        = number
+  default     = 32
+  validation {
+    condition     = var.database_storage_gb > 0 && var.database_storage_gb <= 32767
+    error_message = "database_storage_gb must be between 1 and 32767 (the largest Flexible Server tier)."
+  }
+}
+
+variable "database_deletion_protection" {
+  description = "Keep the Flexible Server on terraform destroy by refusing deletion."
+  type        = bool
+  default     = false
+}
+
+variable "generate_secrets" {
+  description = "Generate BIFROST_ENCRYPTION_KEY and BIFROST_SETUP_TOKEN and inject them into the container group as secure environment variables."
+  type        = bool
+  default     = false
+}
+
+variable "key_vault_network_default_action" {
+  description = "Key Vault network ACL default. Deny limits data-plane access to the service subnet and trusted Azure services; Allow lets the Terraform runner (for example Azure Cloud Shell) write the config secret from any network, authenticated by access policy."
+  type        = string
+  default     = "Deny"
+  validation {
+    condition     = contains(["Allow", "Deny"], var.key_vault_network_default_action)
+    error_message = "key_vault_network_default_action must be Allow or Deny"
+  }
+}
+
+variable "image_registry_credentials" {
+  description = "Registry credentials for a private image (Bifrost Enterprise). Each entry becomes an image_registry_credential block on the ACI container group. AKS pulls with the kubelet identity of an attached registry instead; see the AKS guide."
+  type = list(object({
+    server   = string
+    username = string
+    password = string
+  }))
+  default   = []
+  sensitive = true
+
+  validation {
+    condition     = alltrue([for c in var.image_registry_credentials : c.server != null && c.server != "" && c.username != null && c.username != "" && c.password != null && c.password != ""])
+    error_message = "Each image_registry_credentials entry needs a non-empty server, username and password; a partial credential would only fail when the container group pulls the image."
+  }
+}

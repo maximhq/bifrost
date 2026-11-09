@@ -33,6 +33,7 @@ mock_provider "azurerm" {
   }
 }
 mock_provider "kubernetes" {}
+mock_provider "random" {}
 
 run "aci_basic" {
   command = plan
@@ -55,6 +56,31 @@ run "aci_custom_compute" {
     config_json    = jsonencode({})
     cpu            = 1000
     memory         = 2048
+  }
+}
+
+# --- Managed database and generated secrets (the one-click Azure stack) ---
+
+run "aci_with_managed_database" {
+  command = plan
+  module { source = "./tests/setup" }
+  variables {
+    cloud_provider   = "azure"
+    service          = "aci"
+    region           = "eastus"
+    config_json      = jsonencode({})
+    create_database  = true
+    generate_secrets = true
+  }
+
+  assert {
+    condition     = jsondecode(nonsensitive(output.config_json)).logs_store.config.host == "env.PG_HOST"
+    error_message = "create_database must inject an env-referenced postgres logs_store"
+  }
+
+  assert {
+    condition     = jsondecode(nonsensitive(output.config_json)).encryption_key == "env.BIFROST_ENCRYPTION_KEY"
+    error_message = "generate_secrets must reference BIFROST_ENCRYPTION_KEY"
   }
 }
 
