@@ -115,6 +115,106 @@ write_config_from_env() {
 
 write_config_from_env
 
+# Hosted platforms (Fly.io, Heroku, Railway, Render) attach a database as one
+# DATABASE_URL. The reference config.json reads PG_HOST, PG_PORT, PG_USER,
+# PG_PASSWORD, PG_DATABASE and PG_SSL_MODE, so derive whichever of those is not
+# already set from the URL. Explicit PG_* values always win.
+# Percent-decode one URL component. Pure POSIX sh: dash and busybox printf do
+# not understand \x escapes in %b, so each %HH is turned into an octal escape.
+url_decode() {
+    _in="$1"
+    _out=""
+    while [ -n "$_in" ]; do
+        case "$_in" in
+            %[0-9A-Fa-f][0-9A-Fa-f]*)
+                _hex="${_in#%}"
+                _hex="${_hex%"${_hex#??}"}"
+                # shellcheck disable=SC2059 # the octal escape is the format on purpose
+                _out="$_out$(printf "\\$(printf '%03o' "0x$_hex")")"
+                _in="${_in#???}"
+                ;;
+            *)
+                _out="$_out${_in%"${_in#?}"}"
+                _in="${_in#?}"
+                ;;
+        esac
+    done
+    printf '%s' "$_out"
+}
+
+derive_pg_env_from_database_url() {
+    [ -n "$DATABASE_URL" ] || return 0
+    case "$DATABASE_URL" in
+        postgres://*|postgresql://*) ;;
+        *) return 0 ;;
+    esac
+
+    rest="${DATABASE_URL#*://}"
+    # Fragment and query first, then cut the authority at the first "/": an
+    # "@" or ":" in the path must never be read as credentials or a port.
+    rest="${rest%%#*}"
+    query=""
+    case "$rest" in
+        *\?*) query="${rest#*\?}"; rest="${rest%%\?*}" ;;
+    esac
+
+    authority="${rest%%/*}"
+    dbname=""
+    case "$rest" in
+        */*) dbname="${rest#*/}" ;;
+    esac
+
+    userinfo=""
+    hostport="$authority"
+    case "$authority" in
+        *@*) userinfo="${authority%@*}"; hostport="${authority##*@}" ;;
+    esac
+
+    user="$userinfo"
+    pass=""
+    case "$userinfo" in
+        *:*) user="${userinfo%%:*}"; pass="${userinfo#*:}" ;;
+    esac
+
+    # Bracketed IPv6 literals carry colons of their own; strip the brackets
+    # and only read a port that follows the closing bracket.
+    host="$hostport"
+    port="5432"
+    case "$hostport" in
+        \[*\]:*) host="${hostport%%\]:*}"; host="${host#\[}"; port="${hostport##*\]:}" ;;
+        \[*\])   host="${hostport#\[}"; host="${host%\]}" ;;
+        *:*)     host="${hostport%%:*}"; port="${hostport##*:}" ;;
+    esac
+    # "host:" and "?sslmode=" are valid URL forms with an empty value; they
+    # take the same defaults as a missing one.
+    [ -n "$port" ] || port="5432"
+
+    sslmode="prefer"
+    case "$query" in
+        *sslmode=*) sslmode="${query#*sslmode=}"; sslmode="${sslmode%%&*}" ;;
+    esac
+    [ -n "$sslmode" ] || sslmode="prefer"
+
+    [ -n "$PG_HOST" ]     || export PG_HOST="$host"
+    [ -n "$PG_PORT" ]     || export PG_PORT="$port"
+    if [ -z "$PG_USER" ]; then
+        PG_USER=$(url_decode "$user")
+        export PG_USER
+    fi
+    if [ -z "$PG_PASSWORD" ]; then
+        PG_PASSWORD=$(url_decode "$pass")
+        export PG_PASSWORD
+    fi
+    if [ -z "$PG_DATABASE" ]; then
+        PG_DATABASE=$(url_decode "$dbname")
+        export PG_DATABASE
+    fi
+    [ -n "$PG_SSL_MODE" ] || export PG_SSL_MODE="$sslmode"
+    echo "Derived PG_* connection settings from DATABASE_URL (host=$PG_HOST db=$PG_DATABASE sslmode=$PG_SSL_MODE)"
+}
+
+derive_pg_env_from_database_url
+
 # Parse command line arguments and set environment variables
 parse_args() {
     while [ $# -gt 0 ]; do
