@@ -26741,11 +26741,14 @@ func TestMergeProviderWithHash_UnverifiableLegacyOverrideHashKeepsAPIKeys(t *tes
 
 		providers := map[schemas.ModelProvider]configstore.ProviderConfig{provider: stored(t)}
 		mergeProviderWithHash(provider, fileCfg, providers)
+		found := false
 		for _, k := range providers[provider].Keys {
 			if k.Name == "file" {
+				found = true
 				require.Equal(t, float64(2), k.Weight, "a key edited in config.json must still replace the stored key")
 			}
 		}
+		require.True(t, found, "the file key must remain in the merged keys")
 	})
 
 	t.Run("upgrade boot is recorded as a file sync", func(t *testing.T) {
