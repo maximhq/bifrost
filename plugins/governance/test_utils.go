@@ -404,7 +404,7 @@ func evaluateGrantedRequestWith(r *BudgetResolver, ctx *schemas.BifrostContext, 
 	}
 	// Evaluate settles the limits on the grant before any check runs; a test reaching the resolver
 	// directly has to do the same, or it checks an attempt nothing has been settled for.
-	limits, err := resolveLimits(ctx, r.store, provider, model)
+	limits, err := resolveLimits(ctx, r.store, evaluationRequest.RequestType, provider, model)
 	if err != nil {
 		return &EvaluationResult{Decision: DecisionAccessBlocked, Reason: err.Error()}
 	}
@@ -429,7 +429,7 @@ func resolveLimitsForTest(r *BudgetResolver, ctx *schemas.BifrostContext, provid
 // settleAttemptLimits is resolveLimits for a test driving a store directly, dropping the settling
 // error: the store under test resolves one permit per credential and never fails to settle.
 func settleAttemptLimits(ctx *schemas.BifrostContext, store GovernanceStore, provider schemas.ModelProvider, model string) schemas.Limits {
-	limits, _ := resolveLimits(ctx, store, provider, model)
+	limits, _ := resolveLimits(ctx, store, "", provider, model)
 	return limits
 }
 

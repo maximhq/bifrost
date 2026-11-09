@@ -765,7 +765,7 @@ func (p *GovernancePlugin) Evaluate(ctx *schemas.BifrostContext, evaluationReque
 	// A settling error is held rather than refused on the spot: the ordering below puts identity
 	// refusals first, and a caller whose credential is dead must be told that before anything about
 	// how the request would have been funded.
-	limits, limitsErr := resolveLimits(ctx, p.store, evaluationRequest.Provider, evaluationRequest.Model)
+	limits, limitsErr := resolveLimits(ctx, p.store, evaluationRequest.RequestType, evaluationRequest.Provider, evaluationRequest.Model)
 
 	// The order of everything below is load bearing:
 	//
@@ -1092,7 +1092,11 @@ func (p *GovernancePlugin) modelMatcher() grant.ModelMatcher {
 // composes several possible payers settles there on who pays, and this only records the answer. An
 // error is a request whose payers cannot be settled at all; nothing is recorded for it, and the
 // funnel refuses it rather than serving it against half an answer.
-func resolveLimits(ctx *schemas.BifrostContext, store GovernanceStore, provider schemas.ModelProvider, model string) (schemas.Limits, error) {
+//
+// A budget's scope is applied here, once, so that what is checked, logged and charged agree: an
+// MCP tool execution answers only to "mcp" and "shared" budgets, every other request only to "model"
+// and "shared" ones. See budgetsForRequestKind.
+func resolveLimits(ctx *schemas.BifrostContext, store GovernanceStore, requestType schemas.RequestType, provider schemas.ModelProvider, model string) (schemas.Limits, error) {
 	g := ctx.Grant()
 	if g == nil {
 		return nil, nil
@@ -1101,9 +1105,43 @@ func resolveLimits(ctx *schemas.BifrostContext, store GovernanceStore, provider 
 	if err != nil {
 		return nil, err
 	}
+	budgets = budgetsForRequestKind(ctx, store, budgets, requestType == schemas.MCPToolExecutionRequest)
 	limits := grant.NewLimits(budgets, rateLimits)
 	g.SetLimits(limits)
 	return limits, nil
+}
+
+// budgetsForRequestKind drops the budgets whose scope does not cover a request of this kind: an
+// MCP tool execution when isMCP, a model request otherwise.
+//
+// Applied to what the store gathered rather than inside the store, so every holder a store composes
+// (keys, teams, customers, model configs, and whatever a deployment layers on top) is filtered by
+// the same rule without each needing to know about request kinds. Budgets are read by ID from the
+// store, the way enforcement reads them; one the store cannot load is kept, since enforcement skips
+// it anyway. The common case, where every budget applies, returns the input without allocating.
+func budgetsForRequestKind(ctx context.Context, store GovernanceStore, budgets []schemas.Limit, isMCP bool) []schemas.Limit {
+	var kept []schemas.Limit
+	for i, limit := range budgets {
+		budget := store.LoadBudget(ctx, limit.ID)
+		applies := budget == nil || budget.Scope.AppliesTo(isMCP)
+		if kept == nil {
+			if applies {
+				continue
+			}
+			// First budget to drop: copy what was kept so far rather than filtering in place, since
+			// the gathered slice may share a backing array with the store's.
+			kept = make([]schemas.Limit, i, len(budgets)-1)
+			copy(kept, budgets[:i])
+			continue
+		}
+		if applies {
+			kept = append(kept, limit)
+		}
+	}
+	if kept == nil {
+		return budgets
+	}
+	return kept
 }
 
 // PreRequestHook is the per-request governance phase: it resolves the request's access, completes
@@ -2288,6 +2326,10 @@ func (p *GovernancePlugin) reportBatchModelUsage(ctx context.Context, usage joba
 		if modelUsage.Cost > 0 {
 			for _, budgetID := range budgetIDs {
 				if alreadyCharged["budget:"+budgetID] {
+					continue
+				}
+				// A batch is model traffic: an MCP-only budget on the tiers collected here is never its to spend.
+				if budget := p.store.LoadBudget(ctx, budgetID); budget != nil && !budget.Scope.AppliesTo(false) {
 					continue
 				}
 				// Keyed per model: one budget reached by two models must take both shares.
