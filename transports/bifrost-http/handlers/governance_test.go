@@ -5913,10 +5913,6 @@ func TestReconcileOwnedBudgetsNewBudgetUsage(t *testing.T) {
 		})
 	}
 }
-
-// TestApplyRateLimitUpdate pins what a team's or customer's update does to its stored rate limit: a
-// maximum left out is cleared with its window, a maximum sent with a window takes it, and a maximum
-// sent without one keeps the window already stored instead of failing validation.
 func TestApplyRateLimitUpdate(t *testing.T) {
 	hour, day := "1h", "1d"
 	tokens, requests := int64(100), int64(10)
@@ -5937,4 +5933,39 @@ func TestApplyRateLimitUpdate(t *testing.T) {
 	assert.Equal(t, "1d", *newWindow.TokenResetDuration)
 	assert.Nil(t, newWindow.RequestMaxLimit, "a maximum left out is cleared")
 	assert.Nil(t, newWindow.RequestResetDuration, "with its window")
+}
+
+// TestReconcileOwnedBudgetsNewWindowFollowsTheResetChoice pins how a budget added on an edit starts:
+// with the spend already counted in the closest shorter window when the operator keeps usage, and at
+// zero when they reset it - the same choice the edited budgets follow.
+func TestReconcileOwnedBudgetsNewWindowFollowsTheResetChoice(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		reset bool
+		want  float64
+	}{
+		{name: "keep carries the spend over", reset: false, want: 5},
+		{name: "reset starts it at zero", reset: true, want: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newOwnedBudgetsStore(t)
+			ctx := context.Background()
+			first, err := reconcileOwned(t, store, nil, []CreateBudgetRequest{{MaxLimit: 10, ResetDuration: "1d"}}, nil)
+			require.NoError(t, err)
+			require.NoError(t, store.UpdateBudgetUsage(ctx, first[0].ID, 5))
+			daily, err := store.GetBudget(ctx, first[0].ID)
+			require.NoError(t, err)
+
+			out, err := reconcileOwned(t, store, []configstoreTables.TableBudget{*daily},
+				[]CreateBudgetRequest{{ID: daily.ID, MaxLimit: 10, ResetDuration: "1d"}, {MaxLimit: 100, ResetDuration: "1M"}},
+				NewBudgetUsageReset(tc.reset))
+			require.NoError(t, err)
+			require.Len(t, out, 2)
+			for _, b := range out {
+				if b.ResetDuration == "1M" {
+					assert.Equal(t, tc.want, b.CurrentUsage)
+				}
+			}
+		})
+	}
 }
