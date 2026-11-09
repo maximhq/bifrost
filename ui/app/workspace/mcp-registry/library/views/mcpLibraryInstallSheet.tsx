@@ -15,13 +15,13 @@ import { useForm } from "react-hook-form";
 import type { TFunction } from "i18next";
 import { useTranslation } from "react-i18next";
 import {
-	authScopeOf,
 	buildMCPClientPayload,
 	getHeadersValidationError,
 	MCPClientFormFields,
 	useMCPClientFormSatellites,
 	validateMCPClientForm,
 } from "../../views/mcpClientFormFields";
+import { authScopeOf } from "../../views/mcpClientsTable.utils";
 import { MCPHeadersAuthorizer } from "../../views/mcpHeadersAuthorizer";
 import { OAuth2Authorizer } from "../../views/oauth2Authorizer";
 import { shouldSeedHeaders } from "./mcpLibraryInstallSheet.utils";

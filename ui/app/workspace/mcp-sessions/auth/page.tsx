@@ -37,6 +37,7 @@ import {
 } from "@/lib/store";
 import { MCPFlowDetail } from "@/lib/types/mcpSessions";
 import { MCPHeadersFlowDetail } from "@/lib/types/mcpPerUserHeaders";
+import { missingHeaderKeys } from "@/lib/utils/mcpCredential";
 import { Link } from "@tanstack/react-router";
 import { CheckCircle2, ExternalLink, Fingerprint, KeyRound, Loader2, LogIn, ShieldCheck, TriangleAlert, UserRound } from "lucide-react";
 import { useQueryState } from "nuqs";
@@ -345,6 +346,8 @@ function HeadersAuthView({ flowId }: { flowId: string }) {
 					requiredKeys={detail.required_header_keys}
 					adminHeaderKeys={detail.admin_header_keys}
 					previouslySubmittedKeys={detail.submitted_keys}
+					// Keys added after the stored credential was saved; a first submission marks none.
+					newKeys={detail.submitted_keys?.length ? missingHeaderKeys(detail.required_header_keys, detail.submitted_keys) : []}
 					onSubmit={handleSubmit}
 					busy={submitting}
 					submitLabel={isEdit ? tc("save") : t("sessions.auth.submit")}
