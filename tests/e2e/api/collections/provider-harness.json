@@ -314377,6 +314377,70 @@
           }
         }
       ]
+    },
+    {
+      "name": "326. Gemini reports tool_calls when STOP follows a function call (#9737 / PR #9800) (stop reason tool calls)",
+      "description": "Gemini ends a turn that issued a function call with finishReason STOP; it has no dedicated finish reason for function calls. closeGeminiOpenItems (core/providers/gemini/responses.go) converted that STOP to the stop reason \"stop\" even when the stream had started a tool call, so response.completed carried stop_reason \"stop\" next to a function_call item. Egresses that read the Responses stop reason, such as /anthropic/v1/messages, then reported end_turn instead of tool_use (#9737). The fix reports \"tool_calls\" when the finish reason is STOP and a tool call was started in the stream, as the chat converter already does; STOP without a tool call stays \"stop\". The case streams a forced get_weather call on /v1/responses and asserts the function_call item and stop_reason \"tool_calls\" on response.completed (red before the fix, green after). The non-streamed Responses path is not changed by this fix and has no case here.",
+      "item": [
+        {
+          "name": "gemini/gemini-2.5-flash /v1/responses stream forced tool call: response.completed stop_reason is tool_calls - #9737",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"gemini/gemini-2.5-flash\",\"stream\":true,\"max_output_tokens\":1024,\"input\":\"What is the weather in Oslo? Use the get_weather tool.\",\"tools\":[{\"type\":\"function\",\"name\":\"get_weather\",\"description\":\"Get the current weather for a city\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}],\"tool_choice\":\"required\"}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('stop reason tool calls gemini /v1/responses stream: 200', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "var events = txt.split(/\\r?\\n/).filter(function (l) { return l.indexOf('data:') === 0; }).map(function (l) { return l.slice(5).trim(); }).filter(function (d) { return d && d !== '[DONE]'; }).map(function (d) { try { return JSON.parse(d); } catch (e) { return { unparsed: d }; } });",
+                  "pm.test('stop reason tool calls gemini /v1/responses stream: every streamed event parses', function () {",
+                  "  events.forEach(function (e) {",
+                  "    pm.expect(e.unparsed, 'unparseable SSE data: ' + String(e.unparsed).slice(0, 300)).to.be.undefined;",
+                  "  });",
+                  "});",
+                  "pm.test('stop reason tool calls gemini /v1/responses stream: the forced get_weather call streamed as a function_call item', function () {",
+                  "  var calls = events.filter(function (e) { return e.type === 'response.output_item.added' && e.item && e.item.type === 'function_call'; });",
+                  "  pm.expect(calls.length, 'no function_call item: ' + txt.slice(0, 1500)).to.be.above(0);",
+                  "});",
+                  "// Gemini ends a function-call turn with finishReason STOP. response.completed must report stop_reason",
+                  "// 'tool_calls' for it, not 'stop', so a client (or an egress such as /anthropic/v1/messages) does not read the turn as final.",
+                  "var completed = events.filter(function (e) { return e.type === 'response.completed'; });",
+                  "pm.test('stop reason tool calls gemini /v1/responses stream: response.completed reports stop_reason tool_calls', function () {",
+                  "  pm.expect(completed.length, 'no response.completed: ' + txt.slice(-1500)).to.eql(1);",
+                  "  var resp = completed[0].response || {};",
+                  "  pm.expect(resp.stop_reason, 'stop_reason after a function call: ' + JSON.stringify(resp).slice(0, 800)).to.eql('tool_calls');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }
