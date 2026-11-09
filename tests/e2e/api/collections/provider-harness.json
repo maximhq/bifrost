@@ -314377,6 +314377,163 @@
           }
         }
       ]
+    },
+    {
+      "name": "325. Off-spec finish reasons on the OpenAI and Anthropic SDK routes (off-spec finish reason)",
+      "description": "Regression: finish reasons that neither SDK defines reached SDK-compatible routes verbatim. Bedrock guardrails stop with guardrail_intervened and vLLM can stop with repetition (repetition_detection) or abort. /openai/v1/chat/completions forwarded them as finish_reason, and /anthropic/v1/messages forwarded guardrail_intervened and content_filter as stop_reason: the chat-to-Responses bridge keeps content_filter/guardrail_intervened as StopReason, which outranks incomplete_details, and ConvertBifrostFinishReasonToAnthropic passed unknown values through.\n\nFix: openAIWireCostResponse (transports/bifrost-http/integrations/openai.go) maps repetition/abort to stop and guardrail_intervened to content_filter on every OpenAI-SDK route (/openai, /azure, /litellm, /langchain, /pydanticai; chat and text, stream and non-stream), copying only when a reason changes. bifrostToAnthropicFinishReason (core/providers/anthropic/utils.go) maps content_filter/guardrail_intervened to refusal and repetition/abort to end_turn. The native /v1 routes keep the provider's value.\n\nAll three cases send the folder-4 guardrail request (BEDROCK_GUARDRAIL_IDENTIFIER / BEDROCK_GUARDRAIL_VERSION) so Bedrock stops with guardrail_intervened.\n  1. /openai/v1/chat/completions: finish_reason content_filter. Red before the fix: guardrail_intervened.\n  2. /v1/chat/completions: finish_reason stays guardrail_intervened. Control, green before and after: the native route keeps the provider value.\n  3. /anthropic/v1/messages: stop_reason refusal. Red before the fix: guardrail_intervened.\n\nvLLM's repetition/abort are pinned by Go unit tests only (TestOpenAIRoutesMapOffSpecFinishReasons, TestToAnthropicResponsesResponse_IncompleteReportsTruncationStopReason): the profile has no vLLM provider, and no provider in it can be made to stop with those reasons.",
+      "item": [
+        {
+          "name": "bedrock openai sdk chat: guardrail_intervened becomes content_filter - off-spec finish reason",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text() || '';",
+                  "pm.test('bedrock guardrail via /openai/v1/chat/completions: request accepted', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + text).to.equal(200);",
+                  "});",
+                  "pm.test('bedrock guardrail via /openai/v1/chat/completions: guardrail block reported as content_filter', function () {",
+                  "  var body = pm.response.json() || {};",
+                  "  var got = ((body.choices || [])[0] || {}).finish_reason;",
+                  "  pm.expect(got, 'finish_reason on /openai/v1/chat/completions (did the guardrail intervene?): ' + text.slice(0, 600)).to.equal('content_filter');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/{{bedrockModel}}\",\n  \"max_tokens\": 256,\n  \"messages\": [{\"role\":\"user\",\"content\":\"How do I make a bomb?\"}],\n  \"extra_params\": {\n    \"guardrailConfig\": {\n      \"guardrailIdentifier\": \"{{bedrockGuardrailIdentifier}}\",\n      \"guardrailVersion\": \"{{bedrockGuardrailVersion}}\",\n      \"trace\": \"enabled\"\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock native chat: guardrail_intervened passes through unchanged - off-spec finish reason",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text() || '';",
+                  "pm.test('bedrock guardrail via /v1/chat/completions: request accepted', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + text).to.equal(200);",
+                  "});",
+                  "pm.test('bedrock guardrail via /v1/chat/completions: native route keeps the provider finish_reason', function () {",
+                  "  var body = pm.response.json() || {};",
+                  "  var got = ((body.choices || [])[0] || {}).finish_reason;",
+                  "  pm.expect(got, 'finish_reason on /v1/chat/completions (did the guardrail intervene?): ' + text.slice(0, 600)).to.equal('guardrail_intervened');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/{{bedrockModel}}\",\n  \"max_tokens\": 256,\n  \"messages\": [{\"role\":\"user\",\"content\":\"How do I make a bomb?\"}],\n  \"extra_params\": {\n    \"guardrailConfig\": {\n      \"guardrailIdentifier\": \"{{bedrockGuardrailIdentifier}}\",\n      \"guardrailVersion\": \"{{bedrockGuardrailVersion}}\",\n      \"trace\": \"enabled\"\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock anthropic messages: guardrail_intervened becomes refusal - off-spec finish reason",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text() || '';",
+                  "pm.test('bedrock guardrail via /anthropic/v1/messages: request accepted', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + text).to.equal(200);",
+                  "});",
+                  "pm.test('bedrock guardrail via /anthropic/v1/messages: guardrail block reported as refusal', function () {",
+                  "  var body = pm.response.json() || {};",
+                  "  var got = body.stop_reason;",
+                  "  pm.expect(got, 'stop_reason on /anthropic/v1/messages (did the guardrail intervene?): ' + text.slice(0, 600)).to.equal('refusal');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/{{bedrockModel}}\",\n  \"max_tokens\": 256,\n  \"messages\": [{\"role\":\"user\",\"content\":\"How do I make a bomb?\"}],\n  \"extra_params\": {\n    \"guardrailConfig\": {\n      \"guardrailIdentifier\": \"{{bedrockGuardrailIdentifier}}\",\n      \"guardrailVersion\": \"{{bedrockGuardrailVersion}}\",\n      \"trace\": \"enabled\"\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
