@@ -1151,10 +1151,14 @@ func Test_handleStreaming_ConverterPanicIsRecovered(t *testing.T) {
 	rec := newCancelRecorder()
 	router.handleStreaming(ctx, schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), route, "", stream, rec.cancel)
 
-	readDone := make(chan error, 1)
+	type readResult struct {
+		body []byte
+		err  error
+	}
+	readDone := make(chan readResult, 1)
 	go func() {
-		_, err := io.ReadAll(ctx.Response.BodyStream())
-		readDone <- err
+		b, err := io.ReadAll(ctx.Response.BodyStream())
+		readDone <- readResult{b, err}
 	}()
 
 	// Unbuffered: every send after the panicking one only completes if the recover drains.
@@ -1173,12 +1177,59 @@ func Test_handleStreaming_ConverterPanicIsRecovered(t *testing.T) {
 		t.Fatal("provider side stayed blocked on send: the stream was not drained after the panic")
 	}
 	select {
-	case err := <-readDone:
-		require.NoError(t, err)
+	case res := <-readDone:
+		require.NoError(t, res.err)
+		// The route has no error converter, so the default internal_error body is framed.
+		require.Contains(t, string(res.body), `"internal_error"`, "a stream cut short by a panic must end with an error frame, got %q", res.body)
 	case <-time.After(5 * time.Second):
 		t.Fatal("response body stream never closed after the panic")
 	}
 	rec.requireCancelled(t, "upstream was not cancelled after the converter panicked")
+}
+
+// Test_handleStreaming_TeardownPanicsAreRecovered pins that the producer's deferred
+// teardown survives a panicking step. The teardown runs after the producer's recover, so a
+// panic in it (an integration's stream Cleanup, the trace completer that runs observability
+// plugins) is a new panic nothing else catches. Each step is contained, the steps after it
+// still run, and the client stream still closes.
+func Test_handleStreaming_TeardownPanicsAreRecovered(t *testing.T) {
+	stream := make(chan *schemas.BifrostStreamChunk, 1)
+	stream <- &schemas.BifrostStreamChunk{BifrostChatResponse: &schemas.BifrostChatResponse{}}
+	close(stream)
+	router := NewGenericRouter(nil, &mockHandlerStore{}, nil, nil, nil, bifrost.NewNoOpLogger())
+	ctx := &fasthttp.RequestCtx{}
+	traceRan := make(chan struct{})
+	ctx.SetUserValue(schemas.BifrostContextKeyTraceCompleter, func([]schemas.PluginLogEntry) {
+		close(traceRan)
+		panic("trace completer")
+	})
+	route := RouteConfig{StreamConfig: &StreamConfig{
+		ChatStreamResponseConverter: func(*schemas.BifrostContext, *schemas.BifrostChatResponse) (string, interface{}, error) {
+			return "", map[string]string{"ok": "1"}, nil
+		},
+		Cleanup: func(*schemas.BifrostContext) { panic("cleanup") },
+	}}
+
+	rec := newCancelRecorder()
+	router.handleStreaming(ctx, schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), route, "", stream, rec.cancel)
+
+	readDone := make(chan error, 1)
+	go func() {
+		_, err := io.ReadAll(ctx.Response.BodyStream())
+		readDone <- err
+	}()
+	select {
+	case err := <-readDone:
+		require.NoError(t, err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("response body stream never closed after a teardown panic")
+	}
+	select {
+	case <-traceRan:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the trace completer did not run after Cleanup panicked")
+	}
+	rec.requireCancelled(t, "the teardown's cancel did not run after a teardown panic")
 }
 
 // cancelRecorder captures the cancel func handed to handleStreaming.
@@ -2230,6 +2281,64 @@ func BenchmarkIsChatGPTBearer(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		_ = isChatGPTBearer(authHeader)
+	}
+}
+
+// TestPassthroughStreamTeardownPanicIsRecovered pins that the passthrough relay goroutine
+// survives a panic in its deferred teardown (the trace completer runs observability
+// plugins after the handler returned, outside RecoveryMiddleware): the relayed body still
+// reaches the client and the stream still closes, instead of the process ending.
+func TestPassthroughStreamTeardownPanicIsRecovered(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	defer ln.Close()
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		_, _ = http.ReadRequest(bufio.NewReader(conn))
+		event := "event: response.completed\ndata: {\"type\":\"response.completed\",\"sequence_number\":0,\"response\":{\"id\":\"resp_1\",\"status\":\"completed\"}}\n\n"
+		_, _ = fmt.Fprintf(conn, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n%x\r\n%s\r\n0\r\n\r\n", len(event), event)
+	}()
+
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{Account: codexPassthroughAccount{}, Logger: bifrost.NewNoOpLogger()})
+	require.NoError(t, err)
+	defer client.Shutdown()
+	g := NewGenericRouter(client, &mockHandlerStore{}, nil, nil, nil, bifrost.NewNoOpLogger())
+
+	var ctx fasthttp.RequestCtx
+	traceRan := make(chan struct{})
+	ctx.SetUserValue(schemas.BifrostContextKeyTraceCompleter, func([]schemas.PluginLogEntry) {
+		close(traceRan)
+		panic("trace completer")
+	})
+	bifrostCtx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	g.handlePassthroughStream(&ctx, bifrostCtx, cancel, schemas.OpenAI, &schemas.BifrostPassthroughRequest{
+		Method:      "POST",
+		Path:        "/backend-api/codex/responses",
+		UpstreamURL: "http://" + ln.Addr().String(),
+		Body:        []byte(`{"model":"gpt-5.5","input":[],"stream":true}`),
+		SafeHeaders: map[string]string{"content-type": "application/json"},
+	})
+	require.Equal(t, 200, ctx.Response.StatusCode())
+
+	done := make(chan []byte, 1)
+	go func() {
+		b, _ := io.ReadAll(ctx.Response.BodyStream())
+		done <- b
+	}()
+	select {
+	case b := <-done:
+		require.Contains(t, string(b), `"type":"response.completed"`)
+	case <-time.After(10 * time.Second):
+		t.Fatal("relayed stream never closed after the teardown panic")
+	}
+	select {
+	case <-traceRan:
+	case <-time.After(5 * time.Second):
+		t.Fatal("trace completer never ran")
 	}
 }
 
