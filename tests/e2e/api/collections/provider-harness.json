@@ -313196,7 +313196,1190 @@
       ]
     },
     {
-      "name": "322. Cloudflare 520 origin errors retry on the same key (provider error fixture) (PR #8967)",
+      "name": "322. Codex subagent encrypted_content block survives the fail-soft retry (subagent encrypted block)",
+      "description": "Ticket 11340: Codex on gpt-6.1-sol failed with \"Missing required parameter: 'input[N].content[1].encrypted_content'\"\nwhen consecutive turns hit different Azure resources (East, then West).\n\nCodex multi_agent v1 records the parent task in a subagent thread as an agent_message whose content[1] is\n{\"type\":\"encrypted_content\",\"encrypted_content\":\"...\"}: a block that is nothing but that field. West refuses\nEast's ciphertext, the fail-soft (core/encryptedreasoning.go) strips and retries once, and it used to blank\nthe field on that block, so Azure answered the retry with missing_required_parameter and hid the real refusal.\nThe fix drops a block of type encrypted_content whole (dropsWholeContentBlock); it carries no text.\n\nThe forged reasoning item stands in for the cross-resource ciphertext (Azure refuses it the same way).\nPre-fix this row returns 400 missing_required_parameter; post-fix 200 with only input_text on the agent_message.\nAzure only: OpenAI accepts this forged ciphertext without a refusal, so the retry never fires there.",
+      "item": [
+        {
+          "name": "azure/gpt-6.1-sol /v1/responses Codex subagent agent_message encrypted_content block heals on retry - subagent encrypted block",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text() || '';",
+                  "pm.test('azure: fail-soft retry heals a Codex subagent history instead of returning 400', function () {",
+                  "  pm.expect(text, 'the retry blanked the encrypted_content block (ticket 11340)').to.not.include('missing_required_parameter');",
+                  "  pm.expect(text, 'the upstream refusal reached the client').to.not.include('invalid_encrypted_content');",
+                  "  pm.expect(pm.response.code, 'failed: ' + text).to.equal(200);",
+                  "  pm.expect(pm.response.json().output, 'no output after the stripped retry').to.be.an('array').that.is.not.empty;",
+                  "});",
+                  "pm.test('azure: retried payload drops the encrypted_content block and keeps the task text', function () {",
+                  "  var raw = (pm.response.json().extra_fields || {}).raw_request;",
+                  "  if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+                  "  pm.expect(raw, 'no raw_request returned: ' + text).to.be.an('object');",
+                  "  var agent = (raw.input || []).filter(function (i) { return i.type === 'agent_message'; });",
+                  "  pm.expect(agent.length, 'the agent_message was dropped: ' + JSON.stringify(raw)).to.equal(1);",
+                  "  var types = (agent[0].content || []).map(function (c) { return c.type; });",
+                  "  pm.expect(types, 'expected only the task text block').to.eql(['input_text']);",
+                  "  pm.expect(agent[0].author, 'author lost on the retry').to.equal('/root');",
+                  "  pm.expect(JSON.stringify(raw), 'a ciphertext survived the strip').to.not.include('encrypted_content');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"azure/gpt-6.1-sol\",\"input\":[{\"type\":\"reasoning\",\"id\":\"rs_bfharness0000000000000000000000000000000000322\",\"summary\":[],\"encrypted_content\":\"gAAAAABqdgntZpz92rFHmQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0Iv\"},{\"type\":\"agent_message\",\"id\":\"amsg_bfharness322\",\"author\":\"/root\",\"recipient\":\"/root/reply_number\",\"content\":[{\"type\":\"input_text\",\"text\":\"Message Type: NEW_TASK\\nTask: reply with the number 782.\"},{\"type\":\"encrypted_content\",\"encrypted_content\":\"gAAAAABqdgntZpz92rFHmQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0Iv\"}]},{\"role\":\"user\",\"content\":\"Reply with just the number 782.\"}],\"max_output_tokens\":256}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "323. Datasheet override survives a datasheet sync (datasheet override) [SERIAL]",
+      "description": "Pins the datasheet editor contract: an edit to a synced datasheet entry is stored as an override that is re-applied after every datasheet sync, so the user value survives upstream updates while the upstream value stays visible. The setup saves a mode-specific override for openai/gpt-4o-mini (context_length 4321 and input/output rates far above the real ones). The entry endpoint must show the override as effective and the synced value as upstream; a forced datasheet sync must leave the effective value untouched; a chat completion must be logged at the overridden rates, which proves the cost engine reads the merged row; an unknown datasheet field is rejected with 400; and saving the target with an empty patch removes the override and restores the upstream entry. [SERIAL] because the override reprices gpt-4o-mini for every request while it exists. Go coverage: TestEntryOverride_* (framework/modelcatalog/datasheet), TestSaveDatasheetOverride_* (framework/modelcatalog), TestDatasheetOverrideHandlers_* (handlers).",
+      "item": [
+        {
+          "name": "Setup - datasheet override for openai/gpt-4o-mini chat (datasheet override)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.unset('datasheetOverrideId');",
+                  "pm.collectionVariables.unset('datasheetUpstreamContext');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Datasheet override is saved', function () {",
+                  "  pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var ov = (pm.response.json() || {}).override;",
+                  "pm.test('Saved override has an id and the patch', function () {",
+                  "  pm.expect(ov && ov.id, 'body: ' + pm.response.text()).to.be.a('string').and.not.be.empty;",
+                  "  pm.expect(ov.pricing_patch.context_length, 'body: ' + pm.response.text()).to.equal(4321);",
+                  "});",
+                  "pm.test('Baseline records the synced upstream context_length', function () {",
+                  "  var base = ov && ov.baseline && ov.baseline.pricing;",
+                  "  pm.expect(base, 'baseline: ' + JSON.stringify(ov && ov.baseline)).to.be.an('object');",
+                  "  pm.expect(base.context_length, 'baseline: ' + JSON.stringify(base)).to.be.a('number').and.not.equal(4321);",
+                  "  pm.collectionVariables.set('datasheetUpstreamContext', String(base.context_length));",
+                  "});",
+                  "if (ov && ov.id) { pm.collectionVariables.set('datasheetOverrideId', ov.id); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/models/datasheet/overrides",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "models",
+                "datasheet",
+                "overrides"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"provider\": \"openai\",\n  \"model\": \"gpt-4o-mini\",\n  \"mode\": \"chat\",\n  \"pricing_patch\": {\n    \"context_length\": 4321,\n    \"input_cost_per_token\": 0.001,\n    \"output_cost_per_token\": 0.002\n  }\n}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Datasheet entry shows the override over the upstream value - openai/gpt-4o-mini (datasheet override)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = ['datasheetOverrideId'].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Entry is returned', function () {",
+                  "  pm.expect(pm.response.code, 'body: ' + pm.response.text().slice(0, 500)).to.equal(200);",
+                  "});",
+                  "var entry = pm.response.json();",
+                  "pm.test('Effective context_length is the override, upstream is the synced value', function () {",
+                  "  pm.expect(entry.effective.context_length, 'entry: ' + pm.response.text().slice(0, 800)).to.equal(4321);",
+                  "  pm.expect(String(entry.upstream.context_length), 'entry: ' + pm.response.text().slice(0, 800)).to.equal(pm.collectionVariables.get('datasheetUpstreamContext'));",
+                  "});",
+                  "pm.test('The override is listed on the entry', function () {",
+                  "  var ids = (entry.overrides || []).map(function (o) { return o.id; });",
+                  "  pm.expect(ids, 'overrides: ' + JSON.stringify(ids)).to.include(pm.collectionVariables.get('datasheetOverrideId'));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/models/datasheet/entry?provider=openai&model=gpt-4o-mini&mode=chat",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "models",
+                "datasheet",
+                "entry"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "openai"
+                },
+                {
+                  "key": "model",
+                  "value": "gpt-4o-mini"
+                },
+                {
+                  "key": "mode",
+                  "value": "chat"
+                }
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Forced datasheet sync keeps the override - openai/gpt-4o-mini (datasheet override)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = ['datasheetOverrideId'].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// /api is locked behind the setup token on the harness profile; pm.sendRequest does not inherit the collection header.",
+                  "var setupToken = pm.variables.get('setupToken');",
+                  "var apiHeaders = setupToken ? [{ key: 'X-Bifrost-Setup-Token', value: setupToken }] : [];",
+                  "function readEntry(cb) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/models/datasheet/entry?provider=openai&model=gpt-4o-mini&mode=chat', method: 'GET', header: apiHeaders }, cb);",
+                  "}",
+                  "pm.test('Datasheet sync ran', function () {",
+                  "  pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "readEntry(function (err, res) {",
+                  "  pm.test('After the sync the effective context_length is still the override', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code, 'entry: ' + res.text().slice(0, 500)).to.equal(200);",
+                  "    var entry = res.json();",
+                  "    pm.expect(entry.effective.context_length, 'entry: ' + res.text().slice(0, 800)).to.equal(4321);",
+                  "    pm.expect(entry.effective.input_cost_per_token, 'entry: ' + res.text().slice(0, 800)).to.equal(0.001);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/pricing/force-sync",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "pricing",
+                "force-sync"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Chat completion is priced from the overridden datasheet rates - openai/gpt-4o-mini (datasheet override)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = ['datasheetOverrideId'].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// /api is locked behind the setup token on the harness profile; pm.sendRequest does not inherit the collection header.",
+                  "var setupToken = pm.variables.get('setupToken');",
+                  "var apiHeaders = setupToken ? [{ key: 'X-Bifrost-Setup-Token', value: setupToken }] : [];",
+                  "function readEntry(cb) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/models/datasheet/entry?provider=openai&model=gpt-4o-mini&mode=chat', method: 'GET', header: apiHeaders }, cb);",
+                  "}",
+                  "var LABEL = 'datasheet override pricing';",
+                  "var RATES = { input: 0.001, output: 0.002 };",
+                  "pm.test(LABEL + ': request succeeds', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "var usage = pm.response.json().usage || {};",
+                  "pm.test(LABEL + ': usage is reported', function () { pm.expect(usage.prompt_tokens, 'usage: ' + JSON.stringify(usage)).to.be.above(0); });",
+                  "var expected = (usage.prompt_tokens || 0) * RATES.input + (usage.completion_tokens || 0) * RATES.output;",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test(LABEL + ': x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
+                  "// The log row is written by the batching writer, so poll the logs API. Bounded: ten reads a second apart.",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET', header: apiHeaders }, function (err, res) {",
+                  "    if (!err && res.code === 200) {",
+                  "      var cb = res.json().cost_breakdown;",
+                  "      pm.test(LABEL + ': logged cost uses the overridden input and output rates', function () {",
+                  "        pm.expect(cb, 'cost_breakdown: ' + res.text().slice(0, 1000)).to.be.an('object');",
+                  "        pm.expect(cb.total_cost, 'expected ' + expected + ' for usage ' + JSON.stringify(usage) + ', cost_breakdown: ' + JSON.stringify(cb)).to.be.closeTo(expected, expected * 1e-6);",
+                  "      });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test(LABEL + ': log row appeared', function () { pm.expect.fail('log ' + reqId + ' never appeared: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"max_tokens\": 5\n}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Unknown datasheet field is rejected [EXPECT-400] - openai/gpt-4o-mini (datasheet override)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Unknown field is a 400 naming the field', function () {",
+                  "  pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text()).to.include('not_a_datasheet_field');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/models/datasheet/overrides",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "models",
+                "datasheet",
+                "overrides"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"provider\": \"openai\",\n  \"model\": \"gpt-4o-mini\",\n  \"mode\": \"chat\",\n  \"pricing_patch\": {\n    \"not_a_datasheet_field\": 1\n  }\n}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Misspelled patch name is rejected and keeps the override [EXPECT-400] - openai/gpt-4o-mini (datasheet override)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = ['datasheetOverrideId'].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A typo must not read as an empty save, which resets the target.",
+                  "var setupToken = pm.variables.get('setupToken');",
+                  "var apiHeaders = setupToken ? [{ key: 'X-Bifrost-Setup-Token', value: setupToken }] : [];",
+                  "pm.test('Unknown top-level field is a 400 naming the field', function () {",
+                  "  pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text()).to.include('pricing_pach');",
+                  "});",
+                  "pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/models/datasheet/entry?provider=openai&model=gpt-4o-mini&mode=chat', method: 'GET', header: apiHeaders }, function (err, res) {",
+                  "  pm.test('The saved override still applies', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code, 'entry: ' + res.text().slice(0, 500)).to.equal(200);",
+                  "    var entry = res.json();",
+                  "    pm.expect(entry.overrides || [], 'entry: ' + res.text().slice(0, 800)).to.have.lengthOf(1);",
+                  "    pm.expect(entry.effective.context_length, 'entry: ' + res.text().slice(0, 800)).to.equal(4321);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/models/datasheet/overrides",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "models",
+                "datasheet",
+                "overrides"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"provider\": \"openai\",\n  \"model\": \"gpt-4o-mini\",\n  \"mode\": \"chat\",\n  \"pricing_pach\": {}\n}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Cleanup - empty patch (spaced) removes the override and restores upstream - openai/gpt-4o-mini (datasheet override)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = ['datasheetOverrideId'].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// /api is locked behind the setup token on the harness profile; pm.sendRequest does not inherit the collection header.",
+                  "var setupToken = pm.variables.get('setupToken');",
+                  "var apiHeaders = setupToken ? [{ key: 'X-Bifrost-Setup-Token', value: setupToken }] : [];",
+                  "function readEntry(cb) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/models/datasheet/entry?provider=openai&model=gpt-4o-mini&mode=chat', method: 'GET', header: apiHeaders }, cb);",
+                  "}",
+                  "pm.test('Override is removed', function () {",
+                  "  pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(200);",
+                  "  pm.expect((pm.response.json() || {}).override, 'body: ' + pm.response.text()).to.equal(null);",
+                  "});",
+                  "readEntry(function (err, res) {",
+                  "  pm.test('The entry is back to the upstream values', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code, 'entry: ' + res.text().slice(0, 500)).to.equal(200);",
+                  "    var entry = res.json();",
+                  "    pm.expect(entry.overrides || [], 'entry: ' + res.text().slice(0, 800)).to.have.lengthOf(0);",
+                  "    pm.expect(String(entry.effective.context_length), 'entry: ' + res.text().slice(0, 800)).to.equal(pm.collectionVariables.get('datasheetUpstreamContext'));",
+                  "  });",
+                  "  pm.collectionVariables.unset('datasheetOverrideId');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/models/datasheet/overrides",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "models",
+                "datasheet",
+                "overrides"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"provider\": \"openai\",\n  \"model\": \"gpt-4o-mini\",\n  \"mode\": \"chat\",\n  \"pricing_patch\": {\n  }\n}"
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "324. Vertex Cloud Text-to-Speech: Chirp 3 HD on the native, OpenAI drop-in and GenAI routes (vertex chirp speech)",
+      "description": "Vertex speech is served by Cloud Text-to-Speech (texttospeech.googleapis.com), authenticated with the key's Google service account. The model chirp-3-hd only selects pricing; the voice name (hi-IN-Chirp3-HD-Erinome) carries the model and the locale, and the language code is derived from it. The first three cases send the same voice through /v1/audio/speech (MP3), the OpenAI drop-in /openai/v1/audio/speech (WAV, with speed) and the GenAI /genai generateContent route (inlineData), and require real audio in the container the route promises. Gemini TTS models on Vertex take the other Google API: generateContent, which reports the token usage billing reads. The next three cases send gemini-2.5-flash-tts through /v1/audio/speech (WAV), its SSE stream (the done event must carry output_tokens) and /genai (inlineData). The last case is refused before reaching Google: a Chirp voice with no locale and no language_code.",
+      "item": [
+        {
+          "name": "vertex/chirp-3-hd native /v1/audio/speech returns MP3 audio - vertex chirp speech",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function head(audio, n) { var s = \"\"; for (var i = 0; i < n && i < audio.length; i++) { s += String.fromCharCode(audio[i]); } return s; }",
+                  "pm.test('Chirp 3 HD returned MP3 audio through /v1/audio/speech', function () {",
+                  "  var ct = pm.response.headers.get('content-type') || '';",
+                  "  pm.expect(pm.response.code, 'speech failed: ' + pm.response.text().slice(0, 300)).to.equal(200);",
+                  "  pm.expect(ct, 'unexpected content-type: ' + ct).to.match(/audio\\//i);",
+                  "  var audio = pm.response.stream;",
+                  "  pm.expect(audio.length, 'empty audio body').to.be.above(1000);",
+                  "  var frameSync = audio[0] === 0xFF && (audio[1] & 0xE0) === 0xE0;",
+                  "  pm.expect(frameSync || head(audio, 3) === 'ID3', 'body is not MP3 audio, it starts with: ' + head(audio, 4)).to.equal(true);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/chirp-3-hd\",\n  \"input\": \"नमस्ते, आप कैसे हैं?\",\n  \"voice\": \"hi-IN-Chirp3-HD-Erinome\",\n  \"response_format\": \"mp3\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/speech",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "speech"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "vertex/chirp-3-hd /openai/v1/audio/speech returns WAV audio - vertex chirp speech",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function head(audio, n) { var s = \"\"; for (var i = 0; i < n && i < audio.length; i++) { s += String.fromCharCode(audio[i]); } return s; }",
+                  "pm.test('Chirp 3 HD returned WAV audio through the OpenAI drop-in', function () {",
+                  "  var ct = pm.response.headers.get('content-type') || '';",
+                  "  pm.expect(pm.response.code, 'speech failed: ' + pm.response.text().slice(0, 300)).to.equal(200);",
+                  "  pm.expect(ct, 'unexpected content-type: ' + ct).to.match(/audio\\//i);",
+                  "  var audio = pm.response.stream;",
+                  "  pm.expect(audio.length, 'empty audio body').to.be.above(5000);",
+                  "  pm.expect(head(audio, 4), 'body is not a WAV file').to.equal('RIFF');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/chirp-3-hd\",\n  \"input\": \"नमस्ते, आप कैसे हैं?\",\n  \"voice\": \"hi-IN-Chirp3-HD-Erinome\",\n  \"response_format\": \"wav\",\n  \"speed\": 1.2\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/audio/speech",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "audio",
+                "speech"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "vertex/chirp-3-hd /genai speech returns MP3 inlineData - vertex chirp speech",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Chirp 3 HD returned MP3 inlineData through /genai', function () {",
+                  "  pm.expect(pm.response.code, 'genai speech failed: ' + pm.response.text().slice(0, 300)).to.equal(200);",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.candidates, 'no candidates: ' + pm.response.text().slice(0, 300)).to.be.an('array').that.is.not.empty;",
+                  "  var inline = body.candidates[0].content.parts[0].inlineData;",
+                  "  pm.expect(inline, 'no inlineData: ' + pm.response.text().slice(0, 300)).to.be.an('object');",
+                  "  pm.expect(inline.mimeType).to.equal('audio/mp3');",
+                  "  pm.expect(inline.data.length, 'empty audio').to.be.above(1000);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"नमस्ते, आप कैसे हैं?\"\n        }\n      ]\n    }\n  ],\n  \"generationConfig\": {\n    \"responseModalities\": [\n      \"AUDIO\"\n    ],\n    \"speechConfig\": {\n      \"voiceConfig\": {\n        \"prebuiltVoiceConfig\": {\n          \"voiceName\": \"hi-IN-Chirp3-HD-Erinome\"\n        }\n      },\n      \"languageCode\": \"hi-IN\"\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/vertex/chirp-3-hd:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "vertex",
+                "chirp-3-hd:generateContent"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "vertex/gemini-2.5-flash-tts native /v1/audio/speech returns WAV audio through generateContent - vertex chirp speech",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function head(audio, n) { var s = \"\"; for (var i = 0; i < n && i < audio.length; i++) { s += String.fromCharCode(audio[i]); } return s; }",
+                  "pm.test('Gemini TTS on Vertex returned WAV audio through /v1/audio/speech', function () {",
+                  "  var ct = pm.response.headers.get('content-type') || '';",
+                  "  pm.expect(pm.response.code, 'speech failed: ' + pm.response.text().slice(0, 300)).to.equal(200);",
+                  "  pm.expect(ct, 'unexpected content-type: ' + ct).to.match(/audio\\//i);",
+                  "  var audio = pm.response.stream;",
+                  "  pm.expect(audio.length, 'empty audio body').to.be.above(5000);",
+                  "  pm.expect(head(audio, 4), 'body is not a WAV file').to.equal('RIFF');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/gemini-2.5-flash-tts\",\n  \"input\": \"Hello there, this is a short test.\",\n  \"voice\": \"Kore\",\n  \"response_format\": \"wav\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/speech",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "speech"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "vertex/gemini-2.5-flash-tts native /v1/audio/speech stream_format sse streams audio and reports output tokens - vertex chirp speech",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('Gemini TTS SSE stream carries deltas and a done event with token usage', function () {",
+                  "  pm.expect(pm.response.code, 'stream failed: ' + body.slice(0, 300)).to.equal(200);",
+                  "  pm.expect(pm.response.headers.get('content-type') || '', 'not an SSE stream').to.include('text/event-stream');",
+                  "  pm.expect(body, 'no audio delta: ' + body.slice(0, 300)).to.include('speech.audio.delta');",
+                  "  pm.expect(body, 'no done event: ' + body.slice(-300)).to.include('speech.audio.done');",
+                  "  pm.expect(body, 'done event lacks output tokens, so the stream cannot be billed: ' + body.slice(-300)).to.match(/\"output_tokens\":\\s*[1-9]/);",
+                  "  pm.expect(body, 'stream carried an error: ' + body.slice(0, 300)).to.not.include('\"error\"');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/gemini-2.5-flash-tts\",\n  \"input\": \"This is a streaming speech test for Gemini TTS on Vertex.\",\n  \"voice\": \"Kore\",\n  \"stream_format\": \"sse\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/speech",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "speech"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "vertex/gemini-2.5-flash-tts /genai speech returns inlineData audio - vertex chirp speech",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Gemini TTS on Vertex returned inlineData audio through /genai', function () {",
+                  "  pm.expect(pm.response.code, 'genai speech failed: ' + pm.response.text().slice(0, 300)).to.equal(200);",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.candidates, 'no candidates: ' + pm.response.text().slice(0, 300)).to.be.an('array').that.is.not.empty;",
+                  "  var inline = body.candidates[0].content.parts[0].inlineData;",
+                  "  pm.expect(inline, 'no inlineData: ' + pm.response.text().slice(0, 300)).to.be.an('object');",
+                  "  pm.expect(inline.mimeType).to.match(/^audio\\//);",
+                  "  pm.expect(inline.data.length, 'empty audio').to.be.above(1000);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Hello there, this is a short test.\"\n        }\n      ]\n    }\n  ],\n  \"generationConfig\": {\n    \"responseModalities\": [\n      \"AUDIO\"\n    ],\n    \"speechConfig\": {\n      \"voiceConfig\": {\n        \"prebuiltVoiceConfig\": {\n          \"voiceName\": \"Kore\"\n        }\n      }\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/vertex/gemini-2.5-flash-tts:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "vertex",
+                "gemini-2.5-flash-tts:generateContent"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "[EXPECT-400] vertex/chirp-3-hd native /v1/audio/speech needs a locale in the voice or a language_code - vertex chirp speech",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('A voice with no locale and no language_code is refused', function () {",
+                  "  pm.expect(pm.response.code, 'expected 400: ' + pm.response.text().slice(0, 300)).to.equal(400);",
+                  "  pm.expect(pm.response.text(), 'refusal should name language_code').to.include('language_code is required');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/chirp-3-hd\",\n  \"input\": \"Hello, world.\",\n  \"voice\": \"alloy\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/speech",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "speech"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "vertex/gemini-2.5-flash-tts /genai streamGenerateContent streams inlineData audio chunks and reports output tokens - vertex chirp speech",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('Gemini TTS on Vertex streams inlineData audio chunks through /genai', function () {",
+                  "  pm.expect(pm.response.code, 'genai speech stream failed: ' + body.slice(0, 300)).to.equal(200);",
+                  "  pm.expect(pm.response.headers.get('content-type') || '', 'not an SSE stream').to.include('text/event-stream');",
+                  "  var chunks = body.split('\\n').filter(function (l) { return l.indexOf('data:') === 0 && l.slice(5).trim().charAt(0) === '{'; }).map(function (l) { return JSON.parse(l.slice(5)); });",
+                  "  var audio = chunks.filter(function (c) { var p = c.candidates && c.candidates[0] && c.candidates[0].content && c.candidates[0].content.parts && c.candidates[0].content.parts[0]; return p && p.inlineData; });",
+                  "  pm.expect(audio.length, 'no inlineData audio chunks: ' + body.slice(0, 300)).to.be.above(0);",
+                  "  pm.expect(audio[0].candidates[0].content.parts[0].inlineData.mimeType, 'chunk is not audio').to.match(/^audio\\//);",
+                  "  pm.expect(audio[0].candidates[0].content.parts[0].inlineData.data.length, 'empty audio chunk').to.be.above(100);",
+                  "  var finished = chunks.filter(function (c) { return c.candidates && c.candidates[0] && c.candidates[0].finishReason; });",
+                  "  pm.expect(finished.length, 'the stream never finished: ' + body.slice(-300)).to.be.above(0);",
+                  "  var last = finished[finished.length - 1];",
+                  "  pm.expect(last.candidates[0].finishReason, 'unexpected finish: ' + body.slice(-300)).to.equal('STOP');",
+                  "  pm.expect(last.usageMetadata && last.usageMetadata.candidatesTokenCount, 'the last chunk lacks output tokens, so the stream cannot be billed: ' + body.slice(-300)).to.be.above(0);",
+                  "  pm.expect(body, 'stream carried an error: ' + body.slice(0, 300)).to.not.include('\"error\"');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Hello there, this is a short test.\"\n        }\n      ]\n    }\n  ],\n  \"generationConfig\": {\n    \"responseModalities\": [\n      \"AUDIO\"\n    ],\n    \"speechConfig\": {\n      \"voiceConfig\": {\n        \"prebuiltVoiceConfig\": {\n          \"voiceName\": \"Kore\"\n        }\n      }\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/vertex/gemini-2.5-flash-tts:streamGenerateContent?alt=sse",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "vertex",
+                "gemini-2.5-flash-tts:streamGenerateContent"
+              ],
+              "query": [
+                {
+                  "key": "alt",
+                  "value": "sse"
+                }
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "[EXPECT-400] vertex/chirp-3-hd /genai streamGenerateContent is refused because Cloud Text-to-Speech does not stream over REST - vertex chirp speech",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('A Chirp 3 HD stream request is refused, not served as audio', function () {",
+                  "  pm.expect(pm.response.code, 'expected 400: ' + pm.response.text().slice(0, 300)).to.equal(400);",
+                  "  pm.expect(pm.response.text(), 'refusal should say the operation is not supported').to.include('not supported');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"नमस्ते, आप कैसे हैं?\"\n        }\n      ]\n    }\n  ],\n  \"generationConfig\": {\n    \"responseModalities\": [\n      \"AUDIO\"\n    ],\n    \"speechConfig\": {\n      \"voiceConfig\": {\n        \"prebuiltVoiceConfig\": {\n          \"voiceName\": \"hi-IN-Chirp3-HD-Erinome\"\n        }\n      },\n      \"languageCode\": \"hi-IN\"\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/vertex/chirp-3-hd:streamGenerateContent?alt=sse",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "vertex",
+                "chirp-3-hd:streamGenerateContent"
+              ],
+              "query": [
+                {
+                  "key": "alt",
+                  "value": "sse"
+                }
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "261. ElevenLabs Scribe wildcard permissions (#8467) [SERIAL]",
+      "description": "ElevenLabs Scribe models must survive partial TTS/STS discovery and wildcard virtual-key authorization (#8467). Requires an ElevenLabs provider configured with a valid STT-capable credential and models=[\"*\"]. A run-scoped virtual key is created with allowed_models=[\"*\"], key_ids=[\"*\"], and allow_all_providers=true, then deleted. Covers management-catalog discovery separately from upstream provider listing, native transcription, OpenAI-compatible transcription, and a 403 model_blocked denial for an unknown model. No provider settings or existing keys are modified. Run with PROVIDER=elevenlabs FEATURE=\"scribe wildcard\". The transcription rows make paid provider calls only when the operator explicitly runs the live harness.",
+      "item": [
+        {
+          "name": "elevenlabs scribe_v2 scribe wildcard setup: create virtual key - #8467",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.unset('scribeWildcardVkId');",
+                  "pm.collectionVariables.unset('scribeWildcardVkValue');",
+                  "pm.collectionVariables.set('scribeWildcardRun', String(Date.now()) + '-' + pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('scribe wildcard: expected HTTP 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "var vk = {}; try { vk = pm.response.json().virtual_key || {}; } catch (e) {}",
+                  "var value = typeof vk.value === 'string' ? vk.value : ((vk.value || {}).value || '');",
+                  "pm.test('scribe wildcard: virtual key created', function () { pm.expect(vk.id, pm.response.text()).to.be.a('string').and.not.equal(''); pm.expect(value, pm.response.text()).to.be.a('string').and.not.equal(''); });",
+                  "if (vk.id) { pm.collectionVariables.set('scribeWildcardVkId', vk.id); }",
+                  "if (value) { pm.collectionVariables.set('scribeWildcardVkValue', value); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"harness-elevenlabs-scribe-{{scribeWildcardRun}}\",\"is_active\":true,\"allow_all_providers\":true,\"provider_configs\":[{\"provider\":\"elevenlabs\",\"allowed_models\":[\"*\"],\"key_ids\":[\"*\"],\"weight\":1}]}"
+            },
+            "url": "{{baseUrl}}/api/governance/virtual-keys"
+          }
+        },
+        {
+          "name": "elevenlabs scribe_v2 scribe wildcard catalog discovery on /api/models - #8467",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('scribe wildcard: expected HTTP 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "pm.test('scribe wildcard: management catalog includes Scribe v2', function () { var j = pm.response.json(); pm.expect(j.models, pm.response.text()).to.be.an('array'); var ids = j.models.map(function (m) { return m.provider + '/' + m.name; }); pm.expect(ids, pm.response.text()).to.include('elevenlabs/scribe_v2'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{scribeWildcardVkValue}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/models?provider=elevenlabs&limit=100"
+          }
+        },
+        {
+          "name": "elevenlabs scribe_v2 scribe wildcard transcription on /v1/audio/transcriptions - #8467",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('scribe wildcard: expected HTTP 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "pm.test('scribe wildcard: transcription succeeded rather than model_blocked', function () { var j = pm.response.json(); pm.expect(j.error, pm.response.text()).to.equal(undefined); pm.expect(j.text, pm.response.text()).to.be.a('string').and.not.equal(''); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{scribeWildcardVkValue}}"
+              }
+            ],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "elevenlabs/scribe_v2",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/sample.mp3",
+                  "type": "file"
+                }
+              ]
+            },
+            "url": "{{baseUrl}}/v1/audio/transcriptions"
+          }
+        },
+        {
+          "name": "elevenlabs scribe_v2 scribe wildcard transcription on /openai/v1/audio/transcriptions - #8467",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('scribe wildcard: expected HTTP 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "pm.test('scribe wildcard: transcription succeeded rather than model_blocked', function () { var j = pm.response.json(); pm.expect(j.error, pm.response.text()).to.equal(undefined); pm.expect(j.text, pm.response.text()).to.be.a('string').and.not.equal(''); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{scribeWildcardVkValue}}"
+              }
+            ],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "elevenlabs/scribe_v2",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/sample.mp3",
+                  "type": "file"
+                }
+              ]
+            },
+            "url": "{{baseUrl}}/openai/v1/audio/transcriptions"
+          }
+        },
+        {
+          "name": "[EXPECT-403] elevenlabs scribe wildcard unknown model denial - #8467",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('scribe wildcard: expected HTTP 403', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(403); });",
+                  "pm.test('scribe wildcard: unknown model is rejected by governance', function () { var j = pm.response.json(); pm.expect(j.type, pm.response.text()).to.eql('model_blocked'); pm.expect(j.error.message, pm.response.text()).to.include('not allowed'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{scribeWildcardVkValue}}"
+              }
+            ],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "elevenlabs/bifrost-nonexistent-scribe-8467",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/sample.mp3",
+                  "type": "file"
+                }
+              ]
+            },
+            "url": "{{baseUrl}}/v1/audio/transcriptions"
+          }
+        },
+        {
+          "name": "elevenlabs scribe_v2 scribe wildcard cleanup: delete virtual key - #8467",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('scribe wildcard: expected HTTP 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "if (pm.response.code === 200) { pm.collectionVariables.unset('scribeWildcardVkId'); pm.collectionVariables.unset('scribeWildcardVkValue'); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "url": "{{baseUrl}}/api/governance/virtual-keys/{{scribeWildcardVkId}}"
+          }
+        }
+      ]
+    },
+    {
+      "name": "325. Cloudflare 520 origin errors retry on the same key (provider error fixture) (PR #8967)",
       "description": "Cloudflare answers 520-524 when its edge gets nothing usable from the origin, and providers behind it (OpenAI) pass that through, usually as a plain-text body such as \"error code: 520\". These statuses are transient (core/failureclass.go), so Bifrost retries them on the same key instead of returning them. The row uses the routing-error-fixture setup (see folder 185's description): a run-scoped OpenAI-backed provider on the provider error fixture with max_retries 2, one key whose alias sends upstream-520-once, which answers the first attempt with a plain-text 520 and the next with a response. Before the change the client gets the 520; after it the request succeeds on the second attempt with the same key. Run with providerErrorFixture=1 (and providerErrorFixtureUrl when the fixture is not on http://127.0.0.1:8791); skipped otherwise.",
       "item": [
         {

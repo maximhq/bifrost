@@ -22,6 +22,7 @@ var providersWithPartialListModels = map[schemas.ModelProvider]bool{
 	schemas.Vertex:     true,
 	schemas.Runware:    true,
 	schemas.Databricks: true,
+	schemas.Elevenlabs: true, // Include catalog-known STT models absent from live discovery.
 }
 
 // providersWithListModelsOnly enumerates providers whose unfiltered model list

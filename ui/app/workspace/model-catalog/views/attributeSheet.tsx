@@ -147,6 +147,7 @@ export default function AttributeSheet({ model, overrides, onClose }: AttributeS
 	const { t: tObs } = useTranslation("observability");
 	const [isOpen, setIsOpen] = useState(true);
 	const hasUpdateAccess = useRbac(RbacResource.ModelProvider, RbacOperation.Update);
+	const hasDatasheetAccess = useRbac(RbacResource.Datasheet, RbacOperation.View);
 	const { data: bifrostConfig } = useGetCoreConfigQuery({ fromDB: true });
 
 	const [upsertEntries, { isLoading }] = useUpsertModelCatalogEntriesMutation();
@@ -268,6 +269,17 @@ export default function AttributeSheet({ model, overrides, onClose }: AttributeS
 						<div className="space-y-3">
 							<div className="flex items-center justify-between gap-3">
 								<Label className="text-sm font-medium">{t("modelCatalog.pricing")}</Label>
+								{hasDatasheetAccess && (
+									<Link
+										to="/workspace/datasheet-editor"
+										search={{ search: model.name, provider: model.provider }}
+										className="text-muted-foreground hover:text-foreground ml-auto inline-flex items-center gap-1 text-xs"
+										data-testid="model-catalog-edit-datasheet-link"
+									>
+										{t("modelCatalog.editInDatasheet")}
+										<ExternalLink className="h-3 w-3" />
+									</Link>
+								)}
 								{canOpenPricingSource ? (
 									<a
 										href={pricingSourceUrl}

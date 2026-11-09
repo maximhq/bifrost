@@ -1,6 +1,7 @@
 import { formatLatency } from "@/app/workspace/dashboard/utils/chartUtils";
 import BlockHeader from "@/app/workspace/logs/views/blockHeader";
 import LogEntryDetailsView from "@/app/workspace/logs/views/logEntryDetailsView";
+import { LogErrorCard } from "@/app/workspace/logs/views/logErrorCard";
 import PluginLogsView from "@/app/workspace/logs/views/pluginLogsView";
 import { CorrelatedLogsContent } from "@/app/workspace/agent-logs/views/correlatedLogs";
 import { SheetNavigationButtons } from "@/components/sheetNavigationButtons";
@@ -37,11 +38,13 @@ import type { MCPToolLogEntry } from "@/lib/types/logs";
 import { cn } from "@/lib/utils";
 import { downloadAsJson } from "@/lib/utils/browser-download";
 import {
+	getMCPLogError,
 	getMCPLogPillTone,
 	getMCPLogPresentation,
 	getMCPLogTimeline,
 	getMCPReadKind,
 	type MCPLogPillTone,
+	splitMCPErrorMessage,
 } from "@/lib/utils/mcpLogPresentation";
 import { applyRedactionMappingToValue, hasRedactionMappingEntries, mergeRedactionMappings } from "@/lib/utils/redaction";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
@@ -255,6 +258,8 @@ export function MCPLogDetailSheet({
 	const displayedArguments = applyRedactionMappingToValue(displayLog.arguments, inputRevealMapping);
 	const displayedResult = applyRedactionMappingToValue(displayLog.result, outputRevealMapping);
 	const displayedErrorDetails = applyRedactionMappingToValue(displayLog.error_details, mixedRevealMapping);
+	const errorCard = displayedErrorDetails ? getMCPLogError(displayedErrorDetails) : undefined;
+	const errorText = errorCard?.message ? splitMCPErrorMessage(errorCard.message) : undefined;
 	const pluginLogCount = getPluginLogCount(displayLog.plugin_logs);
 	const presentation = getMCPLogPresentation(displayLog, t);
 	const { durationMs, startTimestamp, endTimestamp } = getMCPLogTimeline(displayLog, presentation);
@@ -501,21 +506,6 @@ export function MCPLogDetailSheet({
 										<CopyInlineButton text={displayLog.llm_request_id} testId="mcplogdetails-copy-llm-request-id-button" />
 									</div>
 								)}
-								{(displayLog.virtual_key || displayLog.virtual_key_id) && (
-									<div className="mt-1 flex items-center gap-2">
-										<div className="text-muted-foreground w-24 shrink-0 text-[10.5px] font-semibold tracking-wider uppercase">
-											{t("mcpLogs.detail.key")}
-										</div>
-										<Link
-											to="/workspace/governance/virtual-keys"
-											search={{ selected_vk: displayLog.virtual_key?.id || displayLog.virtual_key_id! }}
-											className="truncate font-mono text-[13px] text-blue-600 hover:underline dark:text-blue-400"
-											data-testid="mcplogdetails-virtual-key-link"
-										>
-											{displayLog.virtual_key?.name || displayLog.virtual_key_name || displayLog.virtual_key_id}
-										</Link>
-									</div>
-								)}
 							</div>
 							<div className="flex shrink-0 items-center gap-1.5 rounded-sm border bg-white px-2 py-1 text-[12px] font-medium dark:bg-zinc-900">
 								{appIcon && <img src={appIcon} alt={app.name} width={14} height={14} />}
@@ -568,7 +558,10 @@ export function MCPLogDetailSheet({
 						</div>
 					</div>
 					<details className="group bg-card rounded-sm border" open={false}>
-						<summary className="hover:bg-muted/30 flex cursor-pointer items-center justify-between px-4 py-2.5 text-sm transition">
+						<summary
+							className="hover:bg-muted/30 flex cursor-pointer items-center justify-between px-4 py-2.5 text-sm transition"
+							data-testid="mcplogdetails-more-details-toggle"
+						>
 							<span className="text-foreground font-medium">{t("mcpLogs.detail.moreDetails")}</span>
 							<span className="text-muted-foreground flex items-center gap-2 text-xs">
 								<span className="hidden md:inline">
@@ -578,8 +571,14 @@ export function MCPLogDetailSheet({
 							</span>
 						</summary>
 						<div className="space-y-4 border-t px-4 py-4 md:px-6">
-							<p className="text-muted-foreground text-sm">{presentation.description}</p>
-							<DottedSeparator />
+							{presentation.description && (
+								<>
+									<p className="text-muted-foreground text-sm" data-testid="mcplogdetails-status-description">
+										{presentation.description}
+									</p>
+									<DottedSeparator />
+								</>
+							)}
 							<div className="space-y-4">
 								<BlockHeader title={t("mcpLogs.detail.timings")} />
 								<div className="grid w-full grid-cols-1 items-center justify-between gap-4 md:grid-cols-3">
@@ -709,7 +708,17 @@ export function MCPLogDetailSheet({
 										<LogEntryDetailsView
 											className="w-full"
 											label={t("mcpLogs.detail.virtualKey")}
-											value={displayLog.virtual_key?.name || displayLog.virtual_key_name || displayLog.virtual_key_id}
+											valueTooltip={displayLog.virtual_key?.name || displayLog.virtual_key_name || displayLog.virtual_key_id}
+											value={
+												<Link
+													to="/workspace/governance/virtual-keys"
+													search={{ selected_vk: displayLog.virtual_key?.id || displayLog.virtual_key_id! }}
+													className="text-sm font-normal text-blue-600 underline-offset-2 hover:underline dark:text-blue-400"
+													data-testid="mcplogdetails-virtual-key-link"
+												>
+													{displayLog.virtual_key?.name || displayLog.virtual_key_name || displayLog.virtual_key_id}
+												</Link>
+											}
 										/>
 									)}
 									{displayLog.decision && (
@@ -728,13 +737,6 @@ export function MCPLogDetailSheet({
 													))}
 												</span>
 											}
-										/>
-									)}
-									{displayLog.llm_request_id && (
-										<LogEntryDetailsView
-											className="col-span-3 w-full"
-											label={t("mcpLogs.detail.llmRequestId")}
-											value={<span className="font-mono text-xs">{displayLog.llm_request_id}</span>}
 										/>
 									)}
 								</div>
@@ -847,23 +849,15 @@ export function MCPLogDetailSheet({
 								</div>
 							)}
 
-							{/* Error Details */}
-							{displayedErrorDetails && (
-								<div className="border-destructive/50 w-full rounded-sm border">
-									<div className="border-destructive/50 text-destructive border-b px-4 py-2 text-sm font-medium md:px-6">
-										{t("mcpLogs.errorDetails")}
-									</div>
-									<CodeEditor
-										className="z-0 w-full"
-										shouldAdjustInitialHeight={true}
-										maxHeight={250}
-										wrap={true}
-										code={JSON.stringify(displayedErrorDetails, null, 2)}
-										lang="json"
-										readonly={true}
-										options={{ scrollBeyondLastLine: false, collapsibleBlocks: true, lineNumbers: "off", alwaysConsumeMouseWheel: false }}
-									/>
-								</div>
+							{errorCard && (
+								<LogErrorCard
+									message={errorText?.text || (errorText?.json ? "" : t("mcpLogs.errorNoMessage"))}
+									json={errorText?.json}
+									messageAfter={errorText?.textAfter}
+									copyText={errorCard.message}
+									details={errorCard.details}
+									testId="mcplogdetails-error"
+								/>
 							)}
 						</TabsContent>
 

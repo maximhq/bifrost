@@ -4753,3 +4753,54 @@ func TestSchemaAuditLogsSigningKeys(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateConfigSchema_DatasheetOverrideConstraints(t *testing.T) {
+	schema := loadLocalSchema(t)
+	for _, tc := range []struct {
+		name    string
+		fields  string
+		wantErr bool
+	}{
+		{"provider patch", `"params_patch":{"provider":"anthropic"}`, true},
+		{"null provider patch", `"params_patch":{"provider":null}`, true},
+		{"provider patch with pricing", `"params_patch":{"provider":"anthropic"},"pricing_patch":{"input_cost_per_token":1}`, true},
+		{"custom missing mode", `"is_custom":true`, true},
+		{"custom empty mode", `"is_custom":true,"mode":""`, true},
+		{"custom whitespace mode", `"is_custom":true,"mode":" \t\n"`, true},
+		{"custom valid mode", `"is_custom":true,"mode":"chat"`, false},
+		{"custom padded mode", `"is_custom":true,"mode":" chat "`, false},
+		{"mode wide pricing", `"pricing_patch":{"context_length":64000}`, false},
+		{"empty noncustom mode", `"mode":"","pricing_patch":{"input_cost_per_token":1}`, false},
+		{"other parameters", `"params_patch":{"supports_mcp":true,"max_output_tokens":1024,"custom_parameter":null},"pricing_patch":{"input_cost_per_token":1}`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			config := `{"datasheet_overrides":[{"provider":"openai","model":"m",` + tc.fields + `}]}`
+			err := ValidateConfigSchema([]byte(config), schema)
+			if (err != nil) != tc.wantErr {
+				t.Errorf("validation error = %v, want error = %v", err, tc.wantErr)
+			}
+		})
+	}
+
+	// The loader trims provider and model and skips an entry whose identity
+	// is then empty, so the schema must reject a whitespace-only value.
+	for _, tc := range []struct {
+		name     string
+		identity string
+		wantErr  bool
+	}{
+		{"empty provider", `"provider":"","model":"m"`, true},
+		{"whitespace provider", `"provider":" \t\n","model":"m"`, true},
+		{"empty model", `"provider":"openai","model":""`, true},
+		{"whitespace model", `"provider":"openai","model":"  "`, true},
+		{"padded identity", `"provider":" openai ","model":" m "`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			config := `{"datasheet_overrides":[{` + tc.identity + `,"pricing_patch":{"input_cost_per_token":1}}]}`
+			err := ValidateConfigSchema([]byte(config), schema)
+			if (err != nil) != tc.wantErr {
+				t.Errorf("validation error = %v, want error = %v", err, tc.wantErr)
+			}
+		})
+	}
+}

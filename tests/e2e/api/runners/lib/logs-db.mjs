@@ -14,6 +14,7 @@ import { fileURLToPath } from "node:url";
 const require = createRequire(import.meta.url);
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../../..");
 const { readLogsDbUrl } = require("../../lib/logs-db-url.js");
+const { openSqliteReadonly } = require("../../lib/sqlite-readonly.js");
 
 const IDENT = /^[a-z_][a-z0-9_]*$/;
 
@@ -34,15 +35,10 @@ export async function openLogsDb() {
 	const urls = candidateUrls();
 	const url = urls[0];
 	if (url.startsWith("sqlite://")) {
-		const Database = require("better-sqlite3");
 		const candidates = urls
 			.map((u) => u.slice("sqlite://".length))
 			.filter((file) => fs.existsSync(file))
-			.map((file) => {
-				const db = new Database(file, { readonly: true, fileMustExist: true });
-				db.pragma("busy_timeout = 5000");
-				return { file, db, stmts: new Map() };
-			});
+			.map((file) => ({ file, db: openSqliteReadonly(file), stmts: new Map() }));
 		if (candidates.length === 0) {
 			throw new Error(`cannot locate the logs database: none of ${urls.join(", ")} exists; set BIFROST_E2E_SERVER_CWD to the gateway's working directory`);
 		}
