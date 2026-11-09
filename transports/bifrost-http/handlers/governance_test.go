@@ -5773,3 +5773,194 @@ func TestVirtualKeyMCPConfigCallerErrorsAre400(t *testing.T) {
 	assert.Equal(t, a.MCPConfigs[0].ID, unchanged.MCPConfigs[0].ID)
 	assert.Equal(t, []string{"echo"}, []string(unchanged.MCPConfigs[0].ToolsToExecute))
 }
+
+// vkAllModelsBudgets reads the budgets on a virtual key's all-models model config, which is where
+// a key's own budgets live.
+func vkAllModelsBudgets(t *testing.T, store configstore.ConfigStore, vkID string) []configstoreTables.TableBudget {
+	t.Helper()
+	configs, err := store.GetModelConfigs(context.Background())
+	require.NoError(t, err)
+	for _, mc := range configs {
+		if mc.Scope == configstoreTables.ModelConfigScopeVirtualKey && mc.ScopeID != nil && *mc.ScopeID == vkID &&
+			mc.ModelName == configstoreTables.ModelConfigAllModels && mc.Provider == nil {
+			return mc.Budgets
+		}
+	}
+	return nil
+}
+
+// TestVirtualKeyBudgetScopeDuplicateValidation pins the scope-aware reset-period rule on a virtual
+// key: one reset period may be used once per scope, so a shared and an MCP budget over the same day
+// coexist, while two MCP budgets over the same day are refused. Scope round-trips on create and is
+// editable in place by ID without losing the row.
+func TestVirtualKeyBudgetScopeDuplicateValidation(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := setupPricingOverrideHandlerStore(t)
+	handler := &GovernanceHandler{configStore: store, governanceManager: &budgetOverrideTestGovernanceManager{store: store}}
+
+	dup := newTestRequestCtx(`{"name":"scoped-dup","budgets":[{"max_limit":5,"reset_duration":"1d","scope":"mcp"},{"max_limit":6,"reset_duration":"1d","scope":"mcp"}]}`)
+	handler.createVirtualKey(dup)
+	require.Equal(t, fasthttp.StatusBadRequest, dup.Response.StatusCode(), "resp=%s", dup.Response.Body())
+	assert.Contains(t, string(dup.Response.Body()), "duplicate reset_duration 1d for scope mcp")
+
+	// Omitted scope is the shared default, so it collides with an explicit "shared".
+	dupDefault := newTestRequestCtx(`{"name":"scoped-dup-default","budgets":[{"max_limit":5,"reset_duration":"1d"},{"max_limit":6,"reset_duration":"1d","scope":"shared"}]}`)
+	handler.createVirtualKey(dupDefault)
+	require.Equal(t, fasthttp.StatusBadRequest, dupDefault.Response.StatusCode(), "resp=%s", dupDefault.Response.Body())
+
+	invalid := newTestRequestCtx(`{"name":"scoped-invalid","budgets":[{"max_limit":5,"reset_duration":"1d","scope":"tools"}]}`)
+	handler.createVirtualKey(invalid)
+	require.Equal(t, fasthttp.StatusBadRequest, invalid.Response.StatusCode(), "resp=%s", invalid.Response.Body())
+
+	create := newTestRequestCtx(`{"name":"scoped","budgets":[{"max_limit":10,"reset_duration":"1d"},{"max_limit":5,"reset_duration":"1d","scope":"mcp"},{"max_limit":8,"reset_duration":"1d","scope":"model"}]}`)
+	handler.createVirtualKey(create)
+	require.Equal(t, fasthttp.StatusOK, create.Response.StatusCode(), "resp=%s", create.Response.Body())
+	var created struct {
+		VirtualKey struct {
+			ID string `json:"id"`
+		} `json:"virtual_key"`
+	}
+	require.NoError(t, json.Unmarshal(create.Response.Body(), &created))
+
+	budgets := vkAllModelsBudgets(t, store, created.VirtualKey.ID)
+	require.Len(t, budgets, 3)
+	byScope := map[configstoreTables.LimitScope]configstoreTables.TableBudget{}
+	for _, b := range budgets {
+		byScope[b.Scope] = b
+	}
+	require.Contains(t, byScope, configstoreTables.LimitScopeShared)
+	require.Contains(t, byScope, configstoreTables.LimitScopeMCP)
+	require.Contains(t, byScope, configstoreTables.LimitScopeModel)
+	assert.Equal(t, 5.0, byScope[configstoreTables.LimitScopeMCP].MaxLimit)
+
+	// Edit by ID: the MCP budget becomes a weekly one and the model budget moves to MCP over the
+	// day the old MCP budget vacated. Both keep their rows.
+	mcpID, modelID, sharedID := byScope[configstoreTables.LimitScopeMCP].ID, byScope[configstoreTables.LimitScopeModel].ID, byScope[configstoreTables.LimitScopeShared].ID
+	update := newTestRequestCtx(fmt.Sprintf(`{"budgets":[{"id":%q,"max_limit":10,"reset_duration":"1d"},{"id":%q,"max_limit":5,"reset_duration":"1w","scope":"mcp"},{"id":%q,"max_limit":8,"reset_duration":"1d","scope":"mcp"}]}`, sharedID, mcpID, modelID))
+	update.SetUserValue("vk_id", created.VirtualKey.ID)
+	handler.updateVirtualKey(update)
+	require.Equal(t, fasthttp.StatusOK, update.Response.StatusCode(), "resp=%s", update.Response.Body())
+	updated := map[string]configstoreTables.TableBudget{}
+	for _, b := range vkAllModelsBudgets(t, store, created.VirtualKey.ID) {
+		updated[b.ID] = b
+	}
+	require.Len(t, updated, 3)
+	assert.Equal(t, configstoreTables.LimitScopeMCP, updated[modelID].Scope)
+	assert.Equal(t, "1w", updated[mcpID].ResetDuration)
+
+	// An update that would leave two MCP budgets on the same day is refused.
+	dupUpdate := newTestRequestCtx(fmt.Sprintf(`{"budgets":[{"id":%q,"max_limit":5,"reset_duration":"1d","scope":"mcp"},{"id":%q,"max_limit":8,"reset_duration":"1d","scope":"mcp"}]}`, mcpID, modelID))
+	dupUpdate.SetUserValue("vk_id", created.VirtualKey.ID)
+	handler.updateVirtualKey(dupUpdate)
+	require.Equal(t, fasthttp.StatusBadRequest, dupUpdate.Response.StatusCode(), "resp=%s", dupUpdate.Response.Body())
+
+	t.Run("teams follow the same rule", func(t *testing.T) {
+		teamHandler := &GovernanceHandler{configStore: store, governanceManager: pricingOverrideTestGovernanceManager{}}
+		dup := newTestRequestCtx(`{"name":"team-dup","budgets":[{"max_limit":5,"reset_duration":"1M","scope":"model"},{"max_limit":6,"reset_duration":"1M","scope":"model"}]}`)
+		teamHandler.createTeam(dup)
+		require.Equal(t, fasthttp.StatusBadRequest, dup.Response.StatusCode(), "resp=%s", dup.Response.Body())
+
+		ok := newTestRequestCtx(`{"name":"team-ok","budgets":[{"max_limit":5,"reset_duration":"1M"},{"max_limit":6,"reset_duration":"1M","scope":"mcp"}]}`)
+		teamHandler.createTeam(ok)
+		require.Equal(t, fasthttp.StatusOK, ok.Response.StatusCode(), "resp=%s", ok.Response.Body())
+	})
+}
+
+// TestBudgetScopeRejectedWhereMCPCannotReach pins that the mcp scope is only accepted on a model
+// config MCP tool executions are charged against (all models, no provider), and refused on a
+// provider- or model-specific one where it could never take effect, while model stays accepted there.
+func TestBudgetScopeRejectedWhereMCPCannotReach(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := setupPricingOverrideHandlerStore(t)
+	handler := &GovernanceHandler{configStore: store, governanceManager: &modelConfigTestGovernanceManager{store: store}}
+
+	for _, body := range []string{
+		`{"model_name":"gpt-4o","provider":"openai","budgets":[{"max_limit":1,"reset_duration":"1h","scope":"mcp"}]}`,
+		`{"model_name":"gpt-4o","budgets":[{"max_limit":1,"reset_duration":"1h","scope":"mcp"}]}`,
+		`{"model_name":"*","provider":"openai","budgets":[{"max_limit":1,"reset_duration":"1h","scope":"mcp"}]}`,
+	} {
+		ctx := newTestRequestCtx(body)
+		handler.createModelConfig(ctx)
+		require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), "body=%s resp=%s", body, ctx.Response.Body())
+	}
+
+	for _, body := range []string{
+		`{"model_name":"gpt-4o-mini","provider":"openai","budgets":[{"max_limit":1,"reset_duration":"1h","scope":"model"}]}`,
+		`{"model_name":"gpt-4o-mini","budgets":[{"max_limit":1,"reset_duration":"1h","scope":"model"}]}`,
+		`{"model_name":"*","provider":"openai","budgets":[{"max_limit":1,"reset_duration":"1h","scope":"model"}]}`,
+	} {
+		ctx := newTestRequestCtx(body)
+		handler.createModelConfig(ctx)
+		require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), "body=%s resp=%s", body, ctx.Response.Body())
+		var modelScoped struct {
+			ModelConfig configstoreTables.TableModelConfig `json:"model_config"`
+		}
+		require.NoError(t, json.Unmarshal(ctx.Response.Body(), &modelScoped))
+		require.Len(t, modelScoped.ModelConfig.Budgets, 1, "body=%s", body)
+		assert.Equal(t, configstoreTables.LimitScopeModel, modelScoped.ModelConfig.Budgets[0].Scope, "body=%s", body)
+	}
+
+	ok := newTestRequestCtx(`{"model_name":"*","budgets":[{"max_limit":1,"reset_duration":"1h"},{"max_limit":2,"reset_duration":"1h","scope":"mcp"}]}`)
+	handler.createModelConfig(ok)
+	require.Equal(t, fasthttp.StatusOK, ok.Response.StatusCode(), "resp=%s", ok.Response.Body())
+	var created struct {
+		ModelConfig struct {
+			ID string `json:"id"`
+		} `json:"model_config"`
+	}
+	require.NoError(t, json.Unmarshal(ok.Response.Body(), &created))
+
+	// Narrowing the all-models limit without resending budgets would strand the MCP budget on a tier
+	// MCP never reaches, so it is refused as a bad request.
+	narrow := newTestRequestCtx(`{"model_name":"gpt-4o"}`)
+	narrow.SetUserValue("mc_id", created.ModelConfig.ID)
+	handler.updateModelConfig(narrow)
+	require.Equal(t, fasthttp.StatusBadRequest, narrow.Response.StatusCode(), "resp=%s", narrow.Response.Body())
+
+	// Sending an MCP budget to a specific-model limit on update is a 400, not a 500; a model one is kept.
+	specific := newTestRequestCtx(`{"model_name":"gpt-4o","provider":"openai","budgets":[{"max_limit":1,"reset_duration":"1h"}]}`)
+	handler.createModelConfig(specific)
+	require.Equal(t, fasthttp.StatusOK, specific.Response.StatusCode(), "resp=%s", specific.Response.Body())
+	require.NoError(t, json.Unmarshal(specific.Response.Body(), &created))
+	update := newTestRequestCtx(`{"budgets":[{"max_limit":1,"reset_duration":"1h","scope":"mcp"}]}`)
+	update.SetUserValue("mc_id", created.ModelConfig.ID)
+	handler.updateModelConfig(update)
+	require.Equal(t, fasthttp.StatusBadRequest, update.Response.StatusCode(), "resp=%s", update.Response.Body())
+	modelUpdate := newTestRequestCtx(`{"budgets":[{"max_limit":1,"reset_duration":"1h","scope":"model"}]}`)
+	modelUpdate.SetUserValue("mc_id", created.ModelConfig.ID)
+	handler.updateModelConfig(modelUpdate)
+	require.Equal(t, fasthttp.StatusOK, modelUpdate.Response.StatusCode(), "resp=%s", modelUpdate.Response.Body())
+	stored, err := store.GetModelConfigByID(context.Background(), created.ModelConfig.ID)
+	require.NoError(t, err)
+	require.Len(t, stored.Budgets, 1)
+	assert.Equal(t, configstoreTables.LimitScopeModel, stored.Budgets[0].Scope)
+}
+
+// TestFindExistingBudgetMatchesOnDurationAndScope pins that a budget without an ID is matched to an
+// existing row only when both its reset period and its scope agree, so an MCP budget can never take
+// over the model budget of the same period, and that a new budget inherits usage only from its own
+// scope.
+func TestFindExistingBudgetMatchesOnDurationAndScope(t *testing.T) {
+	existing := []configstoreTables.TableBudget{
+		{ID: "model-daily", MaxLimit: 10, ResetDuration: "1d", Scope: configstoreTables.LimitScopeModel, CurrentUsage: 7},
+	}
+	request := CreateBudgetRequest{MaxLimit: 4, ResetDuration: "1d", Scope: configstoreTables.LimitScopeMCP}
+	byID, byDuration := buildBudgetLookup(existing, []CreateBudgetRequest{request})
+	_, found, err := findExistingBudget(request, byID, byDuration)
+	require.NoError(t, err)
+	assert.False(t, found, "an mcp request must not match the model row of the same period")
+
+	sameScope := CreateBudgetRequest{MaxLimit: 4, ResetDuration: "1d", Scope: configstoreTables.LimitScopeModel}
+	byID, byDuration = buildBudgetLookup(existing, []CreateBudgetRequest{sameScope})
+	matched, found, err := findExistingBudget(sameScope, byID, byDuration)
+	require.NoError(t, err)
+	require.True(t, found)
+	assert.Equal(t, "model-daily", matched.ID)
+
+	weeklyMCP := newBudgetFromRequest(CreateBudgetRequest{MaxLimit: 20, ResetDuration: "1w", Scope: configstoreTables.LimitScopeMCP}, false)
+	inheritUsageFromClosestShorterBudget(&weeklyMCP, existing, false)
+	assert.Zero(t, weeklyMCP.CurrentUsage, "mcp budget must not inherit model usage")
+	weeklyModel := newBudgetFromRequest(CreateBudgetRequest{MaxLimit: 20, ResetDuration: "1w", Scope: configstoreTables.LimitScopeModel}, false)
+	inheritUsageFromClosestShorterBudget(&weeklyModel, existing, false)
+	assert.Equal(t, 7.0, weeklyModel.CurrentUsage)
+}

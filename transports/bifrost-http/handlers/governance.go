@@ -577,6 +577,31 @@ type CreateBudgetRequest struct {
 	// ResetConfig carries window settings the duration cannot express, currently
 	// the fiscal quarter start. Only valid on a quarterly reset duration.
 	ResetConfig *configstoreTables.BudgetResetConfig `json:"reset_config,omitempty"`
+	// Scope selects the traffic the budget is charged by: "shared" (default), "model" or "mcp".
+	Scope configstoreTables.LimitScope `json:"scope,omitempty"`
+}
+
+// validateBudgetRequestScope checks a budget request's scope is known and, where
+// MCP tool executions can never reach the owner, that it is not "mcp".
+//
+// MCP tool executions name no provider and no model, so they are only charged by
+// budgets that bind whatever the request does: a virtual key's own, a team's, a
+// customer's, and a model config covering every model on every provider. On any
+// narrower owner an "mcp" budget would never be charged, so it is refused rather
+// than stored as a setting that does nothing; "shared" and "model" are accepted there.
+func validateBudgetRequestScope(b CreateBudgetRequest, mcpApplicable bool) error {
+	if !b.Scope.IsValid() {
+		return &badRequestError{err: fmt.Errorf("invalid budget scope: %s (must be one of shared, model, mcp)", b.Scope)}
+	}
+	if !mcpApplicable && b.Scope.Normalize() == configstoreTables.LimitScopeMCP {
+		return &badRequestError{err: fmt.Errorf("budget scope %s is only supported on budgets that apply to all models and providers", b.Scope)}
+	}
+	return nil
+}
+
+// duplicateBudgetPeriodError reports two budgets of one owner sharing a reset period and scope.
+func duplicateBudgetPeriodError(b CreateBudgetRequest) error {
+	return &badRequestError{err: fmt.Errorf("duplicate reset_duration %s for scope %s in budgets", b.ResetDuration, b.Scope.Normalize())}
 }
 
 // UpdateBudgetRequest represents the request body for updating a budget
@@ -681,6 +706,7 @@ func newBudgetFromRequest(req CreateBudgetRequest, calendarAligned bool) configs
 		MaxLimit:      req.MaxLimit,
 		ResetDuration: req.ResetDuration,
 		ResetConfig:   req.ResetConfig,
+		Scope:         req.Scope.Normalize(),
 		CurrentUsage:  0,
 	}
 	budget.LastReset = budgetLastReset(calendarAligned, &budget)
@@ -740,6 +766,11 @@ func inheritUsageFromClosestShorterBudget(budget *configstoreTables.TableBudget,
 	var closestDuration time.Duration
 	for i := range existing {
 		candidate := &existing[i]
+		// Spend of one scope is not spend of another: an MCP budget must not open
+		// already charged with model usage.
+		if candidate.Scope.Normalize() != budget.Scope.Normalize() {
+			continue
+		}
 		candidateDuration, err := configstoreTables.ParseDuration(candidate.ResetDuration)
 		if err != nil || candidateDuration >= targetDuration {
 			continue
@@ -777,7 +808,7 @@ func buildBudgetLookup(existing []configstoreTables.TableBudget, requests []Crea
 		if _, claimed := claimedIDs[budget.ID]; claimed {
 			continue
 		}
-		byDuration[budget.ResetDuration] = budget
+		byDuration[configstoreTables.LimitPeriodKey(budget.ResetDuration, budget.Scope)] = budget
 	}
 	return byID, byDuration
 }
@@ -792,13 +823,13 @@ func findExistingBudget(request CreateBudgetRequest, byID map[string]configstore
 		// reuse it (e.g. renaming an existing budget by ID while the same
 		// payload adds a new budget with the old duration).
 		delete(byID, existing.ID)
-		delete(byDuration, existing.ResetDuration)
+		delete(byDuration, configstoreTables.LimitPeriodKey(existing.ResetDuration, existing.Scope))
 		return existing, true, nil
 	}
-	existing, found := byDuration[request.ResetDuration]
+	existing, found := byDuration[configstoreTables.LimitPeriodKey(request.ResetDuration, request.Scope)]
 	if found {
 		delete(byID, existing.ID)
-		delete(byDuration, existing.ResetDuration)
+		delete(byDuration, configstoreTables.LimitPeriodKey(existing.ResetDuration, existing.Scope))
 	}
 	return existing, found, nil
 }
@@ -821,6 +852,7 @@ func coerceLegacyBudget(req *UpdateBudgetRequest, existing *configstoreTables.Ta
 		// as it is, and dropping the window settings here would silently move a quarterly budget's
 		// fiscal start back to the default.
 		b.ResetConfig = existing.ResetConfig
+		b.Scope = existing.Scope
 	}
 	if req.MaxLimit != nil {
 		b.MaxLimit = *req.MaxLimit
@@ -910,6 +942,7 @@ func (h *GovernanceHandler) adoptCalendarAlignment(ctx context.Context, switched
 // ones. It mutates mc.Budgets to the reconciled set. The model config row must already
 // exist (callers create it first). Mirrors the VK/team multi-budget reconciliation.
 func (h *GovernanceHandler) reconcileModelConfigBudgets(ctx context.Context, tx *gorm.DB, mc *configstoreTables.TableModelConfig, requests []CreateBudgetRequest, usageReset *budgetUsageReset) error {
+	mcpApplicable := mc.IsHolderLevel()
 	seenDurations := make(map[string]bool, len(requests))
 	for _, b := range requests {
 		if b.MaxLimit < 0 {
@@ -918,10 +951,14 @@ func (h *GovernanceHandler) reconcileModelConfigBudgets(ctx context.Context, tx 
 		if d, err := configstoreTables.ParseDuration(b.ResetDuration); err != nil || d <= 0 {
 			return &badRequestError{err: fmt.Errorf("invalid reset duration (must be a positive duration): %s", b.ResetDuration)}
 		}
-		if seenDurations[b.ResetDuration] {
-			return &badRequestError{err: fmt.Errorf("duplicate reset_duration in budgets: %s", b.ResetDuration)}
+		if err := validateBudgetRequestScope(b, mcpApplicable); err != nil {
+			return err
 		}
-		seenDurations[b.ResetDuration] = true
+		key := configstoreTables.LimitPeriodKey(b.ResetDuration, b.Scope)
+		if seenDurations[key] {
+			return duplicateBudgetPeriodError(b)
+		}
+		seenDurations[key] = true
 	}
 
 	existingByID, existingByDuration := buildBudgetLookup(mc.Budgets, requests)
@@ -935,6 +972,7 @@ func (h *GovernanceHandler) reconcileModelConfigBudgets(ctx context.Context, tx 
 		if found {
 			existing.MaxLimit = b.MaxLimit
 			existing.ResetDuration = b.ResetDuration
+			existing.Scope = b.Scope.Normalize()
 			applyResetConfigToExistingBudget(&existing, b)
 			if err := validateBudget(&existing); err != nil {
 				return err
@@ -989,10 +1027,14 @@ func (h *GovernanceHandler) reconcileCustomerBudgets(ctx context.Context, tx *go
 		if d, err := configstoreTables.ParseDuration(b.ResetDuration); err != nil || d <= 0 {
 			return &badRequestError{err: fmt.Errorf("invalid reset duration (must be a positive duration): %s", b.ResetDuration)}
 		}
-		if seenDurations[b.ResetDuration] {
-			return &badRequestError{err: fmt.Errorf("duplicate reset_duration in budgets: %s", b.ResetDuration)}
+		if err := validateBudgetRequestScope(b, true); err != nil {
+			return err
 		}
-		seenDurations[b.ResetDuration] = true
+		key := configstoreTables.LimitPeriodKey(b.ResetDuration, b.Scope)
+		if seenDurations[key] {
+			return duplicateBudgetPeriodError(b)
+		}
+		seenDurations[key] = true
 	}
 
 	existingByID, existingByDuration := buildBudgetLookup(customer.Budgets, requests)
@@ -1006,6 +1048,7 @@ func (h *GovernanceHandler) reconcileCustomerBudgets(ctx context.Context, tx *go
 		if found {
 			existing.MaxLimit = b.MaxLimit
 			existing.ResetDuration = b.ResetDuration
+			existing.Scope = b.Scope.Normalize()
 			applyResetConfigToExistingBudget(&existing, b)
 			if err := validateBudget(&existing); err != nil {
 				return err
@@ -2191,11 +2234,16 @@ func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 				SendError(ctx, 400, fmt.Sprintf("Invalid reset duration (must be a positive duration): %s", b.ResetDuration))
 				return
 			}
-			if seenDurations[b.ResetDuration] {
-				SendError(ctx, 400, fmt.Sprintf("Duplicate reset_duration in budgets: %s", b.ResetDuration))
+			if err := validateBudgetRequestScope(b, true); err != nil {
+				SendError(ctx, 400, err.Error())
 				return
 			}
-			seenDurations[b.ResetDuration] = true
+			key := configstoreTables.LimitPeriodKey(b.ResetDuration, b.Scope)
+			if seenDurations[key] {
+				SendError(ctx, 400, duplicateBudgetPeriodError(b).Error())
+				return
+			}
+			seenDurations[key] = true
 		}
 	}
 	// Validate expires_at: must be in the future if provided
@@ -3433,10 +3481,14 @@ func (h *GovernanceHandler) createTeam(ctx *fasthttp.RequestCtx) {
 			if d, err := configstoreTables.ParseDuration(b.ResetDuration); err != nil || d <= 0 {
 				return &badRequestError{err: fmt.Errorf("invalid reset duration (must be a positive duration): %s", b.ResetDuration)}
 			}
-			if seenDurations[b.ResetDuration] {
-				return &badRequestError{err: fmt.Errorf("duplicate reset_duration in budgets: %s", b.ResetDuration)}
+			if err := validateBudgetRequestScope(b, true); err != nil {
+				return err
 			}
-			seenDurations[b.ResetDuration] = true
+			key := configstoreTables.LimitPeriodKey(b.ResetDuration, b.Scope)
+			if seenDurations[key] {
+				return duplicateBudgetPeriodError(b)
+			}
+			seenDurations[key] = true
 			budget := newBudgetFromRequest(b, team.CalendarAligned)
 			budget.TeamID = &team.ID
 			if err := validateBudget(&budget); err != nil {
@@ -3590,10 +3642,14 @@ func (h *GovernanceHandler) updateTeam(ctx *fasthttp.RequestCtx) {
 				if d, err := configstoreTables.ParseDuration(b.ResetDuration); err != nil || d <= 0 {
 					return &badRequestError{err: fmt.Errorf("invalid reset duration (must be a positive duration): %s", b.ResetDuration)}
 				}
-				if seenDurations[b.ResetDuration] {
-					return &badRequestError{err: fmt.Errorf("duplicate reset_duration in budgets: %s", b.ResetDuration)}
+				if err := validateBudgetRequestScope(b, true); err != nil {
+					return err
 				}
-				seenDurations[b.ResetDuration] = true
+				key := configstoreTables.LimitPeriodKey(b.ResetDuration, b.Scope)
+				if seenDurations[key] {
+					return duplicateBudgetPeriodError(b)
+				}
+				seenDurations[key] = true
 			}
 
 			existingByID, existingByDuration := buildBudgetLookup(team.Budgets, req.Budgets)
@@ -3608,6 +3664,7 @@ func (h *GovernanceHandler) updateTeam(ctx *fasthttp.RequestCtx) {
 				if found {
 					existing.MaxLimit = b.MaxLimit
 					existing.ResetDuration = b.ResetDuration
+					existing.Scope = b.Scope.Normalize()
 					applyResetConfigToExistingBudget(&existing, b)
 					// LastReset is preserved on update: the reset boundary only ever
 					// moves forward, and never as a side effect of a config write.
@@ -4701,6 +4758,7 @@ func (h *GovernanceHandler) createModelConfig(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	// Validate budgets if provided
+	holderLevel := (&configstoreTables.TableModelConfig{ModelName: req.ModelName, Provider: req.Provider}).IsHolderLevel()
 	seenDurations := make(map[string]bool, len(req.Budgets))
 	for i := range req.Budgets {
 		if req.Budgets[i].MaxLimit < 0 {
@@ -4711,11 +4769,16 @@ func (h *GovernanceHandler) createModelConfig(ctx *fasthttp.RequestCtx) {
 			SendError(ctx, 400, fmt.Sprintf("Invalid reset duration (must be a positive duration): %s", req.Budgets[i].ResetDuration))
 			return
 		}
-		if seenDurations[req.Budgets[i].ResetDuration] {
-			SendError(ctx, 400, fmt.Sprintf("Duplicate reset_duration in budgets: %s", req.Budgets[i].ResetDuration))
+		if err := validateBudgetRequestScope(req.Budgets[i], holderLevel); err != nil {
+			SendError(ctx, 400, err.Error())
 			return
 		}
-		seenDurations[req.Budgets[i].ResetDuration] = true
+		key := configstoreTables.LimitPeriodKey(req.Budgets[i].ResetDuration, req.Budgets[i].Scope)
+		if seenDurations[key] {
+			SendError(ctx, 400, duplicateBudgetPeriodError(req.Budgets[i]).Error())
+			return
+		}
+		seenDurations[key] = true
 	}
 	var mc configstoreTables.TableModelConfig
 	if err := h.configStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
@@ -4839,6 +4902,14 @@ func (h *GovernanceHandler) updateModelConfig(ctx *fasthttp.RequestCtx) {
 			if err := h.reconcileModelConfigBudgets(ctx, tx, mc, req.Budgets, usageReset); err != nil {
 				return err
 			}
+		} else if !mc.IsHolderLevel() {
+			// Kept budgets must still suit the tier: narrowing an all-models limit to one model or
+			// provider would otherwise strand an MCP budget where MCP tool executions never reach it.
+			for _, b := range mc.Budgets {
+				if err := validateBudgetRequestScope(CreateBudgetRequest{ResetDuration: b.ResetDuration, Scope: b.Scope}, false); err != nil {
+					return err
+				}
+			}
 		}
 		// Handle rate limit updates
 		if req.RateLimit != nil {
@@ -4904,6 +4975,11 @@ func (h *GovernanceHandler) updateModelConfig(ctx *fasthttp.RequestCtx) {
 
 		return nil
 	}); err != nil {
+		var badReqErr *badRequestError
+		if errors.As(err, &badReqErr) {
+			SendError(ctx, 400, fmt.Sprintf("Failed to update model config: %v", err))
+			return
+		}
 		logger.Error("failed to update model config: %v", err)
 		SendError(ctx, 500, fmt.Sprintf("Failed to update model config: %v", err))
 		return

@@ -800,6 +800,12 @@
                 "type": "string",
                 "description": "Budget reset duration (e.g., '30s', '5m', '1h', '1d', '1w', '1M', '1Q', '1Y')"
               },
+              "scope": {
+                "type": "string",
+                "enum": ["shared", "model", "mcp"],
+                "default": "shared",
+                "description": "Traffic the budget is charged by: 'shared' (default), 'model' or 'mcp'. 'mcp' is only valid on budgets that apply to all models and providers; reset durations are unique per owner and scope."
+              },
               "reset_config": {
                 "type": "object",
                 "description": "Window settings the reset duration cannot express. Only valid when reset_duration is quarterly ('1Q').",
@@ -1079,7 +1085,7 @@
               },
               "budgets": {
                 "type": "array",
-                "description": "Inline budget configurations for this customer. Each entry must have a unique reset_duration. Mutually exclusive with budget_id.",
+                "description": "Inline budget configurations for this customer. Each entry must have a unique reset_duration and scope pair. Mutually exclusive with budget_id.",
                 "items": {
                   "$ref": "#/$defs/budget_line"
                 }
@@ -12776,6 +12782,12 @@
         "reset_duration": {
           "type": "string",
           "description": "Reset window, e.g. \"1M\", \"1h\", \"1Q\""
+        },
+        "scope": {
+          "type": "string",
+          "enum": ["shared", "model", "mcp"],
+          "default": "shared",
+          "description": "Traffic the budget is charged by: \"shared\" (default), \"model\" (model requests only) or \"mcp\" (MCP tool executions only). Reset durations must be unique per owner and scope."
         },
         "reset_config": {
           "type": "object",

@@ -27394,3 +27394,132 @@ func TestNormalizeUsageEstimationTokenizers(t *testing.T) {
 	// config.json and stored rows reach the runtime through validateClientConfig.
 	require.Error(t, validateClientConfig(&configstore.ClientConfig{UsageEstimationTokenizers: []string{"gpt2"}}))
 }
+
+// TestValidateGovernanceBudgetScopes pins config.json's budget scope rules, which mirror the API:
+// a reset period is unique per owner and scope (inline and governance.budgets rows for one owner
+// count together), the mcp scope is refused where MCP tool executions can never be charged,
+// and a duplicate of default-scope budgets, which a file could always declare, only warns.
+func TestValidateGovernanceBudgetScopes(t *testing.T) {
+	vk, team := "vk-1", "team-1"
+	pcID := uint(3)
+	provider := "openai"
+	budget := func(id, duration string, scope configstoreTables.LimitScope) configstoreTables.TableBudget {
+		return configstoreTables.TableBudget{ID: id, MaxLimit: 10, ResetDuration: duration, Scope: scope}
+	}
+	withVK := func(b configstoreTables.TableBudget) configstoreTables.TableBudget { b.VirtualKeyID = &vk; return b }
+	cases := []struct {
+		name     string
+		gov      configstore.GovernanceConfig
+		wantErr  string
+		wantWarn bool
+	}{
+		{
+			name: "same period across scopes is allowed",
+			gov: configstore.GovernanceConfig{Budgets: []configstoreTables.TableBudget{
+				withVK(budget("a", "1d", "")), withVK(budget("b", "1d", configstoreTables.LimitScopeMCP)), withVK(budget("c", "1d", configstoreTables.LimitScopeModel)),
+			}},
+		},
+		{
+			name: "two mcp budgets on one period across inline and governance.budgets are refused",
+			gov: configstore.GovernanceConfig{
+				Budgets: []configstoreTables.TableBudget{withVK(budget("a", "1d", configstoreTables.LimitScopeMCP))},
+				VirtualKeys: []configstoreTables.TableVirtualKey{{ID: vk, Budgets: []configstoreTables.TableBudget{
+					budget("b", "1d", configstoreTables.LimitScopeMCP),
+				}}},
+			},
+			wantErr: "duplicate reset_duration 1d for scope mcp",
+		},
+		{
+			name: "default-scope duplicate only warns, so an existing config still loads",
+			gov: configstore.GovernanceConfig{Teams: []configstoreTables.TableTeam{{ID: team, Budgets: []configstoreTables.TableBudget{
+				budget("a", "1M", ""), budget("b", "1M", configstoreTables.LimitScopeShared),
+			}}}},
+			wantWarn: true,
+		},
+		{
+			name:    "unknown scope is refused",
+			gov:     configstore.GovernanceConfig{Budgets: []configstoreTables.TableBudget{withVK(budget("a", "1d", "tools"))}},
+			wantErr: "invalid scope",
+		},
+		{
+			name: "mcp scope on a provider config is refused",
+			gov: configstore.GovernanceConfig{Budgets: []configstoreTables.TableBudget{
+				func() configstoreTables.TableBudget {
+					b := budget("a", "1d", configstoreTables.LimitScopeMCP)
+					b.ProviderConfigID = &pcID
+					return b
+				}(),
+			}},
+			wantErr: "only supported on budgets that apply to all models and providers",
+		},
+		{
+			name: "mcp scope on a provider-specific model config is refused",
+			gov: configstore.GovernanceConfig{
+				Budgets:      []configstoreTables.TableBudget{budget("a", "1d", configstoreTables.LimitScopeMCP)},
+				ModelConfigs: []configstoreTables.TableModelConfig{{ID: "mc", ModelName: "*", Provider: &provider, BudgetIDs: []string{"a"}}},
+			},
+			wantErr: "only supported on budgets that apply to all models and providers",
+		},
+		{
+			name: "mcp scope on a provider governance budget linked by budget_id is refused",
+			gov: configstore.GovernanceConfig{
+				Budgets:   []configstoreTables.TableBudget{budget("a", "1d", configstoreTables.LimitScopeMCP)},
+				Providers: []configstoreTables.TableProvider{{Name: "openai", BudgetID: func() *string { id := "a"; return &id }()}},
+			},
+			wantErr: "only supported on budgets that apply to all models and providers",
+		},
+		{
+			name: "model scope on a provider config is allowed",
+			gov: configstore.GovernanceConfig{Budgets: []configstoreTables.TableBudget{
+				func() configstoreTables.TableBudget {
+					b := budget("a", "1d", configstoreTables.LimitScopeModel)
+					b.ProviderConfigID = &pcID
+					return b
+				}(),
+			}},
+		},
+		{
+			name: "model scope on a provider-specific model config is allowed",
+			gov: configstore.GovernanceConfig{
+				Budgets:      []configstoreTables.TableBudget{budget("a", "1d", configstoreTables.LimitScopeModel)},
+				ModelConfigs: []configstoreTables.TableModelConfig{{ID: "mc", ModelName: "gpt-4o", Provider: &provider, BudgetIDs: []string{"a"}}},
+			},
+		},
+		{
+			name: "a customer's budget_id budget counts with its inline budgets",
+			gov: configstore.GovernanceConfig{
+				Budgets: []configstoreTables.TableBudget{budget("a", "1d", configstoreTables.LimitScopeMCP)},
+				Customers: []configstoreTables.TableCustomer{{ID: "cust", BudgetID: func() *string { id := "a"; return &id }(), Budgets: []configstoreTables.TableBudget{
+					budget("b", "1d", configstoreTables.LimitScopeMCP),
+				}}},
+			},
+			wantErr: "duplicate reset_duration 1d for scope mcp",
+		},
+		{
+			name: "mcp scope on the all-models model config is allowed",
+			gov: configstore.GovernanceConfig{
+				Budgets:      []configstoreTables.TableBudget{budget("a", "1d", configstoreTables.LimitScopeMCP)},
+				ModelConfigs: []configstoreTables.TableModelConfig{{ID: "mc", ModelName: "*", BudgetIDs: []string{"a"}}},
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			gov := tc.gov
+			warned := false
+			err := validateGovernanceBudgetScopes(&ConfigData{Governance: &gov}, func(string, ...any) { warned = true })
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("err = %v, want containing %q", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if warned != tc.wantWarn {
+				t.Fatalf("warned = %v, want %v", warned, tc.wantWarn)
+			}
+		})
+	}
+}
