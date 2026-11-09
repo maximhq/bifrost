@@ -1052,6 +1052,25 @@ func TestClickHouseA2AAttributionFilters(t *testing.T) {
 	assertA2AAttributionFilters(t, store.RDBLogStore, store.BatchCreateAgentLogsIfNotExists)
 }
 
+// The MCP tool log team, customer and business-unit filters go through the same hasAny membership
+// SQL as agent logs, so they are pinned on this backend too.
+func TestClickHouseMCPAttributionFilters(t *testing.T) {
+	store := trySetupClickHouseStore(t)
+	assertMCPAttributionFilters(t, store.RDBLogStore, store.BatchCreateMCPToolLogsIfNotExists)
+}
+
+// The MCP filter options fan out over the JSON-array columns through this backend's own ARRAY JOIN.
+func TestClickHouseMCPKeyPairs(t *testing.T) {
+	store := trySetupClickHouseStore(t)
+	assertMCPKeyPairs(t, store.RDBLogStore, store.BatchCreateMCPToolLogsIfNotExists)
+}
+
+// The MCP latency histogram reads its percentiles from ClickHouse's own quantile functions.
+func TestClickHouseMCPStatsAndHistograms(t *testing.T) {
+	store := trySetupClickHouseStore(t)
+	assertMCPFinishedCallAggregates(t, store.RDBLogStore, store.BatchCreateMCPToolLogsIfNotExists)
+}
+
 // The keyset cursor bound its timestamp as a time.Time, which the driver sends
 // at seconds precision. Ascending, every page re-read the rows earlier in the
 // cursor's second, and a second holding a full page never advanced; descending,

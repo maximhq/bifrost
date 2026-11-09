@@ -2497,9 +2497,12 @@ type MCPToolLogSearchResult struct {
 // MCPToolLogStats represents statistics for MCP tool log searches
 type MCPToolLogStats struct {
 	TotalExecutions int64   `json:"total_executions"`
-	SuccessRate     float64 `json:"success_rate"`
-	AverageLatency  float64 `json:"average_latency"`
-	TotalCost       float64 `json:"total_cost"` // Total cost in dollars
+	SuccessCount    int64   `json:"success_count"`
+	ErrorCount      int64   `json:"error_count"`
+	CancelledCount  int64   `json:"cancelled_count"`
+	SuccessRate     float64 `json:"success_rate"`    // percentage of finished calls that succeeded, cancelled ones counted, as on the LLM logs stats
+	AverageLatency  float64 `json:"average_latency"` // milliseconds, over finished calls
+	TotalCost       float64 `json:"total_cost"`      // Total cost in dollars
 }
 
 // BuildContentSummary creates a searchable text summary
@@ -2960,6 +2963,7 @@ type MCPHistogramBucket struct {
 	Count     int64     `json:"count"`
 	Success   int64     `json:"success"`
 	Error     int64     `json:"error"`
+	Cancelled int64     `json:"cancelled"` // calls the caller hung up on, as in the LLM logs histogram
 }
 
 // MCPHistogramResult represents the MCP tool call volume histogram query result

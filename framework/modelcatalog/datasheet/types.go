@@ -511,6 +511,30 @@ func normalizeProvider(p string) string {
 	}
 }
 
+// pricingLookupModes are the modes normalizeRequestType maps requests to, the
+// only modes a pricing lookup ever asks for.
+var pricingLookupModes = map[string]struct{}{
+	"completion": {}, "chat": {}, "responses": {}, "embedding": {}, "rerank": {}, "decisions": {},
+	"audio_speech": {}, "audio_transcription": {}, "image_generation": {}, "image_edit": {},
+	"video_generation": {}, "ocr": {}, "container_create": {}, "live": {},
+}
+
+// PricingLookupModes returns the pricing modes, sorted.
+func PricingLookupModes() []string {
+	modes := make([]string, 0, len(pricingLookupModes))
+	for mode := range pricingLookupModes {
+		modes = append(modes, mode)
+	}
+	slices.Sort(modes)
+	return modes
+}
+
+// IsPricingLookupMode reports whether requests are ever priced under mode.
+func IsPricingLookupMode(mode string) bool {
+	_, ok := pricingLookupModes[mode]
+	return ok
+}
+
 // normalizeRequestType collapses streaming and non-streaming variants of a
 // request type to a single pricing mode string.
 func normalizeRequestType(reqType schemas.RequestType) string {
