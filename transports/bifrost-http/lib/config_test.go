@@ -19931,6 +19931,7 @@ func getSchemaTypeMappings() []schemaTypeMapping {
 
 		// Webhooks config
 		{"webhooks", reflect.TypeOf(WebhookEndpointConfig{}), true},
+		{"datasheet_overrides", reflect.TypeOf(DatasheetOverrideFileConfig{}), true},
 		{"client.webhook_config", reflect.TypeOf(tables.WebhookConfig{}), false},
 
 		// Governance config
