@@ -89,3 +89,6 @@ jobs:
 
       - name: Check the Azure one-click deploy script
         run: bash ./deploy/azure/deploy.test.sh
+
+      - name: Check the Fly.io one-click deploy script
+        run: bash ./deploy/fly/deploy.test.sh
