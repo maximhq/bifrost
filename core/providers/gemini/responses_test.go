@@ -2459,3 +2459,26 @@ func TestGenAIFunctionResponseSiblingFieldsSurviveRoundTrip(t *testing.T) {
 		})
 	}
 }
+
+// Gemini ends a turn that called a tool with finishReason STOP. Reporting that as "stop"
+// tells a client the turn is final, so a started tool call reports "tool_calls".
+func TestCloseGeminiOpenItems_StopAfterToolCallReportsToolCalls(t *testing.T) {
+	stopReason := func(t *testing.T, part string) string {
+		t.Helper()
+		state := acquireGeminiResponsesStreamState()
+		defer releaseGeminiResponsesStreamState(state)
+		var chunk GenerateContentResponse
+		body := `{"candidates":[{"content":{"role":"model","parts":[` + part + `]},"finishReason":"STOP"}]}`
+		require.NoError(t, sonic.Unmarshal([]byte(body), &chunk))
+		events, bErr := chunk.ToBifrostResponsesStream(0, state)
+		require.Nil(t, bErr)
+		require.NotEmpty(t, events)
+		terminal := events[len(events)-1]
+		require.NotNil(t, terminal.Response)
+		require.NotNil(t, terminal.Response.StopReason)
+		return *terminal.Response.StopReason
+	}
+
+	assert.Equal(t, "tool_calls", stopReason(t, `{"functionCall":{"name":"get_weather","args":{"city":"Oslo"}}}`))
+	assert.Equal(t, "stop", stopReason(t, `{"text":"It is sunny."}`))
+}

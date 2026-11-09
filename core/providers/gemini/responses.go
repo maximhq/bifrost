@@ -2805,6 +2805,9 @@ func closeGeminiOpenItems(state *GeminiResponsesStreamState, groundingMetadata *
 		completedResp.Error = state.PromptBlockError
 	} else if finishReason != "" {
 		stopReason := ConvertGeminiFinishReasonToBifrost(finishReason)
+		if finishReason == FinishReasonStop && state.HasStartedToolCall {
+			stopReason = string(schemas.BifrostFinishReasonToolCalls)
+		}
 		completedResp.StopReason = &stopReason
 
 		// For error finish reasons, set status to failed
