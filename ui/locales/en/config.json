@@ -1603,5 +1603,263 @@
 			"withMinimum": "{{pricing}}, min {{min}}",
 			"reportedCost": "reported cost"
 		}
+	},
+	"evals": {
+		"types": {
+			"ai": "AI judge",
+			"programmatic": "Code",
+			"statistical": "Statistical",
+			"api": "API",
+			"human": "Human"
+		},
+		"typeHints": {
+			"ai": "An LLM grades the output against your instructions",
+			"programmatic": "Your own function, run in a sandbox",
+			"statistical": "A fixed text metric",
+			"api": "Your HTTP endpoint returns the score",
+			"human": "A reviewer scores each entry by hand"
+		},
+		"sources": {
+			"custom": "Custom",
+			"builtin": "Built-in"
+		},
+		"modelNeeds": {
+			"judge": "Judge model",
+			"embedding": "Embedding model",
+			"none": "No model needed"
+		},
+		"suggestions": {
+			"singleTurn": "Single-turn",
+			"multiTurn": "Multi-turn",
+			"variables": {
+				"input": "The input sent to the model",
+				"output": "The model's output being graded",
+				"context": "Retrieved context, from RAG or a dataset column",
+				"expected_output": "The expected output, from a dataset",
+				"history": "Earlier turns of the conversation, before the latest input",
+				"session": "Every turn of a multi-turn conversation",
+				"expected_steps": "The steps the agent is expected to follow, from a dataset",
+				"db_schema": "The database schema a SQL query runs against",
+				"transcript": "The full transcript of a conversation or call"
+			},
+			"custom": "A custom variable. Its value is supplied by the dataset column or log field with this name."
+		},
+		"statuses": {
+			"ready": "Ready to run",
+			"no_key": "No eval key"
+		},
+		"filters": {
+			"status": "Status",
+			"type": "Type",
+			"source": "Source",
+			"tags": "Tags",
+			"searchTags": "Find or type a tag",
+			"category": "Category",
+			"modelNeeded": "Model needed"
+		},
+		"list": {
+			"title": "Evaluators",
+			"description": "Score model output with an LLM judge, your own code, an HTTP endpoint or a text metric. Evaluators that call a model run only on provider keys marked for evaluations.",
+			"browseCatalog": "Browse catalog",
+			"newEvaluator": "New evaluator",
+			"searchPlaceholder": "Search evaluators",
+			"emptyTitle": "No evaluators yet",
+			"emptyDescription": "An evaluator scores model output and decides whether it passes. Start from a built-in, or write your own.",
+			"noResults": "No evaluators match these filters.",
+			"noEvalKey": "No eval key",
+			"noEvalKeyAlert_one": "No {{provider}} key is marked for evaluations. {{count}} evaluator on this page cannot run.",
+			"noEvalKeyAlert_other": "No {{provider}} key is marked for evaluations. {{count}} evaluators on this page cannot run.",
+			"markKey": "Mark a key",
+			"columns": {
+				"name": "Name",
+				"type": "Type",
+				"reads": "Reads",
+				"passesWhen": "Passes when",
+				"runsOn": "Runs on",
+				"version": "Version",
+				"updated": "Updated"
+			},
+			"runsOnSandbox": "Starlark sandbox",
+			"runsOnGateway": "In the gateway",
+			"runsOnReviewer": "A reviewer",
+			"versionShort": "v{{version}}",
+			"actionsFor": "Actions for {{name}}",
+			"duplicate": "Duplicate",
+			"duplicated": "Created {{name}}",
+			"deleted": "Deleted {{name}}",
+			"deleteTitle": "Delete {{name}}?",
+			"deleteDescription": "The evaluator and all of its versions will no longer be available."
+		},
+		"criteria": {
+			"scoreCompare": "score {{symbol}} {{value}}",
+			"scoreIsOneOf": "score is one of {{values}}",
+			"entryPassesWhen": "An entry passes when the score",
+			"runPassesWhen": "A run passes when",
+			"operator": "Comparison",
+			"value": "Value",
+			"is": "is",
+			"isNot": "is not",
+			"yes": "Yes",
+			"no": "No",
+			"labels": "Labels the score can be",
+			"labelsPlaceholder": "Type a label and press Enter",
+			"passingLabels": "Labels that pass",
+			"runMeasure": "Run measure",
+			"runNames": {
+				"queries_passed": "% of entries passed",
+				"mean_score": "Mean score",
+				"median_score": "Median score",
+				"minimum_score": "Minimum score",
+				"maximum_score": "Maximum score"
+			}
+		},
+		"scoreTypes": {
+			"yes_no": {
+				"label": "Yes / No",
+				"hint": "Requirement met or not"
+			},
+			"scale": {
+				"label": "Scale",
+				"hint": "A number in a range, such as 1 to 5"
+			},
+			"multiselect": {
+				"label": "One of",
+				"hint": "A label from a list you define"
+			},
+			"number": {
+				"label": "Number",
+				"hint": "Any number"
+			}
+		},
+		"model": {
+			"judgeProvider": "Judge provider",
+			"judgeModel": "Judge model",
+			"embeddingProvider": "Embedding provider",
+			"embeddingModel": "Embedding model",
+			"runsOnKey": "Runs on the {{provider}} key \"{{name}}\", at most {{limit}} evaluations at a time.",
+			"noEvalKey": "No {{provider}} key is marked for evaluations, so this cannot run.",
+			"onlyEvalKeys": "Only providers with a key marked for evaluations can run this."
+		},
+		"catalog": {
+			"title": "Built-in evaluators",
+			"breadcrumb": "Catalog",
+			"description": "{{total}} ready-made evaluators. Pick one, choose its model if it needs one, and it is added to your evaluators.",
+			"searchPlaceholder": "Search built-in evaluators",
+			"showing": "Showing {{shown}} of {{total}}",
+			"noResults": "No built-in evaluators match these filters.",
+			"add": "Add",
+			"addTitle": "Add {{name}}",
+			"addDescriptionModel": "Its prompt is fixed. You choose the model and when a score passes.",
+			"addDescriptionMetric": "Its metric is fixed. You choose when a score passes.",
+			"addEvaluator": "Add evaluator",
+			"adding": "Adding...",
+			"added": "Added {{name}}",
+			"lowerIsBetter": "Lower is better",
+			"scoreRange": "Score {{scale}}",
+			"passesAt": "Passes when",
+			"passesWhenLower": "An entry passes when the score (lower is better)",
+			"whatItReads": "What it reads",
+			"optionalVariables": "Optional: {{variables}}"
+		},
+		"fields": {
+			"name": "Name",
+			"tags": "Tags",
+			"tagsPlaceholder": "Add a tag",
+			"description": "Description",
+			"descriptionPlaceholder": "What this evaluator checks",
+			"instructionsPlaceholder": "Decide whether {{output}} answers the question in {{input}}.",
+			"scoreType": "Score type",
+			"scaleFrom": "From",
+			"scaleTo": "to",
+			"scaleMin": "Lowest score",
+			"scaleMax": "Highest score",
+			"returnType": "Return type",
+			"returnTypeHint": "What validate returns: a boolean, a number or a label.",
+			"method": "Method",
+			"url": "URL",
+			"headerName": "Header name",
+			"headerValue": "Header value",
+			"addHeader": "Add header",
+			"removeHeader": "Remove header",
+			"scorePath": "Score path",
+			"reasoningPath": "Reasoning path (optional)",
+			"timeoutMs": "Timeout (ms)",
+			"concurrency": "Concurrency",
+			"concurrencyHint": "The most calls to this endpoint at once. Defaults to 1."
+		},
+		"sections": {
+			"instructions": "Instructions for the judge",
+			"instructionsHint": "Write the grading rule. Refer to an input in double braces, such as {{input}} or {{output}}. Each one becomes a variable.",
+			"judge": "Judge model",
+			"embedding": "Embedding model",
+			"passCriteria": "Pass criteria",
+			"passCriteriaHint": "When one entry passes, and when a whole run does.",
+			"code": "Code",
+			"codeHint": "Starlark, a Python dialect. Define validate. Its argument names are the variables it reads.",
+			"request": "Request",
+			"requestHint": "The endpoint the gateway calls for each entry. Private and loopback addresses are refused.",
+			"headers": "Headers",
+			"headersHint": "Enter the value itself. References such as env.NAME are not accepted. A stored value is never shown again.",
+			"payload": "Body",
+			"payloadHint": "The request body. Refer to an input in double braces, such as {{input}} or {{output}}.",
+			"response": "Response",
+			"responseHint": "Where the score and the reasoning are in the JSON response, as dotted paths.",
+			"reviewerInstructions": "Instructions for reviewers",
+			"reviewerInstructionsHint": "Shown to the person scoring each entry."
+		},
+		"editor": {
+			"newTitle": "New evaluator",
+			"entity": "evaluator",
+			"version": "Version {{version}}",
+			"unsaved": "Unsaved changes",
+			"discard": "Discard",
+			"save": "Save",
+			"saveAsVersion": "Save as version {{version}}",
+			"create": "Create evaluator",
+			"saving": "Saving...",
+			"saved": "Saved",
+			"savedVersion": "Saved as version {{version}}",
+			"created": "Created {{name}}",
+			"nameRequired": "Name is required",
+			"nameTooLong": "Name is at most 255 characters",
+			"variablesFound": "Variables found:",
+			"noVariables": "none",
+			"optionalVariable": "{{name}} (optional)",
+			"builtinPromptFixed": "This is a built-in evaluator. Its prompt is fixed. You can change the judge model and the pass criteria.",
+			"builtinMetricFixed": "This is a built-in metric. Its formula is fixed. You can change the pass criteria.",
+			"humanNotice": "A reviewer scores this by hand during a test run. It cannot be run here."
+		},
+		"test": {
+			"title": "Test",
+			"description": "Runs the evaluator as it is now, saved or not.",
+			"noVariables": "This evaluator reads no variables.",
+			"optional": "optional",
+			"run": "Run test",
+			"running": "Running...",
+			"queued": "Waiting for a free slot on the evaluation key.",
+			"stillRunning": "Still running.",
+			"timedOut": "The run did not finish in time.",
+			"blockedHuman": "A human evaluator cannot be run here.",
+			"blockedInvalid": "Fix the config to run a test.",
+			"outcomes": {
+				"passed": "Passed",
+				"failed": "Failed",
+				"scored": "Scored",
+				"na": "Not applicable",
+				"error": "Error"
+			},
+			"score": "score: {{score}}",
+			"reasoning": "Reasoning",
+			"cause": "Cause",
+			"why": "Why",
+			"logs": "Output",
+			"ranOn": "Ran on",
+			"ranOnKey": "{{provider}} key \"{{name}}\"",
+			"latency": "Latency",
+			"latencyMs": "{{ms}} ms",
+			"tokens": "Tokens",
+			"tokensInOut": "{{input}} in / {{output}} out",
+			"cost": "Cost"
+		}
 	}
 }

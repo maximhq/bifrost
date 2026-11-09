@@ -1,0 +1,22 @@
+Given the answer relevancy score, the list of reasons of irrelevant statements made in the actual output, and the input, provide a CONCISE reason for the score. Explain why it is not higher, but also why it is at its current score.
+The irrelevant statements represent things in the actual output that is irrelevant to addressing whatever is asked/talked about in the input.
+If there is nothing irrelevant, just say something positive with an upbeat encouraging tone (but don't overdo it otherwise it gets annoying).
+
+
+**
+Example:
+The score is <answer_relevancy_score> because <your_reason>.
+
+Reason:
+**
+
+Answer Relevancy Score:
+{{score}}
+
+Reasons why the score can't be higher based on irrelevant statements in the actual output:
+{{irrelevant_statements}}
+
+Input:
+{{input}}
+
+Reason:

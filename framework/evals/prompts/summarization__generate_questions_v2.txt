@@ -1,0 +1,63 @@
+Based on the provided keypoints extracted from the original text, generate comprehensive closed-ended questions that test whether a summary adequately covers the essential information from the original document.
+
+Create questions that assess if a summary includes:
+- The main concepts and findings represented by each keypoint
+- Important relationships and connections between concepts
+- Specific details, data, or evidence mentioned in the keypoints
+- Methodological approaches or processes described
+- Conclusions, implications, or significance discussed
+
+Each question should be answerable with "yes" or "no" and should test for information that would be critical for a quality summary to include.
+
+Example:
+Original Text: [Long academic paper about quantum computing advances]
+
+Example Keypoints: [
+    "quantum computing demonstrates exponential speedup potential for certain problems",
+    "IBM's 127-qubit Eagle processor achieved quantum advantage in random circuit sampling", 
+    "quantum advantage performance exceeded classical supercomputers by orders of magnitude",
+    "quantum error correction protocols maintained 127-qubit coherence for 100 microseconds",
+    "current quantum computers are limited by decoherence and gate fidelity issues",
+    "fault-tolerant quantum computing requires at least 1,000 logical qubits",
+    "each logical qubit needs thousands of physical qubits for error correction",
+    "Google targets fault-tolerant quantum computing milestone by 2030",
+    "IBM pursues modular quantum network approach for scaling"
+]
+
+Example JSON:
+{
+    "questions": [
+        "Does the text discuss quantum computing's potential for exponential speedup in certain computational problems?",
+        "Is IBM's 127-qubit Eagle processor and its achievements mentioned?", 
+        "Does the text specify that quantum advantage was demonstrated in random circuit sampling tasks?",
+        "Is the performance comparison showing orders of magnitude improvement over classical supercomputers included?",
+        "Are quantum error correction protocols and their role in maintaining qubit coherence discussed?",
+        "Does the text mention the specific coherence duration of 100 microseconds for 127 qubits?",
+        "Are the current limitations of quantum computers, specifically decoherence and gate fidelity issues, addressed?",
+        "Is the requirement of at least 1,000 logical qubits for fault-tolerant quantum computing mentioned?",
+        "Does the text explain the relationship between logical and physical qubits in error correction?",
+        "Are Google's timeline projections for achieving fault-tolerant quantum computing discussed?",
+        "Is IBM's modular quantum network approach for scaling quantum systems mentioned?",
+        "Does the text provide context about the significance of quantum advantage demonstrations?",
+        "Are the technical challenges facing current quantum computing implementations discussed?"
+    ]
+}
+===== END OF EXAMPLE ======
+
+** IMPORTANT **
+- Only return JSON with a 'questions' key containing a list of strings  
+- Questions must be strictly closed-ended (answerable with yes/no)
+- Generate 1-2 questions per keypoint, focusing on the most important aspects
+- Include some questions that test for broader understanding and connections between keypoints
+- Each question should test for information that a comprehensive summary should contain
+- Questions should range from high-level concepts to specific details mentioned in keypoints
+- The original text should be able to answer "yes" to each question
+- Avoid overly granular questions about minor details not represented in the keypoints
+
+Text:
+{{text}}
+
+Keypoints:
+{{keypoints}}
+
+JSON:

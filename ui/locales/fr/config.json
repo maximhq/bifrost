@@ -1632,5 +1632,263 @@
 		"retry": "Réessayer",
 		"externalClientUrl": "URL du client externe",
 		"externalClientUrlHelp": "URL de base publique de Bifrost pour les places de marché Claude Code et Codex. Laissez vide pour désactiver la diffusion et l’enregistrement de la place de marché. La gestion et le téléchargement des Skills restent disponibles. Prend en charge les variables d’environnement et les références vault. Derrière un préfixe d’URL (server.base_path), incluez le préfixe, par exemple https://host/bifrost."
+	},
+	"evals": {
+		"types": {
+			"ai": "Juge IA",
+			"programmatic": "Code",
+			"statistical": "Statistique",
+			"api": "API",
+			"human": "Humain"
+		},
+		"typeHints": {
+			"ai": "Un LLM note la sortie selon vos instructions",
+			"programmatic": "Votre propre fonction, exécutée dans un bac à sable",
+			"statistical": "Une métrique de texte fixe",
+			"api": "Votre point de terminaison HTTP renvoie le score",
+			"human": "Un relecteur note chaque entrée à la main"
+		},
+		"sources": {
+			"custom": "Personnalisé",
+			"builtin": "Intégré"
+		},
+		"modelNeeds": {
+			"judge": "Modèle juge",
+			"embedding": "Modèle d'embedding",
+			"none": "Aucun modèle requis"
+		},
+		"suggestions": {
+			"singleTurn": "Tour unique",
+			"multiTurn": "Plusieurs tours",
+			"variables": {
+				"input": "L'entrée envoyée au modèle",
+				"output": "La sortie du modèle à noter",
+				"context": "Le contexte récupéré, issu du RAG ou d'une colonne du jeu de données",
+				"expected_output": "La sortie attendue, issue d'un jeu de données",
+				"history": "Les tours précédents de la conversation, avant la dernière entrée",
+				"session": "Tous les tours d'une conversation à plusieurs tours",
+				"expected_steps": "Les étapes que l'agent doit suivre, issues d'un jeu de données",
+				"db_schema": "Le schéma de base de données sur lequel une requête SQL s'exécute",
+				"transcript": "La transcription complète d'une conversation ou d'un appel"
+			},
+			"custom": "Une variable personnalisée. Sa valeur vient de la colonne du jeu de données ou du champ de log portant ce nom."
+		},
+		"statuses": {
+			"ready": "Prêt à s'exécuter",
+			"no_key": "Aucune clé d'évaluation"
+		},
+		"filters": {
+			"status": "Statut",
+			"type": "Type",
+			"source": "Source",
+			"tags": "Tags",
+			"searchTags": "Chercher ou saisir un tag",
+			"category": "Catégorie",
+			"modelNeeded": "Modèle requis"
+		},
+		"list": {
+			"title": "Évaluateurs",
+			"description": "Notez les sorties des modèles avec un juge LLM, votre propre code, un point de terminaison HTTP ou une métrique de texte. Les évaluateurs qui appellent un modèle ne s'exécutent que sur les clés de fournisseur marquées pour les évaluations.",
+			"browseCatalog": "Parcourir le catalogue",
+			"newEvaluator": "Nouvel évaluateur",
+			"searchPlaceholder": "Rechercher des évaluateurs",
+			"emptyTitle": "Aucun évaluateur pour l'instant",
+			"emptyDescription": "Un évaluateur note la sortie d'un modèle et décide si elle réussit. Partez d'un évaluateur intégré ou écrivez le vôtre.",
+			"noResults": "Aucun évaluateur ne correspond à ces filtres.",
+			"noEvalKey": "Aucune clé d'évaluation",
+			"noEvalKeyAlert_one": "Aucune clé {{provider}} n'est marquée pour les évaluations. {{count}} évaluateur de cette page ne peut pas s'exécuter.",
+			"noEvalKeyAlert_other": "Aucune clé {{provider}} n'est marquée pour les évaluations. {{count}} évaluateurs de cette page ne peuvent pas s'exécuter.",
+			"markKey": "Marquer une clé",
+			"columns": {
+				"name": "Nom",
+				"type": "Type",
+				"reads": "Lit",
+				"passesWhen": "Réussit quand",
+				"runsOn": "S'exécute sur",
+				"version": "Version",
+				"updated": "Mis à jour"
+			},
+			"runsOnSandbox": "Bac à sable Starlark",
+			"runsOnGateway": "Dans la passerelle",
+			"runsOnReviewer": "Un relecteur",
+			"versionShort": "v{{version}}",
+			"actionsFor": "Actions pour {{name}}",
+			"duplicate": "Dupliquer",
+			"duplicated": "{{name}} créé",
+			"deleted": "{{name}} supprimé",
+			"deleteTitle": "Supprimer {{name}} ?",
+			"deleteDescription": "L'évaluateur et toutes ses versions ne seront plus disponibles."
+		},
+		"criteria": {
+			"scoreCompare": "score {{symbol}} {{value}}",
+			"scoreIsOneOf": "le score est l'un de {{values}}",
+			"entryPassesWhen": "Une entrée réussit quand le score",
+			"runPassesWhen": "Une exécution réussit quand",
+			"operator": "Comparaison",
+			"value": "Valeur",
+			"is": "est",
+			"isNot": "n'est pas",
+			"yes": "Oui",
+			"no": "Non",
+			"labels": "Étiquettes possibles pour le score",
+			"labelsPlaceholder": "Saisissez une étiquette puis Entrée",
+			"passingLabels": "Étiquettes qui réussissent",
+			"runMeasure": "Mesure de l'exécution",
+			"runNames": {
+				"queries_passed": "% d'entrées réussies",
+				"mean_score": "Score moyen",
+				"median_score": "Score médian",
+				"minimum_score": "Score minimal",
+				"maximum_score": "Score maximal"
+			}
+		},
+		"scoreTypes": {
+			"yes_no": {
+				"label": "Oui / Non",
+				"hint": "Exigence satisfaite ou non"
+			},
+			"scale": {
+				"label": "Échelle",
+				"hint": "Un nombre dans une plage, par exemple de 1 à 5"
+			},
+			"multiselect": {
+				"label": "Un parmi",
+				"hint": "Une étiquette d'une liste que vous définissez"
+			},
+			"number": {
+				"label": "Nombre",
+				"hint": "N'importe quel nombre"
+			}
+		},
+		"model": {
+			"judgeProvider": "Fournisseur du juge",
+			"judgeModel": "Modèle juge",
+			"embeddingProvider": "Fournisseur d'embedding",
+			"embeddingModel": "Modèle d'embedding",
+			"runsOnKey": "S'exécute sur la clé {{provider}} « {{name}} », au plus {{limit}} évaluations à la fois.",
+			"noEvalKey": "Aucune clé {{provider}} n'est marquée pour les évaluations, donc ceci ne peut pas s'exécuter.",
+			"onlyEvalKeys": "Seuls les fournisseurs ayant une clé marquée pour les évaluations peuvent exécuter ceci."
+		},
+		"catalog": {
+			"title": "Évaluateurs intégrés",
+			"breadcrumb": "Catalogue",
+			"description": "{{total}} évaluateurs prêts à l'emploi. Choisissez-en un, choisissez son modèle s'il en faut un, et il s'ajoute à vos évaluateurs.",
+			"searchPlaceholder": "Rechercher des évaluateurs intégrés",
+			"showing": "{{shown}} sur {{total}} affichés",
+			"noResults": "Aucun évaluateur intégré ne correspond à ces filtres.",
+			"add": "Ajouter",
+			"addTitle": "Ajouter {{name}}",
+			"addDescriptionModel": "Son prompt est fixe. Vous choisissez le modèle et le seuil de réussite.",
+			"addDescriptionMetric": "Sa métrique est fixe. Vous choisissez le seuil de réussite.",
+			"addEvaluator": "Ajouter l'évaluateur",
+			"adding": "Ajout...",
+			"added": "{{name}} ajouté",
+			"lowerIsBetter": "Plus bas, c'est mieux",
+			"scoreRange": "Score {{scale}}",
+			"passesAt": "Réussit quand",
+			"passesWhenLower": "Une entrée réussit quand le score (plus bas, c'est mieux)",
+			"whatItReads": "Ce qu'il lit",
+			"optionalVariables": "Facultatif : {{variables}}"
+		},
+		"fields": {
+			"name": "Nom",
+			"tags": "Tags",
+			"tagsPlaceholder": "Ajouter un tag",
+			"description": "Description",
+			"descriptionPlaceholder": "Ce que cet évaluateur vérifie",
+			"instructionsPlaceholder": "Décide si {{output}} répond à la question posée dans {{input}}.",
+			"scoreType": "Type de score",
+			"scaleFrom": "De",
+			"scaleTo": "à",
+			"scaleMin": "Score le plus bas",
+			"scaleMax": "Score le plus haut",
+			"returnType": "Type de retour",
+			"returnTypeHint": "Ce que validate renvoie : un booléen, un nombre ou une étiquette.",
+			"method": "Méthode",
+			"url": "URL",
+			"headerName": "Nom de l'en-tête",
+			"headerValue": "Valeur de l'en-tête",
+			"addHeader": "Ajouter un en-tête",
+			"removeHeader": "Supprimer l'en-tête",
+			"scorePath": "Chemin du score",
+			"reasoningPath": "Chemin du raisonnement (facultatif)",
+			"timeoutMs": "Délai (ms)",
+			"concurrency": "Concurrence",
+			"concurrencyHint": "Le nombre maximal d'appels simultanés à ce point de terminaison. 1 par défaut."
+		},
+		"sections": {
+			"instructions": "Instructions pour le juge",
+			"instructionsHint": "Écrivez la règle de notation. Désignez une entrée entre doubles accolades, par exemple {{input}} ou {{output}}. Chacune devient une variable.",
+			"judge": "Modèle juge",
+			"embedding": "Modèle d'embedding",
+			"passCriteria": "Critères de réussite",
+			"passCriteriaHint": "Quand une entrée réussit, et quand une exécution entière réussit.",
+			"code": "Code",
+			"codeHint": "Starlark, un dialecte de Python. Définissez validate. Les noms de ses arguments sont les variables qu'il lit.",
+			"request": "Requête",
+			"requestHint": "Le point de terminaison que la passerelle appelle pour chaque entrée. Les adresses privées et de bouclage sont refusées.",
+			"headers": "En-têtes",
+			"headersHint": "Saisissez la valeur elle-même. Les références comme env.NAME ne sont pas acceptées. Une valeur enregistrée n'est plus jamais affichée.",
+			"payload": "Corps",
+			"payloadHint": "Le corps de la requête. Désignez une entrée entre doubles accolades, par exemple {{input}} ou {{output}}.",
+			"response": "Réponse",
+			"responseHint": "Où se trouvent le score et le raisonnement dans la réponse JSON, sous forme de chemins à points.",
+			"reviewerInstructions": "Instructions pour les relecteurs",
+			"reviewerInstructionsHint": "Affichées à la personne qui note chaque entrée."
+		},
+		"editor": {
+			"newTitle": "Nouvel évaluateur",
+			"entity": "évaluateur",
+			"version": "Version {{version}}",
+			"unsaved": "Modifications non enregistrées",
+			"discard": "Annuler les modifications",
+			"save": "Enregistrer",
+			"saveAsVersion": "Enregistrer comme version {{version}}",
+			"create": "Créer l'évaluateur",
+			"saving": "Enregistrement...",
+			"saved": "Enregistré",
+			"savedVersion": "Enregistré comme version {{version}}",
+			"created": "{{name}} créé",
+			"nameRequired": "Le nom est obligatoire",
+			"nameTooLong": "Le nom fait au plus 255 caractères",
+			"variablesFound": "Variables trouvées :",
+			"noVariables": "aucune",
+			"optionalVariable": "{{name}} (facultatif)",
+			"builtinPromptFixed": "Ceci est un évaluateur intégré. Son prompt est fixe. Vous pouvez changer le modèle juge et les critères de réussite.",
+			"builtinMetricFixed": "Ceci est une métrique intégrée. Sa formule est fixe. Vous pouvez changer les critères de réussite.",
+			"humanNotice": "Un relecteur note ceci à la main pendant une exécution de test. Il ne peut pas être exécuté ici."
+		},
+		"test": {
+			"title": "Test",
+			"description": "Exécute l'évaluateur tel qu'il est maintenant, enregistré ou non.",
+			"noVariables": "Cet évaluateur ne lit aucune variable.",
+			"optional": "facultatif",
+			"run": "Lancer le test",
+			"running": "En cours...",
+			"queued": "En attente d'une place libre sur la clé d'évaluation.",
+			"stillRunning": "Toujours en cours.",
+			"timedOut": "L'exécution ne s'est pas terminée à temps.",
+			"blockedHuman": "Un évaluateur humain ne peut pas être exécuté ici.",
+			"blockedInvalid": "Corrigez la configuration pour lancer un test.",
+			"outcomes": {
+				"passed": "Réussi",
+				"failed": "Échoué",
+				"scored": "Noté",
+				"na": "Sans objet",
+				"error": "Erreur"
+			},
+			"score": "score : {{score}}",
+			"reasoning": "Raisonnement",
+			"cause": "Cause",
+			"why": "Pourquoi",
+			"logs": "Sortie",
+			"ranOn": "Exécuté sur",
+			"ranOnKey": "clé {{provider}} « {{name}} »",
+			"latency": "Latence",
+			"latencyMs": "{{ms}} ms",
+			"tokens": "Tokens",
+			"tokensInOut": "{{input}} en entrée / {{output}} en sortie",
+			"cost": "Coût"
+		}
 	}
 }

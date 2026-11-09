@@ -232,6 +232,8 @@ func TestDecodeKeyUpdate_PartialBody(t *testing.T) {
 			SGLKeyConfig:      &schemas.SGLKeyConfig{URL: *schemas.NewSecretVar("http://old:30000")},
 			Enabled:           schemas.Ptr(false),
 			UseForBatchAPI:    schemas.Ptr(true),
+			UseForEvals:       schemas.Ptr(true),
+			EvalConcurrency:   schemas.Ptr(6),
 			Description:       "primary",
 		}
 	}
@@ -266,6 +268,12 @@ func TestDecodeKeyUpdate_PartialBody(t *testing.T) {
 		}
 		if merged.UseForBatchAPI == nil || !*merged.UseForBatchAPI {
 			t.Fatalf("use_for_batch_api: got %v, want the stored true", merged.UseForBatchAPI)
+		}
+		if merged.UseForEvals == nil || !*merged.UseForEvals {
+			t.Fatalf("use_for_evals: got %v, want the stored true", merged.UseForEvals)
+		}
+		if merged.EvalConcurrency == nil || *merged.EvalConcurrency != 6 {
+			t.Fatalf("eval_concurrency: got %v, want the stored 6", merged.EvalConcurrency)
 		}
 		if merged.Description != "primary" {
 			t.Fatalf("description: got %q, want primary", merged.Description)
@@ -2014,4 +2022,41 @@ func TestProviderKeyWrites_RejectUnknownOAuthKeyConfigFields(t *testing.T) {
 			t.Fatalf("the stored key must be untouched, got %+v", stored.OAuthKeyConfig)
 		}
 	})
+}
+
+// eval_concurrency is at least 1 when it is set. A value below that used to be stored
+// and then replaced by the default without a word; it is refused. Leaving it unset
+// still means "use the default".
+func TestValidateProviderKey_EvalConcurrency(t *testing.T) {
+	for _, bad := range []int{0, -3} {
+		err := validateProviderKeyServerURLs(schemas.Key{Name: "k", EvalConcurrency: new(bad)})
+		if err == nil || !strings.Contains(err.Error(), "eval_concurrency") {
+			t.Fatalf("eval_concurrency %d: got %v, want an error that names the field", bad, err)
+		}
+	}
+	for _, ok := range []*int{nil, new(1), new(12)} {
+		if err := validateProviderKeyServerURLs(schemas.Key{Name: "k", EvalConcurrency: ok}); err != nil {
+			t.Fatalf("eval_concurrency %v: unexpected error %v", ok, err)
+		}
+	}
+}
+
+// Clearing the concurrency field in the dashboard sends null, which resets the key to
+// the default. A body that leaves the field out keeps what is stored.
+func TestDecodeKeyUpdate_NullEvalConcurrencyClearsIt(t *testing.T) {
+	stored := schemas.Key{ID: "k1", Name: "k", UseForEvals: new(true), EvalConcurrency: new(6)}
+	cleared, err := decodeKeyUpdate([]byte(`{"name":"k","eval_concurrency":null}`), stored)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cleared.EvalConcurrency != nil {
+		t.Fatalf("eval_concurrency: got %d, want it cleared", *cleared.EvalConcurrency)
+	}
+	kept, err := decodeKeyUpdate([]byte(`{"name":"k"}`), stored)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if kept.EvalConcurrency == nil || *kept.EvalConcurrency != 6 {
+		t.Fatalf("eval_concurrency: got %v, want the stored 6", kept.EvalConcurrency)
+	}
 }

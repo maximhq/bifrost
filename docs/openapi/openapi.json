@@ -102985,6 +102985,3882 @@
         }
       }
     },
+    "/api/evals/evaluators": {
+      "get": {
+        "operationId": "listEvaluators",
+        "x-mint": {
+          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Evaluators:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+        },
+        "summary": "List evaluators",
+        "description": "Returns evaluators, newest first, without their configs.\n",
+        "tags": [
+          "Evaluators"
+        ],
+        "parameters": [
+          {
+            "name": "type",
+            "in": "query",
+            "required": false,
+            "description": "Only evaluators of this type (ai, programmatic, statistical, api, human). Several types separated by commas match any of them",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "source",
+            "in": "query",
+            "required": false,
+            "description": "Only evaluators written by a user (custom) or installed from the catalog (builtin)",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "custom",
+                "builtin"
+              ]
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "description": "A provider-level check. `no_key` lists evaluators that call a model whose provider has no key marked for evaluations; `ready` lists the rest. `ready` does not promise that a marked key allows the evaluator's model, which is checked when the evaluator runs.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "ready",
+                "no_key"
+              ]
+            }
+          },
+          {
+            "name": "search",
+            "in": "query",
+            "required": false,
+            "description": "Case-insensitive match on name or description",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "tag",
+            "in": "query",
+            "required": false,
+            "description": "Only evaluators with this exact tag",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "Page size, 1 to 200. Defaults to 50",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "description": "Number of evaluators to skip",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "evaluators": {
+                      "type": "array",
+                      "items": {
+                        "description": "An evaluator as a listing returns it. It has no config, only the facts a list shows",
+                        "allOf": [
+                          {
+                            "type": "object",
+                            "properties": {
+                              "id": {
+                                "type": "string",
+                                "description": "Unique evaluator ID (UUID)"
+                              },
+                              "name": {
+                                "type": "string"
+                              },
+                              "description": {
+                                "type": "string"
+                              },
+                              "type": {
+                                "type": "string",
+                                "enum": [
+                                  "ai",
+                                  "programmatic",
+                                  "statistical",
+                                  "api",
+                                  "human"
+                                ]
+                              },
+                              "builtin_key": {
+                                "type": "string",
+                                "description": "Catalog key, for an evaluator installed from a built-in"
+                              },
+                              "current_version": {
+                                "type": "integer"
+                              },
+                              "tags": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string"
+                                }
+                              },
+                              "created_by": {
+                                "type": "string"
+                              },
+                              "created_at": {
+                                "type": "string",
+                                "format": "date-time"
+                              },
+                              "updated_at": {
+                                "type": "string",
+                                "format": "date-time"
+                              }
+                            }
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "variables": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string"
+                                },
+                                "description": "Names of the inputs the evaluator requires"
+                              },
+                              "pass_criterion": {
+                                "type": "object",
+                                "description": "One pass/fail rule",
+                                "properties": {
+                                  "name": {
+                                    "type": "string",
+                                    "description": "What the rule judges. Entry level: `score`. Run level: `mean_score`, `median_score`,\n`minimum_score`, `maximum_score` or `queries_passed` (percent of entries that passed).\n"
+                                  },
+                                  "operator": {
+                                    "type": "string",
+                                    "enum": [
+                                      "=",
+                                      "!=",
+                                      ">",
+                                      "<",
+                                      ">=",
+                                      "<=",
+                                      "is one of"
+                                    ]
+                                  },
+                                  "value": {
+                                    "description": "The value to compare against. A number, a string, a boolean, or a list of strings for `is one of`."
+                                  },
+                                  "options": {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "string"
+                                    },
+                                    "description": "The choices of a multiselect score"
+                                  }
+                                }
+                              },
+                              "lower_is_better": {
+                                "type": "boolean"
+                              },
+                              "provider": {
+                                "type": "string",
+                                "description": "Judge or embedding provider, for an evaluator that calls a model"
+                              },
+                              "model": {
+                                "type": "string"
+                              },
+                              "endpoint": {
+                                "type": "string",
+                                "description": "Method and host of an API evaluator. The path, query and headers are left out"
+                              }
+                            }
+                          }
+                        ]
+                      }
+                    },
+                    "total": {
+                      "type": "integer",
+                      "description": "Number of matching evaluators before paging"
+                    },
+                    "limit": {
+                      "type": "integer"
+                    },
+                    "offset": {
+                      "type": "integer"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "createEvaluator",
+        "x-mint": {
+          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Evaluators:Create` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+        },
+        "summary": "Create evaluator",
+        "description": "Creates a custom evaluator with its first version. The config is validated for the given type, and\nfor a programmatic evaluator the code is compiled.\n\nStatistical evaluators are not created here: install one from the catalog.\n",
+        "tags": [
+          "Evaluators"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "description": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "type": "string",
+                    "enum": [
+                      "ai",
+                      "programmatic",
+                      "api",
+                      "human"
+                    ],
+                    "description": "Required on create. Cannot be changed afterwards."
+                  },
+                  "tags": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "config": {
+                    "type": "object",
+                    "description": "Evaluator config. The fields depend on the evaluator type.\n\n- `ai`: `instructions`, `grading_style` (`yes_no`, `scale`, `multiselect`, `number`), `scale`, `provider`, `model`, `model_params`\n- `programmatic`: `code` (Starlark, must define `validate(...)`), `response_type`\n- `api`: `method`, `url`, `headers`, `params`, `payload`, `output_mapping`, `timeout_ms`, `concurrency`\n- `statistical`: `embedding_provider`, `embedding_model` (embedding-based metrics only)\n- `human`: `instructions`, `evaluation_type`, `scale`\n\nEvery type also takes `pass_criteria`, `reversed`, `score_normalizer`, `variables` and `optional_variables`.\n",
+                    "additionalProperties": true,
+                    "properties": {
+                      "pass_criteria": {
+                        "type": "object",
+                        "properties": {
+                          "entry_level": {
+                            "type": "object",
+                            "description": "One pass/fail rule",
+                            "properties": {
+                              "name": {
+                                "type": "string",
+                                "description": "What the rule judges. Entry level: `score`. Run level: `mean_score`, `median_score`,\n`minimum_score`, `maximum_score` or `queries_passed` (percent of entries that passed).\n"
+                              },
+                              "operator": {
+                                "type": "string",
+                                "enum": [
+                                  "=",
+                                  "!=",
+                                  ">",
+                                  "<",
+                                  ">=",
+                                  "<=",
+                                  "is one of"
+                                ]
+                              },
+                              "value": {
+                                "description": "The value to compare against. A number, a string, a boolean, or a list of strings for `is one of`."
+                              },
+                              "options": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string"
+                                },
+                                "description": "The choices of a multiselect score"
+                              }
+                            }
+                          },
+                          "run_level": {
+                            "type": "object",
+                            "description": "One pass/fail rule",
+                            "properties": {
+                              "name": {
+                                "type": "string",
+                                "description": "What the rule judges. Entry level: `score`. Run level: `mean_score`, `median_score`,\n`minimum_score`, `maximum_score` or `queries_passed` (percent of entries that passed).\n"
+                              },
+                              "operator": {
+                                "type": "string",
+                                "enum": [
+                                  "=",
+                                  "!=",
+                                  ">",
+                                  "<",
+                                  ">=",
+                                  "<=",
+                                  "is one of"
+                                ]
+                              },
+                              "value": {
+                                "description": "The value to compare against. A number, a string, a boolean, or a list of strings for `is one of`."
+                              },
+                              "options": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string"
+                                },
+                                "description": "The choices of a multiselect score"
+                              }
+                            }
+                          }
+                        }
+                      },
+                      "reversed": {
+                        "type": "boolean",
+                        "description": "Whether a lower score is better"
+                      },
+                      "variables": {
+                        "type": "object",
+                        "additionalProperties": {
+                          "type": "string"
+                        },
+                        "description": "Required variables, name to description"
+                      },
+                      "optional_variables": {
+                        "type": "object",
+                        "additionalProperties": {
+                          "type": "string"
+                        },
+                        "description": "Optional variables, name to description"
+                      }
+                    }
+                  },
+                  "commit_message": {
+                    "type": "string",
+                    "description": "Note stored with the version this request creates"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "evaluator": {
+                      "allOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "id": {
+                              "type": "string",
+                              "description": "Unique evaluator ID (UUID)"
+                            },
+                            "name": {
+                              "type": "string"
+                            },
+                            "description": {
+                              "type": "string"
+                            },
+                            "type": {
+                              "type": "string",
+                              "enum": [
+                                "ai",
+                                "programmatic",
+                                "statistical",
+                                "api",
+                                "human"
+                              ]
+                            },
+                            "builtin_key": {
+                              "type": "string",
+                              "description": "Catalog key, for an evaluator installed from a built-in"
+                            },
+                            "current_version": {
+                              "type": "integer"
+                            },
+                            "tags": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              }
+                            },
+                            "created_by": {
+                              "type": "string"
+                            },
+                            "created_at": {
+                              "type": "string",
+                              "format": "date-time"
+                            },
+                            "updated_at": {
+                              "type": "string",
+                              "format": "date-time"
+                            }
+                          }
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "version": {
+                              "type": "integer",
+                              "description": "The version `config` belongs to"
+                            },
+                            "config": {
+                              "type": "object",
+                              "description": "Evaluator config. The fields depend on the evaluator type.\n\n- `ai`: `instructions`, `grading_style` (`yes_no`, `scale`, `multiselect`, `number`), `scale`, `provider`, `model`, `model_params`\n- `programmatic`: `code` (Starlark, must define `validate(...)`), `response_type`\n- `api`: `method`, `url`, `headers`, `params`, `payload`, `output_mapping`, `timeout_ms`, `concurrency`\n- `statistical`: `embedding_provider`, `embedding_model` (embedding-based metrics only)\n- `human`: `instructions`, `evaluation_type`, `scale`\n\nEvery type also takes `pass_criteria`, `reversed`, `score_normalizer`, `variables` and `optional_variables`.\n",
+                              "additionalProperties": true,
+                              "properties": {
+                                "pass_criteria": {
+                                  "type": "object",
+                                  "properties": {
+                                    "entry_level": {
+                                      "type": "object",
+                                      "description": "One pass/fail rule",
+                                      "properties": {
+                                        "name": {
+                                          "type": "string",
+                                          "description": "What the rule judges. Entry level: `score`. Run level: `mean_score`, `median_score`,\n`minimum_score`, `maximum_score` or `queries_passed` (percent of entries that passed).\n"
+                                        },
+                                        "operator": {
+                                          "type": "string",
+                                          "enum": [
+                                            "=",
+                                            "!=",
+                                            ">",
+                                            "<",
+                                            ">=",
+                                            "<=",
+                                            "is one of"
+                                          ]
+                                        },
+                                        "value": {
+                                          "description": "The value to compare against. A number, a string, a boolean, or a list of strings for `is one of`."
+                                        },
+                                        "options": {
+                                          "type": "array",
+                                          "items": {
+                                            "type": "string"
+                                          },
+                                          "description": "The choices of a multiselect score"
+                                        }
+                                      }
+                                    },
+                                    "run_level": {
+                                      "type": "object",
+                                      "description": "One pass/fail rule",
+                                      "properties": {
+                                        "name": {
+                                          "type": "string",
+                                          "description": "What the rule judges. Entry level: `score`. Run level: `mean_score`, `median_score`,\n`minimum_score`, `maximum_score` or `queries_passed` (percent of entries that passed).\n"
+                                        },
+                                        "operator": {
+                                          "type": "string",
+                                          "enum": [
+                                            "=",
+                                            "!=",
+                                            ">",
+                                            "<",
+                                            ">=",
+                                            "<=",
+                                            "is one of"
+                                          ]
+                                        },
+                                        "value": {
+                                          "description": "The value to compare against. A number, a string, a boolean, or a list of strings for `is one of`."
+                                        },
+                                        "options": {
+                                          "type": "array",
+                                          "items": {
+                                            "type": "string"
+                                          },
+                                          "description": "The choices of a multiselect score"
+                                        }
+                                      }
+                                    }
+                                  }
+                                },
+                                "reversed": {
+                                  "type": "boolean",
+                                  "description": "Whether a lower score is better"
+                                },
+                                "variables": {
+                                  "type": "object",
+                                  "additionalProperties": {
+                                    "type": "string"
+                                  },
+                                  "description": "Required variables, name to description"
+                                },
+                                "optional_variables": {
+                                  "type": "object",
+                                  "additionalProperties": {
+                                    "type": "string"
+                                  },
+                                  "description": "Optional variables, name to description"
+                                }
+                              }
+                            },
+                            "variables": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              },
+                              "description": "Variables the evaluator requires"
+                            },
+                            "optional_variables": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              },
+                              "description": "Variables the evaluator reads when present"
+                            },
+                            "executable": {
+                              "type": "boolean",
+                              "description": "False for human evaluators, which reviewers score by hand"
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict with the current state of the resource",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/evals/evaluators/validate": {
+      "post": {
+        "operationId": "validateEvaluator",
+        "x-mint": {
+          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Evaluators:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+        },
+        "summary": "Validate evaluator config",
+        "description": "Checks a config as a save would, without saving or running it, and reports the variables it reads.\nAn invalid config is a normal 200 response with `valid` set to false.\n",
+        "tags": [
+          "Evaluators"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "type"
+                ],
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "enum": [
+                      "ai",
+                      "programmatic",
+                      "statistical",
+                      "api",
+                      "human"
+                    ]
+                  },
+                  "builtin_key": {
+                    "type": "string"
+                  },
+                  "config": {
+                    "type": "object",
+                    "description": "Evaluator config. The fields depend on the evaluator type.\n\n- `ai`: `instructions`, `grading_style` (`yes_no`, `scale`, `multiselect`, `number`), `scale`, `provider`, `model`, `model_params`\n- `programmatic`: `code` (Starlark, must define `validate(...)`), `response_type`\n- `api`: `method`, `url`, `headers`, `params`, `payload`, `output_mapping`, `timeout_ms`, `concurrency`\n- `statistical`: `embedding_provider`, `embedding_model` (embedding-based metrics only)\n- `human`: `instructions`, `evaluation_type`, `scale`\n\nEvery type also takes `pass_criteria`, `reversed`, `score_normalizer`, `variables` and `optional_variables`.\n",
+                    "additionalProperties": true,
+                    "properties": {
+                      "pass_criteria": {
+                        "type": "object",
+                        "properties": {
+                          "entry_level": {
+                            "type": "object",
+                            "description": "One pass/fail rule",
+                            "properties": {
+                              "name": {
+                                "type": "string",
+                                "description": "What the rule judges. Entry level: `score`. Run level: `mean_score`, `median_score`,\n`minimum_score`, `maximum_score` or `queries_passed` (percent of entries that passed).\n"
+                              },
+                              "operator": {
+                                "type": "string",
+                                "enum": [
+                                  "=",
+                                  "!=",
+                                  ">",
+                                  "<",
+                                  ">=",
+                                  "<=",
+                                  "is one of"
+                                ]
+                              },
+                              "value": {
+                                "description": "The value to compare against. A number, a string, a boolean, or a list of strings for `is one of`."
+                              },
+                              "options": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string"
+                                },
+                                "description": "The choices of a multiselect score"
+                              }
+                            }
+                          },
+                          "run_level": {
+                            "type": "object",
+                            "description": "One pass/fail rule",
+                            "properties": {
+                              "name": {
+                                "type": "string",
+                                "description": "What the rule judges. Entry level: `score`. Run level: `mean_score`, `median_score`,\n`minimum_score`, `maximum_score` or `queries_passed` (percent of entries that passed).\n"
+                              },
+                              "operator": {
+                                "type": "string",
+                                "enum": [
+                                  "=",
+                                  "!=",
+                                  ">",
+                                  "<",
+                                  ">=",
+                                  "<=",
+                                  "is one of"
+                                ]
+                              },
+                              "value": {
+                                "description": "The value to compare against. A number, a string, a boolean, or a list of strings for `is one of`."
+                              },
+                              "options": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string"
+                                },
+                                "description": "The choices of a multiselect score"
+                              }
+                            }
+                          }
+                        }
+                      },
+                      "reversed": {
+                        "type": "boolean",
+                        "description": "Whether a lower score is better"
+                      },
+                      "variables": {
+                        "type": "object",
+                        "additionalProperties": {
+                          "type": "string"
+                        },
+                        "description": "Required variables, name to description"
+                      },
+                      "optional_variables": {
+                        "type": "object",
+                        "additionalProperties": {
+                          "type": "string"
+                        },
+                        "description": "Optional variables, name to description"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "valid": {
+                      "type": "boolean"
+                    },
+                    "error": {
+                      "type": "string",
+                      "description": "Why the config is invalid"
+                    },
+                    "variables": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "optional_variables": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "config": {
+                      "type": "object",
+                      "description": "Evaluator config. The fields depend on the evaluator type.\n\n- `ai`: `instructions`, `grading_style` (`yes_no`, `scale`, `multiselect`, `number`), `scale`, `provider`, `model`, `model_params`\n- `programmatic`: `code` (Starlark, must define `validate(...)`), `response_type`\n- `api`: `method`, `url`, `headers`, `params`, `payload`, `output_mapping`, `timeout_ms`, `concurrency`\n- `statistical`: `embedding_provider`, `embedding_model` (embedding-based metrics only)\n- `human`: `instructions`, `evaluation_type`, `scale`\n\nEvery type also takes `pass_criteria`, `reversed`, `score_normalizer`, `variables` and `optional_variables`.\n",
+                      "additionalProperties": true,
+                      "properties": {
+                        "pass_criteria": {
+                          "type": "object",
+                          "properties": {
+                            "entry_level": {
+                              "type": "object",
+                              "description": "One pass/fail rule",
+                              "properties": {
+                                "name": {
+                                  "type": "string",
+                                  "description": "What the rule judges. Entry level: `score`. Run level: `mean_score`, `median_score`,\n`minimum_score`, `maximum_score` or `queries_passed` (percent of entries that passed).\n"
+                                },
+                                "operator": {
+                                  "type": "string",
+                                  "enum": [
+                                    "=",
+                                    "!=",
+                                    ">",
+                                    "<",
+                                    ">=",
+                                    "<=",
+                                    "is one of"
+                                  ]
+                                },
+                                "value": {
+                                  "description": "The value to compare against. A number, a string, a boolean, or a list of strings for `is one of`."
+                                },
+                                "options": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string"
+                                  },
+                                  "description": "The choices of a multiselect score"
+                                }
+                              }
+                            },
+                            "run_level": {
+                              "type": "object",
+                              "description": "One pass/fail rule",
+                              "properties": {
+                                "name": {
+                                  "type": "string",
+                                  "description": "What the rule judges. Entry level: `score`. Run level: `mean_score`, `median_score`,\n`minimum_score`, `maximum_score` or `queries_passed` (percent of entries that passed).\n"
+                                },
+                                "operator": {
+                                  "type": "string",
+                                  "enum": [
+                                    "=",
+                                    "!=",
+                                    ">",
+                                    "<",
+                                    ">=",
+                                    "<=",
+                                    "is one of"
+                                  ]
+                                },
+                                "value": {
+                                  "description": "The value to compare against. A number, a string, a boolean, or a list of strings for `is one of`."
+                                },
+                                "options": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string"
+                                  },
+                                  "description": "The choices of a multiselect score"
+                                }
+                              }
+                            }
+                          }
+                        },
+                        "reversed": {
+                          "type": "boolean",
+                          "description": "Whether a lower score is better"
+                        },
+                        "variables": {
+                          "type": "object",
+                          "additionalProperties": {
+                            "type": "string"
+                          },
+                          "description": "Required variables, name to description"
+                        },
+                        "optional_variables": {
+                          "type": "object",
+                          "additionalProperties": {
+                            "type": "string"
+                          },
+                          "description": "Optional variables, name to description"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/evals/evaluators/execute": {
+      "post": {
+        "operationId": "executeDraftEvaluator",
+        "x-mint": {
+          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Evaluators:Update` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+        },
+        "summary": "Execute unsaved evaluator",
+        "description": "Runs an evaluator config that has not been saved. An editor's test panel uses this.\n",
+        "tags": [
+          "Evaluators"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "draft"
+                ],
+                "properties": {
+                  "draft": {
+                    "type": "object",
+                    "required": [
+                      "type"
+                    ],
+                    "properties": {
+                      "type": {
+                        "type": "string",
+                        "enum": [
+                          "ai",
+                          "programmatic",
+                          "statistical",
+                          "api"
+                        ]
+                      },
+                      "builtin_key": {
+                        "type": "string"
+                      },
+                      "config": {
+                        "type": "object",
+                        "description": "Evaluator config. The fields depend on the evaluator type.\n\n- `ai`: `instructions`, `grading_style` (`yes_no`, `scale`, `multiselect`, `number`), `scale`, `provider`, `model`, `model_params`\n- `programmatic`: `code` (Starlark, must define `validate(...)`), `response_type`\n- `api`: `method`, `url`, `headers`, `params`, `payload`, `output_mapping`, `timeout_ms`, `concurrency`\n- `statistical`: `embedding_provider`, `embedding_model` (embedding-based metrics only)\n- `human`: `instructions`, `evaluation_type`, `scale`\n\nEvery type also takes `pass_criteria`, `reversed`, `score_normalizer`, `variables` and `optional_variables`.\n",
+                        "additionalProperties": true,
+                        "properties": {
+                          "pass_criteria": {
+                            "type": "object",
+                            "properties": {
+                              "entry_level": {
+                                "type": "object",
+                                "description": "One pass/fail rule",
+                                "properties": {
+                                  "name": {
+                                    "type": "string",
+                                    "description": "What the rule judges. Entry level: `score`. Run level: `mean_score`, `median_score`,\n`minimum_score`, `maximum_score` or `queries_passed` (percent of entries that passed).\n"
+                                  },
+                                  "operator": {
+                                    "type": "string",
+                                    "enum": [
+                                      "=",
+                                      "!=",
+                                      ">",
+                                      "<",
+                                      ">=",
+                                      "<=",
+                                      "is one of"
+                                    ]
+                                  },
+                                  "value": {
+                                    "description": "The value to compare against. A number, a string, a boolean, or a list of strings for `is one of`."
+                                  },
+                                  "options": {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "string"
+                                    },
+                                    "description": "The choices of a multiselect score"
+                                  }
+                                }
+                              },
+                              "run_level": {
+                                "type": "object",
+                                "description": "One pass/fail rule",
+                                "properties": {
+                                  "name": {
+                                    "type": "string",
+                                    "description": "What the rule judges. Entry level: `score`. Run level: `mean_score`, `median_score`,\n`minimum_score`, `maximum_score` or `queries_passed` (percent of entries that passed).\n"
+                                  },
+                                  "operator": {
+                                    "type": "string",
+                                    "enum": [
+                                      "=",
+                                      "!=",
+                                      ">",
+                                      "<",
+                                      ">=",
+                                      "<=",
+                                      "is one of"
+                                    ]
+                                  },
+                                  "value": {
+                                    "description": "The value to compare against. A number, a string, a boolean, or a list of strings for `is one of`."
+                                  },
+                                  "options": {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "string"
+                                    },
+                                    "description": "The choices of a multiselect score"
+                                  }
+                                }
+                              }
+                            }
+                          },
+                          "reversed": {
+                            "type": "boolean",
+                            "description": "Whether a lower score is better"
+                          },
+                          "variables": {
+                            "type": "object",
+                            "additionalProperties": {
+                              "type": "string"
+                            },
+                            "description": "Required variables, name to description"
+                          },
+                          "optional_variables": {
+                            "type": "object",
+                            "additionalProperties": {
+                              "type": "string"
+                            },
+                            "description": "Optional variables, name to description"
+                          }
+                        }
+                      },
+                      "evaluator_id": {
+                        "type": "string",
+                        "description": "The evaluator being edited, if any. Lets a draft that carries redacted secrets run with the stored ones."
+                      }
+                    }
+                  },
+                  "variables": {
+                    "type": "object",
+                    "additionalProperties": {
+                      "type": "string"
+                    }
+                  },
+                  "wait_ms": {
+                    "type": "integer"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "execution": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "queued",
+                            "running",
+                            "completed"
+                          ]
+                        },
+                        "evaluator_id": {
+                          "type": "string"
+                        },
+                        "evaluator_version": {
+                          "type": "integer"
+                        },
+                        "key_id": {
+                          "type": "string",
+                          "description": "The provider key the run used, for an evaluator that calls a model"
+                        },
+                        "result": {
+                          "type": "object",
+                          "properties": {
+                            "evaluator_id": {
+                              "type": "string"
+                            },
+                            "evaluator_version": {
+                              "type": "integer"
+                            },
+                            "score": {
+                              "type": "object",
+                              "description": "An evaluator's verdict. Exactly one of `number`, `bool` and `string` is set when `status` is `ok`.",
+                              "properties": {
+                                "status": {
+                                  "type": "string",
+                                  "enum": [
+                                    "ok",
+                                    "na",
+                                    "error"
+                                  ],
+                                  "description": "`na` when a required variable is missing, `error` when the evaluator failed"
+                                },
+                                "number": {
+                                  "type": "number"
+                                },
+                                "bool": {
+                                  "type": "boolean"
+                                },
+                                "string": {
+                                  "type": "string"
+                                }
+                              }
+                            },
+                            "reasoning": {
+                              "type": "string"
+                            },
+                            "pass": {
+                              "type": "boolean",
+                              "description": "Whether the score met the entry-level pass criterion. Absent unless the score status is `ok`."
+                            },
+                            "usage": {
+                              "type": "object",
+                              "description": "Tokens the evaluator's model calls used",
+                              "properties": {
+                                "prompt_tokens": {
+                                  "type": "integer"
+                                },
+                                "completion_tokens": {
+                                  "type": "integer"
+                                },
+                                "total_tokens": {
+                                  "type": "integer"
+                                }
+                              }
+                            },
+                            "cost": {
+                              "type": "number",
+                              "description": "Cost of the evaluator's model calls"
+                            },
+                            "latency_ms": {
+                              "type": "integer"
+                            },
+                            "logs": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              },
+                              "description": "Output printed by a programmatic evaluator"
+                            }
+                          }
+                        },
+                        "created_at": {
+                          "type": "string",
+                          "format": "date-time"
+                        },
+                        "started_at": {
+                          "type": "string",
+                          "format": "date-time"
+                        },
+                        "completed_at": {
+                          "type": "string",
+                          "format": "date-time"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "The run is still going when the wait ends. Poll the execution for its result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "execution": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "queued",
+                            "running",
+                            "completed"
+                          ]
+                        },
+                        "evaluator_id": {
+                          "type": "string"
+                        },
+                        "evaluator_version": {
+                          "type": "integer"
+                        },
+                        "key_id": {
+                          "type": "string",
+                          "description": "The provider key the run used, for an evaluator that calls a model"
+                        },
+                        "result": {
+                          "type": "object",
+                          "properties": {
+                            "evaluator_id": {
+                              "type": "string"
+                            },
+                            "evaluator_version": {
+                              "type": "integer"
+                            },
+                            "score": {
+                              "type": "object",
+                              "description": "An evaluator's verdict. Exactly one of `number`, `bool` and `string` is set when `status` is `ok`.",
+                              "properties": {
+                                "status": {
+                                  "type": "string",
+                                  "enum": [
+                                    "ok",
+                                    "na",
+                                    "error"
+                                  ],
+                                  "description": "`na` when a required variable is missing, `error` when the evaluator failed"
+                                },
+                                "number": {
+                                  "type": "number"
+                                },
+                                "bool": {
+                                  "type": "boolean"
+                                },
+                                "string": {
+                                  "type": "string"
+                                }
+                              }
+                            },
+                            "reasoning": {
+                              "type": "string"
+                            },
+                            "pass": {
+                              "type": "boolean",
+                              "description": "Whether the score met the entry-level pass criterion. Absent unless the score status is `ok`."
+                            },
+                            "usage": {
+                              "type": "object",
+                              "description": "Tokens the evaluator's model calls used",
+                              "properties": {
+                                "prompt_tokens": {
+                                  "type": "integer"
+                                },
+                                "completion_tokens": {
+                                  "type": "integer"
+                                },
+                                "total_tokens": {
+                                  "type": "integer"
+                                }
+                              }
+                            },
+                            "cost": {
+                              "type": "number",
+                              "description": "Cost of the evaluator's model calls"
+                            },
+                            "latency_ms": {
+                              "type": "integer"
+                            },
+                            "logs": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              },
+                              "description": "Output printed by a programmatic evaluator"
+                            }
+                          }
+                        },
+                        "created_at": {
+                          "type": "string",
+                          "format": "date-time"
+                        },
+                        "started_at": {
+                          "type": "string",
+                          "format": "date-time"
+                        },
+                        "completed_at": {
+                          "type": "string",
+                          "format": "date-time"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The evaluator calls a model and no provider key is enabled for evaluations on that provider and model.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManagementErrorResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/evals/evaluators/{id}": {
+      "get": {
+        "operationId": "getEvaluator",
+        "x-mint": {
+          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Evaluators:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+        },
+        "summary": "Get evaluator",
+        "description": "Returns an evaluator with the config of its current version. Secret header values are redacted.\n",
+        "tags": [
+          "Evaluators"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "Evaluator ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "evaluator": {
+                      "allOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "id": {
+                              "type": "string",
+                              "description": "Unique evaluator ID (UUID)"
+                            },
+                            "name": {
+                              "type": "string"
+                            },
+                            "description": {
+                              "type": "string"
+                            },
+                            "type": {
+                              "type": "string",
+                              "enum": [
+                                "ai",
+                                "programmatic",
+                                "statistical",
+                                "api",
+                                "human"
+                              ]
+                            },
+                            "builtin_key": {
+                              "type": "string",
+                              "description": "Catalog key, for an evaluator installed from a built-in"
+                            },
+                            "current_version": {
+                              "type": "integer"
+                            },
+                            "tags": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              }
+                            },
+                            "created_by": {
+                              "type": "string"
+                            },
+                            "created_at": {
+                              "type": "string",
+                              "format": "date-time"
+                            },
+                            "updated_at": {
+                              "type": "string",
+                              "format": "date-time"
+                            }
+                          }
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "version": {
+                              "type": "integer",
+                              "description": "The version `config` belongs to"
+                            },
+                            "config": {
+                              "type": "object",
+                              "description": "Evaluator config. The fields depend on the evaluator type.\n\n- `ai`: `instructions`, `grading_style` (`yes_no`, `scale`, `multiselect`, `number`), `scale`, `provider`, `model`, `model_params`\n- `programmatic`: `code` (Starlark, must define `validate(...)`), `response_type`\n- `api`: `method`, `url`, `headers`, `params`, `payload`, `output_mapping`, `timeout_ms`, `concurrency`\n- `statistical`: `embedding_provider`, `embedding_model` (embedding-based metrics only)\n- `human`: `instructions`, `evaluation_type`, `scale`\n\nEvery type also takes `pass_criteria`, `reversed`, `score_normalizer`, `variables` and `optional_variables`.\n",
+                              "additionalProperties": true,
+                              "properties": {
+                                "pass_criteria": {
+                                  "type": "object",
+                                  "properties": {
+                                    "entry_level": {
+                                      "type": "object",
+                                      "description": "One pass/fail rule",
+                                      "properties": {
+                                        "name": {
+                                          "type": "string",
+                                          "description": "What the rule judges. Entry level: `score`. Run level: `mean_score`, `median_score`,\n`minimum_score`, `maximum_score` or `queries_passed` (percent of entries that passed).\n"
+                                        },
+                                        "operator": {
+                                          "type": "string",
+                                          "enum": [
+                                            "=",
+                                            "!=",
+                                            ">",
+                                            "<",
+                                            ">=",
+                                            "<=",
+                                            "is one of"
+                                          ]
+                                        },
+                                        "value": {
+                                          "description": "The value to compare against. A number, a string, a boolean, or a list of strings for `is one of`."
+                                        },
+                                        "options": {
+                                          "type": "array",
+                                          "items": {
+                                            "type": "string"
+                                          },
+                                          "description": "The choices of a multiselect score"
+                                        }
+                                      }
+                                    },
+                                    "run_level": {
+                                      "type": "object",
+                                      "description": "One pass/fail rule",
+                                      "properties": {
+                                        "name": {
+                                          "type": "string",
+                                          "description": "What the rule judges. Entry level: `score`. Run level: `mean_score`, `median_score`,\n`minimum_score`, `maximum_score` or `queries_passed` (percent of entries that passed).\n"
+                                        },
+                                        "operator": {
+                                          "type": "string",
+                                          "enum": [
+                                            "=",
+                                            "!=",
+                                            ">",
+                                            "<",
+                                            ">=",
+                                            "<=",
+                                            "is one of"
+                                          ]
+                                        },
+                                        "value": {
+                                          "description": "The value to compare against. A number, a string, a boolean, or a list of strings for `is one of`."
+                                        },
+                                        "options": {
+                                          "type": "array",
+                                          "items": {
+                                            "type": "string"
+                                          },
+                                          "description": "The choices of a multiselect score"
+                                        }
+                                      }
+                                    }
+                                  }
+                                },
+                                "reversed": {
+                                  "type": "boolean",
+                                  "description": "Whether a lower score is better"
+                                },
+                                "variables": {
+                                  "type": "object",
+                                  "additionalProperties": {
+                                    "type": "string"
+                                  },
+                                  "description": "Required variables, name to description"
+                                },
+                                "optional_variables": {
+                                  "type": "object",
+                                  "additionalProperties": {
+                                    "type": "string"
+                                  },
+                                  "description": "Optional variables, name to description"
+                                }
+                              }
+                            },
+                            "variables": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              },
+                              "description": "Variables the evaluator requires"
+                            },
+                            "optional_variables": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              },
+                              "description": "Variables the evaluator reads when present"
+                            },
+                            "executable": {
+                              "type": "boolean",
+                              "description": "False for human evaluators, which reviewers score by hand"
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "operationId": "updateEvaluator",
+        "x-mint": {
+          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Evaluators:Update` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+        },
+        "summary": "Update evaluator",
+        "description": "Updates name, description and tags in place. A config that differs from the current one is stored as\na new version; sending the current config back changes nothing. The type cannot be changed.\n\nA header value sent as `<REDACTED>` keeps the stored secret for that header.\n",
+        "tags": [
+          "Evaluators"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "Evaluator ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "description": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "type": "string",
+                    "enum": [
+                      "ai",
+                      "programmatic",
+                      "api",
+                      "human"
+                    ],
+                    "description": "Required on create. Cannot be changed afterwards."
+                  },
+                  "tags": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "config": {
+                    "type": "object",
+                    "description": "Evaluator config. The fields depend on the evaluator type.\n\n- `ai`: `instructions`, `grading_style` (`yes_no`, `scale`, `multiselect`, `number`), `scale`, `provider`, `model`, `model_params`\n- `programmatic`: `code` (Starlark, must define `validate(...)`), `response_type`\n- `api`: `method`, `url`, `headers`, `params`, `payload`, `output_mapping`, `timeout_ms`, `concurrency`\n- `statistical`: `embedding_provider`, `embedding_model` (embedding-based metrics only)\n- `human`: `instructions`, `evaluation_type`, `scale`\n\nEvery type also takes `pass_criteria`, `reversed`, `score_normalizer`, `variables` and `optional_variables`.\n",
+                    "additionalProperties": true,
+                    "properties": {
+                      "pass_criteria": {
+                        "type": "object",
+                        "properties": {
+                          "entry_level": {
+                            "type": "object",
+                            "description": "One pass/fail rule",
+                            "properties": {
+                              "name": {
+                                "type": "string",
+                                "description": "What the rule judges. Entry level: `score`. Run level: `mean_score`, `median_score`,\n`minimum_score`, `maximum_score` or `queries_passed` (percent of entries that passed).\n"
+                              },
+                              "operator": {
+                                "type": "string",
+                                "enum": [
+                                  "=",
+                                  "!=",
+                                  ">",
+                                  "<",
+                                  ">=",
+                                  "<=",
+                                  "is one of"
+                                ]
+                              },
+                              "value": {
+                                "description": "The value to compare against. A number, a string, a boolean, or a list of strings for `is one of`."
+                              },
+                              "options": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string"
+                                },
+                                "description": "The choices of a multiselect score"
+                              }
+                            }
+                          },
+                          "run_level": {
+                            "type": "object",
+                            "description": "One pass/fail rule",
+                            "properties": {
+                              "name": {
+                                "type": "string",
+                                "description": "What the rule judges. Entry level: `score`. Run level: `mean_score`, `median_score`,\n`minimum_score`, `maximum_score` or `queries_passed` (percent of entries that passed).\n"
+                              },
+                              "operator": {
+                                "type": "string",
+                                "enum": [
+                                  "=",
+                                  "!=",
+                                  ">",
+                                  "<",
+                                  ">=",
+                                  "<=",
+                                  "is one of"
+                                ]
+                              },
+                              "value": {
+                                "description": "The value to compare against. A number, a string, a boolean, or a list of strings for `is one of`."
+                              },
+                              "options": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string"
+                                },
+                                "description": "The choices of a multiselect score"
+                              }
+                            }
+                          }
+                        }
+                      },
+                      "reversed": {
+                        "type": "boolean",
+                        "description": "Whether a lower score is better"
+                      },
+                      "variables": {
+                        "type": "object",
+                        "additionalProperties": {
+                          "type": "string"
+                        },
+                        "description": "Required variables, name to description"
+                      },
+                      "optional_variables": {
+                        "type": "object",
+                        "additionalProperties": {
+                          "type": "string"
+                        },
+                        "description": "Optional variables, name to description"
+                      }
+                    }
+                  },
+                  "commit_message": {
+                    "type": "string",
+                    "description": "Note stored with the version this request creates"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "evaluator": {
+                      "allOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "id": {
+                              "type": "string",
+                              "description": "Unique evaluator ID (UUID)"
+                            },
+                            "name": {
+                              "type": "string"
+                            },
+                            "description": {
+                              "type": "string"
+                            },
+                            "type": {
+                              "type": "string",
+                              "enum": [
+                                "ai",
+                                "programmatic",
+                                "statistical",
+                                "api",
+                                "human"
+                              ]
+                            },
+                            "builtin_key": {
+                              "type": "string",
+                              "description": "Catalog key, for an evaluator installed from a built-in"
+                            },
+                            "current_version": {
+                              "type": "integer"
+                            },
+                            "tags": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              }
+                            },
+                            "created_by": {
+                              "type": "string"
+                            },
+                            "created_at": {
+                              "type": "string",
+                              "format": "date-time"
+                            },
+                            "updated_at": {
+                              "type": "string",
+                              "format": "date-time"
+                            }
+                          }
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "version": {
+                              "type": "integer",
+                              "description": "The version `config` belongs to"
+                            },
+                            "config": {
+                              "type": "object",
+                              "description": "Evaluator config. The fields depend on the evaluator type.\n\n- `ai`: `instructions`, `grading_style` (`yes_no`, `scale`, `multiselect`, `number`), `scale`, `provider`, `model`, `model_params`\n- `programmatic`: `code` (Starlark, must define `validate(...)`), `response_type`\n- `api`: `method`, `url`, `headers`, `params`, `payload`, `output_mapping`, `timeout_ms`, `concurrency`\n- `statistical`: `embedding_provider`, `embedding_model` (embedding-based metrics only)\n- `human`: `instructions`, `evaluation_type`, `scale`\n\nEvery type also takes `pass_criteria`, `reversed`, `score_normalizer`, `variables` and `optional_variables`.\n",
+                              "additionalProperties": true,
+                              "properties": {
+                                "pass_criteria": {
+                                  "type": "object",
+                                  "properties": {
+                                    "entry_level": {
+                                      "type": "object",
+                                      "description": "One pass/fail rule",
+                                      "properties": {
+                                        "name": {
+                                          "type": "string",
+                                          "description": "What the rule judges. Entry level: `score`. Run level: `mean_score`, `median_score`,\n`minimum_score`, `maximum_score` or `queries_passed` (percent of entries that passed).\n"
+                                        },
+                                        "operator": {
+                                          "type": "string",
+                                          "enum": [
+                                            "=",
+                                            "!=",
+                                            ">",
+                                            "<",
+                                            ">=",
+                                            "<=",
+                                            "is one of"
+                                          ]
+                                        },
+                                        "value": {
+                                          "description": "The value to compare against. A number, a string, a boolean, or a list of strings for `is one of`."
+                                        },
+                                        "options": {
+                                          "type": "array",
+                                          "items": {
+                                            "type": "string"
+                                          },
+                                          "description": "The choices of a multiselect score"
+                                        }
+                                      }
+                                    },
+                                    "run_level": {
+                                      "type": "object",
+                                      "description": "One pass/fail rule",
+                                      "properties": {
+                                        "name": {
+                                          "type": "string",
+                                          "description": "What the rule judges. Entry level: `score`. Run level: `mean_score`, `median_score`,\n`minimum_score`, `maximum_score` or `queries_passed` (percent of entries that passed).\n"
+                                        },
+                                        "operator": {
+                                          "type": "string",
+                                          "enum": [
+                                            "=",
+                                            "!=",
+                                            ">",
+                                            "<",
+                                            ">=",
+                                            "<=",
+                                            "is one of"
+                                          ]
+                                        },
+                                        "value": {
+                                          "description": "The value to compare against. A number, a string, a boolean, or a list of strings for `is one of`."
+                                        },
+                                        "options": {
+                                          "type": "array",
+                                          "items": {
+                                            "type": "string"
+                                          },
+                                          "description": "The choices of a multiselect score"
+                                        }
+                                      }
+                                    }
+                                  }
+                                },
+                                "reversed": {
+                                  "type": "boolean",
+                                  "description": "Whether a lower score is better"
+                                },
+                                "variables": {
+                                  "type": "object",
+                                  "additionalProperties": {
+                                    "type": "string"
+                                  },
+                                  "description": "Required variables, name to description"
+                                },
+                                "optional_variables": {
+                                  "type": "object",
+                                  "additionalProperties": {
+                                    "type": "string"
+                                  },
+                                  "description": "Optional variables, name to description"
+                                }
+                              }
+                            },
+                            "variables": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              },
+                              "description": "Variables the evaluator requires"
+                            },
+                            "optional_variables": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              },
+                              "description": "Variables the evaluator reads when present"
+                            },
+                            "executable": {
+                              "type": "boolean",
+                              "description": "False for human evaluators, which reviewers score by hand"
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict with the current state of the resource",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "operationId": "deleteEvaluator",
+        "x-mint": {
+          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Evaluators:Delete` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+        },
+        "summary": "Delete evaluator",
+        "description": "Deletes an evaluator. Its versions are kept, and its name can be reused.\n",
+        "tags": [
+          "Evaluators"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "Evaluator ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "message": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/evals/evaluators/{id}/duplicate": {
+      "post": {
+        "operationId": "duplicateEvaluator",
+        "x-mint": {
+          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Evaluators:Create` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+        },
+        "summary": "Duplicate evaluator",
+        "description": "Copies an evaluator's current config under a new name. Without a name, the copy is named after the original.\n",
+        "tags": [
+          "Evaluators"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "Evaluator ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "description": "Name of the copy"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "evaluator": {
+                      "allOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "id": {
+                              "type": "string",
+                              "description": "Unique evaluator ID (UUID)"
+                            },
+                            "name": {
+                              "type": "string"
+                            },
+                            "description": {
+                              "type": "string"
+                            },
+                            "type": {
+                              "type": "string",
+                              "enum": [
+                                "ai",
+                                "programmatic",
+                                "statistical",
+                                "api",
+                                "human"
+                              ]
+                            },
+                            "builtin_key": {
+                              "type": "string",
+                              "description": "Catalog key, for an evaluator installed from a built-in"
+                            },
+                            "current_version": {
+                              "type": "integer"
+                            },
+                            "tags": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              }
+                            },
+                            "created_by": {
+                              "type": "string"
+                            },
+                            "created_at": {
+                              "type": "string",
+                              "format": "date-time"
+                            },
+                            "updated_at": {
+                              "type": "string",
+                              "format": "date-time"
+                            }
+                          }
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "version": {
+                              "type": "integer",
+                              "description": "The version `config` belongs to"
+                            },
+                            "config": {
+                              "type": "object",
+                              "description": "Evaluator config. The fields depend on the evaluator type.\n\n- `ai`: `instructions`, `grading_style` (`yes_no`, `scale`, `multiselect`, `number`), `scale`, `provider`, `model`, `model_params`\n- `programmatic`: `code` (Starlark, must define `validate(...)`), `response_type`\n- `api`: `method`, `url`, `headers`, `params`, `payload`, `output_mapping`, `timeout_ms`, `concurrency`\n- `statistical`: `embedding_provider`, `embedding_model` (embedding-based metrics only)\n- `human`: `instructions`, `evaluation_type`, `scale`\n\nEvery type also takes `pass_criteria`, `reversed`, `score_normalizer`, `variables` and `optional_variables`.\n",
+                              "additionalProperties": true,
+                              "properties": {
+                                "pass_criteria": {
+                                  "type": "object",
+                                  "properties": {
+                                    "entry_level": {
+                                      "type": "object",
+                                      "description": "One pass/fail rule",
+                                      "properties": {
+                                        "name": {
+                                          "type": "string",
+                                          "description": "What the rule judges. Entry level: `score`. Run level: `mean_score`, `median_score`,\n`minimum_score`, `maximum_score` or `queries_passed` (percent of entries that passed).\n"
+                                        },
+                                        "operator": {
+                                          "type": "string",
+                                          "enum": [
+                                            "=",
+                                            "!=",
+                                            ">",
+                                            "<",
+                                            ">=",
+                                            "<=",
+                                            "is one of"
+                                          ]
+                                        },
+                                        "value": {
+                                          "description": "The value to compare against. A number, a string, a boolean, or a list of strings for `is one of`."
+                                        },
+                                        "options": {
+                                          "type": "array",
+                                          "items": {
+                                            "type": "string"
+                                          },
+                                          "description": "The choices of a multiselect score"
+                                        }
+                                      }
+                                    },
+                                    "run_level": {
+                                      "type": "object",
+                                      "description": "One pass/fail rule",
+                                      "properties": {
+                                        "name": {
+                                          "type": "string",
+                                          "description": "What the rule judges. Entry level: `score`. Run level: `mean_score`, `median_score`,\n`minimum_score`, `maximum_score` or `queries_passed` (percent of entries that passed).\n"
+                                        },
+                                        "operator": {
+                                          "type": "string",
+                                          "enum": [
+                                            "=",
+                                            "!=",
+                                            ">",
+                                            "<",
+                                            ">=",
+                                            "<=",
+                                            "is one of"
+                                          ]
+                                        },
+                                        "value": {
+                                          "description": "The value to compare against. A number, a string, a boolean, or a list of strings for `is one of`."
+                                        },
+                                        "options": {
+                                          "type": "array",
+                                          "items": {
+                                            "type": "string"
+                                          },
+                                          "description": "The choices of a multiselect score"
+                                        }
+                                      }
+                                    }
+                                  }
+                                },
+                                "reversed": {
+                                  "type": "boolean",
+                                  "description": "Whether a lower score is better"
+                                },
+                                "variables": {
+                                  "type": "object",
+                                  "additionalProperties": {
+                                    "type": "string"
+                                  },
+                                  "description": "Required variables, name to description"
+                                },
+                                "optional_variables": {
+                                  "type": "object",
+                                  "additionalProperties": {
+                                    "type": "string"
+                                  },
+                                  "description": "Optional variables, name to description"
+                                }
+                              }
+                            },
+                            "variables": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              },
+                              "description": "Variables the evaluator requires"
+                            },
+                            "optional_variables": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              },
+                              "description": "Variables the evaluator reads when present"
+                            },
+                            "executable": {
+                              "type": "boolean",
+                              "description": "False for human evaluators, which reviewers score by hand"
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict with the current state of the resource",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/evals/evaluators/{id}/execute": {
+      "post": {
+        "operationId": "executeEvaluator",
+        "x-mint": {
+          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Evaluators:Update` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+        },
+        "summary": "Execute evaluator",
+        "description": "Runs a saved evaluator on a set of variables. The run is queued, and the call waits for the result up\nto `wait_ms`. An evaluator that calls a model runs on a provider key marked for evaluations, within\nthat key's eval concurrency.\n\nA missing variable or a failed evaluator is a completed execution whose score status is `na` or\n`error`, not an HTTP error.\n",
+        "tags": [
+          "Evaluators"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "Evaluator ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "variables": {
+                    "type": "object",
+                    "additionalProperties": {
+                      "type": "string"
+                    },
+                    "description": "The values to evaluate, by variable name"
+                  },
+                  "version": {
+                    "type": "integer",
+                    "description": "Version to run. Defaults to the current version."
+                  },
+                  "wait_ms": {
+                    "type": "integer",
+                    "description": "How long to hold the call for a result, up to 120000. Defaults to 30000. 0 returns at once."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "execution": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "queued",
+                            "running",
+                            "completed"
+                          ]
+                        },
+                        "evaluator_id": {
+                          "type": "string"
+                        },
+                        "evaluator_version": {
+                          "type": "integer"
+                        },
+                        "key_id": {
+                          "type": "string",
+                          "description": "The provider key the run used, for an evaluator that calls a model"
+                        },
+                        "result": {
+                          "type": "object",
+                          "properties": {
+                            "evaluator_id": {
+                              "type": "string"
+                            },
+                            "evaluator_version": {
+                              "type": "integer"
+                            },
+                            "score": {
+                              "type": "object",
+                              "description": "An evaluator's verdict. Exactly one of `number`, `bool` and `string` is set when `status` is `ok`.",
+                              "properties": {
+                                "status": {
+                                  "type": "string",
+                                  "enum": [
+                                    "ok",
+                                    "na",
+                                    "error"
+                                  ],
+                                  "description": "`na` when a required variable is missing, `error` when the evaluator failed"
+                                },
+                                "number": {
+                                  "type": "number"
+                                },
+                                "bool": {
+                                  "type": "boolean"
+                                },
+                                "string": {
+                                  "type": "string"
+                                }
+                              }
+                            },
+                            "reasoning": {
+                              "type": "string"
+                            },
+                            "pass": {
+                              "type": "boolean",
+                              "description": "Whether the score met the entry-level pass criterion. Absent unless the score status is `ok`."
+                            },
+                            "usage": {
+                              "type": "object",
+                              "description": "Tokens the evaluator's model calls used",
+                              "properties": {
+                                "prompt_tokens": {
+                                  "type": "integer"
+                                },
+                                "completion_tokens": {
+                                  "type": "integer"
+                                },
+                                "total_tokens": {
+                                  "type": "integer"
+                                }
+                              }
+                            },
+                            "cost": {
+                              "type": "number",
+                              "description": "Cost of the evaluator's model calls"
+                            },
+                            "latency_ms": {
+                              "type": "integer"
+                            },
+                            "logs": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              },
+                              "description": "Output printed by a programmatic evaluator"
+                            }
+                          }
+                        },
+                        "created_at": {
+                          "type": "string",
+                          "format": "date-time"
+                        },
+                        "started_at": {
+                          "type": "string",
+                          "format": "date-time"
+                        },
+                        "completed_at": {
+                          "type": "string",
+                          "format": "date-time"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "The run is still going when the wait ends. Poll the execution for its result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "execution": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "queued",
+                            "running",
+                            "completed"
+                          ]
+                        },
+                        "evaluator_id": {
+                          "type": "string"
+                        },
+                        "evaluator_version": {
+                          "type": "integer"
+                        },
+                        "key_id": {
+                          "type": "string",
+                          "description": "The provider key the run used, for an evaluator that calls a model"
+                        },
+                        "result": {
+                          "type": "object",
+                          "properties": {
+                            "evaluator_id": {
+                              "type": "string"
+                            },
+                            "evaluator_version": {
+                              "type": "integer"
+                            },
+                            "score": {
+                              "type": "object",
+                              "description": "An evaluator's verdict. Exactly one of `number`, `bool` and `string` is set when `status` is `ok`.",
+                              "properties": {
+                                "status": {
+                                  "type": "string",
+                                  "enum": [
+                                    "ok",
+                                    "na",
+                                    "error"
+                                  ],
+                                  "description": "`na` when a required variable is missing, `error` when the evaluator failed"
+                                },
+                                "number": {
+                                  "type": "number"
+                                },
+                                "bool": {
+                                  "type": "boolean"
+                                },
+                                "string": {
+                                  "type": "string"
+                                }
+                              }
+                            },
+                            "reasoning": {
+                              "type": "string"
+                            },
+                            "pass": {
+                              "type": "boolean",
+                              "description": "Whether the score met the entry-level pass criterion. Absent unless the score status is `ok`."
+                            },
+                            "usage": {
+                              "type": "object",
+                              "description": "Tokens the evaluator's model calls used",
+                              "properties": {
+                                "prompt_tokens": {
+                                  "type": "integer"
+                                },
+                                "completion_tokens": {
+                                  "type": "integer"
+                                },
+                                "total_tokens": {
+                                  "type": "integer"
+                                }
+                              }
+                            },
+                            "cost": {
+                              "type": "number",
+                              "description": "Cost of the evaluator's model calls"
+                            },
+                            "latency_ms": {
+                              "type": "integer"
+                            },
+                            "logs": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              },
+                              "description": "Output printed by a programmatic evaluator"
+                            }
+                          }
+                        },
+                        "created_at": {
+                          "type": "string",
+                          "format": "date-time"
+                        },
+                        "started_at": {
+                          "type": "string",
+                          "format": "date-time"
+                        },
+                        "completed_at": {
+                          "type": "string",
+                          "format": "date-time"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The evaluator calls a model and no provider key is enabled for evaluations on that provider and model.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManagementErrorResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/evals/evaluators/{id}/versions": {
+      "get": {
+        "operationId": "listEvaluatorVersions",
+        "x-mint": {
+          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Evaluators:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+        },
+        "summary": "List evaluator versions",
+        "description": "Returns every version of an evaluator, newest first.\n",
+        "tags": [
+          "Evaluators"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "Evaluator ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "versions": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "evaluator_id": {
+                            "type": "string"
+                          },
+                          "version": {
+                            "type": "integer"
+                          },
+                          "config": {
+                            "type": "object",
+                            "description": "Evaluator config. The fields depend on the evaluator type.\n\n- `ai`: `instructions`, `grading_style` (`yes_no`, `scale`, `multiselect`, `number`), `scale`, `provider`, `model`, `model_params`\n- `programmatic`: `code` (Starlark, must define `validate(...)`), `response_type`\n- `api`: `method`, `url`, `headers`, `params`, `payload`, `output_mapping`, `timeout_ms`, `concurrency`\n- `statistical`: `embedding_provider`, `embedding_model` (embedding-based metrics only)\n- `human`: `instructions`, `evaluation_type`, `scale`\n\nEvery type also takes `pass_criteria`, `reversed`, `score_normalizer`, `variables` and `optional_variables`.\n",
+                            "additionalProperties": true,
+                            "properties": {
+                              "pass_criteria": {
+                                "type": "object",
+                                "properties": {
+                                  "entry_level": {
+                                    "type": "object",
+                                    "description": "One pass/fail rule",
+                                    "properties": {
+                                      "name": {
+                                        "type": "string",
+                                        "description": "What the rule judges. Entry level: `score`. Run level: `mean_score`, `median_score`,\n`minimum_score`, `maximum_score` or `queries_passed` (percent of entries that passed).\n"
+                                      },
+                                      "operator": {
+                                        "type": "string",
+                                        "enum": [
+                                          "=",
+                                          "!=",
+                                          ">",
+                                          "<",
+                                          ">=",
+                                          "<=",
+                                          "is one of"
+                                        ]
+                                      },
+                                      "value": {
+                                        "description": "The value to compare against. A number, a string, a boolean, or a list of strings for `is one of`."
+                                      },
+                                      "options": {
+                                        "type": "array",
+                                        "items": {
+                                          "type": "string"
+                                        },
+                                        "description": "The choices of a multiselect score"
+                                      }
+                                    }
+                                  },
+                                  "run_level": {
+                                    "type": "object",
+                                    "description": "One pass/fail rule",
+                                    "properties": {
+                                      "name": {
+                                        "type": "string",
+                                        "description": "What the rule judges. Entry level: `score`. Run level: `mean_score`, `median_score`,\n`minimum_score`, `maximum_score` or `queries_passed` (percent of entries that passed).\n"
+                                      },
+                                      "operator": {
+                                        "type": "string",
+                                        "enum": [
+                                          "=",
+                                          "!=",
+                                          ">",
+                                          "<",
+                                          ">=",
+                                          "<=",
+                                          "is one of"
+                                        ]
+                                      },
+                                      "value": {
+                                        "description": "The value to compare against. A number, a string, a boolean, or a list of strings for `is one of`."
+                                      },
+                                      "options": {
+                                        "type": "array",
+                                        "items": {
+                                          "type": "string"
+                                        },
+                                        "description": "The choices of a multiselect score"
+                                      }
+                                    }
+                                  }
+                                }
+                              },
+                              "reversed": {
+                                "type": "boolean",
+                                "description": "Whether a lower score is better"
+                              },
+                              "variables": {
+                                "type": "object",
+                                "additionalProperties": {
+                                  "type": "string"
+                                },
+                                "description": "Required variables, name to description"
+                              },
+                              "optional_variables": {
+                                "type": "object",
+                                "additionalProperties": {
+                                  "type": "string"
+                                },
+                                "description": "Optional variables, name to description"
+                              }
+                            }
+                          },
+                          "commit_message": {
+                            "type": "string"
+                          },
+                          "created_by": {
+                            "type": "string"
+                          },
+                          "created_at": {
+                            "type": "string",
+                            "format": "date-time"
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/evals/evaluators/{id}/versions/{version}": {
+      "get": {
+        "operationId": "getEvaluatorVersion",
+        "x-mint": {
+          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Evaluators:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+        },
+        "summary": "Get evaluator version",
+        "description": "Returns an evaluator as of one version.\n",
+        "tags": [
+          "Evaluators"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "Evaluator ID",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "version",
+            "in": "path",
+            "required": true,
+            "description": "Version number, starting at 1",
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "evaluator": {
+                      "allOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "id": {
+                              "type": "string",
+                              "description": "Unique evaluator ID (UUID)"
+                            },
+                            "name": {
+                              "type": "string"
+                            },
+                            "description": {
+                              "type": "string"
+                            },
+                            "type": {
+                              "type": "string",
+                              "enum": [
+                                "ai",
+                                "programmatic",
+                                "statistical",
+                                "api",
+                                "human"
+                              ]
+                            },
+                            "builtin_key": {
+                              "type": "string",
+                              "description": "Catalog key, for an evaluator installed from a built-in"
+                            },
+                            "current_version": {
+                              "type": "integer"
+                            },
+                            "tags": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              }
+                            },
+                            "created_by": {
+                              "type": "string"
+                            },
+                            "created_at": {
+                              "type": "string",
+                              "format": "date-time"
+                            },
+                            "updated_at": {
+                              "type": "string",
+                              "format": "date-time"
+                            }
+                          }
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "version": {
+                              "type": "integer",
+                              "description": "The version `config` belongs to"
+                            },
+                            "config": {
+                              "type": "object",
+                              "description": "Evaluator config. The fields depend on the evaluator type.\n\n- `ai`: `instructions`, `grading_style` (`yes_no`, `scale`, `multiselect`, `number`), `scale`, `provider`, `model`, `model_params`\n- `programmatic`: `code` (Starlark, must define `validate(...)`), `response_type`\n- `api`: `method`, `url`, `headers`, `params`, `payload`, `output_mapping`, `timeout_ms`, `concurrency`\n- `statistical`: `embedding_provider`, `embedding_model` (embedding-based metrics only)\n- `human`: `instructions`, `evaluation_type`, `scale`\n\nEvery type also takes `pass_criteria`, `reversed`, `score_normalizer`, `variables` and `optional_variables`.\n",
+                              "additionalProperties": true,
+                              "properties": {
+                                "pass_criteria": {
+                                  "type": "object",
+                                  "properties": {
+                                    "entry_level": {
+                                      "type": "object",
+                                      "description": "One pass/fail rule",
+                                      "properties": {
+                                        "name": {
+                                          "type": "string",
+                                          "description": "What the rule judges. Entry level: `score`. Run level: `mean_score`, `median_score`,\n`minimum_score`, `maximum_score` or `queries_passed` (percent of entries that passed).\n"
+                                        },
+                                        "operator": {
+                                          "type": "string",
+                                          "enum": [
+                                            "=",
+                                            "!=",
+                                            ">",
+                                            "<",
+                                            ">=",
+                                            "<=",
+                                            "is one of"
+                                          ]
+                                        },
+                                        "value": {
+                                          "description": "The value to compare against. A number, a string, a boolean, or a list of strings for `is one of`."
+                                        },
+                                        "options": {
+                                          "type": "array",
+                                          "items": {
+                                            "type": "string"
+                                          },
+                                          "description": "The choices of a multiselect score"
+                                        }
+                                      }
+                                    },
+                                    "run_level": {
+                                      "type": "object",
+                                      "description": "One pass/fail rule",
+                                      "properties": {
+                                        "name": {
+                                          "type": "string",
+                                          "description": "What the rule judges. Entry level: `score`. Run level: `mean_score`, `median_score`,\n`minimum_score`, `maximum_score` or `queries_passed` (percent of entries that passed).\n"
+                                        },
+                                        "operator": {
+                                          "type": "string",
+                                          "enum": [
+                                            "=",
+                                            "!=",
+                                            ">",
+                                            "<",
+                                            ">=",
+                                            "<=",
+                                            "is one of"
+                                          ]
+                                        },
+                                        "value": {
+                                          "description": "The value to compare against. A number, a string, a boolean, or a list of strings for `is one of`."
+                                        },
+                                        "options": {
+                                          "type": "array",
+                                          "items": {
+                                            "type": "string"
+                                          },
+                                          "description": "The choices of a multiselect score"
+                                        }
+                                      }
+                                    }
+                                  }
+                                },
+                                "reversed": {
+                                  "type": "boolean",
+                                  "description": "Whether a lower score is better"
+                                },
+                                "variables": {
+                                  "type": "object",
+                                  "additionalProperties": {
+                                    "type": "string"
+                                  },
+                                  "description": "Required variables, name to description"
+                                },
+                                "optional_variables": {
+                                  "type": "object",
+                                  "additionalProperties": {
+                                    "type": "string"
+                                  },
+                                  "description": "Optional variables, name to description"
+                                }
+                              }
+                            },
+                            "variables": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              },
+                              "description": "Variables the evaluator requires"
+                            },
+                            "optional_variables": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              },
+                              "description": "Variables the evaluator reads when present"
+                            },
+                            "executable": {
+                              "type": "boolean",
+                              "description": "False for human evaluators, which reviewers score by hand"
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/evals/catalog": {
+      "get": {
+        "operationId": "listEvaluatorCatalog",
+        "x-mint": {
+          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Evaluators:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+        },
+        "summary": "List built-in evaluators",
+        "description": "Returns the built-in evaluators: what each measures, the variables it reads and its default pass criteria.\n",
+        "tags": [
+          "Evaluators"
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "catalog": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "key": {
+                            "type": "string"
+                          },
+                          "name": {
+                            "type": "string"
+                          },
+                          "description": {
+                            "type": "string"
+                          },
+                          "category": {
+                            "type": "string"
+                          },
+                          "type": {
+                            "type": "string",
+                            "enum": [
+                              "ai",
+                              "statistical"
+                            ]
+                          },
+                          "variables": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "optional_variables": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "lower_is_better": {
+                            "type": "boolean"
+                          },
+                          "needs_judge_model": {
+                            "type": "boolean"
+                          },
+                          "needs_embedding_model": {
+                            "type": "boolean"
+                          },
+                          "pass_criteria": {
+                            "type": "object",
+                            "properties": {
+                              "entry_level": {
+                                "type": "object",
+                                "description": "One pass/fail rule",
+                                "properties": {
+                                  "name": {
+                                    "type": "string",
+                                    "description": "What the rule judges. Entry level: `score`. Run level: `mean_score`, `median_score`,\n`minimum_score`, `maximum_score` or `queries_passed` (percent of entries that passed).\n"
+                                  },
+                                  "operator": {
+                                    "type": "string",
+                                    "enum": [
+                                      "=",
+                                      "!=",
+                                      ">",
+                                      "<",
+                                      ">=",
+                                      "<=",
+                                      "is one of"
+                                    ]
+                                  },
+                                  "value": {
+                                    "description": "The value to compare against. A number, a string, a boolean, or a list of strings for `is one of`."
+                                  },
+                                  "options": {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "string"
+                                    },
+                                    "description": "The choices of a multiselect score"
+                                  }
+                                }
+                              },
+                              "run_level": {
+                                "type": "object",
+                                "description": "One pass/fail rule",
+                                "properties": {
+                                  "name": {
+                                    "type": "string",
+                                    "description": "What the rule judges. Entry level: `score`. Run level: `mean_score`, `median_score`,\n`minimum_score`, `maximum_score` or `queries_passed` (percent of entries that passed).\n"
+                                  },
+                                  "operator": {
+                                    "type": "string",
+                                    "enum": [
+                                      "=",
+                                      "!=",
+                                      ">",
+                                      "<",
+                                      ">=",
+                                      "<=",
+                                      "is one of"
+                                    ]
+                                  },
+                                  "value": {
+                                    "description": "The value to compare against. A number, a string, a boolean, or a list of strings for `is one of`."
+                                  },
+                                  "options": {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "string"
+                                    },
+                                    "description": "The choices of a multiselect score"
+                                  }
+                                }
+                              }
+                            }
+                          },
+                          "scale": {
+                            "type": "string",
+                            "description": "The range of the score, in words"
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/evals/catalog/{key}/install": {
+      "post": {
+        "operationId": "installBuiltinEvaluator",
+        "x-mint": {
+          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Evaluators:Create` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+        },
+        "summary": "Install built-in evaluator",
+        "description": "Creates an evaluator from a built-in. A built-in graded by a model needs a judge provider and model;\none that embeds text needs an embedding provider and model.\n",
+        "tags": [
+          "Evaluators"
+        ],
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "description": "Catalog key of the built-in, for example `faithfulness`",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "description": "Defaults to the built-in's name"
+                  },
+                  "description": {
+                    "type": "string"
+                  },
+                  "tags": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "provider": {
+                    "type": "string",
+                    "description": "Judge or embedding provider, when the built-in needs one"
+                  },
+                  "model": {
+                    "type": "string",
+                    "description": "Judge or embedding model"
+                  },
+                  "model_params": {
+                    "type": "object",
+                    "additionalProperties": true
+                  },
+                  "pass_criteria": {
+                    "type": "object",
+                    "properties": {
+                      "entry_level": {
+                        "type": "object",
+                        "description": "One pass/fail rule",
+                        "properties": {
+                          "name": {
+                            "type": "string",
+                            "description": "What the rule judges. Entry level: `score`. Run level: `mean_score`, `median_score`,\n`minimum_score`, `maximum_score` or `queries_passed` (percent of entries that passed).\n"
+                          },
+                          "operator": {
+                            "type": "string",
+                            "enum": [
+                              "=",
+                              "!=",
+                              ">",
+                              "<",
+                              ">=",
+                              "<=",
+                              "is one of"
+                            ]
+                          },
+                          "value": {
+                            "description": "The value to compare against. A number, a string, a boolean, or a list of strings for `is one of`."
+                          },
+                          "options": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            },
+                            "description": "The choices of a multiselect score"
+                          }
+                        }
+                      },
+                      "run_level": {
+                        "type": "object",
+                        "description": "One pass/fail rule",
+                        "properties": {
+                          "name": {
+                            "type": "string",
+                            "description": "What the rule judges. Entry level: `score`. Run level: `mean_score`, `median_score`,\n`minimum_score`, `maximum_score` or `queries_passed` (percent of entries that passed).\n"
+                          },
+                          "operator": {
+                            "type": "string",
+                            "enum": [
+                              "=",
+                              "!=",
+                              ">",
+                              "<",
+                              ">=",
+                              "<=",
+                              "is one of"
+                            ]
+                          },
+                          "value": {
+                            "description": "The value to compare against. A number, a string, a boolean, or a list of strings for `is one of`."
+                          },
+                          "options": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            },
+                            "description": "The choices of a multiselect score"
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "evaluator": {
+                      "allOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "id": {
+                              "type": "string",
+                              "description": "Unique evaluator ID (UUID)"
+                            },
+                            "name": {
+                              "type": "string"
+                            },
+                            "description": {
+                              "type": "string"
+                            },
+                            "type": {
+                              "type": "string",
+                              "enum": [
+                                "ai",
+                                "programmatic",
+                                "statistical",
+                                "api",
+                                "human"
+                              ]
+                            },
+                            "builtin_key": {
+                              "type": "string",
+                              "description": "Catalog key, for an evaluator installed from a built-in"
+                            },
+                            "current_version": {
+                              "type": "integer"
+                            },
+                            "tags": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              }
+                            },
+                            "created_by": {
+                              "type": "string"
+                            },
+                            "created_at": {
+                              "type": "string",
+                              "format": "date-time"
+                            },
+                            "updated_at": {
+                              "type": "string",
+                              "format": "date-time"
+                            }
+                          }
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "version": {
+                              "type": "integer",
+                              "description": "The version `config` belongs to"
+                            },
+                            "config": {
+                              "type": "object",
+                              "description": "Evaluator config. The fields depend on the evaluator type.\n\n- `ai`: `instructions`, `grading_style` (`yes_no`, `scale`, `multiselect`, `number`), `scale`, `provider`, `model`, `model_params`\n- `programmatic`: `code` (Starlark, must define `validate(...)`), `response_type`\n- `api`: `method`, `url`, `headers`, `params`, `payload`, `output_mapping`, `timeout_ms`, `concurrency`\n- `statistical`: `embedding_provider`, `embedding_model` (embedding-based metrics only)\n- `human`: `instructions`, `evaluation_type`, `scale`\n\nEvery type also takes `pass_criteria`, `reversed`, `score_normalizer`, `variables` and `optional_variables`.\n",
+                              "additionalProperties": true,
+                              "properties": {
+                                "pass_criteria": {
+                                  "type": "object",
+                                  "properties": {
+                                    "entry_level": {
+                                      "type": "object",
+                                      "description": "One pass/fail rule",
+                                      "properties": {
+                                        "name": {
+                                          "type": "string",
+                                          "description": "What the rule judges. Entry level: `score`. Run level: `mean_score`, `median_score`,\n`minimum_score`, `maximum_score` or `queries_passed` (percent of entries that passed).\n"
+                                        },
+                                        "operator": {
+                                          "type": "string",
+                                          "enum": [
+                                            "=",
+                                            "!=",
+                                            ">",
+                                            "<",
+                                            ">=",
+                                            "<=",
+                                            "is one of"
+                                          ]
+                                        },
+                                        "value": {
+                                          "description": "The value to compare against. A number, a string, a boolean, or a list of strings for `is one of`."
+                                        },
+                                        "options": {
+                                          "type": "array",
+                                          "items": {
+                                            "type": "string"
+                                          },
+                                          "description": "The choices of a multiselect score"
+                                        }
+                                      }
+                                    },
+                                    "run_level": {
+                                      "type": "object",
+                                      "description": "One pass/fail rule",
+                                      "properties": {
+                                        "name": {
+                                          "type": "string",
+                                          "description": "What the rule judges. Entry level: `score`. Run level: `mean_score`, `median_score`,\n`minimum_score`, `maximum_score` or `queries_passed` (percent of entries that passed).\n"
+                                        },
+                                        "operator": {
+                                          "type": "string",
+                                          "enum": [
+                                            "=",
+                                            "!=",
+                                            ">",
+                                            "<",
+                                            ">=",
+                                            "<=",
+                                            "is one of"
+                                          ]
+                                        },
+                                        "value": {
+                                          "description": "The value to compare against. A number, a string, a boolean, or a list of strings for `is one of`."
+                                        },
+                                        "options": {
+                                          "type": "array",
+                                          "items": {
+                                            "type": "string"
+                                          },
+                                          "description": "The choices of a multiselect score"
+                                        }
+                                      }
+                                    }
+                                  }
+                                },
+                                "reversed": {
+                                  "type": "boolean",
+                                  "description": "Whether a lower score is better"
+                                },
+                                "variables": {
+                                  "type": "object",
+                                  "additionalProperties": {
+                                    "type": "string"
+                                  },
+                                  "description": "Required variables, name to description"
+                                },
+                                "optional_variables": {
+                                  "type": "object",
+                                  "additionalProperties": {
+                                    "type": "string"
+                                  },
+                                  "description": "Optional variables, name to description"
+                                }
+                              }
+                            },
+                            "variables": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              },
+                              "description": "Variables the evaluator requires"
+                            },
+                            "optional_variables": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              },
+                              "description": "Variables the evaluator reads when present"
+                            },
+                            "executable": {
+                              "type": "boolean",
+                              "description": "False for human evaluators, which reviewers score by hand"
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict with the current state of the resource",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/evals/executions/{id}": {
+      "get": {
+        "operationId": "getEvaluatorExecution",
+        "x-mint": {
+          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Evaluators:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+        },
+        "summary": "Get execution",
+        "description": "Returns an execution and, once it has completed, its result.\n",
+        "tags": [
+          "Evaluators"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "Execution ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "execution": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "queued",
+                            "running",
+                            "completed"
+                          ]
+                        },
+                        "evaluator_id": {
+                          "type": "string"
+                        },
+                        "evaluator_version": {
+                          "type": "integer"
+                        },
+                        "key_id": {
+                          "type": "string",
+                          "description": "The provider key the run used, for an evaluator that calls a model"
+                        },
+                        "result": {
+                          "type": "object",
+                          "properties": {
+                            "evaluator_id": {
+                              "type": "string"
+                            },
+                            "evaluator_version": {
+                              "type": "integer"
+                            },
+                            "score": {
+                              "type": "object",
+                              "description": "An evaluator's verdict. Exactly one of `number`, `bool` and `string` is set when `status` is `ok`.",
+                              "properties": {
+                                "status": {
+                                  "type": "string",
+                                  "enum": [
+                                    "ok",
+                                    "na",
+                                    "error"
+                                  ],
+                                  "description": "`na` when a required variable is missing, `error` when the evaluator failed"
+                                },
+                                "number": {
+                                  "type": "number"
+                                },
+                                "bool": {
+                                  "type": "boolean"
+                                },
+                                "string": {
+                                  "type": "string"
+                                }
+                              }
+                            },
+                            "reasoning": {
+                              "type": "string"
+                            },
+                            "pass": {
+                              "type": "boolean",
+                              "description": "Whether the score met the entry-level pass criterion. Absent unless the score status is `ok`."
+                            },
+                            "usage": {
+                              "type": "object",
+                              "description": "Tokens the evaluator's model calls used",
+                              "properties": {
+                                "prompt_tokens": {
+                                  "type": "integer"
+                                },
+                                "completion_tokens": {
+                                  "type": "integer"
+                                },
+                                "total_tokens": {
+                                  "type": "integer"
+                                }
+                              }
+                            },
+                            "cost": {
+                              "type": "number",
+                              "description": "Cost of the evaluator's model calls"
+                            },
+                            "latency_ms": {
+                              "type": "integer"
+                            },
+                            "logs": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              },
+                              "description": "Output printed by a programmatic evaluator"
+                            }
+                          }
+                        },
+                        "created_at": {
+                          "type": "string",
+                          "format": "date-time"
+                        },
+                        "started_at": {
+                          "type": "string",
+                          "format": "date-time"
+                        },
+                        "completed_at": {
+                          "type": "string",
+                          "format": "date-time"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/evals/keys": {
+      "get": {
+        "operationId": "listEvalKeys",
+        "x-mint": {
+          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Evaluators:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+        },
+        "summary": "List evaluation keys",
+        "description": "Returns the provider keys marked \"use for evaluations\", sorted by provider and then name.\nAn evaluator that calls a model runs only on one of these keys. The list is empty when no\nkey is marked.\n",
+        "tags": [
+          "Evaluators"
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "keys": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "description": "A provider key marked \"use for evaluations\". The secret is never returned",
+                        "properties": {
+                          "key_id": {
+                            "type": "string"
+                          },
+                          "name": {
+                            "type": "string"
+                          },
+                          "provider": {
+                            "type": "string"
+                          },
+                          "concurrency": {
+                            "type": "integer",
+                            "description": "The most evaluations that run on this key at once, across every instance"
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/skills/files/upload": {
       "post": {
         "operationId": "uploadSkillFile",
@@ -135918,6 +139794,16 @@
             "type": "boolean",
             "description": "Whether this key can be used for batch API operations"
           },
+          "use_for_evals": {
+            "type": "boolean",
+            "description": "Whether this key can serve evaluation model calls. Evaluations only ever use keys with this set."
+          },
+          "eval_concurrency": {
+            "type": "integer",
+            "nullable": true,
+            "minimum": 1,
+            "description": "Maximum evaluations in flight on this key at once, across every Bifrost instance. Defaults to 4. On an update, null clears the stored value and returns the key to the default; leaving the field out keeps the stored value. A value below 1 is refused."
+          },
           "config_hash": {
             "type": "string",
             "description": "Hash of config.json version, used for change detection"
@@ -140367,6 +144253,19 @@
               "null"
             ],
             "default": false
+          },
+          "use_for_evals": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "default": false
+          },
+          "eval_concurrency": {
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "created_at": {
             "type": "string",

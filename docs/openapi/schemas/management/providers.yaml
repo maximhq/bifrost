@@ -428,6 +428,14 @@ Key:
     use_for_batch_api:
       type: boolean
       description: Whether this key can be used for batch API operations
+    use_for_evals:
+      type: boolean
+      description: Whether this key can serve evaluation model calls. Evaluations only ever use keys with this set.
+    eval_concurrency:
+      type: integer
+      nullable: true
+      minimum: 1
+      description: Maximum evaluations in flight on this key at once, across every Bifrost instance. Defaults to 4. On an update, null clears the stored value and returns the key to the default; leaving the field out keeps the stored value. A value below 1 is refused.
     config_hash:
       type: string
       description: Hash of config.json version, used for change detection

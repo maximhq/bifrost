@@ -1,0 +1,25 @@
+Based on the given answer, please extract the key phrases from the provided text.
+
+Example:
+Example Answer: "JPMorgan Chase & Co. is an American multinational finance company headquartered in New York City. It is the largest bank in the United States and the world's largest by market capitalization as of 2023."
+
+Example JSON:
+{
+    "statements": [
+        "JPMorgan Chase & Co. is an American multinational finance company",
+        "headquartered in New York City.",
+        "It is the largest bank in the United States",
+        "and the world's largest bank by market capitalization as of 2023."
+    ]
+}
+===== END OF EXAMPLE ======
+
+**
+IMPORTANT: Please make sure to only return in JSON format, with the "statements" key as a list of strings. No words or explanation is needed.
+You should NOT include any prior knowledge, and take the text at face value when outputting statements.
+**
+
+Answer:
+{{output}}
+
+JSON:

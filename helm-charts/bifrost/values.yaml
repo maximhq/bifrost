@@ -469,6 +469,10 @@ bifrost:
   #       enabled: true               # false = keep the key configured but skip it in routing (new keys default to true; omitted keeps the stored value)
   #       models: ["gpt-4o", "gpt-4o-mini"]  # Restrict key to specific models
   #       use_for_batch_api: false    # Whether this key can be used for batch API
+  #       use_for_evals: false        # Whether evaluators may call models with this key. Evaluations only
+  #                                   # ever use keys with this set, so they never share a production key
+  #       eval_concurrency: 4         # Max evaluations in flight on this key, across all replicas
+  #                                   # (min 1, default 4; only applies when use_for_evals is true)
   #       # use_anthropic_endpoints: false  # deepseek/fireworks/vllm/sgl keys only: route chat completions
   #                                         # and responses through Anthropic-compatible endpoints (also
   #                                         # settable per-alias alongside use_deployments_endpoint)
