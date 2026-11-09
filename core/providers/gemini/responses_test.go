@@ -2459,3 +2459,43 @@ func TestGenAIFunctionResponseSiblingFieldsSurviveRoundTrip(t *testing.T) {
 		})
 	}
 }
+
+// closeGeminiOpenItemsErrorText returns the output_text deltas that closeGeminiOpenItems
+// emitted for the finish message.
+func closeGeminiOpenItemsErrorText(events []*schemas.BifrostResponsesStreamResponse) []string {
+	var texts []string
+	for _, ev := range events {
+		if ev != nil && ev.Type == schemas.ResponsesStreamResponseTypeOutputTextDelta && ev.Delta != nil {
+			texts = append(texts, *ev.Delta)
+		}
+	}
+	return texts
+}
+
+// A finish message that only describes a malformed or unexpected model turn is not assistant
+// output: surfaced as text it lands in the conversation history and the model can imitate it on
+// the next turn. Other error finish reasons keep their visible text.
+func TestCloseGeminiOpenItems_MalformedFinishMessageNotSurfaced(t *testing.T) {
+	for _, reason := range []FinishReason{FinishReasonMalformedFunctionCall, FinishReasonUnexpectedToolCall, FinishReasonMalformedResponse} {
+		t.Run(string(reason), func(t *testing.T) {
+			state := acquireGeminiResponsesStreamState()
+			defer releaseGeminiResponsesStreamState(state)
+
+			events := closeGeminiOpenItems(state, nil, nil, 0, reason, "Malformed function call: print(default_api.x())")
+
+			for _, text := range closeGeminiOpenItemsErrorText(events) {
+				assert.NotContains(t, text, "Error: "+string(reason), "the finish message must not become assistant text")
+			}
+			require.NotEmpty(t, events)
+			terminal := events[len(events)-1]
+			require.NotNil(t, terminal.Response)
+			require.NotNil(t, terminal.Response.Status)
+			assert.Equal(t, schemas.ResponsesResponseStatusFailed, *terminal.Response.Status, "the turn still ends as failed")
+		})
+	}
+
+	state := acquireGeminiResponsesStreamState()
+	defer releaseGeminiResponsesStreamState(state)
+	events := closeGeminiOpenItems(state, nil, nil, 0, FinishReasonSafety, "blocked by policy")
+	assert.Contains(t, closeGeminiOpenItemsErrorText(events), "Error: SAFETY - blocked by policy", "other error finish reasons still surface their message")
+}
