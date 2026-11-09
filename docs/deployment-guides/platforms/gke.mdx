@@ -2,14 +2,45 @@
 title: "Google Kubernetes Engine"
 sidebarTitle: "Google Kubernetes Engine"
 description: "Deploy Bifrost to an existing Google Kubernetes Engine cluster"
-icon: "google"
+icon: "/media/gcp-icon.svg"
 ---
+
+import { GoogleCloudMark } from "/snippets/deploy-marks.jsx";
 
 This guide deploys Bifrost to an existing GKE cluster using the Helm chart. It covers the Bifrost image, secrets, storage, database connection, service exposure, verification, and scaling.
 
 <Note>
 The Helm configuration is validated in the repository. The complete guide is not continuously exercised in a live Google Cloud project, so test the selected values in a non-production cluster before rollout.
 </Note>
+
+## One-click deploy
+
+<a className="deploy-btn" href="https://shell.cloud.google.com/?show=terminal" target="_blank" rel="noopener noreferrer"><GoogleCloudMark />Deploy on GCP</a>
+
+If you do not have a cluster yet, the one-click path creates one. The button opens Google Cloud Shell, already signed in as you. Paste one line into it:
+
+```bash
+( git -C bifrost pull --ff-only 2>/dev/null || git clone --depth 1 https://github.com/maximhq/bifrost ) && bifrost/deploy/gke/deploy.sh
+```
+
+Cloud Shell no longer bundles Terraform, so the script first installs a pinned release into your home directory, where it survives between sessions. It then applies [`terraform/examples/gcp-gke-postgres`](https://github.com/maximhq/bifrost/tree/main/terraform/examples/gcp-gke-postgres) in two phases: the cluster first, then, after `gcloud container clusters get-credentials` has written the kubeconfig, the database, secrets, and Bifrost itself.
+
+| Resource | What it is |
+|---|---|
+| Cluster and node pool | Created for you (about 10 minutes) |
+| Cloud SQL PostgreSQL 16 (`db-custom-1-3840`, private IP on the cluster VPC through service networking) | Configuration store and log store, reachable only from inside the deployment's network |
+| Kubernetes Secrets `bifrost-config` and `bifrost-runtime` (named `<name_prefix>-config` and `<name_prefix>-runtime`; these are the default-prefix names) | `config.json`; database password, `BIFROST_ENCRYPTION_KEY`, `BIFROST_SETUP_TOKEN` |
+| `LoadBalancer` Service | Public passthrough Network Load Balancer, restricted to `allowed_cidr` when the example sets one; the script prints its URL |
+
+**Before you open the dashboard:** the Service is plain HTTP and reachable from any address, so the setup token, the admin password and every provider key you paste would travel unencrypted. Add a GKE Ingress with a Google-managed certificate, or an ingress controller with TLS, in front before you enter any credential. Narrowing `allowed_cidr` in `terraform.tfvars` and applying again limits who can connect and is worth doing as well, but it encrypts nothing, so it is not a substitute for TLS. Once TLS is in front, set `service_type = "ClusterIP"` in `terraform.tfvars` and apply so the public port-80 Service disappears, and use the HTTPS URL from then on. A GKE Ingress keeps serving plain HTTP by default, so also turn that off once the certificate is active: add the `kubernetes.io/ingress.allow-http: "false"` annotation, or, when the Ingress carries the `networking.gke.io/managed-certificates` annotation (which cannot be combined with `allow-http`), attach a `FrontendConfig` with `redirectToHttps` so HTTP requests are redirected. Add TLS before inviting other users.
+
+Then open the URL, [create the first admin account](/quickstart/gateway/setting-up-auth) with the printed setup token, add a provider key, and [create a virtual key](/features/governance/virtual-keys); inference routes require one because the Service is public.
+
+Terraform state stays in the example directory inside Cloud Shell's persistent home, so choose persistent storage when Cloud Shell first asks (an ephemeral session loses the state while the cloud resources remain), or configure a remote backend before running the script. The state file holds the database password, the encryption key and the setup token: restrict access to that storage or backend, and never commit or share the file. Keep the clone to change or destroy the stack. Environment overrides for the first run: `GOOGLE_CLOUD_PROJECT` (on a rerun the project in the kept `terraform.tfvars` wins, and an explicit value that disagrees with it is refused), `GCP_REGION`, `BIFROST_NAME_PREFIX`, `BIFROST_IMAGE_TAG` (pin a release), `BIFROST_IMAGE_REPOSITORY`, and `BIFROST_AUTO_APPROVE=1`. They seed `terraform.tfvars`; the script keeps that file on reruns, so later changes such as a new image tag go into `terraform.tfvars` followed by `terraform apply`. Do not change `region` on an existing deployment that way: the database cannot move, so Terraform would replace it and the plan would destroy both stores; a region move is a new stack plus a database migration. Tear down with `terraform destroy` in the example directory.
+
+**Enterprise:** the Terraform Deployment pulls with the node service account, not a pull secret, and that account exists only once the script has created the cluster. So run the script first with `BIFROST_IMAGE_REPOSITORY` unset, which deploys the public image. Then copy the Enterprise image into an Artifact Registry repository in your project (or set up a remote repository that proxies the issued registry), grant the created node service account `roles/artifactregistry.reader` on it, set `image_repository` in `terraform.tfvars` to that repository and run `terraform apply`. Starting with the private path would leave the pod in `ImagePullBackOff`. The upstream credential comes from the [enterprise guide](/deployment-guides/enterprise/gcp).
+
+The rest of this page deploys Bifrost into a cluster you already run.
 
 ## Bifrost on GKE
 
