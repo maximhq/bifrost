@@ -1,3 +1,4 @@
+- fix: elevenlabs - speech with_timestamps returns character times in seconds instead of null (thanks [@abmorrill4](https://github.com/abmorrill4)!)
 - feat: mcp - per-user tool discovery: pluggable discovery store, per-caller tools, prompts and resources on the gateway, per-caller connect tool, Refresh tools, and an explicit pending_verification flag
 - feat: mcp - serve MCP Apps tools and ui:// resources on the gateway, keep app-only tools away from models, and accept tools by their upstream names
 - feat: mcp - relay input_required to gateway callers, forward callers' declared capabilities upstream, and log rounds by round_trip_id and MCP Apps use

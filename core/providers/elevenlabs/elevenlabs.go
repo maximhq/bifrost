@@ -299,17 +299,17 @@ func (provider *ElevenlabsProvider) Speech(ctx *schemas.BifrostContext, key sche
 
 		if timestampResponse.Alignment != nil {
 			bifrostResponse.Alignment = &schemas.SpeechAlignment{
-				CharStartTimesMs: timestampResponse.Alignment.CharStartTimesMs,
-				CharEndTimesMs:   timestampResponse.Alignment.CharEndTimesMs,
-				Characters:       timestampResponse.Alignment.Characters,
+				CharacterStartTimesSeconds: timestampResponse.Alignment.CharacterStartTimesSeconds,
+				CharacterEndTimesSeconds:   timestampResponse.Alignment.CharacterEndTimesSeconds,
+				Characters:                 timestampResponse.Alignment.Characters,
 			}
 		}
 
 		if timestampResponse.NormalizedAlignment != nil {
 			bifrostResponse.NormalizedAlignment = &schemas.SpeechAlignment{
-				CharStartTimesMs: timestampResponse.NormalizedAlignment.CharStartTimesMs,
-				CharEndTimesMs:   timestampResponse.NormalizedAlignment.CharEndTimesMs,
-				Characters:       timestampResponse.NormalizedAlignment.Characters,
+				CharacterStartTimesSeconds: timestampResponse.NormalizedAlignment.CharacterStartTimesSeconds,
+				CharacterEndTimesSeconds:   timestampResponse.NormalizedAlignment.CharacterEndTimesSeconds,
+				Characters:                 timestampResponse.NormalizedAlignment.Characters,
 			}
 		}
 
