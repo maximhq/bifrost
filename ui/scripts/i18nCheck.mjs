@@ -443,6 +443,7 @@ function checkLocales() {
 	return report;
 }
 
+/** Compares each language under one locale root with English and records the problems found in `report`. */
 function checkLocaleRoot(localesDir, report) {
 	const namespaces = fs.readdirSync(path.join(localesDir, SOURCE_LANG)).filter((name) => name.endsWith(".json"));
 	for (const lang of SUPPORTED_LANGS) {
