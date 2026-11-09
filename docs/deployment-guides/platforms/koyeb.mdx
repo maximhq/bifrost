@@ -1,0 +1,55 @@
+---
+title: "Koyeb"
+description: "Deploy the Bifrost container as a Koyeb web service"
+icon: "cloud"
+---
+
+import { KoyebMark } from "/snippets/deploy-marks.jsx";
+
+Koyeb runs the published Bifrost image as a web service with managed TLS. The one-click button carries every setting in its URL and shows them on a review form before the service is created.
+
+<Note>
+**Support level: Preview.** This guide is not continuously exercised against a live Koyeb account.
+</Note>
+
+## One-click deploy
+
+<a className="deploy-btn" href="https://app.koyeb.com/deploy?type=docker&image=docker.io%2Fmaximhq%2Fbifrost%3Alatest&name=bifrost&service_type=web&instance_type=small&region=fra&ports=8080%3Bhttp%3B%2F&env[APP_HOST]=0.0.0.0&env[BIFROST_CONFIG_B64]=ewogICIkc2NoZW1hIjogImh0dHBzOi8vd3d3LmdldGJpZnJvc3QuYWkvc2NoZW1hIiwKICAiZW5jcnlwdGlvbl9rZXkiOiAiZW52LkJJRlJPU1RfRU5DUllQVElPTl9LRVkiLAogICJzZXR1cF90b2tlbiI6ICJlbnYuQklGUk9TVF9TRVRVUF9UT0tFTiIsCiAgImNsaWVudCI6IHsKICAgICJlbmZvcmNlX2F1dGhfb25faW5mZXJlbmNlIjogdHJ1ZQogIH0sCiAgImNvbmZpZ19zdG9yZSI6IHsKICAgICJlbmFibGVkIjogdHJ1ZSwKICAgICJ0eXBlIjogInBvc3RncmVzIiwKICAgICJjb25maWciOiB7CiAgICAgICJob3N0IjogImVudi5QR19IT1NUIiwKICAgICAgInBvcnQiOiAiZW52LlBHX1BPUlQiLAogICAgICAidXNlciI6ICJlbnYuUEdfVVNFUiIsCiAgICAgICJwYXNzd29yZCI6ICJlbnYuUEdfUEFTU1dPUkQiLAogICAgICAiZGJfbmFtZSI6ICJlbnYuUEdfREFUQUJBU0UiLAogICAgICAic3NsX21vZGUiOiAiZW52LlBHX1NTTF9NT0RFIgogICAgfQogIH0sCiAgImxvZ3Nfc3RvcmUiOiB7CiAgICAiZW5hYmxlZCI6IHRydWUsCiAgICAidHlwZSI6ICJwb3N0Z3JlcyIsCiAgICAiY29uZmlnIjogewogICAgICAiaG9zdCI6ICJlbnYuUEdfSE9TVCIsCiAgICAgICJwb3J0IjogImVudi5QR19QT1JUIiwKICAgICAgInVzZXIiOiAiZW52LlBHX1VTRVIiLAogICAgICAicGFzc3dvcmQiOiAiZW52LlBHX1BBU1NXT1JEIiwKICAgICAgImRiX25hbWUiOiAiZW52LlBHX0RBVEFCQVNFIiwKICAgICAgInNzbF9tb2RlIjogImVudi5QR19TU0xfTU9ERSIKICAgIH0KICB9Cn0K&env[BIFROST_ENCRYPTION_KEY]=CHANGE_ME_LONG_RANDOM_STRING&env[BIFROST_SETUP_TOKEN]=CHANGE_ME_RANDOM_STRING&env[DATABASE_URL]=CHANGE_ME_postgres%3A%2F%2Fuser%3Apassword%40host%3A5432%2Fdb%3Fsslmode%3Drequire" target="_blank" rel="noopener noreferrer"><KoyebMark />Deploy to Koyeb</a>
+
+The button pre-fills a web service named `bifrost` from `docker.io/maximhq/bifrost:latest` on a `small` instance in `fra`, port `8080` routed at `/`, with the shared [`config.postgres.json`](https://github.com/maximhq/bifrost/blob/main/deploy/config.postgres.json) base64-encoded into `BIFROST_CONFIG_B64`. Koyeb cannot create a database from the button, so three values on the form are placeholders you fill in:
+
+| Variable | What to enter |
+|---|---|
+| `DATABASE_URL` | The connection string of a Koyeb PostgreSQL database or any PostgreSQL 16 or later reachable from Koyeb. The entrypoint derives `PG_*` from it |
+| `BIFROST_ENCRYPTION_KEY` | A long random string. Never change it afterwards |
+| `BIFROST_SETUP_TOKEN` | A random string used once to create the first admin account |
+
+Create the database first, in the button's region and inside an app (`bifrost` here; the command creates it when it does not exist, and the service the button creates can live in the same app):
+
+```bash
+koyeb databases create bifrost/bifrost-db --region fra --pg-version 16
+koyeb databases get bifrost/bifrost-db   # copy the connection string
+```
+
+Then click the button, paste the connection string into `DATABASE_URL` and append `?sslmode=require` (or `&sslmode=require` if the string already has a query; Koyeb's copied string has none, and without it the entrypoint falls back to `prefer`, which can downgrade to plaintext on a server that allows it), replace the two secrets, and deploy. When the service is healthy, open its public URL, [create the first admin account](/quickstart/gateway/setting-up-auth) with the setup token, add a provider key, and [create a virtual key](/features/governance/virtual-keys); inference routes require one.
+
+Pin a release tag in the service settings afterwards; the button tracks `latest` so a fresh deploy always gets the current release. The URL is regenerated from [`deploy/koyeb/README.md`](https://github.com/maximhq/bifrost/blob/main/deploy/koyeb/README.md) whenever the shared config changes.
+
+**Enterprise:** on the review form, change the image to the registry path issued for your organization and add the registry secret (server, username, token) in the registry settings before you click deploy; a service created without it cannot pull the private image and the first deployment fails. Koyeb stores the credential as a secret, never in the button URL. Enterprise requires PostgreSQL for both stores.
+
+## Platform requirements
+
+| Setting | Value |
+|---|---|
+| Container port | `8080`; Koyeb also sets `PORT`, which the entrypoint honours |
+| Health check | Koyeb's HTTP check on `/health` (set in the service settings; the button configures the port and route) |
+| Storage | PostgreSQL for both stores; Koyeb instances have no persistent disk |
+| Instances | One. OSS replicas do not share live configuration |
+
+See [Bifrost Deployment Requirements](/deployment-guides/runtime-contract) for the shared container values.
+
+## Troubleshooting
+
+- Service restarts with an environment error: a placeholder was left in place. Edit the variable and redeploy.
+- Cannot connect to the database: Koyeb databases require TLS; keep `?sslmode=require` in `DATABASE_URL` or set `PG_SSL_MODE=require`.
+- Port not detected: the button sets `8080;http;/`. Koyeb sets `PORT` to the exposed port and the entrypoint listens on it, overriding `APP_PORT`, so change the exposed port in the service settings rather than `APP_PORT`.

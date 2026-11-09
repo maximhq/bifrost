@@ -24,6 +24,8 @@ on:
       - "README.md"
       - "docs/quickstart/gateway/setting-up.mdx"
       - "docs/deployment-guides/platforms/koyeb.mdx"
+      - "docs/deployment-guides/platforms/digitalocean.mdx"
+      - "docs/deployment-guides/platforms/heroku.mdx"
 
 permissions:
   contents: read
