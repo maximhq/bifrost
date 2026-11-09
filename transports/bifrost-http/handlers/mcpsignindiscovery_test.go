@@ -37,6 +37,12 @@ type signInMCPManager struct {
 	verifyErr    error
 }
 
+// IsMCPCredentialActionAllowedOnOthers answers as the gateway does: every caller may act on any
+// credential.
+func (*signInMCPManager) IsMCPCredentialActionAllowedOnOthers(*fasthttp.RequestCtx, MCPCredentialAction) bool {
+	return true
+}
+
 func (m *signInMCPManager) VerifyPerUserOAuthConnection(_ context.Context, config *schemas.MCPClientConfig, accessToken string) (*schemas.MCPDiscovery, error) {
 	m.mu.Lock()
 	m.tokens = append(m.tokens, accessToken)

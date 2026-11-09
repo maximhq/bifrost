@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -144,7 +145,7 @@ func TestRevokeMCPSession_PendingOAuthFlow(t *testing.T) {
 		ID: "token-1", AuthMode: "vk", VirtualKeyID: &vk, MCPClientID: "client-1", OauthConfigID: "oauth-config-1",
 		Status: "active", AccessToken: "secret", TokenType: "Bearer", Scopes: "null", CreatedAt: now, UpdatedAt: now,
 	}))
-	sessions := NewMCPSessionsHandler(h.store, nil, nil)
+	sessions := NewMCPSessionsHandler(h.store, nil, gatewayCredentials{})
 
 	status, body := doMCPRequest(t, sessions.revoke, fasthttp.MethodDelete, "", "flow-1", false)
 	require.Equal(t, fasthttp.StatusNoContent, status, body)
@@ -177,7 +178,7 @@ func TestFlowStart_ExpiredOAuthFlowIsGone(t *testing.T) {
 		ExpiresAt: expired, CreatedAt: expired.Add(-15 * time.Minute), UpdatedAt: expired,
 	}))
 	h.store.OAuthProvider = oauth2.NewOAuth2Provider(h.store.ConfigStore, &mockLogger{})
-	sessions := NewMCPSessionsHandler(h.store, nil, nil)
+	sessions := NewMCPSessionsHandler(h.store, nil, gatewayCredentials{})
 
 	status, body := doMCPRequest(t, sessions.flowStart, fasthttp.MethodGet, "", "flow-expired", false)
 	assert.Equal(t, fasthttp.StatusGone, status, body)
@@ -297,7 +298,7 @@ func TestMCPSessionsRevoke_DropsTheRevokedCredentialsDiscovery(t *testing.T) {
 			}
 			log := &evictionLog{}
 
-			require.Equal(t, fasthttp.StatusNoContent, callRevoke(NewMCPSessionsHandler(cfg, log, nil).revoke, rowID))
+			require.Equal(t, fasthttp.StatusNoContent, callRevoke(NewMCPSessionsHandler(cfg, log, gatewayCredentials{}).revoke, rowID))
 
 			assert.Nil(t, storedDiscovery(store, tc.mode, tc.identity, client.ID))
 			assert.NotNil(t, storedDiscovery(store, schemas.MCPAuthModeUser, "bob", client.ID), "other callers keep theirs")
@@ -323,7 +324,7 @@ func TestMCPSessionsRevoke_HoldsAgainstASignInFinishingDuringIt(t *testing.T) {
 
 		// The token endpoint is where the code exchange waits on the provider:
 		// the revoke runs there, before the new token comes back.
-		revoke := NewMCPSessionsHandler(cfg, &evictionLog{}, nil).revoke
+		revoke := NewMCPSessionsHandler(cfg, &evictionLog{}, gatewayCredentials{}).revoke
 		var revokeStatus atomic.Int32
 		tokens := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			revokeStatus.Store(int32(callRevoke(revoke, existingID)))
@@ -371,7 +372,7 @@ func TestMCPSessionsRevoke_HoldsAgainstASignInFinishingDuringIt(t *testing.T) {
 
 		// Verification dials the upstream with the submitted values: the revoke
 		// runs while it does.
-		revoke := NewMCPSessionsHandler(cfg, &evictionLog{}, nil).revoke
+		revoke := NewMCPSessionsHandler(cfg, &evictionLog{}, gatewayCredentials{}).revoke
 		var revokeStatus int
 		manager := &signInMCPManager{duringVerify: func() { revokeStatus = callRevoke(revoke, existing.ID) }}
 
@@ -455,7 +456,7 @@ func TestMCPSessionsList_CarriesEachCallersDiscovery(t *testing.T) {
 	seedDiscovery(t, store, schemas.MCPAuthModeUser, "erin", notes.ID)
 	createHeadersFlow(t, store, &tables.TableMCPPerUserHeaderFlow{ID: "flow-dave", MCPClientID: notes.ID, FlowMode: string(schemas.MCPAuthModeUser), UserID: schemas.Ptr("dave")})
 
-	h := NewMCPSessionsHandler(cfg, &evictionLog{}, nil)
+	h := NewMCPSessionsHandler(cfg, &evictionLog{}, gatewayCredentials{})
 	rows := map[string]mcpSessionRow{}
 	for _, row := range callList(t, h, "").Sessions {
 		identity := ""
@@ -593,7 +594,8 @@ func newRefreshConfig(t *testing.T) (*lib.Config, configstore.ConfigStore) {
 // TestMCPSessionsRefresh_DiscoversTheCallersToolsAgainWithTheirStoredCredential refreshes a
 // virtual key's session on a client with per_user_discovery on: its tools, prompts and resources
 // are discovered again with the credential the row stores, the new discovery replaces the old one,
-// and the answer gives the new counts. A virtual-key session is refreshed by whoever can see it.
+// and the answer gives the new counts. A virtual-key session is refreshed by whoever can see it
+// and is let act on others' credentials, which the gateway allows everyone.
 func TestMCPSessionsRefresh_DiscoversTheCallersToolsAgainWithTheirStoredCredential(t *testing.T) {
 	for _, tc := range refreshCases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -620,6 +622,44 @@ func TestMCPSessionsRefresh_DiscoversTheCallersToolsAgainWithTheirStoredCredenti
 			row := storedDiscovery(store, schemas.MCPAuthModeVK, "vk-1", client.ID)
 			require.NotNil(t, row)
 			requireSignInResourcesAndPrompts(t, row)
+		})
+	}
+}
+
+// keepsCallersToTheirOwn is a sign-in manager whose server keeps every caller to their own
+// credentials.
+type keepsCallersToTheirOwn struct{ *signInMCPManager }
+
+func (keepsCallersToTheirOwn) IsMCPCredentialActionAllowedOnOthers(*fasthttp.RequestCtx, MCPCredentialAction) bool {
+	return false
+}
+
+// TestMCPSessionsRefresh_LeavesOthersCredentialsToCallersTheServerAllows refreshes a virtual key's
+// session only for a caller the server lets act on others' credentials: one kept to their own is
+// refused with 403 before anything is dialed. A user refreshes their own session either way.
+func TestMCPSessionsRefresh_LeavesOthersCredentialsToCallersTheServerAllows(t *testing.T) {
+	for _, tc := range refreshCases {
+		t.Run(tc.name+" a virtual key's session", func(t *testing.T) {
+			cfg, store := newRefreshConfig(t)
+			client, rowID := tc.seed(t, store, schemas.MCPAuthModeVK, "vk-1")
+			seedDiscovery(t, store, schemas.MCPAuthModeVK, "vk-1", client.ID)
+			manager := &signInMCPManager{}
+
+			status, body := callRefresh(NewMCPSessionsHandler(cfg, &evictionLog{}, keepsCallersToTheirOwn{manager}), rowID, "alice")
+
+			require.Equal(t, fasthttp.StatusForbidden, status, string(body))
+			assert.Empty(t, tc.handed(manager), "nothing was dialed")
+		})
+		t.Run(tc.name+" the caller's own session", func(t *testing.T) {
+			cfg, store := newRefreshConfig(t)
+			client, rowID := tc.seed(t, store, schemas.MCPAuthModeUser, "alice")
+			seedDiscovery(t, store, schemas.MCPAuthModeUser, "alice", client.ID)
+			manager := &signInMCPManager{}
+
+			status, body := callRefresh(NewMCPSessionsHandler(cfg, &evictionLog{}, keepsCallersToTheirOwn{manager}), rowID, "alice")
+
+			require.Equal(t, fasthttp.StatusOK, status, string(body))
+			assert.Len(t, tc.handed(manager), 1, "one discovery, with the stored credential")
 		})
 	}
 }
@@ -682,7 +722,7 @@ func TestMCPSessionsRefresh_StoresNothingForACredentialRevokedDuringIt(t *testin
 			cfg, store := newRefreshConfig(t)
 			client, rowID := tc.seed(t, store, schemas.MCPAuthModeVK, "vk-1")
 			seedDiscovery(t, store, schemas.MCPAuthModeVK, "vk-1", client.ID)
-			revoke := NewMCPSessionsHandler(cfg, &evictionLog{}, nil).revoke
+			revoke := NewMCPSessionsHandler(cfg, &evictionLog{}, gatewayCredentials{}).revoke
 			var revokeStatus int
 			manager := &signInMCPManager{duringVerify: func() { revokeStatus = callRevoke(revoke, rowID) }}
 
@@ -822,37 +862,449 @@ func TestMCPSessionsList_SaysWhichSessionsCanBeRefreshed(t *testing.T) {
 	credential(docs.ID, schemas.MCPAuthModeVK, "vk-1", "active")
 	createHeadersFlow(t, store, &tables.TableMCPPerUserHeaderFlow{ID: "flow-dave", MCPClientID: notes.ID, FlowMode: string(schemas.MCPAuthModeUser), UserID: schemas.Ptr("dave")})
 
-	var req fasthttp.Request
-	req.Header.SetMethod(fasthttp.MethodGet)
-	req.SetRequestURI("/api/mcp/sessions")
-	var rctx fasthttp.RequestCtx
-	rctx.Init(&req, nil, nil)
-	rctx.SetUserValue(schemas.BifrostContextKeyUserID, "alice")
-	NewMCPSessionsHandler(cfg, &evictionLog{}, nil).list(&rctx)
-	require.Equal(t, fasthttp.StatusOK, rctx.Response.StatusCode(), string(rctx.Response.Body()))
-	var page mcpSessionsListResponse
-	require.NoError(t, json.Unmarshal(rctx.Response.Body(), &page))
-
-	refreshable := map[string]bool{}
-	for _, row := range page.Sessions {
-		identity := ""
-		switch {
-		case row.UserID != nil:
-			identity = *row.UserID
-		case row.VirtualKey != nil:
-			identity = row.VirtualKey.ID
-		case row.SessionID != nil:
-			identity = *row.SessionID
+	refreshable := func(manager MCPManager) map[string]bool {
+		var req fasthttp.Request
+		req.Header.SetMethod(fasthttp.MethodGet)
+		req.SetRequestURI("/api/mcp/sessions")
+		var rctx fasthttp.RequestCtx
+		rctx.Init(&req, nil, nil)
+		rctx.SetUserValue(schemas.BifrostContextKeyUserID, "alice")
+		NewMCPSessionsHandler(cfg, &evictionLog{}, manager).list(&rctx)
+		require.Equal(t, fasthttp.StatusOK, rctx.Response.StatusCode(), string(rctx.Response.Body()))
+		var page mcpSessionsListResponse
+		require.NoError(t, json.Unmarshal(rctx.Response.Body(), &page))
+		got := map[string]bool{}
+		for _, row := range page.Sessions {
+			identity := ""
+			switch {
+			case row.UserID != nil:
+				identity = *row.UserID
+			case row.VirtualKey != nil:
+				identity = row.VirtualKey.ID
+			case row.SessionID != nil:
+				identity = *row.SessionID
+			}
+			got[row.MCPClient.Name+" "+row.Kind+" "+identity] = row.CanRefresh
 		}
-		refreshable[row.MCPClient.Name+" "+row.Kind+" "+identity] = row.CanRefresh
+		return got
 	}
 	assert.Equal(t, map[string]bool{
-		"notes header vk-1":   true,  // a virtual key's session, by anyone
+		"notes header vk-1":   true,  // a virtual key's session, by anyone the server lets act on others'
 		"notes header alice":  true,  // the caller's own session
 		"notes header bob":    false, // needs updated headers first
 		"notes header sess-1": false, // a session-bound caller keeps no discovery
 		"wiki header vk-1":    false, // a client without per-user discovery
 		"docs header vk-1":    false, // a client awaiting admin verification serves no caller
 		"notes flow dave":     false, // a pending sign-in has no credential yet
-	}, refreshable)
+	}, refreshable(gatewayCredentials{}))
+
+	// A caller the server keeps to their own credentials refreshes only those.
+	got := refreshable(credentialsPolicy{})
+	assert.False(t, got["notes header vk-1"], "a virtual key's session is not the caller's own")
+	assert.True(t, got["notes header alice"], "the caller's own session")
+}
+
+// gatewayCredentials is an MCPManager that answers IsMCPCredentialActionAllowedOnOthers as the gateway
+// does: every caller may act on any credential.
+type gatewayCredentials struct{ MCPManager }
+
+func (gatewayCredentials) IsMCPCredentialActionAllowedOnOthers(*fasthttp.RequestCtx, MCPCredentialAction) bool {
+	return true
+}
+
+// credentialsPolicy is an MCPManager whose server lets callers act on others' credentials when
+// others is set, and records each action it was asked about in asked.
+type credentialsPolicy struct {
+	MCPManager
+	others bool
+	asked  *[]MCPCredentialAction
+}
+
+func (p credentialsPolicy) IsMCPCredentialActionAllowedOnOthers(_ *fasthttp.RequestCtx, action MCPCredentialAction) bool {
+	if p.asked != nil {
+		*p.asked = append(*p.asked, action)
+	}
+	return p.others
+}
+
+// callRevokeAs calls a revoke route for row id as callerUserID ("" for a caller with no user
+// identity) and returns the status.
+func callRevokeAs(route func(*fasthttp.RequestCtx), id, callerUserID string) int {
+	var req fasthttp.Request
+	req.Header.SetMethod(fasthttp.MethodDelete)
+	var ctx fasthttp.RequestCtx
+	ctx.Init(&req, nil, nil)
+	ctx.SetUserValue("id", id)
+	if callerUserID != "" {
+		ctx.SetUserValue(schemas.BifrostContextKeyUserID, callerUserID)
+	}
+	route(&ctx)
+	return ctx.Response.StatusCode()
+}
+
+// TestMCPSessionsRevoke_LeavesOthersRowsToCallersTheServerAllows revokes every kind of row the
+// sessions list shows. A caller revokes their own user-mode rows without the server being asked.
+// Anyone else's row, a virtual key's included, is revoked only when the server lets the caller act
+// on others' credentials; otherwise the answer is 403 and the row stays.
+func TestMCPSessionsRevoke_LeavesOthersRowsToCallersTheServerAllows(t *testing.T) {
+	type row struct {
+		id     string
+		exists func(store configstore.ConfigStore) bool
+	}
+	ctx := context.Background()
+	for _, kind := range []struct {
+		name string
+		mode schemas.MCPAuthMode
+		seed func(t *testing.T, store configstore.ConfigStore, clientID string) row
+	}{
+		{
+			name: "header credential", mode: schemas.MCPAuthModeUser,
+			seed: func(t *testing.T, store configstore.ConfigStore, clientID string) row {
+				cred := &tables.TableMCPPerUserHeaderCredential{MCPClientID: clientID, AuthMode: "user", UserID: schemas.Ptr("alice"), Status: "active", HeadersJSON: `{"x-api-key":"k"}`}
+				require.NoError(t, store.UpsertMCPPerUserHeaderCredential(ctx, cred))
+				return row{cred.ID, func(store configstore.ConfigStore) bool {
+					got, err := store.GetMCPPerUserHeaderCredentialByID(ctx, cred.ID)
+					return err == nil && got != nil
+				}}
+			},
+		},
+		{
+			name: "pending header flow", mode: schemas.MCPAuthModeUser,
+			seed: func(t *testing.T, store configstore.ConfigStore, clientID string) row {
+				createHeadersFlow(t, store, &tables.TableMCPPerUserHeaderFlow{ID: "flow-alice", MCPClientID: clientID, FlowMode: "user", UserID: schemas.Ptr("alice")})
+				return row{"flow-alice", func(store configstore.ConfigStore) bool {
+					got, err := store.GetMCPPerUserHeaderFlowByID(ctx, "flow-alice")
+					return err == nil && got != nil
+				}}
+			},
+		},
+		{
+			name: "pending oauth flow", mode: schemas.MCPAuthModeUser,
+			seed: func(t *testing.T, store configstore.ConfigStore, clientID string) row {
+				now := time.Now()
+				require.NoError(t, store.CreateOauthUserSession(ctx, &tables.TableMCPOauthFlow{
+					ID: "oauth-flow-alice", MCPClientID: clientID, OauthConfigID: "oauth-notes", State: "state-alice",
+					UserID: schemas.Ptr("alice"), FlowMode: "user", Status: "pending",
+					ExpiresAt: now.Add(15 * time.Minute), CreatedAt: now, UpdatedAt: now,
+				}))
+				return row{"oauth-flow-alice", func(store configstore.ConfigStore) bool {
+					got, err := store.GetOauthUserSessionByID(ctx, "oauth-flow-alice")
+					return err == nil && got != nil
+				}}
+			},
+		},
+		{
+			name: "oauth token", mode: schemas.MCPAuthModeUser,
+			seed: func(t *testing.T, store configstore.ConfigStore, clientID string) row {
+				require.NoError(t, store.CreateOauthToken(ctx, &tables.TableMCPOauthToken{ID: "tok-alice", MCPClientID: clientID, AuthMode: "user", UserID: schemas.Ptr("alice"), Status: "active", AccessToken: "x", TokenType: "Bearer", OauthConfigID: "oauth-notes"}))
+				return row{"tok-alice", func(store configstore.ConfigStore) bool {
+					got, err := store.GetOauthUserTokenByID(ctx, "tok-alice")
+					return err == nil && got != nil
+				}}
+			},
+		},
+		{
+			name: "virtual key header credential", mode: schemas.MCPAuthModeVK,
+			seed: func(t *testing.T, store configstore.ConfigStore, clientID string) row {
+				cred := &tables.TableMCPPerUserHeaderCredential{MCPClientID: clientID, AuthMode: "vk", VirtualKeyID: schemas.Ptr("vk-1"), Status: "active", HeadersJSON: `{"x-api-key":"k"}`}
+				require.NoError(t, store.UpsertMCPPerUserHeaderCredential(ctx, cred))
+				return row{cred.ID, func(store configstore.ConfigStore) bool {
+					got, err := store.GetMCPPerUserHeaderCredentialByID(ctx, cred.ID)
+					return err == nil && got != nil
+				}}
+			},
+		},
+	} {
+		for _, tc := range []struct {
+			name   string
+			caller string
+			others bool
+		}{
+			{"by alice, kept to her own", "alice", false},
+			{"by bob, kept to his own", "bob", false},
+			{"by bob, allowed others'", "bob", true},
+		} {
+			t.Run(kind.name+" "+tc.name, func(t *testing.T) {
+				cfg, store := newRefreshConfig(t)
+				client := headersNotesClient()
+				createSignInClient(t, store, client, true)
+				seeded := kind.seed(t, store, client.ID)
+				var asked []MCPCredentialAction
+				policy := credentialsPolicy{others: tc.others, asked: &asked}
+
+				status := callRevokeAs(NewMCPSessionsHandler(cfg, &evictionLog{}, policy).revoke, seeded.id, tc.caller)
+
+				own := kind.mode == schemas.MCPAuthModeUser && tc.caller == "alice"
+				want := fasthttp.StatusNoContent
+				if !own && !tc.others {
+					want = fasthttp.StatusForbidden
+				}
+				require.Equal(t, want, status)
+				assert.Equal(t, want == fasthttp.StatusForbidden, seeded.exists(store), "a refused revoke keeps the row")
+				if own {
+					assert.Empty(t, asked, "the caller's own row needs no answer from the server")
+				} else {
+					assert.Equal(t, []MCPCredentialAction{MCPCredentialActionRevoke}, asked)
+				}
+			})
+		}
+	}
+}
+
+// accessByUser is an MCPManager that allows each user only the MCP clients named for them.
+type accessByUser struct {
+	MCPManager
+	allowed map[string][]string
+}
+
+// IsMCPCredentialActionAllowedOnOthers answers as the gateway does: every caller may act on any credential.
+func (accessByUser) IsMCPCredentialActionAllowedOnOthers(*fasthttp.RequestCtx, MCPCredentialAction) bool {
+	return true
+}
+
+func (a accessByUser) IsMCPAllowedForUser(_ context.Context, mcpClientName, userID string) bool {
+	for _, name := range a.allowed[userID] {
+		if name == mcpClientName {
+			return true
+		}
+	}
+	return false
+}
+
+// newConnectConfig returns a config holding clients in its store and in its running MCP config,
+// whose OAuth config "oauth-notes" authorizes at https://idp.example/authorize.
+func newConnectConfig(t *testing.T, clients ...*schemas.MCPClientConfig) (*lib.Config, configstore.ConfigStore) {
+	t.Helper()
+	cfg, store := newSignInConfig(t)
+	createOAuthConfig(t, store, "alice-token")
+	for _, client := range clients {
+		createSignInClient(t, store, client, false)
+	}
+	cfg.MCPConfig = &schemas.MCPConfig{ClientConfigs: clients}
+	cfg.SetBifrostClient(newVerificationRuntime(t))
+	return cfg, store
+}
+
+// oauthNotesClient is a per_user_oauth client signing in through "oauth-notes".
+func oauthNotesClient() *schemas.MCPClientConfig {
+	return &schemas.MCPClientConfig{
+		ID:               "client-notes",
+		Name:             "notes",
+		ConnectionType:   schemas.MCPConnectionTypeHTTP,
+		ConnectionString: schemas.NewSecretVar("http://upstream.invalid/mcp"),
+		AuthType:         schemas.MCPAuthTypePerUserOauth,
+		OauthConfigID:    schemas.Ptr("oauth-notes"),
+		ToolsToExecute:   []string{"*"},
+	}
+}
+
+// callConnect posts body to POST /api/mcp/sessions/connect as callerUserID, when set, and
+// returns the status and the decoded answer.
+func callConnect(t *testing.T, h *MCPSessionsHandler, body, callerUserID string) (int, map[string]any) {
+	t.Helper()
+	var req fasthttp.Request
+	req.Header.SetMethod(fasthttp.MethodPost)
+	req.Header.SetHost("localhost:8080")
+	req.SetRequestURI("/api/mcp/sessions/connect")
+	req.SetBodyString(body)
+	var ctx fasthttp.RequestCtx
+	ctx.Init(&req, nil, nil)
+	if callerUserID != "" {
+		ctx.SetUserValue(schemas.BifrostContextKeyUserID, callerUserID)
+	}
+	h.connect(&ctx)
+	var answer map[string]any
+	require.NoError(t, json.Unmarshal(ctx.Response.Body(), &answer), string(ctx.Response.Body()))
+	return ctx.Response.StatusCode(), answer
+}
+
+// TestMCPSessionsConnect_StartsTheCallersOwnOAuthSignIn: a signed-in user connecting to a
+// per_user_oauth client they can reach gets the provider's authorize URL for a flow bound to
+// their own user ID, carrying the page they started from; without an origin the flow has none.
+// Connecting again reuses the pending flow.
+func TestMCPSessionsConnect_StartsTheCallersOwnOAuthSignIn(t *testing.T) {
+	cfg, store := newConnectConfig(t, oauthNotesClient())
+	h := NewMCPSessionsHandler(cfg, &evictionLog{}, accessByUser{allowed: map[string][]string{"alice": {"notes"}}})
+
+	status, answer := callConnect(t, h, `{"mcp_client_id":"client-notes","origin":"home"}`, "alice")
+
+	require.Equal(t, fasthttp.StatusOK, status, answer)
+	assert.Equal(t, "oauth", answer["kind"])
+	assert.True(t, strings.HasPrefix(answer["authorize_url"].(string), "https://idp.example/authorize?"), answer["authorize_url"])
+	flowID := answer["flow_id"].(string)
+	flow, err := store.GetOauthUserSessionByID(context.Background(), flowID)
+	require.NoError(t, err)
+	require.NotNil(t, flow)
+	assert.Equal(t, string(schemas.MCPAuthModeUser), flow.FlowMode)
+	require.NotNil(t, flow.UserID)
+	assert.Equal(t, "alice", *flow.UserID)
+	assert.Equal(t, tables.MCPOauthFlowOriginHome, flow.Origin)
+	assert.Contains(t, answer["authorize_url"], "state="+url.QueryEscape(flow.State))
+
+	status, again := callConnect(t, h, `{"mcp_client_id":"client-notes"}`, "alice")
+
+	require.Equal(t, fasthttp.StatusOK, status, again)
+	assert.Equal(t, flowID, again["flow_id"], "the pending flow is reused")
+	flow, err = store.GetOauthUserSessionByID(context.Background(), flowID)
+	require.NoError(t, err)
+	assert.Empty(t, flow.Origin, "a connect without an origin returns to the default page")
+}
+
+// TestMCPSessionsConnect_StartsTheCallersOwnHeaderSubmission: connecting to a per_user_headers
+// client starts a submission flow bound to the caller's own user ID and names the headers to send.
+func TestMCPSessionsConnect_StartsTheCallersOwnHeaderSubmission(t *testing.T) {
+	cfg, store := newConnectConfig(t, headersNotesClient())
+	h := NewMCPSessionsHandler(cfg, &evictionLog{}, accessByUser{allowed: map[string][]string{"alice": {"notes"}}})
+
+	status, answer := callConnect(t, h, `{"mcp_client_id":"client-notes","origin":"home"}`, "alice")
+
+	require.Equal(t, fasthttp.StatusOK, status, answer)
+	assert.Equal(t, "headers", answer["kind"])
+	assert.Equal(t, []any{"x-api-key"}, answer["required_header_keys"])
+	assert.Equal(t, []any{}, answer["missing_header_keys"], "with nothing stored, no key is pointed out")
+	flow, err := store.GetMCPPerUserHeaderFlowByID(context.Background(), answer["flow_id"].(string))
+	require.NoError(t, err)
+	require.NotNil(t, flow)
+	assert.Equal(t, string(schemas.MCPAuthModeUser), flow.FlowMode)
+	require.NotNil(t, flow.UserID)
+	assert.Equal(t, "alice", *flow.UserID)
+}
+
+// TestMCPSessionsConnect_RefusesWhatItCannotConnect: connect needs a well-formed body, a known
+// origin, a signed-in user and a client that user can reach, and only connects an enabled,
+// verified client that takes a caller's own credential. A client out of reach, like one with no
+// reach rule at all, answers as if it did not exist.
+func TestMCPSessionsConnect_RefusesWhatItCannotConnect(t *testing.T) {
+	oauth := oauthNotesClient()
+	disabled := oauthNotesClient()
+	disabled.ID, disabled.Name, disabled.Disabled = "client-disabled", "disabled", true
+	pending := oauthNotesClient()
+	pending.ID, pending.Name, pending.PendingVerification = "client-pending", "pending", true
+	shared := oauthNotesClient()
+	shared.ID, shared.Name, shared.AuthType = "client-shared", "shared", schemas.MCPAuthTypeOauth
+	open := oauthNotesClient()
+	open.ID, open.Name, open.AuthType, open.OauthConfigID = "client-open", "open", schemas.MCPAuthTypeNone, nil
+	exchange := oauthNotesClient()
+	exchange.ID, exchange.Name, exchange.AuthType, exchange.OauthConfigID = "client-exchange", "exchange", schemas.MCPAuthTypeTokenExchange, nil
+	all := accessByUser{allowed: map[string][]string{"alice": {oauth.Name, disabled.Name, pending.Name, shared.Name, open.Name, exchange.Name}}}
+	cfg, _ := newConnectConfig(t, oauth, disabled, pending, shared, open, exchange)
+
+	for _, tc := range []struct {
+		name   string
+		body   string
+		caller string
+		access MCPManager
+		want   int
+	}{
+		{name: "malformed body", body: `{`, caller: "alice", want: fasthttp.StatusBadRequest},
+		{name: "no client", body: `{}`, caller: "alice", want: fasthttp.StatusBadRequest},
+		{name: "unknown origin", body: `{"mcp_client_id":"client-notes","origin":"settings"}`, caller: "alice", want: fasthttp.StatusBadRequest},
+		{name: "no signed-in user", body: `{"mcp_client_id":"client-notes"}`, want: fasthttp.StatusForbidden},
+		{name: "no user access rule", body: `{"mcp_client_id":"client-notes"}`, caller: "alice", access: MCPManager(nil), want: fasthttp.StatusNotFound},
+		{name: "not allowed for the user", body: `{"mcp_client_id":"client-notes"}`, caller: "bob", want: fasthttp.StatusNotFound},
+		{name: "unknown client", body: `{"mcp_client_id":"client-unknown"}`, caller: "alice", want: fasthttp.StatusNotFound},
+		{name: "disabled", body: `{"mcp_client_id":"client-disabled"}`, caller: "alice", want: fasthttp.StatusConflict},
+		{name: "awaiting admin verification", body: `{"mcp_client_id":"client-pending"}`, caller: "alice", want: fasthttp.StatusConflict},
+		{name: "shared OAuth", body: `{"mcp_client_id":"client-shared"}`, caller: "alice", want: fasthttp.StatusConflict},
+		{name: "no auth", body: `{"mcp_client_id":"client-open"}`, caller: "alice", want: fasthttp.StatusConflict},
+		{name: "token exchange", body: `{"mcp_client_id":"client-exchange"}`, caller: "alice", want: fasthttp.StatusConflict},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var access MCPManager = all
+			if tc.name == "no user access rule" {
+				access = tc.access
+			}
+
+			status, answer := callConnect(t, NewMCPSessionsHandler(cfg, &evictionLog{}, access), tc.body, tc.caller)
+
+			assert.Equal(t, tc.want, status, answer)
+			assert.NotContains(t, answer, "flow_id")
+		})
+	}
+}
+
+// TestMCPSessionsList_SaysWhichSessionsTheCallerOwns marks the rows bound to the caller's own
+// user ID, a credential or a pending flow; another user's row, a virtual key's and a session's
+// are not theirs, and a caller without a user identity owns none.
+func TestMCPSessionsList_SaysWhichSessionsTheCallerOwns(t *testing.T) {
+	cfg, store := newRefreshConfig(t)
+	ctx := context.Background()
+	notes := headersNotesClient()
+	createSignInClient(t, store, notes, false)
+	credential := func(mode schemas.MCPAuthMode, identity string) {
+		cred := &tables.TableMCPPerUserHeaderCredential{MCPClientID: notes.ID, AuthMode: string(mode), Status: "active", HeadersJSON: `{"x-api-key":"k"}`}
+		switch mode {
+		case schemas.MCPAuthModeUser:
+			cred.UserID = schemas.Ptr(identity)
+		case schemas.MCPAuthModeVK:
+			cred.VirtualKeyID = schemas.Ptr(identity)
+		case schemas.MCPAuthModeSession:
+			cred.SessionID = identity
+		}
+		require.NoError(t, store.UpsertMCPPerUserHeaderCredential(ctx, cred))
+	}
+	credential(schemas.MCPAuthModeUser, "alice")
+	credential(schemas.MCPAuthModeUser, "bob")
+	credential(schemas.MCPAuthModeVK, "vk-1")
+	credential(schemas.MCPAuthModeSession, "sess-1")
+	createUserOAuthFlow(t, store, notes.ID, "alice", "state-alice")
+
+	owned := func(caller string) map[string]bool {
+		var req fasthttp.Request
+		req.Header.SetMethod(fasthttp.MethodGet)
+		req.SetRequestURI("/api/mcp/sessions")
+		var rctx fasthttp.RequestCtx
+		rctx.Init(&req, nil, nil)
+		if caller != "" {
+			rctx.SetUserValue(schemas.BifrostContextKeyUserID, caller)
+		}
+		NewMCPSessionsHandler(cfg, &evictionLog{}, gatewayCredentials{}).list(&rctx)
+		require.Equal(t, fasthttp.StatusOK, rctx.Response.StatusCode(), string(rctx.Response.Body()))
+		var page mcpSessionsListResponse
+		require.NoError(t, json.Unmarshal(rctx.Response.Body(), &page))
+		got := map[string]bool{}
+		for _, row := range page.Sessions {
+			identity := row.Kind + ":"
+			switch {
+			case row.UserID != nil:
+				identity += "user " + *row.UserID
+			case row.VirtualKey != nil:
+				identity += "vk " + row.VirtualKey.ID
+			case row.SessionID != nil:
+				identity += "session " + *row.SessionID
+			}
+			got[identity] = row.OwnedByCaller
+		}
+		return got
+	}
+
+	assert.Equal(t, map[string]bool{
+		"header:user alice":     true,
+		"flow:user alice":       true,
+		"header:user bob":       false,
+		"header:vk vk-1":        false,
+		"header:session sess-1": false,
+	}, owned("alice"))
+	for identity, mine := range owned("") {
+		assert.False(t, mine, identity)
+	}
+}
+
+// TestMCPSessionsConnect_NamesTheHeaderKeysTheCallersCredentialLacks: resubmitting headers to a
+// client whose required keys grew since the caller submitted names the keys their stored
+// credential does not hold, from its key names alone.
+func TestMCPSessionsConnect_NamesTheHeaderKeysTheCallersCredentialLacks(t *testing.T) {
+	client := headersNotesClient()
+	client.PerUserHeaderKeys = []string{"x-api-key", "x-org"}
+	cfg, store := newConnectConfig(t, client)
+	require.NoError(t, store.UpsertMCPPerUserHeaderCredential(context.Background(), &tables.TableMCPPerUserHeaderCredential{
+		MCPClientID: client.ID, AuthMode: string(schemas.MCPAuthModeUser), UserID: schemas.Ptr("alice"),
+		Status: "needs_update", HeadersJSON: `{"x-api-key":"k"}`,
+	}))
+
+	status, answer := callConnect(t, NewMCPSessionsHandler(cfg, &evictionLog{}, accessByUser{allowed: map[string][]string{"alice": {client.Name}}}), `{"mcp_client_id":"client-notes"}`, "alice")
+
+	require.Equal(t, fasthttp.StatusOK, status, answer)
+	assert.Equal(t, []any{"x-api-key", "x-org"}, answer["required_header_keys"])
+	assert.Equal(t, []any{"x-org"}, answer["missing_header_keys"])
 }

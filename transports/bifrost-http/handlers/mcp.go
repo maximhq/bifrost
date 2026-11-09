@@ -67,6 +67,14 @@ type MCPManager interface {
 	// auth type, connection type, and needs_session_stickiness into account
 	// together.
 	RequiresPerCallConnection(config *schemas.MCPClientConfig) bool
+	// IsMCPAllowedForUser reports whether the user may call the MCP client named
+	// mcpClientName, which decides whether they may connect their own credential
+	// to it from the dashboard.
+	IsMCPAllowedForUser(ctx context.Context, mcpClientName, userID string) bool
+	// IsMCPCredentialActionAllowedOnOthers reports whether the caller of ctx may take
+	// action on a per-user MCP credential that is not their own. A caller may
+	// always act on their own.
+	IsMCPCredentialActionAllowedOnOthers(ctx *fasthttp.RequestCtx, action MCPCredentialAction) bool
 }
 
 // MCPHandler manages HTTP requests for MCP tool operations
@@ -416,7 +424,7 @@ func (h *MCPHandler) startMCPClientReauthorization(ctx *fasthttp.RequestCtx, rer
 // status endpoint answers from the flow row instead, which stays "pending"
 // until the callback actually completes.
 func (h *MCPHandler) startAdminSignIn(ctx *fasthttp.RequestCtx, clientConfig *schemas.MCPClientConfig, redirectURI, initiateFailure, completeStep string) (map[string]any, string, error) {
-	flowInitiation, flowID, err := h.store.OAuthProvider.InitiateUserOAuthFlow(ctx, *clientConfig.OauthConfigID, clientConfig.ID, redirectURI, schemas.MCPAuthModeAdmin)
+	flowInitiation, flowID, err := h.store.OAuthProvider.InitiateUserOAuthFlow(ctx, *clientConfig.OauthConfigID, clientConfig.ID, redirectURI, schemas.MCPAuthModeAdmin, "")
 	if err != nil {
 		return nil, initiateFailure, err
 	}

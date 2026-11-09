@@ -1110,7 +1110,7 @@ func TestInitiateUserOAuthFlow_AdminMode_CreatesFlowWithNoIdentity(t *testing.T)
 	provider := NewOAuth2Provider(store, bifrost.NewDefaultLogger(schemas.LogLevelError))
 	ctx := context.Background()
 
-	initiation, flowID, err := provider.InitiateUserOAuthFlow(ctx, oauthConfigID, "mcp-client-1", "http://localhost/api/oauth/callback", schemas.MCPAuthModeAdmin)
+	initiation, flowID, err := provider.InitiateUserOAuthFlow(ctx, oauthConfigID, "mcp-client-1", "http://localhost/api/oauth/callback", schemas.MCPAuthModeAdmin, "")
 	require.NoError(t, err)
 	require.NotEmpty(t, flowID)
 	require.NotNil(t, initiation)
@@ -1140,12 +1140,12 @@ func TestInitiateUserOAuthFlow_AdminMode_ReusesPendingRow(t *testing.T) {
 	provider := NewOAuth2Provider(store, bifrost.NewDefaultLogger(schemas.LogLevelError))
 	ctx := context.Background()
 
-	_, flowID1, err := provider.InitiateUserOAuthFlow(ctx, oauthConfigID, "mcp-client-1", "http://localhost/api/oauth/callback", schemas.MCPAuthModeAdmin)
+	_, flowID1, err := provider.InitiateUserOAuthFlow(ctx, oauthConfigID, "mcp-client-1", "http://localhost/api/oauth/callback", schemas.MCPAuthModeAdmin, "")
 	require.NoError(t, err)
 	require.Len(t, store.oauthFlows, 1, "exactly one flow row after first initiation")
 	firstState := store.oauthFlows[flowID1].State
 
-	_, flowID2, err := provider.InitiateUserOAuthFlow(ctx, oauthConfigID, "mcp-client-1", "http://localhost/api/oauth/callback", schemas.MCPAuthModeAdmin)
+	_, flowID2, err := provider.InitiateUserOAuthFlow(ctx, oauthConfigID, "mcp-client-1", "http://localhost/api/oauth/callback", schemas.MCPAuthModeAdmin, "")
 	require.NoError(t, err)
 
 	assert.Equal(t, flowID1, flowID2, "second initiation for the same binding while pending must reuse the same row")
@@ -1154,16 +1154,17 @@ func TestInitiateUserOAuthFlow_AdminMode_ReusesPendingRow(t *testing.T) {
 
 	// A different mcp_client_id is a different binding — it must get its own
 	// row, not reuse mcp-client-1's.
-	_, flowID3, err := provider.InitiateUserOAuthFlow(ctx, oauthConfigID, "mcp-client-2", "http://localhost/api/oauth/callback", schemas.MCPAuthModeAdmin)
+	_, flowID3, err := provider.InitiateUserOAuthFlow(ctx, oauthConfigID, "mcp-client-2", "http://localhost/api/oauth/callback", schemas.MCPAuthModeAdmin, "")
 	require.NoError(t, err)
 	assert.NotEqual(t, flowID1, flowID3, "a different mcp_client_id must not reuse another client's admin flow row")
 	assert.Len(t, store.oauthFlows, 2)
 }
 
-// TestInitiateUserOAuthFlow_ReusedRowDropsItsOrigin pins that a pending flow reused by a
-// later initiation (a tool call's sign-in link, say) forgets the dashboard page an earlier
-// initiation started on, so its callback does not send the caller to a page they never left.
-func TestInitiateUserOAuthFlow_ReusedRowDropsItsOrigin(t *testing.T) {
+// TestInitiateUserOAuthFlow_RecordsTheOriginOfTheLatestSignIn pins that a sign-in records the
+// dashboard page it starts from, and that a pending flow reused by a later sign-in (a tool
+// call's sign-in link, say) takes that sign-in's origin, so its callback does not send the
+// caller to a page they never left.
+func TestInitiateUserOAuthFlow_RecordsTheOriginOfTheLatestSignIn(t *testing.T) {
 	store := newTestConfigStore()
 	oauthConfigID := "user-oauth-config"
 	seedAdminOauthConfig(store, oauthConfigID)
@@ -1171,11 +1172,11 @@ func TestInitiateUserOAuthFlow_ReusedRowDropsItsOrigin(t *testing.T) {
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	ctx.SetValue(schemas.BifrostContextKeyUserID, "alice")
 
-	_, flowID, err := provider.InitiateUserOAuthFlow(ctx, oauthConfigID, "mcp-client-1", "http://localhost/api/oauth/callback", schemas.MCPAuthModeUser)
+	_, flowID, err := provider.InitiateUserOAuthFlow(ctx, oauthConfigID, "mcp-client-1", "http://localhost/api/oauth/callback", schemas.MCPAuthModeUser, tables.MCPOauthFlowOriginHome)
 	require.NoError(t, err)
-	store.oauthFlows[flowID].Origin = tables.MCPOauthFlowOriginHome
+	assert.Equal(t, tables.MCPOauthFlowOriginHome, store.oauthFlows[flowID].Origin)
 
-	_, reusedID, err := provider.InitiateUserOAuthFlow(ctx, oauthConfigID, "mcp-client-1", "http://localhost/api/oauth/callback", schemas.MCPAuthModeUser)
+	_, reusedID, err := provider.InitiateUserOAuthFlow(ctx, oauthConfigID, "mcp-client-1", "http://localhost/api/oauth/callback", schemas.MCPAuthModeUser, "")
 	require.NoError(t, err)
 
 	require.Equal(t, flowID, reusedID, "the pending row is reused")
