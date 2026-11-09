@@ -1007,7 +1007,7 @@ func TestGeminiCodeExecutionPartsBecomeCodeInterpreterCall(t *testing.T) {
 			{ExecutableCode: &ExecutableCode{Language: "PYTHON", Code: "print(6*7)"}},
 			{CodeExecutionResult: &CodeExecutionResult{Outcome: OutcomeOK, Output: "42\n"}},
 		}}},
-	})
+	}, "msg_test")
 
 	var calls []schemas.ResponsesMessage
 	for _, msg := range out {
@@ -1054,12 +1054,12 @@ func TestGeminiCodeExecutionFailureKeepsOutput(t *testing.T) {
 		out := convertGeminiCandidatesToResponsesOutput([]*Candidate{{Content: &Content{Role: "model", Parts: []*Part{
 			{ExecutableCode: &ExecutableCode{Language: "PYTHON", Code: "1/0"}},
 			{CodeExecutionResult: failed},
-		}}}})
+		}}}}, "msg_test")
 		assertFailedCall(t, &out[len(out)-1])
 	})
 
 	t.Run("constructed without code", func(t *testing.T) {
-		out := convertGeminiCandidatesToResponsesOutput([]*Candidate{{Content: &Content{Role: "model", Parts: []*Part{{CodeExecutionResult: failed}}}}})
+		out := convertGeminiCandidatesToResponsesOutput([]*Candidate{{Content: &Content{Role: "model", Parts: []*Part{{CodeExecutionResult: failed}}}}}, "msg_test")
 		assertFailedCall(t, &out[len(out)-1])
 	})
 
@@ -2338,4 +2338,124 @@ func TestAnthropicThinkingBudgetReachesGemini4AsLevel(t *testing.T) {
 	assert.Nil(t, got.ThinkingBudget, "gemini-4 rejects thinkingBudget with a 400")
 	require.NotNil(t, got.ThinkingLevel)
 	assert.Equal(t, "medium", *got.ThinkingLevel)
+}
+
+// TestExtractFunctionResponseOutput_KeepsSiblingFields pins which functionResponse.response
+// shapes are unwrapped. Only the documented {"output": X} envelope is unwrapped; any sibling
+// field (stderr, ok, budget, error, ...) means the whole object is the tool result, so it must
+// survive intact. Before the fix, the "output" key was picked whenever present, and a null
+// output collapsed to "" because unmarshalling JSON null into a Go string succeeds.
+func TestExtractFunctionResponseOutput_KeepsSiblingFields(t *testing.T) {
+	tests := []struct {
+		name     string
+		response string
+		want     string
+		wantJSON bool
+	}{
+		{name: "sole string output is unwrapped", response: `{"output":"hello"}`, want: "hello"},
+		{name: "sole object output is unwrapped", response: `{"output":{"count":3}}`, want: `{"count":3}`, wantJSON: true},
+		{name: "no output key keeps whole object", response: `{"temperature":22}`, want: `{"temperature":22}`, wantJSON: true},
+		{
+			name:     "null output with stderr sibling",
+			response: `{"ok":false,"stdout":"","stderr":"SYNTHETIC_ERROR","output":null}`,
+			want:     `{"ok":false,"stdout":"","stderr":"SYNTHETIC_ERROR","output":null}`,
+			wantJSON: true,
+		},
+		{
+			name:     "null output with stdout sibling",
+			response: `{"ok":true,"stdout":"VISIBLE_MARKER\n","stderr":"","output":null}`,
+			want:     `{"ok":true,"stdout":"VISIBLE_MARKER\n","stderr":"","output":null}`,
+			wantJSON: true,
+		},
+		{
+			name:     "object output with siblings",
+			response: `{"ok":true,"stdout":"VISIBLE_MARKER\n","stderr":"DIAGNOSTIC","output":{"count":3},"budget":"Finish now."}`,
+			want:     `{"ok":true,"stdout":"VISIBLE_MARKER\n","stderr":"DIAGNOSTIC","output":{"count":3},"budget":"Finish now."}`,
+			wantJSON: true,
+		},
+		{
+			name:     "output with error sibling",
+			response: `{"output":"partial","error":"timeout"}`,
+			want:     `{"output":"partial","error":"timeout"}`,
+			wantJSON: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := extractFunctionResponseOutput(&FunctionResponse{Name: "run", Response: json.RawMessage(tt.response)})
+			if tt.wantJSON {
+				assert.JSONEq(t, tt.want, got)
+				return
+			}
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+// TestGenAIFunctionResponseSiblingFieldsSurviveRoundTrip drives the /genai converting route
+// end to end: GenAI request -> Bifrost Responses request -> outbound Gemini request. Every
+// field the client put in functionResponse.response must reach the upstream.
+func TestGenAIFunctionResponseSiblingFieldsSurviveRoundTrip(t *testing.T) {
+	tests := []struct {
+		name     string
+		response string
+		want     string
+	}{
+		{
+			name:     "execution error",
+			response: `{"ok":false,"stdout":"","stderr":"SYNTHETIC_ERROR","output":null}`,
+			want:     `{"output":{"ok":false,"stdout":"","stderr":"SYNTHETIC_ERROR","output":null}}`,
+		},
+		{
+			name:     "printed text",
+			response: `{"ok":true,"stdout":"VISIBLE_MARKER\n","stderr":"","output":null}`,
+			want:     `{"output":{"ok":true,"stdout":"VISIBLE_MARKER\n","stderr":"","output":null}}`,
+		},
+		{
+			name:     "expression and siblings",
+			response: `{"ok":true,"stdout":"VISIBLE_MARKER\n","stderr":"DIAGNOSTIC","output":{"count":3},"budget":"Finish now."}`,
+			want:     `{"output":{"ok":true,"stdout":"VISIBLE_MARKER\n","stderr":"DIAGNOSTIC","output":{"count":3},"budget":"Finish now."}}`,
+		},
+		{
+			name:     "budget",
+			response: `{"ok":false,"stdout":"","stderr":"","output":null,"budget":"Finish now."}`,
+			want:     `{"output":{"ok":false,"stdout":"","stderr":"","output":null,"budget":"Finish now."}}`,
+		},
+		{
+			name:     "sole output envelope is unchanged",
+			response: `{"output":{"count":3}}`,
+			want:     `{"output":{"count":3}}`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			genaiReq := &GeminiGenerationRequest{
+				Model: "gemini-2.5-flash",
+				Contents: []Content{
+					{Role: "user", Parts: []*Part{{Text: "Run the code."}}},
+					{Role: "model", Parts: []*Part{{FunctionCall: &FunctionCall{ID: "call_1", Name: "run", Args: json.RawMessage(`{"code":"1+2"}`)}}}},
+					{Role: "user", Parts: []*Part{{FunctionResponse: &FunctionResponse{ID: "call_1", Name: "run", Response: json.RawMessage(tt.response)}}}},
+				},
+			}
+			bifrostReq := genaiReq.ToBifrostResponsesRequest(ctx)
+			require.NotNil(t, bifrostReq)
+			bifrostReq.Provider = schemas.Gemini
+
+			out, err := ToGeminiResponsesRequest(ctx, bifrostReq)
+			require.NoError(t, err)
+			require.NotNil(t, out)
+
+			var got []string
+			for _, content := range out.Contents {
+				for _, part := range content.Parts {
+					if part != nil && part.FunctionResponse != nil {
+						got = append(got, string(part.FunctionResponse.Response))
+					}
+				}
+			}
+			require.Len(t, got, 1)
+			assert.JSONEq(t, tt.want, got[0])
+		})
+	}
 }

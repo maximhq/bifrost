@@ -1474,7 +1474,7 @@ func (p *OAuth2Provider) callTokenEndpoint(ctx context.Context, tokenURL string,
 	var lastErr error
 
 	for attempt := range maxTokenRetries {
-		req, err := http.NewRequestWithContext(ctx, "POST", tokenURL, strings.NewReader(data.Encode()))
+		req, err := http.NewRequestWithContext(requestContext(ctx), "POST", tokenURL, strings.NewReader(data.Encode()))
 		if err != nil {
 			return nil, fmt.Errorf("failed to create request: %w", err)
 		}

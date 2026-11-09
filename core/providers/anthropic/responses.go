@@ -1935,6 +1935,13 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 					},
 				}
 
+				// Claude calling a client-run tool_search goes back as the caller's
+				// tool_search_call; its arguments arrive whole on output_item.done.
+				if restoreClientToolSearchCall(item, clientToolSearchFrom(ctx)) {
+					item.Status = &statusInProgress
+					item.Arguments = nil
+				}
+
 				// Initialize argument buffer for this tool call
 				state.ToolArgumentBuffers[outputIndex] = ""
 
@@ -2208,6 +2215,10 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 					// Check if this is the structured output tool - if so, just accumulate without emitting
 					if state.StructuredOutputIndex != nil && *state.StructuredOutputIndex == outputIndex {
 						// This is the structured output tool - accumulate without emitting delta events
+						return nil, nil, false
+					}
+					// A client tool_search_call has no argument events; done carries them.
+					if isStreamedClientToolSearchCall(state, outputIndex) {
 						return nil, nil, false
 					}
 
@@ -3023,7 +3034,15 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 			// Check if this is a tool call (function_call or MCP call)
 			// If we have accumulated arguments, emit appropriate arguments.done first
 			// Note: we check hasArgs only (not accumulatedArgs != "") to handle zero-arg tool calls
-			if accumulatedArgs, hasArgs := state.ToolArgumentBuffers[outputIndex]; hasArgs {
+			if accumulatedArgs, hasArgs := state.ToolArgumentBuffers[outputIndex]; hasArgs && isStreamedClientToolSearchCall(state, outputIndex) {
+				if accumulatedArgs == "" {
+					accumulatedArgs = "{}"
+				}
+				storedItem := state.OutputItems[outputIndex]
+				storedItem.ResponsesToolMessage.Arguments = &accumulatedArgs
+				storedItem.Status = schemas.Ptr("completed")
+				delete(state.ToolArgumentBuffers, outputIndex)
+			} else if hasArgs {
 				// Update the stored output item with the final arguments
 				if storedItem, exists := state.OutputItems[outputIndex]; exists && storedItem.ResponsesToolMessage != nil {
 					storedItem.ResponsesToolMessage.Arguments = &accumulatedArgs
@@ -3852,7 +3871,7 @@ func toAnthropicResponsesStreamEvents(ctx *schemas.BifrostContext, bifrostResp *
 			}
 		}
 
-	case schemas.ResponsesStreamResponseTypeReasoningSummaryTextDelta:
+	case schemas.ResponsesStreamResponseTypeReasoningSummaryTextDelta, schemas.ResponsesStreamResponseTypeReasoningTextDelta:
 		state := getOrCreateAnthropicToResponsesStreamState(ctx)
 		key := reverseStreamItemKey(bifrostResp)
 		idx := state.blockIndexFor(key)
@@ -4852,6 +4871,27 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 	if err != nil {
 		return nil, err
 	}
+	// A client-run tool_search, declared in tools or added by a tool_addition block, goes
+	// upstream as a function; see clienttoolsearch.go.
+	tools := requestTools
+	var inlineSearch *schemas.ResponsesTool
+	var searchName string
+	// A context reused from an earlier request must not restore by that request's name.
+	if ctx != nil && ctx.Value(anthropicEgressClientToolSearchKey) != nil {
+		ctx.ClearValue(anthropicEgressClientToolSearchKey)
+	}
+	if declared := hasClientToolSearchTool(requestTools); declared || inlineClientToolSearch(input) != nil {
+		if !declared {
+			inlineSearch = inlineClientToolSearch(input)
+		}
+		searchName = clientToolSearchName(requestTools, input)
+		if ctx != nil {
+			ctx.SetValue(anthropicEgressClientToolSearchKey, searchName)
+		}
+		tools, input = lowerClientToolSearch(requestTools, input, searchName)
+		input = rewriteClientToolSearchHistory(input, searchName, bifrostReq.NamespaceToolAliases)
+	}
+	input = providerUtils.ResponsesBreakpointsAsCacheControl(input, bifrostReq.Params, AnthropicMaxCacheBreakpoints)
 	// Fable 5.1+ rejects tool_choice "any"/"tool" outright, so every forced
 	// choice below — the caller's and the synthetic structured-output pin — is
 	// dropped and the model answers under the default "auto".
@@ -5257,7 +5297,7 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 
 		// Convert tools
 		if bifrostReq.Params.Tools != nil {
-			anthropicTools, mcpServers, err := convertBifrostToolsToAnthropic(caps, bifrostReq.Params.Tools, bifrostReq.Provider)
+			anthropicTools, mcpServers, err := convertBifrostToolsToAnthropic(caps, tools, bifrostReq.Provider)
 			if err != nil {
 				return nil, err
 			}
@@ -5302,6 +5342,18 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 
 	if bifrostReq.Input != nil {
 		anthropicMessages, systemContent := ConvertBifrostMessagesToAnthropicMessages(ctx, input, true, caps)
+		// A search added only by a tool_addition the model or its placement cannot take
+		// would leave the history and the restore naming an undeclared tool, so it is
+		// declared in tools instead.
+		// It goes through the regular conversion so its own flags (cache_control,
+		// defer_loading, allowed_callers) carry over as they do from tools.
+		if inlineSearch != nil && !messagesAddTool(anthropicMessages, searchName) {
+			searchTools, _, err := convertBifrostToolsToAnthropic(caps, []schemas.ResponsesTool{clientToolSearchAsFunction(inlineSearch, searchName)}, bifrostReq.Provider)
+			if err != nil {
+				return nil, err
+			}
+			anthropicReq.Tools = append(anthropicReq.Tools, searchTools...)
+		}
 
 		// Instructions lead the system prompt, ahead of any system/developer input (OpenAI semantics)
 		if bifrostReq.Params != nil && bifrostReq.Params.Instructions != nil && *bifrostReq.Params.Instructions != "" {
@@ -5552,6 +5604,11 @@ func (response *AnthropicMessageResponse) ToBifrostResponsesResponse(ctx *schema
 						}
 						m.ResponsesToolMessage.ResponsesCodeExecutionCall.ContainerExpiresAt = response.Container.ExpiresAt
 					}
+				}
+			}
+			if searchName := clientToolSearchFrom(ctx); searchName != "" {
+				for i := range outputMessages {
+					restoreClientToolSearchCall(&outputMessages[i], searchName)
 				}
 			}
 			bifrostResp.Output = outputMessages
@@ -10485,6 +10542,10 @@ func convertBifrostToolToAnthropic(caps schemas.ModelCaps, tool *schemas.Respons
 		}
 		return anthropicTool
 	case schemas.ResponsesToolTypeToolSearch:
+		if isClientToolSearchTool(tool) {
+			// The caller runs this search over tools only it holds; see clienttoolsearch.go.
+			return clientToolSearchFunction(tool, clientToolSearchFunctionName)
+		}
 		toolSearchType := AnthropicToolTypeToolSearchBM2520251119
 		toolSearchName := AnthropicToolNameToolSearchBM25
 		if tool.Name != nil && strings.Contains(*tool.Name, "regex") {

@@ -588,6 +588,8 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_anthropic_workload_identity_column"}, run: migrationAddAnthropicWorkloadIdentityColumn},
 	{IDs: []string{"add_mcp_per_user_discoveries"}, run: migrationAddMCPPerUserDiscoveries},
 	{IDs: []string{"add_mcp_client_pending_verification_column"}, run: migrationAddMCPClientPendingVerificationColumn},
+	{IDs: []string{"add_cache_creation_above_12hr_pricing_columns"}, run: migrationAddCacheCreationAbove12hrPricingColumns},
+	{IDs: []string{"add_datasheet_overrides_table"}, run: migrationAddDatasheetOverridesTable},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -1209,6 +1211,27 @@ func rssFeedsTableMigration(ctx context.Context, migrationName string) *migrator
 			return fmt.Errorf("%s is non-rollbackable: dropping rss_feeds would permanently delete custom feeds, their logos and every builtin enabled choice; the table is additive and older binaries ignore it", migrationName)
 		},
 	}
+}
+
+// migrationAddDatasheetOverridesTable creates governance_datasheet_overrides,
+// the user edit layer the datasheet sync re-applies after every refresh.
+func migrationAddDatasheetOverridesTable(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_datasheet_overrides_table"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			mgr := tx.WithContext(ctx).Migrator()
+			if mgr.HasTable(&tables.TableDatasheetOverride{}) {
+				return nil
+			}
+			return mgr.CreateTable(&tables.TableDatasheetOverride{})
+		},
+		Rollback: func(*gorm.DB) error {
+			return fmt.Errorf("%s is non-rollbackable: dropping governance_datasheet_overrides would permanently delete user datasheet edits; the table is additive and older binaries ignore it", migrationName)
+		},
+	})
 }
 
 // migrationAddRSSFeedsIconURLColumn adds the custom-logo column to rss_feeds
@@ -17057,6 +17080,51 @@ func migrationAddMCPClientPendingVerificationColumn(ctx context.Context, db *gor
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// migrationAddCacheCreationAbove12hrPricingColumns adds OpenAI 12h cache-write rates by service tier and 272k tier.
+func migrationAddCacheCreationAbove12hrPricingColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_cache_creation_above_12hr_pricing_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	columns := []string{
+		"cache_creation_input_token_cost_above_12hr",
+		"cache_creation_input_token_cost_above_12hr_above_272k_tokens",
+		"cache_creation_input_token_cost_above_12hr_priority",
+		"cache_creation_input_token_cost_above_12hr_above_272k_priority",
+		"cache_creation_input_token_cost_above_12hr_flex",
+		"cache_creation_input_token_cost_above_12hr_above_272k_flex",
+		"cache_creation_input_token_cost_above_12hr_ultrafast",
+		"cache_creation_input_token_cost_above_12hr_above_272k_ultrafast",
+	}
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := setMigrationLockTimeout(tx); err != nil {
+				return err
+			}
+			for _, field := range columns {
+				if err := addColumnIfNotExists(tx, logger, &tables.TableModelPricing{}, field); err != nil {
+					return fmt.Errorf("failed to add column %s: %w", field, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, field := range columns {
+				if err := dropColumnIfExists(tx, logger, &tables.TableModelPricing{}, field); err != nil {
+					return fmt.Errorf("failed to drop column %s: %w", field, err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running cache creation above 12hr pricing columns migration: %s", err.Error())
 	}
 	return nil
 }
