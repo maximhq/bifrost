@@ -1,6 +1,6 @@
 ---
 title: "Baseten"
-description: "Baseten guide for Model APIs chat, streaming, tool calling, reasoning and the Responses API, plus dedicated deployments for chat, embeddings, transcription and image generation"
+description: "Baseten guide for Model APIs chat, streaming, tool calling, reasoning, the Responses API and decision models, plus dedicated deployments for chat, embeddings, transcription and image generation"
 icon: "b"
 ---
 
@@ -24,6 +24,7 @@ Both take your Baseten API key as a bearer token.
 | Embeddings | ❌ | ✅ | `/embeddings` |
 | Transcriptions (STT) | ❌ | ✅ | `/audio/transcriptions` |
 | Image Generation | ❌ | ✅ | `/images/generations` |
+| Decisions | ✅ | ❌ | `/systemone` |
 | List Models | ✅ | - | `/models` |
 | Text Completions | ❌ | ❌ | - |
 | Speech (TTS), Image Edit, Image Variation, Image streaming, Video | ❌ | ❌ | - |
@@ -288,13 +289,50 @@ Images come back as base64 in `data[].b64_json`. Streaming, edits and variations
 
 ---
 
-# 6. List Models
+# 6. Decisions
+
+Baseten's decision models answer [`/v1/decisions`](/quickstart/gateway/decisions) through Model APIs' System One endpoint, `/systemone`. They classify, route and score an input with typed answers instead of generated text.
+
+| Model | Slug | Context limit |
+|-------|------|---------------|
+| joey-1 | `decision-models/baseten-joey-2b-latest` | 16,384 tokens |
+| elephant-1 | `decision-models/baseten-elephant-9b-latest` | 16,384 tokens |
+| mammoth-1 | `decision-models/baseten-mammoth-27b-latest` | 16,384 tokens |
+
+```bash
+curl -X POST http://localhost:8080/v1/decisions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "baseten/decision-models/baseten-joey-2b-latest",
+    "input": "I was charged twice. Refund me today or I cancel.",
+    "questions": [
+      {"type": "predicate", "name": "wants_refund", "instructions": "Is the customer asking for a refund?"},
+      {"type": "choice", "name": "route", "choices": [
+        {"value": "billing", "description": "Payments and refunds"},
+        {"value": "technical_support", "description": "Software defects"}
+      ]}
+    ]
+  }'
+```
+
+How Bifrost maps the request:
+
+- `predicate`, `choice` and `score` questions become System One's `noul`, `choice` and `score`. `box` questions aren't supported and come back as Baseten's 400. A request can have at most 255 choices per question, 2 to 10 score levels, and 512 options in total, where each predicate counts as two.
+- Text and structured input are sent as the `state` unchanged. A message input is sent as `{"messages": [...]}`, because Baseten reads a top-level array as data rather than a conversation. Only `user` and `assistant` roles are accepted, and a message without a role is sent as `user`. Any other role fails before reaching Baseten.
+- Images go inline as `input_image` parts on user messages, as a base64 PNG, JPEG or WebP data URL or an HTTPS URL on Amazon S3, Google Cloud Storage or Azure Blob Storage, up to 16 per request. An image `detail` other than `auto` is dropped, since Baseten accepts only `auto`. Images on assistant messages, more than 16 images, images sent by reference (with an `id`), and tool calls or outputs in the input fail before reaching Baseten. Bifrost passes images to every decision model, but Baseten trained elephant-1 and mammoth-1 on text only, so they may not read an image reliably.
+- Baseten's `service_tier` (`flex` or `priority`) and `max_len` are sent when the request carries them as extra params with `x-bf-passthrough-extra-params: true`.
+
+Bifrost sends Decisions to Model APIs and ignores an alias `deployment_url`, even though Baseten also offers decision models as dedicated deployments. With the [compat plugin's](/features/compat-plugin) `convert_decision_to_responses` on, `decision-models/` models still go to Baseten's endpoint, and any other Baseten model is emulated through the Responses API.
+
+---
+
+# 7. List Models
 
 Bifrost lists models from Model APIs' `/models` for each key, plus the aliases configured on the key. Dedicated deployments appear through their aliases.
 
 ---
 
-# 7. Errors and retries
+# 8. Errors and retries
 
 Baseten returns 529 when a model is overloaded. Bifrost treats it as transient, so it is retried with the provider's backoff settings when `network_config.max_retries` is above 0. `max_retries` defaults to 0, so set it before relying on retries; see [Retries and fallbacks](/features/retries-and-fallbacks). Other errors keep their status code and message.
 
