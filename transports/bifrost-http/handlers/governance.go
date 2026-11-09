@@ -3632,74 +3632,18 @@ func (h *GovernanceHandler) updateTeam(ctx *fasthttp.RequestCtx) {
 		// reset_duration for clients that do not send them. Preserve usage on
 		// update, create new budgets, and delete unmatched existing budgets.
 		if req.Budgets != nil {
-			// Validate incoming budgets
-			seenDurations := make(map[string]bool)
-			for _, b := range req.Budgets {
-				if b.MaxLimit < 0 {
-					return &badRequestError{err: fmt.Errorf("budget max_limit cannot be negative: %.2f", b.MaxLimit)}
-				}
-				if d, err := configstoreTables.ParseDuration(b.ResetDuration); err != nil || d <= 0 {
-					return &badRequestError{err: fmt.Errorf("invalid reset duration (must be a positive duration): %s", b.ResetDuration)}
-				}
-				if seenDurations[b.ResetDuration] {
-					return &badRequestError{err: fmt.Errorf("duplicate reset_duration in budgets: %s", b.ResetDuration)}
-				}
-				seenDurations[b.ResetDuration] = true
+			// The shared reconciler a customer's budgets go through: matching by id then window, usage
+			// kept on a matched row (or zeroed when the operator asked for a reset), and removed rows
+			// deleted. A new window starts at zero, as a team's always has, rather than inheriting the
+			// shorter window's spend the way a customer's does.
+			teamID := team.ID
+			reconciled, err := ReconcileOwnedBudgets(ctx, h.configStore, tx, team.Budgets, req.Budgets, team.CalendarAligned, func(b *configstoreTables.TableBudget) {
+				b.TeamID = &teamID
+			}, usageReset, NewBudgetStartsAtZero)
+			if err != nil {
+				return err
 			}
-
-			existingByID, existingByDuration := buildBudgetLookup(team.Budgets, req.Budgets)
-
-			var reconciledBudgets []configstoreTables.TableBudget
-			matchedIDs := make(map[string]bool)
-			for _, b := range req.Budgets {
-				existing, found, err := findExistingBudget(b, existingByID, existingByDuration)
-				if err != nil {
-					return err
-				}
-				if found {
-					existing.MaxLimit = b.MaxLimit
-					existing.ResetDuration = b.ResetDuration
-					applyResetConfigToExistingBudget(&existing, b)
-					// LastReset is preserved on update: the reset boundary only ever
-					// moves forward, and never as a side effect of a config write.
-					// CurrentUsage is preserved too unless the operator explicitly
-					// asked for a reset, which UpdateBudget cannot carry and so goes
-					// through the store method that owns the column.
-					if err := validateBudget(&existing); err != nil {
-						return err
-					}
-					if err := h.configStore.UpdateBudget(ctx, &existing, tx); err != nil {
-						return err
-					}
-					if err := usageReset.apply(ctx, h.configStore, existing.ID, tx); err != nil {
-						return err
-					}
-					if usageReset.requested {
-						existing.CurrentUsage = 0
-					}
-					reconciledBudgets = append(reconciledBudgets, existing)
-					matchedIDs[existing.ID] = true
-				} else {
-					budget := newBudgetFromRequest(b, team.CalendarAligned)
-					budget.TeamID = &team.ID
-					if err := validateBudget(&budget); err != nil {
-						return err
-					}
-					if err := h.configStore.CreateBudget(ctx, &budget, tx); err != nil {
-						return err
-					}
-					reconciledBudgets = append(reconciledBudgets, budget)
-				}
-			}
-			// Delete budgets that are no longer present
-			for _, existing := range team.Budgets {
-				if !matchedIDs[existing.ID] {
-					if err := h.configStore.DeleteBudget(ctx, existing.ID, tx); err != nil {
-						return fmt.Errorf("failed to delete removed team budget: %w", err)
-					}
-				}
-			}
-			team.Budgets = reconciledBudgets
+			team.Budgets = reconciled
 		}
 		// Handle rate limit updates
 		if req.RateLimit != nil {

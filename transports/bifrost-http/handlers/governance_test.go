@@ -5934,10 +5934,6 @@ func TestApplyRateLimitUpdate(t *testing.T) {
 	assert.Nil(t, newWindow.RequestMaxLimit, "a maximum left out is cleared")
 	assert.Nil(t, newWindow.RequestResetDuration, "with its window")
 }
-
-// TestReconcileOwnedBudgetsNewWindowFollowsTheResetChoice pins how a budget added on an edit starts:
-// with the spend already counted in the closest shorter window when the operator keeps usage, and at
-// zero when they reset it - the same choice the edited budgets follow.
 func TestReconcileOwnedBudgetsNewWindowFollowsTheResetChoice(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -5964,6 +5960,49 @@ func TestReconcileOwnedBudgetsNewWindowFollowsTheResetChoice(t *testing.T) {
 			for _, b := range out {
 				if b.ResetDuration == "1M" {
 					assert.Equal(t, tc.want, b.CurrentUsage)
+				}
+			}
+		})
+	}
+}
+
+// TestUpdateTeamNewBudgetStartsAtZero pins that a team's budgets go through the shared reconciler and
+// keep the team behaviour: a window added on an edit starts at zero whether usage is preserved or
+// reset, never with the spend counted in the team's shorter window. The existing window keeps its
+// spend unless the operator resets it.
+func TestUpdateTeamNewBudgetStartsAtZero(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		reset     bool
+		wantDaily float64
+	}{
+		{name: "preserve keeps the existing spend", reset: false, wantDaily: 5},
+		{name: "reset zeroes the existing spend", reset: true, wantDaily: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			SetLogger(&mockLogger{})
+			store := setupPricingOverrideHandlerStore(t)
+			handler := &GovernanceHandler{configStore: store, governanceManager: pricingOverrideTestGovernanceManager{}}
+			ctx := context.Background()
+			teamID := "team-carry"
+			require.NoError(t, store.CreateTeam(ctx, &configstoreTables.TableTeam{ID: teamID, Name: "Carry " + tc.name}))
+			require.NoError(t, store.CreateBudget(ctx, &configstoreTables.TableBudget{ID: "team-daily", MaxLimit: 10, ResetDuration: "1d", TeamID: &teamID, LastReset: time.Now()}))
+			require.NoError(t, store.UpdateBudgetUsage(ctx, "team-daily", 5))
+
+			body := fmt.Sprintf(`{"budgets":[{"id":"team-daily","max_limit":10,"reset_duration":"1d"},{"max_limit":100,"reset_duration":"1M"}],"reset_budget_usage":%t}`, tc.reset)
+			put := newGovernanceTeamIDCtx(teamID, body)
+			handler.updateTeam(put)
+			require.Equal(t, fasthttp.StatusOK, put.Response.StatusCode(), "body: %s", put.Response.Body())
+
+			team, err := store.GetTeam(ctx, teamID)
+			require.NoError(t, err)
+			require.Len(t, team.Budgets, 2)
+			for _, b := range team.Budgets {
+				switch b.ResetDuration {
+				case "1M":
+					assert.Equal(t, 0.0, b.CurrentUsage, "the new monthly budget starts at zero")
+				case "1d":
+					assert.Equal(t, tc.wantDaily, b.CurrentUsage, "the existing daily budget")
 				}
 			}
 		})
