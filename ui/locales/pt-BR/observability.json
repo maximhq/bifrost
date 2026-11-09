@@ -945,6 +945,9 @@
 		"copyToClipboard": "Copiar para a área de transferência",
 		"stats": {
 			"totalExecutions": "Total de execuções",
+			"executions": "Execuções",
+			"ofAllExecutions": "De todas as chamadas de ferramentas MCP nesta janela",
+			"perExecution": "{{value}}/chamada",
 			"successRate": "Taxa de sucesso",
 			"avgLatency": "Latência média",
 			"totalCost": "Custo total"
@@ -974,7 +977,6 @@
 			"toolName": "Nome da ferramenta",
 			"server": "Servidor",
 			"virtualKey": "Chave virtual",
-			"llmRequestId": "ID da requisição LLM",
 			"metadata": "Metadados",
 			"deleteFailed": "Falha ao excluir o log",
 			"invalidDate": "Data inválida",
@@ -1025,6 +1027,7 @@
 		"rounds": "Rodadas",
 		"execution": "Execução",
 		"errorDetails": "Detalhes do erro",
+		"errorNoMessage": "A chamada da ferramenta falhou sem mensagem de erro.",
 		"pluginLogs": "Logs de plugin",
 		"loading": "Carregando logs de MCP...",
 		"native": "Nativo",
@@ -1046,8 +1049,7 @@
 			"blockedDescription": "Bloqueado antes da execução.",
 			"observedDescription": "A atividade da ferramenta foi capturada, mas o resultado da execução é desconhecido.",
 			"inputRequiredDescription": "O servidor MCP solicitou uma entrada ao chamador antes de concluir. A nova tentativa com a resposta é um registro separado.",
-			"retryLaterDescription": "O servidor MCP pediu que o chamador tentasse novamente mais tarde, sem solicitar entrada. A nova tentativa é um registro separado.",
-			"executionDescription": "Resultado gravado da execução da ferramenta."
+			"retryLaterDescription": "O servidor MCP pediu que o chamador tentasse novamente mais tarde, sem solicitar entrada. A nova tentativa é um registro separado."
 		},
 		"noResults": "Nenhum resultado encontrado. Tente ajustar os filtros e/ou o intervalo de tempo.",
 		"observedRoundTrip": "Ida e volta observada"
