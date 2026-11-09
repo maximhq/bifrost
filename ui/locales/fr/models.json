@@ -572,6 +572,10 @@
 		"keys": {
 			"useForBatch": "Utiliser pour les API Batch",
 			"useForBatchHelp": "Activez cette clé pour les opérations d’API Batch. Seules les clés pour lesquelles cette option est activée seront utilisées pour les requêtes batch.",
+			"useForEvals": "Utiliser pour les évaluations",
+			"useForEvalsHelp": "Autorise les évaluateurs à appeler des modèles avec cette clé. Les évaluations n'utilisent que les clés où cette option est activée. Elles ne concurrencent donc jamais le trafic de production sur vos autres clés.",
+			"evalConcurrency": "Concurrence des évaluations",
+			"evalConcurrencyHelp": "Le nombre maximal d'évaluations exécutées en même temps sur cette clé, toutes instances Bifrost confondues. Les évaluations en plus attendent dans une file. Laissez vide pour la valeur par défaut de 4.",
 			"vpcEndpointsOptional": "Points de terminaison VPC (facultatif)",
 			"vpcEndpointsHelp": "Acheminez le trafic via des points de terminaison VPC d’interface au lieu des points de terminaison régionaux publics. Utilisez le nom DNS de chaque point de terminaison depuis la console VPC, et non son ID. La région reste requise — elle définit le périmètre de signature de la requête.",
 			"vpc": {

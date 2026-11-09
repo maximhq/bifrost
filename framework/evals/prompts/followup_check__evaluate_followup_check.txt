@@ -1,0 +1,73 @@
+You are evaluating whether a medical assistant tool correctly processed a doctor-patient conversation and scheduled an appropriate followup date.
+
+Your task is to analyze:
+1. The **transcript** of the doctor-patient conversation
+2. The **tool output** (what the tool extracted/scheduled)
+3. The **current date** (optional; when provided, use it to validate the followup date is in the future)
+
+**Handle these scenarios carefully:**
+
+**Scenario A: No followup mentioned AND no tool output**
+- If the transcript contains NO mention of followup appointments, scheduling, or future visits
+- AND the tool output is empty, null, or contains no followup-related information
+- → This is **VALID** behavior. Set `tool_output_valid: "yes"`, `followup_date_valid: "not_applicable"`, and `medical_appropriateness: "not_applicable"`
+- The tool correctly did nothing when no followup was needed.
+
+**Scenario B: No followup mentioned BUT tool output has followup date**
+- If the transcript contains NO mention of followup appointments, scheduling, or future visits
+- BUT the tool output contains a followup date, appointment scheduling, or followup-related information
+- → This is **INVALID** behavior. Set `tool_output_valid: "no"` and add to `tool_output_issues`: "Tool scheduled a followup when none was mentioned in the conversation"
+- The tool incorrectly created a followup that was not discussed.
+
+**Scenario C: Followup mentioned AND tool output has followup date**
+- If the transcript mentions a followup appointment or scheduling
+- AND the tool output contains a followup date
+- → Validate that the date matches what was discussed, is in the future, and is medically appropriate
+
+Evaluate across these dimensions:
+
+**1. Tool Output Validity**
+- Does the tool output accurately reflect what was discussed in the transcript?
+- Are all key medical details captured correctly?
+- Is the information properly structured and complete?
+- Are there any hallucinations or incorrect extractions?
+- **IMPORTANT**: If no followup was mentioned but tool output contains followup info, this is invalid.
+
+**2. Followup Date Validity**
+- Was a followup mentioned or scheduled in the conversation?
+- If NO followup was mentioned:
+  - Tool output should be empty/null → Valid (use "not_applicable")
+  - Tool output contains followup date → Invalid (use "no")
+- If YES, followup was mentioned:
+  - Is the scheduled date consistent with what the doctor said?
+  - If current date is provided: Is the followup date in the future (after the current date)?
+  - If current date is not provided: Skip future-date validation; evaluate based on consistency and medical appropriateness only.
+  - Is the timeframe medically appropriate for the condition discussed?
+  - Are there any date calculation errors?
+
+**3. Medical Appropriateness**
+- Only evaluate if a followup was actually mentioned in the conversation
+- If no followup mentioned → use "not_applicable"
+- If followup mentioned → evaluate if timing makes sense for the medical context
+- If urgent care was mentioned, is the followup soon enough?
+- If routine checkup, is the timeframe reasonable?
+
+**IMPORTANT: Please make sure to only return in JSON format, with the required keys as specified in the response schema.**
+
+Provide your evaluation in the exact JSON format specified in the response schema. The JSON object has exactly these keys:
+- "tool_output_valid": "yes", "no" or "partial"
+- "followup_date_valid": "yes", "no" or "not_applicable"
+- "tool_output_issues": a list of strings, empty when the tool output is valid
+- "followup_date_issues": a list of strings, empty when the followup date is valid
+- "medical_appropriateness": "appropriate", "questionable", "inappropriate" or "not_applicable"
+- "reasoning": 2-3 sentences explaining the overall assessment
+
+---
+
+**CURRENT DATE**: {{current_date}}
+
+**TRANSCRIPT**:
+{{input_transcript}}
+
+**TOOL OUTPUT**:
+{{tool_output}}

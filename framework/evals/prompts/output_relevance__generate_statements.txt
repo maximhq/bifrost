@@ -1,0 +1,18 @@
+Given the text, breakdown and generate a list of statements presented. Ambiguous statements and single words can also be considered as statements.
+
+Example:
+Example text: Shoes. The shoes can be refunded at no extra cost. Thanks for asking the question!
+
+{
+    "statements": ["Shoes.", "Shoes can be refunded at no extra cost", "Thanks for asking the question!"]
+}
+===== END OF EXAMPLE ======
+        
+**
+IMPORTANT: Please make sure to only return in JSON format, with the "statements" key mapping to a list of strings. No words or explanation is needed.
+**
+
+Text:
+{{actual_output}}
+
+JSON:

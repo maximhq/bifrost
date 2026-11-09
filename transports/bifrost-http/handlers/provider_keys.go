@@ -539,6 +539,8 @@ func decodeKeyUpdate(body []byte, oldRawKey schemas.Key) (schemas.Key, error) {
 		"oauth_key_config":          func() { updateKey.OAuthKeyConfig = oldRawKey.OAuthKeyConfig },
 		"enabled":                   func() { updateKey.Enabled = oldRawKey.Enabled },
 		"use_for_batch_api":         func() { updateKey.UseForBatchAPI = oldRawKey.UseForBatchAPI },
+		"use_for_evals":             func() { updateKey.UseForEvals = oldRawKey.UseForEvals },
+		"eval_concurrency":          func() { updateKey.EvalConcurrency = oldRawKey.EvalConcurrency },
 		"use_anthropic_endpoints":   func() { updateKey.UseAnthropicEndpoints = oldRawKey.UseAnthropicEndpoints },
 		"use_openai_endpoints":      func() { updateKey.UseOpenAIEndpoints = oldRawKey.UseOpenAIEndpoints },
 		"description":               func() { updateKey.Description = oldRawKey.Description },
@@ -919,6 +921,11 @@ func validateProviderKeyServerURLs(key schemas.Key) error {
 	type serverURL struct {
 		name string
 		v    *schemas.SecretVar
+	}
+	// An eval concurrency that is set is at least 1. Zero or less used to be stored and
+	// then read as the default, so the key ran at a limit nobody had asked for.
+	if key.EvalConcurrency != nil && *key.EvalConcurrency < 1 {
+		return fmt.Errorf("eval_concurrency: must be at least 1; leave it unset to use the default")
 	}
 	var urls []serverURL
 	if c := key.OllamaKeyConfig; c != nil {

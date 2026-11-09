@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
 	applyAuthMethod,
+	parseEvalConcurrencyInput,
 	stripAnthropicAuthDiscriminator,
 	stripDatabricksAuthDiscriminator,
 	stripOAuthAuthDiscriminator,
@@ -306,5 +307,16 @@ describe("applyAuthMethod with anthropic_key_config", () => {
 		expect(
 			stripAnthropicAuthDiscriminator({ workload_identity: { ...ids, identity_source: { type: "inline", path: tokenFile } } }),
 		).toBeUndefined();
+	});
+});
+describe("parseEvalConcurrencyInput", () => {
+	it("keeps what was typed, so the form can reject a decimal instead of saving a truncated limit", () => {
+		expect(parseEvalConcurrencyInput("12.5")).toBe(12.5);
+		expect(parseEvalConcurrencyInput("3")).toBe(3);
+	});
+
+	it("reads an empty field as null, which clears the stored value", () => {
+		expect(parseEvalConcurrencyInput("")).toBeNull();
+		expect(parseEvalConcurrencyInput("   ")).toBeNull();
 	});
 });
