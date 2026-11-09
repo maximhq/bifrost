@@ -13,7 +13,7 @@ icon: "signs-post"
 | **Runs as** | A hosted API at `https://api.getnadir.com` |
 | **Models** | Any name, echoed back in the response. This page uses `nadir-bucket` |
 | **Model listing** | Turn **List Models** off: Nadir's `/v1/models` lists the chat models it proxies, not `nadir-bucket` |
-| **Auth** | A Nadir API key, sent as `Authorization: Bearer`. Without a key, requests share a limit of 10 per minute per client IP |
+| **Auth** | A Nadir API key, sent as `Authorization: Bearer` |
 | **Input** | Text only. User messages are read; other roles and image parts are ignored |
 | **Questions** | Exactly one `choice` question whose values are `SIMPLE`, `MEDIUM`, and `COMPLEX` (any case, any subset). Anything else is a `400` |
 
@@ -25,7 +25,7 @@ Nadir is a trained classifier, not a prompted model. It accepts [tier guidance](
 
 ## 1. Get a key
 
-Create an API key in the Nadir dashboard under **API Keys**. Without a key, the endpoint answers anonymously up to the per-IP limit above; past it, requests are rejected and the router leaves them unclassified. Keyless use is meant for trying the setup, not for production traffic.
+Create an API key in the Nadir dashboard under **API Keys**. The provider needs it even for a trial: the key's **Allowed Models** list is what keeps chat traffic off Nadir, and a keyless custom provider has no key to carry that list.
 
 ---
 
@@ -71,8 +71,6 @@ Create an API key in the Nadir dashboard under **API Keys**. Without a key, the 
 }
 ```
 
-To try it without a key, drop `keys` and add `"is_key_less": true` to `custom_provider_config`.
-
 </Tab>
 </Tabs>
 
@@ -112,8 +110,8 @@ Pick the custom provider and `nadir-bucket` as the decision model in [**Complexi
 The `keywords` lists are required in `config.json` even when the decision model classifies; a block without them is rejected at startup. Then add a [routing rule](/features/complexity-router#routing-with-complexity_tier) for each tier you want to route.
 
 - **Timeout.** Each classification is a call to a hosted API, so it includes a network round trip. If your gateway is far from `us-east-1`, check the classification latency in the logs and raise `decision.timeout` (`1.5s` by default) if requests go unclassified.
-- **Failures.** A timeout, a rejected request, or an outage leaves the request unclassified, and it continues through normal routing.
-- **Data.** Requests sent with a key are logged to your Nadir account, including the classified text unless prompt storage is turned off in your Nadir settings. Keyless requests write no usage record.
+- **Failures.** A timeout, a rejected request, or an outage produces no tier from Nadir. If [session-aware routing](/features/complexity-router#session-aware-routing) holds a tier for the session, the request reuses it and logs `complexity_mechanism=session`, not `decision`; otherwise it goes unclassified and continues through normal routing.
+- **Data.** Requests are logged to your Nadir account, including the classified text unless prompt storage is turned off in your Nadir settings.
 
 ---
 
@@ -124,7 +122,6 @@ The `keywords` lists are required in `config.json` even when the decision model 
 | Unrelated requests (chat, embeddings) go to Nadir | List Models is on, or the key allows every model | Turn **List Models** off and set **Allowed Models** to `nadir-bucket` |
 | `400` from Nadir | The decision request is not the router's tier question: another question type, other choice values, or several questions | Use Nadir only as the Complexity Router's decision model |
 | `401` from Nadir | The key is missing or invalid | Check the key in the Nadir dashboard |
-| `429` from Nadir | A keyless provider passed the per-IP limit | Add a key |
 | Every request logs `complexity_mechanism=skipped` | Classifications pass `decision.timeout` | Raise `decision.timeout` |
 
 ---
