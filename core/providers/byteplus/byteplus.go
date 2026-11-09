@@ -646,6 +646,7 @@ func (provider *BytePlusProvider) doImageStream(ctx *schemas.BifrostContext, pos
 			}
 			providerUtils.CloseStream(ctx, responseChan)
 		}()
+		defer providerUtils.RecoverStreamPanic(ctx, postHookRunner, responseChan, provider.logger, postHookSpanFinalizer)
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
 
 		reader, releaseGzip := providerUtils.DecompressStreamBody(resp)

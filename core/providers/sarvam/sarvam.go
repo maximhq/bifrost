@@ -371,6 +371,7 @@ func (provider *SarvamProvider) SpeechStream(ctx *schemas.BifrostContext, postHo
 		stopCancellation := providerUtils.SetupStreamCancellation(ctx, resp.BodyStream(), provider.logger)
 		defer stopCancellation()
 		defer providerUtils.EnsureStreamFinalizerCalled(ctx, postHookSpanFinalizer)
+		defer providerUtils.RecoverStreamPanic(ctx, postHookRunner, responseChan, provider.logger, postHookSpanFinalizer)
 
 		buffer := make([]byte, 4096)
 		chunkIndex := -1

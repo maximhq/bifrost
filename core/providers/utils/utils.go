@@ -18,6 +18,8 @@ import (
 	"net/textproto"
 	"net/url"
 	"regexp"
+	"runtime"
+	"runtime/debug"
 	"slices"
 	"sort"
 	"strings"
@@ -3787,6 +3789,7 @@ func ProcessAndSendResponse(
 		// Even if skipping, complete the deferred span if this is the final chunk
 		if isFinalChunk := ctx.Value(schemas.BifrostContextKeyStreamEndIndicator); isFinalChunk != nil {
 			if final, ok := isFinalChunk.(bool); ok && final {
+				markStreamTerminalHandled(ctx)
 				completeDeferredSpan(ctx, processedResponse, processedError, postHookSpanFinalizer)
 			}
 		}
@@ -3805,6 +3808,7 @@ func ProcessAndSendResponse(
 	// Check if this is the final chunk and complete deferred span with post-processed data
 	if isFinalChunk := ctx.Value(schemas.BifrostContextKeyStreamEndIndicator); isFinalChunk != nil {
 		if final, ok := isFinalChunk.(bool); ok && final {
+			markStreamTerminalHandled(ctx)
 			completeDeferredSpan(ctx, processedResponse, processedError, postHookSpanFinalizer)
 		}
 	}
@@ -3830,6 +3834,7 @@ func ProcessAndSendBifrostError(
 		// Even if skipping, complete the deferred span if this is the final chunk
 		if isFinalChunk := ctx.Value(schemas.BifrostContextKeyStreamEndIndicator); isFinalChunk != nil {
 			if final, ok := isFinalChunk.(bool); ok && final {
+				markStreamTerminalHandled(ctx)
 				completeDeferredSpan(ctx, processedResponse, processedError, postHookSpanFinalizer)
 			}
 		}
@@ -3843,9 +3848,97 @@ func ProcessAndSendBifrostError(
 	// Check if this is the final chunk and complete deferred span with post-processed data
 	if isFinalChunk := ctx.Value(schemas.BifrostContextKeyStreamEndIndicator); isFinalChunk != nil {
 		if final, ok := isFinalChunk.(bool); ok && final {
+			markStreamTerminalHandled(ctx)
 			completeDeferredSpan(ctx, processedResponse, processedError, postHookSpanFinalizer)
 		}
 	}
+}
+
+// ErrStreamPanicMessage is the client-facing message of the terminal error chunk a
+// provider stream emits after RecoverStreamPanic catches a panic on its goroutine.
+const ErrStreamPanicMessage = "internal error while streaming the provider response"
+
+// streamTerminalHandledKey marks, on a provider stream's context, that its final chunk
+// went through a send helper: delivered to the client, or deliberately dropped by a
+// plugin's stream-control skip. StreamEndIndicator cannot carry this: providers set it
+// before the final chunk is traced and post-hooked, so a panic there would otherwise
+// look like a stream that already ended.
+type streamTerminalHandledKey struct{}
+
+// markStreamTerminalHandled records that the client's final chunk was handled. While a
+// provider-injected tool loop has another turn pending, this stream's final chunk is not
+// the client's (the loop sets the flag before handing the chunk back as a skip), so the
+// marker is left unset for the turn that really ends the client stream.
+func markStreamTerminalHandled(ctx *schemas.BifrostContext) {
+	if pending, _ := ctx.Value(schemas.BifrostContextKeyStreamTurnPending).(bool); pending {
+		return
+	}
+	ctx.SetValue(streamTerminalHandledKey{}, true)
+}
+
+func streamTerminalHandled(ctx *schemas.BifrostContext) bool {
+	handled, _ := ctx.Value(streamTerminalHandledKey{}).(bool)
+	return handled
+}
+
+// PanicSummary describes a recovered panic value without echoing arbitrary content.
+// Runtime errors keep their message (runtime-generated, no request data); any other
+// value is reduced to its type, since a panic value can wrap request content or secrets.
+func PanicSummary(r any) string {
+	if rerr, ok := r.(runtime.Error); ok {
+		return rerr.Error()
+	}
+	return fmt.Sprintf("%T", r)
+}
+
+// RecoverStreamPanic is deferred by every provider streaming goroutine, directly after
+// the defer that closes responseChan, so it runs first while the channel is still open.
+// Nothing above that goroutine can catch a panic in it (a chunk converter, a decoder, or
+// the post-hook runner), so without this a single bad chunk ends the whole process.
+//
+// It logs the panic and, unless the stream is already cancelled or its final chunk was
+// already handled by a send helper (see streamTerminalHandledKey), sends one terminal 500 error chunk through the post-hooks, the same path
+// HandleStreamCancellation uses, so logging and billing record the failure and the client
+// sees an error instead of a silently truncated stream. A second panic while sending is
+// logged and dropped; the close defer that runs next still ends the stream.
+func RecoverStreamPanic(
+	ctx *schemas.BifrostContext,
+	postHookRunner schemas.PostHookRunner,
+	responseChan chan *schemas.BifrostStreamChunk,
+	logger schemas.Logger,
+	postHookSpanFinalizer func(context.Context),
+) {
+	r := recover()
+	if r == nil {
+		return
+	}
+	if logger == nil {
+		logger = getLogger()
+	}
+	logger.Error("recovered from panic in provider stream goroutine: %s\n%s", PanicSummary(r), debug.Stack())
+	// A cancelled or timed-out stream gets its terminal chunk from the cancellation defer.
+	if ctx == nil || ctx.Err() != nil || postHookRunner == nil {
+		return
+	}
+	if streamTerminalHandled(ctx) {
+		return // the final chunk already went out
+	}
+	ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+	defer func() {
+		if r2 := recover(); r2 != nil {
+			logger.Error("recovered from panic while sending the stream panic error: %s", PanicSummary(r2))
+		}
+	}()
+	panicErr := &schemas.BifrostError{
+		IsBifrostError: true,
+		StatusCode:     schemas.Ptr(500),
+		Error: &schemas.ErrorField{
+			Message: ErrStreamPanicMessage,
+			Type:    schemas.Ptr("server_error"),
+		},
+	}
+	attachBilledUsageFromContext(ctx, panicErr)
+	ProcessAndSendBifrostError(ctx, postHookRunner, panicErr, responseChan, logger, postHookSpanFinalizer)
 }
 
 // EnsureStreamFinalizerCalled invokes the post-hook span finalizer registered
@@ -4383,6 +4476,9 @@ func ProcessAndSendError(
 	}
 
 	GateSendChunk(ctx, streamResponse, responseChan)
+	if final, _ := ctx.Value(schemas.BifrostContextKeyStreamEndIndicator).(bool); final {
+		markStreamTerminalHandled(ctx)
+	}
 }
 
 // SendStreamTruncatedError surfaces an upstream stream that ended without a

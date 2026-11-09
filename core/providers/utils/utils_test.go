@@ -7,10 +7,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -4462,5 +4467,264 @@ func BenchmarkCheckContextAndGetRequestBodyFromInterface(b *testing.B) {
 		if _, err := CheckContextAndGetRequestBodyFromInterface(ctx, rawBodyGetter{}, converter); err != nil {
 			b.Fatal(err)
 		}
+	}
+}
+
+// runPanickingStreamGoroutine mirrors a provider streaming goroutine's defer stack
+// (finalizer, then the close, then RecoverStreamPanic) and panics in its body. It
+// returns every chunk the stream delivered before it closed.
+func runPanickingStreamGoroutine(t *testing.T, ctx *schemas.BifrostContext, runner schemas.PostHookRunner) []*schemas.BifrostStreamChunk {
+	t.Helper()
+	return runStreamGoroutine(t, ctx, runner, func(chan *schemas.BifrostStreamChunk) {
+		var resp *schemas.BifrostResponse
+		_ = resp.ChatResponse // nil dereference: a runtime.Error panic
+	})
+}
+
+// runStreamGoroutine is runPanickingStreamGoroutine with the goroutine body supplied,
+// so a test can send chunks through the real helpers before (or while) it panics.
+func runStreamGoroutine(t *testing.T, ctx *schemas.BifrostContext, runner schemas.PostHookRunner, body func(ch chan *schemas.BifrostStreamChunk)) []*schemas.BifrostStreamChunk {
+	t.Helper()
+	ch := make(chan *schemas.BifrostStreamChunk, 4)
+	go func() {
+		defer EnsureStreamFinalizerCalled(ctx, nil)
+		defer CloseStream(ctx, ch)
+		defer RecoverStreamPanic(ctx, runner, ch, getLogger(), nil)
+		body(ch)
+	}()
+	var got []*schemas.BifrostStreamChunk
+	timeout := time.After(5 * time.Second)
+	for {
+		select {
+		case c, ok := <-ch:
+			if !ok {
+				return got
+			}
+			got = append(got, c)
+		case <-timeout:
+			t.Fatal("stream did not close after the panic")
+			return got
+		}
+	}
+}
+
+// TestRecoverStreamPanic pins RecoverStreamPanic's contract: a panic on a provider stream
+// goroutine yields one terminal 500 error chunk through the post-hooks and a closed
+// stream, never a crash, and it sends nothing extra when the stream already ended.
+func TestRecoverStreamPanic(t *testing.T) {
+	passthrough := func(_ *schemas.BifrostContext, r *schemas.BifrostResponse, e *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+		return r, e
+	}
+	newCtx := func() *schemas.BifrostContext {
+		return schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	}
+
+	t.Run("sends one terminal error chunk", func(t *testing.T) {
+		var hookSaw *schemas.BifrostError
+		runner := func(c *schemas.BifrostContext, r *schemas.BifrostResponse, e *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+			hookSaw = e
+			return r, e
+		}
+		ctx := newCtx()
+		got := runPanickingStreamGoroutine(t, ctx, runner)
+		if len(got) != 1 || got[0].BifrostError == nil {
+			t.Fatalf("got %d chunks %+v, want one error chunk", len(got), got)
+		}
+		e := got[0].BifrostError
+		if e.Error == nil || e.Error.Message != ErrStreamPanicMessage || e.StatusCode == nil || *e.StatusCode != 500 {
+			t.Errorf("error chunk = %+v, want a 500 with %q", e, ErrStreamPanicMessage)
+		}
+		if hookSaw == nil {
+			t.Error("the error must pass through the post-hooks so logging records it")
+		}
+		if end, _ := ctx.Value(schemas.BifrostContextKeyStreamEndIndicator).(bool); !end {
+			t.Error("the error chunk must be marked as the stream's final chunk")
+		}
+	})
+	t.Run("final chunk already sent", func(t *testing.T) {
+		ctx := newCtx()
+		got := runStreamGoroutine(t, ctx, passthrough, func(ch chan *schemas.BifrostStreamChunk) {
+			ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+			ProcessAndSendResponse(ctx, passthrough, &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{}}, ch, nil)
+			panic("after the final chunk")
+		})
+		if len(got) != 1 || got[0].BifrostError != nil {
+			t.Fatalf("got %d chunks %+v, want only the delivered final chunk", len(got), got)
+		}
+	})
+	// Providers set the end indicator before the final chunk runs through tracing and the
+	// post-hooks; a panic there means the final chunk never reached the client, so the
+	// indicator alone must not suppress the terminal error.
+	t.Run("panic while processing the final chunk", func(t *testing.T) {
+		ctx := newCtx()
+		runner := func(c *schemas.BifrostContext, r *schemas.BifrostResponse, e *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+			if r != nil {
+				panic("post-hook on the final chunk")
+			}
+			return r, e
+		}
+		got := runStreamGoroutine(t, ctx, runner, func(ch chan *schemas.BifrostStreamChunk) {
+			ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+			ProcessAndSendResponse(ctx, runner, &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{}}, ch, nil)
+		})
+		if len(got) != 1 || got[0].BifrostError == nil || got[0].BifrostError.Error == nil || got[0].BifrostError.Error.Message != ErrStreamPanicMessage {
+			t.Fatalf("got %d chunks %+v, want the terminal panic error chunk", len(got), got)
+		}
+	})
+	// A provider-injected tool loop runs several upstream turns on one context. A turn's
+	// final chunk is skipped while another turn is pending, so it is not the client's
+	// terminal, and a panic in a later turn must still produce the error chunk.
+	t.Run("panic in a later turn of a tool loop", func(t *testing.T) {
+		ctx := newCtx()
+		skipFinal := func(c *schemas.BifrostContext, r *schemas.BifrostResponse, e *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+			if r != nil {
+				c.SetValue(schemas.BifrostContextKeyStreamTurnPending, true)
+				return nil, &schemas.BifrostError{StreamControl: &schemas.StreamControl{SkipStream: schemas.Ptr(true)}}
+			}
+			return r, e
+		}
+		turn1 := runStreamGoroutine(t, ctx, skipFinal, func(ch chan *schemas.BifrostStreamChunk) {
+			ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+			ProcessAndSendResponse(ctx, skipFinal, &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{}}, ch, nil)
+		})
+		if len(turn1) != 0 {
+			t.Fatalf("turn 1 delivered %d chunks, want its final chunk skipped", len(turn1))
+		}
+		ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, false) // resetStreamTurnState between turns
+		turn2 := runPanickingStreamGoroutine(t, ctx, passthrough)
+		if len(turn2) != 1 || turn2[0].BifrostError == nil || turn2[0].BifrostError.Error == nil || turn2[0].BifrostError.Error.Message != ErrStreamPanicMessage {
+			t.Fatalf("turn 2 got %d chunks %+v, want the terminal panic error chunk", len(turn2), turn2)
+		}
+	})
+	t.Run("cancelled stream leaves the terminal to the cancellation path", func(t *testing.T) {
+		ctx := newCtx()
+		ctx.Cancel()
+		if got := runPanickingStreamGoroutine(t, ctx, passthrough); len(got) != 0 {
+			t.Fatalf("got %d chunks, want none on a cancelled stream", len(got))
+		}
+	})
+	t.Run("post-hook panicking on the error too", func(t *testing.T) {
+		runner := func(*schemas.BifrostContext, *schemas.BifrostResponse, *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+			panic("hook")
+		}
+		if got := runPanickingStreamGoroutine(t, newCtx(), runner); len(got) != 0 {
+			t.Fatalf("got %d chunks, want the stream closed with none", len(got))
+		}
+	})
+}
+
+// TestProviderStreamGoroutinesRecoverPanics guards every provider streaming goroutine:
+// any `go func()` that defers EnsureStreamFinalizerCalled must also defer
+// RecoverStreamPanic, registered after the defer that closes the stream so it runs
+// first, while the channel is still open for the terminal error chunk.
+func TestProviderStreamGoroutinesRecoverPanics(t *testing.T) {
+	calls := func(n ast.Node, name string) bool {
+		found := false
+		ast.Inspect(n, func(x ast.Node) bool {
+			if c, ok := x.(*ast.CallExpr); ok {
+				switch f := c.Fun.(type) {
+				case *ast.Ident:
+					found = found || f.Name == name
+				case *ast.SelectorExpr:
+					found = found || f.Sel.Name == name
+				}
+			}
+			return !found
+		})
+		return found
+	}
+	files, err := filepath.Glob("../*/*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	checked := 0
+	for _, path := range files {
+		if strings.HasSuffix(path, "_test.go") {
+			continue
+		}
+		src, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(src), "EnsureStreamFinalizerCalled(") {
+			continue
+		}
+		fset := token.NewFileSet()
+		file, err := parser.ParseFile(fset, path, src, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ast.Inspect(file, func(n ast.Node) bool {
+			goStmt, ok := n.(*ast.GoStmt)
+			if !ok {
+				return true
+			}
+			lit, ok := goStmt.Call.Fun.(*ast.FuncLit)
+			if !ok {
+				return true
+			}
+			var finalizer bool
+			closeAt, recoverAt := -1, -1
+			for i, stmt := range lit.Body.List {
+				d, ok := stmt.(*ast.DeferStmt)
+				if !ok {
+					continue
+				}
+				switch {
+				case calls(d.Call, "EnsureStreamFinalizerCalled"):
+					finalizer = true
+				case calls(d.Call, "RecoverStreamPanic"):
+					recoverAt = i
+				case calls(d.Call, "CloseStream"):
+					closeAt = i
+				}
+			}
+			if !finalizer {
+				return true
+			}
+			checked++
+			pos := fset.Position(goStmt.Pos())
+			if recoverAt < 0 {
+				t.Errorf("%s: streaming goroutine defers EnsureStreamFinalizerCalled but not RecoverStreamPanic", pos)
+			} else if closeAt >= 0 && recoverAt < closeAt {
+				t.Errorf("%s: RecoverStreamPanic must be deferred after the defer that closes the stream", pos)
+			}
+			return true
+		})
+	}
+	if checked < 30 {
+		t.Fatalf("checked only %d streaming goroutines; the scan is not finding the providers", checked)
+	}
+}
+
+// BenchmarkRecoverStreamPanicNoPanic is the cost every stream pays when nothing panics:
+// one deferred call per stream goroutine (not per chunk).
+func BenchmarkRecoverStreamPanicNoPanic(b *testing.B) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ch := make(chan *schemas.BifrostStreamChunk, 1)
+	logger := getLogger()
+	b.ReportAllocs()
+	for b.Loop() {
+		func() {
+			defer RecoverStreamPanic(ctx, nil, ch, logger, nil)
+		}()
+	}
+}
+
+// BenchmarkProcessAndSendResponseFinalChunk is the final-chunk send of a provider stream,
+// the one place the stream marks its terminal chunk as handled. Each iteration is a fresh
+// stream context, as in production.
+func BenchmarkProcessAndSendResponseFinalChunk(b *testing.B) {
+	runner := func(_ *schemas.BifrostContext, r *schemas.BifrostResponse, e *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+		return r, e
+	}
+	resp := &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{}}
+	ch := make(chan *schemas.BifrostStreamChunk, 1)
+	b.ReportAllocs()
+	for b.Loop() {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+		ProcessAndSendResponse(ctx, runner, resp, ch, nil)
+		<-ch
 	}
 }

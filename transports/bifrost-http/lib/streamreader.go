@@ -4,11 +4,11 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"runtime"
 	"runtime/debug"
 	"sync"
 	"time"
 
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -290,16 +290,17 @@ func StopSSEHeartbeat(reader *SSEStreamReader, done chan struct{}, exited <-chan
 }
 
 // RecoverStreamProducer is deferred by the goroutine that turns a provider stream into
-// SSE frames. That goroutine runs after the HTTP handler has returned, outside
+// client frames. That goroutine runs after the HTTP handler has returned, outside
 // RecoveryMiddleware, so a panic in a chunk converter or a stream-chunk plugin hook would
-// otherwise end the whole process. It logs the panic, cancels the upstream request and
-// drains stream so the provider goroutine is not left blocked on a send, then returns so
-// the producer's own deferred teardown closes the client stream. The client sees the
-// stream end without a terminal frame.
+// otherwise end the whole process. It logs the panic, calls onPanic (when non-nil) so the
+// producer can write a terminal error frame in its route's format while the client stream
+// is still open, cancels the upstream request and drains stream so the provider goroutine
+// is not left blocked on a send, then returns so the producer's own deferred teardown
+// closes the client stream. A panic inside onPanic is contained; cancel and drain still run.
 //
 // Defer it after the producer's teardown defer, so it runs first and the drain finishes
 // before the trace completes, the same order the client-disconnect path uses.
-func RecoverStreamProducer(cancel context.CancelFunc, stream <-chan *schemas.BifrostStreamChunk) {
+func RecoverStreamProducer(cancel context.CancelFunc, stream <-chan *schemas.BifrostStreamChunk, onPanic func()) {
 	r := recover()
 	if r == nil {
 		return
@@ -307,19 +308,51 @@ func RecoverStreamProducer(cancel context.CancelFunc, stream <-chan *schemas.Bif
 	if logger != nil {
 		logger.Error(fmt.Sprintf("recovered from panic in stream producer: %s\n%s", PanicSummary(r), debug.Stack()))
 	}
+	if onPanic != nil {
+		RunRecovered("stream producer error frame", onPanic)
+	}
 	if cancel != nil {
 		cancel()
 	}
-	for range stream {
+	if stream != nil {
+		for range stream {
+		}
 	}
 }
 
-// PanicSummary describes a recovered panic value without echoing arbitrary content.
-// Runtime errors keep their message (runtime-generated, no request data); any other
-// value is reduced to its type.
-func PanicSummary(r any) string {
-	if rerr, ok := r.(runtime.Error); ok {
-		return rerr.Error()
+// StreamProducerPanicMessage is the message of the error frame a stream producer emits
+// after RecoverStreamProducer catches a panic.
+const StreamProducerPanicMessage = "internal error while streaming the response"
+
+// StreamProducerPanicError is the error a stream producer frames for the client after a
+// recovered panic. It carries no detail of the panic itself.
+func StreamProducerPanicError() *schemas.BifrostError {
+	return &schemas.BifrostError{
+		IsBifrostError: true,
+		StatusCode:     schemas.Ptr(500),
+		Error: &schemas.ErrorField{
+			Type:    schemas.Ptr("server_error"),
+			Message: StreamProducerPanicMessage,
+		},
 	}
-	return fmt.Sprintf("%T", r)
+}
+
+// RunRecovered calls fn and contains a panic in it. A stream producer's deferred teardown
+// runs after RecoverStreamProducer, so a panic in one of its steps (an integration's
+// stream cleanup, the trace completer, a transport post-hook completer) is a new panic
+// that nothing else catches. Wrapping each such step keeps the steps after it, including
+// closing the client stream, running.
+func RunRecovered(what string, fn func()) {
+	defer func() {
+		if r := recover(); r != nil && logger != nil {
+			logger.Error(fmt.Sprintf("recovered from panic in %s: %s\n%s", what, PanicSummary(r), debug.Stack()))
+		}
+	}()
+	fn()
+}
+
+// PanicSummary describes a recovered panic value without echoing arbitrary content.
+// See providerUtils.PanicSummary.
+func PanicSummary(r any) string {
+	return providerUtils.PanicSummary(r)
 }
