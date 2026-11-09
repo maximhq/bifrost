@@ -314377,6 +314377,81 @@
           }
         }
       ]
+    },
+    {
+      "name": "325. Gemini does not surface MALFORMED_FUNCTION_CALL finish text (#9798 / PR #9799) (malformed finish text)",
+      "description": "closeGeminiOpenItems (core/providers/gemini/responses.go) emitted the finish message of an error finish reason as an assistant output_text item before response.completed. For MALFORMED_FUNCTION_CALL, UNEXPECTED_TOOL_CALL and MALFORMED_RESPONSE that message is a description of the failed turn, for example \"Error: MALFORMED_FUNCTION_CALL - Malformed function call: ...\". Replayed as conversation history it is assistant output the model imitates on the next turn. The fix stops emitting that text for those three finish reasons; the turn still completes as failed, and other error finish reasons (SAFETY, for example) keep their visible message. A MALFORMED_FUNCTION_CALL finish cannot be forced on demand, so the case streams a forced tool call on /v1/responses and asserts the call itself succeeded and that no output_text event carries one of the three error strings. It is a guard that is green before and after the fix; the deterministic red/green pin is TestCloseGeminiOpenItems_MalformedFinishMessageNotSurfaced in core/providers/gemini/responses_test.go.",
+      "item": [
+        {
+          "name": "gemini/gemini-2.5-flash /v1/responses stream forced tool call carries no MALFORMED_FUNCTION_CALL error text - #9798",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"gemini/gemini-2.5-flash\",\"stream\":true,\"max_output_tokens\":1024,\"input\":\"What is the weather in Oslo? Use the get_weather tool.\",\"tools\":[{\"type\":\"function\",\"name\":\"get_weather\",\"description\":\"Get the current weather for a city\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}],\"tool_choice\":\"required\"}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('malformed finish text gemini /v1/responses stream: 200', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "var events = txt.split(/\\r?\\n/).filter(function (l) { return l.indexOf('data:') === 0; }).map(function (l) { return l.slice(5).trim(); }).filter(function (d) { return d && d !== '[DONE]'; }).map(function (d) { try { return JSON.parse(d); } catch (e) { return { unparsed: d }; } });",
+                  "pm.test('malformed finish text gemini /v1/responses stream: every streamed event parses', function () {",
+                  "  events.forEach(function (e) {",
+                  "    pm.expect(e.unparsed, 'unparseable SSE data: ' + String(e.unparsed).slice(0, 300)).to.be.undefined;",
+                  "  });",
+                  "});",
+                  "pm.test('malformed finish text gemini /v1/responses stream: the forced get_weather call streamed as a function_call item', function () {",
+                  "  var calls = events.filter(function (e) { return e.type === 'response.output_item.added' && e.item && e.item.type === 'function_call'; });",
+                  "  pm.expect(calls.length, 'no function_call item: ' + txt.slice(0, 1500)).to.be.above(0);",
+                  "});",
+                  "// A MALFORMED_FUNCTION_CALL, UNEXPECTED_TOOL_CALL or MALFORMED_RESPONSE finish message describes a failed turn.",
+                  "// It must not be emitted as assistant output_text, where it becomes conversation history the model imitates.",
+                  "// A MALFORMED_FUNCTION_CALL finish cannot be forced on demand, so this case is a guard that is green on both",
+                  "// sides of the fix; the deterministic red/green is the Go test TestCloseGeminiOpenItems_MalformedFinishMessageNotSurfaced.",
+                  "var forbidden = /Error: (MALFORMED_FUNCTION_CALL|UNEXPECTED_TOOL_CALL|MALFORMED_RESPONSE)/;",
+                  "var texts = [];",
+                  "events.forEach(function (e) {",
+                  "  if (e.type === 'response.output_text.delta' && typeof e.delta === 'string') { texts.push(e.delta); }",
+                  "  if (e.type === 'response.output_text.done' && typeof e.text === 'string') { texts.push(e.text); }",
+                  "  if (e.type === 'response.content_part.done' && e.part && typeof e.part.text === 'string') { texts.push(e.part.text); }",
+                  "  if (e.type === 'response.output_item.done' && e.item && Array.isArray(e.item.content)) {",
+                  "    e.item.content.forEach(function (c) { if (c && typeof c.text === 'string') { texts.push(c.text); } });",
+                  "  }",
+                  "});",
+                  "pm.test('malformed finish text gemini /v1/responses stream: no output_text carries a MALFORMED_FUNCTION_CALL, UNEXPECTED_TOOL_CALL or MALFORMED_RESPONSE error', function () {",
+                  "  texts.forEach(function (t) {",
+                  "    pm.expect(t, 'finish message surfaced as assistant text: ' + t.slice(0, 400)).to.not.match(forbidden);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }

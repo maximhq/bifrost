@@ -2663,8 +2663,13 @@ func closeGeminiOpenItems(state *GeminiResponsesStreamState, groundingMetadata *
 	}
 
 	// For error finish reasons with a finish message, emit the error as text content BEFORE completed event
-	// This ensures the error message is visible to the client
-	if isErrorFinishReason(finishReason) && finishMessage != "" {
+	// This ensures the error message is visible to the client.
+	// Exception: Do NOT inject MALFORMED_FUNCTION_CALL / MALFORMED_RESPONSE / UNEXPECTED_TOOL_CALL finishMessage
+	// into assistant output_text, as it becomes assistant history that the model can imitate on later turns.
+	if isErrorFinishReason(finishReason) && finishMessage != "" &&
+		finishReason != FinishReasonMalformedFunctionCall &&
+		finishReason != FinishReasonUnexpectedToolCall &&
+		finishReason != FinishReasonMalformedResponse {
 		errorText := fmt.Sprintf("Error: %s - %s", finishReason, finishMessage)
 		outputIndex := state.nextOutputIndex()
 		itemID := generateItemID(state.MessageID, "error", outputIndex)
