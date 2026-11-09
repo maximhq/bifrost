@@ -965,8 +965,22 @@ func (p *ProviderConfig) GenerateConfigHash(providerName string) (string, error)
 		}
 		customProviderConfig = data
 	}
-	return p.generateConfigHash(providerName, customProviderConfig)
+	hash, err := p.generateConfigHash(providerName, customProviderConfig)
+	if err != nil {
+		return "", err
+	}
+	if p.CustomProviderConfig != nil && len(p.CustomProviderConfig.RequestPathOverrides) >= 2 {
+		// Only multi-override encodings changed when overrides were sorted; the marker lets
+		// reconciliation tell a sorted-era hash from one written by an older build.
+		hash += SortedOverridesConfigHashMarker
+	}
+	return hash, nil
 }
+
+// SortedOverridesConfigHashMarker suffixes the config_hash of a custom provider with two or
+// more request_path_overrides once they are hashed in sorted order. A stored hash without it
+// on such a provider was written by an older build, whose override order is unknown.
+const SortedOverridesConfigHashMarker = ":sorted-overrides"
 
 // LegacyOverrideOrderConfigHash returns the config_hash a provider had on builds that hashed
 // request_path_overrides with the unsorted encoder, with its overrides encoded in the given
@@ -992,7 +1006,7 @@ func (p *ProviderConfig) LegacyOverrideOrderConfigHash(providerName string, orde
 // through the API or dashboard survive the upgrade. It runs only after a direct compare
 // failed, never on the request path.
 func (p *ProviderConfig) ConfigHashMatchesLegacyOverrideOrder(providerName, storedHash string) (bool, error) {
-	if p.CustomProviderConfig == nil {
+	if p.CustomProviderConfig == nil || strings.HasSuffix(storedHash, SortedOverridesConfigHashMarker) {
 		return false, nil
 	}
 	return hashMatchesAnyLegacyOrder(p.CustomProviderConfig.RequestPathOverrides, storedHash, func(order []schemas.RequestType) (string, error) {
@@ -1000,13 +1014,16 @@ func (p *ProviderConfig) ConfigHashMatchesLegacyOverrideOrder(providerName, stor
 	})
 }
 
-// ConfigHashLegacyOverrideOrderUnverifiable reports whether storedHash could have been written
-// by an older build with unsorted request_path_overrides, yet ConfigHashMatchesLegacyOverrideOrder
-// cannot say so because the provider has more overrides than maxLegacyMapPermutations. For such
-// a provider a hash mismatch does not prove that config.json was edited, so reconciliation
-// must not treat it as proof either.
+// ConfigHashLegacyOverrideOrderUnverifiable reports whether storedHash was written by an older
+// build with unsorted request_path_overrides (it lacks SortedOverridesConfigHashMarker), yet
+// ConfigHashMatchesLegacyOverrideOrder cannot say whether config.json changed because the
+// provider has more overrides than maxLegacyMapPermutations. For such a provider a hash
+// mismatch does not prove that config.json was edited, so reconciliation must not treat it as
+// proof either. Once the sorted hash is stored it carries the marker, so this holds on the
+// upgrade boot only and later edits are detected normally.
 func (p *ProviderConfig) ConfigHashLegacyOverrideOrderUnverifiable(storedHash string) bool {
-	return storedHash != "" && p.CustomProviderConfig != nil &&
+	return storedHash != "" && !strings.HasSuffix(storedHash, SortedOverridesConfigHashMarker) &&
+		p.CustomProviderConfig != nil &&
 		len(p.CustomProviderConfig.RequestPathOverrides) > maxLegacyMapPermutations
 }
 
@@ -1026,12 +1043,12 @@ func legacyCustomProviderConfigBytes(cfg *schemas.CustomProviderConfig, order []
 	if err != nil {
 		return nil, err
 	}
-	field := []byte(`"request_path_overrides":`)
-	sortedField := append(append([]byte{}, field...), sorted...)
+	const field = `"request_path_overrides":`
+	sortedField := append([]byte(field), sorted...)
 	if !bytes.Contains(data, sortedField) {
 		return nil, fmt.Errorf("request_path_overrides not found in the encoded custom provider config")
 	}
-	return bytes.Replace(data, sortedField, append(field, legacy...), 1), nil
+	return bytes.Replace(data, sortedField, append([]byte(field), legacy...), 1), nil
 }
 
 // generateConfigHash composes the provider hash; customProviderConfig is the already-encoded

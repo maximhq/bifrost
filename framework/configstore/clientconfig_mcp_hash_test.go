@@ -1,11 +1,12 @@
 package configstore
 
 import (
-	"github.com/maximhq/bifrost/core/schemas"
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/bytedance/sonic"
-
+	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -271,6 +272,43 @@ func TestKeyHashMatchesLegacyAliasOrder(t *testing.T) {
 	require.False(t, ok, "above maxLegacyMapPermutations the search is skipped and the file wins")
 }
 
+// TestGenerateConfigHash_SortedOverridesMarker pins which providers carry the sorted-overrides
+// marker: only custom providers with two or more overrides, whose encoding changed. Every
+// other provider keeps the hash older builds stored, so upgrading does not look like an edit.
+func TestGenerateConfigHash_SortedOverridesMarker(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		cfg    *ProviderConfig
+		marked bool
+	}{
+		{"not custom", &ProviderConfig{}, false},
+		{"no overrides", customProviderWithOverrides(), false},
+		{"one override", customProviderWithOverrides("a"), false},
+		{"two overrides", customProviderWithOverrides("a", "b"), true},
+		{"above the search bound", customProviderWithOverrides("a", "b", "c", "d", "e", "f", "g", "h"), true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, err := tc.cfg.GenerateConfigHash("custom")
+			require.NoError(t, err)
+			require.Equal(t, tc.marked, strings.HasSuffix(h, SortedOverridesConfigHashMarker))
+			if !tc.marked && tc.cfg.CustomProviderConfig != nil {
+				legacy, err := tc.cfg.LegacyOverrideOrderConfigHash("custom", sortedOverrideNames(tc.cfg))
+				require.NoError(t, err)
+				require.Equal(t, legacy, h, "a provider whose encoding did not change keeps its stored hash")
+			}
+		})
+	}
+}
+
+func sortedOverrideNames(p *ProviderConfig) []schemas.RequestType {
+	names := make([]schemas.RequestType, 0, len(p.CustomProviderConfig.RequestPathOverrides))
+	for name := range p.CustomProviderConfig.RequestPathOverrides {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	return names
+}
+
 // customProviderWithOverrides builds a custom provider config whose request_path_overrides
 // holds one entry per named request type.
 func customProviderWithOverrides(names ...schemas.RequestType) *ProviderConfig {
@@ -328,7 +366,7 @@ func TestConfigHashMatchesLegacyOverrideOrder(t *testing.T) {
 
 	identity, err := p.LegacyOverrideOrderConfigHash("custom", []schemas.RequestType{"a", "b", "c", "d"})
 	require.NoError(t, err)
-	require.Equal(t, sorted, identity, "the sorted order is one of the legacy orders")
+	require.Equal(t, identity+SortedOverridesConfigHashMarker, sorted, "the sorted order is one of the legacy orders; the sorted hash only adds the marker")
 
 	for _, order := range [][]schemas.RequestType{{"d", "c", "b", "a"}, {"b", "d", "a", "c"}} {
 		legacy, err := p.LegacyOverrideOrderConfigHash("custom", order)
@@ -339,7 +377,7 @@ func TestConfigHashMatchesLegacyOverrideOrder(t *testing.T) {
 		require.True(t, ok, "legacy hash for order %v must be recognised", order)
 	}
 
-	ok, err := p.ConfigHashMatchesLegacyOverrideOrder("other", mustLegacyConfigHash(t, p, "other", "d", "c", "b", "a"))
+	ok, err := p.ConfigHashMatchesLegacyOverrideOrder("custom", mustLegacyConfigHash(t, p, "other", "d", "c", "b", "a"))
 	require.NoError(t, err)
 	require.False(t, ok, "another provider's hash must not match")
 
@@ -361,6 +399,10 @@ func TestConfigHashMatchesLegacyOverrideOrder(t *testing.T) {
 	ok, err = many.ConfigHashMatchesLegacyOverrideOrder("custom", mustLegacyConfigHash(t, many, "custom", "h", "g", "f", "e", "d", "c", "b", "a"))
 	require.NoError(t, err)
 	require.False(t, ok, "above maxLegacyMapPermutations the search is skipped and the file wins")
+
+	ok, err = p.ConfigHashMatchesLegacyOverrideOrder("custom", "deadbeef"+SortedOverridesConfigHashMarker)
+	require.NoError(t, err)
+	require.False(t, ok, "a stored hash carrying the sorted marker is never a legacy hash")
 }
 
 // TestConfigHashLegacyOverrideOrderUnverifiable pins when reconciliation must stop trusting a
@@ -378,6 +420,7 @@ func TestConfigHashLegacyOverrideOrderUnverifiable(t *testing.T) {
 	require.False(t, customProviderWithOverrides(names(maxLegacyMapPermutations)...).ConfigHashLegacyOverrideOrderUnverifiable("stored"), "the search covers up to the bound")
 	require.True(t, customProviderWithOverrides(names(maxLegacyMapPermutations+1)...).ConfigHashLegacyOverrideOrderUnverifiable("stored"), "above the bound the stored hash cannot be verified")
 	require.False(t, customProviderWithOverrides(names(maxLegacyMapPermutations+1)...).ConfigHashLegacyOverrideOrderUnverifiable(""), "a provider with no stored hash has nothing to verify")
+	require.False(t, customProviderWithOverrides(names(maxLegacyMapPermutations+1)...).ConfigHashLegacyOverrideOrderUnverifiable("stored"+SortedOverridesConfigHashMarker), "a sorted-era hash is verified by direct compare, so a mismatch is a real edit")
 	require.False(t, (&ProviderConfig{}).ConfigHashLegacyOverrideOrderUnverifiable("stored"), "a provider that is not custom has no overrides")
 }
 

@@ -26747,6 +26747,49 @@ func TestMergeProviderWithHash_UnverifiableLegacyOverrideHashKeepsAPIKeys(t *tes
 			}
 		}
 	})
+
+	t.Run("upgrade boot is recorded as a file sync", func(t *testing.T) {
+		DrainStartupAuditChanges()
+		fileCfg := build()
+		current, err := fileCfg.GenerateConfigHash(string(provider))
+		require.NoError(t, err)
+		fileCfg.ConfigHash = current
+		providers := map[schemas.ModelProvider]configstore.ProviderConfig{provider: stored(t)}
+		mergeProviderWithHash(provider, fileCfg, providers)
+		changes := DrainStartupAuditChanges()
+		require.Len(t, changes, 1, "provider settings were taken from config.json, so the sync is audited")
+		require.Equal(t, string(provider), changes[0].TargetID)
+	})
+
+	t.Run("a later edit after the upgrade takes the normal edit path", func(t *testing.T) {
+		// First boot on the sorted build: legacy hash, unverifiable, keys reconciled.
+		fileCfg := build()
+		current, err := fileCfg.GenerateConfigHash(string(provider))
+		require.NoError(t, err)
+		fileCfg.ConfigHash = current
+		providers := map[schemas.ModelProvider]configstore.ProviderConfig{provider: stored(t)}
+		mergeProviderWithHash(provider, fileCfg, providers)
+		upgraded := providers[provider]
+		require.Equal(t, current, upgraded.ConfigHash)
+
+		// Second boot: config.json really changed (provider setting edited, the file key removed).
+		DrainStartupAuditChanges()
+		edited := build()
+		edited.CustomProviderConfig.IsKeyLess = true
+		edited.Keys = nil
+		editedHash, err := edited.GenerateConfigHash(string(provider))
+		require.NoError(t, err)
+		edited.ConfigHash = editedHash
+		require.False(t, edited.ConfigHashLegacyOverrideOrderUnverifiable(upgraded.ConfigHash), "a sorted-era stored hash is never unverifiable")
+
+		providers = map[schemas.ModelProvider]configstore.ProviderConfig{provider: upgraded}
+		mergeProviderWithHash(provider, edited, providers)
+		merged := providers[provider]
+		require.Equal(t, editedHash, merged.ConfigHash)
+		require.True(t, merged.CustomProviderConfig.IsKeyLess)
+		require.NotContains(t, keyNames(merged), "file", "a key removed from config.json must be removed once the hash is sorted-era")
+		require.Len(t, DrainStartupAuditChanges(), 1, "the edit is audited")
+	})
 }
 
 // TestPrepareOpenAPIClientFromFile covers how an openapi client declared in
