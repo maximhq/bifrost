@@ -307,6 +307,7 @@
 		"grpcHostPortFormat": "gRPC 的格式必須為 <host>:<port>（例如 {{example}}）",
 		"invalidInput": "輸入無效",
 		"vertexEndpointId": "請輸入 Vertex 端點 ID，或貼上支援的端點 URL",
+		"basetenDeploymentUrl": "部署 URL 必須是絕對 https URL",
 		"mcp": {
 			"privateKeyRequired": "private_key_jwt 需要私密金鑰",
 			"secretRequiredForMethod": "選擇傳送方式需要用戶端密鑰",
