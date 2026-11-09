@@ -49,6 +49,7 @@ export enum RbacResource {
 	WarpSession = "WarpSession",
 	BackgroundJobs = "BackgroundJobs",
 	Alerting = "Alerting",
+	Datasheet = "Datasheet",
 }
 
 // RBAC Operation Names (must match backend definitions)

@@ -1698,6 +1698,11 @@ func (h *HybridLogStore) GetMCPHistogram(ctx context.Context, filters MCPToolLog
 	return h.inner.GetMCPHistogram(ctx, filters, bucketSizeSeconds)
 }
 
+// GetMCPLatencyHistogram delegates to the inner store.
+func (h *HybridLogStore) GetMCPLatencyHistogram(ctx context.Context, filters MCPToolLogSearchFilters, bucketSizeSeconds int64) (*LatencyHistogramResult, error) {
+	return h.inner.GetMCPLatencyHistogram(ctx, filters, bucketSizeSeconds)
+}
+
 // GetMCPCostHistogram returns the cost histogram for MCP tool logs.
 func (h *HybridLogStore) GetMCPCostHistogram(ctx context.Context, filters MCPToolLogSearchFilters, bucketSizeSeconds int64) (*MCPCostHistogramResult, error) {
 	return h.inner.GetMCPCostHistogram(ctx, filters, bucketSizeSeconds)
@@ -2450,6 +2455,11 @@ func (h *HybridLogStore) GetAvailableServerLabels(ctx context.Context, limit int
 // GetAvailableMCPVirtualKeys returns a list of MCP tool log virtual keys that match the given query.
 func (h *HybridLogStore) GetAvailableMCPVirtualKeys(ctx context.Context, limit int, query string) ([]MCPToolLog, error) {
 	return h.inner.GetAvailableMCPVirtualKeys(ctx, limit, query)
+}
+
+// GetDistinctMCPKeyPairs delegates to the inner store.
+func (h *HybridLogStore) GetDistinctMCPKeyPairs(ctx context.Context, idCol, nameCol string, limit int, query string) ([]KeyPairResult, error) {
+	return h.inner.GetDistinctMCPKeyPairs(ctx, idCol, nameCol, limit, query)
 }
 
 // Async Job methods — delegated directly.
