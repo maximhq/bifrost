@@ -370,6 +370,14 @@ type ConfigStore interface {
 	// section cannot be overwritten.
 	ResetComplexityAnalyzerConfig(ctx context.Context, defaults *ComplexityAnalyzerConfig) (*ComplexityAnalyzerConfig, error)
 
+	// Model routers CRUD.
+	GetModelRouters(ctx context.Context) ([]ModelRouter, error)
+	GetModelRouter(ctx context.Context, id string) (*ModelRouter, error)
+	CreateModelRouter(ctx context.Context, router *ModelRouter, tx ...*gorm.DB) error
+	UpdateModelRouter(ctx context.Context, router *ModelRouter, tx ...*gorm.DB) error
+	DeleteModelRouter(ctx context.Context, id string, tx ...*gorm.DB) error
+	ResetModelRouter(ctx context.Context, id string, defaults *ComplexityAnalyzerConfig) (*ModelRouter, error)
+
 	// Plugins CRUD
 	GetPlugins(ctx context.Context) ([]*tables.TablePlugin, error)
 	GetPlugin(ctx context.Context, name string) (*tables.TablePlugin, error)
