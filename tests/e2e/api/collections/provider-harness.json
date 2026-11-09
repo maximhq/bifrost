@@ -314615,6 +314615,238 @@
             }
           },
           "response": []
+        },
+        {
+          "name": "[EXPECT-400] vertex/gemini-2.5-flash-tts native /v1/audio/speech refuses mp3 as a caller error, not a 500 - vertex chirp speech",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('An unsupported response_format is a 400 that names it, never a 500', function () {",
+                  "  pm.expect(pm.response.code, 'expected 400: ' + pm.response.text().slice(0, 300)).to.equal(400);",
+                  "  pm.expect(pm.response.text(), 'refusal should name response_format').to.include('does not support response_format');",
+                  "  pm.expect(pm.response.text(), 'refusal should name the format').to.include('mp3');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/gemini-2.5-flash-tts\",\n  \"input\": \"Hello there, this is a short test.\",\n  \"voice\": \"Kore\",\n  \"response_format\": \"mp3\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/speech",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "speech"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "vertex/chirp-3-hd native /v1/audio/speech labels WAV audio as audio/wav - vertex chirp speech",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function head(audio, n) { var s = \"\"; for (var i = 0; i < n && i < audio.length; i++) { s += String.fromCharCode(audio[i]); } return s; }",
+                  "pm.test('Chirp WAV on the native route is labelled audio/wav, not audio/mpeg', function () {",
+                  "  pm.expect(pm.response.code, 'speech failed: ' + pm.response.text().slice(0, 300)).to.equal(200);",
+                  "  var ct = pm.response.headers.get('content-type') || '';",
+                  "  var cd = pm.response.headers.get('content-disposition') || '';",
+                  "  pm.expect(ct, 'WAV body labelled ' + ct).to.match(/^audio\\/wav/i);",
+                  "  pm.expect(cd, 'WAV body downloads as ' + cd).to.include('filename=speech.wav');",
+                  "  pm.expect(head(pm.response.stream, 4), 'body is not a WAV file').to.equal('RIFF');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/chirp-3-hd\",\n  \"input\": \"नमस्ते, आप कैसे हैं?\",\n  \"voice\": \"hi-IN-Chirp3-HD-Erinome\",\n  \"response_format\": \"wav\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/speech",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "speech"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "vertex/chirp-3-hd /openai/v1/audio/speech labels WAV audio as audio/wav - vertex chirp speech",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function head(audio, n) { var s = \"\"; for (var i = 0; i < n && i < audio.length; i++) { s += String.fromCharCode(audio[i]); } return s; }",
+                  "pm.test('Chirp WAV on the OpenAI drop-in is labelled audio/wav, not audio/mpeg', function () {",
+                  "  pm.expect(pm.response.code, 'speech failed: ' + pm.response.text().slice(0, 300)).to.equal(200);",
+                  "  var ct = pm.response.headers.get('content-type') || '';",
+                  "  var cd = pm.response.headers.get('content-disposition') || '';",
+                  "  pm.expect(ct, 'WAV body labelled ' + ct).to.match(/^audio\\/wav/i);",
+                  "  pm.expect(cd, 'WAV body downloads as ' + cd).to.include('filename=speech.wav');",
+                  "  pm.expect(head(pm.response.stream, 4), 'body is not a WAV file').to.equal('RIFF');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/chirp-3-hd\",\n  \"input\": \"नमस्ते, आप कैसे हैं?\",\n  \"voice\": \"hi-IN-Chirp3-HD-Erinome\",\n  \"response_format\": \"wav\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/audio/speech",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "audio",
+                "speech"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "325. Gemini Text-to-Speech: refused response formats and instructions (gemini tts)",
+      "description": "Gemini TTS served by the gemini provider through /v1/audio/speech. The first case asks for mp3, which Gemini TTS cannot produce, and requires a 400 that names the format (it used to be a 500). The second sends instructions, which Gemini TTS takes as a style direction ahead of the text, and requires WAV audio back.",
+      "item": [
+        {
+          "name": "[EXPECT-400] gemini/gemini-2.5-flash-preview-tts native /v1/audio/speech refuses mp3 as a caller error, not a 500 - gemini tts",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('An unsupported response_format is a 400 that names it, never a 500', function () {",
+                  "  pm.expect(pm.response.code, 'expected 400: ' + pm.response.text().slice(0, 300)).to.equal(400);",
+                  "  pm.expect(pm.response.text(), 'refusal should name response_format').to.include('does not support response_format');",
+                  "  pm.expect(pm.response.text(), 'refusal should name the format').to.include('mp3');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash-preview-tts\",\n  \"input\": \"Hello there, this is a short test.\",\n  \"voice\": \"Kore\",\n  \"response_format\": \"mp3\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/speech",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "speech"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "gemini/gemini-2.5-flash-preview-tts native /v1/audio/speech with instructions returns audio - gemini tts",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function head(audio, n) { var s = \"\"; for (var i = 0; i < n && i < audio.length; i++) { s += String.fromCharCode(audio[i]); } return s; }",
+                  "pm.test('Gemini TTS accepts instructions and returns WAV audio', function () {",
+                  "  pm.expect(pm.response.code, 'speech failed: ' + pm.response.text().slice(0, 300)).to.equal(200);",
+                  "  var audio = pm.response.stream;",
+                  "  pm.expect(audio.length, 'empty audio body').to.be.above(5000);",
+                  "  pm.expect(head(audio, 4), 'body is not a WAV file').to.equal('RIFF');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash-preview-tts\",\n  \"input\": \"The quarterly report is ready, and the numbers look better than we expected.\",\n  \"voice\": \"Kore\",\n  \"response_format\": \"wav\",\n  \"instructions\": \"Speak slowly and warmly\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/speech",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "speech"
+              ]
+            }
+          },
+          "response": []
         }
       ]
     },

@@ -1326,8 +1326,12 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 			return
 		} else {
 			lib.ApplyBifrostResponseHeaders(ctx, bifrostCtx, bifrostExtraFields)
-			ctx.Response.Header.Set("Content-Type", "audio/mpeg")
-			ctx.Response.Header.Set("Content-Disposition", "attachment; filename=speech.mp3")
+			responseFormat := ""
+			if params := bifrostReq.SpeechRequest.Params; params != nil {
+				responseFormat = params.ResponseFormat
+			}
+			ctx.Response.Header.Set("Content-Type", lib.SpeechContentType(responseFormat, speechResponse.Audio))
+			ctx.Response.Header.Set("Content-Disposition", "attachment; filename="+lib.SpeechAttachmentFilename(responseFormat))
 			ctx.Response.Header.Set("Content-Length", strconv.Itoa(len(speechResponse.Audio)))
 			ctx.Response.SetBody(speechResponse.Audio)
 			return
