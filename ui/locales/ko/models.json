@@ -573,6 +573,10 @@
 		"keys": {
 			"useForBatch": "일괄 API에 사용",
 			"useForBatchHelp": "일괄 API 작업에 이 키를 활성화하세요. 이 기능이 활성화된 키만 일괄 요청에 사용돼요.",
+			"useForEvals": "평가에 사용",
+			"useForEvalsHelp": "평가기가 이 키로 모델을 호출할 수 있게 합니다. 평가는 이 설정을 켠 키만 사용합니다. 따라서 다른 키의 프로덕션 트래픽과 경쟁하지 않습니다.",
+			"evalConcurrency": "평가 동시 실행 수",
+			"evalConcurrencyHelp": "이 키에서 동시에 실행되는 평가의 최대 개수입니다. 모든 Bifrost 인스턴스를 합쳐서 셉니다. 초과한 평가는 대기열에서 기다립니다. 비워 두면 기본값 4를 사용합니다.",
 			"vpcEndpointsOptional": "VPC 엔드포인트(선택 사항)",
 			"vpcEndpointsHelp": "퍼블릭 리전 엔드포인트 대신 인터페이스 VPC 엔드포인트를 통해 트래픽을 라우팅해요. ID가 아닌 VPC 콘솔의 각 엔드포인트 DNS 이름을 사용하세요. 지역은 여전히 ​​필수이에요. 요청 서명 범위를 설정해요.",
 			"vpc": {

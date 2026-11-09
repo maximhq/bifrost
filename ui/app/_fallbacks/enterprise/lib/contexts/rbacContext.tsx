@@ -44,6 +44,7 @@ export enum RbacResource {
 	Inventory = "Inventory",
 	EdgeConfig = "EdgeConfig",
 	SkillsRepository = "SkillsRepository",
+	Evaluators = "Evaluators",
 	Notifications = "Notifications",
 	Warp = "Warp",
 	WarpSession = "WarpSession",

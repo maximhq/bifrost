@@ -1622,5 +1622,263 @@
 		"retry": "再試行",
 		"externalClientUrl": "外部クライアント URL",
 		"externalClientUrlHelp": "Claude Code と Codex のマーケットプレイス用の Bifrost の公開ベース URL です。空のままにすると、マーケットプレイスの配信と登録が無効になります。スキル管理とダウンロードは引き続き利用できます。環境変数と vault 参照に対応しています。 URL プレフィックス（server.base_path）配下で動作する場合は、https://host/bifrost のようにプレフィックスを含めてください。"
+	},
+	"evals": {
+		"types": {
+			"ai": "AI ジャッジ",
+			"programmatic": "コード",
+			"statistical": "統計",
+			"api": "API",
+			"human": "人手"
+		},
+		"typeHints": {
+			"ai": "LLM が指示に従って出力を採点します",
+			"programmatic": "独自の関数をサンドボックスで実行します",
+			"statistical": "固定のテキスト指標です",
+			"api": "お使いの HTTP エンドポイントがスコアを返します",
+			"human": "レビュアーが各エントリを手作業で採点します"
+		},
+		"sources": {
+			"custom": "カスタム",
+			"builtin": "組み込み"
+		},
+		"modelNeeds": {
+			"judge": "ジャッジモデル",
+			"embedding": "埋め込みモデル",
+			"none": "モデル不要"
+		},
+		"suggestions": {
+			"singleTurn": "シングルターン",
+			"multiTurn": "マルチターン",
+			"variables": {
+				"input": "モデルに送った入力",
+				"output": "採点対象となるモデルの出力",
+				"context": "RAG またはデータセットの列から取得したコンテキスト",
+				"expected_output": "データセットにある期待される出力",
+				"history": "最新の入力より前の会話のターン",
+				"session": "マルチターンの会話のすべてのターン",
+				"expected_steps": "エージェントが従うべき手順 (データセットより)",
+				"db_schema": "SQL クエリの実行対象となるデータベーススキーマ",
+				"transcript": "会話または通話の全文書き起こし"
+			},
+			"custom": "カスタム変数です。この名前のデータセット列またはログのフィールドから値が入ります。"
+		},
+		"statuses": {
+			"ready": "実行可能",
+			"no_key": "評価用キーなし"
+		},
+		"filters": {
+			"status": "ステータス",
+			"type": "種類",
+			"source": "作成元",
+			"tags": "タグ",
+			"searchTags": "タグを検索または入力",
+			"category": "カテゴリ",
+			"modelNeeded": "必要なモデル"
+		},
+		"list": {
+			"title": "エバリュエーター",
+			"description": "LLM ジャッジ、独自のコード、HTTP エンドポイント、テキスト指標でモデルの出力を採点します。モデルを呼び出すエバリュエーターは、評価用に指定したプロバイダーキーでのみ実行されます。",
+			"browseCatalog": "カタログを見る",
+			"newEvaluator": "新しいエバリュエーター",
+			"searchPlaceholder": "エバリュエーターを検索",
+			"emptyTitle": "エバリュエーターはまだありません",
+			"emptyDescription": "エバリュエーターはモデルの出力を採点し、合格かどうかを判定します。組み込みから始めるか、独自に作成してください。",
+			"noResults": "このフィルターに一致するエバリュエーターはありません。",
+			"noEvalKey": "評価用キーなし",
+			"noEvalKeyAlert_one": "評価用に指定された {{provider}} のキーがありません。このページのエバリュエーター {{count}} 件は実行できません。",
+			"noEvalKeyAlert_other": "評価用に指定された {{provider}} のキーがありません。このページのエバリュエーター {{count}} 件は実行できません。",
+			"markKey": "キーを指定",
+			"columns": {
+				"name": "名前",
+				"type": "種類",
+				"reads": "読み取る変数",
+				"passesWhen": "合格条件",
+				"runsOn": "実行先",
+				"version": "バージョン",
+				"updated": "更新"
+			},
+			"runsOnSandbox": "Starlark サンドボックス",
+			"runsOnGateway": "ゲートウェイ内",
+			"runsOnReviewer": "レビュアー",
+			"versionShort": "v{{version}}",
+			"actionsFor": "{{name}} の操作",
+			"duplicate": "複製",
+			"duplicated": "{{name}} を作成しました",
+			"deleted": "{{name}} を削除しました",
+			"deleteTitle": "{{name}} を削除しますか？",
+			"deleteDescription": "このエバリュエーターとすべてのバージョンが使えなくなります。"
+		},
+		"criteria": {
+			"scoreCompare": "スコア {{symbol}} {{value}}",
+			"scoreIsOneOf": "スコアが {{values}} のいずれか",
+			"entryPassesWhen": "エントリが合格するスコアの条件",
+			"runPassesWhen": "実行が合格する条件",
+			"operator": "比較",
+			"value": "値",
+			"is": "等しい",
+			"isNot": "等しくない",
+			"yes": "はい",
+			"no": "いいえ",
+			"labels": "スコアが取りうるラベル",
+			"labelsPlaceholder": "ラベルを入力して Enter",
+			"passingLabels": "合格とするラベル",
+			"runMeasure": "実行の指標",
+			"runNames": {
+				"queries_passed": "合格したエントリの割合 (%)",
+				"mean_score": "平均スコア",
+				"median_score": "スコアの中央値",
+				"minimum_score": "最小スコア",
+				"maximum_score": "最大スコア"
+			}
+		},
+		"scoreTypes": {
+			"yes_no": {
+				"label": "はい / いいえ",
+				"hint": "要件を満たすかどうか"
+			},
+			"scale": {
+				"label": "スケール",
+				"hint": "1 から 5 など、範囲内の数値"
+			},
+			"multiselect": {
+				"label": "いずれか",
+				"hint": "定義したリストの中のラベル"
+			},
+			"number": {
+				"label": "数値",
+				"hint": "任意の数値"
+			}
+		},
+		"model": {
+			"judgeProvider": "ジャッジのプロバイダー",
+			"judgeModel": "ジャッジモデル",
+			"embeddingProvider": "埋め込みのプロバイダー",
+			"embeddingModel": "埋め込みモデル",
+			"runsOnKey": "{{provider}} のキー「{{name}}」で実行します。同時に実行する評価は最大 {{limit}} 件です。",
+			"noEvalKey": "評価用に指定された {{provider}} のキーがないため、実行できません。",
+			"onlyEvalKeys": "評価用に指定したキーを持つプロバイダーだけが実行できます。"
+		},
+		"catalog": {
+			"title": "組み込みエバリュエーター",
+			"breadcrumb": "カタログ",
+			"description": "すぐに使えるエバリュエーターが {{total}} 件あります。1 つ選び、必要ならモデルを選ぶと、エバリュエーターに追加されます。",
+			"searchPlaceholder": "組み込みエバリュエーターを検索",
+			"showing": "{{total}} 件中 {{shown}} 件を表示",
+			"noResults": "このフィルターに一致する組み込みエバリュエーターはありません。",
+			"add": "追加",
+			"addTitle": "{{name}} を追加",
+			"addDescriptionModel": "プロンプトは固定です。モデルと合格とするスコアを選べます。",
+			"addDescriptionMetric": "指標は固定です。合格とするスコアを選べます。",
+			"addEvaluator": "エバリュエーターを追加",
+			"adding": "追加中...",
+			"added": "{{name}} を追加しました",
+			"lowerIsBetter": "低いほど良い",
+			"scoreRange": "スコア {{scale}}",
+			"passesAt": "合格条件",
+			"passesWhenLower": "エントリが合格するスコアの条件 (低いほど良い)",
+			"whatItReads": "読み取る変数",
+			"optionalVariables": "任意: {{variables}}"
+		},
+		"fields": {
+			"name": "名前",
+			"tags": "タグ",
+			"tagsPlaceholder": "タグを追加",
+			"description": "説明",
+			"descriptionPlaceholder": "このエバリュエーターが確認する内容",
+			"instructionsPlaceholder": "{{output}} が {{input}} の質問に答えているかを判定してください。",
+			"scoreType": "スコアの種類",
+			"scaleFrom": "下限",
+			"scaleTo": "上限",
+			"scaleMin": "最低スコア",
+			"scaleMax": "最高スコア",
+			"returnType": "戻り値の種類",
+			"returnTypeHint": "validate が返す値: 真偽値、数値、またはラベル。",
+			"method": "メソッド",
+			"url": "URL",
+			"headerName": "ヘッダー名",
+			"headerValue": "ヘッダーの値",
+			"addHeader": "ヘッダーを追加",
+			"removeHeader": "ヘッダーを削除",
+			"scorePath": "スコアのパス",
+			"reasoningPath": "理由のパス (任意)",
+			"timeoutMs": "タイムアウト (ms)",
+			"concurrency": "同時実行数",
+			"concurrencyHint": "このエンドポイントを同時に呼び出す上限です。既定値は 1 です。"
+		},
+		"sections": {
+			"instructions": "ジャッジへの指示",
+			"instructionsHint": "採点ルールを書きます。入力は {{input}} や {{output}} のように二重波かっこで参照します。それぞれが変数になります。",
+			"judge": "ジャッジモデル",
+			"embedding": "埋め込みモデル",
+			"passCriteria": "合格基準",
+			"passCriteriaHint": "1 件のエントリが合格する条件と、実行全体が合格する条件です。",
+			"code": "コード",
+			"codeHint": "Python の方言である Starlark で書きます。validate を定義してください。引数の名前が、読み取る変数になります。",
+			"request": "リクエスト",
+			"requestHint": "ゲートウェイがエントリごとに呼び出すエンドポイントです。プライベートアドレスとループバックアドレスは拒否されます。",
+			"headers": "ヘッダー",
+			"headersHint": "値そのものを入力してください。env.NAME のような参照は使用できません。保存した値は二度と表示されません。",
+			"payload": "ボディ",
+			"payloadHint": "リクエストのボディです。入力は {{input}} や {{output}} のように二重波かっこで参照します。",
+			"response": "レスポンス",
+			"responseHint": "JSON レスポンス内のスコアと理由の場所を、ドット区切りのパスで指定します。",
+			"reviewerInstructions": "レビュアーへの指示",
+			"reviewerInstructionsHint": "各エントリを採点する人に表示されます。"
+		},
+		"editor": {
+			"newTitle": "新しいエバリュエーター",
+			"entity": "エバリュエーター",
+			"version": "バージョン {{version}}",
+			"unsaved": "未保存の変更",
+			"discard": "破棄",
+			"save": "保存",
+			"saveAsVersion": "バージョン {{version}} として保存",
+			"create": "エバリュエーターを作成",
+			"saving": "保存中...",
+			"saved": "保存しました",
+			"savedVersion": "バージョン {{version}} として保存しました",
+			"created": "{{name}} を作成しました",
+			"nameRequired": "名前は必須です",
+			"nameTooLong": "名前は 255 文字以内です",
+			"variablesFound": "検出した変数:",
+			"noVariables": "なし",
+			"optionalVariable": "{{name}} (任意)",
+			"builtinPromptFixed": "これは組み込みエバリュエーターです。プロンプトは固定です。ジャッジモデルと合格基準は変更できます。",
+			"builtinMetricFixed": "これは組み込みの指標です。計算式は固定です。合格基準は変更できます。",
+			"humanNotice": "テスト実行中にレビュアーが手作業で採点します。ここでは実行できません。"
+		},
+		"test": {
+			"title": "テスト",
+			"description": "保存の有無にかかわらず、現在の内容でエバリュエーターを実行します。",
+			"noVariables": "このエバリュエーターは変数を読み取りません。",
+			"optional": "任意",
+			"run": "テストを実行",
+			"running": "実行中...",
+			"queued": "評価用キーの空きを待っています。",
+			"stillRunning": "まだ実行中です。",
+			"timedOut": "時間内に実行が終わりませんでした。",
+			"blockedHuman": "人手のエバリュエーターはここでは実行できません。",
+			"blockedInvalid": "テストを実行するには設定を修正してください。",
+			"outcomes": {
+				"passed": "合格",
+				"failed": "不合格",
+				"scored": "採点済み",
+				"na": "対象外",
+				"error": "エラー"
+			},
+			"score": "スコア: {{score}}",
+			"reasoning": "理由",
+			"cause": "原因",
+			"why": "理由",
+			"logs": "出力",
+			"ranOn": "実行先",
+			"ranOnKey": "{{provider}} のキー「{{name}}」",
+			"latency": "レイテンシ",
+			"latencyMs": "{{ms}} ms",
+			"tokens": "トークン",
+			"tokensInOut": "入力 {{input}} / 出力 {{output}}",
+			"cost": "コスト"
+		}
 	}
 }

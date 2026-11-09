@@ -755,6 +755,13 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 		} else {
 			redactedConfig.Keys[i].UseForBatchAPI = new(false)
 		}
+		// Add back the eval flag and its concurrency
+		if key.UseForEvals != nil {
+			redactedConfig.Keys[i].UseForEvals = key.UseForEvals
+		} else {
+			redactedConfig.Keys[i].UseForEvals = new(false)
+		}
+		redactedConfig.Keys[i].EvalConcurrency = key.EvalConcurrency
 		// Add back use anthropic endpoints
 		if key.UseAnthropicEndpoints != nil {
 			redactedConfig.Keys[i].UseAnthropicEndpoints = key.UseAnthropicEndpoints
@@ -1510,6 +1517,13 @@ func generateKeyHash(key schemas.Key, aliases []byte) (string, error) {
 	}
 	if useForBatchAPI {
 		hash.Write([]byte("useForBatchAPI:true"))
+	}
+	// Hash UseForEvals (nil = default false) and EvalConcurrency (nil = default)
+	if key.UseForEvals != nil && *key.UseForEvals {
+		hash.Write([]byte("useForEvals:true"))
+	}
+	if key.EvalConcurrency != nil {
+		hash.Write([]byte("evalConcurrency:" + strconv.Itoa(*key.EvalConcurrency)))
 	}
 	// Hash UseAnthropicEndpoints (nil = default false for new keys)
 	useAnthropicEndpoints := false

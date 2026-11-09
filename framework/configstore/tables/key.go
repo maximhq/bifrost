@@ -118,6 +118,10 @@ type TableKey struct {
 	// Batch API configuration
 	UseForBatchAPI *bool `gorm:"default:false" json:"use_for_batch_api,omitempty"` // Whether this key can be used for batch API operations
 
+	// Evaluation configuration
+	UseForEvals     *bool `gorm:"default:false" json:"use_for_evals,omitempty"` // Whether this key can serve evaluation model calls
+	EvalConcurrency *int  `json:"eval_concurrency,omitempty"`                   // Max evaluation calls in flight on this key; nil takes the default
+
 	// UseAnthropicEndpoints routes inference through the provider's Anthropic-compatible
 	// endpoints instead of its OpenAI-compatible ones.
 	UseAnthropicEndpoints *bool `gorm:"default:false" json:"use_anthropic_endpoints,omitempty"`
@@ -193,6 +197,9 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 	if k.UseForBatchAPI == nil {
 		useForBatchAPI := false // DB default
 		k.UseForBatchAPI = &useForBatchAPI
+	}
+	if k.UseForEvals == nil {
+		k.UseForEvals = new(false) // DB default
 	}
 	if k.UseAnthropicEndpoints == nil {
 		useAnthropicEndpoints := false // DB default
@@ -1068,6 +1075,9 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 	if k.UseForBatchAPI == nil {
 		useForBatchAPI := false // DB default
 		k.UseForBatchAPI = &useForBatchAPI
+	}
+	if k.UseForEvals == nil {
+		k.UseForEvals = new(false) // DB default
 	}
 	if k.UseAnthropicEndpoints == nil {
 		useAnthropicEndpoints := false // DB default

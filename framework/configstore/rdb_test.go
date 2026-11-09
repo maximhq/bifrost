@@ -824,6 +824,100 @@ func TestUpdateProvidersConfig_EnabledFromFileIsPersisted(t *testing.T) {
 	assert.False(t, enabledByName["key-b"], "unset enabled should keep the stored value")
 }
 
+// The eval flag and its concurrency are stored per key and survive a sync that leaves
+// them unset, the same way enabled does.
+func TestUpdateProvidersConfig_EvalFieldsArePersisted(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	providers := map[schemas.ModelProvider]ProviderConfig{
+		"openai": {
+			Keys: []schemas.Key{
+				{ID: "key-prod", Name: "key-prod", Value: *schemas.NewSecretVar("sk-prod"), Weight: 1.0},
+				{ID: "key-evals", Name: "key-evals", Value: *schemas.NewSecretVar("sk-evals"), Weight: 1.0, UseForEvals: new(true), EvalConcurrency: new(8)},
+			},
+		},
+	}
+	require.NoError(t, store.UpdateProvidersConfig(ctx, providers))
+
+	result, err := store.GetProvidersConfig(ctx)
+	require.NoError(t, err)
+	byName := map[string]schemas.Key{}
+	for _, key := range result["openai"].Keys {
+		byName[key.Name] = key
+	}
+	require.NotNil(t, byName["key-prod"].UseForEvals)
+	assert.False(t, *byName["key-prod"].UseForEvals, "a key is not used for evals unless marked")
+	require.NotNil(t, byName["key-evals"].UseForEvals)
+	assert.True(t, *byName["key-evals"].UseForEvals)
+	require.NotNil(t, byName["key-evals"].EvalConcurrency)
+	assert.Equal(t, 8, *byName["key-evals"].EvalConcurrency)
+
+	// A single-key update, as the UI makes, changes the concurrency.
+	keyEvals, err := store.GetProviderKey(ctx, "openai", "key-evals")
+	require.NoError(t, err)
+	keyEvals.EvalConcurrency = new(2)
+	require.NoError(t, store.UpdateProviderKey(ctx, "openai", "key-evals", *keyEvals))
+	updated, err := store.GetProviderKey(ctx, "openai", "key-evals")
+	require.NoError(t, err)
+	require.NotNil(t, updated.EvalConcurrency)
+	assert.Equal(t, 2, *updated.EvalConcurrency)
+	require.NotNil(t, updated.UseForEvals)
+	assert.True(t, *updated.UseForEvals)
+}
+
+// A key marked for evals in the UI keeps the mark when the config file is synced again
+// and the file says nothing about evals. The sync runs on every start, so without this
+// the mark is lost on each restart. A file that sets the flag still wins.
+func TestUpdateProvidersConfig_EvalFieldsSurviveFileSync(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+	fileKey := func(id string) schemas.Key {
+		return schemas.Key{ID: id, Name: "key-a", Value: *schemas.NewSecretVar("sk-a"), Weight: 1.0}
+	}
+	sync := func(key schemas.Key) {
+		t.Helper()
+		require.NoError(t, store.UpdateProvidersConfig(ctx, map[schemas.ModelProvider]ProviderConfig{"openai": {Keys: []schemas.Key{key}}}))
+	}
+	stored := func() schemas.Key {
+		t.Helper()
+		result, err := store.GetProvidersConfig(ctx)
+		require.NoError(t, err)
+		require.Len(t, result["openai"].Keys, 1)
+		return result["openai"].Keys[0]
+	}
+	sync(fileKey("key-a"))
+
+	// The key is marked for evals outside the file, as the UI does.
+	marked, err := store.GetProviderKey(ctx, "openai", "key-a")
+	require.NoError(t, err)
+	marked.UseForEvals = new(true)
+	marked.EvalConcurrency = new(6)
+	require.NoError(t, store.UpdateProviderKey(ctx, "openai", "key-a", *marked))
+
+	// The file is synced again with the same key ID, then with a fresh one, which is
+	// matched by name. Neither says anything about evals.
+	for _, id := range []string{"key-a", "new-uuid-from-config-reload"} {
+		sync(fileKey(id))
+		key := stored()
+		require.NotNil(t, key.UseForEvals)
+		assert.True(t, *key.UseForEvals, "an unset use_for_evals keeps the stored value (file key ID %s)", id)
+		require.NotNil(t, key.EvalConcurrency)
+		assert.Equal(t, 6, *key.EvalConcurrency, "an unset eval_concurrency keeps the stored value (file key ID %s)", id)
+	}
+
+	// The file now turns evals off and sets a concurrency: the file wins.
+	off := fileKey("key-a")
+	off.UseForEvals = new(false)
+	off.EvalConcurrency = new(2)
+	sync(off)
+	key := stored()
+	require.NotNil(t, key.UseForEvals)
+	assert.False(t, *key.UseForEvals, "an explicit use_for_evals from the file is stored")
+	require.NotNil(t, key.EvalConcurrency)
+	assert.Equal(t, 2, *key.EvalConcurrency)
+}
+
 func TestUpdateProvidersConfig_MultipleKeys(t *testing.T) {
 	store := setupRDBTestStore(t)
 	ctx := context.Background()

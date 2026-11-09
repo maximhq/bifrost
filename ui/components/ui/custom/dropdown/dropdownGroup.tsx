@@ -27,12 +27,13 @@ export function DropdownGroup({
 }: DropdownGroupProps) {
 	return (
 		<>
-			{parentIndex > 0 && <Separator className="bg-border mt-2 mb-4" />}
-			<div className="flex flex-col gap-1">
+			{/* Bleeds to the menu edge: the menu has p-1, the separator cancels it. */}
+			{parentIndex > 0 && <Separator className="bg-border -mx-1 my-1 w-[calc(100%+0.5rem)]" />}
+			<div className="flex flex-col">
 				{label && (
-					<div className={cn("flex items-center gap-1", groupHeadingClassName)}>
+					<div className={cn("flex items-center gap-1.5 pt-2 pb-1.5", groupHeadingClassName)}>
 						{icon}
-						<p className="text-content-tertiary text-sm font-medium">{label}</p>
+						<p className="text-muted-foreground text-xs font-medium">{label}</p>
 					</div>
 				)}
 				<div className="flex flex-col">

@@ -29,8 +29,8 @@ export function DropdownItem<T extends DropdownOption>({ field, onSelectItem, is
 			tabIndex={0}
 			aria-selected={isSelected}
 			className={cn(
-				"text-content-primary text-body-medium flex cursor-pointer items-center gap-1 rounded-sm px-2 py-1.5 font-normal outline-hidden select-none",
-				isSelected ? "bg-background-highlight-primary" : "",
+				"text-popover-foreground flex cursor-pointer text-sm items-center gap-1 rounded-sm px-2 py-1.5 font-normal outline-hidden select-none",
+				isSelected ? "bg-accent text-accent-foreground" : "",
 			)}
 			onMouseDown={(e) => {
 				e.preventDefault();
@@ -53,12 +53,12 @@ export function DropdownItem<T extends DropdownOption>({ field, onSelectItem, is
 			onMouseLeave={() => {}}
 		>
 			{field.view ?? (
-				<div className="flex flex-col overflow-hidden overscroll-auto">
+				<div className="flex flex-col gap-0.5 overflow-hidden overscroll-auto">
 					<div className="flex items-center gap-1">
 						{field.icon}
-						<span className="block truncate overscroll-auto">{field.label ?? field.value}</span>
+						<span className="block truncate overscroll-auto leading-5">{field.label ?? field.value}</span>
 					</div>
-					{description && <span className="text-content-tertiary block truncate overscroll-auto text-xs">{description}</span>}
+					{description && <span className="text-muted-foreground block truncate overscroll-auto text-xs leading-4">{description}</span>}
 				</div>
 			)}
 		</div>

@@ -573,6 +573,10 @@
 		"keys": {
 			"useForBatch": "Uso para las API de lotes",
 			"useForBatchHelp": "Habilitar esta clave para las operaciones de la API de lotes. Sólo las claves con esto se habilitarán para las solicitudes de lotes.",
+			"useForEvals": "Usar para evaluaciones",
+			"useForEvalsHelp": "Permite que los evaluadores llamen a modelos con esta clave. Las evaluaciones solo usan claves con esta opción activada. Así nunca compiten con el tráfico de producción de tus otras claves.",
+			"evalConcurrency": "Concurrencia de evaluaciones",
+			"evalConcurrencyHelp": "El máximo de evaluaciones que se ejecutan a la vez en esta clave, contando todas las instancias de Bifrost. Las demás esperan en una cola. Déjalo vacío para usar el valor predeterminado de 4.",
 			"vpcEndpointsOptional": "VPC Endpoints (opcional)",
 			"vpcEndpointsHelp": "Tráfico de ruta a través de la interfaz VPC endpoints en lugar de los endpoints regionales públicos. Usa el nombre DNS de cada punto final de la consola VPC, no su ID. Región todavía es necesaria — establece el alcance de la firma de solicitud.",
 			"vpc": {

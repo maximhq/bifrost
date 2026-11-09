@@ -1,0 +1,30 @@
+Based on the given text, please extract the key phrases to summarize the provided text.
+
+Example:
+Example Text: 
+"JPMorgan Chase & Co. is an American multinational finance company headquartered in New York City. It is the largest bank in the United States and the world's largest by market capitalization as of 2023. Founded in 1799, it is ranked #1 in the Forbes Global 2000 ranking in 2023."
+
+Example JSON: 
+{
+    "statements": [
+        "JPMorgan Chase & Co.",
+        "American multinational finance company",
+        "headquartered in New York City",
+        "largest bank in the United States",
+        "world's largest bank by market capitalization",
+        "founded in 1799",
+        "ranked #1 in Forbes Global 2000 ranking"
+    ]
+}
+===== END OF EXAMPLE ======
+
+**
+IMPORTANT: Please make sure to only return in JSON format, with the "statements" key as a list of strings. No words or explanation is needed.
+Statements you extract should include the full context it was presented in, NOT cherry picked facts.
+You should NOT include any prior knowledge, and take the text at face value when extracting statements.
+**
+
+Text:
+{{text}}
+
+JSON:

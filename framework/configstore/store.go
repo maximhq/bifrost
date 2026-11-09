@@ -3,6 +3,7 @@ package configstore
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -1082,6 +1083,28 @@ type ConfigStore interface {
 	UpdatePromptSession(ctx context.Context, session *tables.TablePromptSession) error
 	RenamePromptSession(ctx context.Context, id uint, name string) error
 	DeletePromptSession(ctx context.Context, id uint) error
+
+	// Evals - Evaluators
+	ListEvaluators(ctx context.Context, params EvaluatorListParams) ([]tables.TableEvaluator, int64, error)
+	GetEvaluator(ctx context.Context, id string) (*tables.TableEvaluator, error)
+	GetEvaluatorByName(ctx context.Context, name string) (*tables.TableEvaluator, error)
+	CreateEvaluator(ctx context.Context, evaluator *tables.TableEvaluator, version *tables.TableEvaluatorVersion) error
+	UpdateEvaluator(ctx context.Context, evaluator *tables.TableEvaluator) error
+	DeleteEvaluator(ctx context.Context, id string) error
+	CreateEvaluatorVersion(ctx context.Context, version *tables.TableEvaluatorVersion) error
+	GetEvaluatorVersion(ctx context.Context, evaluatorID string, versionNumber int) (*tables.TableEvaluatorVersion, error)
+	ListEvaluatorVersions(ctx context.Context, evaluatorID string) ([]tables.TableEvaluatorVersion, error)
+	GetEvaluatorVersionsAt(ctx context.Context, versionByEvaluator map[string]int) (map[string]tables.TableEvaluatorVersion, error)
+
+	// Evals - Executions
+	CreateEvalExecution(ctx context.Context, execution *tables.TableEvalExecution) error
+	GetEvalExecution(ctx context.Context, id string) (*tables.TableEvalExecution, error)
+	StartEvalExecution(ctx context.Context, id, keyID string) error
+	CompleteEvalExecution(ctx context.Context, id string, resultJSON json.RawMessage) error
+	RouteEvalExecution(ctx context.Context, id, fromKey, toKey string) (bool, error)
+	ListQueuedEvalExecutions(ctx context.Context, createdBefore time.Time, limit int) ([]tables.TableEvalExecution, error)
+	ListUnfinishedEvalExecutions(ctx context.Context) ([]tables.TableEvalExecution, error)
+	DeleteCompletedEvalExecutions(ctx context.Context, completedBefore time.Time) (int64, error)
 
 	// Sidekiq - generic durable background jobs
 	CreateSidekiqJob(ctx context.Context, job *tables.TableSidekiqJob) error

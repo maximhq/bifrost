@@ -1,0 +1,43 @@
+Based on the given text, extract the key points and important concepts that capture the essential information a reader should understand from this text.
+
+Focus on identifying:
+- Main topics, themes, and subject areas
+- Key findings, results, or conclusions
+- Important methodologies, processes, or approaches
+- Significant concepts, theories, or frameworks discussed
+- Critical data, measurements, or evidence presented
+- Major implications, applications, or significance
+- Essential context or background information
+
+Extract substantial concepts and themes rather than isolated facts or individual sentences. Synthesize related information into broader key points. Each keypoint should represent a meaningful concept or finding that would be essential to include in a comprehensive summary. Avoid creating separate keypoints for closely related details - instead, combine them into higher-level concepts.
+
+Example:
+Example Text:
+"Recent advances in quantum computing have demonstrated the potential for exponential speedup in certain computational problems. IBM's 127-qubit Eagle processor achieved quantum advantage in random circuit sampling tasks, outperforming classical supercomputers by several orders of magnitude. The experiment utilized quantum error correction protocols to maintain coherence across 127 qubits for up to 100 microseconds. However, current quantum computers remain limited by decoherence and gate fidelity issues. Researchers estimate that fault-tolerant quantum computers will require at least 1,000 logical qubits, each supported by thousands of physical qubits for error correction. Google's roadmap suggests achieving this milestone by 2030, while IBM targets similar capabilities through their modular quantum network approach."
+
+Example JSON:
+{
+    "keypoints": [
+        "quantum computing has demonstrated exponential speedup potential over classical computing",
+        "IBM achieved quantum advantage with 127-qubit Eagle processor in specific computational tasks",
+        "quantum error correction protocols are essential for maintaining qubit coherence",
+        "current quantum computers face significant limitations from decoherence and gate fidelity",
+        "fault-tolerant quantum computing requires scaling to thousands of qubits with error correction",
+        "major tech companies have roadmaps targeting fault-tolerant quantum computing by 2030"
+    ]
+}
+===== END OF EXAMPLE ======
+
+**IMPORTANT:**
+- Return only JSON format with "keypoints" key containing a list of strings
+- Extract 6-15 key points depending on text length and complexity
+- Focus on substantial concepts and findings, not trivial details
+- Each keypoint should be a complete, meaningful statement that synthesizes related information
+- Capture information at the conceptual level, combining related details into broader themes
+- Stay faithful to the text - don't add external knowledge or interpretations
+- Include quantitative data and specific results when they represent important findings
+
+Text:
+{{text}}
+
+JSON:

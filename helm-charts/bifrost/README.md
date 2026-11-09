@@ -4,9 +4,14 @@
 
 Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost) - a high-performance AI gateway with unified interface for multiple providers.
 
-**Latest Version:** 2.1.48
+**Latest Version:** 2.1.49
 
 ## Changelog
+
+### Upcoming
+
+- Added `bifrost.providers.<provider>.keys[].use_for_evals` (`use_for_evals`): let evaluators call models with this key. Evaluations only use keys with this set. Off by default.
+- Added `bifrost.providers.<provider>.keys[].eval_concurrency` (`eval_concurrency`): the most evaluations in flight on the key across all replicas. Minimum 1, defaults to 4.
 
 ### 2.1.48
 

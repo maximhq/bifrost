@@ -58,6 +58,63 @@ function BatchAPIFormField({ control }: { control: Control<any>; form: UseFormRe
 	);
 }
 
+// Evaluation fields for all providers: whether evaluators may use this key, and how
+// many evaluations may run on it at once. The concurrency only shows while the key is
+// marked, since it means nothing otherwise.
+function EvalsFormFields({ control, form }: { control: Control<any>; form: UseFormReturn<any> }) {
+	const { t } = useTranslation("models");
+	const useForEvals = form.watch("key.use_for_evals") ?? false;
+	return (
+		<div className="space-y-3 rounded-sm border p-2">
+			<FormField
+				control={control}
+				name={`key.use_for_evals`}
+				render={({ field }) => (
+					<FormItem className="flex flex-row items-center justify-between gap-4">
+						<div className="space-y-1.5">
+							<FormLabel>{t("providers.keys.useForEvals")}</FormLabel>
+							<FormDescription>{t("providers.keys.useForEvalsHelp")}</FormDescription>
+						</div>
+						<FormControl>
+							<Switch checked={field.value ?? false} onCheckedChange={field.onChange} data-testid="key-input-use-for-evals" />
+						</FormControl>
+					</FormItem>
+				)}
+			/>
+			{useForEvals && (
+				<FormField
+					control={control}
+					name={`key.eval_concurrency`}
+					render={({ field }) => (
+						<FormItem>
+							<FormLabel>{t("providers.keys.evalConcurrency")}</FormLabel>
+							<FormControl>
+								<Input
+									type="number"
+									min={1}
+									step={1}
+									className="w-32"
+									placeholder="4" // i18n-ignore
+									value={field.value ?? ""}
+									onChange={(event) => {
+										// Empty means "use the default". It is sent as null: a field left
+										// out of the request keeps the stored value, so only null clears it.
+										const parsed = Number.parseInt(event.target.value, 10);
+										field.onChange(Number.isNaN(parsed) ? null : parsed);
+									}}
+									data-testid="key-input-eval-concurrency"
+								/>
+							</FormControl>
+							<FormDescription>{t("providers.keys.evalConcurrencyHelp")}</FormDescription>
+							<FormMessage />
+						</FormItem>
+					)}
+				/>
+			)}
+		</div>
+	);
+}
+
 // AWS endpoint services Bifrost dials for Bedrock. `name` is the config field, `placeholder` the
 // DNS name shape for that service - S3 differs from the rest, so each is spelled out.
 const BEDROCK_VPC_ENDPOINT_SERVICES = [
@@ -557,6 +614,7 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 				/>
 			</>
 			{supportsBatchAPI && !isBedrock && !isAzure && !isVertex && <BatchAPIFormField control={control} form={form} />}
+			{!isBedrock && !isAzure && !isVertex && <EvalsFormFields control={control} form={form} />}
 			{isAzure && (
 				<div className="space-y-4 px-0.5">
 					<Separator className="my-6" />
@@ -745,6 +803,7 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 						)}
 					/>
 					{supportsBatchAPI && <BatchAPIFormField control={control} form={form} />}
+					<EvalsFormFields control={control} form={form} />
 				</div>
 			)}
 			{isVertex && (
@@ -1065,6 +1124,7 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 						)}
 					/>
 					{supportsBatchAPI && <BatchAPIFormField control={control} form={form} />}
+					<EvalsFormFields control={control} form={form} />
 				</div>
 			)}
 			{isReplicate && (
@@ -2179,6 +2239,7 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 						/>
 					)}
 					{supportsBatchAPI && <BatchAPIFormField control={control} form={form} />}
+					<EvalsFormFields control={control} form={form} />
 					<VPCEndpointsFormField control={control} configKey="key.bedrock_key_config" services={BEDROCK_VPC_ENDPOINT_SERVICES} />
 				</div>
 			)}

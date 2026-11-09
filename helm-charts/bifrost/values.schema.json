@@ -8086,6 +8086,16 @@
         "use_for_batch_api": {
           "type": "boolean"
         },
+        "use_for_evals": {
+          "type": "boolean",
+          "default": false,
+          "description": "Whether this key can serve evaluation model calls (LLM-as-judge and embedding-based evaluators). Evaluations only ever use keys with this set, so they never compete with production traffic on other keys."
+        },
+        "eval_concurrency": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Maximum number of evaluations in flight on this key at once, counted across every Bifrost instance. Only applies when use_for_evals is true. Defaults to 4 when omitted."
+        },
         "use_anthropic_endpoints": {
           "type": "boolean",
           "description": "For deepseek, fireworks, vllm, and sgl keys: route chat completions and responses requests through Anthropic-compatible endpoints.",
