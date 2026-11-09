@@ -1,6 +1,7 @@
 package openai
 
 import (
+	"slices"
 	"strings"
 
 	"github.com/maximhq/bifrost/core/providers/utils"
@@ -327,8 +328,17 @@ func ConvertOpenAIMessagesToBifrostMessages(messages []OpenAIMessage) []schemas.
 // carrier for. Over-long tool call IDs are stripped of embedded provider
 // reasoning signatures, and tool messages lose is_error so providers that reject
 // unknown message parameters never see it.
+// Tool images are hoisted into user content because the Chat tool wire takes text only.
 // The caller's messages are never mutated: shared pointers are cloned before edit.
 func ConvertBifrostMessagesToOpenAIMessages(messages []schemas.ChatMessage) []OpenAIMessage {
+	hasToolImages := false
+	keepToolImage := func(block schemas.ChatContentBlock) bool {
+		if !schemas.IsImageBlock(block) || block.ImageURLStruct.URL == "" {
+			return false
+		}
+		hasToolImages = true
+		return true
+	}
 	openaiMessages := make([]OpenAIMessage, len(messages))
 	for i, message := range messages {
 		openaiMessages[i] = OpenAIMessage{
@@ -337,9 +347,10 @@ func ConvertBifrostMessagesToOpenAIMessages(messages []schemas.ChatMessage) []Op
 			Content:         message.Content,
 			ChatToolMessage: message.ChatToolMessage,
 		}
-		// A tool message takes text only on the OpenAI wire.
+		// Preserve portable images until they can be moved after all tool results.
+		// Other media still becomes a text placeholder.
 		if message.Role == schemas.ChatMessageRoleTool {
-			openaiMessages[i].Content = schemas.FlattenToolResultMedia(message.Content, nil)
+			openaiMessages[i].Content = schemas.FlattenToolResultMedia(message.Content, keepToolImage)
 		}
 		// Strip provider reasoning signatures (e.g. Gemini thoughtSignatures embedded in
 		// call_id as "<baseID>_ts_<sig>") from the tool result's tool_call_id, but only when it
@@ -392,7 +403,92 @@ func ConvertBifrostMessagesToOpenAIMessages(messages []schemas.ChatMessage) []Op
 			}
 		}
 	}
+	if hasToolImages {
+		return hoistChatToolResultImages(openaiMessages)
+	}
 	return openaiMessages
+}
+
+// hoistChatToolResultImages moves images after each complete run of tool results.
+// It prepends them to an existing following user turn when possible, avoiding
+// consecutive user turns. Message content still aliases the caller and is copied
+// before edit; image payloads themselves are reused, not decoded or copied.
+func hoistChatToolResultImages(messages []OpenAIMessage) []OpenAIMessage {
+	out := make([]OpenAIMessage, 0, len(messages)+1)
+	var attachments []schemas.ChatContentBlock
+	for i := 0; i < len(messages); i++ {
+		message := messages[i]
+		if message.Role == schemas.ChatMessageRoleTool && message.Content != nil {
+			var blocks []schemas.ChatContentBlock
+			for j, block := range message.Content.ContentBlocks {
+				if block.Type != schemas.ChatContentBlockTypeImage {
+					continue
+				}
+				if blocks == nil {
+					blocks = slices.Clone(message.Content.ContentBlocks)
+					caption := "Images returned by tool:"
+					if message.ChatToolMessage != nil && message.ToolCallID != nil {
+						caption = "Images returned by tool call " + *message.ToolCallID + ":"
+					}
+					attachments = append(attachments, schemas.ChatContentBlock{Type: schemas.ChatContentBlockTypeText, Text: &caption})
+				}
+				// Keep the original cache boundary on a text part, where Chat
+				// accepts it, rather than duplicating it on the moved image.
+				blocks[j] = schemas.ChatContentBlock{
+					Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr("Image attached below."),
+					CacheControl: block.CacheControl, PromptCacheBreakpoint: block.PromptCacheBreakpoint,
+				}
+				block.CacheControl = nil
+				block.PromptCacheBreakpoint = nil
+				block.CachePoint = nil
+				block.GuardContent = nil
+				attachments = append(attachments, block)
+			}
+			if blocks != nil {
+				// Flattening previously joined refusal text into the tool's
+				// string. Retain that text, not an assistant-only refusal part.
+				for j, block := range blocks {
+					if block.Type != schemas.ChatContentBlockTypeRefusal {
+						continue
+					}
+					block.Type = schemas.ChatContentBlockTypeText
+					if block.Text == nil {
+						block.Text = block.Refusal
+					}
+					if block.Text == nil {
+						block.Text = schemas.Ptr("")
+					}
+					block.Refusal = nil
+					blocks[j] = block
+				}
+				content := *message.Content
+				content.ContentBlocks = blocks
+				message.Content = &content
+			}
+		}
+		out = append(out, message)
+		if len(attachments) == 0 || (i+1 < len(messages) && messages[i+1].Role == schemas.ChatMessageRoleTool) {
+			continue
+		}
+
+		user := OpenAIMessage{Role: schemas.ChatMessageRoleUser}
+		content := &schemas.ChatMessageContent{ContentBlocks: attachments}
+		if i+1 < len(messages) && messages[i+1].Role == schemas.ChatMessageRoleUser {
+			i++
+			user = messages[i]
+			if user.Content != nil {
+				if user.Content.ContentStr != nil {
+					content.ContentBlocks = append(content.ContentBlocks, schemas.ChatContentBlock{Type: schemas.ChatContentBlockTypeText, Text: user.Content.ContentStr})
+				} else {
+					content.ContentBlocks = append(content.ContentBlocks, user.Content.ContentBlocks...)
+				}
+			}
+		}
+		user.Content = content
+		out = append(out, user)
+		attachments = nil
+	}
+	return out
 }
 
 // MaxUserFieldLength for OpenAI enforces a 64 character maximum on the user field

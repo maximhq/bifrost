@@ -7,6 +7,7 @@ import (
 
 	"github.com/maximhq/bifrost/core/providers/anthropic"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/stretchr/testify/require"
 )
 
 // TestToolResultIsErrorStrippedFromOpenAIWire verifies that IsError — an
@@ -136,32 +137,219 @@ func TestToolResultIsErrorSurvivesAnthropicToOpenAIResponsesRoundTrip(t *testing
 	}
 }
 
-// A tool message takes text only on the OpenAI wire: media a tool returned becomes a placeholder
-// naming it, never base64 text and never an image part OpenAI would reject.
-func TestToolResultMediaFlattenedOnOpenAIWire(t *testing.T) {
-	content := &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{
-		{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr("chart below")},
-		{Type: schemas.ChatContentBlockTypeImage, ImageURLStruct: &schemas.ChatInputImage{URL: "data:image/png;base64,iVBORw0KGgo="}},
-		{Type: schemas.ChatContentBlockTypeInputAudio, InputAudio: &schemas.ChatInputAudio{Data: "SUQz", Format: schemas.Ptr("mp3")}},
-	}}
-	converted := ConvertBifrostMessagesToOpenAIMessages([]schemas.ChatMessage{{
-		Role:            schemas.ChatMessageRoleTool,
-		ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: schemas.Ptr("call_1")},
-		Content:         content,
-	}})
-	if converted[0].Content == nil || converted[0].Content.ContentStr == nil {
-		t.Fatalf("expected a string tool message, got %+v", converted[0].Content)
+// Strict Chat accepts images in user content, not tool content. The image must
+// survive on the serialized wire without interrupting parallel tool results.
+func TestToolResultImagesHoistedOnOpenAIWire(t *testing.T) {
+	const png = "data:image/png;base64,iVBORw0KGgo="
+	const jpeg = "data:image/jpeg;base64,/9j/2w=="
+	text := func(s string) schemas.ChatContentBlock {
+		return schemas.ChatContentBlock{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr(s)}
 	}
-	got := *converted[0].Content.ContentStr
-	for _, want := range []string{"chart below", "[image/png", "[audio/mp3"} {
-		if !strings.Contains(got, want) {
-			t.Fatalf("expected %q in %q", want, got)
+	image := func(url string) schemas.ChatContentBlock {
+		return schemas.ChatContentBlock{Type: schemas.ChatContentBlockTypeImage, ImageURLStruct: &schemas.ChatInputImage{URL: url, Detail: schemas.Ptr("low")}}
+	}
+	tool := func(id string, blocks ...schemas.ChatContentBlock) schemas.ChatMessage {
+		return schemas.ChatMessage{
+			Role: schemas.ChatMessageRoleTool, ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: schemas.Ptr(id)},
+			Content: &schemas.ChatMessageContent{ContentBlocks: blocks},
 		}
 	}
-	if strings.Contains(got, "iVBORw0KGgo") {
-		t.Fatalf("base64 must not reach the model as text: %q", got)
+	user := func(s string) schemas.ChatMessage {
+		return schemas.ChatMessage{Role: schemas.ChatMessageRoleUser, Name: schemas.Ptr("reader"), Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr(s)}}
 	}
-	if len(content.ContentBlocks) != 3 {
-		t.Fatal("caller's content must not be mutated")
+	audio := schemas.ChatContentBlock{Type: schemas.ChatContentBlockTypeInputAudio, InputAudio: &schemas.ChatInputAudio{Data: "SUQz", Format: schemas.Ptr("mp3")}}
+	file := schemas.ChatContentBlock{Type: schemas.ChatContentBlockTypeFile, File: &schemas.ChatInputFile{Filename: schemas.Ptr("report.pdf"), FileData: schemas.Ptr("JVBERg=="), FileType: schemas.Ptr("application/pdf")}}
+	tests := []struct {
+		name         string
+		input        []schemas.ChatMessage
+		wantRoles    string
+		wantToolText []string
+		wantUserText []string
+		wantImages   []string
+	}{
+		{
+			name: "image only at end", input: []schemas.ChatMessage{tool("call_a", image(png))},
+			wantRoles: "tool,user", wantToolText: []string{"Image attached below."},
+			wantUserText: []string{"Images returned by tool call call_a:"}, wantImages: []string{png},
+		},
+		{
+			name: "mixed content", input: []schemas.ChatMessage{tool("call_a", text("before"), image(png), text("after"), audio, file)},
+			wantRoles:    "tool,user",
+			wantToolText: []string{"before", "Image attached below.", "after", "[audio/mp3, 3 bytes returned by the tool, not shown]", "[application/pdf report.pdf, 6 bytes returned by the tool, not shown]"},
+			wantUserText: []string{"Images returned by tool call call_a:"}, wantImages: []string{png},
+		},
+		{
+			name: "refusal remains tool text", input: []schemas.ChatMessage{tool("call_a", schemas.ChatContentBlock{Type: schemas.ChatContentBlockTypeRefusal, Refusal: schemas.Ptr("not available")}, image(png))},
+			wantRoles: "tool,user", wantToolText: []string{"not available", "Image attached below."},
+			wantUserText: []string{"Images returned by tool call call_a:"}, wantImages: []string{png},
+		},
+		{
+			name: "multiple images precede next user string", input: []schemas.ChatMessage{tool("call_a", image(png), image(jpeg)), user("describe both")},
+			wantRoles: "tool,user", wantToolText: []string{"Image attached below.", "Image attached below."},
+			wantUserText: []string{"Images returned by tool call call_a:", "describe both"}, wantImages: []string{png, jpeg},
+		},
+		{
+			name: "next user blocks preserved", input: []schemas.ChatMessage{tool("call_a", image(png)), {Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{text("follow up"), image(jpeg)}}}},
+			wantRoles: "tool,user", wantToolText: []string{"Image attached below."},
+			wantUserText: []string{"Images returned by tool call call_a:", "follow up"}, wantImages: []string{png, jpeg},
+		},
+		{
+			name: "next user without content", input: []schemas.ChatMessage{tool("call_a", image(png)), {Role: schemas.ChatMessageRoleUser}},
+			wantRoles: "tool,user", wantToolText: []string{"Image attached below."},
+			wantUserText: []string{"Images returned by tool call call_a:"}, wantImages: []string{png},
+		},
+		{
+			name: "parallel results in completion order", input: []schemas.ChatMessage{tool("call_b", image(jpeg)), tool("call_a", image(png))},
+			wantRoles: "tool,tool,user", wantToolText: []string{"Image attached below.", "Image attached below."},
+			wantUserText: []string{"Images returned by tool call call_b:", "Images returned by tool call call_a:"}, wantImages: []string{jpeg, png},
+		},
+		{
+			name: "parallel text result remains before images", input: []schemas.ChatMessage{tool("call_a", image(png)), tool("call_b", text("done"))},
+			wantRoles: "tool,tool,user", wantToolText: []string{"Image attached below.", "done"},
+			wantUserText: []string{"Images returned by tool call call_a:"}, wantImages: []string{png},
+		},
+		{
+			name: "separate result groups", input: []schemas.ChatMessage{tool("call_a", image(png)), {Role: schemas.ChatMessageRoleAssistant, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("next call")}}, tool("call_b", image(jpeg))},
+			wantRoles: "tool,user,assistant,tool,user", wantToolText: []string{"Image attached below.", "Image attached below."},
+			wantUserText: []string{"Images returned by tool call call_a:", "Images returned by tool call call_b:"}, wantImages: []string{png, jpeg},
+		},
+		{
+			name: "remote image URL", input: []schemas.ChatMessage{tool("call_a", image("https://example.com/image.png"))},
+			wantRoles: "tool,user", wantToolText: []string{"Image attached below."},
+			wantUserText: []string{"Images returned by tool call call_a:"}, wantImages: []string{"https://example.com/image.png"},
+		},
+		{
+			name: "caption uses outgoing ID", input: []schemas.ChatMessage{tool("call_a_ts_"+strings.Repeat("x", 80), image(png))},
+			wantRoles: "tool,user", wantToolText: []string{"Image attached below."},
+			wantUserText: []string{"Images returned by tool call call_a:"}, wantImages: []string{png},
+		},
+		{
+			name: "text blocks unchanged", input: []schemas.ChatMessage{tool("call_a", text("first"), text("second"))},
+			wantRoles: "tool", wantToolText: []string{"first", "second"},
+		},
+		{
+			name: "text string unchanged", input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleTool, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("done")}}},
+			wantRoles: "tool", wantToolText: []string{"done"},
+		},
+		{
+			name: "empty and nil tool content", input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleTool}, tool("call_a"), {Role: schemas.ChatMessageRoleTool, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("")}}},
+			wantRoles: "tool,tool,tool", wantToolText: []string{""},
+		},
+		{
+			name: "unsupported images remain placeholders", input: []schemas.ChatMessage{tool("call_a", image("data:image/svg+xml;base64,PHN2Zz4="), image(""), schemas.ChatContentBlock{Type: schemas.ChatContentBlockTypeImage}, schemas.ChatContentBlock{Type: schemas.ChatContentBlockTypeImage, ImageURLStruct: &schemas.ChatInputImage{FileID: schemas.Ptr("file_image")}})},
+			wantRoles: "tool", wantToolText: []string{"[image/svg+xml, 6 bytes returned by the tool, not shown]\n[image returned by the tool, not shown]\n[image_url returned by the tool, not shown]\n[image returned by the tool, not shown]"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			before, err := schemas.MarshalSorted(tt.input)
+			require.NoError(t, err)
+			converted := ConvertBifrostMessagesToOpenAIMessages(tt.input)
+			wire, err := schemas.MarshalSorted(converted)
+			require.NoError(t, err)
+			var messages []OpenAIMessage
+			require.NoError(t, schemas.Unmarshal(wire, &messages), string(wire))
+			var roles, toolText, userText, images []string
+			for _, message := range messages {
+				roles = append(roles, string(message.Role))
+				if message.Content == nil {
+					continue
+				}
+				var texts []string
+				if message.Content.ContentStr != nil {
+					texts = append(texts, *message.Content.ContentStr)
+				}
+				for _, block := range message.Content.ContentBlocks {
+					if message.Role == schemas.ChatMessageRoleTool {
+						require.Equal(t, schemas.ChatContentBlockTypeText, block.Type, string(wire))
+					}
+					if block.Text != nil {
+						texts = append(texts, *block.Text)
+						require.NotContains(t, *block.Text, "base64,", "image data must not become text")
+					}
+					if block.Type == schemas.ChatContentBlockTypeImage {
+						require.Equal(t, schemas.ChatMessageRoleUser, message.Role)
+						require.NotNil(t, block.ImageURLStruct)
+						require.Equal(t, "low", *block.ImageURLStruct.Detail)
+						images = append(images, block.ImageURLStruct.URL)
+					}
+				}
+				switch message.Role {
+				case schemas.ChatMessageRoleTool:
+					toolText = append(toolText, texts...)
+				case schemas.ChatMessageRoleUser:
+					userText = append(userText, texts...)
+				}
+			}
+			for _, original := range tt.input {
+				if original.Role == schemas.ChatMessageRoleUser && original.Name != nil {
+					found := false
+					for _, message := range messages {
+						found = found || (message.Name != nil && *message.Name == *original.Name)
+					}
+					require.True(t, found, "following user's name was lost")
+				}
+			}
+			require.Equal(t, tt.wantRoles, strings.Join(roles, ","), string(wire))
+			require.Equal(t, tt.wantToolText, toolText, string(wire))
+			require.Equal(t, tt.wantUserText, userText, string(wire))
+			require.Equal(t, tt.wantImages, images, string(wire))
+			after, err := schemas.MarshalSorted(tt.input)
+			require.NoError(t, err)
+			require.Equal(t, string(before), string(after), "caller input was mutated")
+			repeated, err := schemas.MarshalSorted(ConvertBifrostMessagesToOpenAIMessages(tt.input))
+			require.NoError(t, err)
+			require.Equal(t, string(wire), string(repeated), "serialization must be deterministic")
+			if len(tt.wantImages) > 0 {
+				roundTrip, err := schemas.MarshalSorted(ConvertBifrostMessagesToOpenAIMessages(ConvertOpenAIMessagesToBifrostMessages(messages)))
+				require.NoError(t, err)
+				require.Equal(t, string(wire), string(roundTrip), "already hoisted images must not be duplicated")
+			}
+		})
+	}
+}
+
+func TestHoistedToolImagesStripProviderMetadata(t *testing.T) {
+	const imageURL = "data:image/png;base64,iVBORw0KGgo="
+	for _, tt := range []struct {
+		name  string
+		guard bool
+		cache bool
+	}{
+		{"guard content", true, false},
+		{"cache point", false, true},
+		{"both", true, true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			image := schemas.ChatContentBlock{
+				Type:           schemas.ChatContentBlockTypeImage,
+				ImageURLStruct: &schemas.ChatInputImage{URL: imageURL, Detail: schemas.Ptr("low")},
+			}
+			if tt.guard {
+				image.GuardContent = &schemas.GuardContent{}
+			}
+			if tt.cache {
+				image.CachePoint = &schemas.CachePoint{Type: "default"}
+			}
+			req := &schemas.BifrostChatRequest{
+				Provider: schemas.OpenAI, Model: "gpt-4o",
+				Input: []schemas.ChatMessage{{
+					Role:            schemas.ChatMessageRoleTool,
+					ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: schemas.Ptr("call_a")},
+					Content:         &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{image}},
+				}},
+			}
+			before, err := schemas.MarshalSorted(req)
+			require.NoError(t, err)
+			ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+			wire, err := ToOpenAIChatRequest(ctx, req).MarshalJSON()
+			require.NoError(t, err)
+			require.Contains(t, string(wire), imageURL)
+			require.NotContains(t, string(wire), "guard_content", "Bedrock-only fields are not valid Chat image parts")
+			require.NotContains(t, string(wire), "cachePoint", "Bedrock-only fields are not valid Chat image parts")
+			after, err := schemas.MarshalSorted(req)
+			require.NoError(t, err)
+			require.Equal(t, string(before), string(after), "the source metadata must remain available to another provider")
+		})
 	}
 }
