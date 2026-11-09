@@ -225,7 +225,7 @@ func requestNarrowed(ctx *schemas.BifrostContext) bool {
 // GetAvailableTools uses to list the code-mode tools.
 func (m *MCPManager) codeModeClientReachable(ctx *schemas.BifrostContext) bool {
 	for clientName := range m.GetToolPerClient(ctx) {
-		if client := m.GetClientByName(clientName); client != nil && client.ExecutionConfig.IsCodeModeClient {
+		if client := m.GetClientByName(clientName); client != nil && client.ExecutionConfig.CodeModeFor(ctx) {
 			return true
 		}
 	}

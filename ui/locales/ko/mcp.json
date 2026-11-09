@@ -496,6 +496,8 @@
 			"showErrorDetails": "세부 정보 보기",
 			"hideErrorDetails": "세부 정보 숨기기",
 			"codeMode": "코드 모드",
+			"serverTypeOnSlugEnabled": "/mcp/{{slug}}에서 코드 모드",
+			"serverTypeOnSlugDisabled": "/mcp/{{slug}}에서 도구 직접 노출",
 			"spec": "사양",
 			"calls": "호출 대상",
 			"copyBaseUrl": "기본 URL 복사",

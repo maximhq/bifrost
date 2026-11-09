@@ -496,6 +496,8 @@
 			"showErrorDetails": "Mostrar detalles",
 			"hideErrorDetails": "Ocultar detalles",
 			"codeMode": "Modo código",
+			"serverTypeOnSlugEnabled": "Code Mode en /mcp/{{slug}}",
+			"serverTypeOnSlugDisabled": "Herramientas directas en /mcp/{{slug}}",
 			"spec": "Especificación",
 			"calls": "Llama a",
 			"copyBaseUrl": "Copiar URL base",

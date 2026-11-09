@@ -502,6 +502,8 @@
 			"showErrorDetails": "Показать подробности",
 			"hideErrorDetails": "Скрыть подробности",
 			"codeMode": "Режим кода",
+			"serverTypeOnSlugEnabled": "Code Mode на /mcp/{{slug}}",
+			"serverTypeOnSlugDisabled": "Инструменты напрямую на /mcp/{{slug}}",
 			"spec": "Спецификация",
 			"calls": "Вызывает",
 			"copyBaseUrl": "Копировать базовый URL",

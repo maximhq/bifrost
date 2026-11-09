@@ -383,6 +383,11 @@ export class MCPRegistryPage extends BasePage {
     return (await this.storedClientConfig(request, name)).server_type_on_slug as string | undefined
   }
 
+  /** The stored endpoint_slug of the named client over the API. */
+  async storedEndpointSlug(request: APIRequestContext, name: string): Promise<string> {
+    return (await this.storedClientConfig(request, name)).endpoint_slug as string
+  }
+
   /** Picks a slug code mode option in the open add form or detail sheet. */
   async selectServerTypeOnSlug(scope: Locator, value: string): Promise<void> {
     await scope.getByTestId('mcp-client-server-type-on-slug-select').click()
