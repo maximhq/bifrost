@@ -12,6 +12,10 @@ on:
       - "**/version"
       - "transports/docker-entrypoint.sh"
       - "transports/docker-entrypoint.test.sh"
+      - "transports/docker-healthcheck.test.sh"
+      - "transports/Dockerfile"
+      - "transports/Dockerfile.local"
+      - "transports/Dockerfile.redhat"
       - "deploy/**"
 
 permissions:
@@ -80,6 +84,9 @@ jobs:
 
       - name: Check Docker entrypoint config bootstrap
         run: bash ./transports/docker-entrypoint.test.sh
+
+      - name: Check Docker image health-check port selection
+        run: bash ./transports/docker-healthcheck.test.sh
 
       - name: Check the AWS one-click deploy script
         run: bash ./deploy/aws/deploy.test.sh

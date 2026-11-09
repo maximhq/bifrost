@@ -36,17 +36,27 @@ leftovers() {
   printf '%s' "$out"
 }
 
-# run <name> [VAR=value ...]: fresh APP_DIR per case unless PRESEED is set.
+# run <name> [VAR=value ...] [-- entrypoint args...]: fresh APP_DIR per case.
 run() {
   local name=$1; shift
+  local -a envs=() args=()
+  while [[ $# -gt 0 ]]; do
+    if [[ "$1" == "--" ]]; then shift; args=("$@"); break; fi
+    envs+=("$1"); shift
+  done
   APP_DIR="$WORK/data-$name"
   mkdir -p "$APP_DIR"
   export APP_DIR MAIN_ARGS="$WORK/args-$name"
   rm -f "$MAIN_ARGS"
   local rc=0
-  env -u BIFROST_CONFIG_JSON -u BIFROST_CONFIG_B64 "$@" sh "$WORK/entrypoint.sh" > "$WORK/log-$name" 2>&1 || rc=$?
+  env -u BIFROST_CONFIG_JSON -u BIFROST_CONFIG_B64 -u PORT BIFROST_PORT_FILE="$WORK/port-$name" "${envs[@]}" sh "$WORK/entrypoint.sh" "${args[@]}" > "$WORK/log-$name" 2>&1 || rc=$?
   return $rc
 }
+
+# main_port: the -port value the stub binary received in the last run.
+main_port() { awk 'prev=="-port" {print; exit} {prev=$0}' "$MAIN_ARGS"; }
+# port_file <case>: what the entrypoint recorded for the image health check in that run.
+port_file() { cat "$WORK/port-$1" 2>/dev/null; }
 
 JSON='{"client":{"drop_excess_requests":false},"encryption_key":"env.BIFROST_ENCRYPTION_KEY"}'
 OTHER='{"marker":"from-b64"}'
@@ -207,6 +217,32 @@ if run url_other DATABASE_URL='mysql://u:p@db.internal/app'; then
   [[ "$(pg HOST)" == "" ]] || fail "url_other: PG_HOST should be unset, got $(pg HOST)"
 else
   cat "$WORK/log-url_other" >&2; fail "url_other: entrypoint exited non-zero"
+fi
+
+# 14. PORT: unset keeps APP_PORT, empty is ignored, set overrides APP_PORT, and --port wins over both.
+if run port_unset APP_PORT=8080; then
+  [[ "$(main_port)" == "8080" ]] || fail "port_unset: expected 8080, got $(main_port)"
+  [[ "$(port_file port_unset)" == "8080" ]] || fail "port_unset: health-check port file holds '$(port_file port_unset)', expected 8080"
+else
+  cat "$WORK/log-port_unset" >&2; fail "port_unset: entrypoint exited non-zero"
+fi
+if run port_empty APP_PORT=8080 PORT=; then
+  [[ "$(main_port)" == "8080" ]] || fail "port_empty: an empty PORT must not override APP_PORT, got $(main_port)"
+  [[ "$(port_file port_empty)" == "8080" ]] || fail "port_empty: health-check port file holds '$(port_file port_empty)', expected 8080"
+else
+  cat "$WORK/log-port_empty" >&2; fail "port_empty: entrypoint exited non-zero"
+fi
+if run port_set APP_PORT=8080 PORT=10000; then
+  [[ "$(main_port)" == "10000" ]] || fail "port_set: PORT must override APP_PORT, got $(main_port)"
+  [[ "$(port_file port_set)" == "10000" ]] || fail "port_set: health-check port file holds '$(port_file port_set)', expected 10000"
+else
+  cat "$WORK/log-port_set" >&2; fail "port_set: entrypoint exited non-zero"
+fi
+if run port_arg APP_PORT=8080 PORT=10000 -- --port 7000 --host 0.0.0.0; then
+  [[ "$(main_port)" == "7000" ]] || fail "port_arg: --port must win over PORT and APP_PORT, got $(main_port)"
+  [[ "$(port_file port_arg)" == "7000" ]] || fail "port_arg: health-check port file holds '$(port_file port_arg)', expected 7000"
+else
+  cat "$WORK/log-port_arg" >&2; fail "port_arg: entrypoint exited non-zero"
 fi
 
 if [[ $FAILED -ne 0 ]]; then

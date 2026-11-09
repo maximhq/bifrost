@@ -215,6 +215,13 @@ derive_pg_env_from_database_url() {
 
 derive_pg_env_from_database_url
 
+# Platforms that pick the listening port (Heroku, Render, Cloud Run, Koyeb,
+# DigitalOcean App Platform) announce it as PORT. When PORT is set it wins over
+# APP_PORT, so the image needs no per-platform port configuration.
+if [ -n "$PORT" ]; then
+    export APP_PORT="$PORT"
+fi
+
 # Parse command line arguments and set environment variables
 parse_args() {
     while [ $# -gt 0 ]; do
@@ -250,6 +257,12 @@ parse_args() {
 if [ $# -gt 1 ]; then
     parse_args "$@"
 fi
+
+# Record the port the server will listen on (after PORT and --port) so the
+# image HEALTHCHECK, which runs in a separate process without the arguments,
+# probes the right one. Best effort: a read-only filesystem must not stop the start.
+BIFROST_PORT_FILE="${BIFROST_PORT_FILE:-/tmp/bifrost.port}"
+printf '%s' "$APP_PORT" > "$BIFROST_PORT_FILE" 2>/dev/null || true
 
 # Build the command with environment variables and standard arguments
 exec /app/main -app-dir "$APP_DIR" -port "$APP_PORT" -host "$APP_HOST" -log-level "$LOG_LEVEL" -log-style "$LOG_STYLE"

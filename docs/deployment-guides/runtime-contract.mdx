@@ -99,6 +99,7 @@ The container has defaults for its basic runtime settings:
 |---|---|---|
 | `APP_HOST` | `0.0.0.0` | Address used by the HTTP listener |
 | `APP_PORT` | `8080` | HTTP port used by the API, dashboard, health check, and metrics |
+| `PORT` | Unset | Set by platforms that choose the port (Heroku, Render, Cloud Run, Koyeb, DigitalOcean App Platform). When present it overrides `APP_PORT` |
 | `APP_DIR` | `/app/data` | Location of `config.json` and local runtime files; persistence is used when an OSS store uses SQLite |
 | `LOG_LEVEL` | `info` | Process log level: `debug`, `info`, `warn`, or `error` |
 | `LOG_STYLE` | `json` | Process log format: `json` or `pretty` |
