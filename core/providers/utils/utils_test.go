@@ -4373,3 +4373,94 @@ func BenchmarkStreamGoroutineExit(b *testing.B) {
 		EnsureStreamFinalizerCalled(ctx, finalizer)
 	}
 }
+
+type typedNilBody struct{ Input *[]string }
+
+func (b *typedNilBody) GetExtraParams() map[string]interface{} { return nil }
+func (b *typedNilBody) MarshalJSON() ([]byte, error)           { return json.Marshal(*b.Input) }
+
+type rawBodyGetter struct{}
+
+func (rawBodyGetter) GetRawRequestBody() []byte { return nil }
+
+// A converter that returns a nil typed pointer must yield an error, not a nil-receiver MarshalJSON panic.
+func TestCheckContextAndGetRequestBody_TypedNilConverter(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	var (
+		body       []byte
+		bifrostErr *schemas.BifrostError
+		panicked   interface{}
+	)
+	func() {
+		defer func() { panicked = recover() }()
+		body, bifrostErr = CheckContextAndGetRequestBody(ctx, rawBodyGetter{}, func() (*typedNilBody, error) {
+			var nilBody *typedNilBody
+			return nilBody, nil
+		})
+	}()
+	if panicked != nil {
+		t.Fatalf("expected an error for a typed-nil converted body, got panic: %v", panicked)
+	}
+	if bifrostErr == nil {
+		t.Fatalf("expected an error for a typed-nil converted body, got body %q", body)
+	}
+}
+
+// TestCheckContextAndGetRequestBodyFromInterface pins the interface variant used by
+// converters that return more than one body type: a literal nil body is refused with an
+// error instead of being marshalled, and a real body produces exactly the bytes the
+// generic CheckContextAndGetRequestBody produces, since both share one marshal step.
+func TestCheckContextAndGetRequestBodyFromInterface(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	body, bifrostErr := CheckContextAndGetRequestBodyFromInterface(ctx, rawBodyGetter{}, func() (RequestBodyWithExtraParams, error) {
+		return nil, nil
+	})
+	if bifrostErr == nil {
+		t.Fatalf("expected an error for a nil converted body, got body %q", body)
+	}
+
+	input := []string{"hello"}
+	converted := &typedNilBody{Input: &input}
+	viaInterface, bifrostErr := CheckContextAndGetRequestBodyFromInterface(ctx, rawBodyGetter{}, func() (RequestBodyWithExtraParams, error) {
+		return converted, nil
+	})
+	if bifrostErr != nil {
+		t.Fatalf("unexpected error: %v", bifrostErr)
+	}
+	viaGeneric, bifrostErr := CheckContextAndGetRequestBody(ctx, rawBodyGetter{}, func() (*typedNilBody, error) {
+		return converted, nil
+	})
+	if bifrostErr != nil {
+		t.Fatalf("unexpected error: %v", bifrostErr)
+	}
+	if string(viaInterface) != string(viaGeneric) || string(viaGeneric) != `["hello"]` {
+		t.Fatalf("interface variant body %q, generic body %q, want both %q", viaInterface, viaGeneric, `["hello"]`)
+	}
+}
+
+func BenchmarkCheckContextAndGetRequestBody(b *testing.B) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	input := []string{"hello"}
+	converted := &typedNilBody{Input: &input}
+	converter := func() (*typedNilBody, error) { return converted, nil }
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		if _, err := CheckContextAndGetRequestBody(ctx, rawBodyGetter{}, converter); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkCheckContextAndGetRequestBodyFromInterface(b *testing.B) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	input := []string{"hello"}
+	converted := &typedNilBody{Input: &input}
+	converter := func() (RequestBodyWithExtraParams, error) { return converted, nil }
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		if _, err := CheckContextAndGetRequestBodyFromInterface(ctx, rawBodyGetter{}, converter); err != nil {
+			b.Fatal(err)
+		}
+	}
+}

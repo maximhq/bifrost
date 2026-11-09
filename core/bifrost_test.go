@@ -658,6 +658,30 @@ func TestHandleProviderRequest_OCROperationNotAllowed(t *testing.T) {
 	}
 }
 
+// An integration that decodes a body without messages builds an empty, non-nil Input; it must
+// be rejected as a 400 before dispatch, where the Responses conversion would panic on it.
+func TestChatCompletionRequest_EmptyInputRejected(t *testing.T) {
+	// A bare Bifrost has no request pools, so a request that slips past the guard panics.
+	guard := func(call func() *schemas.BifrostError) (err *schemas.BifrostError, passed bool) {
+		defer func() { passed = recover() != nil }()
+		return call(), false
+	}
+	bifrost := &Bifrost{}
+	for _, input := range [][]schemas.ChatMessage{nil, {}} {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		req := &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: "gpt-5.6-luna", Input: input}
+
+		err, passed := guard(func() *schemas.BifrostError { _, err := bifrost.ChatCompletionRequest(ctx, req); return err })
+		if passed || err == nil || err.EffectiveHTTPStatus() != http.StatusBadRequest {
+			t.Fatalf("chat: expected 400 for input %#v, got err=%v passedGuard=%v", input, err, passed)
+		}
+		err, passed = guard(func() *schemas.BifrostError { _, err := bifrost.ChatCompletionStreamRequest(ctx, req); return err })
+		if passed || err == nil || err.EffectiveHTTPStatus() != http.StatusBadRequest {
+			t.Fatalf("chat stream: expected 400 for input %#v, got err=%v passedGuard=%v", input, err, passed)
+		}
+	}
+}
+
 // https://github.com/maximhq/bifrost/issues/6784: an OpenAI-compatible upstream that ends
 // generation on finish_reason, never sends [DONE] and then parks the connection behind SSE
 // heartbeats holds the stream open indefinitely — heartbeat bytes reset the idle timer without

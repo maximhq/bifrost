@@ -539,7 +539,7 @@ func (provider *AnthropicProvider) TextCompletion(ctx *schemas.BifrostContext, k
 	jsonData, err := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*AnthropicTextRequest, error) {
 			return ToAnthropicTextCompletionRequest(request), nil
 		})
 	if err != nil {

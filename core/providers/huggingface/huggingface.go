@@ -482,7 +482,7 @@ func (provider *HuggingFaceProvider) ChatCompletion(ctx *schemas.BifrostContext,
 	jsonBody, err := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*HuggingFaceChatRequest, error) {
 			reqBody, err := ToHuggingFaceChatCompletionRequest(request)
 			if err != nil {
 				return nil, err
@@ -564,8 +564,8 @@ func (provider *HuggingFaceProvider) ChatCompletionStream(ctx *schemas.BifrostCo
 
 	customRequestConverter := func(request *schemas.BifrostChatRequest) (providerUtils.RequestBodyWithExtraParams, error) {
 		reqBody, err := ToHuggingFaceChatCompletionStreamRequest(request)
-		if err != nil {
-			return nil, err
+		if err != nil || reqBody == nil {
+			return nil, err // a literal nil: a nil *HuggingFaceChatRequest would pass the interface nil check
 		}
 		return reqBody, nil
 	}
@@ -642,7 +642,7 @@ func (provider *HuggingFaceProvider) Embedding(ctx *schemas.BifrostContext, key 
 	jsonBody, err := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*HuggingFaceEmbeddingRequest, error) {
 			req, err := ToHuggingFaceEmbeddingRequest(request)
 			return req, err
 		})
@@ -734,7 +734,7 @@ func (provider *HuggingFaceProvider) Speech(ctx *schemas.BifrostContext, key sch
 	jsonData, err := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*HuggingFaceSpeechRequest, error) {
 			return ToHuggingFaceSpeechRequest(request)
 		})
 	if err != nil {
@@ -845,7 +845,7 @@ func (provider *HuggingFaceProvider) Transcription(ctx *schemas.BifrostContext, 
 		jsonData, err = providerUtils.CheckContextAndGetRequestBody(
 			ctx,
 			request,
-			func() (providerUtils.RequestBodyWithExtraParams, error) {
+			func() (*HuggingFaceTranscriptionRequest, error) {
 				return ToHuggingFaceTranscriptionRequest(request)
 			})
 		if err != nil {
@@ -935,12 +935,13 @@ func (provider *HuggingFaceProvider) ImageGeneration(ctx *schemas.BifrostContext
 		}
 	}
 
-	jsonBody, err := providerUtils.CheckContextAndGetRequestBody(
+	// The converter picks a body type per inference provider, so its result is the
+	// interface; it returns a literal nil whenever it has no body.
+	jsonBody, err := providerUtils.CheckContextAndGetRequestBodyFromInterface(
 		ctx,
 		request,
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
-			req, err := ToHuggingFaceImageGenerationRequest(request)
-			return req, err
+			return ToHuggingFaceImageGenerationRequest(request)
 		})
 	if err != nil {
 		return nil, err
@@ -1042,7 +1043,7 @@ func (provider *HuggingFaceProvider) ImageGenerationStream(ctx *schemas.BifrostC
 	jsonBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*HuggingFaceFalAIImageStreamRequest, error) {
 			return ToHuggingFaceImageStreamRequest(request)
 		})
 	if bifrostErr != nil {
@@ -1323,7 +1324,7 @@ func (provider *HuggingFaceProvider) ImageEdit(ctx *schemas.BifrostContext, key 
 	jsonBody, err := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*HuggingFaceFalAIImageEditRequest, error) {
 			req, err := ToHuggingFaceImageEditRequest(request)
 			return req, err
 		})
@@ -1436,7 +1437,7 @@ func (provider *HuggingFaceProvider) ImageEditStream(ctx *schemas.BifrostContext
 	jsonBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*HuggingFaceFalAIImageEditRequest, error) {
 			return ToHuggingFaceImageEditRequest(request)
 		})
 	if bifrostErr != nil {

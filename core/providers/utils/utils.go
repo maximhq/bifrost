@@ -1858,8 +1858,6 @@ type RequestBodyWithExtraParams interface {
 	GetExtraParams() map[string]interface{}
 }
 
-type RequestBodyConverter func() (RequestBodyWithExtraParams, error)
-
 // IsLargePayloadPassthroughEnabled returns true when large payload mode has already
 // prepared an upstream body reader in context.
 func IsLargePayloadPassthroughEnabled(ctx context.Context) bool {
@@ -2611,69 +2609,115 @@ func StartScopedPhaseSpan(ctx *schemas.BifrostContext, name string) (schemas.Tra
 	return t, h, func() { ctx.SetValue(schemas.BifrostContextKeySpanID, prev) }
 }
 
-// CheckContextAndGetRequestBody checks if the raw request body should be used, and returns it if it exists.
-func CheckContextAndGetRequestBody(ctx context.Context, request RequestBodyGetter, requestConverter RequestBodyConverter) ([]byte, *schemas.BifrostError) {
+// CheckContextAndGetRequestBody returns the raw request body when the context asks for it,
+// and otherwise converts the request with requestConverter and marshals the result.
+//
+// The converter returns its concrete body pointer (P), not the RequestBodyWithExtraParams
+// interface. Converters return nil for a request they cannot build, and a nil pointer
+// returned as the interface is a non-nil interface value: it would pass a nil check and
+// then panic in MarshalJSON on the nil receiver. Keeping the pointer type makes the nil
+// check a plain pointer comparison, enforced at every call site by the compiler. Every
+// pointer type shares one GC shape, so this is a single instantiation, and passing the
+// pointer on as an interface does not allocate.
+func CheckContextAndGetRequestBody[B any, P interface {
+	*B
+	RequestBodyWithExtraParams
+}](ctx context.Context, request RequestBodyGetter, requestConverter func() (P, error)) ([]byte, *schemas.BifrostError) {
 	if IsLargePayloadPassthroughEnabled(ctx) {
 		return nil, nil
 	}
-
-	rawBody, ok := CheckAndGetRawRequestBody(ctx, request)
-	if !ok {
-		// The converting path splits into two non-overlapping overhead phases so their
-		// costs are attributed separately (and never double-counted): "convertor" for
-		// the Bifrost->provider format conversion, then "request-marshal" for the JSON
-		// encode. The raw-body passthrough branch does neither.
-		ct, chdl := startPhaseSpan(ctx, "convertor")
-		convertedBody, err := requestConverter()
-		if err != nil {
-			if ct != nil {
-				ct.EndSpan(chdl, schemas.SpanStatusError, err.Error())
-			}
-			// Caller-fault refusals carry their own 400; everything else is a conversion
-			// bug on our side and keeps the 500 default.
-			if badRequest, ok := AsBifrostBadRequestError(err); ok {
-				return nil, badRequest
-			}
-			return nil, NewBifrostOperationError(schemas.ErrRequestBodyConversion, err)
-		}
-		if ct != nil {
-			ct.EndSpan(chdl, schemas.SpanStatusOk, "")
-		}
-		if convertedBody == nil {
-			return nil, NewBifrostOperationError("request body is not provided", nil)
-		}
-
-		mt, mhdl := startPhaseSpan(ctx, "request-marshal")
-		// Indenting is removed to reduce data on wire
-		jsonBody, err := MarshalProviderRequest(convertedBody)
-		if err != nil {
-			if mt != nil {
-				mt.EndSpan(mhdl, schemas.SpanStatusError, err.Error())
-			}
-			return nil, NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
-		}
-		// Merge ExtraParams into the JSON if passthrough is enabled
-		if ctx.Value(schemas.BifrostContextKeyPassthroughExtraParams) != nil && ctx.Value(schemas.BifrostContextKeyPassthroughExtraParams) == true {
-			extraParams := convertedBody.GetExtraParams()
-			if len(extraParams) > 0 {
-				// Use order-preserving merge to avoid destroying key ordering in
-				// tool schemas and other order-sensitive JSON structures.
-				jsonBody, err = MergeExtraParamsIntoJSON(jsonBody, extraParams)
-				if err != nil {
-					if mt != nil {
-						mt.EndSpan(mhdl, schemas.SpanStatusError, err.Error())
-					}
-					return nil, NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
-				}
-			}
-		}
-		if mt != nil {
-			mt.EndSpan(mhdl, schemas.SpanStatusOk, "")
-		}
-		return jsonBody, nil
-	} else {
+	if rawBody, ok := CheckAndGetRawRequestBody(ctx, request); ok {
 		return rawBody, nil
 	}
+	// The converting path splits into two non-overlapping overhead phases so their costs are
+	// attributed separately (and never double-counted): "convertor" for the Bifrost->provider
+	// format conversion, then "request-marshal" for the JSON encode. The raw-body passthrough
+	// branch does neither.
+	ct, chdl := startPhaseSpan(ctx, "convertor")
+	convertedBody, err := requestConverter()
+	if bifrostErr := endConvertorPhase(ct, chdl, err); bifrostErr != nil {
+		return nil, bifrostErr
+	}
+	if convertedBody == nil {
+		return nil, NewBifrostOperationError("request body is not provided", nil)
+	}
+	return marshalConvertedRequestBody(ctx, convertedBody)
+}
+
+// CheckContextAndGetRequestBodyFromInterface is CheckContextAndGetRequestBody for a
+// converter that can return more than one concrete body type, such as the custom request
+// converters the OpenAI-compatible handlers accept, so its result can only be the
+// interface. Its nil check sees an untyped nil only: a converter used here must return a
+// literal nil, never a nil concrete pointer, when it has no body. Prefer the generic
+// CheckContextAndGetRequestBody wherever the converter has a single concrete type.
+func CheckContextAndGetRequestBodyFromInterface(ctx context.Context, request RequestBodyGetter, requestConverter func() (RequestBodyWithExtraParams, error)) ([]byte, *schemas.BifrostError) {
+	if IsLargePayloadPassthroughEnabled(ctx) {
+		return nil, nil
+	}
+	if rawBody, ok := CheckAndGetRawRequestBody(ctx, request); ok {
+		return rawBody, nil
+	}
+	ct, chdl := startPhaseSpan(ctx, "convertor")
+	convertedBody, err := requestConverter()
+	if bifrostErr := endConvertorPhase(ct, chdl, err); bifrostErr != nil {
+		return nil, bifrostErr
+	}
+	if convertedBody == nil {
+		return nil, NewBifrostOperationError("request body is not provided", nil)
+	}
+	return marshalConvertedRequestBody(ctx, convertedBody)
+}
+
+// endConvertorPhase closes the "convertor" phase span and maps a converter error to the
+// client error: caller-fault refusals carry their own 400, everything else is a
+// conversion bug on our side and keeps the 500 default.
+func endConvertorPhase(ct schemas.Tracer, chdl schemas.SpanHandle, err error) *schemas.BifrostError {
+	if err != nil {
+		if ct != nil {
+			ct.EndSpan(chdl, schemas.SpanStatusError, err.Error())
+		}
+		if badRequest, ok := AsBifrostBadRequestError(err); ok {
+			return badRequest
+		}
+		return NewBifrostOperationError(schemas.ErrRequestBodyConversion, err)
+	}
+	if ct != nil {
+		ct.EndSpan(chdl, schemas.SpanStatusOk, "")
+	}
+	return nil
+}
+
+// marshalConvertedRequestBody encodes a converted, non-nil body under the
+// "request-marshal" phase and merges its extra params when passthrough is enabled.
+func marshalConvertedRequestBody(ctx context.Context, convertedBody RequestBodyWithExtraParams) ([]byte, *schemas.BifrostError) {
+	mt, mhdl := startPhaseSpan(ctx, "request-marshal")
+	// Indenting is removed to reduce data on wire
+	jsonBody, err := MarshalProviderRequest(convertedBody)
+	if err != nil {
+		if mt != nil {
+			mt.EndSpan(mhdl, schemas.SpanStatusError, err.Error())
+		}
+		return nil, NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
+	}
+	// Merge ExtraParams into the JSON if passthrough is enabled
+	if ctx.Value(schemas.BifrostContextKeyPassthroughExtraParams) != nil && ctx.Value(schemas.BifrostContextKeyPassthroughExtraParams) == true {
+		extraParams := convertedBody.GetExtraParams()
+		if len(extraParams) > 0 {
+			// Use order-preserving merge to avoid destroying key ordering in
+			// tool schemas and other order-sensitive JSON structures.
+			jsonBody, err = MergeExtraParamsIntoJSON(jsonBody, extraParams)
+			if err != nil {
+				if mt != nil {
+					mt.EndSpan(mhdl, schemas.SpanStatusError, err.Error())
+				}
+				return nil, NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
+			}
+		}
+	}
+	if mt != nil {
+		mt.EndSpan(mhdl, schemas.SpanStatusOk, "")
+	}
+	return jsonBody, nil
 }
 
 // SetExtraHeadersHTTP sets additional headers from NetworkConfig to the standard HTTP request.

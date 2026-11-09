@@ -148,7 +148,7 @@ func (provider *RunwayProvider) ImageGeneration(ctx *schemas.BifrostContext, key
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		bifrostReq,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*RunwayImageGenerationRequest, error) {
 			return ToRunwayImageGenerationRequest(bifrostReq)
 		})
 	if bifrostErr != nil {
@@ -337,7 +337,7 @@ func (provider *RunwayProvider) ImageEdit(ctx *schemas.BifrostContext, key schem
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		bifrostReq,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*RunwayImageGenerationRequest, error) {
 			return ToRunwayImageEditRequest(bifrostReq)
 		})
 	if bifrostErr != nil {
@@ -366,7 +366,7 @@ func (provider *RunwayProvider) VideoGeneration(ctx *schemas.BifrostContext, key
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		bifrostReq,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*RunwayVideoGenerationRequest, error) {
 			return ToRunwayVideoGenerationRequest(bifrostReq)
 		})
 	if bifrostErr != nil {

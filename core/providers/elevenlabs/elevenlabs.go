@@ -228,7 +228,7 @@ func (provider *ElevenlabsProvider) Speech(ctx *schemas.BifrostContext, key sche
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*ElevenlabsSpeechRequest, error) {
 			return ToElevenlabsSpeechRequest(request), nil
 		})
 
@@ -344,7 +344,7 @@ func (provider *ElevenlabsProvider) SpeechStream(ctx *schemas.BifrostContext, po
 	jsonBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*ElevenlabsSpeechRequest, error) {
 			return ToElevenlabsSpeechRequest(request), nil
 		})
 
