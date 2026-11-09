@@ -1131,6 +1131,56 @@ func Test_handleStreaming_RetentionCancelsAndLeavesNoGoroutine(t *testing.T) {
 	// lib.TestClientDisconnectWatcher_RetentionNoGoroutineLeak against a real socket.
 }
 
+// Test_handleStreaming_ConverterPanicIsRecovered pins that a panic inside a stream chunk
+// converter does not end the process. The producer goroutine runs after the handler has
+// returned, outside RecoveryMiddleware, so without its own recover an unrecovered panic
+// there crashes the server (and this test binary). It must instead cancel upstream, drain
+// the remaining chunks so the provider goroutine is not left blocked on a send, and close
+// the client stream.
+func Test_handleStreaming_ConverterPanicIsRecovered(t *testing.T) {
+	stream := make(chan *schemas.BifrostStreamChunk)
+	router := NewGenericRouter(nil, &mockHandlerStore{}, nil, nil, nil, bifrost.NewNoOpLogger())
+	ctx := &fasthttp.RequestCtx{}
+	route := RouteConfig{StreamConfig: &StreamConfig{
+		ChatStreamResponseConverter: func(*schemas.BifrostContext, *schemas.BifrostChatResponse) (string, interface{}, error) {
+			var resp *schemas.BifrostChatResponse
+			return "", resp.ID, nil // nil dereference, as a converter bug would
+		},
+	}}
+
+	rec := newCancelRecorder()
+	router.handleStreaming(ctx, schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), route, "", stream, rec.cancel)
+
+	readDone := make(chan error, 1)
+	go func() {
+		_, err := io.ReadAll(ctx.Response.BodyStream())
+		readDone <- err
+	}()
+
+	// Unbuffered: every send after the panicking one only completes if the recover drains.
+	sendDone := make(chan struct{})
+	go func() {
+		defer close(sendDone)
+		for i := 0; i < 3; i++ {
+			stream <- &schemas.BifrostStreamChunk{BifrostChatResponse: &schemas.BifrostChatResponse{}}
+		}
+		close(stream)
+	}()
+
+	select {
+	case <-sendDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("provider side stayed blocked on send: the stream was not drained after the panic")
+	}
+	select {
+	case err := <-readDone:
+		require.NoError(t, err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("response body stream never closed after the panic")
+	}
+	rec.requireCancelled(t, "upstream was not cancelled after the converter panicked")
+}
+
 // cancelRecorder captures the cancel func handed to handleStreaming.
 //
 // handleStreaming cancels from its producer goroutine's deferred cleanup, which runs after

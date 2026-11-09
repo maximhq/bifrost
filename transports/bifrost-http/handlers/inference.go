@@ -2498,6 +2498,9 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, bi
 				traceCompleter(transportLogs)
 			}
 		}()
+		// Registered after the teardown above so it runs first: a panic while converting a
+		// chunk is logged, upstream is cancelled and drained, then the teardown closes the stream.
+		defer lib.RecoverStreamProducer(cancel, stream)
 
 		var includeEventType bool
 		var skipDoneMarker bool

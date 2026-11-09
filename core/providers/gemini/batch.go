@@ -430,6 +430,9 @@ func geminiGenerateContentToBatchResultBody(resp *GenerateContentResponse) map[s
 		if candidate.Content != nil && len(candidate.Content.Parts) > 0 {
 			var textParts []string
 			for _, part := range candidate.Content.Parts {
+				if part == nil {
+					continue
+				}
 				if part.Text != "" {
 					textParts = append(textParts, part.Text)
 				}

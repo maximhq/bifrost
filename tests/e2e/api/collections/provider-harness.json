@@ -313376,6 +313376,363 @@
           }
         }
       ]
+    },
+    {
+      "name": "326. Gemini null part skipped on the /genai route (null genai part)",
+      "description": "A GenAI generateContent body whose parts array holds a JSON null decoded to a nil *Part, and request-type detection (isSpeechRequest / isTranscriptionRequest / isImage*Request in transports/bifrost-http/integrations/genai.go) and the Gemini converters dereferenced it. RecoveryMiddleware caught the panic, so the client got a 500 for a request whose other part is perfectly valid. Every loop over []*Part now skips nil entries. Both cases send parts [null, {text}] with a bare model (no gemini/ prefix, so the re-encoded request, not the raw body, goes upstream) and must now get a 200 with model text: one unary generateContent, one streamGenerateContent over SSE that must also reach a finishReason. thinkingLevel minimal keeps gemini-3.6-flash thinking inside the output budget, so a MAX_TOKENS reply with no text cannot fail the case. Two more cases pin the other outcomes: parts holding only a null leave no input at all and must get a 400 from the gateway (before, a 500), and a null function declaration beside a valid one must get a 200. Response-side nil parts cannot be injected over HTTP; core/providers/gemini chat_test.go and responses_test.go pin those.",
+      "item": [
+        {
+          "name": "gemini/gemini-3.6-flash /genai generateContent with a null part before text (null genai part)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        null,\n        {\n          \"text\": \"Reply with the single word: pong\"\n        }\n      ]\n    }\n  ],\n  \"generationConfig\": {\n    \"maxOutputTokens\": 256,\n    \"thinkingConfig\": {\n      \"thinkingLevel\": \"minimal\"\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/gemini-3.6-flash:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "gemini-3.6-flash:generateContent"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('null part is skipped: 200, not a recovered panic', function () {",
+                  "    pm.expect(pm.response.code, 'expected 200: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('the text part beside the null still produced model output', function () {",
+                  "    var body = pm.response.json();",
+                  "    var text = '';",
+                  "    ((body.candidates || [])[0] && body.candidates[0].content && body.candidates[0].content.parts || []).forEach(function (p) { if (p && p.text && !p.thought) { text += p.text; } });",
+                  "    pm.expect(text.length, 'no candidate text: ' + pm.response.text()).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "gemini/gemini-3.6-flash /genai streamGenerateContent with a null part before text (null genai part)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        null,\n        {\n          \"text\": \"Reply with the single word: pong\"\n        }\n      ]\n    }\n  ],\n  \"generationConfig\": {\n    \"maxOutputTokens\": 256,\n    \"thinkingConfig\": {\n      \"thinkingLevel\": \"minimal\"\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/gemini-3.6-flash:streamGenerateContent?alt=sse",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "gemini-3.6-flash:streamGenerateContent"
+              ],
+              "query": [
+                {
+                  "key": "alt",
+                  "value": "sse"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('null part is skipped on the stream: 200, not a recovered panic', function () {",
+                  "    pm.expect(pm.response.code, 'expected 200: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var raw = pm.response.text();",
+                  "var chunks = [];",
+                  "raw.split('\\n').forEach(function (line) {",
+                  "    var t = line.trim();",
+                  "    if (t.indexOf('data:') !== 0) { return; }",
+                  "    var payload = t.slice(5).trim();",
+                  "    if (!payload || payload === '[DONE]') { return; }",
+                  "    try { chunks.push(JSON.parse(payload)); } catch (e) {}",
+                  "});",
+                  "var text = '';",
+                  "var finish = '';",
+                  "chunks.forEach(function (c) {",
+                  "    (c.candidates || []).forEach(function (cand) {",
+                  "        if (cand.finishReason) { finish = cand.finishReason; }",
+                  "        ((cand.content && cand.content.parts) || []).forEach(function (p) { if (p && p.text && !p.thought) { text += p.text; } });",
+                  "    });",
+                  "});",
+                  "pm.test('the text part beside the null streamed model output', function () {",
+                  "    pm.expect(text.length, 'no streamed text: ' + raw.slice(0, 800)).to.be.above(0);",
+                  "});",
+                  "pm.test('the stream reached a finishReason', function () {",
+                  "    pm.expect(finish, 'no finishReason in stream: ' + raw.slice(0, 800)).to.not.equal('');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "gemini/gemini-3.6-flash /genai generateContent with only a null part [EXPECT-400] (null genai part)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        null\n      ]\n    }\n  ],\n  \"generationConfig\": {\n    \"maxOutputTokens\": 256,\n    \"thinkingConfig\": {\n      \"thinkingLevel\": \"minimal\"\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/gemini-3.6-flash:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "gemini-3.6-flash:generateContent"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('parts holding only a null are rejected with 400, not a recovered panic', function () {",
+                  "    pm.expect(pm.response.code, 'expected 400: ' + pm.response.text()).to.equal(400);",
+                  "    var body = pm.response.json();",
+                  "    pm.expect(body.error && body.error.message, 'missing error message: ' + pm.response.text()).to.be.a('string').and.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "gemini/gemini-3.6-flash /genai generateContent with a null function declaration beside a valid one (null genai part)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Reply with the single word: pong\"\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"functionDeclarations\": [\n        null,\n        {\n          \"name\": \"get_weather\",\n          \"description\": \"Get the current weather for a city\",\n          \"parameters\": {\n            \"type\": \"object\",\n            \"properties\": {\n              \"city\": {\n                \"type\": \"string\"\n              }\n            },\n            \"required\": [\n              \"city\"\n            ]\n          }\n        }\n      ]\n    }\n  ],\n  \"generationConfig\": {\n    \"maxOutputTokens\": 256,\n    \"thinkingConfig\": {\n      \"thinkingLevel\": \"minimal\"\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/gemini-3.6-flash:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "gemini-3.6-flash:generateContent"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('a null function declaration is skipped: 200, not a recovered panic', function () {",
+                  "    pm.expect(pm.response.code, 'expected 200: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('the model answered with text or a call to the valid declaration', function () {",
+                  "    var body = pm.response.json();",
+                  "    var parts = ((body.candidates || [])[0] && body.candidates[0].content && body.candidates[0].content.parts) || [];",
+                  "    var answered = parts.some(function (p) { return p && ((p.text && !p.thought) || (p.functionCall && p.functionCall.name === 'get_weather')); });",
+                  "    pm.expect(answered, 'no text or get_weather call: ' + pm.response.text()).to.equal(true);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "327. Vertex reply with a null candidate part (vertex null response part)",
+      "description": "Local fixture regression, no network traffic leaves the machine. Run tests/e2e/api/runners/vertex-endpoint-fixture.mjs --app-dir <dir>, start an isolated gateway with -app-dir <dir>, and pass ENV_FILE=<dir>/harness-environment.json so vertexEndpointFixture is 1; without it both cases skip.\n\nA prompt carrying the marker null-part-fixture makes the fixture answer :generateContent and :streamGenerateContent with Gemini candidates whose parts hold a JSON null beside the text (the final stream chunk carries only [null]). The null decodes to a nil *Part, and the Gemini response converters dereferenced it: the unary chat path panicked in ToBifrostChatResponse (recovered as a 500), and the stream panicked on the provider goroutine. Every loop over []*Part now skips nil entries. Both cases must get a 200 whose text is the fixture's \"hello\": unary through choices[0].message.content, stream through the delta contents, ending with finish_reason stop and [DONE].",
+      "item": [
+        {
+          "name": "327.1 vertex/gemini-2.5-flash chat reply whose candidate parts open with null (vertex null response part)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "vertex-global"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/gemini-2.5-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"null-part-fixture: say hello\"\n    }\n  ],\n  \"max_tokens\": 8\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('vertexEndpointFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "} else {",
+                  "  pm.sendRequest({ url: 'http://127.0.0.1:8792/__reset', method: 'POST' }, function () {});",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('a null candidate part is skipped: 200, not a recovered panic', function () {",
+                  "    pm.expect(pm.response.code, 'expected 200: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('the text part beside the null reaches the client', function () {",
+                  "    var j = pm.response.json();",
+                  "    pm.expect(j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content, pm.response.text().slice(0, 400)).to.equal('hello');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "327.2 vertex/gemini-2.5-flash chat stream whose candidate parts open with null (vertex null response part)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "vertex-global"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/gemini-2.5-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"null-part-fixture: say hello\"\n    }\n  ],\n  \"max_tokens\": 8,\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('vertexEndpointFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "} else {",
+                  "  pm.sendRequest({ url: 'http://127.0.0.1:8792/__reset', method: 'POST' }, function () {});",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('a null candidate part is skipped on the stream: 200', function () {",
+                  "    pm.expect(pm.response.code, 'expected 200: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var raw = pm.response.text();",
+                  "var text = '', finish = '', done = false, errors = [];",
+                  "raw.split('\\n').forEach(function (line) {",
+                  "    var t = line.trim();",
+                  "    if (t.indexOf('data:') !== 0) { return; }",
+                  "    var payload = t.slice(5).trim();",
+                  "    if (payload === '[DONE]') { done = true; return; }",
+                  "    var c; try { c = JSON.parse(payload); } catch (e) { return; }",
+                  "    if (c.error) { errors.push(payload); }",
+                  "    (c.choices || []).forEach(function (ch) {",
+                  "        if (ch.delta && typeof ch.delta.content === 'string') { text += ch.delta.content; }",
+                  "        if (ch.finish_reason) { finish = ch.finish_reason; }",
+                  "    });",
+                  "});",
+                  "pm.test('no error chunk on the stream', function () { pm.expect(errors, raw.slice(0, 800)).to.have.length(0); });",
+                  "pm.test('the text part beside the null is streamed', function () { pm.expect(text, raw.slice(0, 800)).to.equal('hello'); });",
+                  "pm.test('the stream finishes with stop and [DONE]', function () {",
+                  "    pm.expect(finish, raw.slice(0, 800)).to.equal('stop');",
+                  "    pm.expect(done, 'no [DONE]: ' + raw.slice(0, 800)).to.equal(true);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }

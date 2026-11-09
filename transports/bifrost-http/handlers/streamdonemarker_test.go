@@ -23,10 +23,17 @@ import (
 // connection and returns the raw SSE body the client would receive.
 func serveStreamingResponse(t *testing.T, chunks []*schemas.BifrostStreamChunk) string {
 	t.Helper()
+	// A zero Config loads no transport plugins, so no chunk interceptor runs.
+	return serveStreamingResponseWithConfig(t, &lib.Config{}, chunks)
+}
+
+// serveStreamingResponseWithConfig is serveStreamingResponse with the handler's Config
+// supplied, so a test can load transport plugins whose chunk hook runs on the stream.
+func serveStreamingResponseWithConfig(t *testing.T, config *lib.Config, chunks []*schemas.BifrostStreamChunk) string {
+	t.Helper()
 
 	handler := func(reqCtx *fasthttp.RequestCtx) {
-		// A zero Config loads no transport plugins, so no chunk interceptor runs.
-		h := &CompletionHandler{config: &lib.Config{}}
+		h := &CompletionHandler{config: config}
 
 		base, cancel := context.WithCancel(context.Background())
 		bifrostCtx := schemas.NewBifrostContext(base, schemas.NoDeadline)
@@ -150,5 +157,31 @@ func TestStreamingResponseSendsDoneOnCleanStream(t *testing.T) {
 
 	if !strings.Contains(body, "data: [DONE]") {
 		t.Errorf("expected [DONE] to terminate a clean stream, got:\n%s", body)
+	}
+}
+
+// panickingChunkPlugin is a transport plugin whose stream-chunk hook panics.
+type panickingChunkPlugin struct{ fakeResponseHeadersPlugin }
+
+func (p *panickingChunkPlugin) HTTPTransportStreamChunkHook(_ *schemas.BifrostContext, _ *schemas.HTTPRequest, chunk *schemas.BifrostStreamChunk) (*schemas.BifrostStreamChunk, error) {
+	var resp *schemas.BifrostChatResponse
+	_ = resp.ID // nil dereference, as a plugin bug would
+	return chunk, nil
+}
+
+// A panic in a transport plugin's stream-chunk hook runs on the SSE producer goroutine,
+// after the handler has returned and outside RecoveryMiddleware. It must end only this
+// stream; without the producer's own recover it ends the process (and this test binary).
+func TestStreamingResponsePluginChunkHookPanicIsRecovered(t *testing.T) {
+	plugin := &panickingChunkPlugin{fakeResponseHeadersPlugin{name: "panicking-chunk-hook"}}
+	config := responseHeadersTestConfig(t, plugin)
+
+	body := serveStreamingResponseWithConfig(t, config, []*schemas.BifrostStreamChunk{
+		contentChunk("first"),
+		contentChunk("second"),
+	})
+
+	if strings.Contains(body, "data: [DONE]") {
+		t.Errorf("a stream cut short by a panic must not end with [DONE], got:\n%s", body)
 	}
 }
