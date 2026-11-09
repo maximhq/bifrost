@@ -62,6 +62,8 @@ type Store struct {
 	baseModelIndex         map[string]string                              // model → canonical base name
 	supportedResponseTypes map[string][]string                            // model → [chat_completion, responses, …]
 	supportedParams        map[string][]string                            // model → [temperature, top_p, …]
+	modelParameterKeys     []string                                       // usable parameter rows, including empty allowlists
+	modelParamsSyncMu      sync.Mutex                                     // serialize DB snapshot, write, and publication
 
 	// onModelParametersApplied fires after a model-parameters reload lands, so
 	// caches built from the previous sheet can be dropped.
