@@ -69,6 +69,48 @@ func TestApplyRoutingRules_PinnedKeyReachesContext(t *testing.T) {
 		"routing-rule pinned key_id must reach BifrostContextKeyRoutingPinnedAPIKeyID that selectKeyFromProviderForModelWithPool reads")
 }
 
+// TestApplyRoutingRules_LockedPinIsLeftAlone pins that an evaluation call, whose eval key pin
+// is marked locked, is not taken by a matching routing rule: the rule would move it to its own
+// key, outside the eval key's concurrency and possibly onto a production key, and its provider
+// and model rewrite would change what the evaluator asked for.
+func TestApplyRoutingRules_LockedPinIsLeftAlone(t *testing.T) {
+	store, err := rules.NewLocalStore(context.Background(), rules.NewMockLogger(), nil)
+	require.NoError(t, err)
+	require.NoError(t, store.UpsertRule(context.Background(), &configstoreTables.TableRoutingRule{
+		ID:            "pin-locked",
+		Name:          "Pinned Key Rule",
+		CelExpression: "model == 'gpt-4o'",
+		Targets: []configstoreTables.TableRoutingTarget{
+			{Provider: bifrost.Ptr("azure"), Model: bifrost.Ptr("gpt-4-turbo"), KeyID: bifrost.Ptr("k-prod"), Weight: 1.0},
+		},
+		Enabled:  bifrost.Ptr(true),
+		Scope:    "global",
+		Priority: 0,
+	}))
+	plugin, err := InitFromStore(context.Background(), nil, rules.NewMockLogger(), nil, store, NewMockGovernance())
+	require.NoError(t, err)
+
+	req := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: "gpt-4o"},
+	}
+	root := schemas.NewBifrostContext(context.Background(), time.Now())
+	root.SetValue(schemas.BifrostContextKeyAPIKeyID, "k-eval")
+	root.SetValue(schemas.BifrostContextKeyAPIKeyPinLocked, true)
+	root.BlockRestrictedWrites()
+	pluginName := PluginName
+	scoped := root.WithPluginScope(&pluginName)
+
+	decision, err := plugin.applyRoutingRules(scoped, req, rules.GovernanceScope{})
+	require.NoError(t, err)
+	assert.Nil(t, decision, "no rule applies to a locked call")
+	provider, model, _ := req.GetRequestFields()
+	assert.Equal(t, schemas.OpenAI, provider, "the provider is left alone")
+	assert.Equal(t, "gpt-4o", model, "the model is left alone")
+	pin, _ := root.Value(schemas.BifrostContextKeyRoutingPinnedAPIKeyID).(string)
+	assert.Empty(t, pin, "the rule's key is not pinned")
+}
+
 // TestApplyRoutingRules_FallbackKeyPinReachesRequest covers the fallback pin, which travels on the request's fallback list because core clears the context per attempt.
 func TestApplyRoutingRules_FallbackKeyPinReachesRequest(t *testing.T) {
 	const fallbackKeyID = "fallback-key-xyz-789"

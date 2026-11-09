@@ -39,6 +39,7 @@ import (
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/encrypt"
 	"github.com/maximhq/bifrost/framework/envutils"
+	"github.com/maximhq/bifrost/framework/evals"
 	"github.com/maximhq/bifrost/framework/featureflags"
 	"github.com/maximhq/bifrost/framework/livestore"
 	"github.com/maximhq/bifrost/framework/livestore/registry"
@@ -2101,6 +2102,9 @@ func applyToolManagerToClientConfig(cc *configstore.ClientConfig, tm *schemas.MC
 // provider's configuration and its keys are kept in two maps keyed by provider, read from the
 // store's provider and key rows and from config.json, where ConfigData has already split them.
 func loadProviders(ctx context.Context, config *Config, configData *ConfigData) error {
+	if err := validateFileKeyEvalConcurrency(configData.ProviderKeys); err != nil {
+		return err
+	}
 	var providersInConfigStore map[schemas.ModelProvider]configstore.ProviderConfig
 	keysInConfigStore := make(map[schemas.ModelProvider][]schemas.Key)
 	if config.ConfigStore != nil {
@@ -2193,6 +2197,28 @@ func StoredProviderKeys(ctx context.Context, store configstore.ConfigStore, prov
 		keys[row.Provider] = append(keys[row.Provider], row.Key)
 	}
 	return keys, nil
+}
+
+// validateFileKeyEvalConcurrency rejects a config.json key whose eval_concurrency is below
+// 1 or above evals.MaxEvalKeyConcurrency, matching the schema bounds and the provider-key
+// API. Unset takes the default.
+func validateFileKeyEvalConcurrency(providerKeys map[string][]schemas.Key) error {
+	for providerName, keys := range providerKeys {
+		for i, key := range keys {
+			if key.EvalConcurrency == nil || (*key.EvalConcurrency >= 1 && *key.EvalConcurrency <= evals.MaxEvalKeyConcurrency) {
+				continue
+			}
+			label := key.Name
+			if label == "" {
+				label = fmt.Sprintf("#%d", i+1)
+			}
+			if *key.EvalConcurrency < 1 {
+				return fmt.Errorf("providers.%s: key %q: eval_concurrency must be at least 1; leave it unset to use the default", providerName, label)
+			}
+			return fmt.Errorf("providers.%s: key %q: eval_concurrency must be at most %d", providerName, label, evals.MaxEvalKeyConcurrency)
+		}
+	}
+	return nil
 }
 
 // syncAuthoritativeProvidersInStore persists providers and their keys and deletes DB-only
@@ -2374,21 +2400,58 @@ func mergeProviderWithHash(
 	}
 }
 
+// keepStoredEvalSettings carries a key's eval mark and eval concurrency from the stored
+// key onto the file key that replaces it, where the file leaves them unset. They are
+// set in the dashboard, so a config.json that says nothing about them must not clear
+// them on every start. A value the file does set is kept.
+func keepStoredEvalSettings(fileKey *schemas.Key, dbKey schemas.Key) {
+	if fileKey.UseForEvals == nil {
+		fileKey.UseForEvals = dbKey.UseForEvals
+	}
+	if fileKey.EvalConcurrency == nil {
+		fileKey.EvalConcurrency = dbKey.EvalConcurrency
+	}
+}
+
+// applyFileEvalSettings puts what config.json says outright about a key's eval mark and
+// eval concurrency onto the stored key that is being kept. The key hash reads an
+// omitted use_for_evals and an explicit false as the same, so a file that adds the
+// explicit false does not look changed. Without this the stored key would be kept as
+// it is, and a key the dashboard marked could not be unmarked from the file.
+func applyFileEvalSettings(dbKey *schemas.Key, fileKey schemas.Key) {
+	if fileKey.UseForEvals != nil {
+		dbKey.UseForEvals = fileKey.UseForEvals
+	}
+	if fileKey.EvalConcurrency != nil {
+		dbKey.EvalConcurrency = fileKey.EvalConcurrency
+	}
+}
+
 // mergeProviderKeys syncs keys when provider hash has changed (file is source of truth).
 // Keys in file are kept, keys only in DB are removed.
+//
+// Each file key is hashed once, before any stored settings are copied onto it. A key
+// that inherits a stored eval mark is visited again while matching later stored keys,
+// and hashing it then would record a hash of something config.json never said.
 func mergeProviderKeys(provider schemas.ModelProvider, keysInConfigJSON, dbKeys []schemas.Key) []schemas.Key {
 	mergedKeys := keysInConfigJSON
+	fileHashes := make([]string, len(keysInConfigJSON))
+	fileHashErrs := make([]error, len(keysInConfigJSON))
+	for i, fileKey := range keysInConfigJSON {
+		fileHashes[i], fileHashErrs[i] = configstore.GenerateKeyHash(fileKey)
+	}
 	for _, dbKey := range dbKeys {
 		found := false
 		for i, fileKey := range keysInConfigJSON {
 			// Compare by hash to detect changes
-			fileKeyHash, err := configstore.GenerateKeyHash(fileKey)
+			fileKeyHash, err := fileHashes[i], fileHashErrs[i]
 			if err != nil {
 				logger.Warn("failed to generate key hash for file key %s (%s): %v, falling back to name comparison", fileKey.Name, provider, err)
 				if fileKey.Name == dbKey.Name {
 					keysInConfigJSON[i].ID = dbKey.ID
 					keysInConfigJSON[i].Status = dbKey.Status
 					keysInConfigJSON[i].Description = dbKey.Description
+					keepStoredEvalSettings(&keysInConfigJSON[i], dbKey)
 					found = true
 					break
 				}
@@ -2402,6 +2465,7 @@ func mergeProviderKeys(provider schemas.ModelProvider, keysInConfigJSON, dbKeys 
 					keysInConfigJSON[i].ID = dbKey.ID
 					keysInConfigJSON[i].Status = dbKey.Status
 					keysInConfigJSON[i].Description = dbKey.Description
+					keepStoredEvalSettings(&keysInConfigJSON[i], dbKey)
 					found = true
 					break
 				}
@@ -2429,6 +2493,8 @@ func mergeProviderKeys(provider schemas.ModelProvider, keysInConfigJSON, dbKeys 
 					OAuthKeyConfig:         dbKey.OAuthKeyConfig,
 					Enabled:                dbKey.Enabled,
 					UseForBatchAPI:         dbKey.UseForBatchAPI,
+					UseForEvals:            dbKey.UseForEvals,
+					EvalConcurrency:        dbKey.EvalConcurrency,
 					UseAnthropicEndpoints:  dbKey.UseAnthropicEndpoints,
 					DisableContentLogging:  dbKey.DisableContentLogging,
 				})
@@ -2438,6 +2504,7 @@ func mergeProviderKeys(provider schemas.ModelProvider, keysInConfigJSON, dbKeys 
 						keysInConfigJSON[i].ID = dbKey.ID
 						keysInConfigJSON[i].Status = dbKey.Status
 						keysInConfigJSON[i].Description = dbKey.Description
+						keepStoredEvalSettings(&keysInConfigJSON[i], dbKey)
 						found = true
 						break
 					}
@@ -2447,6 +2514,7 @@ func mergeProviderKeys(provider schemas.ModelProvider, keysInConfigJSON, dbKeys 
 					keysInConfigJSON[i].ID = dbKey.ID
 					keysInConfigJSON[i].Status = dbKey.Status
 					keysInConfigJSON[i].Description = dbKey.Description
+					keepStoredEvalSettings(&keysInConfigJSON[i], dbKey)
 					found = true
 					break
 				}
@@ -2484,12 +2552,14 @@ func reconcileProviderKeys(provider schemas.ModelProvider, keysInConfigJSON, dbK
 			if dbKey.ConfigHash != "" {
 				if fileKeyHash == dbKey.ConfigHash {
 					// File unchanged - keep DB version (preserves user updates)
+					applyFileEvalSettings(&dbKey, fileKey)
 					mergedKeys = append(mergedKeys, dbKey)
 				} else if legacy, err := configstore.KeyHashMatchesLegacyAliasOrder(fileKey, dbKey.ConfigHash); err == nil && legacy {
 					// Same file key, hashed by an older build with unsorted aliases: keep the stored
 					// edits and move the stored hash to the sorted form so this search runs once.
 					logger.Debug("key %s for provider %s carries a pre-sorted alias hash, keeping stored version", fileKey.Name, provider)
 					dbKey.ConfigHash = fileKeyHash
+					applyFileEvalSettings(&dbKey, fileKey)
 					mergedKeys = append(mergedKeys, dbKey)
 				} else {
 					// File changed - use file version but preserve ID and set ConfigHash
@@ -2498,6 +2568,7 @@ func reconcileProviderKeys(provider schemas.ModelProvider, keysInConfigJSON, dbK
 					fileKey.ConfigHash = fileKeyHash
 					fileKey.Status = dbKey.Status
 					fileKey.Description = dbKey.Description
+					keepStoredEvalSettings(&fileKey, dbKey)
 					mergedKeys = append(mergedKeys, fileKey)
 				}
 			} else {
@@ -2524,6 +2595,8 @@ func reconcileProviderKeys(provider schemas.ModelProvider, keysInConfigJSON, dbK
 					OAuthKeyConfig:         dbKey.OAuthKeyConfig,
 					Enabled:                dbKey.Enabled,
 					UseForBatchAPI:         dbKey.UseForBatchAPI,
+					UseForEvals:            dbKey.UseForEvals,
+					EvalConcurrency:        dbKey.EvalConcurrency,
 					UseAnthropicEndpoints:  dbKey.UseAnthropicEndpoints,
 					DisableContentLogging:  dbKey.DisableContentLogging,
 				})
@@ -2540,9 +2613,11 @@ func reconcileProviderKeys(provider schemas.ModelProvider, keysInConfigJSON, dbK
 					fileKey.ConfigHash = fileKeyHash
 					fileKey.Status = dbKey.Status
 					fileKey.Description = dbKey.Description
+					keepStoredEvalSettings(&fileKey, dbKey)
 					mergedKeys = append(mergedKeys, fileKey)
 				} else {
 					// Key unchanged - keep DB version
+					applyFileEvalSettings(&dbKey, fileKey)
 					mergedKeys = append(mergedKeys, dbKey)
 				}
 			}

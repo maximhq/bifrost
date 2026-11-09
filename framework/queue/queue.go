@@ -64,12 +64,37 @@ type Stats struct {
 	Dead    int64 `json:"dead"`    // dead-lettered and not yet purged
 }
 
+// DeliveryStatus is the state of one delivery, as Delivery reports it.
+type DeliveryStatus string
+
+const (
+	// DeliveryMissing: no live delivery, because it was acknowledged, purged,
+	// never created, or its group is not registered.
+	DeliveryMissing DeliveryStatus = "missing"
+	// DeliveryPending: waiting to be claimed, due, in retry backoff, or queued
+	// behind an earlier delivery of its key.
+	DeliveryPending DeliveryStatus = "pending"
+	// DeliveryLeased: held by a consumer, or held until its lease ran out and
+	// not claimed again since; LeaseRemaining tells the two apart.
+	DeliveryLeased DeliveryStatus = "leased"
+	// DeliveryDead: dead-lettered and not yet purged.
+	DeliveryDead DeliveryStatus = "dead"
+)
+
+// DeliveryState is a point-in-time reading of one delivery.
+type DeliveryState struct {
+	Status         DeliveryStatus `json:"status"`
+	LeaseRemaining time.Duration  `json:"lease_remaining"` // leased only: time left on the store's clock; zero or negative once it ran out
+}
+
 // Queue is the contract every queue implementation satisfies.
 type Queue interface {
 	Publisher
 	Subscriber
 	// Stats reports delivery counts for one consumer group on a topic.
 	Stats(ctx context.Context, topic, group string) (Stats, error)
+	// Delivery reports the state of one delivery on topic, by its DeliveryID.
+	Delivery(ctx context.Context, topic, deliveryID string) (DeliveryState, error)
 	// Ping checks that the backing store is reachable.
 	Ping(ctx context.Context) error
 	// Close closes every subscription and then the queue's own resources. It
@@ -192,6 +217,22 @@ func validateMessage(m *Message, limits messageLimits) error {
 
 // deliveryNamespace scopes the deterministic delivery and dead-letter IDs.
 var deliveryNamespace = uuid.MustParse("6f0c2a52-3c1e-4b8f-9a57-2f3a1e5d7c90")
+
+// deliveryState maps a stored delivery status to the state Delivery reports.
+// Every status that is not live (an acknowledged tombstone, no row at all)
+// reads as missing. leaseRemaining is used only for a leased delivery.
+func deliveryState(status string, leaseRemaining time.Duration) DeliveryState {
+	switch status {
+	case statusPending, statusWaiting:
+		return DeliveryState{Status: DeliveryPending}
+	case statusLeased:
+		return DeliveryState{Status: DeliveryLeased, LeaseRemaining: leaseRemaining}
+	case statusDead:
+		return DeliveryState{Status: DeliveryDead}
+	default:
+		return DeliveryState{Status: DeliveryMissing}
+	}
+}
 
 // DeliveryID returns the deterministic ID of messageID's delivery to group.
 // Every backend derives delivery rows from it, so re-publishing a message or

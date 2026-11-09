@@ -8,6 +8,10 @@ Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost)
 
 ## Changelog
 
+### Upcoming
+
+- Added `bifrost.providers.<provider>.keys[].use_for_evals` (`use_for_evals`): let evaluators call models with this key. Evaluations only use keys with this set. Off by default.
+- Added `bifrost.providers.<provider>.keys[].eval_concurrency` (`eval_concurrency`): the most evaluations in flight on the key across all replicas. Minimum 1, defaults to 4.
 ### 2.1.49
 
 - Added `serviceMonitor` to create a Prometheus Operator ServiceMonitor that scrapes Bifrost's `/metrics`. Off by default.

@@ -1223,6 +1223,150 @@ def test_access_programs_contract():
     assert not problems, "access_programs contract drift:\n    " + "\n    ".join(problems)
 
 
+def test_key_eval_concurrency_is_a_nullable_integer_in_31_form():
+    """Key.eval_concurrency and TableKey.eval_concurrency accept null (an update clears the stored
+    cap with it). The bundles are OpenAPI 3.1, where `nullable` is ignored, so null must be in the
+    type list itself. Both write paths refuse values outside 1..256, so both schemas carry the bounds."""
+    sources = {
+        "providers.yaml Key": load(HERE / "schemas" / "management" / "providers.yaml")["Key"]["properties"]["eval_concurrency"],
+        "governance.yaml TableKey": load(HERE / "schemas" / "management" / "governance.yaml")["TableKey"]["properties"]["eval_concurrency"],
+    }
+    for name in ("openapi.json", "openapi-oss.json"):
+        bundle = json.loads((HERE / name).read_text(encoding="utf-8"))
+        for schema_name in ("Key", "TableKey"):
+            sources[f"{name} {schema_name}"] = bundle["components"]["schemas"][schema_name]["properties"]["eval_concurrency"]
+    problems = []
+    for where, schema in sources.items():
+        types = schema.get("type")
+        if not isinstance(types, list) or "integer" not in types or "null" not in types:
+            problems.append(f"{where}: type is {types!r}, want a list holding integer and null")
+        if "nullable" in schema:
+            problems.append(f"{where}: carries nullable, which 3.1 ignores")
+        if schema.get("minimum") != 1 or schema.get("maximum") != 256:
+            problems.append(f"{where}: bounds are {schema.get('minimum')}..{schema.get('maximum')}, want 1..256")
+    assert not problems, "Key.eval_concurrency drift:\n    " + "\n    ".join(problems)
+
+
+def _evals_bundle_schemas(bundle):
+    """The evals request schemas as inlined in a bundle: the create body, the update body, and the
+    entry-level Criterion the create body's config carries."""
+    evaluators = bundle["paths"]["/api/evals/evaluators"]["post"]["requestBody"]["content"]["application/json"]["schema"]
+    update = bundle["paths"]["/api/evals/evaluators/{id}"]["put"]["requestBody"]["content"]["application/json"]["schema"]
+    criterion = evaluators["properties"]["config"]["properties"]["pass_criteria"]["properties"]["entry_level"]
+    return criterion, evaluators, update
+
+
+def test_evals_criterion_models_the_server_validation():
+    """validateCriterion takes a number for the ordering operators, a string, number or boolean for
+    = and != at entry level, and a non-empty string list for `is one of`. The entry name must be
+    `score` (an empty name is filled with it)."""
+    want = {
+        (">", "<", ">=", "<="): {"type": "number"},
+        ("=", "!="): {"type": ["string", "number", "boolean"]},
+        ("is one of",): {"type": "array", "items": {"type": "string"}, "minItems": 1},
+    }
+    sources = {"evals.yaml Criterion": load(HERE / "schemas" / "management" / "evals.yaml")["Criterion"]}
+    for name in ("openapi.json", "openapi-oss.json"):
+        bundle = json.loads((HERE / name).read_text(encoding="utf-8"))
+        sources[f"{name} Criterion"] = _evals_bundle_schemas(bundle)[0]
+    problems = []
+    for where, schema in sources.items():
+        enum = (schema.get("properties", {}).get("name") or {}).get("enum")
+        if sorted(enum or []) != sorted(["score", ""]):
+            problems.append(f"{where}: name enum is {enum!r}, want [score, '']")
+        got = {}
+        for cond in schema.get("allOf") or []:
+            op = ((cond.get("if") or {}).get("properties") or {}).get("operator") or {}
+            ops = tuple(op.get("enum") or ([op["const"]] if "const" in op else []))
+            value = ((cond.get("then") or {}).get("properties") or {}).get("value")
+            got[ops] = value
+        for ops, value in want.items():
+            if got.get(ops) != value:
+                problems.append(f"{where}: operators {ops} constrain value to {got.get(ops)!r}, want {value!r}")
+    assert not problems, "Criterion drift:\n    " + "\n    ".join(problems)
+
+
+def test_evals_create_requires_config_and_update_does_not():
+    """Every type create accepts fails on an empty config, so create requires config. Update keeps
+    config optional (an omitted config keeps the stored one)."""
+    create = {"evals.yaml": load(HERE / "schemas" / "management" / "evals.yaml")["CreateEvaluatorRequest"]}
+    update = {"evals.yaml": load(HERE / "schemas" / "management" / "evals.yaml")["UpdateEvaluatorRequest"]}
+    for name in ("openapi.json", "openapi-oss.json"):
+        bundle = json.loads((HERE / name).read_text(encoding="utf-8"))
+        _, create[name], update[name] = _evals_bundle_schemas(bundle)
+    problems = []
+    for where, schema in create.items():
+        if sorted(schema.get("required") or []) != ["config", "name", "type"]:
+            problems.append(f"{where} create: required is {schema.get('required')!r}, want [name, type, config]")
+    for where, schema in update.items():
+        if "config" in (schema.get("required") or []):
+            problems.append(f"{where} update: requires config")
+    assert not problems, "evaluator request drift:\n    " + "\n    ".join(problems)
+
+
+def _request_schemas(source_file, source_name, path, method):
+    """A request body schema in its source file and as inlined in both bundles."""
+    out = {f"{source_file} {source_name}": load(HERE / "schemas" / "management" / source_file)[source_name]}
+    for name in ("openapi.json", "openapi-oss.json"):
+        bundle = json.loads((HERE / name).read_text(encoding="utf-8"))
+        out[name] = bundle["paths"][path][method]["requestBody"]["content"]["application/json"]["schema"]
+    return out
+
+
+def test_commit_session_request_refuses_empty_values():
+    """commitSession answers 400 to an empty commit_message and to an empty message_indices list
+    (it selects nothing), so the schema refuses both."""
+    problems = []
+    for where, schema in _request_schemas("prompts.yaml", "CommitSessionRequest", "/api/prompt-repo/sessions/{id}/commit", "post").items():
+        props = schema.get("properties") or {}
+        if (props.get("commit_message") or {}).get("minLength") != 1:
+            problems.append(f"{where}: commit_message minLength is {(props.get('commit_message') or {}).get('minLength')!r}, want 1")
+        if (props.get("message_indices") or {}).get("minItems") != 1:
+            problems.append(f"{where}: message_indices minItems is {(props.get('message_indices') or {}).get('minItems')!r}, want 1")
+    assert not problems, "CommitSessionRequest drift:\n    " + "\n    ".join(problems)
+
+
+def test_evals_validate_request_needs_type_or_evaluator_id():
+    """With evaluator_id the handler uses the saved evaluator's type when type is empty, so type is
+    required only without evaluator_id."""
+    problems = []
+    for where, schema in _request_schemas("evals.yaml", "ValidateRequest", "/api/evals/evaluators/validate", "post").items():
+        if schema.get("required"):
+            problems.append(f"{where}: top-level required is {schema.get('required')!r}, want none")
+        branches = sorted(tuple(branch.get("required") or []) for branch in schema.get("anyOf") or [])
+        if branches != [("evaluator_id",), ("type",)]:
+            problems.append(f"{where}: anyOf requires {branches!r}, want [type] or [evaluator_id]")
+    assert not problems, "ValidateRequest drift:\n    " + "\n    ".join(problems)
+
+
+def test_evals_install_pass_criteria_replaces_the_whole_rule_set():
+    """InstallConfig replaces the built-in's pass rules with the override as a whole and validates
+    it without filling defaults, so an override that gives only entry_level answers 400. The schema
+    requires both levels whenever pass_criteria is given."""
+    try:
+        import jsonschema
+    except ImportError as exc:
+        raise AssertionError("needs the jsonschema package: pip install jsonschema") from exc
+
+    entry = {"name": "score", "operator": ">=", "value": 0.5}
+    run = {"name": "mean_score", "operator": ">=", "value": 0.5}
+    cases = [
+        ("an entry-only override", {"pass_criteria": {"entry_level": entry}}, False),
+        ("a run-only override", {"pass_criteria": {"run_level": run}}, False),
+        ("both levels", {"pass_criteria": {"entry_level": entry, "run_level": run}}, True),
+        ("no override", {}, True),
+    ]
+    problems = []
+    for name in ("openapi.json", "openapi-oss.json"):
+        bundle = json.loads((HERE / name).read_text(encoding="utf-8"))
+        schema = bundle["paths"]["/api/evals/catalog/{key}/install"]["post"]["requestBody"]["content"]["application/json"]["schema"]
+        validator = jsonschema.Draft202012Validator(schema)
+        for label, body, want in cases:
+            if validator.is_valid(body) != want:
+                problems.append(f"{name}: {label} is {'refused' if want else 'accepted'}, want {'accepted' if want else 'refused'}")
+    assert not problems, "InstallRequest.pass_criteria drift:\n    " + "\n    ".join(problems)
+
+
 check("legacy aliases are mounted and their successors documented", test_legacy_aliases_mount_legacy_fragments)
 check("secret-capable values accept bare strings (EnvVar oneOf)", test_secret_capable_values_accept_bare_strings)
 check("vertex aws_workload_identity matches config.schema.json", test_vertex_aws_workload_identity_contract)
@@ -1247,5 +1391,11 @@ check("adaptive routing PUT descriptions state that an empty reroute_target is s
 check("pricing patch OpenAI 12h cache-creation rates are non-negative numbers in source and bundle", test_pricing_patch_above_12hr_fields)
 check("clamped list endpoints document limit maximum 100 and default 25", test_clamped_list_endpoints_document_the_page_bounds)
 check("access_programs schema: cyber programs, forwarded unknown members, one component on every Responses body", test_access_programs_contract)
+check("Key and TableKey eval_concurrency are [integer, null] with bounds 1..256 in source and bundles", test_key_eval_concurrency_is_a_nullable_integer_in_31_form)
+check("evals Criterion name enum and per-operator value types match validateCriterion", test_evals_criterion_models_the_server_validation)
+check("evals create requires config and update does not", test_evals_create_requires_config_and_update_does_not)
+check("CommitSessionRequest refuses an empty commit_message and an empty message_indices", test_commit_session_request_refuses_empty_values)
+check("evals ValidateRequest requires type or evaluator_id", test_evals_validate_request_needs_type_or_evaluator_id)
+check("evals InstallRequest pass_criteria requires both levels", test_evals_install_pass_criteria_replaces_the_whole_rule_set)
 print(f"\n{passed} passed, {failed} failed")
 sys.exit(0 if failed == 0 else 1)

@@ -616,6 +616,10 @@ func (p *RoutingPlugin) applyRoutingRules(ctx *schemas.BifrostContext, req *sche
 	if !p.rules.HasRules(ctx) {
 		return nil, nil
 	}
+	// An evaluation call stays on its eval key, provider and model: a rule may not move it.
+	if pinLocked(ctx) {
+		return nil, nil
+	}
 
 	provider, model, _ := req.GetRequestFields()
 	if model == "" {

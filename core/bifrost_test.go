@@ -3775,6 +3775,31 @@ func (f *fakeRoutingPlugin) PostLLMHook(ctx *schemas.BifrostContext, resp *schem
 	return resp, bifrostErr, nil
 }
 
+// lockingPlugin tries to set the reserved pin lock from its PreRequestHook.
+type lockingPlugin struct{ fakeRoutingPlugin }
+
+func (l *lockingPlugin) PreRequestHook(ctx *schemas.BifrostContext, _ *schemas.BifrostRequest) error {
+	ctx.SetValue(schemas.BifrostContextKeyAPIKeyPinLocked, true)
+	return nil
+}
+
+// TestKeySupportsModelOn checks the exported placement rule against key selection's: the
+// allow and deny lists, and for a vLLM key (or a custom provider based on vLLM) the model
+// its instance serves.
+func TestKeySupportsModelOn(t *testing.T) {
+	open := &schemas.Key{Models: schemas.WhiteList{"*"}, BlacklistedModels: schemas.BlackList{"blocked"}}
+	if !KeySupportsModelOn(schemas.OpenAI, open, "gpt-4o") || KeySupportsModelOn(schemas.OpenAI, open, "blocked") {
+		t.Fatal("the allow and deny lists decide for a key with no served model")
+	}
+	served := &schemas.Key{Models: schemas.WhiteList{"*"}, VLLMKeyConfig: &schemas.VLLMKeyConfig{ModelName: "alpha"}}
+	if !KeySupportsModelOn(schemas.VLLM, served, "alpha") || KeySupportsModelOn(schemas.VLLM, served, "beta") {
+		t.Fatal("a vLLM key serves only its instance's model")
+	}
+	if !KeySupportsModelOn(schemas.OpenAI, served, "beta") {
+		t.Fatal("the served model only applies when the base provider is vLLM")
+	}
+}
+
 // panickingPostHookPlugin is an LLM plugin whose PostLLMHook panics after replacing
 // the response, the way a buggy plugin can half-mutate state before it crashes.
 type panickingPostHookPlugin struct{ fakeRoutingPlugin }
@@ -3902,6 +3927,29 @@ func TestRunPreRequestHooks_CommitsRoutingPinnedKey(t *testing.T) {
 		p.RunPreRequestHooks(ctx, &schemas.BifrostRequest{})
 		if got, _ := ctx.Value(schemas.BifrostContextKeyAPIKeyID).(string); got != pinned {
 			t.Fatalf("APIKeyID = %q, want %q (routing pin must override caller pin)", got, pinned)
+		}
+	})
+
+	t.Run("a locked caller pin is not moved by a routing pin", func(t *testing.T) {
+		p := newRoutingCommitPipeline(&fakeRoutingPlugin{name: "gov", pinKeyID: "k-prod"})
+		ctx := schemas.NewBifrostContext(context.Background(), time.Now())
+		ctx.SetValue(schemas.BifrostContextKeyAPIKeyID, "k-eval")
+		ctx.SetValue(schemas.BifrostContextKeyAPIKeyPinLocked, true)
+		p.RunPreRequestHooks(ctx, &schemas.BifrostRequest{})
+		if got, _ := ctx.Value(schemas.BifrostContextKeyAPIKeyID).(string); got != "k-eval" {
+			t.Fatalf("APIKeyID = %q, want %q (an evaluation call stays on its eval key)", got, "k-eval")
+		}
+		if got, _ := ctx.Value(schemas.BifrostContextKeyRoutingPinnedAPIKeyID).(string); got != "" {
+			t.Fatalf("RoutingPinnedAPIKeyID = %q, want it cleared so no later reader acts on it", got)
+		}
+	})
+
+	t.Run("a plugin cannot set the pin lock", func(t *testing.T) {
+		p := newRoutingCommitPipeline(&lockingPlugin{fakeRoutingPlugin: fakeRoutingPlugin{name: "locker"}})
+		ctx := schemas.NewBifrostContext(context.Background(), time.Now())
+		p.RunPreRequestHooks(ctx, &schemas.BifrostRequest{})
+		if locked, _ := ctx.Value(schemas.BifrostContextKeyAPIKeyPinLocked).(bool); locked {
+			t.Fatal("a PreRequestHook set the reserved pin lock")
 		}
 	})
 

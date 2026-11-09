@@ -1769,6 +1769,13 @@ TableKey:
         on and an object-storage-backed log store, the full payload is then kept there as hidden content
         that the API and UI never serve. When client.allow_per_request_content_storage_override is on, the
         x-bf-disable-content-logging request header still takes precedence for the log store.
+    use_for_evals:
+      type: [boolean, 'null']
+      default: false
+    eval_concurrency:
+      type: [integer, 'null']
+      minimum: 1
+      maximum: 256
     created_at:
       type: string
       format: date-time

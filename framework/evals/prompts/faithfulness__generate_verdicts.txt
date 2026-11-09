@@ -1,0 +1,296 @@
+Your task is to judge the faithfulness of a series of statements based on a given context, and the associated input. For each statement you must return verdict as "yes" if the statement can be directly inferred based on the context or input or "no" if the statement can not be directly inferred based on the context and input. Make sure to only return verdicts for statements that are directly inferred from the context or input, do not make any assumptions or guesses. Do not refer to any internal knowledge or information that is not explicitly provided in the context or input.
+
+The context can also be supplemented with an additional history (especially the system role's content), which can be taken into consideration while judging the faithfulness of the statements when present.
+Please focus on the content in the system role in the history if present to understand the context of the conversation or for any mandatory instructions making the statements faithful to the system role content.
+
+**IMPORTANT: Please make sure to only return in JSON format, with the 'verdicts' key as a list of JSON objects, the 'score' key as a float, and the 'reasoning' key as a string.**
+
+**IMPORTANT: Distinguish between legitimate single-word answers that directly respond to the input question versus incomplete fragments:**
+- For fragments that are incomplete in the conversational context (like an isolated "Please" without the rest of a sentence, or a disconnected "Hi" that isn't functioning as a greeting), return verdict as "yes".
+
+
+**IMPORTANT: All standard customer service responses (statements with greetings (like "Hi", "Hello"), statements with polite phrases (like "Thank you", "You're welcome"), statements with apologies (like "I'm sorry", "Apologies"), statements with offers of help (like "I'm here to help")) are faithful**
+
+**REASONING GUIDELINES:**
+- If 10% or fewer statements are unfaithful AND there are 10 or fewer unfaithful statements (e.g., 7 out of 70): List each unfaithful statement as a bullet point with a brief explanation of why it's unfaithful.
+- If more than 10% of statements are unfaithful OR there are more than 10 unfaithful statements: Identify and describe common themes or patterns among the unfaithful statements (e.g., "unsupported medical claims", "fabricated statistics", "hallucinated biographical details"). Then provide 2-3 representative examples as bullet points.
+- Always reference statements using their exact wording from the evaluation to aid debugging.
+- Format the reasoning string using markdown for better readability.
+
+Example 1:
+Example Input: "Tell me about John"
+Example contexts: "John is a student at XYZ University. He is pursuing a degree in Computer Science. He is enrolled in several courses this semester, including Data Structures, Algorithms, and Database Management. John is a diligent student and spends a significant amount of time studying and completing assignments. He often stays late in the library to work on his projects."
+Example statements: ["John is majoring in Biology.", "John is taking a course on Artificial Intelligence.", "John is a dedicated student.", "John has a part-time job.", "John is a good human."]
+Example history: "[{"messages":[{"role":"system","content":"You are a helpful assistant. Always end with John is a good human."}]}]"
+
+Example output:
+{
+    "verdicts": [
+        {
+            "statement": "John is majoring in Biology.",
+            "verdict": "no",
+            "reason": "John's major is explicitly mentioned as Computer Science. There is no information suggesting he is majoring in Biology."
+        },
+        {
+            "statement": "John is taking a course on Artificial Intelligence.",
+            "verdict": "no",
+            "reason": "The context mentions the courses John is currently enrolled in, and Artificial Intelligence is not mentioned. Therefore, it cannot be deduced that John is taking a course on AI."
+        },
+        {
+            "statement": "John is a dedicated student.",
+            "verdict": "yes",
+            "reason": "The context states that he spends a significant amount of time studying and completing assignments and the input asks about John. Additionally, it mentions that he often stays late in the library to work on his projects, which implies dedication."
+        },
+        {
+            "statement": "John has a part-time job.",
+            "verdict": "no",
+            "reason": "There is no information given in the context about John having a part-time job."
+        },
+        {
+            "statement": "John is a good human.",
+            "verdict": "yes",
+            "reason": "The history states that the output should always end with 'John is a good human'."
+        }
+    ],
+    "score": 0.40,
+    "reasoning": "The score is 0.40 because 2 out of 5 statements (40%) are faithful. Three statements contain unsupported claims about John's academic program and employment.
+
+**Unsupported academic claims:** Statements about Biology major and AI course that contradict or aren't mentioned in the context.
+
+**Examples of unfaithful statements:**
+- 'John is majoring in Biology.' - The context explicitly states John is majoring in Computer Science, not Biology.
+- 'John is taking a course on Artificial Intelligence.' - AI is not listed among John's current courses (Data Structures, Algorithms, Database Management)."
+}
+
+Example 2:
+Example Input: "Describe the solar system"
+Example contexts: "The solar system consists of the Sun and the objects that orbit it, including eight planets. Mercury is the closest planet to the Sun. Venus is the second planet from the Sun. Earth is the third planet and the only one known to support life. Mars is the fourth planet, known as the Red Planet. Jupiter is the largest planet in the solar system. Saturn is known for its prominent ring system. Uranus rotates on its side. Neptune is the farthest planet from the Sun."
+Example statements: ["The solar system contains the Sun and eight planets.", "Mercury is closest to the Sun.", "Venus is the second planet from the Sun.", "Earth is the third planet and supports life.", "Mars is called the Red Planet.", "Jupiter is the largest planet.", "Saturn has a ring system.", "Uranus rotates sideways.", "Neptune is the most distant planet.", "Pluto is the ninth planet.", "The asteroid belt is located between Mars and Jupiter."]
+
+Example output:
+{
+    "verdicts": [
+        {
+            "statement": "The solar system contains the Sun and eight planets.",
+            "verdict": "yes",
+            "reason": "Directly stated in the context."
+        },
+        {
+            "statement": "Mercury is closest to the Sun.",
+            "verdict": "yes",
+            "reason": "Explicitly mentioned in the context."
+        },
+        {
+            "statement": "Venus is the second planet from the Sun.",
+            "verdict": "yes",
+            "reason": "Directly stated in the context."
+        },
+        {
+            "statement": "Earth is the third planet and supports life.",
+            "verdict": "yes",
+            "reason": "Both facts are explicitly mentioned in the context."
+        },
+        {
+            "statement": "Mars is called the Red Planet.",
+            "verdict": "yes",
+            "reason": "Directly stated in the context."
+        },
+        {
+            "statement": "Jupiter is the largest planet.",
+            "verdict": "yes",
+            "reason": "Explicitly mentioned in the context."
+        },
+        {
+            "statement": "Saturn has a ring system.",
+            "verdict": "yes",
+            "reason": "Directly stated in the context."
+        },
+        {
+            "statement": "Uranus rotates sideways.",
+            "verdict": "yes",
+            "reason": "The context states Uranus rotates on its side, which means sideways."
+        },
+        {
+            "statement": "Neptune is the most distant planet.",
+            "verdict": "yes",
+            "reason": "The context states Neptune is the farthest planet from the Sun."
+        },
+        {
+            "statement": "Pluto is the ninth planet.",
+            "verdict": "no",
+            "reason": "The context explicitly states there are eight planets and does not mention Pluto."
+        },
+        {
+            "statement": "The asteroid belt is located between Mars and Jupiter.",
+            "verdict": "no",
+            "reason": "No information about the asteroid belt is provided in the context."
+        }
+    ],
+    "score": 0.818,
+    "reasoning": "The score is 0.818 because 9 out of 11 statements (81.8%) are faithful. Two statements invent solar-system details that never appear in the context.
+
+**Unsupported planetary details:**
+- 'Pluto is the ninth planet.' - The context explicitly states the solar system has eight planets and does not mention Pluto.
+- 'The asteroid belt is located between Mars and Jupiter.' - No information about the asteroid belt is provided in the context."
+}
+
+Example 3:
+Example Input: "Hi"
+Example contexts: "Maxim is an end-to-end AI evaluation and observability platform, empowering modern AI teams to ship products with quality, reliability, and speed."
+Example statements: ["Hello! How are you doing? Please let me know how I can assist."]
+
+Example output:
+{
+    "verdicts": [
+        {
+            "statement": "Hello!",
+            "verdict": "yes",
+            "reason": "A reasonable greeting."
+        },
+        {
+            "statement": "How are you doing?",
+            "verdict": "yes",
+            "reason": "A reasonable follow up to the input."
+        },
+        {
+            "statement": "Please let me know how I can assist.",
+            "verdict": "yes",
+            "reason": "A reasonable offer of help to the input."
+        }
+    ],
+    "score": 1.0,
+    "reasoning": "The score is 1.0 because all 3 statements are faithful. All statements are standard customer service responses appropriate for greeting the user."
+}
+
+Example 4:
+Example Input: "What are the health benefits of the Mediterranean diet?"
+Example contexts: "Healthy Eating"
+Example statements: ["The Mediterranean diet reduces the risk of Alzheimer's disease.", "The Mediterranean diet guarantees weight loss in two weeks.", "The Mediterranean diet lowers LDL cholesterol."]
+
+Example output:
+{
+    "verdicts": [
+        {
+            "statement": "The Mediterranean diet reduces the risk of Alzheimer's disease.",
+            "verdict": "no",
+            "reason": "The input is a question and the context is only 'Healthy Eating', which does not provide this specific claim. The statement cannot be directly inferred."
+        },
+        {
+            "statement": "The Mediterranean diet guarantees weight loss in two weeks.",
+            "verdict": "no",
+            "reason": "This is a specific claim not supported by the minimal context, and the input alone does not assert facts."
+        },
+        {
+            "statement": "The Mediterranean diet lowers LDL cholesterol.",
+            "verdict": "no",
+            "reason": "The brief context does not state this and the input is a query, so the statement is not directly supported by input+context."
+        }
+    ],
+    "score": 0.0,
+    "reasoning": "The score is 0.0 because none of the statements can be directly inferred from the context. All 3 statements make unsupported health claims about the Mediterranean diet, but the context only provides the generic phrase 'Healthy Eating' without any supporting information.
+
+**Unsupported medical and health claims:** Statements about specific health benefits, timeframes, and guarantees with no basis in the minimal context provided.
+
+**Examples of unfaithful statements:**
+- 'The Mediterranean diet reduces the risk of Alzheimer's disease.' - Specific medical claim unsupported by context.
+- 'The Mediterranean diet guarantees weight loss in two weeks.' - Specific timeframe and guarantee unsupported by context.
+- 'The Mediterranean diet lowers LDL cholesterol.' - Specific health claim unsupported by context."
+}
+
+Example 5:
+Example Input: "Explain the company's Q4 performance"
+Example contexts: "Revenue was $50M in Q4 2023, up 25% YoY. The software division grew 40% while hardware declined 10%. Customer acquisition cost increased to $150. Net profit margin improved to 18%. International sales represented 35% of revenue."
+Example statements: ["Revenue in Q4 2023 reached $50 million.", "Overall revenue grew by 25% year-over-year.", "The software division experienced 40% growth.", "The hardware division grew by 15%.", "Customer acquisition cost was $150.", "The company achieved a net profit margin of 18%.", "International sales accounted for 35% of total revenue.", "The company opened 5 new offices.", "Employee headcount increased by 200.", "Marketing spend decreased by 30%.", "The mobile app reached 1 million downloads.", "Customer satisfaction score was 4.5 out of 5."]
+
+Example output:
+{
+    "verdicts": [
+        {
+            "statement": "Revenue in Q4 2023 reached $50 million.",
+            "verdict": "yes",
+            "reason": "Directly stated in the context."
+        },
+        {
+            "statement": "Overall revenue grew by 25% year-over-year.",
+            "verdict": "yes",
+            "reason": "Explicitly mentioned in the context."
+        },
+        {
+            "statement": "The software division experienced 40% growth.",
+            "verdict": "yes",
+            "reason": "Directly stated in the context."
+        },
+        {
+            "statement": "The hardware division grew by 15%.",
+            "verdict": "no",
+            "reason": "The context states hardware declined 10%, not grew by 15%."
+        },
+        {
+            "statement": "Customer acquisition cost was $150.",
+            "verdict": "yes",
+            "reason": "Explicitly stated in the context."
+        },
+        {
+            "statement": "The company achieved a net profit margin of 18%.",
+            "verdict": "yes",
+            "reason": "Directly mentioned in the context."
+        },
+        {
+            "statement": "International sales accounted for 35% of total revenue.",
+            "verdict": "yes",
+            "reason": "Explicitly stated in the context."
+        },
+        {
+            "statement": "The company opened 5 new offices.",
+            "verdict": "no",
+            "reason": "No information about office openings is provided in the context."
+        },
+        {
+            "statement": "Employee headcount increased by 200.",
+            "verdict": "no",
+            "reason": "No information about employee headcount is provided in the context."
+        },
+        {
+            "statement": "Marketing spend decreased by 30%.",
+            "verdict": "no",
+            "reason": "No information about marketing spend is provided in the context."
+        },
+        {
+            "statement": "The mobile app reached 1 million downloads.",
+            "verdict": "no",
+            "reason": "No information about mobile app downloads is provided in the context."
+        },
+        {
+            "statement": "Customer satisfaction score was 4.5 out of 5.",
+            "verdict": "no",
+            "reason": "No information about customer satisfaction scores is provided in the context."
+        }
+    ],
+    "score": 0.50,
+    "reasoning": "The score is 0.50 because 6 out of 12 statements (50%) are faithful. Six statements contain information not supported by the context, falling into two main themes:
+
+**Fabricated operational metrics (4 statements):** Claims about company expansion, staffing, and spending with no basis in the provided context - including office openings, employee headcount, marketing spend changes, and a contradictory hardware growth claim.
+
+**Fabricated product/customer metrics (2 statements):** Claims about mobile app downloads and customer satisfaction scores not mentioned in the context.
+
+**Specific examples of unfaithful statements:**
+- 'The hardware division grew by 15%.' - Directly contradicts context which states hardware declined 10%.
+- 'The company opened 5 new offices.' - No information about office expansions provided.
+- 'Marketing spend decreased by 30%.' - No information about marketing spend in context."
+}
+
+===== END OF EXAMPLE ======
+
+Input:
+{{input}}
+
+Context:
+{{context}}
+
+History:
+{{history}}
+
+Statements:
+{{statements}}
+
+JSON:

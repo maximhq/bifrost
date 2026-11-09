@@ -159,6 +159,8 @@ type Key struct {
 	OAuthKeyConfig         *OAuthKeyConfig         `json:"oauth_key_config,omitempty"`          // OAuth-minted bearer for OpenAI-compatible providers; used when Value is empty
 	Enabled                *bool                   `json:"enabled,omitempty"`                   // Whether the key is active (default:true)
 	UseForBatchAPI         *bool                   `json:"use_for_batch_api,omitempty"`         // Whether this key can be used for batch API operations (default:false for new keys, migrated keys default to true)
+	UseForEvals            *bool                   `json:"use_for_evals,omitempty"`             // Whether this key can serve evaluation model calls (default:false)
+	EvalConcurrency        *int                    `json:"eval_concurrency,omitempty"`          // Max evaluation calls in flight on this key; across instances only on a Postgres or ClickHouse log store (default applied when unset)
 	UseAnthropicEndpoints  *bool                   `json:"use_anthropic_endpoints,omitempty"`   // Whether to use anthropic endpoints for this key
 	UseOpenAIEndpoints     *bool                   `json:"use_openai_endpoints,omitempty"`      // Whether to use OpenAI-compatible endpoints for this key
 	// DisableContentLogging is the key's own content-logging decision: nil inherits, true turns

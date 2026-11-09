@@ -53,6 +53,9 @@ type Store interface {
 	Purge(ctx context.Context, policy PurgePolicy, batch int) (int64, error)
 	// Stats counts group's deliveries on topic.
 	Stats(ctx context.Context, topic, group string) (Stats, error)
+	// Delivery reads one delivery on topic by its DeliveryID. The lease time
+	// left is measured on the store's own clock, like every lease.
+	Delivery(ctx context.Context, topic, deliveryID string) (DeliveryState, error)
 	// Ping checks that the store is reachable.
 	Ping(ctx context.Context) error
 	// Close releases the store's own resources. It must not close a database

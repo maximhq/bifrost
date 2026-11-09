@@ -188,6 +188,46 @@ func routeChatRequest(t *testing.T, plugin *RoutingPlugin, model string) (routed
 	return routedModel, routerID
 }
 
+// TestModelRouterLeavesALockedCallAlone pins that a model router does not take an evaluation
+// call whose eval key pin is locked: its target would rewrite the model and could pin its own
+// key.
+func TestModelRouterLeavesALockedCallAlone(t *testing.T) {
+	ctx := context.Background()
+	store := newModelRouterTestStore(t)
+	plugin := bootRoutingPlugin(t, store)
+	require.NoError(t, store.CreateModelRouter(ctx, &configstore.ModelRouter{ID: "general", Name: "General", ComplexityAnalyzerConfig: decisionRouterConfig()}))
+	require.NoError(t, store.SetModelRouterTargets(ctx, "general", []configstoreTables.TableModelRouterTarget{
+		{Tier: complexity.TierComplex, Provider: bifrost.Ptr("openai"), Model: bifrost.Ptr("gpt-4o-mini"), KeyID: bifrost.Ptr("k-prod"), Weight: 1},
+	}))
+	require.NoError(t, store.SetModelRouterRouting(ctx, "general", configstore.ModelRouterRouting{Enabled: true, Scope: "global", Priority: 1}))
+	router, err := store.GetModelRouter(ctx, "general")
+	require.NoError(t, err)
+	require.NoError(t, plugin.ReloadModelRouter(router))
+
+	model, routerID := routeChatRequest(t, plugin, "gpt-4o")
+	require.Equal(t, "gpt-4o-mini", model, "an ordinary call is taken by the router")
+	require.Equal(t, "general", routerID)
+
+	text := "design a sharded cache with a write-ahead log"
+	req := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Provider: schemas.OpenAI, Model: "gpt-4o",
+			Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: &text}}},
+		},
+	}
+	locked := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+	locked.SetValue(schemas.BifrostContextKeyAPIKeyID, "k-eval")
+	locked.SetValue(schemas.BifrostContextKeyAPIKeyPinLocked, true)
+	require.NoError(t, plugin.PreRequestHook(locked, req))
+	_, model, _ = req.GetRequestFields()
+	assert.Equal(t, "gpt-4o", model, "a locked call keeps its model")
+	routerID, _ = locked.Value(schemas.BifrostContextKeyModelRouterID).(string)
+	assert.Empty(t, routerID, "no router takes a locked call")
+	pin, _ := locked.Value(schemas.BifrostContextKeyRoutingPinnedAPIKeyID).(string)
+	assert.Empty(t, pin, "the router's key is not pinned")
+}
+
 // TestModelRouterStoreWritesReachLiveRouting walks two routers through every
 // write the API makes, applying after each one what the HTTP server applies
 // (the saved router, its targets, or its routing, read back from the store),

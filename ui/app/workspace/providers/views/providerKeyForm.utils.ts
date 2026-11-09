@@ -152,3 +152,8 @@ export const applyAuthMethod = (key: KeyPayload, isEditing: boolean): Record<str
 	}
 	return out;
 };
+// parseEvalConcurrencyInput reads the eval concurrency field. Empty means "use the
+// default" and is sent as null: a field left out of the request keeps the stored value,
+// so only null clears it. Anything else is kept as typed, so the schema's whole-number
+// rule shows an error for 12.5 instead of the form quietly saving 12.
+export const parseEvalConcurrencyInput = (value: string): number | null => (value.trim() === "" ? null : Number(value));

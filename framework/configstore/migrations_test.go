@@ -790,6 +790,24 @@ func TestMigrationAddWebSearchCostPerRequestColumn_BackfillsFromSearchContext(t 
 	assert.Nil(t, got[1].WebSearchCostPerRequest)
 }
 
+// The claim columns arrive on an evals_executions table created before they existed.
+func TestMigrationAddEvalExecutionClaimColumns(t *testing.T) {
+	db := setupRDBTestStore(t).DB()
+	ctx := context.Background()
+	require.NoError(t, db.AutoMigrate(&tables.TableEvalExecution{}))
+	mg := db.Migrator()
+	for _, column := range []string{"claim_id", "routed_at"} {
+		require.NoError(t, mg.DropColumn(&tables.TableEvalExecution{}, column))
+		require.False(t, mg.HasColumn(&tables.TableEvalExecution{}, column))
+	}
+
+	require.NoError(t, migrationAddEvalExecutionClaimColumns(ctx, db, testMigrationLogger))
+	for _, column := range []string{"claim_id", "routed_at"} {
+		assert.True(t, mg.HasColumn(&tables.TableEvalExecution{}, column), column)
+	}
+	require.NoError(t, migrationAddEvalExecutionClaimColumns(ctx, db, testMigrationLogger), "a re-run is a no-op")
+}
+
 func TestMigrationAddVKRotationCooldownColumns_CreatesIndex(t *testing.T) {
 	db := setupVKTestDBWithoutRotationColumns(t)
 	ctx := context.Background()

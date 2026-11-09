@@ -137,3 +137,10 @@ func withMatchedExemplar(message, exemplar string) string {
 	}
 	return fmt.Sprintf("%s matched=%q", message, matched)
 }
+
+// pinLocked reports whether the request's key pin is locked (an evaluation call on its eval
+// key). Neither a routing rule nor a model router may then rewrite its provider, model or key.
+func pinLocked(ctx *schemas.BifrostContext) bool {
+	locked, _ := ctx.Value(schemas.BifrostContextKeyAPIKeyPinLocked).(bool)
+	return locked
+}

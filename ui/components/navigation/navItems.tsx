@@ -17,6 +17,8 @@ import {
 	DatabaseZap,
 	FileSpreadsheet,
 	Flag,
+	FlaskConical,
+	Microscope,
 	FolderGit,
 	Gavel,
 	GitCompareArrows,
@@ -163,6 +165,7 @@ export function useNavItems(): NavItem[] {
 	const hasAPIKeyAccess = useRbac(RbacResource.APIKeys, RbacOperation.View);
 	const hasPromptRepositoryAccess = useRbac(RbacResource.PromptRepository, RbacOperation.View);
 	const hasSkillsRepositoryAccess = useRbac(RbacResource.SkillsRepository, RbacOperation.View);
+	const hasEvaluatorsAccess = useRbac(RbacResource.Evaluators, RbacOperation.View);
 	const hasDevicesAccess = useRbac(RbacResource.Devices, RbacOperation.View);
 	const hasInventoryAccess = useRbac(RbacResource.Inventory, RbacOperation.View);
 	const hasEdgeConfigAccess = useRbac(RbacResource.EdgeConfig, RbacOperation.View);
@@ -814,6 +817,24 @@ export function useNavItems(): NavItem[] {
 								},
 							],
 						},
+						{
+							id: "evals",
+							title: t("nav.evals"),
+							url: "/workspace/evals/evaluators",
+							icon: Microscope,
+							description: t("navDesc.evals"),
+							hasAccess: hasEvaluatorsAccess,
+							subItems: [
+								{
+									id: "evals.evaluators",
+									title: t("nav.evaluators"),
+									url: "/workspace/evals/evaluators",
+									icon: FlaskConical,
+									description: t("navDesc.evaluators"),
+									hasAccess: hasEvaluatorsAccess,
+								},
+							],
+						},
 					]
 				: []),
 			{
@@ -962,6 +983,7 @@ export function useNavItems(): NavItem[] {
 			hasSettingsAccess,
 			hasPromptRepositoryAccess,
 			hasSkillsRepositoryAccess,
+			hasEvaluatorsAccess,
 			hasAccessProfilesAccess,
 			hasProjectsAccess,
 			hasFinOpsAccess,

@@ -10138,10 +10138,16 @@ func (p *PluginPipeline) RunPreRequestHooks(ctx *schemas.BifrostContext, req *sc
 	// Core is the sole writer of the reserved key, so normalize the routing pin into it here,
 	// after unblocking, so key selection reads a single canonical pin. A non-empty routing pin
 	// overrides a caller-supplied pin: the routing rule is authoritative server-side policy and
-	// has typically already rewritten provider/model for this request.
+	// has typically already rewritten provider/model for this request. The one exception is a
+	// caller pin marked locked (an evaluation call on its eval key): the rule's pin is dropped,
+	// so no later reader acts on it either. The lock is read only when a routing pin is set.
 	if pin, ok := ctx.Value(schemas.BifrostContextKeyRoutingPinnedAPIKeyID).(string); ok {
 		if pin = strings.TrimSpace(pin); pin != "" {
-			ctx.SetValue(schemas.BifrostContextKeyAPIKeyID, pin)
+			if locked, _ := ctx.Value(schemas.BifrostContextKeyAPIKeyPinLocked).(bool); locked {
+				ctx.ClearValue(schemas.BifrostContextKeyRoutingPinnedAPIKeyID)
+			} else {
+				ctx.SetValue(schemas.BifrostContextKeyAPIKeyID, pin)
+			}
 		}
 	}
 }
@@ -11740,6 +11746,15 @@ func keySupportsModel(baseProviderType schemas.ModelProvider, key *schemas.Key, 
 		return key.VLLMKeyConfig.ModelName == key.Aliases.Resolve(model)
 	}
 	return true
+}
+
+// KeySupportsModelOn reports whether a key of a provider whose base type is
+// baseProviderType can serve model, by the same rule key selection uses: the key's allow
+// and deny lists, and for a vLLM key the model its instance serves. Callers that place
+// work on a specific key before a request (the evals runner) use it so that core accepts
+// the pin.
+func KeySupportsModelOn(baseProviderType schemas.ModelProvider, key *schemas.Key, model string) bool {
+	return keySupportsModel(baseProviderType, key, model)
 }
 
 // Shutdown gracefully stops all workers when triggered.

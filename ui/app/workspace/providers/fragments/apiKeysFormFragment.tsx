@@ -5,6 +5,7 @@ import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/
 import { FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { DefaultAnthropicWorkloadIdentityConfig, DefaultVertexAWSWorkloadIdentityConfig, OAuthSigningAlgorithms } from "@/lib/types/config";
 import { identitySourceType } from "@/lib/types/schemas";
+import { parseEvalConcurrencyInput } from "../views/providerKeyForm.utils";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { SecretVarInput } from "@/components/ui/secretVarInput";
@@ -57,6 +58,58 @@ function BatchAPIFormField({ control }: { control: Control<any>; form: UseFormRe
 				</FormItem>
 			)}
 		/>
+	);
+}
+
+// Evaluation fields for all providers: whether evaluators may use this key, and how
+// many evaluations may run on it at once. The concurrency only shows while the key is
+// marked, since it means nothing otherwise.
+function EvalsFormFields({ control, form }: { control: Control<any>; form: UseFormReturn<any> }) {
+	const { t } = useTranslation("models");
+	const useForEvals = form.watch("key.use_for_evals") ?? false;
+	return (
+		<div className="space-y-3 rounded-sm border p-2">
+			<FormField
+				control={control}
+				name={`key.use_for_evals`}
+				render={({ field }) => (
+					<FormItem className="flex flex-row items-center justify-between gap-4">
+						<div className="space-y-1.5">
+							<FormLabel>{t("providers.keys.useForEvals")}</FormLabel>
+							<FormDescription>{t("providers.keys.useForEvalsHelp")}</FormDescription>
+						</div>
+						<FormControl>
+							<Switch checked={field.value ?? false} onCheckedChange={field.onChange} data-testid="key-input-use-for-evals" />
+						</FormControl>
+					</FormItem>
+				)}
+			/>
+			{useForEvals && (
+				<FormField
+					control={control}
+					name={`key.eval_concurrency`}
+					render={({ field }) => (
+						<FormItem>
+							<FormLabel>{t("providers.keys.evalConcurrency")}</FormLabel>
+							<FormControl>
+								<Input
+									type="number"
+									min={1}
+									step={1}
+									className="w-32"
+									placeholder="4" // i18n-ignore
+									value={field.value ?? ""}
+									onChange={(event) => field.onChange(parseEvalConcurrencyInput(event.target.value))}
+									data-testid="key-input-eval-concurrency"
+								/>
+							</FormControl>
+							<FormDescription>{t("providers.keys.evalConcurrencyHelp")}</FormDescription>
+							<FormMessage />
+						</FormItem>
+					)}
+				/>
+			)}
+		</div>
 	);
 }
 
@@ -582,6 +635,7 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 				/>
 			</>
 			{supportsBatchAPI && !isBedrock && !isAzure && !isVertex && <BatchAPIFormField control={control} form={form} />}
+			{!isBedrock && !isAzure && !isVertex && <EvalsFormFields control={control} form={form} />}
 			{isAzure && (
 				<div className="space-y-4 px-0.5">
 					<Separator className="my-6" />
@@ -770,6 +824,7 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 						)}
 					/>
 					{supportsBatchAPI && <BatchAPIFormField control={control} form={form} />}
+					<EvalsFormFields control={control} form={form} />
 				</div>
 			)}
 			{isVertex && (
@@ -1090,6 +1145,7 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 						)}
 					/>
 					{supportsBatchAPI && <BatchAPIFormField control={control} form={form} />}
+					<EvalsFormFields control={control} form={form} />
 				</div>
 			)}
 			{isReplicate && (
@@ -2204,6 +2260,7 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 						/>
 					)}
 					{supportsBatchAPI && <BatchAPIFormField control={control} form={form} />}
+					<EvalsFormFields control={control} form={form} />
 					<VPCEndpointsFormField control={control} configKey="key.bedrock_key_config" services={BEDROCK_VPC_ENDPOINT_SERVICES} />
 				</div>
 			)}
