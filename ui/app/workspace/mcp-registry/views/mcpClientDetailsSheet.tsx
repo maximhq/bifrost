@@ -52,7 +52,7 @@ import {
 	type MCPClientDetailRow,
 	type VirtualMcpCount,
 } from "./mcpClientDetailsSheet.utils";
-import { authScopeLabel } from "./mcpClientFormFields";
+import { authScopeLabel } from "./mcpClientsTable.utils";
 import { summarizeSpecSource } from "./mcpClientOpenApiUtils";
 import { canReconnectMCPClient } from "./mcpClientsTable.utils";
 import { MCPExposeList } from "./mcpExposeList";

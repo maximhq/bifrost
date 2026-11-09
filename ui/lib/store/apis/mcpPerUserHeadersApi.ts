@@ -31,10 +31,13 @@ export const mcpPerUserHeadersApi = baseApi.injectEndpoints({
 			invalidatesTags: (_result, _err, arg) => ["MCPSessions", { type: "MCPPerUserHeaderCredentials", id: arg.flowId }],
 		}),
 
-		// Revoke a single credential row by primary key. The sessions tab uses
-		// the unified /api/mcp/sessions/{id} DELETE which falls back to header
-		// credential lookup on OAuth miss — this typed endpoint exists for
-		// callers that already know they're acting on a header row.
+		/**
+		 * Revoke a single header credential row by primary key.
+		 *
+		 * @deprecated The backend route is deprecated. Use `useRevokeMCPSessionMutation`
+		 * (DELETE /api/mcp/sessions/{id}), which revokes a header credential the same way
+		 * and every other row kind the sessions list shows.
+		 */
 		revokeMCPPerUserHeaders: builder.mutation<void, string>({
 			query: (credentialID) => ({ url: `/mcp/per-user-headers/credential/${credentialID}`, method: "DELETE" }),
 			invalidatesTags: ["MCPSessions"],
@@ -42,5 +45,7 @@ export const mcpPerUserHeadersApi = baseApi.injectEndpoints({
 	}),
 });
 
-export const { useGetMCPPerUserHeadersFlowQuery, useSubmitMCPPerUserHeadersFlowMutation, useRevokeMCPPerUserHeadersMutation } =
-	mcpPerUserHeadersApi;
+export const { useGetMCPPerUserHeadersFlowQuery, useSubmitMCPPerUserHeadersFlowMutation } = mcpPerUserHeadersApi;
+
+/** @deprecated The backend route is deprecated. Use `useRevokeMCPSessionMutation` (DELETE /api/mcp/sessions/{id}). */
+export const useRevokeMCPPerUserHeadersMutation = mcpPerUserHeadersApi.useRevokeMCPPerUserHeadersMutation;

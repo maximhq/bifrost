@@ -15,14 +15,8 @@ import { useEffect } from "react";
 import { useForm } from "react-hook-form";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
-import {
-	authKindOf,
-	authScopeOf,
-	type MCPAuthKind,
-	type MCPAuthScope,
-	SectionHeader,
-	StdioRuntimeNotice,
-} from "../../views/mcpClientFormFields";
+import { authKindOf, type MCPAuthKind, SectionHeader, StdioRuntimeNotice } from "../../views/mcpClientFormFields";
+import { authScopeOf, type MCPAuthScope } from "../../views/mcpClientsTable.utils";
 
 interface MCPLibraryAddServerFormData {
 	name: string;

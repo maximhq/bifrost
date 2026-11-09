@@ -1319,6 +1319,7 @@
 		"staticAdminHeadersHelp": "这些请求头由管理员在 MCP 客户端上设置，会与你提交的值一起附加在每个请求中。你无法在此处编辑它们。",
 		"noKeys": "此 MCP 客户端尚未声明任何请求头键名。",
 		"previouslySubmitted": "之前已提交",
+		"newKey": "新增",
 		"overwritePlaceholder": "••••••（输入新值以覆盖）",
 		"valuePlaceholder": "{{key}} 的值",
 		"hideValue": "隐藏值",

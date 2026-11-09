@@ -15,6 +15,7 @@
 // optional prefill of previously-submitted key NAMES (never values), and
 // Test/Submit handlers.
 
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -35,6 +36,9 @@ export interface HeadersFormProps {
 	// Used to render a "previously submitted" badge so the user knows which
 	// fields they're editing vs filling in fresh.
 	previouslySubmittedKeys?: string[];
+	// Names of required keys the caller has never submitted, marked "New" so
+	// an update shows which values are asked for the first time.
+	newKeys?: string[];
 	// Optional "Test" handler. When provided, a Test button is rendered
 	// alongside Submit. Used by the admin-test panel.
 	onTest?: (values: Record<string, string>) => Promise<void> | void;
@@ -67,6 +71,7 @@ export default function HeadersForm({
 	requiredKeys,
 	adminHeaderKeys,
 	previouslySubmittedKeys,
+	newKeys,
 	onTest,
 	onSubmit,
 	busy = false,
@@ -90,6 +95,7 @@ export default function HeadersForm({
 	}, [requiredKeys, initialValues]);
 
 	const previouslySubmittedSet = useMemo(() => new Set(previouslySubmittedKeys ?? []), [previouslySubmittedKeys]);
+	const newKeySet = useMemo(() => new Set(newKeys ?? []), [newKeys]);
 
 	const canSubmit = useMemo(
 		() => requiredKeys.every((k) => previouslySubmittedSet.has(k) || (values[k] ?? "").trim() !== ""),
@@ -154,9 +160,16 @@ export default function HeadersForm({
 						return (
 							<div key={key} className="space-y-1.5">
 								<div className="flex items-center justify-between gap-2">
-									<Label htmlFor={`${testIdPrefix}-${key}`} className="font-mono text-xs">
-										{key}
-									</Label>
+									<span className="flex items-center gap-1.5">
+										<Label htmlFor={`${testIdPrefix}-${key}`} className="font-mono text-xs">
+											{key}
+										</Label>
+										{newKeySet.has(key) && (
+											<Badge variant="secondary" className="h-4 rounded-sm px-1 text-[10px]" data-testid={`${testIdPrefix}-new-${key}`}>
+												{t("headersForm.newKey")}
+											</Badge>
+										)}
+									</span>
 									{wasSubmitted && <span className="text-muted-foreground text-xs">{t("headersForm.previouslySubmitted")}</span>}
 								</div>
 								<div className="relative">

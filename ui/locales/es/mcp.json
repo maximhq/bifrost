@@ -1319,6 +1319,7 @@
 		"staticAdminHeadersHelp": "Estos encabezados los define el administrador en el cliente MCP y acompañan a cada solicitud junto con los valores que envíes. No puedes editarlos aquí.",
 		"noKeys": "No se ha declarado ninguna clave de encabezado en este cliente MCP.",
 		"previouslySubmitted": "Enviado anteriormente",
+		"newKey": "Nuevo",
 		"overwritePlaceholder": "•••••• (introduce un valor nuevo para sobrescribir)",
 		"valuePlaceholder": "Valor para {{key}}",
 		"hideValue": "Ocultar valor",

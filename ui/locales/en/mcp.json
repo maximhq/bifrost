@@ -1235,6 +1235,7 @@
 		"staticAdminHeadersHelp": "These headers are set by the admin on the MCP client and accompany every request alongside your submitted values. You can't edit them here.",
 		"noKeys": "No header keys have been declared on this MCP client.",
 		"previouslySubmitted": "Previously submitted",
+		"newKey": "New",
 		"overwritePlaceholder": "•••••• (enter new value to overwrite)",
 		"valuePlaceholder": "Value for {{key}}",
 		"hideValue": "Hide value",

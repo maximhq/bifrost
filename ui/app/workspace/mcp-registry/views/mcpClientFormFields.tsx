@@ -55,6 +55,7 @@ import { MaxProtocolVersionSelect } from "./maxProtocolVersionSelect";
 import { OAuthAdvancedFields } from "./oauthAdvancedFields";
 import { OpenAPIPreviewPanel, type OpenAPIBaseUrlChoice } from "./openApiPreviewPanel";
 import { OpenAPISpecSource } from "./openApiSpecSource";
+import { authScopeOf, type MCPAuthScope } from "./mcpClientsTable.utils";
 import { SectionHeader } from "./sectionHeader";
 import { TLSConfigFields } from "./tlsConfigFields";
 import { exchangesAsSSOApplication, TokenExchangeFields, tokenExchangeProfilePayload } from "./tokenExchangeFields";
@@ -70,7 +71,6 @@ import { exchangesAsSSOApplication, TokenExchangeFields, tokenExchangeProfilePay
 const emptySecretVar: SecretVar = { value: "", ref: "" };
 
 export type MCPAuthKind = "none" | "headers" | "oauth" | "token_exchange";
-export type MCPAuthScope = "shared" | "per_user";
 
 /** Resolve the wire `auth_type` back into the two dropdowns the UI splits it into. */
 export function authKindOf(authType: MCPAuthType | undefined): MCPAuthKind {
@@ -86,24 +86,6 @@ export function authKindOf(authType: MCPAuthType | undefined): MCPAuthKind {
 		default:
 			return "none";
 	}
-}
-
-export function authScopeOf(authType: MCPAuthType | undefined): MCPAuthScope {
-	return authType === "per_user_oauth" || authType === "per_user_headers" ? "per_user" : "shared";
-}
-
-// authScopeLabel is how the servers table and the server view name a scope.
-// token_exchange carries the caller's own token on every call, so it is
-// per-user even though the form does not expose a scope dropdown for it.
-// Everything else, including "none", resolves through authScopeOf so the
-// label agrees with the form.
-export function authScopeLabel(authType: MCPAuthType | undefined): string {
-	if (authType === "token_exchange") {
-		return i18n.t("registry.form.perUser", { ns: "mcp" });
-	}
-	return authScopeOf(authType) === "per_user"
-		? i18n.t("registry.form.perUser", { ns: "mcp" })
-		: i18n.t("registry.form.shared", { ns: "mcp" });
 }
 
 /**
