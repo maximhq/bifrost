@@ -464,9 +464,8 @@
 		"budgetMaxLimit": "O limite máximo do orçamento tem de ser superior a $0.01",
 		"budgetNMaxLimit": "O limite máximo do orçamento #{{n}} tem de ser superior a $0.01",
 		"budgetNResetRequired": "A duração de reposição do orçamento #{{n}} é obrigatória",
-		"distinctResetDuration": "Cada orçamento tem de ter uma duração de reposição distinta",
-		"uniqueResetPeriod": "Cada orçamento tem de ter um período de reposição único",
-		"budgetNLabel": "Orçamento #{{n}}: despesa máxima (USD)",
+		"distinctResetDuration": "Cada orçamento tem de ter uma duração de reposição distinta no seu âmbito",
+		"uniqueResetPeriod": "Cada orçamento tem de ter um período de reposição único no seu âmbito",
 		"noBudgets": "Sem orçamentos. Clique em \"Adicionar orçamento\" para impor um limite de despesa.",
 		"budgetDuration": "Orçamento ({{duration}})",
 		"noLimit": "Sem limite",
@@ -475,7 +474,8 @@
 		"maximumSpend": "Despesa máxima (USD)",
 		"noBudgetLimits": "Não há limites de orçamento configurados.",
 		"removeBudgetAria": "Remover orçamento {{number}}",
-		"duplicateResetPeriod": "Período de reposição duplicado; cada linha de orçamento tem de usar um intervalo diferente."
+		"duplicateResetPeriod": "Período de reposição duplicado; cada linha de orçamento tem de usar um intervalo diferente.",
+		"duplicateResetPeriodScope": "Período de reposição duplicado para este âmbito; as linhas de orçamento com o mesmo âmbito têm de usar intervalos diferentes."
 	},
 	"filters": {
 		"filters": "Filtros",

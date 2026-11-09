@@ -206,6 +206,15 @@
 		"resetPeriod": "Rücksetzzeitraum",
 		"noLimit": "Kein Limit"
 	},
+	"budgetScope": {
+		"label": "Geltungsbereich",
+		"shared": "Beide",
+		"model": "Modell",
+		"mcp": "MCP",
+		"sharedHint": "Wird von Modellanfragen und MCP-Tool-Ausführungen belastet",
+		"modelHint": "Wird nur von Modellanfragen belastet",
+		"mcpHint": "Wird nur von MCP-Tool-Ausführungen belastet"
+	},
 	"secretVar": {
 		"resolvedAfterSave": "Der aufgelöste Wert wird nach dem Speichern angezeigt"
 	},

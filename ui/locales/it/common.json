@@ -206,6 +206,15 @@
 		"resetPeriod": "Periodo di reimpostazione",
 		"noLimit": "Nessun limite"
 	},
+	"budgetScope": {
+		"label": "Ambito",
+		"shared": "Entrambi",
+		"model": "Modello",
+		"mcp": "MCP",
+		"sharedHint": "Addebitato da richieste ai modelli ed esecuzioni di strumenti MCP",
+		"modelHint": "Addebitato solo da richieste ai modelli",
+		"mcpHint": "Addebitato solo da esecuzioni di strumenti MCP"
+	},
 	"secretVar": {
 		"resolvedAfterSave": "Il valore risolto apparirà dopo il salvataggio"
 	},

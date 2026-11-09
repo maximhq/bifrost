@@ -206,6 +206,15 @@
 		"resetPeriod": "重置周期",
 		"noLimit": "无限制"
 	},
+	"budgetScope": {
+		"label": "范围",
+		"shared": "两者",
+		"model": "模型",
+		"mcp": "MCP",
+		"sharedHint": "由模型请求和 MCP 工具执行共同计费",
+		"modelHint": "仅由模型请求计费",
+		"mcpHint": "仅由 MCP 工具执行计费"
+	},
 	"secretVar": {
 		"resolvedAfterSave": "解析后的值将在保存后显示"
 	},

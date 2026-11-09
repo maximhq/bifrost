@@ -197,6 +197,55 @@ test.describe('Virtual Keys', () => {
       await expect(virtualKeysPage.page.getByTestId('vk-budget-lines-amount-1')).toHaveValue(String(SAMPLE_BUDGETS.everyMinute.maxLimit))
       await virtualKeysPage.closeSheet()
     })
+
+    test('should create virtual key with a shared and an MCP budget on the same reset period', async ({ virtualKeysPage }) => {
+      const vkData = createVirtualKeyWithBudget(
+        [SAMPLE_BUDGETS.daily, { ...SAMPLE_BUDGETS.daily, maxLimit: 5, scope: 'mcp' }],
+        { name: `Scoped Budget VK ${Date.now()}` }
+      )
+
+      createdVKs.push(vkData.name)
+      await virtualKeysPage.createVirtualKey(vkData)
+
+      const vkExists = await virtualKeysPage.virtualKeyExists(vkData.name)
+      expect(vkExists).toBe(true)
+
+      await virtualKeysPage.viewVirtualKey(vkData.name)
+      await virtualKeysPage.waitForSheetAnimation()
+      const page = virtualKeysPage.page
+      // Lines may come back in either order; one is the shared $daily, the other the $5 MCP budget.
+      const amounts = [
+        await page.getByTestId('vk-budget-lines-amount-0').inputValue(),
+        await page.getByTestId('vk-budget-lines-amount-1').inputValue(),
+      ]
+      const mcpIndex = amounts.indexOf('5')
+      expect(mcpIndex).toBeGreaterThanOrEqual(0)
+      await expect(page.getByTestId(`vk-budget-lines-scope-${mcpIndex}-trigger`)).toHaveText('MCP')
+      await expect(page.getByTestId(`vk-budget-lines-scope-${1 - mcpIndex}-trigger`)).toHaveText('Both')
+      await virtualKeysPage.closeSheet()
+    })
+
+    test('should flag two budgets with the same reset period and scope', async ({ virtualKeysPage }) => {
+      const page = virtualKeysPage.page
+      await virtualKeysPage.createBtn.click()
+      await expect(virtualKeysPage.sheet).toBeVisible()
+      await virtualKeysPage.waitForSheetAnimation()
+      for (const index of [0, 1]) {
+        await page.getByTestId('vk-budget-lines-add-btn').click()
+        await page.getByTestId(`vk-budget-lines-amount-${index}`).fill('5')
+        await page.getByTestId(`vk-budget-lines-line-${index}`).getByRole('combobox').first().click()
+        await page.getByRole('option', { name: 'Daily', exact: true }).click()
+        await page.getByTestId(`vk-budget-lines-scope-${index}-trigger`).click()
+        await page.getByTestId(`vk-budget-lines-scope-${index}-option-mcp`).click()
+      }
+      await expect(page.getByTestId('vk-budget-lines-line-0')).toContainText('Duplicate reset period for this scope')
+
+      // Moving one of them to another scope clears the conflict.
+      await page.getByTestId('vk-budget-lines-scope-1-trigger').click()
+      await page.getByTestId('vk-budget-lines-scope-1-option-shared').click()
+      await expect(page.getByTestId('vk-budget-lines-line-0')).not.toContainText('Duplicate reset period')
+      await virtualKeysPage.closeSheet()
+    })
   })
 
   test.describe('Virtual Key with Rate Limits', () => {

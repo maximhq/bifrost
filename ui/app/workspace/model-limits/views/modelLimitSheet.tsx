@@ -11,7 +11,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { DottedSeparator } from "@/components/ui/separator";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { useBudgetUsageResetPrompt } from "@/hooks/useBudgetUsageResetPrompt";
-import { resetDurationLabels, resetDurationOptions } from "@/lib/constants/governance";
+import { BUDGET_SCOPE_VALUES, resetDurationLabels, resetDurationOptions } from "@/lib/constants/governance";
 import { ProviderLabels, ProviderName } from "@/lib/constants/logs";
 import { getModelLimitScope, getModelLimitScopes } from "@/lib/registries/modelLimitScopes";
 import { budgetSignature } from "@/lib/utils/governance";
@@ -51,6 +51,7 @@ const formSchema = z
 					max_limit: z.number().nonnegative().optional(),
 					reset_duration: z.string().optional(),
 					reset_config: z.object({ quarter_start_month: z.number().int().min(1).max(12).optional() }).optional(),
+					scope: z.enum(BUDGET_SCOPE_VALUES).optional(),
 				}),
 			)
 			.optional(),
@@ -69,6 +70,10 @@ type FormData = z.infer<typeof formSchema>;
 // A limit with no provider applies across all of them; the form spells that absence as a
 // sentinel so the control has something to show. Module level so its identity is stable.
 const ALL_PROVIDERS_VALUE = "all";
+
+// MCP tool executions name no model and no provider, so they are only charged by a limit that
+// covers every model on every provider; that is the only limit whose budgets can be scoped.
+const budgetScopeApplies = (modelName: string | undefined, provider: string | undefined) => modelName === "*" && !provider;
 
 export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: ModelLimitSheetProps) {
 	const { t } = useTranslation("models");
@@ -140,6 +145,7 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 				max_limit: b.max_limit,
 				reset_duration: b.reset_duration,
 				reset_config: b.reset_config,
+				scope: b.scope,
 			})),
 			tokenMaxLimit: modelConfig?.rate_limit?.token_max_limit ?? undefined,
 			tokenResetDuration: modelConfig?.rate_limit?.token_reset_duration || "1h",
@@ -174,6 +180,7 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 					max_limit: b.max_limit,
 					reset_duration: b.reset_duration,
 					reset_config: b.reset_config,
+					scope: b.scope,
 				})),
 				tokenMaxLimit: modelConfig.rate_limit?.token_max_limit ?? undefined,
 				tokenResetDuration: modelConfig.rate_limit?.token_reset_duration || "1h",
@@ -230,6 +237,9 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 
 			// Full desired set of budgets (kept lines with a max_limit). For updates this is
 			// reconciled server-side; an empty array removes all budgets.
+			// Only an all-models, all-providers limit is charged by MCP tool executions, so only
+			// there can a budget be scoped; anywhere else every budget is sent as the shared default.
+			const scopeApplies = budgetScopeApplies(data.modelName, provider);
 			const budgetsPayload = (data.budgets ?? [])
 				.filter((b) => b.max_limit !== undefined && b.max_limit !== null)
 				.map((b) => ({
@@ -237,6 +247,7 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 					max_limit: b.max_limit as number,
 					reset_duration: b.reset_duration || "1M",
 					reset_config: b.reset_config,
+					scope: scopeApplies ? b.scope : undefined,
 				}));
 
 			if (isEditing && modelConfig) {
@@ -602,8 +613,10 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 										max_limit: b.max_limit,
 										reset_duration: b.reset_duration ?? "1M",
 										reset_config: b.reset_config,
+										scope: b.scope,
 									}))}
 									onChange={(lines) => form.setValue("budgets", lines, { shouldDirty: true })}
+									showScope={budgetScopeApplies(form.watch("modelName"), form.watch("provider"))}
 								/>
 							</div>
 

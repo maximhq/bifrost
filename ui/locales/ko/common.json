@@ -206,6 +206,15 @@
 		"resetPeriod": "초기화 주기",
 		"noLimit": "제한 없음"
 	},
+	"budgetScope": {
+		"label": "적용 범위",
+		"shared": "모두",
+		"model": "모델",
+		"mcp": "MCP",
+		"sharedHint": "모델 요청과 MCP 도구 실행 모두에 사용돼요",
+		"modelHint": "모델 요청에만 사용돼요",
+		"mcpHint": "MCP 도구 실행에만 사용돼요"
+	},
 	"secretVar": {
 		"resolvedAfterSave": "확인된 값은 저장 후에 표시돼요"
 	},

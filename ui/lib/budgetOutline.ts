@@ -63,14 +63,21 @@ export function budgetLinesLabel(budgets: BudgetLineLike[] | undefined, fallback
 	return label + fiscalQuarterNote(quarterly?.reset_duration, quarterly?.reset_config);
 }
 
-// True when two or more budget lines share the same reset period. A budget
-// group can only have one cap per reset window — the sheet blocks saving while
-// any group violates this.
-export function hasDuplicateBudgetPeriods(lines: { reset_duration?: string }[] | undefined): boolean {
+// Identity of a budget line within one holder: a holder may carry one cap per
+// reset window per scope. A missing scope is the shared default ("shared"), matching
+// the backend's LimitPeriodKey.
+export function budgetPeriodKey(resetDuration: string | undefined, scope: string | undefined): string {
+	return `${resetDuration ?? ""}|${scope || "shared"}`;
+}
+
+// True when two or more budget lines share the same reset period and scope. A
+// budget group can only have one cap per reset window per scope — the sheet
+// blocks saving while any group violates this.
+export function hasDuplicateBudgetPeriods(lines: { reset_duration?: string; scope?: string }[] | undefined): boolean {
 	if (!lines || lines.length < 2) return false;
 	const seen = new Set<string>();
 	for (const l of lines) {
-		const key = l.reset_duration ?? "";
+		const key = budgetPeriodKey(l.reset_duration, l.scope);
 		if (seen.has(key)) return true;
 		seen.add(key);
 	}

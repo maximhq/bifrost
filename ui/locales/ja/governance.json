@@ -463,9 +463,8 @@
 		"budgetMaxLimit": "予算上限は $0.01 より大きい必要があります",
 		"budgetNMaxLimit": "予算 #{{n}} の上限は $0.01 より大きい必要があります",
 		"budgetNResetRequired": "予算 #{{n}} のリセット期間は必須です",
-		"distinctResetDuration": "各予算には異なるリセット期間が必要です",
-		"uniqueResetPeriod": "各予算には一意のリセット周期が必要です",
-		"budgetNLabel": "予算 #{{n}}: 最大支出（USD）",
+		"distinctResetDuration": "各予算には、適用範囲ごとに異なるリセット期間が必要です",
+		"uniqueResetPeriod": "各予算には、適用範囲ごとに一意のリセット周期が必要です",
 		"noBudgets": "予算がありません。支出上限を適用するには「予算を追加」をクリックしてください。",
 		"budgetDuration": "予算（{{duration}}）",
 		"noLimit": "制限なし",
@@ -474,7 +473,8 @@
 		"maximumSpend": "最大支出（USD）",
 		"noBudgetLimits": "予算の上限は設定されていません。",
 		"removeBudgetAria": "予算 {{number}} を削除",
-		"duplicateResetPeriod": "リセット期間が重複しています。各予算行は異なる間隔を使用する必要があります。"
+		"duplicateResetPeriod": "リセット期間が重複しています。各予算行は異なる間隔を使用する必要があります。",
+		"duplicateResetPeriodScope": "この適用範囲でリセット期間が重複しています。同じ適用範囲の予算行は異なる間隔を使用する必要があります。"
 	},
 	"filters": {
 		"filters": "フィルター",

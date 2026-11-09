@@ -23,9 +23,11 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import BudgetUsageResetDialog from "@/components/ui/budgetUsageResetDialog";
 import { useBudgetUsageResetPrompt } from "@/hooks/useBudgetUsageResetPrompt";
 import QuarterStartSelect from "@/components/ui/quarterStartSelect";
+import BudgetScopeSelect from "@/components/ui/budgetScopeSelect";
+import { budgetPeriodKey } from "@/lib/budgetOutline";
 import { budgetResetDurationOptions, resetDurationOptions, supportsCalendarAlignment } from "@/lib/constants/governance";
 import { getErrorMessage, useCreateTeamMutation, useUpdateTeamMutation } from "@/lib/store";
-import { CreateTeamRequest, Team, UpdateTeamRequest } from "@/lib/types/governance";
+import { LimitScope, CreateTeamRequest, Team, UpdateTeamRequest } from "@/lib/types/governance";
 import { budgetSignature, formatCurrency } from "@/lib/utils/governance";
 import { Validator } from "@/lib/utils/validation";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
@@ -55,6 +57,8 @@ interface TeamBudgetRow {
 	resetDuration: string;
 	/** Fiscal quarter definition; only meaningful when resetDuration is quarterly. */
 	resetConfig?: { quarter_start_month?: number };
+	/** Traffic the budget is charged by; undefined is the shared default. */
+	scope?: LimitScope;
 }
 
 interface TeamFormData {
@@ -83,6 +87,7 @@ const createInitialState = (team?: Team | null): Omit<TeamFormData, "isDirty"> =
 				maxLimit: b.max_limit,
 				resetDuration: b.reset_duration,
 				resetConfig: b.reset_config,
+				scope: b.scope,
 			})) ?? [],
 		// Rate Limit
 		tokenMaxLimit: team?.rate_limit?.token_max_limit ?? undefined,
@@ -216,7 +221,9 @@ export default function TeamSheet({ team, onSave, onCancel }: TeamSheetProps) {
 				Validator.required(row.resetDuration, t("sheet.budgetNResetRequired", { n: idx + 1 })),
 			];
 		});
-		const populatedDurations = formData.budgets.filter((r) => r.maxLimit !== undefined && r.maxLimit !== null).map((r) => r.resetDuration);
+		const populatedDurations = formData.budgets
+			.filter((r) => r.maxLimit !== undefined && r.maxLimit !== null)
+			.map((r) => budgetPeriodKey(r.resetDuration, r.scope));
 		const uniqueDurations = new Set(populatedDurations).size;
 
 		return new Validator([
@@ -261,11 +268,12 @@ export default function TeamSheet({ team, onSave, onCancel }: TeamSheetProps) {
 		if (!isEditing || !team) return false;
 		const next = formData.budgets
 			.filter((r) => r.maxLimit !== undefined && r.maxLimit !== null)
-			.map((r) => ({ max_limit: r.maxLimit, reset_duration: r.resetDuration, reset_config: r.resetConfig }));
+			.map((r) => ({ max_limit: r.maxLimit, reset_duration: r.resetDuration, reset_config: r.resetConfig, scope: r.scope }));
 		const current = (team.budgets ?? []).map((b) => ({
 			max_limit: b.max_limit ?? undefined,
 			reset_duration: b.reset_duration,
 			reset_config: b.reset_config,
+			scope: b.scope,
 		}));
 		return budgetSignature(next) !== budgetSignature(current);
 	};
@@ -296,6 +304,7 @@ export default function TeamSheet({ team, onSave, onCancel }: TeamSheetProps) {
 				reset_duration: r.resetDuration,
 				// Only quarterly windows may carry a quarter definition; the API rejects it elsewhere.
 				reset_config: r.resetDuration.endsWith("Q") ? r.resetConfig : undefined,
+				scope: r.scope,
 			}));
 
 		try {
@@ -454,11 +463,12 @@ export default function TeamSheet({ team, onSave, onCancel }: TeamSheetProps) {
 							{formData.budgets.length === 0 && <p className="text-muted-foreground text-xs">{t("sheet.noBudgets")}</p>}
 							{formData.budgets.map((row, idx) => (
 								<div key={row.id} className="space-y-2 rounded-md border p-3" data-testid={`team-budget-row-${idx}`}>
-									<div className="flex items-start gap-2">
+									{/* Bottom-aligned so amount, reset period, scope and Remove share one baseline. */}
+									<div className="flex items-end gap-2">
 										<div className="flex-1">
 											<NumberAndSelect
 												id={`budgetMaxLimit-${idx}`}
-												label={t("sheet.budgetNLabel", { n: idx + 1 })}
+												label={t("sheet.maximumSpend")}
 												value={row.maxLimit}
 												selectValue={row.resetDuration}
 												onChangeNumber={(value) => updateBudgetRow(idx, { maxLimit: value })}
@@ -473,10 +483,16 @@ export default function TeamSheet({ team, onSave, onCancel }: TeamSheetProps) {
 												dataTestId={`budget-max-limit-input-${idx}`}
 											/>
 										</div>
+										<BudgetScopeSelect
+											id={`team-budget-scope-${idx}`}
+											data-testid={`team-budget-scope-${idx}`}
+											value={row.scope}
+											onChange={(scope) => updateBudgetRow(idx, { scope })}
+										/>
 										<button
 											type="button"
 											onClick={() => removeBudgetRow(idx)}
-											className="text-muted-foreground hover:text-destructive mt-6 text-xs font-medium"
+											className="text-muted-foreground hover:text-destructive mb-2.5 text-xs font-medium"
 											data-testid={`team-remove-budget-btn-${idx}`}
 										>
 											{t("plugins.remove")}

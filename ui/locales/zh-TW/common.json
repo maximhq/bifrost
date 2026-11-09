@@ -605,6 +605,15 @@
 		"resetPeriod": "重置週期",
 		"noLimit": "無限制"
 	},
+	"budgetScope": {
+		"label": "範圍",
+		"shared": "兩者",
+		"model": "模型",
+		"mcp": "MCP",
+		"sharedHint": "由模型請求與 MCP 工具執行共同計費",
+		"modelHint": "僅由模型請求計費",
+		"mcpHint": "僅由 MCP 工具執行計費"
+	},
 	"secretVar": {
 		"resolvedAfterSave": "儲存後將顯示解析後的值"
 	},

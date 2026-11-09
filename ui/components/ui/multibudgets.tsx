@@ -1,8 +1,11 @@
+import BudgetScopeSelect from "@/components/ui/budgetScopeSelect";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import NumberAndSelect from "@/components/ui/numberAndSelect";
 import QuarterStartSelect from "@/components/ui/quarterStartSelect";
+import { budgetPeriodKey } from "@/lib/budgetOutline";
 import { budgetResetDurationOptions } from "@/lib/constants/governance";
+import type { LimitScope } from "@/lib/types/governance";
 import { Plus, RotateCcw, Trash2 } from "lucide-react";
 import { useMemo } from "react";
 import { useTranslation } from "react-i18next";
@@ -12,6 +15,7 @@ export interface BudgetLineEntry {
 	max_limit?: number;
 	reset_duration: string;
 	reset_config?: { quarter_start_month?: number };
+	scope?: LimitScope;
 }
 
 // Quarterly is the only period with settings beyond the duration itself.
@@ -28,6 +32,10 @@ interface MultiBudgetLinesProps {
 	// How many lines this holder can carry; Add Budget disappears once they are all there. Left out
 	// where there is no ceiling - a team, a customer or a virtual key may carry one per reset window.
 	maxLines?: number;
+	// Offer the Both / Model / MCP scope beside each line's reset period. Only for holders MCP tool
+	// executions can be charged against (a key's own budgets, a team, a customer, an all-models
+	// limit); elsewhere every line stays the shared default and no option is shown.
+	showScope?: boolean;
 }
 
 export default function MultiBudgetLines({
@@ -39,23 +47,26 @@ export default function MultiBudgetLines({
 	onReset,
 	showReset,
 	maxLines,
+	showScope = false,
 }: MultiBudgetLinesProps) {
 	const { t } = useTranslation("governance");
 	const { t: tModels } = useTranslation("models");
 	const label = labelProp ?? tModels("virtualKeys.budgetConfiguration");
-	// Track which reset durations are already used (for duplicate detection)
-	const usedDurations = useMemo(() => {
+	// A hidden scope is submitted as the shared default, so it is counted as one.
+	const periodKeyOf = (line: BudgetLineEntry) => budgetPeriodKey(line.reset_duration, showScope ? line.scope : undefined);
+	// Track which reset period + scope pairs are already used (for duplicate detection)
+	const usedPeriods = useMemo(() => {
 		const counts = new Map<string, number>();
 		for (const line of lines) {
-			counts.set(line.reset_duration, (counts.get(line.reset_duration) || 0) + 1);
+			const key = periodKeyOf(line);
+			counts.set(key, (counts.get(key) || 0) + 1);
 		}
 		return counts;
-	}, [lines]);
+	}, [lines, showScope]);
 
 	function addLine() {
-		// Pick the first unused duration, falling back to the first option value
-		const usedSet = new Set(lines.map((l) => l.reset_duration));
-		const available = options.find((o) => !usedSet.has(o.value));
+		// Pick the first duration unused by a shared ("shared") line, falling back to the first option value
+		const available = options.find((o) => !usedPeriods.has(budgetPeriodKey(o.value, undefined)));
 		onChange([
 			...lines,
 			{
@@ -82,6 +93,12 @@ export default function MultiBudgetLines({
 		// resurrect a start month the operator never re-chose on switching back.
 		const { reset_config, ...rest } = updated[index];
 		updated[index] = isQuarterly(value) ? { ...rest, reset_config, reset_duration: value } : { ...rest, reset_duration: value };
+		onChange(updated);
+	}
+
+	function updateScope(index: number, scope: LimitScope) {
+		const updated = [...lines];
+		updated[index] = { ...updated[index], scope };
 		onChange(updated);
 	}
 
@@ -116,7 +133,7 @@ export default function MultiBudgetLines({
 			)}
 
 			{lines.map((line, index) => {
-				const isDuplicate = (usedDurations.get(line.reset_duration) || 0) > 1;
+				const isDuplicate = (usedPeriods.get(periodKeyOf(line)) || 0) > 1;
 				return (
 					<div key={index} className="space-y-1" data-testid={`${testId}-line-${index}`}>
 						<div className="flex items-end gap-2">
@@ -133,6 +150,15 @@ export default function MultiBudgetLines({
 									options={options}
 								/>
 							</div>
+							{showScope && (
+								<BudgetScopeSelect
+									id={`${testId}-scope-${index}`}
+									data-testid={`${testId}-scope-${index}`}
+									labelClassName="font-normal"
+									value={line.scope}
+									onChange={(scope) => updateScope(index, scope)}
+								/>
+							)}
 							<Button
 								data-testid={`${testId}-remove-${index}`}
 								aria-label={t("sheet.removeBudgetAria", { number: index + 1 })}
@@ -147,8 +173,9 @@ export default function MultiBudgetLines({
 						</div>
 						{isQuarterly(line.reset_duration) && (
 							// mr-10 (40px) = the remove button (w-8) + its gap-2, so the fiscal-year
-							// row shares its right edge with the Reset Period select above it.
-							<div className="mr-10">
+							// row shares its right edge with the Reset Period select above it; with the
+							// scope column (w-40 + gap-2) in between, that edge moves to mr-52 (208px).
+							<div className={showScope ? "mr-52" : "mr-10"}>
 								<QuarterStartSelect
 									data-testid={`${testId}-quarter-config-${index}`}
 									value={line.reset_config?.quarter_start_month}
@@ -156,7 +183,11 @@ export default function MultiBudgetLines({
 								/>
 							</div>
 						)}
-						{isDuplicate && <p className="text-destructive pl-0.5 text-xs">{t("sheet.duplicateResetPeriod")}</p>}
+						{isDuplicate && (
+							<p className="text-destructive pl-0.5 text-xs">
+								{t(showScope ? "sheet.duplicateResetPeriodScope" : "sheet.duplicateResetPeriod")}
+							</p>
+						)}
 					</div>
 				);
 			})}

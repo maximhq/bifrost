@@ -206,6 +206,15 @@
 		"resetPeriod": "Período de restablecimiento",
 		"noLimit": "Sin límite"
 	},
+	"budgetScope": {
+		"label": "Ámbito",
+		"shared": "Ambos",
+		"model": "Modelo",
+		"mcp": "MCP",
+		"sharedHint": "Se cobra por solicitudes de modelos y ejecuciones de herramientas MCP",
+		"modelHint": "Se cobra solo por solicitudes de modelos",
+		"mcpHint": "Se cobra solo por ejecuciones de herramientas MCP"
+	},
 	"secretVar": {
 		"resolvedAfterSave": "El valor resuelto aparecerá después de guardar"
 	},
