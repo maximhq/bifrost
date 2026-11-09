@@ -80,6 +80,8 @@ The UI hides the **Re-authenticate** / **Edit values** action on orphaned rows f
 
 The action menu adapts to the row's `kind` and `status`. Orphaned and needs_reauth rows are mutually exclusive with the action that wouldn't help — Bifrost doesn't surface no-op options.
 
+**Revoke** and **Refresh tools** show only on rows you can act on. You can always act on your own sessions, the rows bound to your signed-in user; acting on another identity's rows needs permission to delete or change MCP gateway settings. The list marks your own rows with `owned_by_caller: true`.
+
 ### Re-authenticate (OAuth)
 
 Available on `needs_reauth` OAuth token rows. Clicking it:
@@ -107,6 +109,30 @@ Available on `active` OAuth token and header credential rows of a user or a virt
 - Not offered while the server awaits admin verification, or on rows that need re-authentication or updated header values: do that first.
 
 Over the API: `POST /api/mcp/sessions/{id}/refresh`, which answers with the new tool, prompt and resource counts. See [Per-Caller Discovery](./per-caller-discovery) for how callers' discoveries are made and when they are deleted.
+
+### Start a sign-in
+
+A signed-in user can start their own sign-in to a per-user server before any tool call asks for one; on Enterprise with SSO, **Home → My access → MCP servers** does this from the dashboard. Over the API:
+
+```bash
+curl -X POST http://localhost:8080/api/mcp/sessions/connect \
+  -H "Authorization: Bearer <user-session-token>" \
+  -H "Content-Type: application/json" \
+  -d '{"mcp_client_id": "<client-id>", "origin": "home"}'
+```
+
+- **Per-user OAuth** answers `{"kind": "oauth", "flow_id": "...", "authorize_url": "..."}`. Open `authorize_url` in the browser. With `origin` set to `home`, the OAuth callback returns the browser to Home instead of the standalone success page, adding `sign_in=connected` or `sign_in=failed`, `mcp_client_id` and, on failure, `error`. A pending sign-in for the same user and server is reused rather than duplicated.
+- **Per-user headers** answers `{"kind": "headers", "flow_id": "...", "required_header_keys": [...], "missing_header_keys": [...]}`. Send the values to `PUT /api/mcp/per-user-headers/flows/{flow_id}`. `missing_header_keys` names the required keys the user's saved credential lacks, such as keys an admin added since they last submitted. It is empty on a first connect, so build the form from `required_header_keys`.
+
+| Status | When |
+| ------ | ---- |
+| `400`  | `mcp_client_id` is missing or `origin` is not a known page |
+| `403`  | No signed-in user |
+| `404`  | The server does not exist, or the user cannot call it |
+| `409`  | The server is disabled, awaits admin verification, or does not take a caller's own credential (`per_user_oauth` or `per_user_headers`); or, for OAuth, another sign-in replaced this one while it was starting (try again) |
+| `503`  | The OAuth or per-user headers provider is not configured |
+
+The credential lands in this table like any other, bound to the user.
 
 ### Complete authentication (Pending)
 

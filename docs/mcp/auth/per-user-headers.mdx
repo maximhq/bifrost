@@ -232,6 +232,15 @@ When an end-user hits the inline-401 URL, they land on `/workspace/mcp-sessions/
   <img src="/media/ui-mcp-per-user-headers-success.png" alt="Per-user headers submission success state with a Headers saved confirmation message" />
 </Frame>
 
+### Connect before your first call
+
+A user signed in to the dashboard doesn't have to wait for an inline-401 to enter their values. They can submit them up front, from the dashboard or the API:
+
+- **Dashboard**: on Enterprise with SSO, **Home → My access → MCP servers** lists every MCP server the user can call. **Connect** opens a sheet with one input per required header; Bifrost checks the values with the server before saving them, and a rejection keeps the sheet open with the server's answer. When the admin later adds a required key, the row reads **Needs update** and **Update keys** reopens the sheet with the new key marked **New**.
+- **API**: `POST /api/mcp/sessions/connect` with the server's client ID returns a submission flow ID and the header names it needs; send the values to `PUT /api/mcp/per-user-headers/flows/{id}`. See [Start a sign-in](../sessions#start-a-sign-in).
+
+The credential is bound to the user, the same as one submitted from an inline-401 link. Only an enabled server that has passed admin verification can be connected this way.
+
 ---
 
 ## Identity modes
