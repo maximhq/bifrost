@@ -409,6 +409,24 @@
 		"unlockTitle": "Projekte für bereichsbezogenen Zugriff und Ausgabenkontrolle freischalten",
 		"unlockDescription": "Diese Funktion ist Teil der Bifrost-Enterprise-Lizenz. Ein Projekt ist etwas, für das sich eine Anfrage entscheidet: Es gewährt Zugriff zusätzlich zu dem, was der Aufrufer bereits besitzt, und bestimmt, auf wessen Konto die Ausgaben verbucht werden."
 	},
+	"finops": {
+		"overview": {
+			"unlockTitle": "KI-Ausgaben aller Anbieter an einem Ort sehen",
+			"unlockDescription": "Diese Funktion ist Teil der Bifrost-Enterprise-Lizenz. FinOps liest die in Rechnung gestellten Kosten aus deinen Anbieterkonten und zeigt, wie viel davon über Bifrost lief."
+		},
+		"connections": {
+			"unlockTitle": "Abrechnungskonten der Anbieter verbinden",
+			"unlockDescription": "Diese Funktion ist Teil der Bifrost-Enterprise-Lizenz. Verbinde die Abrechnung von OpenAI, Anthropic, AWS Bedrock, Vertex AI und Azure OpenAI mit Lesezugriff."
+		},
+		"explorer": {
+			"unlockTitle": "KI-Ausgaben nach Modell und Konto aufschlüsseln",
+			"unlockDescription": "Diese Funktion ist Teil der Bifrost-Enterprise-Lizenz. Vergleiche die in Rechnung gestellten Ausgaben Modell für Modell mit dem, was Bifrost protokolliert hat."
+		},
+		"forecast": {
+			"unlockTitle": "KI-Ausgaben prognostizieren und Anomalien erkennen",
+			"unlockDescription": "Diese Funktion ist Teil der Bifrost-Enterprise-Lizenz. Prognostiziere den Monat anhand deiner Budgets und werde benachrichtigt, wenn die Ausgaben sprunghaft steigen."
+		}
+	},
 	"userRankings": {
 		"unlockTitle": "Nutzer-Rankings für bessere Übersicht freischalten"
 	},

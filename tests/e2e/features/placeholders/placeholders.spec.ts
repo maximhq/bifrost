@@ -82,4 +82,43 @@ test.describe('Placeholder and Enterprise Pages', () => {
     await page.waitForLoadState('networkidle')
     await expect(page).toHaveURL(/\/workspace\/guardrails\/providers(?:\?.*)?$/)
   })
+
+  test.describe('FinOps', () => {
+    test('should redirect the finops base path to overview', async ({ page }) => {
+      await page.goto('/workspace/finops')
+      await expect(page).toHaveURL(/\/workspace\/finops\/overview(?:\?.*)?$/)
+      await expect(page.getByTestId('finops-overview-read-more')).toBeVisible()
+    })
+
+    const finopsPages = [
+      { path: 'overview', title: 'See AI spend across every provider in one place' },
+      { path: 'connections', title: 'Connect provider billing accounts' },
+      { path: 'explorer', title: 'Break AI spend down by model and account' },
+      { path: 'forecast', title: 'Forecast AI spend and catch anomalies' },
+    ]
+
+    for (const { path, title } of finopsPages) {
+      test(`should load finops ${path} placeholder`, async ({ page }) => {
+        await page.goto(`/workspace/finops/${path}`)
+        await page.waitForLoadState('networkidle')
+        await expect(page).toHaveURL(new RegExp(`/workspace/finops/${path}(?:\\?.*)?$`))
+        await expect(page.getByText(title)).toBeVisible()
+        await expect(page.getByText(/part of the Bifrost enterprise license/i)).toBeVisible()
+        const readMore = page.getByTestId(`finops-${path}-read-more`)
+        await expect(readMore).toBeVisible()
+        const [popup] = await Promise.all([page.waitForEvent('popup'), readMore.click()])
+        await expect(popup).toHaveURL(/^https:\/\/docs\.getbifrost\.ai\/enterprise(\?|$)/)
+        await popup.close()
+      })
+    }
+
+    // The FinOps nav group is gated on IS_ENTERPRISE; this runner boots OSS builds only,
+    // so enterprise visibility and RBAC denial belong to the enterprise e2e suite.
+    test('should not show finops in the OSS sidebar', async ({ page }) => {
+      await page.goto('/workspace/finops/overview')
+      await page.waitForLoadState('networkidle')
+      await expect(page.getByTestId('finops-overview-read-more')).toBeVisible()
+      await expect(page.getByTestId('sidebar-item-btn-finops')).toHaveCount(0)
+    })
+  })
 })

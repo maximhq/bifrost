@@ -409,6 +409,24 @@
 		"unlockTitle": "Unlock projects for scoped access and spend",
 		"unlockDescription": "This feature is a part of the Bifrost enterprise license. A project is something a request opts into: it grants access alongside what the caller already holds, and decides whose ledger the spend lands on."
 	},
+	"finops": {
+		"overview": {
+			"unlockTitle": "See AI spend across every provider in one place",
+			"unlockDescription": "This feature is a part of the Bifrost enterprise license. FinOps reads invoiced costs from your provider accounts and shows how much of that spend went through Bifrost."
+		},
+		"connections": {
+			"unlockTitle": "Connect provider billing accounts",
+			"unlockDescription": "This feature is a part of the Bifrost enterprise license. Connect OpenAI, Anthropic, AWS Bedrock, Vertex AI and Azure OpenAI billing with read-only access."
+		},
+		"explorer": {
+			"unlockTitle": "Break AI spend down by model and account",
+			"unlockDescription": "This feature is a part of the Bifrost enterprise license. Compare invoiced spend with what Bifrost logged, model by model."
+		},
+		"forecast": {
+			"unlockTitle": "Forecast AI spend and catch anomalies",
+			"unlockDescription": "This feature is a part of the Bifrost enterprise license. Forecast the month against your budgets and get alerted when spend spikes."
+		}
+	},
 	"userRankings": {
 		"unlockTitle": "Unlock user rankings for better visibility"
 	},

@@ -409,6 +409,24 @@
 		"unlockTitle": "Sblocca i progetti per circoscrivere accesso e spesa",
 		"unlockDescription": "Questa funzionalità fa parte della licenza Enterprise di Bifrost. Un progetto è un elemento a cui una richiesta sceglie di aderire: concede l'accesso in aggiunta a ciò di cui il chiamante già dispone e stabilisce su quale registro viene addebitata la spesa."
 	},
+	"finops": {
+		"overview": {
+			"unlockTitle": "Visualizza la spesa IA di tutti i provider in un unico posto",
+			"unlockDescription": "Questa funzionalità fa parte della licenza Enterprise di Bifrost. FinOps legge i costi fatturati dai tuoi account dei provider e mostra quanta parte di quella spesa è passata da Bifrost."
+		},
+		"connections": {
+			"unlockTitle": "Collega gli account di fatturazione dei provider",
+			"unlockDescription": "Questa funzionalità fa parte della licenza Enterprise di Bifrost. Collega la fatturazione di OpenAI, Anthropic, AWS Bedrock, Vertex AI e Azure OpenAI con accesso in sola lettura."
+		},
+		"explorer": {
+			"unlockTitle": "Scomponi la spesa IA per modello e account",
+			"unlockDescription": "Questa funzionalità fa parte della licenza Enterprise di Bifrost. Confronta la spesa fatturata con ciò che Bifrost ha registrato, modello per modello."
+		},
+		"forecast": {
+			"unlockTitle": "Prevedi la spesa IA e individua le anomalie",
+			"unlockDescription": "Questa funzionalità fa parte della licenza Enterprise di Bifrost. Prevedi il mese rispetto ai tuoi budget e ricevi un avviso quando la spesa ha un picco."
+		}
+	},
 	"userRankings": {
 		"unlockTitle": "Sblocca le classifiche degli utenti per una maggiore visibilità"
 	},
