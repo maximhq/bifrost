@@ -6,7 +6,30 @@ icon: "fly"
 
 As `Bifrost` uses multiple sub-modules (`core`, `framework`, etc.) and also embeds the front-end into a single binary (embed.FS), we use a custom Docker build step before we hand over the deployment to flyctl.
 
-There are two ways to deploy Bifrost on Fly.io:
+## One-click deploy
+
+Fly.io has no hosted shell and no deploy button, so the one-click path is one line in a terminal with [flyctl](https://fly.io/docs/flyctl/install/) installed and logged in:
+
+```bash
+git clone --depth 1 https://github.com/maximhq/bifrost && bifrost/deploy/fly/deploy.sh
+```
+
+The script asks for an app name and creates:
+
+| Resource | What it is |
+|---|---|
+| App `<name>` | One `shared-cpu-2x` Machine with 2 GB running the published image, HTTPS on `https://<name>.fly.dev`, health check on `/health` |
+| Fly Postgres `<name>-db` | One `shared-cpu-1x` node with a 10 GB volume, attached to the app |
+
+`fly postgres attach` sets `DATABASE_URL` on the app. The image entrypoint derives `PG_HOST`, `PG_PORT`, `PG_USER`, `PG_PASSWORD`, `PG_DATABASE`, and `PG_SSL_MODE` from it, and the shared [`deploy/config.postgres.json`](https://github.com/maximhq/bifrost/blob/main/deploy/config.postgres.json) arrives through `BIFROST_CONFIG_JSON`, so both Bifrost stores land in Postgres with no manual wiring. The script generates `BIFROST_ENCRYPTION_KEY` and `BIFROST_SETUP_TOKEN` as Fly secrets and prints the token once. Open the URL, [create the first admin account](/quickstart/gateway/setting-up-auth) with it, add a provider key, and [create a virtual key](/features/governance/virtual-keys); inference routes require one.
+
+The app configuration is [`deploy/fly/fly.toml`](https://github.com/maximhq/bifrost/blob/main/deploy/fly/fly.toml). Rerunning the script is safe: it reuses the apps, keeps the encryption key, stages a fresh setup token and prints it, and redeploys. Fly secrets are write-only, so this is also how you recover the token after a first deploy that failed before printing it; the token is only used to create the first admin account and is inert afterwards. Environment overrides: `FLY_APP_NAME`, `FLY_REGION`, `FLY_ORG`, `FLY_PG_VM_SIZE`, `FLY_PG_VOLUME_GB`, and `BIFROST_IMAGE` (pin a release). Tear down with `fly apps destroy <name>` and `fly apps destroy <name>-db`.
+
+**Enterprise:** Fly pulls private images only from its own registry, and `fly secrets set` does not authenticate pulls. The registry namespace exists only once the app does, so create it first with `fly apps create <app> --org <org>`. Then pull the Enterprise image with the credential from the [enterprise guides](/deployment-guides/enterprise/overview), retag it, run `fly auth docker`, push it to `registry.fly.io/<app>:<tag>`, and run the script with `FLY_APP_NAME=<app>` (it reuses the existing app) and `BIFROST_IMAGE=registry.fly.io/<app>:<tag>`. Enterprise requires PostgreSQL for both stores, which is what the script provisions.
+
+## Manual deployment
+
+There are two ways to deploy Bifrost on Fly.io by hand:
 
 1. By cloning the repo
 2. Using flyctl + Docker Hub image

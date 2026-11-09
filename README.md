@@ -30,20 +30,33 @@ npx -y @maximhq/bifrost
 docker run -p 8080:8080 maximhq/bifrost
 ```
 
-Or deploy to the cloud in one click. Railway and Render host the gateway and PostgreSQL for you; AWS and GCP open Cloud Shell and deploy ECS + RDS or Cloud Run + Cloud SQL into your account with Terraform (see [deploy/](deploy/README.md)):
+Or deploy to the cloud in one click. Railway and Render host the gateway and PostgreSQL for you; AWS, GCP and Azure open Cloud Shell and deploy ECS + RDS, Cloud Run + Cloud SQL or Container Instances + Flexible Server into your account with Terraform; Fly.io runs one line from your terminal (see [deploy/](deploy/README.md)):
 
 [![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/new/template/RAILWAY_TEMPLATE_CODE?utm_medium=integration&utm_source=button&utm_campaign=bifrost)
 [![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/maximhq/bifrost)
+[![Deploy on Fly.io](https://img.shields.io/badge/Deploy%20on-Fly.io-5D3FD3?style=for-the-badge&logo=flydotio&logoColor=white)](https://docs.getbifrost.ai/deployment-guides/fly#one-click-deploy)
 [![Deploy on AWS](https://img.shields.io/badge/Deploy%20on-AWS-FF9900?style=for-the-badge&logo=amazonwebservices&logoColor=white)](https://console.aws.amazon.com/cloudshell/home)
 [![Deploy on GCP](https://img.shields.io/badge/Deploy%20on-GCP-4285F4?style=for-the-badge&logo=googlecloud&logoColor=white)](https://shell.cloud.google.com/?show=terminal)
+[![Deploy on Azure](https://img.shields.io/badge/Deploy%20on-Azure-0078D4?style=for-the-badge&logo=microsoftazure&logoColor=white)](https://shell.azure.com)
 
-The AWS and GCP buttons open Cloud Shell; paste the matching line there to run the deployment:
+The AWS, GCP and Azure buttons open Cloud Shell; paste the matching line there to run the deployment. Terraform state stays in the clone, so choose persistent storage when Cloud Shell offers it (Azure: run from `~/clouddrive`); an ephemeral session loses the state while the cloud resources remain. The state file holds the database password, the encryption key and the setup token, so restrict who can read that storage (the Cloud Shell file share or storage account, or the remote backend) before you apply. To use a remote backend instead, clone first, add the backend block to the example under `terraform/examples/`, then run that platform's `bifrost/deploy/<platform>/deploy.sh` directly rather than the one-liner. Each guide explains this.
 
 ```bash
 # AWS CloudShell: ECS Fargate + RDS + ALB
 git clone --depth 1 https://github.com/maximhq/bifrost && bifrost/deploy/aws/deploy.sh
 # Google Cloud Shell: Cloud Run + Cloud SQL
 git clone --depth 1 https://github.com/maximhq/bifrost && bifrost/deploy/gcp/deploy.sh
+# Azure Cloud Shell: Container Instances + PostgreSQL Flexible Server
+git clone --depth 1 https://github.com/maximhq/bifrost && bifrost/deploy/azure/deploy.sh
+```
+
+After any cloud deployment, use its URL wherever the steps below say `http://localhost:8080`; the setup token each path prints is what the first admin account is created with (Render and Railway generate it as the `BIFROST_SETUP_TOKEN` environment variable, shown in the service's environment settings). The AWS and Azure endpoints are plain HTTP until you add TLS, so follow the guide's "Before you open the dashboard" step before creating the admin account or pasting provider keys. Cloud deployments require a virtual key on inference routes, so Step 3 becomes the request below. Put TLS in front before you enter any credential, as each guide describes, and use that HTTPS URL. Narrowing `allowed_cidr` (on AWS and the Kubernetes paths; it does not restrict the Azure Container Instances endpoint) limits who can connect but encrypts nothing, so it adds to TLS rather than replacing it.
+
+```bash
+curl -X POST https://<your-deployment>/v1/chat/completions \
+  -H "Authorization: Bearer <virtual key>" \
+  -H "Content-Type: application/json" \
+  -d '{"model": "openai/gpt-4o-mini", "messages": [{"role": "user", "content": "Hello, Bifrost!"}]}'
 ```
 
 **Step 2:** Configure via Web UI
