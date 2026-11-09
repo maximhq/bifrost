@@ -945,6 +945,9 @@
 		"copyToClipboard": "Copier dans le presse-papiers",
 		"stats": {
 			"totalExecutions": "Total des exécutions",
+			"executions": "Exécutions",
+			"ofAllExecutions": "Sur l’ensemble des appels d’outils MCP de cette période",
+			"perExecution": "{{value}}/appel",
 			"successRate": "Taux de réussite",
 			"avgLatency": "Latence moyenne",
 			"totalCost": "Coût total"
@@ -974,7 +977,6 @@
 			"toolName": "Nom de l’outil",
 			"server": "Serveur",
 			"virtualKey": "Clé virtuelle",
-			"llmRequestId": "ID de la requête LLM",
 			"metadata": "Métadonnées",
 			"deleteFailed": "Échec de la suppression du journal",
 			"invalidDate": "Date invalide",
@@ -1025,6 +1027,7 @@
 		"rounds": "Tours",
 		"execution": "Exécution",
 		"errorDetails": "Détails de l'erreur",
+		"errorNoMessage": "L'appel de l'outil a échoué sans message d'erreur.",
 		"pluginLogs": "Journaux du plugin",
 		"loading": "Chargement des journaux MCP...",
 		"native": "Native",
@@ -1046,8 +1049,7 @@
 			"blockedDescription": "Bloqué avant l'exécution.",
 			"observedDescription": "L'activité de l'outil a été capturée, mais le résultat de son exécution n'est pas connu.",
 			"inputRequiredDescription": "Le serveur MCP a demandé une saisie à l'appelant avant de terminer. La nouvelle tentative qui y répond est une entrée distincte.",
-			"retryLaterDescription": "Le serveur MCP a demandé à l'appelant de réessayer plus tard, sans demander de saisie. La nouvelle tentative est une entrée distincte.",
-			"executionDescription": "Résultat d'exécution de l'outil enregistré."
+			"retryLaterDescription": "Le serveur MCP a demandé à l'appelant de réessayer plus tard, sans demander de saisie. La nouvelle tentative est une entrée distincte."
 		},
 		"noResults": "Aucun résultat trouvé. Essayez d'ajuster vos filtres et/ou votre plage horaire.",
 		"observedRoundTrip": "Aller-retour observé"

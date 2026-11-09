@@ -619,7 +619,8 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 
 	// Canonical model for capability gating only; wire model is untouched.
 	capModel := schemas.ResolveCanonicalModel(ctx, bifrostReq.Model)
-	caps := schemas.ResolveModelCaps(schemas.ResolveBaseProvider(ctx, bifrostReq.Provider), capModel)
+	baseProvider := schemas.ResolveBaseProvider(ctx, bifrostReq.Provider)
+	caps := schemas.ResolveModelCaps(baseProvider, capModel)
 
 	var messages []schemas.ResponsesMessage
 	// OpenAI models (except for gpt-oss) do not support reasoning content blocks, so we need to convert them to summaries, if there are any
@@ -635,6 +636,8 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 	customToolsAsFunctions := customToolsUnsupported(ctx, bifrostReq.Provider, bifrostReq.Model)
 	developerAsSystem := !caps.SupportsDeveloperRole(true)
 	keepAdditionalTools := supportsAdditionalToolsItem(bifrostReq.Provider) && !customToolsAsFunctions
+	keepsReasoningItemIDs := baseProvider == schemas.BedrockMantle || baseProvider == schemas.Bedrock
+	joinsReasoningBlocks := baseProvider == schemas.VLLM
 	keepConfigurationUpdate := supportsConfigurationUpdateItem(ctx, bifrostReq.Provider)
 	replayAssistantTextAsInput := isMantleGPTOSSResponses(ctx, bifrostReq.Provider, capModel)
 	replayComputerActions := bifrostReq.Params != nil && slices.ContainsFunc(bifrostReq.Params.Tools, func(t schemas.ResponsesTool) bool {
@@ -824,11 +827,15 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 		// reasoning_N) and function_call_output items (func_resp_<id>). OpenAI rejects these.
 		// Drop them; the call_id and output pairing are unaffected. message is a value copy.
 		// But preserve native OpenAI reasoning IDs (rs_ prefix) which are needed for replay.
+		// Mantle (bedrock_mantle, and bedrock's Mantle route) requires an id on a replayed
+		// reasoning item and accepts any value, including the msg_ ids it mints itself;
+		// bedrock-runtime's OpenAI surface accepts any id too.
 		if message.Type != nil && (*message.Type == schemas.ResponsesMessageTypeReasoning ||
 			*message.Type == schemas.ResponsesMessageTypeFunctionCallOutput ||
 			*message.Type == schemas.ResponsesMessageTypeWebSearchCall) &&
 			message.ID != nil && *message.ID != "" &&
-			!(*message.Type == schemas.ResponsesMessageTypeReasoning && strings.HasPrefix(*message.ID, "rs_")) &&
+			!(*message.Type == schemas.ResponsesMessageTypeReasoning &&
+				(strings.HasPrefix(*message.ID, "rs_") || keepsReasoningItemIDs)) &&
 			!isNativeWebSearchCall(message) {
 			message.ID = nil
 		}
@@ -906,8 +913,17 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 			}
 		}
 
-		if message.ResponsesReasoning != nil {
-			usesContentBlocks := caps.SupportsReasoningContentBlocks(defaultSupportsReasoningContentBlocks(capModel))
+		// Codex replays assistant message items with summary:null and encrypted_content, which
+		// decode into the embedded ResponsesReasoning. The content is the turn itself: keep it.
+		// Drop the token for every model: OpenAI never mints encrypted_content on a message item
+		// and rejects any it receives, and the fail-soft retry would then also strip the genuine
+		// reasoning items' tokens. Separate reasoning items are handled below, unchanged.
+		if message.ResponsesReasoning != nil && len(message.ResponsesReasoning.Summary) == 0 &&
+			message.Type != nil && *message.Type == schemas.ResponsesMessageTypeMessage {
+			message.ResponsesReasoning = nil
+			messages = append(messages, message)
+		} else if message.ResponsesReasoning != nil {
+			usesContentBlocks := caps.SupportsReasoningContentBlocks(defaultSupportsReasoningContentBlocks(baseProvider, capModel))
 			isReasoning := caps.SupportsReasoning(IsOpenAIReasoningModel(capModel))
 
 			// Models that read reasoning from summary[] have nothing to gain from a
@@ -940,9 +956,13 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 						Text: schemas.Ptr(summary.Text),
 					})
 				}
+				if joinsReasoningBlocks {
+					contentBlocks = joinReasoningBlocks(contentBlocks)
+				}
 				newMessage.Content = &schemas.ResponsesMessageContent{
 					ContentBlocks: contentBlocks,
 				}
+				newMessage.ResponsesReasoning = &schemas.ResponsesReasoning{Summary: []schemas.ResponsesReasoningSummary{}}
 				messages = append(messages, newMessage)
 			} else {
 				// Clone the embedded pointer to avoid mutating the original input
@@ -985,6 +1005,8 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 						}
 					case len(message.Content.ContentBlocks) == 0:
 						message.Content = nil
+					case joinsReasoningBlocks && len(message.Content.ContentBlocks) > 1:
+						message.Content = &schemas.ResponsesMessageContent{ContentBlocks: joinReasoningBlocks(message.Content.ContentBlocks)}
 					}
 				}
 				messages = append(messages, message)

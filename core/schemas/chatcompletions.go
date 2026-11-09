@@ -1224,9 +1224,10 @@ func spliceJSONObjects(fragments [][]byte) []byte {
 func (cm *ChatMessage) UnmarshalJSON(data []byte) error {
 	// Unmarshal the base fields directly
 	type baseFields struct {
-		Name    *string             `json:"name,omitempty"`
-		Role    ChatMessageRole     `json:"role,omitempty"`
-		Content *ChatMessageContent `json:"content,omitempty"`
+		Name         *string             `json:"name,omitempty"`
+		Role         ChatMessageRole     `json:"role,omitempty"`
+		Content      *ChatMessageContent `json:"content,omitempty"`
+		CacheControl *CacheControl       `json:"cache_control,omitempty"`
 	}
 	var base baseFields
 	if err := Unmarshal(data, &base); err != nil {
@@ -1257,11 +1258,54 @@ func (cm *ChatMessage) UnmarshalJSON(data []byte) error {
 	// Only set if any field is populated
 	if assistantMsg.Refusal != nil || assistantMsg.Reasoning != nil ||
 		len(assistantMsg.ReasoningDetails) > 0 || len(assistantMsg.Annotations) > 0 ||
-		len(assistantMsg.ToolCalls) > 0 || assistantMsg.Audio != nil || len(assistantMsg.Images) > 0 {
+		len(assistantMsg.ToolCalls) > 0 || assistantMsg.Audio != nil || len(assistantMsg.Images) > 0 ||
+		len(assistantMsg.Context) > 0 {
 		cm.ChatAssistantMessage = &assistantMsg
 	}
 
+	cm.AttachMessageCacheControl(base.CacheControl)
 	return nil
+}
+
+// AttachMessageCacheControl places a cache_control the client set on the message
+// object (the shape OpenAI-compatible SDKs emit) where every provider converter
+// reads it: the last content block, promoting string content to a single text
+// block, or the last tool call when the message has no content. A block or tool
+// call that already carries its own marker keeps it. Empty string content is left
+// alone, since providers reject a breakpoint on an empty text block, and the marker
+// falls through to the tool calls. Content and tool calls are copied before they
+// are changed, so values shared with the caller are never modified.
+func (cm *ChatMessage) AttachMessageCacheControl(marker *CacheControl) {
+	if marker == nil {
+		return
+	}
+	if cm.Content != nil {
+		if s := cm.Content.ContentStr; s != nil {
+			if *s != "" {
+				cm.Content = &ChatMessageContent{ContentBlocks: []ChatContentBlock{{
+					Type:         ChatContentBlockTypeText,
+					Text:         s,
+					CacheControl: marker,
+				}}}
+				return
+			}
+		} else if n := len(cm.Content.ContentBlocks); n > 0 {
+			if cm.Content.ContentBlocks[n-1].CacheControl == nil {
+				blocks := slices.Clone(cm.Content.ContentBlocks)
+				blocks[n-1].CacheControl = marker
+				cm.Content = &ChatMessageContent{ContentBlocks: blocks}
+			}
+			return
+		}
+	}
+	if cm.ChatAssistantMessage != nil {
+		if n := len(cm.ChatAssistantMessage.ToolCalls); n > 0 && cm.ChatAssistantMessage.ToolCalls[n-1].CacheControl == nil {
+			assistant := *cm.ChatAssistantMessage
+			assistant.ToolCalls = slices.Clone(assistant.ToolCalls)
+			assistant.ToolCalls[n-1].CacheControl = marker
+			cm.ChatAssistantMessage = &assistant
+		}
+	}
 }
 
 // ChatMessageContent represents a content in a message.
@@ -1614,6 +1658,7 @@ type ChatAssistantMessage struct {
 	ReasoningDetails []ChatReasoningDetails           `json:"reasoning_details,omitempty"`
 	Annotations      []ChatAssistantMessageAnnotation `json:"annotations,omitempty"`
 	ToolCalls        []ChatAssistantMessageToolCall   `json:"tool_calls,omitempty"`
+	Context          json.RawMessage                  `json:"context,omitempty"` // Azure On Your Data citations and intent, passed through untouched
 }
 
 // MarshalJSON emits reasoning under both spellings the ecosystem uses.
@@ -1676,6 +1721,10 @@ func (cm *ChatAssistantMessage) UnmarshalJSON(data []byte) error {
 
 	// Copy decoded data back into the original type
 	*cm = ChatAssistantMessage(aux.Alias)
+	// The raw context may alias the decoder's input buffer, which a provider can reuse.
+	if len(cm.Context) > 0 {
+		cm.Context = bytes.Clone(cm.Context)
+	}
 
 	// Map xAI's reasoning_content to Bifrost's Reasoning field
 	// This allows both OpenAI's "reasoning" and xAI's "reasoning_content" to work
@@ -1888,6 +1937,7 @@ type ChatStreamResponseChoiceDelta struct {
 	Annotations      []ChatAssistantMessageAnnotation `json:"annotations,omitempty"`   // URL citations from web search
 	ToolCalls        []ChatAssistantMessageToolCall   `json:"tool_calls,omitempty"`    // If tool calls used (supports incremental updates)
 	ExtraContent     json.RawMessage                  `json:"extra_content,omitempty"` // Provider-specific metadata (e.g. Gemini thought markers, thought_signature)
+	Context          json.RawMessage                  `json:"context,omitempty"`       // Azure On Your Data citations and intent, passed through untouched
 }
 
 // MarshalJSON emits reasoning under both spellings, matching
@@ -1931,6 +1981,10 @@ func (d *ChatStreamResponseChoiceDelta) UnmarshalJSON(data []byte) error {
 
 	// Copy decoded data back into the original type
 	*d = ChatStreamResponseChoiceDelta(aux.Alias)
+	// Stream frames come out of a reused scanner buffer, so the raw context is copied.
+	if len(d.Context) > 0 {
+		d.Context = bytes.Clone(d.Context)
+	}
 
 	// Map xAI's reasoning_content to Bifrost's Reasoning field
 	// This allows both OpenAI's "reasoning" and xAI's "reasoning_content" to work
@@ -2845,6 +2899,41 @@ func (u *BifrostLLMUsage) NormalizeProviderCost() {
 		return
 	}
 	u.Cost = costFromUSDTicks(u.CostInUsdTicks)
+}
+
+// AddTokenCounts adds the token counters of other, details included, to u, for a total built from the
+// generations of one response. Cost, tool usage and the cache-write breakdown are not summed.
+func (u *BifrostLLMUsage) AddTokenCounts(other *BifrostLLMUsage) {
+	if other == nil {
+		return
+	}
+	u.PromptTokens += other.PromptTokens
+	u.CompletionTokens += other.CompletionTokens
+	u.TotalTokens += other.TotalTokens
+	if d := other.PromptTokensDetails; d != nil {
+		if u.PromptTokensDetails == nil {
+			u.PromptTokensDetails = &ChatPromptTokensDetails{}
+		}
+		u.PromptTokensDetails.TextTokens += d.TextTokens
+		u.PromptTokensDetails.AudioTokens += d.AudioTokens
+		u.PromptTokensDetails.ImageTokens += d.ImageTokens
+		u.PromptTokensDetails.CachedReadTokens += d.CachedReadTokens
+		u.PromptTokensDetails.CachedWriteTokens += d.CachedWriteTokens
+		u.PromptTokensDetails.StandardSpeechAudioTokens += d.StandardSpeechAudioTokens
+		u.PromptTokensDetails.CustomSpeechAudioTokens += d.CustomSpeechAudioTokens
+	}
+	if d := other.CompletionTokensDetails; d != nil {
+		if u.CompletionTokensDetails == nil {
+			u.CompletionTokensDetails = &ChatCompletionTokensDetails{}
+		}
+		u.CompletionTokensDetails.TextTokens += d.TextTokens
+		u.CompletionTokensDetails.AudioTokens += d.AudioTokens
+		u.CompletionTokensDetails.ReasoningTokens += d.ReasoningTokens
+		u.CompletionTokensDetails.AcceptedPredictionTokens += d.AcceptedPredictionTokens
+		u.CompletionTokensDetails.RejectedPredictionTokens += d.RejectedPredictionTokens
+		u.CompletionTokensDetails.StandardSpeechAudioTokens += d.StandardSpeechAudioTokens
+		u.CompletionTokensDetails.CustomSpeechAudioTokens += d.CustomSpeechAudioTokens
+	}
 }
 
 // DeepCopy returns a copy whose mutable pointer children are all cloned, so a
