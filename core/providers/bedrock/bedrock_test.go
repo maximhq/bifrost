@@ -4350,6 +4350,29 @@ func TestBedrockAnthropicChatOpenObjectSchemaUsesSyntheticTool(t *testing.T) {
 	requireSyntheticStructuredOutputTool(t, result.ToolConfig, result.AdditionalModelRequestFields)
 }
 
+// TestBedrockAnthropicChatUntypedOpenObjectUsesSyntheticTool: a nested schema
+// can set additionalProperties true without declaring type "object", and
+// output_config.format rejects that too, so the request keeps the bf_so_* tool.
+func TestBedrockAnthropicChatUntypedOpenObjectUsesSyntheticTool(t *testing.T) {
+	schema := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"metadata": map[string]any{
+				"properties":           map[string]any{"source": map[string]any{"type": "string"}},
+				"additionalProperties": true,
+			},
+		},
+		"required": []any{"metadata"},
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	result, err := bedrock.ToBedrockChatCompletionRequest(ctx, chatStructuredOutputRequest(schema))
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	requireSyntheticStructuredOutputTool(t, result.ToolConfig, result.AdditionalModelRequestFields)
+}
+
 // TestToBedrockResponsesRequest_AnthropicNestedOpenObjectUsesSyntheticTool: an
 // additionalProperties schema on a nested object can't be sent natively either,
 // so the whole request keeps the bf_so_* tool.

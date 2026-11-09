@@ -4560,7 +4560,8 @@ func NormalizeSchemaForAnthropicRaw(schema json.RawMessage) json.RawMessage {
 // CloseObjectSchemasRaw sets additionalProperties false on every object schema
 // that leaves it unset, at any depth: output_config.format rejects an object
 // without it, nested ones included. It reports false, and returns the schema
-// unchanged, when an object sets additionalProperties to true or a schema.
+// unchanged, when any schema, typed "object" or not, sets additionalProperties
+// to true or a schema.
 // output_config.format rejects those too, and closing them would reject replies
 // the caller's schema allows. It visits the same subschemas as
 // NormalizeSchemaForAnthropicRaw.
@@ -4572,14 +4573,14 @@ func CloseObjectSchemasRaw(schema json.RawMessage) (json.RawMessage, bool) {
 
 	body := append([]byte(nil), schema...)
 
-	if node.Get("type").String() == "object" {
-		additional := node.Get("additionalProperties")
-		switch {
-		case !additional.Exists():
-			body, _ = sjson.SetBytes(body, "additionalProperties", false)
-		case additional.Type != gjson.False:
-			return schema, false
-		}
+	// A node can declare additionalProperties without type "object", so an
+	// open value falls back whatever the node's type.
+	additional := node.Get("additionalProperties")
+	if additional.Exists() && additional.Type != gjson.False {
+		return schema, false
+	}
+	if node.Get("type").String() == "object" && !additional.Exists() {
+		body, _ = sjson.SetBytes(body, "additionalProperties", false)
 	}
 
 	for _, key := range []string{"properties", "definitions", "$defs"} {
