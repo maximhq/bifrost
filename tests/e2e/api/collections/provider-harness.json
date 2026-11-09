@@ -314413,7 +314413,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"wally/deepseek-v4.1-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What is 17 * 23? Answer with just the number.\"\n    }\n  ]\n}"
+              "raw": "{\n  \"model\": \"wally/deepseek-v4.1-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What is 17 * 23? Answer with just the number.\"\n    }\n  ],\n  \"max_tokens\": 4096\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/chat/completions",
@@ -314456,7 +314456,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"wally/deepseek-v4.1-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say hello in one short sentence.\"\n    }\n  ],\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  }\n}"
+              "raw": "{\n  \"model\": \"wally/deepseek-v4.1-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say hello in one short sentence.\"\n    }\n  ],\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  },\n  \"max_tokens\": 4096\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/chat/completions",
@@ -314499,7 +314499,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"wally/deepseek-v4.1-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the word ok.\"\n    }\n  ],\n  \"reasoning_effort\": \"none\"\n}"
+              "raw": "{\n  \"model\": \"wally/deepseek-v4.1-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the word ok.\"\n    }\n  ],\n  \"reasoning_effort\": \"none\",\n  \"max_tokens\": 4096\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/chat/completions",
@@ -314545,7 +314545,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"wally/deepseek-v4.1-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What's the weather in San Francisco? Use the get_weather tool.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"get_weather\",\n        \"description\": \"Get current weather\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"city\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"city\"\n          ]\n        }\n      }\n    }\n  ]\n}"
+              "raw": "{\n  \"model\": \"wally/deepseek-v4.1-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What's the weather in San Francisco? Use the get_weather tool.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"get_weather\",\n        \"description\": \"Get current weather\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"city\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"city\"\n          ]\n        }\n      }\n    }\n  ],\n  \"max_tokens\": 4096\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/chat/completions",
@@ -314590,7 +314590,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"wally/deepseek-v4.1-flash\",\n  \"input\": \"Name one primary color.\"\n}"
+              "raw": "{\n  \"model\": \"wally/deepseek-v4.1-flash\",\n  \"input\": \"Name one primary color.\",\n  \"max_output_tokens\": 4096\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/responses",
@@ -314630,7 +314630,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"wally/deepseek-v4.1-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Hello\"\n    }\n  ]\n}"
+              "raw": "{\n  \"model\": \"wally/deepseek-v4.1-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Hello\"\n    }\n  ],\n  \"max_tokens\": 4096\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/openai/v1/chat/completions",
@@ -314673,7 +314673,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"wally/deepseek-v4.1-flash\",\n  \"input\": \"Say hello.\",\n  \"stream\": true\n}"
+              "raw": "{\n  \"model\": \"wally/deepseek-v4.1-flash\",\n  \"input\": \"Say hello.\",\n  \"stream\": true,\n  \"max_output_tokens\": 4096\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/responses",

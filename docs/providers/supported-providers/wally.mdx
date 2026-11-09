@@ -98,6 +98,10 @@ case schemas.Wally:
 
 The [Wally public API contract](https://docs.runanywhere.ai/wally-cloud/api#body-parameters) documents `model`, `messages`, `stream`, `temperature`, `max_tokens`, `tools`, `tool_choice`, and `stream_options`. Fields outside that contract may be rejected; support for the full OpenAI parameter set is not implied.
 
+Bifrost maps its output-token cap to Wally's documented `max_tokens` field, including `max_output_tokens` on Responses requests. This follows the documented contract; it does not establish whether Wally accepts other token-field aliases at runtime.
+
+Tool calling, reasoning controls, and image input depend on the selected model's capabilities. Check the current `/models` catalog before relying on them.
+
 For message format and Bifrost's conversion behavior, see [OpenAI Chat Completions](/providers/supported-providers/openai#1-chat-completions).
 
 Bifrost serves every model Wally exposes, for example `deepseek-v4.1-flash`, `glm-5.3-flash`, and `kimi-k3`. Call [List Models](#3-list-models) for the current catalog, or see [Wally pricing](https://www.runwally.com/pricing).

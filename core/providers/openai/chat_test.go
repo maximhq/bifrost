@@ -1959,6 +1959,7 @@ func TestToOpenAIChatRequest_LegacyMaxTokensProvidersUseMaxTokensOnWire(t *testi
 		name     string
 		provider schemas.ModelProvider
 	}{
+		{name: "Wally", provider: schemas.Wally},
 		{name: "Go", provider: schemas.OpencodeGo},
 		{name: "Zen", provider: schemas.OpencodeZen},
 		{name: "Ollama", provider: schemas.Ollama},
@@ -3558,4 +3559,17 @@ func TestOpenAIChatRequest_MessageLevelCacheControlIngress(t *testing.T) {
 	body, err := sonic.Marshal(ToOpenAIChatRequest(ctx, bifrostReq))
 	require.NoError(t, err)
 	require.Equal(t, 3, strings.Count(string(body), `"cache_control"`), "all three breakpoints must reach OpenRouter: %s", body)
+}
+
+func BenchmarkToOpenAIChatRequestWallyTokenCap(b *testing.B) {
+	for _, provider := range []schemas.ModelProvider{schemas.Wally, schemas.OpenAI} {
+		b.Run(string(provider), func(b *testing.B) {
+			ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+			req := &schemas.BifrostChatRequest{Provider: provider, Model: "deepseek-v4.1-flash", Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}}}, Params: &schemas.ChatParameters{MaxCompletionTokens: schemas.Ptr(512)}}
+			b.ReportAllocs()
+			for b.Loop() {
+				_ = ToOpenAIChatRequest(ctx, req)
+			}
+		})
+	}
 }

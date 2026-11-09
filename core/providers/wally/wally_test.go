@@ -181,3 +181,88 @@ func TestWallyTextCompletionUnsupported(t *testing.T) {
 		t.Errorf("TextCompletion error: got %+v, want an unsupported-operation message", bifrostErr.Error)
 	}
 }
+
+// Local upstream capture pins the documented token field on every Wally route.
+func TestWallyOutputTokenContractWire(t *testing.T) {
+	for _, responses := range []bool{false, true} {
+		for _, streaming := range []bool{false, true} {
+			name := "chat"
+			if responses {
+				name = "responses"
+			}
+			if streaming {
+				name += "/stream"
+			}
+			t.Run(name, func(t *testing.T) {
+				bodies := make(chan []byte, 1)
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					body, err := io.ReadAll(r.Body)
+					if err != nil {
+						t.Error(err)
+					}
+					bodies <- body
+					if r.URL.Path != "/v1/chat/completions" {
+						t.Errorf("path: %s", r.URL.Path)
+					}
+					if streaming {
+						w.Header().Set("Content-Type", "text/event-stream")
+						io.WriteString(w, "data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"deepseek-v4.1-flash\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"ok\"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"deepseek-v4.1-flash\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
+					} else {
+						w.Header().Set("Content-Type", "application/json")
+						io.WriteString(w, `{"id":"chatcmpl-1","object":"chat.completion","created":1,"model":"deepseek-v4.1-flash","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`)
+					}
+				}))
+				defer server.Close()
+				provider, err := wally.NewWallyProvider(&schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL + "/v1", AllowPrivateNetwork: true}}, bifrost.NewDefaultLogger(schemas.LogLevelError))
+				if err != nil {
+					t.Fatal(err)
+				}
+				ctx, cancel := schemas.NewBifrostContextWithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				key := schemas.Key{Value: *schemas.NewSecretVar("local-test-key")}
+				chat := &schemas.BifrostChatRequest{Provider: schemas.Wally, Model: "deepseek-v4.1-flash", Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}}}, Params: &schemas.ChatParameters{MaxCompletionTokens: schemas.Ptr(512)}}
+				responseReq := &schemas.BifrostResponsesRequest{Provider: schemas.Wally, Model: chat.Model, Input: []schemas.ResponsesMessage{{Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")}}}, Params: &schemas.ResponsesParameters{MaxOutputTokens: schemas.Ptr(512)}}
+				var stream chan *schemas.BifrostStreamChunk
+				var bfErr *schemas.BifrostError
+				postHookRunner := func(_ *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+					return result, err
+				}
+				if responses {
+					if streaming {
+						stream, bfErr = provider.ResponsesStream(ctx, postHookRunner, nil, key, responseReq)
+					} else {
+						_, bfErr = provider.Responses(ctx, key, responseReq)
+					}
+				} else {
+					if streaming {
+						stream, bfErr = provider.ChatCompletionStream(ctx, postHookRunner, nil, key, chat)
+					} else {
+						_, bfErr = provider.ChatCompletion(ctx, key, chat)
+					}
+				}
+				if bfErr != nil {
+					t.Fatalf("provider error: %v", bfErr)
+				}
+				if streaming {
+					for chunk := range stream {
+						if chunk.BifrostError != nil {
+							t.Errorf("stream error: %v", chunk.BifrostError)
+						}
+					}
+				}
+				body := <-bodies
+				t.Logf("outgoing body: %s", body)
+				var wire map[string]json.RawMessage
+				if err := json.Unmarshal(body, &wire); err != nil {
+					t.Fatal(err)
+				}
+				if string(wire["max_tokens"]) != "512" {
+					t.Errorf("want max_tokens=512; got %s", body)
+				}
+				if _, ok := wire["max_completion_tokens"]; ok {
+					t.Errorf("unexpected max_completion_tokens: %s", body)
+				}
+			})
+		}
+	}
+}
