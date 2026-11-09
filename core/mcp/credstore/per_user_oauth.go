@@ -65,7 +65,7 @@ func (r *perUserOAuthResolver) ConnectionHeaders(ctx *schemas.BifrostContext, co
 		// before the upstream authorize URL — which carries the single-use state — is
 		// ever revealed, and the callback binds the token to the flow's recorded
 		// identity. So initiating the flow here grants nothing on its own.
-		flowInitiation, sessionID, flowErr := r.provider.InitiateUserOAuthFlow(ctx, *config.OauthConfigID, config.ID, redirectURI, mode)
+		flowInitiation, sessionID, flowErr := r.provider.InitiateUserOAuthFlow(ctx, *config.OauthConfigID, config.ID, redirectURI, mode, "")
 		if flowErr != nil {
 			return nil, fmt.Errorf("failed to initiate per-user OAuth flow for %s: %w", config.Name, flowErr)
 		}

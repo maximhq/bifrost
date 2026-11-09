@@ -54,6 +54,14 @@ func (m *fakeMCPManagerVerifyOnly) RequiresPerCallConnection(_ *schemas.MCPClien
 	return false
 }
 
+func (*fakeMCPManagerVerifyOnly) IsMCPAllowedForUser(context.Context, string, string) bool {
+	return false
+}
+
+func (*fakeMCPManagerVerifyOnly) IsMCPCredentialActionAllowedOnOthers(*fasthttp.RequestCtx, MCPCredentialAction) bool {
+	return false
+}
+
 // mockUpdateConfigStore embeds the interface so unimplemented methods panic if called.
 // The test asserts UpdateMCPClientConfig is NOT called when verification fails.
 type mockUpdateConfigStore struct {
