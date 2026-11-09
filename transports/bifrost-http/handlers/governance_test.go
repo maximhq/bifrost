@@ -5791,16 +5791,10 @@ func newOwnedBudgetsStore(t *testing.T) configstore.ConfigStore {
 	require.NoError(t, store.CreateTeam(ctx, &configstoreTables.TableTeam{ID: "team-1", Name: "Team"}))
 	return store
 }
-
-// ownedByTeam stamps the team as the owner of a new row.
-
 func ownedByTeam(b *configstoreTables.TableBudget) {
 	teamID := "team-1"
 	b.TeamID = &teamID
 }
-
-// reconcileOwned runs one reconcile pass in its own transaction.
-
 func reconcileOwned(t *testing.T, store configstore.ConfigStore, existing []configstoreTables.TableBudget, requests []CreateBudgetRequest, usageReset *BudgetUsageReset) ([]configstoreTables.TableBudget, error) {
 	t.Helper()
 	var out []configstoreTables.TableBudget
@@ -5811,11 +5805,6 @@ func reconcileOwned(t *testing.T, store configstore.ConfigStore, existing []conf
 	})
 	return out, err
 }
-
-// TestReconcileOwnedBudgets pins the one reconcile path every owner shares: a new row per declared
-// window, a row matched by window edited in place with its spend kept, a row matched by id renamed
-// onto another window, a row the request leaves out deleted, and the operator's reset zeroing the
-// matched rows and reporting them.
 func TestReconcileOwnedBudgets(t *testing.T) {
 	store := newOwnedBudgetsStore(t)
 	ctx := context.Background()
@@ -5869,10 +5858,6 @@ func TestReconcileOwnedBudgets(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, quiet.BudgetIDs())
 }
-
-// TestReconcileOwnedBudgetsRefusesBadDeclarations pins the failures that come back as bad requests
-// rather than store errors: two budgets on one window, a zero or negative limit, an unparsable window,
-// and an id the owner does not hold.
 func TestReconcileOwnedBudgetsRefusesBadDeclarations(t *testing.T) {
 	store := newOwnedBudgetsStore(t)
 	for name, requests := range map[string][]CreateBudgetRequest{
@@ -5889,19 +5874,12 @@ func TestReconcileOwnedBudgetsRefusesBadDeclarations(t *testing.T) {
 		})
 	}
 }
-
-// TestReconcileOwnedBudgetsRefusesANilTransaction pins that a call without a transaction is an error,
-// not a crash: the store reads an explicit nil as a transaction it was given.
 func TestReconcileOwnedBudgetsRefusesANilTransaction(t *testing.T) {
 	store := newOwnedBudgetsStore(t)
 	_, err := ReconcileOwnedBudgets(context.Background(), store, nil, nil, []CreateBudgetRequest{{MaxLimit: 1, ResetDuration: "1M"}}, false, nil, nil, NewBudgetStartsAtZero)
 	require.Error(t, err)
 	assert.False(t, IsBadRequestError(err), "a missing transaction is the caller's bug, not a bad request")
 }
-
-// TestReconcileOwnedBudgetsNewBudgetUsage pins the two ways a new budget can start. Beside a weekly
-// budget with spend, a new monthly budget starts at zero for an owner that starts new budgets at zero
-// (teams), and with the weekly spend for one that inherits from its closest shorter window (customers).
 func TestReconcileOwnedBudgetsNewBudgetUsage(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -5934,4 +5912,29 @@ func TestReconcileOwnedBudgetsNewBudgetUsage(t *testing.T) {
 			t.Fatal("the monthly budget was not created")
 		})
 	}
+}
+
+// TestApplyRateLimitUpdate pins what a team's or customer's update does to its stored rate limit: a
+// maximum left out is cleared with its window, a maximum sent with a window takes it, and a maximum
+// sent without one keeps the window already stored instead of failing validation.
+func TestApplyRateLimitUpdate(t *testing.T) {
+	hour, day := "1h", "1d"
+	tokens, requests := int64(100), int64(10)
+	stored := func() *configstoreTables.TableRateLimit {
+		return &configstoreTables.TableRateLimit{TokenMaxLimit: &tokens, TokenResetDuration: &hour, RequestMaxLimit: &requests, RequestResetDuration: &hour}
+	}
+
+	keepWindow := stored()
+	newTokens := int64(200)
+	applyRateLimitUpdate(keepWindow, &UpdateRateLimitRequest{TokenMaxLimit: &newTokens, RequestMaxLimit: &requests})
+	assert.Equal(t, int64(200), *keepWindow.TokenMaxLimit)
+	require.NotNil(t, keepWindow.TokenResetDuration)
+	assert.Equal(t, "1h", *keepWindow.TokenResetDuration, "a maximum sent alone keeps the stored window")
+	require.NoError(t, validateRateLimit(keepWindow))
+
+	newWindow := stored()
+	applyRateLimitUpdate(newWindow, &UpdateRateLimitRequest{TokenMaxLimit: &tokens, TokenResetDuration: &day})
+	assert.Equal(t, "1d", *newWindow.TokenResetDuration)
+	assert.Nil(t, newWindow.RequestMaxLimit, "a maximum left out is cleared")
+	assert.Nil(t, newWindow.RequestResetDuration, "with its window")
 }
