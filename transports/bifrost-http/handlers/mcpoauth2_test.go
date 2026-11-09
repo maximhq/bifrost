@@ -1,7 +1,9 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"net/url"
 	"testing"
 	"time"
@@ -130,6 +132,159 @@ func TestHandleOAuthCallback_ChecksIssuer(t *testing.T) {
 			require.NoError(t, err)
 			assert.Contains(t, location, "/workspace/mcp-registry/oauth-callback?status=failed")
 			assert.Contains(t, location, tc.wanted)
+		})
+	}
+}
+
+// setFlowOrigin records origin as the dashboard page the flow under state started from.
+func setFlowOrigin(t *testing.T, store configstore.ConfigStore, state, origin string) {
+	t.Helper()
+	flow, err := store.GetOauthUserSessionByState(context.Background(), state)
+	require.NoError(t, err)
+	require.NotNil(t, flow)
+	flow.Origin = origin
+	require.NoError(t, store.UpdateOauthUserSession(context.Background(), flow))
+}
+
+// signInDashboardSession stores a live dashboard session and returns its cookie value.
+func signInDashboardSession(t *testing.T, store configstore.ConfigStore) string {
+	t.Helper()
+	const token = "dashboard-session"
+	require.NoError(t, store.CreateSession(context.Background(), &tables.SessionsTable{Token: token, ExpiresAt: time.Now().Add(time.Hour)}))
+	return token
+}
+
+// callOAuthCallbackAs runs the callback with query, sending cookie as the dashboard session
+// when it is set, and returns the path and query the browser is redirected to.
+func callOAuthCallbackAs(t *testing.T, h *OAuthHandler, query, cookie string) string {
+	t.Helper()
+	var req fasthttp.Request
+	req.Header.SetMethod(fasthttp.MethodGet)
+	req.SetRequestURI("/api/oauth/callback?" + query)
+	if cookie != "" {
+		req.Header.SetCookie("token", cookie)
+	}
+	var ctx fasthttp.RequestCtx
+	ctx.Init(&req, nil, nil)
+	h.handleOAuthCallback(&ctx)
+	require.Equal(t, fasthttp.StatusFound, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	location, err := url.Parse(string(ctx.Response.Header.Peek(fasthttp.HeaderLocation)))
+	require.NoError(t, err)
+	return location.RequestURI()
+}
+
+// A per-user sign-in started from the Home page sends the browser back to Home, naming the client
+// and how sign-in went, whether or not the callback request carries a session cookie this handler
+// recognizes: only connect records an origin, and connect needs a signed-in user.
+func TestOAuthCallback_ReturnsToThePageTheSignInStartedFrom(t *testing.T) {
+	const home = "/workspace/home?tab=access"
+	const code = "state=state-1&code=code-1"
+
+	t.Run("signed in", func(t *testing.T) {
+		cfg, store, _ := newOAuthSignIn(t, false)
+		setFlowOrigin(t, store, "state-1", tables.MCPOauthFlowOriginHome)
+
+		location := callOAuthCallbackAs(t, NewOAuthHandler(cfg.OAuthProvider, nil, cfg, &signInMCPManager{}), code, signInDashboardSession(t, store))
+
+		assert.Equal(t, home+"&sign_in=connected&mcp_client_id=client-notes", location)
+	})
+
+	t.Run("without a session cookie", func(t *testing.T) {
+		cfg, store, _ := newOAuthSignIn(t, false)
+		setFlowOrigin(t, store, "state-1", tables.MCPOauthFlowOriginHome)
+
+		location := callOAuthCallbackAs(t, NewOAuthHandler(cfg.OAuthProvider, nil, cfg, &signInMCPManager{}), code, "")
+
+		assert.Equal(t, home+"&sign_in=connected&mcp_client_id=client-notes", location)
+	})
+
+	t.Run("denied at the provider, without a session cookie", func(t *testing.T) {
+		cfg, store, _ := newOAuthSignIn(t, false)
+		setFlowOrigin(t, store, "state-1", tables.MCPOauthFlowOriginHome)
+
+		location := callOAuthCallbackAs(t, NewOAuthHandler(cfg.OAuthProvider, nil, cfg, &signInMCPManager{}), "state=state-1&error=access_denied", "")
+
+		assert.Equal(t, home+"&sign_in=failed&mcp_client_id=client-notes&error="+url.QueryEscape("Authentication was denied or failed. Please try again."), location)
+	})
+
+	t.Run("under a base path", func(t *testing.T) {
+		lib.SetBasePath("/bifrost")
+		t.Cleanup(func() { lib.SetBasePath("") })
+		cfg, store, _ := newOAuthSignIn(t, false)
+		setFlowOrigin(t, store, "state-1", tables.MCPOauthFlowOriginHome)
+
+		location := callOAuthCallbackAs(t, NewOAuthHandler(cfg.OAuthProvider, nil, cfg, &signInMCPManager{}), code, signInDashboardSession(t, store))
+
+		assert.Equal(t, "/bifrost"+home+"&sign_in=connected&mcp_client_id=client-notes", location)
+	})
+
+	t.Run("tools could not be loaded", func(t *testing.T) {
+		cfg, store, _ := newOAuthSignIn(t, true)
+		setFlowOrigin(t, store, "state-1", tables.MCPOauthFlowOriginHome)
+		manager := &signInMCPManager{verifyErr: errors.New("upstream unavailable")}
+
+		location := callOAuthCallbackAs(t, NewOAuthHandler(cfg.OAuthProvider, nil, cfg, manager), code, signInDashboardSession(t, store))
+
+		assert.Equal(t, home+"&sign_in=connected&mcp_client_id=client-notes&tools=pending&client=notes", location)
+	})
+
+	t.Run("denied at the provider", func(t *testing.T) {
+		cfg, store, _ := newOAuthSignIn(t, false)
+		setFlowOrigin(t, store, "state-1", tables.MCPOauthFlowOriginHome)
+
+		location := callOAuthCallbackAs(t, NewOAuthHandler(cfg.OAuthProvider, nil, cfg, &signInMCPManager{}), "state=state-1&error=access_denied", signInDashboardSession(t, store))
+
+		assert.Equal(t, home+"&sign_in=failed&mcp_client_id=client-notes&error="+url.QueryEscape("Authentication was denied or failed. Please try again."), location)
+	})
+
+	t.Run("token exchange fails", func(t *testing.T) {
+		// Completing a flow deletes its row when the exchange fails, so the page is read before.
+		cfg, store := newSignInConfig(t)
+		require.NoError(t, store.CreateOauthConfig(context.Background(), &tables.TableOauthConfig{
+			ID: "oauth-notes", ClientID: schemas.NewSecretVar("bifrost"), TokenURL: "http://127.0.0.1:1/token",
+			AuthorizeURL: "https://idp.example/authorize", RedirectURI: "http://localhost/api/oauth/callback", Status: "authorized",
+		}))
+		createSignInClient(t, store, &schemas.MCPClientConfig{
+			ID: "client-notes", Name: "notes", ConnectionType: schemas.MCPConnectionTypeHTTP,
+			ConnectionString: schemas.NewSecretVar("http://upstream.invalid/mcp"), AuthType: schemas.MCPAuthTypePerUserOauth,
+			OauthConfigID: schemas.Ptr("oauth-notes"), ToolsToExecute: []string{"*"},
+		}, false)
+		createUserOAuthFlow(t, store, "client-notes", "alice", "state-1")
+		setFlowOrigin(t, store, "state-1", tables.MCPOauthFlowOriginHome)
+
+		location := callOAuthCallbackAs(t, NewOAuthHandler(cfg.OAuthProvider, nil, cfg, &signInMCPManager{}), code, signInDashboardSession(t, store))
+
+		assert.Equal(t, home+"&sign_in=failed&mcp_client_id=client-notes&error="+url.QueryEscape("OAuth authentication failed. Please try again."), location)
+	})
+}
+
+// The callback keeps the default page for a flow with no origin, or whose origin names no page it
+// knows: a visitor without a dashboard session lands on the public page, a signed-in one on the
+// sessions list.
+func TestOAuthCallback_KeepsTheDefaultPageForAnUnknownOrigin(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		origin   string
+		signedIn bool
+		want     string
+	}{
+		{name: "not signed in, no origin", want: "/workspace/mcp-sessions/auth-success"},
+		{name: "not signed in, unknown origin", origin: "settings", want: "/workspace/mcp-sessions/auth-success"},
+		{name: "no origin", signedIn: true, want: "/workspace/mcp-sessions?completed=1"},
+		{name: "unknown origin", origin: "settings", signedIn: true, want: "/workspace/mcp-sessions?completed=1"},
+		{name: "a path, not an origin", origin: "/workspace/home", signedIn: true, want: "/workspace/mcp-sessions?completed=1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, store, _ := newOAuthSignIn(t, false)
+			setFlowOrigin(t, store, "state-1", tc.origin)
+			cookie := ""
+			if tc.signedIn {
+				cookie = signInDashboardSession(t, store)
+			}
+
+			location := callOAuthCallbackAs(t, NewOAuthHandler(cfg.OAuthProvider, nil, cfg, &signInMCPManager{}), "state=state-1&code=code-1", cookie)
+
+			assert.Equal(t, tc.want, location)
 		})
 	}
 }

@@ -1160,6 +1160,28 @@ func TestInitiateUserOAuthFlow_AdminMode_ReusesPendingRow(t *testing.T) {
 	assert.Len(t, store.oauthFlows, 2)
 }
 
+// TestInitiateUserOAuthFlow_ReusedRowDropsItsOrigin pins that a pending flow reused by a
+// later initiation (a tool call's sign-in link, say) forgets the dashboard page an earlier
+// initiation started on, so its callback does not send the caller to a page they never left.
+func TestInitiateUserOAuthFlow_ReusedRowDropsItsOrigin(t *testing.T) {
+	store := newTestConfigStore()
+	oauthConfigID := "user-oauth-config"
+	seedAdminOauthConfig(store, oauthConfigID)
+	provider := NewOAuth2Provider(store, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyUserID, "alice")
+
+	_, flowID, err := provider.InitiateUserOAuthFlow(ctx, oauthConfigID, "mcp-client-1", "http://localhost/api/oauth/callback", schemas.MCPAuthModeUser)
+	require.NoError(t, err)
+	store.oauthFlows[flowID].Origin = tables.MCPOauthFlowOriginHome
+
+	_, reusedID, err := provider.InitiateUserOAuthFlow(ctx, oauthConfigID, "mcp-client-1", "http://localhost/api/oauth/callback", schemas.MCPAuthModeUser)
+	require.NoError(t, err)
+
+	require.Equal(t, flowID, reusedID, "the pending row is reused")
+	assert.Empty(t, store.oauthFlows[reusedID].Origin)
+}
+
 // TestPerUserOAuthSweepWorker_SweepsAbandonedSharedInstall reproduces an
 // abandoned shared-OAuth install against a real SQLite config store: the UI
 // Create flow runs InitiateOAuthFlow, which writes a pending oauth_configs row

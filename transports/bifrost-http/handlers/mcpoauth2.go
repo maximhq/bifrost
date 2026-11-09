@@ -112,6 +112,10 @@ func (h *OAuthHandler) handleOAuthCallback(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	// Read where a per-user flow started before completing it: completion
+	// deletes the flow row on every failure after it claims it.
+	origin, mcpClientID := h.flowOrigin(ctx, state)
+
 	// Per-user runtime flow (state lives in oauth_user_sessions).
 	completion, perUserErr := h.oauthProvider.CompleteUserOAuthFlow(ctx, state, code)
 	if perUserErr != nil && !errors.Is(perUserErr, schemas.ErrOAuth2NotPerUserSession) {
@@ -119,12 +123,12 @@ func (h *OAuthHandler) handleOAuthCallback(ctx *fasthttp.RequestCtx) {
 		// be replayed by anyone with log access while the flow is alive.
 		logger.Error("[oauth] per-user callback completion failed: err=%v", perUserErr)
 		const userMsg = "OAuth authentication failed. Please try again."
-		ctx.Redirect(perUserCallbackRedirect(ctx, h.store.ConfigStore, userMsg, false), fasthttp.StatusFound)
+		ctx.Redirect(perUserCallbackRedirect(ctx, h.store.ConfigStore, userMsg, false, origin, mcpClientID), fasthttp.StatusFound)
 		return
 	}
 	if perUserErr == nil {
 		pendingClient := h.discoverAfterOAuthSignIn(ctx, completion)
-		redirect := perUserCallbackRedirect(ctx, h.store.ConfigStore, "", true)
+		redirect := perUserCallbackRedirect(ctx, h.store.ConfigStore, "", true, origin, mcpClientID)
 		if pendingClient != "" {
 			redirect = withToolsPending(redirect, pendingClient)
 		}
@@ -218,6 +222,7 @@ func (h *OAuthHandler) handleCallbackError(ctx *fasthttp.RequestCtx, state, erro
 // per-user sessions page. An admin flow is marked failed; a per-user one stays pending for a retry.
 func (h *OAuthHandler) redirectCallbackFailure(ctx *fasthttp.RequestCtx, state, userMsg string) {
 	isAdminTestFlow := false
+	var origin, mcpClientID string
 	if state != "" {
 		flow, err := h.store.ConfigStore.GetOauthUserSessionByState(ctx, state)
 		switch {
@@ -230,6 +235,7 @@ func (h *OAuthHandler) redirectCallbackFailure(ctx *fasthttp.RequestCtx, state, 
 			logger.Error("[oauth] failed to look up oauth flow by state for callback error: err=%v", err)
 		case flow != nil:
 			isAdminTestFlow = flow.FlowMode == "admin"
+			origin, mcpClientID = flow.Origin, flow.MCPClientID
 			if isAdminTestFlow {
 				flow.Status = "failed"
 				if updateErr := h.store.ConfigStore.UpdateOauthUserSession(ctx, flow); updateErr != nil {
@@ -242,18 +248,49 @@ func (h *OAuthHandler) redirectCallbackFailure(ctx *fasthttp.RequestCtx, state, 
 		ctx.Redirect(lib.WithBasePath("/workspace/mcp-registry/oauth-callback?status=failed&error="+url.QueryEscape(userMsg)), fasthttp.StatusFound)
 		return
 	}
-	ctx.Redirect(perUserCallbackRedirect(ctx, h.store.ConfigStore, userMsg, false), fasthttp.StatusFound)
+	ctx.Redirect(perUserCallbackRedirect(ctx, h.store.ConfigStore, userMsg, false, origin, mcpClientID), fasthttp.StatusFound)
+}
+
+// flowOrigin returns the dashboard page the flow under state started from and
+// its MCP client. A failed lookup is logged and returns no origin, which keeps
+// the default page.
+func (h *OAuthHandler) flowOrigin(ctx context.Context, state string) (origin, mcpClientID string) {
+	if state == "" || h.store == nil || h.store.ConfigStore == nil {
+		return "", ""
+	}
+	flow, err := h.store.ConfigStore.GetOauthUserSessionByState(ctx, state)
+	if err != nil {
+		logger.Warn("[oauth] failed to look up where the oauth flow started: err=%v", err)
+		return "", ""
+	}
+	if flow == nil {
+		return "", ""
+	}
+	return flow.Origin, flow.MCPClientID
 }
 
 // perUserCallbackRedirect picks the post-callback destination for a per-user
-// flow based on whether the visitor has a valid dashboard session. Admins land
-// back on the sessions list (full chrome) with either ?completed=1 (success)
-// or ?error=... (failure). Anonymous temp-token visitors land on the public
-// MinimalShell pages (/auth-success or /auth-failed) which don't require a
-// cookie. This mirrors the model used by the temp-token-aware UI: keep admins
-// in the dashboard, route end users to chrome-less landings. Paths carry
-// server.base_path so the browser lands back under the proxy prefix.
-func perUserCallbackRedirect(ctx *fasthttp.RequestCtx, store configstore.ConfigStore, userMsg string, success bool) string {
+// flow. A sign-in started from a known dashboard page (origin) returns there,
+// naming the MCP client and whether it succeeded; only the pages listed here
+// are ever redirected to. The origin alone decides it, whatever session cookie
+// the callback carries: only connect records an origin, and connect needs a
+// signed-in user, so the flow was started from that page; the page asks for a
+// sign-in again if the session has ended meanwhile. Otherwise the visitor's
+// dashboard session decides: admins land back on the sessions list (full
+// chrome) with either ?completed=1 (success) or ?error=... (failure), and
+// anonymous temp-token visitors land on the public MinimalShell pages
+// (/auth-success or /auth-failed) which don't require a cookie. This mirrors
+// the model used by the temp-token-aware UI: keep admins in the dashboard,
+// route end users to chrome-less landings. Paths carry server.base_path so the
+// browser lands back under the proxy prefix.
+func perUserCallbackRedirect(ctx *fasthttp.RequestCtx, store configstore.ConfigStore, userMsg string, success bool, origin, mcpClientID string) string {
+	switch origin {
+	case configstoreTables.MCPOauthFlowOriginHome:
+		if success {
+			return lib.WithBasePath("/workspace/home?tab=access&sign_in=connected&mcp_client_id=" + url.QueryEscape(mcpClientID))
+		}
+		return lib.WithBasePath("/workspace/home?tab=access&sign_in=failed&mcp_client_id=" + url.QueryEscape(mcpClientID) + "&error=" + url.QueryEscape(userMsg))
+	}
 	cookieToken := string(ctx.Request.Header.Cookie("token"))
 	authenticated := cookieToken != "" && validateSession(ctx, store, cookieToken)
 	if success {

@@ -1658,6 +1658,9 @@ func (p *OAuth2Provider) InitiateUserOAuthFlow(ctx context.Context, oauthConfigI
 		existing.Status = "pending"
 		existing.ExpiresAt = expiresAt
 		existing.Issuer, existing.IssParameterSupported = templateConfig.Issuer, templateConfig.IssParameterSupported
+		// The page an earlier attempt started on is not where this one started; a caller
+		// starting from a dashboard page records it again after initiating.
+		existing.Origin = ""
 		if err := p.configStore.UpdateOauthUserSession(ctx, existing); err != nil {
 			return nil, "", fmt.Errorf("failed to update flow row for reauth: %w", err)
 		}
