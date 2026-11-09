@@ -730,6 +730,33 @@ func TestToAnthropicResponsesResponse_IncompleteReportsTruncationStopReason(t *t
 			want:       AnthropicStopReasonRefusal,
 		},
 		{
+			// Chat-to-Responses keeps content_filter as the stop reason, which wins over incomplete_details.
+			name:       "ContentFilterStopReasonIsRefusal",
+			status:     schemas.ResponsesResponseStatusIncomplete,
+			stopReason: schemas.Ptr("content_filter"),
+			incomplete: &schemas.ResponsesResponseIncompleteDetails{Reason: schemas.ResponsesResponseIncompleteReasonContentFilter},
+			want:       AnthropicStopReasonRefusal,
+		},
+		{
+			name:       "BedrockGuardrailIntervenedIsRefusal",
+			status:     schemas.ResponsesResponseStatusIncomplete,
+			stopReason: schemas.Ptr("guardrail_intervened"),
+			incomplete: &schemas.ResponsesResponseIncompleteDetails{Reason: schemas.ResponsesResponseIncompleteReasonContentFilter},
+			want:       AnthropicStopReasonRefusal,
+		},
+		{
+			name:       "VLLMRepetitionIsEndTurn",
+			status:     schemas.ResponsesResponseStatusCompleted,
+			stopReason: schemas.Ptr("repetition"),
+			want:       AnthropicStopReasonEndTurn,
+		},
+		{
+			name:       "VLLMAbortIsEndTurn",
+			status:     schemas.ResponsesResponseStatusCompleted,
+			stopReason: schemas.Ptr("abort"),
+			want:       AnthropicStopReasonEndTurn,
+		},
+		{
 			// Control: a completed text turn with neither field keeps end_turn.
 			name:   "CompletedTextIsEndTurn",
 			status: schemas.ResponsesResponseStatusCompleted,
