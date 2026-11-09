@@ -200,6 +200,24 @@ func (c *client) collect(eventType string) []gjson.Result {
 	}
 }
 
+// drain collects every frame that arrives within d, for tests that assert something does not arrive.
+func (c *client) drain(d time.Duration) []gjson.Result {
+	c.t.Helper()
+	var got []gjson.Result
+	deadline := time.After(d)
+	for {
+		select {
+		case frame, open := <-c.frames:
+			if !open {
+				return got
+			}
+			got = append(got, frame)
+		case <-deadline:
+			return got
+		}
+	}
+}
+
 // anyType makes expectError accept an error of any type.
 const anyType = ""
 

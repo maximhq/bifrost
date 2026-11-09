@@ -352,7 +352,7 @@ export default function MCPView() {
 						id="mcp-agent-depth"
 						data-testid="mcp-agent-depth-input"
 						type="number"
-						className="w-24"
+						className="w-24 shrink-0"
 						value={localValues.mcp_agent_depth}
 						onChange={(e) => handleAgentDepthChange(e.target.value)}
 						min="1"
@@ -371,7 +371,7 @@ export default function MCPView() {
 						id="mcp-tool-execution-timeout"
 						data-testid="mcp-tool-timeout-input"
 						type="number"
-						className="w-24"
+						className="w-24 shrink-0"
 						value={localValues.mcp_tool_execution_timeout}
 						onChange={(e) => handleToolExecutionTimeoutChange(e.target.value)}
 						min="1"
@@ -390,7 +390,7 @@ export default function MCPView() {
 						id="mcp-tool-sync-interval"
 						data-testid="mcp-tool-sync-interval-input"
 						type="number"
-						className="w-24"
+						className="w-24 shrink-0"
 						value={localValues.mcp_tool_sync_interval}
 						onChange={(e) => handleToolSyncIntervalChange(e.target.value)}
 						min="0"
@@ -499,7 +499,7 @@ export default function MCPView() {
 						id="mcp-max-instructions-per-client"
 						data-testid="mcp-max-instructions-per-client-input"
 						type="number"
-						className="w-24"
+						className="w-24 shrink-0"
 						value={localValues.mcp_max_instructions_per_client}
 						onChange={(e) => handleMaxInstructionsPerClientChange(e.target.value)}
 						min="0"
@@ -520,7 +520,7 @@ export default function MCPView() {
 						id="mcp-max-instructions-total"
 						data-testid="mcp-max-instructions-total-input"
 						type="number"
-						className="w-24"
+						className="w-24 shrink-0"
 						value={localValues.mcp_max_instructions_total}
 						onChange={(e) => handleMaxInstructionsTotalChange(e.target.value)}
 						min="0"
