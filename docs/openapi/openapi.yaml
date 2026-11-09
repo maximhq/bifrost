@@ -867,6 +867,8 @@ paths:
   # MCP — per-user sessions (OAuth tokens + headers credentials + pending flows)
   /api/mcp/sessions:
     $ref: "./paths/management/mcp.yaml#/sessions"
+  /api/mcp/sessions/connect:
+    $ref: "./paths/management/mcp.yaml#/session-connect"
   /api/mcp/sessions/{id}:
     $ref: "./paths/management/mcp.yaml#/session-by-id"
   /api/mcp/sessions/{id}/reauth:

@@ -1719,6 +1719,12 @@ MCPSessionRow:
         `vk` caller on an MCP client with `per_user_discovery` on that is not
         awaiting admin verification, and, for a `user` row, only when the calling
         user is the row's user. The UI offers Refresh tools only when this is true.
+    owned_by_caller:
+      type: boolean
+      description: |
+        Whether the row is bound to the calling user's own identity: a `user`
+        row of their user ID, a credential or a pending flow. A caller manages
+        their own rows end to end.
     discovery:
       $ref: '#/MCPSessionDiscovery'
       nullable: true
@@ -1796,6 +1802,50 @@ MCPSessionReauthResponse:
       type: string
       enum: [oauth, headers]
       description: Set only on header re-auth
+
+MCPSessionConnectRequest:
+  type: object
+  description: Body of POST /api/mcp/sessions/connect.
+  required: [mcp_client_id]
+  properties:
+    mcp_client_id:
+      type: string
+      description: The MCP server to connect to
+    origin:
+      type: string
+      enum: [home]
+      description: |
+        The dashboard page the sign-in starts from. The OAuth callback returns
+        the browser to that page. Omit it to return to the default page.
+
+MCPSessionConnectResponse:
+  type: object
+  description: Response for POST /api/mcp/sessions/connect.
+  required: [kind, flow_id]
+  properties:
+    kind:
+      type: string
+      enum: [oauth, headers]
+      description: Which sign-in was started
+    flow_id:
+      type: string
+      description: ID of the pending flow row
+    authorize_url:
+      type: string
+      description: "`oauth` only: the provider's authorize URL for the browser to open"
+    required_header_keys:
+      type: array
+      items:
+        type: string
+      description: "`headers` only: the header names to submit"
+    missing_header_keys:
+      type: array
+      items:
+        type: string
+      description: |
+        `headers` only: the required header names the user's stored credential
+        does not hold, for example ones an admin added since they last
+        submitted. Empty when they have no stored credential.
 
 # ─── Per-User Headers submission flow ───────────────────────────────────────
 

@@ -49133,13 +49133,152 @@
         }
       }
     },
+    "/api/mcp/sessions/connect": {
+      "post": {
+        "summary": "Connect your own credential to an MCP server",
+        "description": "Starts the signed-in user's own sign-in to an MCP server they can reach:\nthe first one, or a fresh one in place of a pending, expired or rejected\ncredential. The credential is keyed to the user, so it serves their calls\nthrough their own keys and sign-in.\n\n- **`per_user_oauth`**: starts the user's OAuth flow for the server, or\n  reuses their pending one, and returns the provider's authorize URL for\n  the browser to open directly. With `origin`, the OAuth callback returns\n  the browser to that page, adding\n  `sign_in=connected|failed`, `mcp_client_id` and, on failure, `error`.\n- **`per_user_headers`**: starts a submission flow and returns its ID with\n  the header names to send to\n  PUT /api/mcp/per-user-headers/flows/{id}.\n\nNeeds a signed-in user (403 otherwise). A server the user cannot reach\nanswers 404, as if it did not exist. Only an enabled server that is not\nawaiting admin verification and takes a caller's own credential\n(`per_user_oauth` or `per_user_headers`) can be connected (409 otherwise).\n",
+        "operationId": "connectMcpSession",
+        "x-mint": {
+          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `MCPGateway:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+        },
+        "tags": [
+          "MCP"
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "description": "Body of POST /api/mcp/sessions/connect.",
+                "required": [
+                  "mcp_client_id"
+                ],
+                "properties": {
+                  "mcp_client_id": {
+                    "type": "string",
+                    "description": "The MCP server to connect to"
+                  },
+                  "origin": {
+                    "type": "string",
+                    "enum": [
+                      "home"
+                    ],
+                    "description": "The dashboard page the sign-in starts from. The OAuth callback returns\nthe browser to that page. Omit it to return to the default page.\n"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Sign-in started",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "Response for POST /api/mcp/sessions/connect.",
+                  "required": [
+                    "kind",
+                    "flow_id"
+                  ],
+                  "properties": {
+                    "kind": {
+                      "type": "string",
+                      "enum": [
+                        "oauth",
+                        "headers"
+                      ],
+                      "description": "Which sign-in was started"
+                    },
+                    "flow_id": {
+                      "type": "string",
+                      "description": "ID of the pending flow row"
+                    },
+                    "authorize_url": {
+                      "type": "string",
+                      "description": "`oauth` only: the provider's authorize URL for the browser to open"
+                    },
+                    "required_header_keys": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "`headers` only: the header names to submit"
+                    },
+                    "missing_header_keys": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "`headers` only: the required header names the user's stored credential\ndoes not hold, for example ones an admin added since they last\nsubmitted. Empty when they have no stored credential.\n"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing mcp_client_id, malformed body, or an unknown origin"
+          },
+          "401": {
+            "description": "Unauthorized — missing or invalid credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "No signed-in user"
+          },
+          "404": {
+            "description": "The server does not exist or the user cannot reach it"
+          },
+          "409": {
+            "description": "The server is disabled, awaits admin verification, or does not take a caller's own credential; or, for OAuth, another sign-in replaced this one while it was starting (try again)"
+          },
+          "503": {
+            "description": "The OAuth or per-user headers provider is not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/mcp/sessions/{id}": {
       "delete": {
         "summary": "Revoke an MCP session",
         "description": "Revokes a session by primary key. Accepts these row kinds:\n- OAuth token rows → hard-deletes the token plus any pending OAuth flow\n  for the same binding, so a callback that has not yet claimed that flow\n  cannot undo the revoke\n- Header credential rows → hard-deletes the credential plus any pending\n  header submission flow for the same binding\n- Pending per-user-headers flow rows → hard-deletes just the flow\n- Pending per-user OAuth flow rows → hard-deletes just the flow, so a\n  callback that has not yet claimed it can no longer mint a token. A\n  callback already completing at that moment can still save its token,\n  which then appears as a session that can be revoked\n\nRevoking a user or virtual-key credential on an MCP client with\n`per_user_discovery` on also deletes the caller's discovery made with\nit, so their next request offers the client's `<name>-connect` tool.\n\nBifrost does **not** call the upstream provider's revoke endpoint —\nrevocation is local. Per-user-headers credentials never call upstream.\n",
         "operationId": "revokeMcpSession",
         "x-mint": {
-          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `MCPGateway:Delete` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `MCPGateway:View` | RBAC role or API key scope |\n\n`MCPGateway:View` is enough to revoke your own sessions. Revoking anyone\nelse's also needs `MCPGateway:Delete`.\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "tags": [
           "MCP"
@@ -49176,6 +49315,9 @@
                 }
               }
             }
+          },
+          "403": {
+            "description": "The row is someone else's and the caller may not revoke others' sessions"
           },
           "404": {
             "description": "Resource not found",
@@ -49280,10 +49422,10 @@
     "/api/mcp/sessions/{id}/refresh": {
       "post": {
         "summary": "Refresh the tools of an MCP session's caller",
-        "description": "Discovers the tools, prompts and resources of the caller a session row\nbelongs to again, with the credential the row stores, and keeps what it\nfinds as that caller's discovery of the row's MCP client. Use it after the\nupstream server adds or removes tools, so the caller is served them\nwithout signing in again.\n\nOnly an `active` OAuth token or header credential of a `user` or `vk`\ncaller can be refreshed, on an MCP client with `per_user_discovery` on\nthat is not awaiting admin verification. A `user` row can be refreshed\nonly by that user; the row's `can_refresh` says whether the caller may.\n\nA refresh that cannot discover answers 502 and keeps the caller's\nexisting discovery. If the row is revoked or replaced while discovery\nruns, nothing is stored and the refresh answers 409.\n",
+        "description": "Discovers the tools, prompts and resources of the caller a session row\nbelongs to again, with the credential the row stores, and keeps what it\nfinds as that caller's discovery of the row's MCP client. Use it after the\nupstream server adds or removes tools, so the caller is served them\nwithout signing in again.\n\nOnly an `active` OAuth token or header credential of a `user` or `vk`\ncaller can be refreshed, on an MCP client with `per_user_discovery` on\nthat is not awaiting admin verification. A `user` row can be refreshed\nonly by that user, and a `vk` row only by a caller who may act on others'\ncredentials; the row's `can_refresh` says whether the caller may.\n\nA refresh that cannot discover answers 502 and keeps the caller's\nexisting discovery. If the row is revoked or replaced while discovery\nruns, nothing is stored and the refresh answers 409.\n",
         "operationId": "refreshMcpSession",
         "x-mint": {
-          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `MCPGateway:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `MCPGateway:View` | RBAC role or API key scope |\n\n`MCPGateway:View` is enough to refresh your own sessions. Refreshing a\nvirtual key's session also needs `MCPGateway:Create`.\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "tags": [
           "MCP"
@@ -49357,7 +49499,7 @@
             }
           },
           "403": {
-            "description": "A user's session, refreshed by someone other than that user"
+            "description": "A user's session, refreshed by someone other than that user, or a\nvirtual key's session, refreshed by a caller who may not act on others'\ncredentials\n"
           },
           "404": {
             "description": "Resource not found",
@@ -49572,11 +49714,17 @@
     },
     "/api/mcp/per-user-headers/credential/{id}": {
       "delete": {
-        "summary": "Revoke a per-user-headers credential",
-        "description": "Hard-deletes a per-user-headers credential row by primary key. Authorization\nscoping is enforced server-side — callers may only delete credentials\nvisible to their identity.\n\nThe unified DELETE /api/mcp/sessions/{id} is the more convenient entry\npoint; this typed endpoint exists for callers that already know they're\nacting on a header credential row.\n",
+        "summary": "Revoke a per-user-headers credential (deprecated path)",
+        "description": "Hard-deletes a per-user-headers credential row by primary key, plus any\npending header submission flow for the same binding. Authorization\nscoping is enforced server-side — callers may only delete credentials\nvisible to their identity.\n\n**Deprecated.** Use DELETE /api/mcp/sessions/{id}, which revokes a header\ncredential the same way, along with every other row kind the sessions\nlist shows.\n",
         "operationId": "revokePerUserHeadersCredential",
+        "deprecated": true,
+        "x-bifrost-successor": "/api/mcp/sessions/{id}",
+        "x-bifrost-removal": "following-major-release",
         "x-mint": {
-          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `MCPGateway:Delete` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+          "content": "<Warning>\n  This path is deprecated and will be removed in the following major release.\n  Use `/api/mcp/sessions/{id}` instead.\n</Warning>\n**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `MCPGateway:View` | RBAC role or API key scope |\n\n`MCPGateway:View` is enough to revoke your own credentials. Revoking anyone\nelse's also needs `MCPGateway:Delete`.\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n",
+          "metadata": {
+            "tag": "Removing soon"
+          }
         },
         "tags": [
           "MCP"
@@ -49613,6 +49761,9 @@
                 }
               }
             }
+          },
+          "403": {
+            "description": "The credential is someone else's and the caller may not revoke others' credentials"
           },
           "404": {
             "description": "Resource not found",
@@ -137776,6 +137927,10 @@
           "can_refresh": {
             "type": "boolean",
             "description": "Whether POST /api/mcp/sessions/{id}/refresh accepts this row for the\ncalling user: an active OAuth token or header credential of a `user` or\n`vk` caller on an MCP client with `per_user_discovery` on that is not\nawaiting admin verification, and, for a `user` row, only when the calling\nuser is the row's user. The UI offers Refresh tools only when this is true.\n"
+          },
+          "owned_by_caller": {
+            "type": "boolean",
+            "description": "Whether the row is bound to the calling user's own identity: a `user`\nrow of their user ID, a credential or a pending flow. A caller manages\ntheir own rows end to end.\n"
           },
           "discovery": {
             "type": "object",

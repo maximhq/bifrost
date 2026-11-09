@@ -1345,8 +1345,10 @@
                   "POST /api/mcp/client/{id}/verify-headers",
                   "POST /api/mcp/client/{id}/verify-exchange",
                   "GET /api/mcp/sessions",
+                  "POST /api/mcp/sessions/connect",
                   "DELETE /api/mcp/sessions/{id}",
                   "POST /api/mcp/sessions/{id}/reauth",
+                  "POST /api/mcp/sessions/{id}/refresh",
                   "GET /api/mcp/per-user-headers/flows/{id}",
                   "PUT /api/mcp/per-user-headers/flows/{id}",
                   "DELETE /api/mcp/per-user-headers/credential/{id}"

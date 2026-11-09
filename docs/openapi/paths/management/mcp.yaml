@@ -1064,6 +1064,74 @@ sessions:
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
 
+session-connect:
+  post:
+    summary: Connect your own credential to an MCP server
+    description: |
+      Starts the signed-in user's own sign-in to an MCP server they can reach:
+      the first one, or a fresh one in place of a pending, expired or rejected
+      credential. The credential is keyed to the user, so it serves their calls
+      through their own keys and sign-in.
+
+      - **`per_user_oauth`**: starts the user's OAuth flow for the server, or
+        reuses their pending one, and returns the provider's authorize URL for
+        the browser to open directly. With `origin`, the OAuth callback returns
+        the browser to that page, adding
+        `sign_in=connected|failed`, `mcp_client_id` and, on failure, `error`.
+      - **`per_user_headers`**: starts a submission flow and returns its ID with
+        the header names to send to
+        PUT /api/mcp/per-user-headers/flows/{id}.
+
+      Needs a signed-in user (403 otherwise). A server the user cannot reach
+      answers 404, as if it did not exist. Only an enabled server that is not
+      awaiting admin verification and takes a caller's own credential
+      (`per_user_oauth` or `per_user_headers`) can be connected (409 otherwise).
+    operationId: connectMcpSession
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `MCPGateway:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    tags: [MCP]
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/mcp.yaml#/MCPSessionConnectRequest'
+    responses:
+      '200':
+        description: Sign-in started
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/mcp.yaml#/MCPSessionConnectResponse'
+      '400':
+        description: Missing mcp_client_id, malformed body, or an unknown origin
+      '401':
+        $ref: '../../openapi.yaml#/components/responses/Unauthorized'
+      '403':
+        description: No signed-in user
+      '404':
+        description: The server does not exist or the user cannot reach it
+      '409':
+        description: The server is disabled, awaits admin verification, or does not take a caller's own credential; or, for OAuth, another sign-in replaced this one while it was starting (try again)
+      '503':
+        description: The OAuth or per-user headers provider is not configured
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
 session-by-id:
   delete:
     summary: Revoke an MCP session
@@ -1093,7 +1161,10 @@ session-by-id:
 
         | Permission | Granted via |
         | --- | --- |
-        | `MCPGateway:Delete` | RBAC role or API key scope |
+        | `MCPGateway:View` | RBAC role or API key scope |
+
+        `MCPGateway:View` is enough to revoke your own sessions. Revoking anyone
+        else's also needs `MCPGateway:Delete`.
 
         [How permissions work](/api/procuring-api-keys#required-permissions)
     tags: [MCP]
@@ -1112,6 +1183,8 @@ session-by-id:
         description: Revoked
       '401':
         $ref: '../../openapi.yaml#/components/responses/Unauthorized'
+      '403':
+        description: The row is someone else's and the caller may not revoke others' sessions
       '404':
         $ref: '../../openapi.yaml#/components/responses/NotFound'
       '500':
@@ -1186,7 +1259,8 @@ session-refresh:
       Only an `active` OAuth token or header credential of a `user` or `vk`
       caller can be refreshed, on an MCP client with `per_user_discovery` on
       that is not awaiting admin verification. A `user` row can be refreshed
-      only by that user; the row's `can_refresh` says whether the caller may.
+      only by that user, and a `vk` row only by a caller who may act on others'
+      credentials; the row's `can_refresh` says whether the caller may.
 
       A refresh that cannot discover answers 502 and keeps the caller's
       existing discovery. If the row is revoked or replaced while discovery
@@ -1199,6 +1273,9 @@ session-refresh:
         | Permission | Granted via |
         | --- | --- |
         | `MCPGateway:View` | RBAC role or API key scope |
+
+        `MCPGateway:View` is enough to refresh your own sessions. Refreshing a
+        virtual key's session also needs `MCPGateway:Create`.
 
         [How permissions work](/api/procuring-api-keys#required-permissions)
     tags: [MCP]
@@ -1228,7 +1305,10 @@ session-refresh:
       '401':
         $ref: '../../openapi.yaml#/components/responses/Unauthorized'
       '403':
-        description: A user's session, refreshed by someone other than that user
+        description: |
+          A user's session, refreshed by someone other than that user, or a
+          virtual key's session, refreshed by a caller who may not act on others'
+          credentials
       '404':
         $ref: '../../openapi.yaml#/components/responses/NotFound'
       '409':
@@ -1351,21 +1431,28 @@ per-user-headers-credential:
   delete:
     summary: Revoke a per-user-headers credential
     description: |
-      Hard-deletes a per-user-headers credential row by primary key. Authorization
+      Hard-deletes a per-user-headers credential row by primary key, plus any
+      pending header submission flow for the same binding. Authorization
       scoping is enforced server-side — callers may only delete credentials
       visible to their identity.
 
-      The unified DELETE /api/mcp/sessions/{id} is the more convenient entry
-      point; this typed endpoint exists for callers that already know they're
-      acting on a header credential row.
+      **Deprecated.** Use DELETE /api/mcp/sessions/{id}, which revokes a header
+      credential the same way, along with every other row kind the sessions
+      list shows.
     operationId: revokePerUserHeadersCredential
+    deprecated: true
+    x-bifrost-successor: '/api/mcp/sessions/{id}'
+    x-bifrost-removal: following-major-release
     x-mint:
       content: |
         **Required Permissions**
 
         | Permission | Granted via |
         | --- | --- |
-        | `MCPGateway:Delete` | RBAC role or API key scope |
+        | `MCPGateway:View` | RBAC role or API key scope |
+
+        `MCPGateway:View` is enough to revoke your own credentials. Revoking anyone
+        else's also needs `MCPGateway:Delete`.
 
         [How permissions work](/api/procuring-api-keys#required-permissions)
     tags: [MCP]
@@ -1384,6 +1471,8 @@ per-user-headers-credential:
         description: Revoked
       '401':
         $ref: '../../openapi.yaml#/components/responses/Unauthorized'
+      '403':
+        description: The credential is someone else's and the caller may not revoke others' credentials
       '404':
         $ref: '../../openapi.yaml#/components/responses/NotFound'
       '500':
