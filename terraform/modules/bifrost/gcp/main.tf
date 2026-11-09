@@ -18,16 +18,23 @@ terraform {
 locals {
   service_name = "${var.name_prefix}-service"
 
-  # Validate: VPC and subnet must be provided together
-  _validate_vpc_subnet = (
-    (var.existing_vpc_id == null) == (var.existing_subnet_ids == null)
-  )
-
   # Resolve networking: use existing or created
   vpc_id    = var.existing_vpc_id != null ? var.existing_vpc_id : try(google_compute_network.bifrost[0].self_link, null)
   subnet_id = var.existing_subnet_ids != null ? var.existing_subnet_ids[0] : try(google_compute_subnetwork.bifrost[0].self_link, null)
 
   create_network = var.existing_vpc_id == null
+}
+
+# existing_vpc_id and existing_subnet_ids must arrive together. A VPC without
+# subnets would hand GKE a null subnetwork; subnets without a VPC would create
+# a new network the subnets do not belong to.
+resource "terraform_data" "validate_network_inputs" {
+  lifecycle {
+    precondition {
+      condition     = (var.existing_vpc_id == null) == (var.existing_subnet_ids == null)
+      error_message = "existing_vpc_id and existing_subnet_ids must be set together: pass both to reuse a network, or neither to create one."
+    }
+  }
 }
 
 # ──────────────────────────────────────────────────────────────────────────────

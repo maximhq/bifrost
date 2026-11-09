@@ -1,6 +1,8 @@
 # All variables pass through to the bifrost module.
 # Defaults match the parent module's defaults.
 
+# No validation here: tests/root_validation.tftest.hcl runs the invalid-input
+# cases against the root module itself so they pin the root's rules.
 variable "cloud_provider" { type = string }
 variable "service" { type = string }
 variable "region" { type = string }

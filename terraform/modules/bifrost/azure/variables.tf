@@ -80,9 +80,15 @@ variable "existing_vpc_id" {
 }
 
 variable "existing_subnet_ids" {
-  description = "Existing subnet IDs. If null, new subnets will be created."
+  description = "Existing subnet IDs. If null, new subnets will be created. Must be provided together with existing_vpc_id."
   type        = list(string)
   default     = null
+
+  validation {
+    # Terraform evaluates both operands of ||, so length(null) must never run.
+    condition     = var.existing_subnet_ids == null ? true : length(var.existing_subnet_ids) > 0
+    error_message = "existing_subnet_ids must be null or a non-empty list."
+  }
 }
 
 # --- Optional features ---

@@ -91,7 +91,8 @@ variable "existing_subnet_ids" {
   default     = null
 
   validation {
-    condition     = var.existing_subnet_ids == null || length(var.existing_subnet_ids) > 0
+    # Terraform evaluates both operands of ||, so length(null) must never run.
+    condition     = var.existing_subnet_ids == null ? true : length(var.existing_subnet_ids) > 0
     error_message = "existing_subnet_ids must be null or a non-empty list."
   }
 }
@@ -158,4 +159,47 @@ variable "node_machine_type" {
 variable "volume_size_gb" {
   description = "Persistent volume size in GB for SQLite storage."
   type        = number
+}
+
+# --- Managed database and generated secrets (Cloud Run only) ---
+variable "create_database" {
+  description = "Provision a Cloud SQL PostgreSQL 16 instance and wire PG_* into the Cloud Run service over the Cloud SQL unix socket."
+  type        = bool
+  default     = false
+}
+
+variable "database_name" {
+  description = "Database name created on the Cloud SQL instance."
+  type        = string
+  default     = "bifrost"
+}
+
+variable "database_user" {
+  description = "Application user created on the Cloud SQL instance."
+  type        = string
+  default     = "bifrost"
+}
+
+variable "database_instance_class" {
+  description = "Cloud SQL tier. Defaults to db-custom-1-3840 (1 vCPU, 3.75 GB)."
+  type        = string
+  default     = null
+}
+
+variable "database_storage_gb" {
+  description = "Cloud SQL disk size in GB."
+  type        = number
+  default     = 20
+}
+
+variable "database_deletion_protection" {
+  description = "Enable Cloud SQL deletion protection."
+  type        = bool
+  default     = false
+}
+
+variable "generate_secrets" {
+  description = "Generate BIFROST_ENCRYPTION_KEY and BIFROST_SETUP_TOKEN in Secret Manager and inject them into the Cloud Run service."
+  type        = bool
+  default     = false
 }

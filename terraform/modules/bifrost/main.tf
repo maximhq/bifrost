@@ -6,7 +6,24 @@ terraform {
 # The azurerm provider requires a `features {}` block even when no Azure
 # resources are being created (count=0). This default satisfies that
 # requirement so AWS/GCP/K8s users don't need to configure azurerm.
-# Azure users: configure azurerm in your root module — it will override this.
+#
+# This block is a provider configuration of its own, not an inheritance point:
+# Terraform does not pass a caller's azurerm settings (subscription_id, tenant,
+# auxiliary tenants) into a module that declares its own provider block. Azure
+# users select the subscription through the environment (ARM_SUBSCRIPTION_ID,
+# `az account set`) or call ./azure directly with a configured provider.
+#
+# skip_provider_registration is deprecated in azurerm 4.x and removed in 5.0,
+# which is why ./azure pins azurerm < 5.0. Without it azurerm registers
+# resource providers at configure time, which needs valid Azure credentials
+# even for an AWS or GCP plan and breaks the mocked tests.
+#
+# Terraform configures every provider in this tree during plan, including the
+# clouds whose modules have count = 0. A plan therefore needs credentials for
+# AWS, GCP and Azure at once. To deploy to one cloud with that cloud's
+# credentials only, call its platform module directly (./aws, ./gcp, ./azure,
+# ./kubernetes); examples/aws-ecs-postgres and examples/gcp-cloud-run-postgres
+# show the pattern.
 provider "azurerm" {
   features {}
   skip_provider_registration = true
