@@ -250,7 +250,12 @@ func TestWallyOutputTokenContractWire(t *testing.T) {
 						}
 					}
 				}
-				body := <-bodies
+				var body []byte
+				select {
+				case body = <-bodies:
+				case <-time.After(5 * time.Second):
+					t.Fatal("mock server did not receive the request")
+				}
 				t.Logf("outgoing body: %s", body)
 				var wire map[string]json.RawMessage
 				if err := json.Unmarshal(body, &wire); err != nil {
