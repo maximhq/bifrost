@@ -70,7 +70,8 @@
 			"decision": "判断モデル",
 			"llm": "LLM",
 			"skipped": "スキップ"
-		}
+		},
+		"modelRouter": "ルーター"
 	},
 	"dashboard": {
 		"tabs": {
@@ -1227,7 +1228,10 @@
 		"exactRoundTripID": "ラウンドトリップ ID（完全一致）",
 		"nothingRecorded": "この期間に記録はありません",
 		"topics": "トピック",
-		"searchTopics": "トピックを検索"
+		"searchTopics": "トピックを検索",
+		"modelRouters": "ルーター",
+		"searchModelRouters": "ルーターを検索",
+		"loadFailed": "このリストを読み込めませんでした。"
 	},
 	"requestTypes": {
 		"chat_completion": "チャット",

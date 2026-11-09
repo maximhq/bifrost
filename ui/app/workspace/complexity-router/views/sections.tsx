@@ -24,7 +24,7 @@ import { cn } from "@/lib/utils";
 import { clefModelFromProvider, isDecisionProvider } from "@/lib/utils/decisionModelProviders";
 import { Link } from "@tanstack/react-router";
 import type { ParseKeys } from "i18next";
-import { ArrowRight, Check, ChevronRight, Info, LoaderCircle, Pencil, RotateCcw, Scale, TriangleAlert, Waypoints } from "lucide-react";
+import { ArrowRight, Bot, Check, ChevronRight, Info, LoaderCircle, Pencil, RotateCcw, Scale, TriangleAlert, Waypoints } from "lucide-react";
 import { useCallback, useState } from "react";
 import { Trans, useTranslation } from "react-i18next";
 import {
@@ -39,7 +39,8 @@ import {
 import { decisionTimeoutFieldValue, type AnalyzerFormValues, type DecisionProviderState } from "../formSchema";
 import { FieldLabel, InfoTip, SectionHeading } from "./formPrimitives";
 
-// The Complexity Router page's sections. Each binds to the page's single form.
+// The classifier editor's sections, used by the Complexity Router page and by
+// model routers. Each binds to its page's single form.
 
 // The three tier lists sit side by side, so each is a fixed-height scroll
 // container rather than a fixed number of phrases: phrases wrap to different
@@ -161,19 +162,30 @@ interface LLMPromptSectionProps {
 	// prompt the operator cleared on purpose.
 	onEdit: () => void;
 	onReset: () => void;
+	// "primary" when the llm is the router's classifier; its prompt then decides every request.
+	variant?: "primary" | "fallback";
 }
 
-// LLMPromptSection edits the fallback classifier's system prompt. It needs
-// width and room to iterate, so it sits on the page below the phrase lists
-// rather than in the sheet with the fallback's other settings, and only shows
-// while the llm fallback is on, because that is the only time it runs.
-export function LLMPromptSection({ control, error, canUpdate, defaultPrompt, livePrompt, onEdit, onReset }: LLMPromptSectionProps) {
+// LLMPromptSection edits the llm classifier's system prompt: the fallback's,
+// or, on a model router whose classifier is the llm, the primary one's. It
+// needs width and room to iterate, so it sits on the page rather than in the
+// sheet with the llm's other settings, and only shows while the llm runs.
+export function LLMPromptSection({
+	control,
+	error,
+	canUpdate,
+	defaultPrompt,
+	livePrompt,
+	onEdit,
+	onReset,
+	variant = "fallback",
+}: LLMPromptSectionProps) {
 	const { t: tcpx } = useTranslation("models", { keyPrefix: "routing.complexityUi" });
 	return (
 		<div className="space-y-3">
 			<SectionHeading
-				title={tcpx("fallbackPromptTitle")}
-				description={tcpx("fallbackPromptDescription")}
+				title={tcpx(variant === "primary" ? "llmPromptTitle" : "fallbackPromptTitle")}
+				description={tcpx(variant === "primary" ? "llmPromptDescription" : "fallbackPromptDescription")}
 				aside={
 					<Button
 						type="button"
@@ -818,17 +830,32 @@ const CLASSIFIER_OPTIONS: {
 }[] = [
 	{ value: "decision", title: "classifierNameDecision", description: "classifierDecisionCardDesc" },
 	{ value: "semantic", title: "classifierNameSemantic", description: "classifierSemanticCardDesc" },
+	{ value: "llm", title: "classifierNameLlm", description: "classifierLlmCardDesc" },
 ];
+
+const CLASSIFIER_ICONS: Record<Classifier, typeof Scale> = { decision: Scale, semantic: Waypoints, llm: Bot };
 
 // ClassifierChoice is the one decision everything else depends on, so each
 // option is an explained card rather than an entry in a dropdown. Anything a
 // choice still needs is reported once, below the cards, after it is picked.
-export function ClassifierChoice({ value, onChange }: { value: Classifier | undefined; onChange: (value: Classifier) => void }) {
+// The llm classifier is offered only where it can be the primary one: on a
+// model router, not on the Complexity Router page.
+export function ClassifierChoice({
+	value,
+	onChange,
+	includeLlm = false,
+}: {
+	value: Classifier | undefined;
+	onChange: (value: Classifier) => void;
+	includeLlm?: boolean;
+}) {
 	const { t: tcpx } = useTranslation("models", { keyPrefix: "routing.complexityUi" });
+	const options = includeLlm ? CLASSIFIER_OPTIONS : CLASSIFIER_OPTIONS.filter((option) => option.value !== "llm");
 	return (
-		<div role="radiogroup" aria-label={tcpx("stepClassifier")} className="grid gap-3 sm:grid-cols-2">
-			{CLASSIFIER_OPTIONS.map((option) => {
+		<div role="radiogroup" aria-label={tcpx("stepClassifier")} className={cn("grid gap-3 sm:grid-cols-2", includeLlm && "lg:grid-cols-3")}>
+			{options.map((option) => {
 				const selected = option.value === value;
+				const Icon = CLASSIFIER_ICONS[option.value];
 				return (
 					<button
 						key={option.value}
@@ -843,11 +870,7 @@ export function ClassifierChoice({ value, onChange }: { value: Classifier | unde
 						)}
 					>
 						<div className="flex w-full items-center gap-2">
-							{option.value === "decision" ? (
-								<Scale className="text-muted-foreground size-4" />
-							) : (
-								<Waypoints className="text-muted-foreground size-4" />
-							)}
+							<Icon className="text-muted-foreground size-4" />
 							<span className="text-sm font-medium">{tcpx(option.title)}</span>
 							{selected && <Check className="ml-auto size-4 text-green-600" />}
 						</div>

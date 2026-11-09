@@ -274,9 +274,16 @@ function usesDecision(values: { classifier: string; semantic: { fallback: string
 	return values.classifier === "decision" || values.semantic.fallback === "decision";
 }
 
+// usesLLM reports whether the llm block is live: the primary classifier or the semantic
+// fallback. As with the Decision block, its controls are hidden and a half-picked block is
+// not saved otherwise.
+function usesLLM(values: { classifier: string; semantic: { fallback: string } }): boolean {
+	return values.classifier === "llm" || values.semantic.fallback === "llm";
+}
+
 export const analyzerConfigSchema = z
 	.object({
-		classifier: z.enum(["semantic", "decision"]),
+		classifier: z.enum(["semantic", "decision", "llm"]),
 		keywords: z.object({
 			simple_keywords: z.array(z.string()).min(1, { error: () => complexityT("phrasesEmpty", { tier: complexityT("tierSimple") }) }),
 			medium_keywords: z.array(z.string()).min(1, { error: () => complexityT("phrasesEmpty", { tier: complexityT("tierMedium") }) }),
@@ -348,23 +355,26 @@ export const analyzerConfigSchema = z
 			}
 		}
 
-		// The llm block follows the same half-filled rule, with one addition:
-		// switching the semantic fallback to "llm" makes the block mandatory,
-		// because the server rejects that fallback without one.
+		// Choosing the llm classifier, or the semantic fallback "llm", makes the llm
+		// block mandatory, because the server rejects either without one. While
+		// neither is chosen its controls are hidden, so a block left half picked is
+		// not checked: an error on it would have nowhere to show and would block
+		// Save, and toAnalyzerPayload does not send a half-picked block.
 		const hasLLMProvider = data.llm.provider.trim() !== "";
 		const hasLLMModel = data.llm.model.trim() !== "";
-		if (hasLLMProvider || hasLLMModel || data.semantic.fallback === "llm") {
+		const llmIsPrimary = data.classifier === "llm";
+		if (usesLLM(data)) {
 			if (!hasLLMProvider) {
 				ctx.addIssue({
 					code: "custom",
-					message: complexityT("selectFallbackProvider"),
+					message: complexityT(llmIsPrimary ? "selectLlmProvider" : "selectFallbackProvider"),
 					path: ["llm", "provider"],
 				});
 			}
 			if (!hasLLMModel) {
 				ctx.addIssue({
 					code: "custom",
-					message: complexityT("selectFallbackModel"),
+					message: complexityT(llmIsPrimary ? "selectLlmModel" : "selectFallbackModel"),
 					path: ["llm", "model"],
 				});
 			}
@@ -601,7 +611,7 @@ export function toFormValues(config: AnalyzerConfig, decisionDefaults?: Decision
 	const savedLLM = config.llm;
 	const classifier = config.classifier?.trim().toLowerCase();
 	return {
-		classifier: classifier === "decision" ? "decision" : "semantic",
+		classifier: classifier === "decision" || classifier === "llm" ? classifier : "semantic",
 		keywords: config.keywords,
 		decision: {
 			// A block saved without a model means the gateway default.
@@ -718,14 +728,15 @@ export function shouldSeedLLMPrompt(enabled: boolean, defaultPrompt: string, pro
 	return enabled && defaultPrompt !== "" && prompt === "" && !edited;
 }
 
-// isRouterConfigured decides whether the page opens on the classifier choice
-// (nothing set up yet) or straight on the configured classifier's settings.
-// A router counts as configured once it can classify anything: a saved semantic
-// block, or Decision chosen as the primary classifier. Phrases alone do not count;
-// every install has them, and without a classifier they route nothing.
+// isRouterConfigured reports whether a router can classify anything: a saved
+// semantic block, Decision chosen as the primary classifier, or the llm
+// classifier with its model. Phrases alone do not count; every install has
+// them, and without a classifier they route nothing.
 export function isRouterConfigured(config: AnalyzerConfig | undefined): boolean {
 	if (!config) return false;
-	if (config.classifier?.trim().toLowerCase() === "decision") return true;
+	const classifier = config.classifier?.trim().toLowerCase();
+	if (classifier === "decision") return true;
+	if (classifier === "llm") return Boolean(config.llm?.provider && config.llm?.model);
 	return Boolean(config.semantic?.provider && config.semantic?.embedding_model);
 }
 // DecisionProviderState is what the UI can actually tell about the provider the

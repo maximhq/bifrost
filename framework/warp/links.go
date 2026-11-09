@@ -65,7 +65,7 @@ func canonicalQuery(raw string) (string, bool) {
 var logsPageParams = map[string]struct{}{
 	"parent_request_id": {}, "providers": {}, "models": {}, "aliases": {}, "status": {}, "stop_reasons": {},
 	"tool_call_names": {}, "objects": {}, "selected_key_ids": {}, "virtual_key_ids": {}, "routing_rule_ids": {},
-	"routing_engine_used": {}, "apps": {}, "user_agents": {}, "complexity_tiers": {}, "complexity_mechanisms": {},
+	"model_router_ids": {}, "routing_engine_used": {}, "apps": {}, "user_agents": {}, "complexity_tiers": {}, "complexity_mechanisms": {},
 	"session_id": {}, "user_ids": {}, "team_ids": {}, "customer_ids": {}, "business_unit_ids": {}, "project_ids": {}, "topic_ids": {},
 	"content_search": {}, "request_id": {}, "min_latency": {}, "max_latency": {}, "min_cost": {}, "max_cost": {},
 	"min_tokens": {}, "max_tokens": {},
@@ -295,12 +295,10 @@ func failuresLink(filters *logstore.SearchFilters, totalRequests int64, successR
 // so a query narrowed by one cannot be reproduced there: the link would open
 // every failure beside a count of seventeen. Such a result gets no link - each
 // row still carries its own - rather than one that is silently wider. The same
-// holds for guardrail_outcomes, which only the Guardrail Incidents view reads,
-// and for the model router and model routing rule filters, which the Logs page
-// does not read yet.
+// holds for guardrail_outcomes, which only the Guardrail Incidents view reads.
 func linkableInLogsView(filters *logstore.SearchFilters) bool {
 	return len(filters.ErrorTypes) == 0 && len(filters.ErrorCodes) == 0 && len(filters.StatusCodes) == 0 &&
-		len(filters.GuardrailOutcomes) == 0 && len(filters.ModelRouterIDs) == 0
+		len(filters.GuardrailOutcomes) == 0
 }
 
 // setLogsLink puts logs_link on a result when there is one to give.
@@ -333,6 +331,7 @@ func logsViewLink(filters *logstore.SearchFilters) string {
 		{"selected_key_ids", filters.SelectedKeyIDs},
 		{"virtual_key_ids", filters.VirtualKeyIDs},
 		{"routing_rule_ids", filters.RoutingRuleIDs},
+		{"model_router_ids", filters.ModelRouterIDs},
 		{"routing_engine_used", filters.RoutingEngineUsed},
 		{"complexity_tiers", filters.ComplexityTiers},
 		{"complexity_mechanisms", filters.ComplexityMechanisms},
@@ -508,6 +507,8 @@ func narrowToDimension(filters *logstore.SearchFilters, dimension logstore.Ranki
 		narrowed.UserAgents = value
 	case logstore.RankingDimensionRoutingRule:
 		narrowed.RoutingRuleIDs = value
+	case logstore.RankingDimensionModelRouter:
+		narrowed.ModelRouterIDs = value
 	case logstore.RankingDimensionSelectedKey:
 		narrowed.SelectedKeyIDs = value
 	case logstore.RankingDimensionAlias:
