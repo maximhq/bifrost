@@ -15,6 +15,23 @@ test.describe('MCP Settings', () => {
     await expect(mcpSettingsPage.page.getByLabel('Tool Execution Timeout (seconds)')).toBeVisible()
   })
 
+  test('should keep every row input the same width however long its description is', async ({ mcpSettingsPage }) => {
+    const widths: number[] = []
+    for (const testId of [
+      'mcp-agent-depth-input',
+      'mcp-tool-timeout-input',
+      'mcp-tool-sync-interval-input',
+      'mcp-max-instructions-per-client-input',
+      'mcp-max-instructions-total-input',
+    ]) {
+      const input = mcpSettingsPage.page.getByTestId(testId)
+      await expect(input).toBeVisible()
+      widths.push((await input.boundingBox())?.width ?? 0)
+    }
+    expect(widths[0]).toBeGreaterThan(0)
+    expect(widths).toEqual(widths.map(() => widths[0]))
+  })
+
   test('should have save button disabled when no changes', async ({ mcpSettingsPage }) => {
     await expect(mcpSettingsPage.saveBtn).toBeVisible()
     await expect(mcpSettingsPage.saveBtn).toBeDisabled()

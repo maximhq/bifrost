@@ -45,7 +45,7 @@ func TestOpenRealtimeUpstreamPrefersProviderConnector(t *testing.T) {
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	defer ctx.Cancel()
 
-	upstream, release, bifrostErr := (&WSRealtimeHandler{}).openRealtimeUpstream(ctx, provider, schemas.Bedrock, schemas.Key{}, "amazon.nova-2-sonic-v1:0", "")
+	upstream, release, bifrostErr := (&WSRealtimeHandler{}).openRealtimeUpstream(ctx, provider, schemas.Bedrock, schemas.Key{}, "amazon.nova-2-sonic-v1:0", "", nil)
 	if bifrostErr != nil {
 		t.Fatalf("unexpected error: %+v", bifrostErr)
 	}
