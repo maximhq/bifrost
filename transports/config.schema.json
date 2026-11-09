@@ -13180,7 +13180,7 @@
         },
         "budgets": {
           "type": "array",
-          "description": "Project-level spend caps. Declared without ids: on a change, a budget is matched to its stored row by reset_duration so its accumulated spend and window carry over.",
+          "description": "Project-level spend caps. Declared without ids: on a change, a budget is matched to its stored row by reset_duration and scope so its accumulated spend and window carry over.",
           "items": {
             "$ref": "#/$defs/project_budget"
           }
@@ -13274,7 +13274,13 @@
         },
         "reset_duration": {
           "type": "string",
-          "description": "Reset window, e.g. \"1M\", \"1h\", \"1Q\". Also what pairs a declared budget with its stored row on a change."
+          "description": "Reset window, e.g. \"1M\", \"1h\", \"1Q\". With scope, what pairs a declared budget with its stored row on a change."
+        },
+        "scope": {
+          "type": "string",
+          "enum": ["shared", "model", "mcp"],
+          "default": "shared",
+          "description": "Traffic the budget is charged by: \"shared\" (default), \"model\" or \"mcp\". Only a project's own budgets may use \"model\" or \"mcp\"; provider and model budgets inside it are always shared."
         },
         "reset_config": {
           "type": "object",

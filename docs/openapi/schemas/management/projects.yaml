@@ -103,6 +103,13 @@ ProjectBudget:
       example: 1M
     reset_config:
       $ref: '#/ProjectBudgetResetConfig'
+    scope:
+      type: string
+      enum: [shared, model, mcp]
+      default: shared
+      description: >-
+        Traffic the budget is charged by: `shared` (default), `model` or `mcp`. Only the project's own
+        budgets may use `model` or `mcp`; provider and model budgets are always `shared`.
     current_usage:
       type: number
       readOnly: true

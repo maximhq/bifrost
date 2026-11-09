@@ -222,6 +222,10 @@ test.describe('Virtual Keys', () => {
       expect(mcpIndex).toBeGreaterThanOrEqual(0)
       await expect(page.getByTestId(`vk-budget-lines-scope-${mcpIndex}-trigger`)).toHaveText('MCP')
       await expect(page.getByTestId(`vk-budget-lines-scope-${1 - mcpIndex}-trigger`)).toHaveText('Both')
+      // Both lines share a period, so each budget override entry names its scope.
+      const overrides = page.getByTestId('vk-budget-overrides-section')
+      await expect(overrides.getByTestId('budget-scope-badge-mcp')).toBeVisible()
+      await expect(overrides.getByTestId('budget-scope-badge-shared')).toBeVisible()
       await virtualKeysPage.closeSheet()
     })
 

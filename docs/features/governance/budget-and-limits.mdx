@@ -120,6 +120,35 @@ When a request is made with a virtual key, Bifrost checks **all applicable budge
     - Then the next request will be blocked (both provider and VK budgets exceeded).
 ```
 
+### Budget scope: model and MCP
+
+MCP tool executions are charged against budgets too, at the tool's configured cost per execution. Each budget has a **scope** that says which traffic it is charged by:
+
+| Scope | Charged by |
+|-------|------------|
+| `shared` (default) | Model requests **and** MCP tool executions, sharing one balance |
+| `model` | Model (LLM) requests only |
+| `mcp` | MCP tool executions only |
+
+Every budget created before scopes existed is `shared`, and a budget sent without a `scope` is `shared`, so existing budgets behave exactly as before. Scope separates the two kinds of spend without giving up a shared cap: a key can carry a `$100/mo` shared budget, a `$20/mo` MCP-only budget, or both at once.
+
+```json
+{
+  "budgets": [
+    { "max_limit": 100, "reset_duration": "1M" },
+    { "max_limit": 20, "reset_duration": "1M", "scope": "mcp" }
+  ]
+}
+```
+
+A reset period may be used **once per scope** on one owner: `1M` + `shared` beside `1M` + `mcp` is accepted, while two `mcp` budgets on `1M` are rejected with `400`.
+
+MCP tool executions name no provider and no model, so they are only charged by budgets that bind every request a holder makes: a **virtual key's own budgets**, **team** and **customer** budgets, and **model limits for all models (`*`) with no provider**. Those are the only places the `mcp` scope is accepted. Provider-config budgets, provider governance budgets and model limits for a specific model or provider are never reached by MCP traffic, so they take `shared` or `model` and the API rejects `mcp` there. On those owners `model` charges exactly what `shared` does, since only model requests reach them.
+
+<Note>
+Scope applies to budgets only. Rate limits still count model requests and MCP tool executions together.
+</Note>
+
 ## Rate Limiting
 
 Rate limits protect your system from abuse and manage traffic by setting thresholds on request frequency and token usage over a specific time window. Rate limits can be configured at the **Provider Config**, **Virtual Key**, **Team**, and **Customer** levels. A team or customer has at most one rate limit of its own.
@@ -549,6 +578,7 @@ curl -X PUT "https://your-bifrost-instance.com/api/governance/virtual-keys/{vk_i
 | `calendar_aligned` | boolean | Virtual-key-level setting. When true, all supported budget and rate-limit windows owned by the virtual key reset at calendar boundaries in UTC |
 | `budgets[].max_limit` | float | Maximum spend in USD |
 | `budgets[].reset_duration` | string | Reset period (e.g., "1h", "1d", "1M") |
+| `budgets[].scope` | string | `shared` (default), `model` or `mcp`. See [Budget scope](#budget-scope-model-and-mcp). Provider-config budgets accept `shared` or `model` |
 | `rate_limit.token_max_limit` | integer | Maximum tokens per period |
 | `rate_limit.request_max_limit` | integer | Maximum requests per period |
 

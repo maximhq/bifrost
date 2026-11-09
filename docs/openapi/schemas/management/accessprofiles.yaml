@@ -60,7 +60,13 @@ Budget:
       $ref: '#/BudgetResetConfig'
     scope:
       type: string
-      description: Set server-side. `total` for global budgets, `provider:<name>` for per-provider budgets.
+      enum: [shared, model, mcp]
+      default: shared
+      description: >-
+        Traffic the budget is charged by: `shared` (default, shared by model requests and MCP tool
+        executions), `model` or `mcp`. Only the profile's own budgets may use `model` or `mcp`;
+        provider and model budgets are always `shared`. The legacy values `total` and
+        `provider:<name>` are still accepted and read as `shared`.
     current_usage:
       type: number
       readOnly: true

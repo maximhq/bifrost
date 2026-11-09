@@ -38,6 +38,17 @@ Budget:
             July and October all reset on calendar quarters and differ only in which quarter is
             labelled Q1.
       additionalProperties: false
+    scope:
+      type: string
+      enum:
+        - shared
+        - model
+        - mcp
+      default: shared
+      description: |
+        Traffic the budget is charged by. `shared` is shared by model requests and MCP tool
+        executions (the behaviour of every budget created before scopes existed), `model` is
+        charged only by model requests, and `mcp` only by MCP tool executions.
     last_reset:
       type: string
       format: date-time
@@ -158,6 +169,20 @@ CreateBudgetRequest:
             July and October all reset on calendar quarters and differ only in which quarter is
             labelled Q1.
       additionalProperties: false
+    scope:
+      type: string
+      enum:
+        - shared
+        - model
+        - mcp
+      default: shared
+      description: |
+        Traffic the budget is charged by: `shared` (default, shared), `model` (model requests only)
+        or `mcp` (MCP tool executions only). A reset duration may appear once per scope on one
+        owner, so a `shared` and an `mcp` budget may share `1d`, but two `mcp` budgets may not.
+        `mcp` is accepted only where MCP tool executions are charged: a virtual key's own
+        budgets, teams, customers, and model limits for all models (`*`) with no provider.
+        Elsewhere the API rejects it; `shared` and `model` are accepted on every owner.
     calendar_aligned:
       type: boolean
       default: false
@@ -365,6 +390,10 @@ BudgetRequestBudgetSnapshot:
       type: number
     reset_duration:
       type: string
+    scope:
+      type: string
+      enum: [shared, model, mcp]
+      description: Traffic the budget is charged by. Tells apart budgets of one owner on the same reset period.
     override_amount:
       type: number
     override_mode:
@@ -1954,7 +1983,7 @@ ModelConfig:
       default: false
     budgets:
       type: array
-      description: Budget configurations for this model limit. Each entry must have a unique reset_duration.
+      description: Budget configurations for this model limit. Each entry must have a unique reset_duration and scope pair.
       items:
         $ref: '#/Budget'
     budget:
