@@ -313258,6 +313258,124 @@
           }
         }
       ]
+    },
+    {
+      "name": "325. Empty chat messages rejected before the Responses reroute (empty chat messages)",
+      "description": "A chat request with no messages on the /openai drop-in reached the provider with an empty Input. When the request was converted to the Responses API, ToOpenAIResponsesRequest returned a nil *OpenAIResponsesRequest that slipped past the nil-body check as a non-nil interface, and MarshalJSON on the nil receiver crashed the gateway process (client saw a 502). Both cases force the chat-to-Responses conversion and must now get a 400 from the core input guard without reaching OpenAI: one omits messages entirely (the reported body), one sends an empty array on the streaming path.",
+      "item": [
+        {
+          "name": "OpenAI gpt-5.6-luna /openai chat with no messages field [EXPECT-400] (empty chat messages)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('empty messages are rejected with 400, not a gateway crash', function () {",
+                  "    pm.expect(pm.response.code, 'expected 400: ' + pm.response.text()).to.equal(400);",
+                  "    var body = pm.response.json();",
+                  "    pm.expect(body.error && body.error.message, 'missing error message: ' + pm.response.text()).to.include('chats not provided');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-compat",
+                "value": "[\"convert_chat_to_responses\"]"
+              },
+              {
+                "key": "x-bf-mcp-include-clients",
+                "value": "__none__"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-5.6-luna\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "OpenAI gpt-5.6-luna /openai chat stream with empty messages array [EXPECT-400] (empty chat messages)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('empty messages are rejected with 400, not a gateway crash', function () {",
+                  "    pm.expect(pm.response.code, 'expected 400: ' + pm.response.text()).to.equal(400);",
+                  "    var body = pm.response.json();",
+                  "    pm.expect(body.error && body.error.message, 'missing error message: ' + pm.response.text()).to.include('chats not provided');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-compat",
+                "value": "[\"convert_chat_to_responses\"]"
+              },
+              {
+                "key": "x-bf-mcp-include-clients",
+                "value": "__none__"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-5.6-luna\",\n  \"messages\": [],\n  \"stream\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

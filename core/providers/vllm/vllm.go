@@ -486,7 +486,7 @@ func (provider *VLLMProvider) Rerank(ctx *schemas.BifrostContext, key schemas.Ke
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*vLLMRerankRequest, error) {
 			return ToVLLMRerankRequest(request), nil
 		})
 	if bifrostErr != nil {

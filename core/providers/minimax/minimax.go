@@ -228,7 +228,7 @@ func (provider *MiniMaxProvider) ImageGeneration(ctx *schemas.BifrostContext, ke
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*MiniMaxImageGenerationRequest, error) {
 			return ToMiniMaxImageGenerationRequest(request)
 		})
 	if bifrostErr != nil {
@@ -269,7 +269,7 @@ func (provider *MiniMaxProvider) VideoGeneration(ctx *schemas.BifrostContext, ke
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*MiniMaxVideoGenerationRequest, error) {
 			return ToMiniMaxVideoGenerationRequest(request)
 		})
 	if bifrostErr != nil {
@@ -640,7 +640,7 @@ func (provider *MiniMaxProvider) Speech(ctx *schemas.BifrostContext, key schemas
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*MiniMaxSpeechRequest, error) {
 			return ToMiniMaxSpeechRequest(request, false)
 		})
 	if bifrostErr != nil {
@@ -685,7 +685,7 @@ func (provider *MiniMaxProvider) SpeechStream(ctx *schemas.BifrostContext, postH
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*MiniMaxSpeechRequest, error) {
 			return ToMiniMaxSpeechRequest(request, true)
 		})
 	if bifrostErr != nil {

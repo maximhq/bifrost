@@ -449,7 +449,7 @@ func (provider *ReplicateProvider) TextCompletion(ctx *schemas.BifrostContext, k
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) { return ToReplicateTextRequest(request) })
+		func() (*ReplicatePredictionRequest, error) { return ToReplicateTextRequest(request) })
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -537,7 +537,7 @@ func (provider *ReplicateProvider) TextCompletionStream(ctx *schemas.BifrostCont
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*ReplicatePredictionRequest, error) {
 			replicateReq, err := ToReplicateTextRequest(request)
 			if err != nil {
 				return nil, err
@@ -800,7 +800,7 @@ func (provider *ReplicateProvider) ChatCompletion(ctx *schemas.BifrostContext, k
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) { return ToReplicateChatRequest(request) })
+		func() (*ReplicatePredictionRequest, error) { return ToReplicateChatRequest(request) })
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -888,7 +888,7 @@ func (provider *ReplicateProvider) ChatCompletionStream(ctx *schemas.BifrostCont
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*ReplicatePredictionRequest, error) {
 			replicateReq, err := ToReplicateChatRequest(request)
 			if err != nil {
 				return nil, err
@@ -1165,7 +1165,7 @@ func (provider *ReplicateProvider) Responses(ctx *schemas.BifrostContext, key sc
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) { return ToReplicateResponsesRequest(request) })
+		func() (*ReplicatePredictionRequest, error) { return ToReplicateResponsesRequest(request) })
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -1248,7 +1248,7 @@ func (provider *ReplicateProvider) ResponsesStream(ctx *schemas.BifrostContext, 
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) { return ToReplicateResponsesRequest(request) })
+		func() (*ReplicatePredictionRequest, error) { return ToReplicateResponsesRequest(request) })
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -1773,7 +1773,7 @@ func (provider *ReplicateProvider) ImageGeneration(ctx *schemas.BifrostContext, 
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*ReplicatePredictionRequest, error) {
 			return ToReplicateImageGenerationInput(request)
 		})
 	if bifrostErr != nil {
@@ -1873,7 +1873,7 @@ func (provider *ReplicateProvider) ImageGenerationStream(ctx *schemas.BifrostCon
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*ReplicatePredictionRequest, error) {
 			replicateReq, err := ToReplicateImageGenerationInput(request)
 			if err != nil {
 				return nil, err
@@ -2200,7 +2200,7 @@ func (provider *ReplicateProvider) ImageEdit(ctx *schemas.BifrostContext, key sc
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*ReplicatePredictionRequest, error) {
 			return ToReplicateImageEditInput(request), nil
 		})
 	if bifrostErr != nil {
@@ -2301,7 +2301,7 @@ func (provider *ReplicateProvider) ImageEditStream(ctx *schemas.BifrostContext, 
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*ReplicatePredictionRequest, error) {
 			replicateReq := ToReplicateImageEditInput(request)
 			replicateReq.Stream = schemas.Ptr(true)
 			return replicateReq, nil
@@ -2611,7 +2611,7 @@ func (provider *ReplicateProvider) VideoGeneration(ctx *schemas.BifrostContext, 
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*ReplicatePredictionRequest, error) {
 			return ToReplicateVideoGenerationInput(request)
 		})
 	if bifrostErr != nil {

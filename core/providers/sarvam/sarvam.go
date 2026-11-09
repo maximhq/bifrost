@@ -210,7 +210,7 @@ func (provider *SarvamProvider) Speech(ctx *schemas.BifrostContext, key schemas.
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*SarvamSpeechRequest, error) {
 			return ToSarvamSpeechRequest(request), nil
 		})
 	if bifrostErr != nil {
@@ -298,7 +298,7 @@ func (provider *SarvamProvider) SpeechStream(ctx *schemas.BifrostContext, postHo
 	jsonBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*SarvamSpeechRequest, error) {
 			return ToSarvamSpeechRequest(request), nil
 		})
 	if bifrostErr != nil {
