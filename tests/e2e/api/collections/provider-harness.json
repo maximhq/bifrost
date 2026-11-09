@@ -314377,6 +314377,260 @@
           }
         }
       ]
+    },
+    {
+      "name": "325. Chat tool-result images survive strict OpenAI-compatible egress (chat-tool-images) (#9456)",
+      "description": "Regression from #9070: the shared Chat converter replaced tool images with placeholders, including direct Chat and translated Responses/Anthropic requests. These two cases pin the strict Chat representation and actual image interpretation through the full HTTP path: tool results remain text-only; each result's image is attributed and moved into user content after all parallel results. Unary and streaming use the same red/blue PNG fixtures as folder 88. File names/tool text reveal no colors. Exact bytes, order, call IDs, completion and model color answers are asserted. Native Responses preservation already has folder 295 coverage; custom and built-in Responses fallback are pinned by Go capture tests. No error statuses are skipped.",
+      "item": [
+        {
+          "name": "openai/gpt-4o-mini /v1/chat/completions unary: parallel tool images reach the strict Chat wire and retain provenance - chat-tool-images - #9456",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var STREAMING = false;",
+                  "var text = pm.response.text() || '';",
+                  "pm.test('chat-tool-images: request accepted', function () {",
+                  "  pm.expect(pm.response.code, text).to.equal(200);",
+                  "});",
+                  "var events = [];",
+                  "var done = false;",
+                  "if (STREAMING) {",
+                  "  var lines = text.split(/\\r?\\n/);",
+                  "  lines.forEach(function (line) {",
+                  "    if (line.indexOf('data:') !== 0) { return; }",
+                  "    var data = line.slice(5).trim();",
+                  "    if (data === '[DONE]') { done = true; return; }",
+                  "    if (data) { events.push(JSON.parse(data)); }",
+                  "  });",
+                  "} else {",
+                  "  events.push(pm.response.json());",
+                  "}",
+                  "var raw;",
+                  "var answer = '';",
+                  "var finished = false;",
+                  "events.forEach(function (event) {",
+                  "  pm.test('chat-tool-images: no error event', function () {",
+                  "    pm.expect(event.error, JSON.stringify(event)).to.equal(undefined);",
+                  "    pm.expect(event.is_bifrost_error, JSON.stringify(event)).not.to.equal(true);",
+                  "  });",
+                  "  var candidate = (event.extra_fields || {}).raw_request;",
+                  "  if (!raw && candidate) { raw = typeof candidate === 'string' ? JSON.parse(candidate) : candidate; }",
+                  "  (event.choices || []).forEach(function (choice) {",
+                  "    var content = STREAMING ? (choice.delta || {}).content : (choice.message || {}).content;",
+                  "    if (typeof content === 'string') { answer += content; }",
+                  "    if (choice.finish_reason === 'stop') { finished = true; }",
+                  "  });",
+                  "});",
+                  "pm.test('chat-tool-images: response completes', function () {",
+                  "  pm.expect(events.length, text).to.be.above(0);",
+                  "  pm.expect(finished, text).to.equal(true);",
+                  "  if (STREAMING) { pm.expect(done, text).to.equal(true); }",
+                  "});",
+                  "pm.test('chat-tool-images: strict Chat wire retains both tool images', function () {",
+                  "  pm.expect(raw, 'raw_request missing: ' + text).to.be.an('object');",
+                  "  pm.expect(raw.messages, JSON.stringify(raw)).to.be.an('array');",
+                  "  var messages = raw.messages;",
+                  "  pm.expect(messages.map(function (m) { return m.role; }), JSON.stringify(messages)).to.eql(['user', 'assistant', 'tool', 'tool', 'user']);",
+                  "  pm.expect(messages[2].tool_call_id).to.equal('call_a');",
+                  "  pm.expect(messages[3].tool_call_id).to.equal('call_b');",
+                  "  [messages[2], messages[3]].forEach(function (m) {",
+                  "    if (Array.isArray(m.content)) {",
+                  "      m.content.forEach(function (part) {",
+                  "        pm.expect(part.type, JSON.stringify(m)).to.equal('text');",
+                  "        pm.expect(part.text).not.to.include('base64,');",
+                  "        pm.expect(part.text).not.to.include('not shown');",
+                  "      });",
+                  "    } else {",
+                  "      pm.expect(m.content).to.be.a('string');",
+                  "      pm.expect(m.content).not.to.include('base64,');",
+                  "      pm.expect(m.content).not.to.include('not shown');",
+                  "    }",
+                  "  });",
+                  "  var parts = messages[4].content;",
+                  "  pm.expect(parts, JSON.stringify(messages[4])).to.be.an('array');",
+                  "  pm.expect(parts.length).to.equal(4);",
+                  "  pm.expect(parts[0].text).to.equal('Images returned by tool call call_a:');",
+                  "  pm.expect(parts[2].text).to.equal('Images returned by tool call call_b:');",
+                  "  var sent = parts.filter(function (part) { return part.type === 'image_url'; });",
+                  "  var requested = JSON.parse(pm.request.body.raw).messages.filter(function (m) { return m.role === 'tool'; });",
+                  "  pm.expect(sent.length).to.equal(2);",
+                  "  sent.forEach(function (part, i) {",
+                  "    pm.expect(part.image_url.url).to.equal(requested[i].content[0].image_url.url);",
+                  "    pm.expect(part.image_url.detail).to.equal('low');",
+                  "    pm.expect(part.prompt_cache_breakpoint).to.equal(undefined);",
+                  "  });",
+                  "});",
+                  "pm.test('chat-tool-images: the model reads each tool image', function () {",
+                  "  var colors = JSON.parse(answer);",
+                  "  pm.expect(String(colors.call_a).toLowerCase(), answer).to.equal('red');",
+                  "  pm.expect(String(colors.call_b).toLowerCase(), answer).to.equal('blue');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Read both files. Report the dominant color returned by each tool call in lowercase JSON with keys call_a and call_b. Do not guess from the tool text.\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"tool_calls\": [\n        {\n          \"id\": \"call_a\",\n          \"type\": \"function\",\n          \"function\": {\n            \"name\": \"read_file\",\n            \"arguments\": \"{\\\"path\\\":\\\"a.png\\\"}\"\n          }\n        },\n        {\n          \"id\": \"call_b\",\n          \"type\": \"function\",\n          \"function\": {\n            \"name\": \"read_file\",\n            \"arguments\": \"{\\\"path\\\":\\\"b.png\\\"}\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"tool\",\n      \"tool_call_id\": \"call_a\",\n      \"content\": [\n        {\n          \"type\": \"image_url\",\n          \"image_url\": {\n            \"url\": \"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAeUlEQVR4nO3PQQkAMAzAwIqof2UTMxF7HINABFzm7H7dcEEDWtCAFjSgBQ1oQQNa0IAWNKAFDWhBA1rQgBY0oAUNaEEDWtCAFjSgBQ1oQQNa0IAWNKAFDWhBA1rQgBY0oAUNaEEDWtCAFjSgBQ1oQQNa0IAWNKAFj12qxUDxeFqrFAAAAABJRU5ErkJggg==\",\n            \"detail\": \"low\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"tool\",\n      \"tool_call_id\": \"call_b\",\n      \"content\": [\n        {\n          \"type\": \"image_url\",\n          \"image_url\": {\n            \"url\": \"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAe0lEQVR4nO3PUQkAIBTAwBfCEPbPYxhD+HEIgwW4zdrn64YLGtCCBrSgAS1oQAsa0IIGtKABLWhACxrQgga0oAEtaEALGtCCBrSgAS1oQAsa0IIGtKABLWhACxrQgga0oAEtaEALGtCCBrSgAS1oQAsa0IIGtKABLXjsAm3EgQAbtio+AAAAAElFTkSuQmCC\",\n            \"detail\": \"low\"\n          }\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"read_file\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"path\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"path\"\n          ]\n        }\n      }\n    }\n  ],\n  \"tool_choice\": \"none\",\n  \"response_format\": {\n    \"type\": \"json_object\"\n  },\n  \"max_completion_tokens\": 64,\n  \"stream\": false\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai/gpt-4o-mini /v1/chat/completions streaming: parallel tool images reach the strict Chat wire and retain provenance - chat-tool-images - #9456",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var STREAMING = true;",
+                  "var text = pm.response.text() || '';",
+                  "pm.test('chat-tool-images: request accepted', function () {",
+                  "  pm.expect(pm.response.code, text).to.equal(200);",
+                  "});",
+                  "var events = [];",
+                  "var done = false;",
+                  "if (STREAMING) {",
+                  "  var lines = text.split(/\\r?\\n/);",
+                  "  lines.forEach(function (line) {",
+                  "    if (line.indexOf('data:') !== 0) { return; }",
+                  "    var data = line.slice(5).trim();",
+                  "    if (data === '[DONE]') { done = true; return; }",
+                  "    if (data) { events.push(JSON.parse(data)); }",
+                  "  });",
+                  "} else {",
+                  "  events.push(pm.response.json());",
+                  "}",
+                  "var raw;",
+                  "var answer = '';",
+                  "var finished = false;",
+                  "events.forEach(function (event) {",
+                  "  pm.test('chat-tool-images: no error event', function () {",
+                  "    pm.expect(event.error, JSON.stringify(event)).to.equal(undefined);",
+                  "    pm.expect(event.is_bifrost_error, JSON.stringify(event)).not.to.equal(true);",
+                  "  });",
+                  "  var candidate = (event.extra_fields || {}).raw_request;",
+                  "  if (!raw && candidate) { raw = typeof candidate === 'string' ? JSON.parse(candidate) : candidate; }",
+                  "  (event.choices || []).forEach(function (choice) {",
+                  "    var content = STREAMING ? (choice.delta || {}).content : (choice.message || {}).content;",
+                  "    if (typeof content === 'string') { answer += content; }",
+                  "    if (choice.finish_reason === 'stop') { finished = true; }",
+                  "  });",
+                  "});",
+                  "pm.test('chat-tool-images: response completes', function () {",
+                  "  pm.expect(events.length, text).to.be.above(0);",
+                  "  pm.expect(finished, text).to.equal(true);",
+                  "  if (STREAMING) { pm.expect(done, text).to.equal(true); }",
+                  "});",
+                  "pm.test('chat-tool-images: strict Chat wire retains both tool images', function () {",
+                  "  pm.expect(raw, 'raw_request missing: ' + text).to.be.an('object');",
+                  "  pm.expect(raw.messages, JSON.stringify(raw)).to.be.an('array');",
+                  "  var messages = raw.messages;",
+                  "  pm.expect(messages.map(function (m) { return m.role; }), JSON.stringify(messages)).to.eql(['user', 'assistant', 'tool', 'tool', 'user']);",
+                  "  pm.expect(messages[2].tool_call_id).to.equal('call_a');",
+                  "  pm.expect(messages[3].tool_call_id).to.equal('call_b');",
+                  "  [messages[2], messages[3]].forEach(function (m) {",
+                  "    if (Array.isArray(m.content)) {",
+                  "      m.content.forEach(function (part) {",
+                  "        pm.expect(part.type, JSON.stringify(m)).to.equal('text');",
+                  "        pm.expect(part.text).not.to.include('base64,');",
+                  "        pm.expect(part.text).not.to.include('not shown');",
+                  "      });",
+                  "    } else {",
+                  "      pm.expect(m.content).to.be.a('string');",
+                  "      pm.expect(m.content).not.to.include('base64,');",
+                  "      pm.expect(m.content).not.to.include('not shown');",
+                  "    }",
+                  "  });",
+                  "  var parts = messages[4].content;",
+                  "  pm.expect(parts, JSON.stringify(messages[4])).to.be.an('array');",
+                  "  pm.expect(parts.length).to.equal(4);",
+                  "  pm.expect(parts[0].text).to.equal('Images returned by tool call call_a:');",
+                  "  pm.expect(parts[2].text).to.equal('Images returned by tool call call_b:');",
+                  "  var sent = parts.filter(function (part) { return part.type === 'image_url'; });",
+                  "  var requested = JSON.parse(pm.request.body.raw).messages.filter(function (m) { return m.role === 'tool'; });",
+                  "  pm.expect(sent.length).to.equal(2);",
+                  "  sent.forEach(function (part, i) {",
+                  "    pm.expect(part.image_url.url).to.equal(requested[i].content[0].image_url.url);",
+                  "    pm.expect(part.image_url.detail).to.equal('low');",
+                  "    pm.expect(part.prompt_cache_breakpoint).to.equal(undefined);",
+                  "  });",
+                  "});",
+                  "pm.test('chat-tool-images: the model reads each tool image', function () {",
+                  "  var colors = JSON.parse(answer);",
+                  "  pm.expect(String(colors.call_a).toLowerCase(), answer).to.equal('red');",
+                  "  pm.expect(String(colors.call_b).toLowerCase(), answer).to.equal('blue');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Read both files. Report the dominant color returned by each tool call in lowercase JSON with keys call_a and call_b. Do not guess from the tool text.\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"tool_calls\": [\n        {\n          \"id\": \"call_a\",\n          \"type\": \"function\",\n          \"function\": {\n            \"name\": \"read_file\",\n            \"arguments\": \"{\\\"path\\\":\\\"a.png\\\"}\"\n          }\n        },\n        {\n          \"id\": \"call_b\",\n          \"type\": \"function\",\n          \"function\": {\n            \"name\": \"read_file\",\n            \"arguments\": \"{\\\"path\\\":\\\"b.png\\\"}\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"tool\",\n      \"tool_call_id\": \"call_a\",\n      \"content\": [\n        {\n          \"type\": \"image_url\",\n          \"image_url\": {\n            \"url\": \"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAeUlEQVR4nO3PQQkAMAzAwIqof2UTMxF7HINABFzm7H7dcEEDWtCAFjSgBQ1oQQNa0IAWNKAFDWhBA1rQgBY0oAUNaEEDWtCAFjSgBQ1oQQNa0IAWNKAFDWhBA1rQgBY0oAUNaEEDWtCAFjSgBQ1oQQNa0IAWNKAFj12qxUDxeFqrFAAAAABJRU5ErkJggg==\",\n            \"detail\": \"low\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"tool\",\n      \"tool_call_id\": \"call_b\",\n      \"content\": [\n        {\n          \"type\": \"image_url\",\n          \"image_url\": {\n            \"url\": \"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAe0lEQVR4nO3PUQkAIBTAwBfCEPbPYxhD+HEIgwW4zdrn64YLGtCCBrSgAS1oQAsa0IIGtKABLWhACxrQgga0oAEtaEALGtCCBrSgAS1oQAsa0IIGtKABLWhACxrQgga0oAEtaEALGtCCBrSgAS1oQAsa0IIGtKABLXjsAm3EgQAbtio+AAAAAElFTkSuQmCC\",\n            \"detail\": \"low\"\n          }\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"read_file\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"path\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"path\"\n          ]\n        }\n      }\n    }\n  ],\n  \"tool_choice\": \"none\",\n  \"response_format\": {\n    \"type\": \"json_object\"\n  },\n  \"max_completion_tokens\": 64,\n  \"stream\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
