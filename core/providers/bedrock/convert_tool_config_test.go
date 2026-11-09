@@ -1751,160 +1751,134 @@ func BenchmarkConverseToolStrict(b *testing.B) {
 // TestConverseToolEmptyDescriptionUsesFallback verifies that an empty tool
 // description ("") is replaced with the non-empty fallback required by Bedrock
 // Converse's toolSpec.description (minLength: 1) across Responses, Chat,
-// Invoke ingress, conversation-history tool extraction, and structured-output
-// synthetic tools.
+// Invoke ingress, and structured-output synthetic tools.
 func TestConverseToolEmptyDescriptionUsesFallback(t *testing.T) {
-	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	empty := ""
-
-	t.Run("responses_tool", func(t *testing.T) {
-		req := &schemas.BifrostResponsesRequest{
+	responsesReq := func(desc *string) *schemas.BifrostResponsesRequest {
+		return &schemas.BifrostResponsesRequest{
 			Provider: schemas.Bedrock,
 			Model:    "us.anthropic.claude-sonnet-4-6",
-			Input: []schemas.ResponsesMessage{
-				{
-					Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
-					Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("Weather in Paris?")},
-				},
-			},
+			Input: []schemas.ResponsesMessage{{
+				Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("Weather in Paris?")},
+			}},
 			Params: &schemas.ResponsesParameters{
-				Tools: []schemas.ResponsesTool{
-					{
-						Type:                  schemas.ResponsesToolTypeFunction,
-						Name:                  schemas.Ptr("get_weather"),
-						Description:           &empty,
-						ResponsesToolFunction: &schemas.ResponsesToolFunction{Parameters: strictWeatherSchema()},
-					},
-				},
+				Tools: []schemas.ResponsesTool{{
+					Type:                  schemas.ResponsesToolTypeFunction,
+					Name:                  schemas.Ptr("get_weather"),
+					Description:           desc,
+					ResponsesToolFunction: &schemas.ResponsesToolFunction{Parameters: strictWeatherSchema()},
+				}},
 			},
 		}
-		out, err := ToBedrockResponsesRequest(ctx, req)
-		if err != nil {
-			t.Fatalf("ToBedrockResponsesRequest: %v", err)
-		}
-		if out.ToolConfig == nil || len(out.ToolConfig.Tools) != 1 || out.ToolConfig.Tools[0].ToolSpec == nil {
-			t.Fatalf("expected 1 ToolSpec, got %+v", out.ToolConfig)
-		}
-		if got := out.ToolConfig.Tools[0].ToolSpec.Description; got == nil || *got != "Function tool" {
-			t.Errorf("toolSpec.description = %v, want %q", got, "Function tool")
-		}
-	})
+	}
 
-	t.Run("invoke_ingress_to_converse_egress", func(t *testing.T) {
-		invokeReq := &BedrockInvokeRequest{
-			ModelID: "us.anthropic.claude-sonnet-4-6",
-			Messages: []BedrockMessage{
-				{Role: BedrockMessageRoleUser, Content: []BedrockContentBlock{{Text: schemas.Ptr("Weather in Paris?")}}},
-			},
-			Tools: []interface{}{
-				map[string]interface{}{
-					"name":         "get_weather",
-					"description":  "",
-					"input_schema": map[string]interface{}{"type": "object", "properties": map[string]interface{}{"city": map[string]interface{}{"type": "string"}}},
-				},
-			},
-		}
-		bifrostReq, err := invokeReq.ToBedrockConverseRequest().ToBifrostResponsesRequest(ctx)
-		if err != nil {
-			t.Fatalf("invoke ingress: %v", err)
-		}
-		bifrostReq.Provider = schemas.Bedrock
-		out, err := ToBedrockResponsesRequest(ctx, bifrostReq)
-		if err != nil {
-			t.Fatalf("ToBedrockResponsesRequest: %v", err)
-		}
-		if out.ToolConfig == nil || len(out.ToolConfig.Tools) != 1 || out.ToolConfig.Tools[0].ToolSpec == nil {
-			t.Fatalf("expected 1 ToolSpec, got %+v", out.ToolConfig)
-		}
-		if got := out.ToolConfig.Tools[0].ToolSpec.Description; got == nil || *got != "Function tool" {
-			t.Errorf("toolSpec.description = %v, want %q", got, "Function tool")
-		}
-	})
-
-	t.Run("chat_tool", func(t *testing.T) {
-		cfg := convertToolConfig("us.anthropic.claude-sonnet-4-6", &schemas.ChatParameters{
-			Tools: []schemas.ChatTool{
-				{
-					Type: schemas.ChatToolTypeFunction,
-					Function: &schemas.ChatToolFunction{
-						Name:        "get_weather",
-						Description: &empty,
-						Parameters:  strictWeatherSchema(),
-					},
-				},
-			},
-		})
-		if cfg == nil || len(cfg.Tools) != 1 || cfg.Tools[0].ToolSpec == nil {
-			t.Fatalf("expected 1 ToolSpec, got %+v", cfg)
-		}
-		if got := cfg.Tools[0].ToolSpec.Description; got == nil || *got != "Function tool" {
-			t.Errorf("toolSpec.description = %v, want %q", got, "Function tool")
-		}
-	})
-
-	t.Run("text_format_structured_output_tool", func(t *testing.T) {
-		soCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-		tool, _, err := convertTextFormatToTool(soCtx, "amazon.nova-pro-v1:0", &schemas.ResponsesTextConfig{
-			Format: &schemas.ResponsesTextConfigFormat{
-				Type: "json_schema",
-				Name: schemas.Ptr("weather_schema"),
-				JSONSchema: &schemas.ResponsesTextConfigFormatJSONSchema{
-					Description: &empty,
-					Type:        schemas.Ptr("object"),
-				},
-			},
-		})
-		if err != nil {
-			t.Fatalf("convertTextFormatToTool: %v", err)
-		}
-		if tool == nil || tool.ToolSpec == nil {
-			t.Fatalf("expected ToolSpec, got %+v", tool)
-		}
-		if got := tool.ToolSpec.Description; got == nil || *got != "Returns structured JSON output" {
-			t.Errorf("toolSpec.description = %v, want %q", got, "Returns structured JSON output")
-		}
-	})
-}
-
-func BenchmarkConverseToolEmptyDescription(b *testing.B) {
-	empty := ""
-	nonEmpty := "Get weather by city"
-	for _, bc := range []struct {
+	tests := []struct {
 		name string
-		desc *string
+		want string
+		run  func(t *testing.T, ctx *schemas.BifrostContext) *BedrockToolSpec
 	}{
-		{"nil_description", nil},
-		{"empty_description", &empty},
-		{"non_empty_description", &nonEmpty},
-	} {
-		b.Run(bc.name, func(b *testing.B) {
+		{
+			name: "responses_tool",
+			want: "Function tool",
+			run: func(t *testing.T, ctx *schemas.BifrostContext) *BedrockToolSpec {
+				out, err := ToBedrockResponsesRequest(ctx, responsesReq(&empty))
+				if err != nil || out.ToolConfig == nil || len(out.ToolConfig.Tools) != 1 {
+					t.Fatalf("ToBedrockResponsesRequest: err=%v, toolConfig=%+v", err, out)
+				}
+				return out.ToolConfig.Tools[0].ToolSpec
+			},
+		},
+		{
+			name: "invoke_ingress_to_converse_egress",
+			want: "Function tool",
+			run: func(t *testing.T, ctx *schemas.BifrostContext) *BedrockToolSpec {
+				invokeReq := &BedrockInvokeRequest{
+					ModelID:  "us.anthropic.claude-sonnet-4-6",
+					Messages: []BedrockMessage{{Role: BedrockMessageRoleUser, Content: []BedrockContentBlock{{Text: schemas.Ptr("Weather in Paris?")}}}},
+					Tools: []interface{}{map[string]interface{}{
+						"name":         "get_weather",
+						"description":  "",
+						"input_schema": map[string]interface{}{"type": "object", "properties": map[string]interface{}{"city": map[string]interface{}{"type": "string"}}},
+					}},
+				}
+				bifrostReq, err := invokeReq.ToBedrockConverseRequest().ToBifrostResponsesRequest(ctx)
+				if err != nil {
+					t.Fatalf("invoke ingress: %v", err)
+				}
+				bifrostReq.Provider = schemas.Bedrock
+				out, err := ToBedrockResponsesRequest(ctx, bifrostReq)
+				if err != nil || out.ToolConfig == nil || len(out.ToolConfig.Tools) != 1 {
+					t.Fatalf("ToBedrockResponsesRequest: err=%v, toolConfig=%+v", err, out)
+				}
+				return out.ToolConfig.Tools[0].ToolSpec
+			},
+		},
+		{
+			name: "chat_tool",
+			want: "Function tool",
+			run: func(t *testing.T, _ *schemas.BifrostContext) *BedrockToolSpec {
+				cfg := convertToolConfig("us.anthropic.claude-sonnet-4-6", &schemas.ChatParameters{
+					Tools: []schemas.ChatTool{{
+						Type:     schemas.ChatToolTypeFunction,
+						Function: &schemas.ChatToolFunction{Name: "get_weather", Description: &empty, Parameters: strictWeatherSchema()},
+					}},
+				})
+				if cfg == nil || len(cfg.Tools) != 1 {
+					t.Fatalf("convertToolConfig: %+v", cfg)
+				}
+				return cfg.Tools[0].ToolSpec
+			},
+		},
+		{
+			name: "text_format_structured_output_tool",
+			want: "Returns structured JSON output",
+			run: func(t *testing.T, ctx *schemas.BifrostContext) *BedrockToolSpec {
+				tool, _, err := convertTextFormatToTool(ctx, "amazon.nova-pro-v1:0", &schemas.ResponsesTextConfig{
+					Format: &schemas.ResponsesTextConfigFormat{
+						Type:       "json_schema",
+						Name:       schemas.Ptr("weather_schema"),
+						JSONSchema: &schemas.ResponsesTextConfigFormatJSONSchema{Description: &empty, Type: schemas.Ptr("object")},
+					},
+				})
+				if err != nil || tool == nil {
+					t.Fatalf("convertTextFormatToTool: err=%v, tool=%+v", err, tool)
+				}
+				return tool.ToolSpec
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
 			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-			req := &schemas.BifrostResponsesRequest{
-				Provider: schemas.Bedrock,
-				Model:    "us.anthropic.claude-sonnet-4-6",
-				Input: []schemas.ResponsesMessage{
-					{
-						Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
-						Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("Weather in Paris?")},
-					},
-				},
-				Params: &schemas.ResponsesParameters{
-					Tools: []schemas.ResponsesTool{
-						{
-							Type:                  schemas.ResponsesToolTypeFunction,
-							Name:                  schemas.Ptr("get_weather"),
-							Description:           bc.desc,
-							ResponsesToolFunction: &schemas.ResponsesToolFunction{Parameters: strictWeatherSchema()},
-						},
-					},
-				},
+			spec := tt.run(t, ctx)
+			if spec == nil || spec.Description == nil || *spec.Description != tt.want {
+				t.Errorf("toolSpec.description = %v, want %q", spec, tt.want)
 			}
-			b.ReportAllocs()
+		})
+	}
+
+	if !testing.Short() {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		reqNil := responsesReq(nil)
+		reqEmpty := responsesReq(&empty)
+		resNil := testing.Benchmark(func(b *testing.B) {
 			for b.Loop() {
-				if _, err := ToBedrockResponsesRequest(ctx, req); err != nil {
+				if _, err := ToBedrockResponsesRequest(ctx, reqNil); err != nil {
 					b.Fatal(err)
 				}
 			}
 		})
+		resEmpty := testing.Benchmark(func(b *testing.B) {
+			for b.Loop() {
+				if _, err := ToBedrockResponsesRequest(ctx, reqEmpty); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+		if resEmpty.AllocsPerOp() > resNil.AllocsPerOp() {
+			t.Errorf("empty description allocs/op = %d, want <= %d", resEmpty.AllocsPerOp(), resNil.AllocsPerOp())
+		}
 	}
 }
