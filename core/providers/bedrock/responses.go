@@ -2927,7 +2927,7 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 
 				// Use the tool description if available, otherwise use a generic description
 				description := "Function tool"
-				if tool.Description != nil {
+				if tool.Description != nil && *tool.Description != "" {
 					description = *tool.Description
 				}
 
@@ -3488,7 +3488,7 @@ func extractToolsFromResponsesConversationHistory(ctx context.Context, messages 
 			}
 
 			description := "Function tool"
-			if tool.Description != nil {
+			if tool.Description != nil && *tool.Description != "" {
 				description = *tool.Description
 			}
 
