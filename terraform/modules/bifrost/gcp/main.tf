@@ -141,6 +141,9 @@ module "gke" {
   source = "./services/gke"
   count  = var.service == "gke" ? 1 : 0
 
+  # Narrows the LoadBalancer Service (loadBalancerSourceRanges) to allowed_cidr.
+  allowed_cidr = var.allowed_cidr
+
   # Bifrost
   service_name      = local.service_name
   config_json       = var.config_json
@@ -180,6 +183,16 @@ module "gke" {
   autoscaling_cpu_threshold    = var.autoscaling_cpu_threshold
   autoscaling_memory_threshold = var.autoscaling_memory_threshold
   domain_name                  = var.domain_name
+
+  # Managed database, generated secrets and exposure
+  extra_environment        = local.managed_environment_map
+  extra_secret_environment = local.managed_secret_map
+  service_type             = var.service_type
+
+  depends_on = [
+    google_sql_database.bifrost,
+    google_sql_user.bifrost,
+  ]
 }
 
 module "cloud_run" {
@@ -243,24 +256,43 @@ module "cloud_run" {
 
 locals {
   is_cloud_run     = var.service == "cloud-run"
-  manage_database  = local.is_cloud_run && var.create_database
-  generate_secrets = local.is_cloud_run && var.generate_secrets
+  is_gke           = var.service == "gke"
+  manage_database  = (local.is_cloud_run || local.is_gke) && var.create_database
+  generate_secrets = (local.is_cloud_run || local.is_gke) && var.generate_secrets
+
+  # Cloud Run reads the runtime values from Secret Manager and reaches the
+  # instance through the connector. GKE gets them through the <name_prefix>-runtime
+  # Kubernetes Secret over private IP, so it needs neither the Secret Manager
+  # copies nor the cloudsql.client binding.
+  cloud_run_database = local.is_cloud_run && local.manage_database
+  cloud_run_secrets  = local.is_cloud_run && local.generate_secrets
 
   database_tier = coalesce(var.database_instance_class, "db-custom-1-3840")
 
+  # Cloud Run reaches the instance over the connector socket; GKE over the
+  # instance's private IP inside the VPC (TLS on).
   managed_environment = local.manage_database ? [
-    { name = "PG_HOST", value = "/cloudsql/${google_sql_database_instance.bifrost[0].connection_name}" },
+    { name = "PG_HOST", value = local.is_gke ? google_sql_database_instance.bifrost[0].private_ip_address : "/cloudsql/${google_sql_database_instance.bifrost[0].connection_name}" },
     { name = "PG_PORT", value = "5432" },
     { name = "PG_USER", value = var.database_user },
     { name = "PG_DATABASE", value = var.database_name },
-    { name = "PG_SSL_MODE", value = "disable" },
+    { name = "PG_SSL_MODE", value = local.is_gke ? "require" : "disable" },
   ] : []
 
+  managed_environment_map = { for e in local.managed_environment : e.name => e.value }
+  managed_secret_map = local.is_gke ? merge(
+    local.manage_database ? { PG_PASSWORD = random_password.database[0].result } : {},
+    local.generate_secrets ? {
+      BIFROST_ENCRYPTION_KEY = random_password.encryption_key[0].result
+      BIFROST_SETUP_TOKEN    = random_password.setup_token[0].result
+    } : {},
+  ) : {}
+
   managed_secret_environment = concat(
-    local.manage_database ? [
+    local.cloud_run_database ? [
       { name = "PG_PASSWORD", secret = google_secret_manager_secret.database_password[0].secret_id },
     ] : [],
-    local.generate_secrets ? [
+    local.cloud_run_secrets ? [
       { name = "BIFROST_ENCRYPTION_KEY", secret = google_secret_manager_secret.encryption_key[0].secret_id },
       { name = "BIFROST_SETUP_TOKEN", secret = google_secret_manager_secret.setup_token[0].secret_id },
     ] : [],
@@ -306,6 +338,8 @@ resource "google_sql_database_instance" "bifrost" {
 
   deletion_protection = var.database_deletion_protection
 
+  depends_on = [google_service_networking_connection.private_services]
+
   settings {
     tier              = local.database_tier
     availability_type = "ZONAL"
@@ -313,10 +347,15 @@ resource "google_sql_database_instance" "bifrost" {
     disk_size         = var.database_storage_gb
     disk_autoresize   = true
 
-    # Public IP with no authorized networks: only connector traffic
-    # (Cloud Run's /cloudsql mount) and IAM-authorized tooling can reach it.
+    # Cloud Run: public IP with no authorized networks, so only connector
+    # traffic (the /cloudsql mount) and IAM-authorized tooling can reach it.
+    # GKE: private IP on the cluster VPC through service networking peering.
     ip_configuration {
-      ipv4_enabled = true
+      ipv4_enabled    = !local.is_gke
+      private_network = local.is_gke ? local.vpc_id : null
+      # GKE connects over the private IP with PG_SSL_MODE=require; make the
+      # server refuse plaintext too. Cloud Run's connector encrypts on its own.
+      ssl_mode = local.is_gke ? "ENCRYPTED_ONLY" : null
     }
 
     backup_configuration {
@@ -326,6 +365,27 @@ resource "google_sql_database_instance" "bifrost" {
 
     user_labels = var.tags
   }
+}
+
+# Private services access for GKE: a reserved range on the VPC peered to the
+# Cloud SQL producer network. The instance must wait for the connection.
+resource "google_compute_global_address" "private_services" {
+  count = local.manage_database && local.is_gke ? 1 : 0
+
+  name          = "${var.name_prefix}-private-services"
+  project       = var.project_id
+  purpose       = "VPC_PEERING"
+  address_type  = "INTERNAL"
+  prefix_length = 16
+  network       = local.vpc_id
+}
+
+resource "google_service_networking_connection" "private_services" {
+  count = local.manage_database && local.is_gke ? 1 : 0
+
+  network                 = local.vpc_id
+  service                 = "servicenetworking.googleapis.com"
+  reserved_peering_ranges = [google_compute_global_address.private_services[0].name]
 }
 
 resource "google_sql_database" "bifrost" {
@@ -346,7 +406,7 @@ resource "google_sql_user" "bifrost" {
 }
 
 resource "google_project_iam_member" "bifrost_cloudsql_client" {
-  count = local.manage_database ? 1 : 0
+  count = local.cloud_run_database ? 1 : 0
 
   project = var.project_id
   role    = "roles/cloudsql.client"
@@ -354,7 +414,7 @@ resource "google_project_iam_member" "bifrost_cloudsql_client" {
 }
 
 resource "google_secret_manager_secret" "database_password" {
-  count = local.manage_database ? 1 : 0
+  count = local.cloud_run_database ? 1 : 0
 
   secret_id = "${var.name_prefix}-db-password"
   project   = var.project_id
@@ -366,14 +426,14 @@ resource "google_secret_manager_secret" "database_password" {
 }
 
 resource "google_secret_manager_secret_version" "database_password" {
-  count = local.manage_database ? 1 : 0
+  count = local.cloud_run_database ? 1 : 0
 
   secret      = google_secret_manager_secret.database_password[0].id
   secret_data = random_password.database[0].result
 }
 
 resource "google_secret_manager_secret" "encryption_key" {
-  count = local.generate_secrets ? 1 : 0
+  count = local.cloud_run_secrets ? 1 : 0
 
   secret_id = "${var.name_prefix}-encryption-key"
   project   = var.project_id
@@ -385,14 +445,14 @@ resource "google_secret_manager_secret" "encryption_key" {
 }
 
 resource "google_secret_manager_secret_version" "encryption_key" {
-  count = local.generate_secrets ? 1 : 0
+  count = local.cloud_run_secrets ? 1 : 0
 
   secret      = google_secret_manager_secret.encryption_key[0].id
   secret_data = random_password.encryption_key[0].result
 }
 
 resource "google_secret_manager_secret" "setup_token" {
-  count = local.generate_secrets ? 1 : 0
+  count = local.cloud_run_secrets ? 1 : 0
 
   secret_id = "${var.name_prefix}-setup-token"
   project   = var.project_id
@@ -404,7 +464,7 @@ resource "google_secret_manager_secret" "setup_token" {
 }
 
 resource "google_secret_manager_secret_version" "setup_token" {
-  count = local.generate_secrets ? 1 : 0
+  count = local.cloud_run_secrets ? 1 : 0
 
   secret      = google_secret_manager_secret.setup_token[0].id
   secret_data = random_password.setup_token[0].result

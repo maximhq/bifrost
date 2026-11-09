@@ -121,3 +121,4 @@ variable "image_registry_credentials" {
   default   = []
   sensitive = true
 }
+variable "service_type" { default = "ClusterIP" }

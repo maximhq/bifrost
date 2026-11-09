@@ -27,6 +27,7 @@ mock_provider "azurerm" {
   }
 }
 mock_provider "kubernetes" {}
+mock_provider "random" {}
 
 run "eks_basic" {
   command = plan
@@ -153,5 +154,31 @@ run "eks_with_ingress_path" {
     domain_name          = "bifrost.example.com"
     ingress_path         = "/bifrost"
     server               = { base_path = "/bifrost" }
+  }
+}
+
+# --- Managed database, generated secrets and a public Service (the one-click EKS stack) ---
+
+run "eks_with_managed_database" {
+  command = plan
+  module { source = "./tests/setup" }
+  variables {
+    cloud_provider   = "aws"
+    service          = "eks"
+    region           = "us-east-1"
+    config_json      = jsonencode({})
+    create_database  = true
+    generate_secrets = true
+    service_type     = "LoadBalancer"
+  }
+
+  assert {
+    condition     = jsondecode(nonsensitive(output.config_json)).config_store.config.password == "env.PG_PASSWORD"
+    error_message = "create_database must inject an env-referenced postgres config_store"
+  }
+
+  assert {
+    condition     = jsondecode(nonsensitive(output.config_json)).setup_token == "env.BIFROST_SETUP_TOKEN"
+    error_message = "generate_secrets must reference BIFROST_SETUP_TOKEN"
   }
 }

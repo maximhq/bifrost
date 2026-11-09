@@ -31,3 +31,14 @@ output "health_check_url" {
   description = "Internal cluster URL for the Bifrost health check endpoint (reaches the service directly, so no ingress prefix)."
   value       = "http://${kubernetes_service.bifrost.metadata[0].name}.${kubernetes_namespace.bifrost.metadata[0].name}.svc.cluster.local${var.health_check_path}"
 }
+
+output "external_url" {
+  description = "Public URL of the LoadBalancer Service when service_type is LoadBalancer (known after apply)."
+  value = var.service_type == "LoadBalancer" ? try(
+    "http://${coalesce(
+      try(kubernetes_service.bifrost.status[0].load_balancer[0].ingress[0].hostname, ""),
+      try(kubernetes_service.bifrost.status[0].load_balancer[0].ingress[0].ip, ""),
+    )}",
+    null,
+  ) : null
+}

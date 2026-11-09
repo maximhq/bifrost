@@ -1,0 +1,6 @@
+region            = "us-east-1"
+name_prefix       = "bifrost"
+image_tag         = "latest"
+node_count        = 2
+node_machine_type = "t3.medium"
+# image_repository = "123456789.dkr.ecr.us-east-1.amazonaws.com/bifrost-enterprise"

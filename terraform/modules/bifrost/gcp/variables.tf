@@ -203,3 +203,9 @@ variable "generate_secrets" {
   type        = bool
   default     = false
 }
+
+variable "service_type" {
+  description = "Kubernetes Service type for GKE (ClusterIP, LoadBalancer, NodePort)."
+  type        = string
+  default     = "ClusterIP"
+}

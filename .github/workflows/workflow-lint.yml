@@ -111,3 +111,12 @@ jobs:
 
       - name: Check the Heroku, DigitalOcean and Koyeb templates
         run: bash ./deploy/templates.test.sh
+
+      - name: Check the EKS one-click deploy script
+        run: bash ./deploy/eks/deploy.test.sh
+
+      - name: Check the GKE one-click deploy script
+        run: bash ./deploy/gke/deploy.test.sh
+
+      - name: Check the AKS one-click deploy script
+        run: bash ./deploy/aks/deploy.test.sh

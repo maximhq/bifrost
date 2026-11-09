@@ -153,3 +153,33 @@ variable "master_authorized_cidr" {
   type        = string
   default     = "0.0.0.0/0"
 }
+
+# --- Extra runtime environment and exposure ---
+variable "extra_environment" {
+  description = "Additional plain environment variables for the Bifrost container."
+  type        = map(string)
+  default     = {}
+}
+
+variable "extra_secret_environment" {
+  description = "Additional environment variables stored in a Kubernetes Secret and injected by key."
+  type        = map(string)
+  default     = {}
+  sensitive   = true
+}
+
+variable "service_type" {
+  description = "Kubernetes Service type for Bifrost. LoadBalancer provisions a cloud load balancer with a public address."
+  type        = string
+  default     = "ClusterIP"
+  validation {
+    condition     = contains(["ClusterIP", "LoadBalancer", "NodePort"], var.service_type)
+    error_message = "service_type must be ClusterIP, LoadBalancer or NodePort"
+  }
+}
+
+variable "allowed_cidr" {
+  description = "CIDR allowed to reach a LoadBalancer Service; 0.0.0.0/0 or * leaves loadBalancerSourceRanges unset."
+  type        = string
+  default     = "0.0.0.0/0"
+}

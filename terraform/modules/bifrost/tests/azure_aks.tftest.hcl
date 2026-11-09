@@ -33,6 +33,7 @@ mock_provider "azurerm" {
   }
 }
 mock_provider "kubernetes" {}
+mock_provider "random" {}
 
 run "aks_basic" {
   command = plan
@@ -130,6 +131,32 @@ run "aks_custom_volume" {
     region         = "eastus"
     config_json    = jsonencode({})
     volume_size_gb = 50
+  }
+}
+
+# --- Managed database, generated secrets and a public Service (the one-click AKS stack) ---
+
+run "aks_with_managed_database" {
+  command = plan
+  module { source = "./tests/setup" }
+  variables {
+    cloud_provider   = "azure"
+    service          = "aks"
+    region           = "eastus"
+    config_json      = jsonencode({})
+    create_database  = true
+    generate_secrets = true
+    service_type     = "LoadBalancer"
+  }
+
+  assert {
+    condition     = jsondecode(nonsensitive(output.config_json)).config_store.config.password == "env.PG_PASSWORD"
+    error_message = "create_database must inject an env-referenced postgres config_store"
+  }
+
+  assert {
+    condition     = jsondecode(nonsensitive(output.config_json)).setup_token == "env.BIFROST_SETUP_TOKEN"
+    error_message = "generate_secrets must reference BIFROST_SETUP_TOKEN"
   }
 }
 

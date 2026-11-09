@@ -358,7 +358,7 @@ variable "ingress_annotations" {
 
 # --- Managed database and generated secrets (AWS ECS and GCP Cloud Run) ---
 variable "create_database" {
-  description = "Provision a managed PostgreSQL 16 database (RDS on AWS, Cloud SQL on GCP, Flexible Server on Azure) and point both Bifrost stores at it through PG_* environment variables. Supported for aws/ecs, gcp/cloud-run and azure/aci. Explicit config_store or logs_store values, and stores already present in config_json or config_json_file, still win."
+  description = "Provision a managed PostgreSQL 16 database (RDS on AWS, Cloud SQL on GCP, Flexible Server on Azure) and point both Bifrost stores at it through PG_* environment variables. Supported on every aws, gcp and azure target; the generic kubernetes target cannot provision one. Explicit config_store or logs_store values, and stores already present in config_json or config_json_file, still win."
   type        = bool
   default     = false
 }
@@ -400,7 +400,7 @@ variable "database_skip_final_snapshot" {
 }
 
 variable "generate_secrets" {
-  description = "Generate BIFROST_ENCRYPTION_KEY and BIFROST_SETUP_TOKEN, store them in the cloud secret manager (secure environment variables on ACI), inject them into the container, and reference them from config.json. Explicit encryption_key or setup_token values, and values already present in config_json or config_json_file, still win. Supported for aws/ecs, gcp/cloud-run and azure/aci."
+  description = "Generate BIFROST_ENCRYPTION_KEY and BIFROST_SETUP_TOKEN, store them in the cloud secret manager (secure environment variables on ACI, a Kubernetes Secret on EKS, GKE and AKS), inject them into the container, and reference them from config.json. Explicit encryption_key or setup_token values, and values already present in config_json or config_json_file, still win. Supported on every aws, gcp and azure target."
   type        = bool
   default     = false
 }
@@ -435,5 +435,15 @@ variable "image_registry_credentials" {
   validation {
     condition     = alltrue([for c in var.image_registry_credentials : c.server != null && c.server != "" && c.username != null && c.username != "" && c.password != null && c.password != ""])
     error_message = "Each image_registry_credentials entry needs a non-empty server, username and password; a partial credential would only fail when the container group pulls the image."
+  }
+}
+
+variable "service_type" {
+  description = "Kubernetes Service type for EKS, GKE and AKS: ClusterIP (default), LoadBalancer (public cloud load balancer, URL in the external_url output) or NodePort."
+  type        = string
+  default     = "ClusterIP"
+  validation {
+    condition     = contains(["ClusterIP", "LoadBalancer", "NodePort"], var.service_type)
+    error_message = "service_type must be ClusterIP, LoadBalancer or NodePort"
   }
 }

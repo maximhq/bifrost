@@ -19,3 +19,7 @@ output "setup_token" {
 output "database_endpoint" {
   value = module.bifrost.database_endpoint
 }
+
+output "external_url" {
+  value = module.bifrost.external_url
+}

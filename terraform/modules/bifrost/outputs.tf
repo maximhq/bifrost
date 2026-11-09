@@ -42,3 +42,12 @@ output "database_endpoint" {
     try(module.azure[0].database_endpoint, null),
   ), null)
 }
+
+output "external_url" {
+  description = "Public URL of the Kubernetes LoadBalancer Service on EKS, GKE or AKS when service_type is LoadBalancer (known after apply)."
+  value = try(coalesce(
+    try(module.aws[0].external_url, null),
+    try(module.gcp[0].external_url, null),
+    try(module.azure[0].external_url, null),
+  ), null)
+}

@@ -234,3 +234,9 @@ variable "image_registry_credentials" {
     error_message = "Each image_registry_credentials entry needs a non-empty server, username and password; a partial credential would only fail when the container group pulls the image."
   }
 }
+
+variable "service_type" {
+  description = "Kubernetes Service type for AKS (ClusterIP, LoadBalancer, NodePort)."
+  type        = string
+  default     = "ClusterIP"
+}

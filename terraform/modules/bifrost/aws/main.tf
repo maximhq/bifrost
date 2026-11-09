@@ -337,6 +337,9 @@ module "eks" {
   source = "./services/eks"
   count  = var.service == "eks" ? 1 : 0
 
+  # Narrows the LoadBalancer Service (loadBalancerSourceRanges) to allowed_cidr.
+  allowed_cidr = var.allowed_cidr
+
   # Container
   image             = var.image
   container_port    = var.container_port
@@ -364,6 +367,11 @@ module "eks" {
   domain_name     = var.domain_name
   certificate_arn = var.certificate_arn
 
+  # Managed database, generated secrets and exposure
+  extra_environment        = local.managed_environment_map
+  extra_secret_environment = local.managed_secret_map
+  service_type             = var.service_type
+
   # K8s-specific
   create_cluster       = var.create_cluster
   kubernetes_namespace = var.kubernetes_namespace
@@ -390,9 +398,11 @@ module "eks" {
 # =============================================================================
 
 locals {
-  manage_database       = local.is_ecs && var.create_database
-  generate_secrets      = local.is_ecs && var.generate_secrets
-  create_runtime_secret = local.manage_database || local.generate_secrets
+  is_eks           = var.service == "eks"
+  manage_database  = (local.is_ecs || local.is_eks) && var.create_database
+  generate_secrets = (local.is_ecs || local.is_eks) && var.generate_secrets
+  # Secrets Manager is the ECS delivery path; EKS gets a Kubernetes Secret.
+  create_runtime_secret = local.is_ecs && (local.manage_database || local.generate_secrets)
 
   database_instance_class = coalesce(var.database_instance_class, "db.t4g.small")
 
@@ -416,14 +426,39 @@ locals {
   # Secret environment for the task: "<secret arn>:<json key>::" selects one
   # key of the JSON secret.
   managed_secrets = concat(
-    local.manage_database ? [
+    local.manage_database && local.is_ecs ? [
       { name = "PG_PASSWORD", valueFrom = "${aws_secretsmanager_secret.runtime[0].arn}:PG_PASSWORD::" },
     ] : [],
-    local.generate_secrets ? [
+    local.generate_secrets && local.is_ecs ? [
       { name = "BIFROST_ENCRYPTION_KEY", valueFrom = "${aws_secretsmanager_secret.runtime[0].arn}:BIFROST_ENCRYPTION_KEY::" },
       { name = "BIFROST_SETUP_TOKEN", valueFrom = "${aws_secretsmanager_secret.runtime[0].arn}:BIFROST_SETUP_TOKEN::" },
     ] : [],
   )
+
+  # Map forms for the EKS Deployment (plain env and a Kubernetes Secret).
+  managed_environment_map = { for e in local.managed_environment : e.name => e.value }
+  managed_secret_map      = local.is_eks ? local.runtime_secret_payload : {}
+}
+
+# EKS nodes carry the cluster security group, not the service groups, so the
+# database admits the whole VPC range for that target.
+data "aws_vpc" "selected" {
+  count = local.manage_database && local.is_eks ? 1 : 0
+
+  id = local.vpc_id
+}
+
+resource "aws_vpc_security_group_ingress_rule" "database_from_vpc" {
+  count = local.manage_database && local.is_eks ? 1 : 0
+
+  security_group_id = aws_security_group.database[0].id
+  description       = "PostgreSQL from the Bifrost VPC (EKS nodes)"
+  cidr_ipv4         = data.aws_vpc.selected[0].cidr_block
+  from_port         = 5432
+  to_port           = 5432
+  ip_protocol       = "tcp"
+
+  tags = var.tags
 }
 
 resource "random_password" "database" {
@@ -510,7 +545,7 @@ resource "aws_security_group" "database" {
 # One rule per service security group. count (not for_each) because the
 # created group's id is unknown until apply, while the list length is known.
 resource "aws_vpc_security_group_ingress_rule" "database_from_service" {
-  count = local.manage_database ? length(local.security_group_ids) : 0
+  count = local.manage_database && local.is_ecs ? length(local.security_group_ids) : 0
 
   security_group_id            = aws_security_group.database[0].id
   description                  = "PostgreSQL from Bifrost service"

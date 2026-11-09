@@ -86,4 +86,6 @@ jobs:
             -filter=tests/aws_database.tftest.hcl \
             -filter=tests/aws_load_balancer.tftest.hcl \
             -filter=tests/azure_database.tftest.hcl \
-            -filter=tests/azure_aci_container.tftest.hcl
+            -filter=tests/azure_aci_container.tftest.hcl \
+            -filter=tests/gcp_database.tftest.hcl \
+            -filter=tests/kubernetes_services.tftest.hcl

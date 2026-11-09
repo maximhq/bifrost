@@ -42,9 +42,9 @@ locals {
   # setup provided via config_json/config_json_file is never silently rewritten.
   schema_url = coalesce(var.schema_url, try(local.base_config["$schema"], null), "https://www.getbifrost.ai/schema")
 
-  # Managed database and generated secrets are only wired for the container
-  # services that read PG_* / BIFROST_* from their task environment.
-  managed_runtime_supported = contains(["aws/ecs", "gcp/cloud-run", "azure/aci"], "${var.cloud_provider}/${var.service}")
+  # Managed database and generated secrets are wired for every cloud target;
+  # the generic kubernetes target has no cloud APIs to provision them with.
+  managed_runtime_supported = var.cloud_provider != "kubernetes"
 
   # Store definition injected when create_database is on. Every value is an
   # env reference resolved inside the container, so the same config.json works
@@ -124,11 +124,11 @@ resource "terraform_data" "validate_service_combination" {
     }
     precondition {
       condition     = !var.create_database || local.managed_runtime_supported
-      error_message = "create_database is supported for aws/ecs, gcp/cloud-run and azure/aci only. Point config_store and logs_store at your own PostgreSQL for '${var.cloud_provider}/${var.service}'."
+      error_message = "create_database needs a cloud target (aws, gcp or azure). Point config_store and logs_store at your own PostgreSQL for '${var.cloud_provider}/${var.service}'."
     }
     precondition {
       condition     = !var.generate_secrets || local.managed_runtime_supported
-      error_message = "generate_secrets is supported for aws/ecs, gcp/cloud-run and azure/aci only. Pass encryption_key and setup_token explicitly for '${var.cloud_provider}/${var.service}'."
+      error_message = "generate_secrets needs a cloud target (aws, gcp or azure). Pass encryption_key and setup_token explicitly for '${var.cloud_provider}/${var.service}'."
     }
   }
 }
@@ -176,6 +176,7 @@ module "aws" {
   database_deletion_protection = var.database_deletion_protection
   database_skip_final_snapshot = var.database_skip_final_snapshot
   generate_secrets             = var.generate_secrets
+  service_type                 = var.service_type
 }
 
 # --- GCP ---
@@ -218,6 +219,7 @@ module "gcp" {
   database_storage_gb          = var.database_storage_gb
   database_deletion_protection = var.database_deletion_protection
   generate_secrets             = var.generate_secrets
+  service_type                 = var.service_type
 }
 
 # --- Azure ---
@@ -264,6 +266,7 @@ module "azure" {
   # Azure-only settings
   key_vault_network_default_action = var.key_vault_network_default_action
   image_registry_credentials       = var.image_registry_credentials
+  service_type                     = var.service_type
 }
 
 # --- Generic Kubernetes ---
