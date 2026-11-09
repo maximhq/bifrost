@@ -2390,6 +2390,7 @@
 				"overview": "Visão geral",
 				"models": "Modelos",
 				"routing": "Encaminhamento",
+				"test": "Testar",
 				"suggestions": "Sugestões",
 				"unsaved": "Alterações por guardar"
 			},
@@ -2418,7 +2419,10 @@
 					"classifierPending": "Configure o classificador para que o encaminhador possa distribuir os pedidos.",
 					"modelsDone": "Todos os níveis têm um modelo.",
 					"modelsPending": "Um nível sem modelo mantém o modelo indicado no pedido.",
-					"pickModels": "Escolher modelos"
+					"pickModels": "Escolher modelos",
+					"test": "Testar uma requisição",
+					"testDetail": "Opcional. Verifique algumas requisições antes de enviar tráfego.",
+					"testAction": "Testar"
 				},
 				"facts": {
 					"notConfigured": "Ainda não configurado",
@@ -2464,6 +2468,24 @@
 				"conditionHelp": "Deixe vazio para assumir todas as solicitações do escopo. Compare o campo de modelo para que os apps peçam este roteador pelo nome. O nível não pode ser usado aqui: o roteador o decide depois de assumir a solicitação.",
 				"saved": "Roteamento salvo",
 				"saveFailed": "Falha ao salvar o roteamento: {{error}}"
+			},
+			"test": {
+				"description": "Classifique requisições de exemplo com o roteador como está sendo servido agora, para verificar qual nível e qual modelo cada uma receberia. Nada é salvo.",
+				"placeholder": "Uma requisição por linha. Comece uma linha com SIMPLE:, MEDIUM: ou COMPLEX: para verificar o nível esperado.",
+				"run_one": "Classificar {{count}} requisição",
+				"run_other": "Classificar {{count}} requisições",
+				"hint": "Um roteador com modelo de decisão ou LLM faz uma chamada ao modelo por requisição.",
+				"tooMany": "Classifique no máximo {{max}} requisições por vez.",
+				"failed": "A classificação falhou: {{error}}",
+				"unclassified": "Sem nível",
+				"accuracy": "{{correct}} de {{labeled}} requisições rotuladas receberam o nível esperado",
+				"columnStatement": "Requisição",
+				"columnTier": "Nível",
+				"columnHow": "Decidido por",
+				"columnRoutesTo": "Encaminha para",
+				"correct": "Nível esperado",
+				"expected": "esperado {{tier}}",
+				"keepsModel": "Mantém o modelo da requisição"
 			}
 		}
 	},

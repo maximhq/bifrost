@@ -2388,6 +2388,7 @@
 				"overview": "개요",
 				"models": "모델",
 				"routing": "라우팅",
+				"test": "테스트",
 				"suggestions": "제안",
 				"unsaved": "저장되지 않은 변경 사항"
 			},
@@ -2416,7 +2417,10 @@
 					"classifierPending": "라우터가 요청을 분류할 수 있도록 분류기를 설정하세요.",
 					"modelsDone": "모든 계층에 모델이 있어요.",
 					"modelsPending": "모델이 없는 계층은 요청에서 지정한 모델을 그대로 사용해요.",
-					"pickModels": "모델 선택"
+					"pickModels": "모델 선택",
+					"test": "요청 테스트",
+					"testDetail": "선택 사항이에요. 트래픽을 보내기 전에 몇 가지 요청을 확인하세요.",
+					"testAction": "테스트"
 				},
 				"facts": {
 					"notConfigured": "아직 설정되지 않음",
@@ -2462,6 +2466,24 @@
 				"conditionHelp": "비워 두면 범위 내 모든 요청을 맡습니다. 모델 필드를 조건으로 쓰면 앱이 이 라우터를 이름으로 요청할 수 있습니다. 티어는 여기서 사용할 수 없습니다. 라우터가 요청을 맡은 뒤에 티어를 정합니다.",
 				"saved": "라우팅을 저장했습니다",
 				"saveFailed": "라우팅을 저장하지 못했습니다: {{error}}"
+			},
+			"test": {
+				"description": "현재 제공 중인 라우터로 샘플 요청을 분류해 각 요청이 어떤 티어와 모델을 받는지 확인해요. 아무것도 저장되지 않아요.",
+				"placeholder": "한 줄에 요청 하나씩 입력하세요. 줄 앞에 SIMPLE:, MEDIUM: 또는 COMPLEX:를 붙이면 기대하는 티어를 확인할 수 있어요.",
+				"run_one": "요청 {{count}}개 분류",
+				"run_other": "요청 {{count}}개 분류",
+				"hint": "결정 모델 또는 LLM 라우터는 요청마다 모델을 한 번 호출해요.",
+				"tooMany": "한 번에 최대 {{max}}개의 요청만 분류할 수 있어요.",
+				"failed": "분류에 실패했어요: {{error}}",
+				"unclassified": "티어 없음",
+				"accuracy": "레이블이 있는 요청 {{labeled}}개 중 {{correct}}개가 기대한 티어를 받았어요",
+				"columnStatement": "요청",
+				"columnTier": "티어",
+				"columnHow": "결정 방식",
+				"columnRoutesTo": "라우팅 대상",
+				"correct": "기대한 티어",
+				"expected": "기대: {{tier}}",
+				"keepsModel": "요청의 모델을 그대로 사용"
 			}
 		}
 	},

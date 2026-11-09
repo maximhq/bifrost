@@ -57,6 +57,7 @@ func (h *RoutingHandler) registerModelRouterRoutes(r *router.Router, middlewares
 	handle(fasthttp.MethodPut, "/api/routing/model-routers/{router_id}/routing", h.setModelRouterRouting)
 	handle(fasthttp.MethodGet, "/api/routing/model-routers/{router_id}/status", h.getModelRouterStatus)
 	handle(fasthttp.MethodPost, "/api/routing/model-routers/{router_id}/status/retry", h.retryModelRouterWarmup)
+	handle(fasthttp.MethodPost, "/api/routing/model-routers/{router_id}/classify", h.classifyWithModelRouter)
 
 }
 
