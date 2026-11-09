@@ -12,6 +12,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/bytedance/sonic"
 	"github.com/fasthttp/router"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/providers/gemini"
@@ -1026,5 +1027,85 @@ func TestOpenAISpeechRoutesCarryVertexGeminiTTS(t *testing.T) {
 				assert.Equal(t, "Kore", request.GenerationConfig.SpeechConfig.VoiceConfig.PrebuiltVoiceConfig.VoiceName)
 			})
 		}
+	}
+}
+
+// TestOpenAIRoutesMapOffSpecFinishReasons pins that OpenAI-SDK routes only emit finish reasons
+// the OpenAI spec defines (vLLM repetition/abort, Bedrock guardrail_intervened) without mutating
+// the shared response; /v1 serializes the Bifrost response directly and keeps the raw value.
+func TestOpenAIRoutesMapOffSpecFinishReasons(t *testing.T) {
+	cases := map[string]string{
+		"repetition":           "stop",
+		"abort":                "stop",
+		"guardrail_intervened": "content_filter",
+		"content_filter":       "content_filter",
+		"stop":                 "stop",
+		"length":               "length",
+		"tool_calls":           "tool_calls",
+	}
+	chatRoute := findOpenAIRoute("/openai", "/openai/v1/chat/completions")
+	textRoute := findOpenAIRoute("/openai", "/openai/v1/completions")
+	require.NotNil(t, chatRoute)
+	require.NotNil(t, textRoute)
+
+	finishReasonOf := func(t *testing.T, out interface{}) string {
+		t.Helper()
+		body, err := sonic.Marshal(out)
+		require.NoError(t, err)
+		return gjson.GetBytes(body, "choices.0.finish_reason").String()
+	}
+	extra := schemas.BifrostResponseExtraFields{Provider: schemas.VLLM}
+
+	for in, want := range cases {
+		t.Run(in, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			text := "hi"
+
+			chat := &schemas.BifrostChatResponse{ID: "c1", Model: "m", ExtraFields: extra, Choices: []schemas.BifrostResponseChoice{{
+				FinishReason:                schemas.Ptr(in),
+				ChatNonStreamResponseChoice: &schemas.ChatNonStreamResponseChoice{Message: &schemas.ChatMessage{Role: schemas.ChatMessageRoleAssistant, Content: &schemas.ChatMessageContent{ContentStr: &text}}},
+			}}}
+			out, err := chatRoute.ChatResponseConverter(ctx, chat)
+			require.NoError(t, err)
+			assert.Equal(t, want, finishReasonOf(t, out), "chat")
+			assert.Equal(t, in, *chat.Choices[0].FinishReason, "chat response must not be mutated")
+
+			chunk := &schemas.BifrostChatResponse{ID: "c1", Model: "m", ExtraFields: extra, Choices: []schemas.BifrostResponseChoice{{
+				FinishReason:             schemas.Ptr(in),
+				ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{Delta: &schemas.ChatStreamResponseChoiceDelta{}},
+			}}}
+			_, streamOut, err := chatRoute.StreamConfig.ChatStreamResponseConverter(ctx, chunk)
+			require.NoError(t, err)
+			assert.Equal(t, want, finishReasonOf(t, streamOut), "chat stream")
+			assert.Equal(t, in, *chunk.Choices[0].FinishReason, "chat chunk must not be mutated")
+
+			completion := &schemas.BifrostTextCompletionResponse{ID: "t1", Model: "m", ExtraFields: extra, Choices: []schemas.BifrostResponseChoice{{
+				FinishReason:                 schemas.Ptr(in),
+				TextCompletionResponseChoice: &schemas.TextCompletionResponseChoice{Text: &text},
+			}}}
+			out, err = textRoute.TextResponseConverter(ctx, completion)
+			require.NoError(t, err)
+			assert.Equal(t, want, finishReasonOf(t, out), "text")
+			_, streamOut, err = textRoute.StreamConfig.TextStreamResponseConverter(ctx, completion)
+			require.NoError(t, err)
+			assert.Equal(t, want, finishReasonOf(t, streamOut), "text stream")
+			assert.Equal(t, in, *completion.Choices[0].FinishReason, "text response must not be mutated")
+		})
+	}
+}
+
+// BenchmarkOpenAIWireCostResponseFinishReason measures the finish-reason check on the common path and on a rewrite.
+func BenchmarkOpenAIWireCostResponseFinishReason(b *testing.B) {
+	for _, reason := range []string{"stop", "repetition"} {
+		resp := &schemas.BifrostChatResponse{ID: "c1", Model: "m", Choices: []schemas.BifrostResponseChoice{{
+			FinishReason:             schemas.Ptr(reason),
+			ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{Delta: &schemas.ChatStreamResponseChoiceDelta{}},
+		}}}
+		b.Run(reason, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				_ = openAIWireCostResponse(resp)
+			}
+		})
 	}
 }

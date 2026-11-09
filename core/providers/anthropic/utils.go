@@ -232,6 +232,12 @@ var (
 		"length":     AnthropicStopReasonMaxTokens,
 		"tool_calls": AnthropicStopReasonToolUse,
 		"compaction": AnthropicStopReasonCompaction,
+
+		// Off-spec reasons other providers emit, mapped so Anthropic clients only see defined values.
+		"content_filter":       AnthropicStopReasonRefusal, // Bedrock guardrails
+		"guardrail_intervened": AnthropicStopReasonRefusal, // Bedrock guardrails
+		"repetition":           AnthropicStopReasonEndTurn, // vLLM repetition_detection
+		"abort":                AnthropicStopReasonEndTurn, // vLLM engine abort
 	}
 )
 

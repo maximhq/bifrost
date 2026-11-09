@@ -1732,6 +1732,37 @@ func openAIWireResponses(r *schemas.BifrostResponsesResponse) *openAIResponsesRe
 	}
 }
 
+// openAIOffSpecFinishReason maps a finish reason the OpenAI spec does not define to the nearest one it does.
+func openAIOffSpecFinishReason(reason string) (string, bool) {
+	switch reason {
+	case "repetition", "abort": // vLLM repetition_detection and engine abort
+		return "stop", true
+	case "guardrail_intervened": // Bedrock guardrails
+		return "content_filter", true
+	}
+	return "", false
+}
+
+// openAISpecFinishReasons returns a copy of choices with off-spec finish reasons mapped, or false when none needed mapping.
+func openAISpecFinishReasons(choices []schemas.BifrostResponseChoice) ([]schemas.BifrostResponseChoice, bool) {
+	var out []schemas.BifrostResponseChoice
+	for i := range choices {
+		if choices[i].FinishReason == nil {
+			continue
+		}
+		mapped, ok := openAIOffSpecFinishReason(*choices[i].FinishReason)
+		if !ok {
+			continue
+		}
+		if out == nil {
+			out = make([]schemas.BifrostResponseChoice, len(choices))
+			copy(out, choices)
+		}
+		out[i].FinishReason = new(mapped)
+	}
+	return out, out != nil
+}
+
 // openAIWireCostResponse rewrites usage.cost to the bare total (float) for the
 // OpenAI-compatible wire. The OpenAI usage schema has no nested cost object, so a
 // BifrostCost object breaks strict SDK deserialization; a bare number is the
@@ -1743,11 +1774,25 @@ func openAIWireResponses(r *schemas.BifrostResponsesResponse) *openAIResponsesRe
 func openAIWireCostResponse(v interface{}) interface{} {
 	switch r := v.(type) {
 	case *schemas.BifrostChatResponse:
+		if r != nil {
+			if choices, ok := openAISpecFinishReasons(r.Choices); ok {
+				cp := *r
+				cp.Choices = choices
+				r = &cp
+			}
+		}
 		if r != nil && r.Usage != nil && r.Usage.Cost != nil {
 			return &openAIChatResponse{BifrostChatResponse: r, Usage: newOpenAIUsage(r.Usage)}
 		}
 		return r.WithPreservedUsage()
 	case *schemas.BifrostTextCompletionResponse:
+		if r != nil {
+			if choices, ok := openAISpecFinishReasons(r.Choices); ok {
+				cp := *r
+				cp.Choices = choices
+				r = &cp
+			}
+		}
 		if r != nil && r.Usage != nil && r.Usage.Cost != nil {
 			return &openAITextResponse{BifrostTextCompletionResponse: r, Usage: newOpenAIUsage(r.Usage)}
 		}
