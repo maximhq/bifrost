@@ -25,6 +25,7 @@ import (
 	mistralprovider "github.com/maximhq/bifrost/core/providers/mistral"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 	"golang.org/x/text/cases"
 	"golang.org/x/text/language"
@@ -9349,5 +9350,189 @@ func TestVideo_ListResumesFromNativeCursor(t *testing.T) {
 	decoded, decodeErr := schemas.DecodeSerialCursor(*resp.After)
 	if decodeErr != nil || decoded.KeyIndex != 2 {
 		t.Fatalf("cursor = %+v (%v), want the third key", decoded, decodeErr)
+	}
+}
+
+// Pin image delivery through real core dispatch, including custom/built-in
+// Responses fallback and both streaming modes, against a strict Chat wire.
+func TestChatToolImages(t *testing.T) {
+	const firstImage = "data:image/png;base64,aW1hZ2UtYQ=="
+	const secondImage = "data:image/png;base64,aW1hZ2UtYg=="
+	type capturedRequest struct {
+		path string
+		body []byte
+	}
+	captures := make(chan capturedRequest, 1)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Error(err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		captures <- capturedRequest{r.URL.Path, body}
+		for _, message := range gjson.GetBytes(body, "messages").Array() {
+			if message.Get("role").String() != "tool" {
+				continue
+			}
+			for _, part := range message.Get("content").Array() {
+				if part.Get("type").String() != "text" {
+					w.WriteHeader(http.StatusBadRequest)
+					fmt.Fprint(w, `{"error":{"message":"tool content must contain text only"}}`)
+					return
+				}
+			}
+		}
+		streaming := gjson.GetBytes(body, "stream").Bool()
+		if r.URL.Path == "/v1/responses" {
+			response := `{"id":"resp_capture","object":"response","created_at":1,"model":"vision","status":"completed","output":[{"type":"message","id":"msg_capture","role":"assistant","status":"completed","content":[{"type":"output_text","text":"captured","annotations":[]}]}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}`
+			if streaming {
+				w.Header().Set("Content-Type", "text/event-stream")
+				fmt.Fprintf(w, "event: response.created\ndata: {\"type\":\"response.created\",\"sequence_number\":0,\"response\":%s}\n\nevent: response.completed\ndata: {\"type\":\"response.completed\",\"sequence_number\":1,\"response\":%s}\n\n", response, response)
+			} else {
+				w.Header().Set("Content-Type", "application/json")
+				fmt.Fprint(w, response)
+			}
+			return
+		}
+		if streaming {
+			w.Header().Set("Content-Type", "text/event-stream")
+			fmt.Fprint(w, `data: {"id":"chatcmpl_capture","object":"chat.completion.chunk","created":1,"model":"vision","choices":[{"index":0,"delta":{"role":"assistant","content":"captured"},"finish_reason":null}]}`+"\n\n")
+			fmt.Fprint(w, `data: {"id":"chatcmpl_capture","object":"chat.completion.chunk","created":1,"model":"vision","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`+"\n\ndata: [DONE]\n\n")
+		} else {
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `{"id":"chatcmpl_capture","object":"chat.completion","created":1,"model":"vision","choices":[{"index":0,"message":{"role":"assistant","content":"captured"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+		}
+	}))
+	t.Cleanup(upstream.Close)
+	cases := []struct {
+		name              string
+		provider          schemas.ModelProvider
+		responses, native bool
+	}{
+		{"custom direct Chat", "custom_chat", false, false},
+		{"custom Responses fallback", "custom_chat", true, false},
+		{"strict OpenAI Chat", schemas.OpenAI, false, false},
+		{"Ollama Responses fallback", schemas.Ollama, true, false},
+		{"SGL Responses fallback", schemas.SGL, true, false},
+		{"custom native Responses", "custom_native", true, true},
+	}
+	account := NewMockAccount()
+	for _, tc := range cases {
+		account.AddProviderWithBaseURL(tc.provider, 1, 10, upstream.URL)
+		account.configs[tc.provider].NetworkConfig.MaxRetries = 0
+		account.configs[tc.provider].NetworkConfig.AllowPrivateNetwork = true
+		key := schemas.Key{ID: "key-" + string(tc.provider), Value: *schemas.NewSecretVar("dummy-test-key"), Models: schemas.WhiteList{"*"}, Weight: 1}
+		switch tc.provider {
+		case "custom_chat", "custom_native":
+			account.SetCustomProviderConfig(tc.provider, &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI, AllowedRequests: &schemas.AllowedRequests{ChatCompletion: true, ChatCompletionStream: true, Responses: tc.native, ResponsesStream: tc.native}})
+		case schemas.Ollama:
+			key.OllamaKeyConfig = &schemas.OllamaKeyConfig{URL: *schemas.NewSecretVar(upstream.URL)}
+		case schemas.SGL:
+			key.SGLKeyConfig = &schemas.SGLKeyConfig{URL: *schemas.NewSecretVar(upstream.URL)}
+		}
+		account.SetKeysForProvider(tc.provider, []schemas.Key{key})
+	}
+	client, err := Init(context.Background(), schemas.BifrostConfig{Account: account, Logger: NewNoOpLogger()})
+	require.NoError(t, err)
+	t.Cleanup(client.Shutdown)
+	for _, tc := range cases {
+		for _, streaming := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/stream=%t", tc.name, streaming), func(t *testing.T) {
+				ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(10*time.Second))
+				defer ctx.Cancel()
+				assistant := &schemas.ChatAssistantMessage{}
+				chat := &schemas.BifrostChatRequest{Provider: tc.provider, Model: "vision", Input: []schemas.ChatMessage{
+					{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Read both images")}},
+					{Role: schemas.ChatMessageRoleAssistant, ChatAssistantMessage: assistant},
+				}}
+				for _, image := range []struct{ id, url string }{{"call_a", firstImage}, {"call_b", secondImage}} {
+					assistant.ToolCalls = append(assistant.ToolCalls, schemas.ChatAssistantMessageToolCall{ID: schemas.Ptr(image.id), Type: schemas.Ptr("function"), Function: schemas.ChatAssistantMessageToolCallFunction{Name: schemas.Ptr("read"), Arguments: `{}`}})
+					chat.Input = append(chat.Input, schemas.ChatMessage{Role: schemas.ChatMessageRoleTool, ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: schemas.Ptr(image.id)}, Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{{Type: schemas.ChatContentBlockTypeImage, ImageURLStruct: &schemas.ChatInputImage{URL: image.url}}}}})
+				}
+				before, err := schemas.MarshalSorted(chat.Input)
+				require.NoError(t, err)
+				if streaming {
+					var stream chan *schemas.BifrostStreamChunk
+					var bifrostErr *schemas.BifrostError
+					if tc.responses {
+						stream, bifrostErr = client.ResponsesStreamRequest(ctx, chat.ToResponsesRequest())
+					} else {
+						stream, bifrostErr = client.ChatCompletionStreamRequest(ctx, chat)
+					}
+					require.Nil(t, bifrostErr)
+					completed := false
+					for chunk := range stream {
+						require.Nil(t, chunk.BifrostError)
+						if response := chunk.BifrostResponsesStreamResponse; response != nil && response.Type == schemas.ResponsesStreamResponseTypeCompleted {
+							completed = true
+						}
+						if response := chunk.BifrostChatResponse; response != nil {
+							for _, choice := range response.Choices {
+								if choice.FinishReason != nil && *choice.FinishReason == "stop" {
+									completed = true
+								}
+							}
+						}
+					}
+					require.True(t, completed, "stream closed without completion")
+				} else {
+					var response any
+					var bifrostErr *schemas.BifrostError
+					if tc.responses {
+						response, bifrostErr = client.ResponsesRequest(ctx, chat.ToResponsesRequest())
+					} else {
+						response, bifrostErr = client.ChatCompletionRequest(ctx, chat)
+					}
+					require.Nil(t, bifrostErr)
+					wire, err := schemas.MarshalSorted(response)
+					require.NoError(t, err)
+					require.Contains(t, string(wire), "captured")
+				}
+				var captured capturedRequest
+				select {
+				case captured = <-captures:
+				case <-ctx.Done():
+					t.Fatal("no upstream request captured")
+				}
+				var images []string
+				if tc.native {
+					require.Equal(t, "/v1/responses", captured.path)
+					require.False(t, gjson.GetBytes(captured.body, "messages").Exists())
+					for _, item := range gjson.GetBytes(captured.body, "input").Array() {
+						if item.Get("type").String() != "function_call_output" {
+							continue
+						}
+						for _, part := range item.Get("output").Array() {
+							if part.Get("type").String() == "input_image" {
+								images = append(images, part.Get("image_url").String())
+							}
+						}
+					}
+				} else {
+					require.Equal(t, "/v1/chat/completions", captured.path)
+					messages := gjson.GetBytes(captured.body, "messages").Array()
+					require.Len(t, messages, 5, string(captured.body))
+					require.Equal(t, "tool", messages[2].Get("role").String())
+					require.Equal(t, "call_a", messages[2].Get("tool_call_id").String())
+					require.Equal(t, "tool", messages[3].Get("role").String())
+					require.Equal(t, "call_b", messages[3].Get("tool_call_id").String())
+					require.Equal(t, "user", messages[4].Get("role").String())
+					parts := messages[4].Get("content").Array()
+					require.Len(t, parts, 4)
+					require.Equal(t, "Images returned by tool call call_a:", parts[0].Get("text").String())
+					require.Equal(t, "Images returned by tool call call_b:", parts[2].Get("text").String())
+					for _, part := range parts {
+						if part.Get("type").String() == "image_url" {
+							images = append(images, part.Get("image_url.url").String())
+						}
+					}
+				}
+				require.Equal(t, []string{firstImage, secondImage}, images, string(captured.body))
+				after, err := schemas.MarshalSorted(chat.Input)
+				require.NoError(t, err)
+				require.Equal(t, string(before), string(after), "dispatch mutated the caller's history")
+			})
+		}
 	}
 }

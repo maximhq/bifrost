@@ -14,6 +14,7 @@ package openai
 //	go test ./core/providers/openai/ -bench ChatRequest -benchmem
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -139,6 +140,42 @@ func BenchmarkToOpenAIChatRequest(b *testing.B) {
 	for b.Loop() {
 		if out := ToOpenAIChatRequest(ctx, bifrostReq); out == nil {
 			b.Fatal("nil OpenAI request")
+		}
+	}
+}
+
+// Tool images are reused by the converter; only ordinary final serialization
+// should scale with their payload size.
+func BenchmarkToOpenAIChatRequestToolImages(b *testing.B) {
+	for _, size := range []struct {
+		name  string
+		bytes int
+	}{{"64KiB", 64 << 10}, {"1MiB", 1 << 20}} {
+		ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+		req := benchOpenAIChatRequest(b).ToBifrostChatRequest(ctx)
+		req.Input[3].Content = &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{
+			{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr("chart below")},
+			{Type: schemas.ChatContentBlockTypeImage, ImageURLStruct: &schemas.ChatInputImage{URL: "data:image/png;base64," + strings.Repeat("A", size.bytes*4/3)}},
+		}}
+		for _, serialize := range []bool{false, true} {
+			name := size.name + "/convert"
+			if serialize {
+				name += "-and-serialize"
+			}
+			b.Run(name, func(b *testing.B) {
+				b.ReportAllocs()
+				for b.Loop() {
+					out := ToOpenAIChatRequest(ctx, req)
+					if out == nil {
+						b.Fatal("nil OpenAI request")
+					}
+					if serialize {
+						if _, err := schemas.MarshalSorted(out); err != nil {
+							b.Fatal(err)
+						}
+					}
+				}
+			})
 		}
 	}
 }
