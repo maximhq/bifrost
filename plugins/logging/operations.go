@@ -1480,6 +1480,51 @@ func (p *LoggerPlugin) GetAvailableMCPVirtualKeys(ctx context.Context, limit int
 	}), nil
 }
 
+// GetAvailableMCPUsers returns the users ID-Name pairs from MCP tool logs.
+func (p *LoggerPlugin) GetAvailableMCPUsers(ctx context.Context, limit int, query string) ([]KeyPair, error) {
+	results, err := p.store.GetDistinctMCPKeyPairs(ctx, "user_id", "user_name", limit, query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get available users from MCP logs: %w", err)
+	}
+	return keyPairResultsToKeyPairs(results), nil
+}
+
+// GetAvailableMCPTeams returns the teams ID-Name pairs from MCP tool logs.
+func (p *LoggerPlugin) GetAvailableMCPTeams(ctx context.Context, limit int, query string) ([]KeyPair, error) {
+	results, err := p.store.GetDistinctMCPKeyPairs(ctx, "team_id", "team_name", limit, query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get available teams from MCP logs: %w", err)
+	}
+	return keyPairResultsToKeyPairs(results), nil
+}
+
+// GetAvailableMCPCustomers returns the customers ID-Name pairs from MCP tool logs.
+func (p *LoggerPlugin) GetAvailableMCPCustomers(ctx context.Context, limit int, query string) ([]KeyPair, error) {
+	results, err := p.store.GetDistinctMCPKeyPairs(ctx, "customer_id", "customer_name", limit, query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get available customers from MCP logs: %w", err)
+	}
+	return keyPairResultsToKeyPairs(results), nil
+}
+
+// GetAvailableMCPBusinessUnits returns the business units ID-Name pairs from MCP tool logs.
+func (p *LoggerPlugin) GetAvailableMCPBusinessUnits(ctx context.Context, limit int, query string) ([]KeyPair, error) {
+	results, err := p.store.GetDistinctMCPKeyPairs(ctx, "business_unit_id", "business_unit_name", limit, query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get available business units from MCP logs: %w", err)
+	}
+	return keyPairResultsToKeyPairs(results), nil
+}
+
+// GetAvailableMCPProjects returns the projects ID-Name pairs from MCP tool logs.
+func (p *LoggerPlugin) GetAvailableMCPProjects(ctx context.Context, limit int, query string) ([]KeyPair, error) {
+	results, err := p.store.GetDistinctMCPKeyPairs(ctx, "project_id", "project_name", limit, query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get available projects from MCP logs: %w", err)
+	}
+	return keyPairResultsToKeyPairs(results), nil
+}
+
 // extractUniqueMCPKeyPairs extracts unique non-empty key pairs from MCP logs using the provided extractor function
 func (p *LoggerPlugin) extractUniqueMCPKeyPairs(logs []logstore.MCPToolLog, extractor func(*logstore.MCPToolLog) KeyPair) []KeyPair {
 	uniqueSet := make(map[string]KeyPair)

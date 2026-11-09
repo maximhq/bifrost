@@ -940,6 +940,9 @@
 		"copyToClipboard": "複製到剪貼簿",
 		"stats": {
 			"totalExecutions": "總執行次數",
+			"executions": "執行次數",
+			"ofAllExecutions": "佔此時段內所有 MCP 工具呼叫的比例",
+			"perExecution": "{{value}}/次呼叫",
 			"successRate": "成功率",
 			"avgLatency": "平均延遲",
 			"totalCost": "總費用"
@@ -969,7 +972,6 @@
 			"toolName": "工具名稱",
 			"server": "伺服器",
 			"virtualKey": "虛擬金鑰",
-			"llmRequestId": "LLM 請求 ID",
 			"metadata": "中繼資料",
 			"deleteFailed": "刪除日誌失敗",
 			"invalidDate": "無效日期",
@@ -1020,6 +1022,7 @@
 		"rounds": "輪次",
 		"execution": "執行",
 		"errorDetails": "錯誤詳情",
+		"errorNoMessage": "工具呼叫失敗，但沒有回傳錯誤訊息。",
 		"pluginLogs": "外掛日誌",
 		"loading": "正在載入 MCP 日誌…",
 		"native": "原生",
@@ -1041,8 +1044,7 @@
 			"blockedDescription": "在執行前被阻止。",
 			"observedDescription": "已捕獲工具活動，但執行結果未知。",
 			"inputRequiredDescription": "MCP 伺服器在完成前向呼叫方要求輸入。回答該要求的重試是獨立的項目。",
-			"retryLaterDescription": "MCP 伺服器要求呼叫端稍後重試，未要求任何輸入。重試是一筆單獨的記錄。",
-			"executionDescription": "已記錄的工具執行結果。"
+			"retryLaterDescription": "MCP 伺服器要求呼叫端稍後重試，未要求任何輸入。重試是一筆單獨的記錄。"
 		},
 		"noResults": "未找到結果，請嘗試調整篩選條件或時間範圍。",
 		"observedRoundTrip": "觀測往返時延"

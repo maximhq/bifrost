@@ -29,15 +29,15 @@ Vertex AI is Google's unified ML platform providing access to Google's Gemini mo
 | Image Variation      | ❌            | -         | Not supported                             |
 | List Models          | ✅            | -         | `/publishers/{publisher}/models`          |
 | Text Completions     | ❌            | ❌        | -                                         |
-| Speech (TTS)         | ❌            | ❌        | -                                         |
+| Speech (TTS)         | ✅            | ✅ (Gemini TTS) | `/text:synthesize` (Cloud Text-to-Speech), `:generateContent` (Gemini TTS) |
 | Transcriptions (STT) | ❌            | ❌        | -                                         |
 | Files                | ❌            | ❌        | -                                         |
 | Batch                | ❌            | ❌        | -                                         |
 
 <Note>
-**Unsupported Operations** (❌): Text Completions, Speech, Transcriptions, Files, and Batch are not supported by Vertex AI. These return `UnsupportedOperationError`.
+**Unsupported Operations** (❌): Text Completions, Transcriptions, Files, and Batch are not supported by Vertex AI. These return `UnsupportedOperationError`.
 
-**Vertex-specific**: Endpoints vary by model type. Responses API available for both Gemini and Anthropic models.
+**Vertex-specific**: Endpoints vary by model type. Responses API available for both Gemini and Anthropic models. Speech is served by Cloud Text-to-Speech rather than Vertex AI, see [Speech](#speech).
 
 </Note>
 
@@ -1517,3 +1517,64 @@ Vertex AI routes video generation through Gemini's Veo models using the `predict
 | Delete    | ❌        | Not supported                 |
 | List      | ❌        | Not supported                 |
 | Remix     | ❌        | Not supported                 |
+
+## Speech
+
+Vertex speech is served by [Cloud Text-to-Speech](https://docs.cloud.google.com/text-to-speech/docs/chirp3-hd) at `texttospeech.googleapis.com`, not by Vertex AI. It is authenticated with the key's Google credentials (service account JSON, Application Default Credentials or workload identity federation); API keys are not accepted. It serves Chirp 3 HD and the other Google voices.
+
+Gemini TTS models are the exception, see [Gemini TTS](#gemini-tts).
+
+The voice name carries the model and the locale (`hi-IN-Chirp3-HD-Erinome`), so the request model only selects pricing. Use `chirp-3-hd`.
+
+```bash
+curl -X POST http://localhost:8080/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "vertex/chirp-3-hd",
+    "input": "नमस्ते, आप कैसे हैं?",
+    "voice": "hi-IN-Chirp3-HD-Erinome",
+    "response_format": "mp3"
+  }' --output speech.mp3
+```
+
+The same request works on the OpenAI-compatible routes (`/openai/v1/audio/speech`, and the same path under `/litellm`, `/langchain` and `/pydanticai`). On the GenAI route, send it as a `generateContent` call with `speechConfig` to `/genai/v1beta/models/vertex/chirp-3-hd:generateContent`; the audio comes back as `inlineData`.
+
+**Parameter Mapping**
+
+| Bifrost                              | Cloud Text-to-Speech           | Notes                                                                                              |
+| ------------------------------------ | ------------------------------ | -------------------------------------------------------------------------------------------------- |
+| `input`                              | `input.text`                   | Input that starts with `<speak` is sent as `input.ssml`                                            |
+| `voice`                              | `voice.name`                   | Required unless `language_code` is set                                                             |
+| `language_code`                      | `voice.languageCode`           | Defaults to the locale at the start of the voice name. It must match the voice's locale            |
+| `response_format`                    | `audioConfig.audioEncoding`    | `mp3` (default) is `MP3`, `wav` is `LINEAR16`, `opus` is `OGG_OPUS`. Any other value returns a 400 |
+| `speed`                              | `audioConfig.speakingRate`     | -                                                                                                  |
+| Extra parameter `pitch`              | `audioConfig.pitch`            | Chirp 3 HD voices reject it                                                                        |
+| Extra parameter `volume_gain_db`     | `audioConfig.volumeGainDb`     | -                                                                                                  |
+| Extra parameter `sample_rate_hertz`  | `audioConfig.sampleRateHertz`  | -                                                                                                  |
+| Extra parameter `effects_profile_id` | `audioConfig.effectsProfileId` | List of strings                                                                                    |
+
+`instructions` is ignored.
+
+<Note>
+  - Input is limited to 5000 bytes per request. Longer input returns Google's error.
+  - Cloud Text-to-Speech voices do not stream or support multi-speaker input. Streaming is available for Gemini TTS models only.
+</Note>
+
+### Gemini TTS
+
+Gemini TTS models (`gemini-2.5-flash-tts`, `gemini-2.5-pro-tts` and the other `gemini-*-tts` models) are served by Vertex `generateContent`, and by `streamGenerateContent` for `stream_format: "sse"`. They are authenticated like Vertex chat, with an API key or the key's Google credentials, and they return the token usage billing reads.
+
+The request and parameters match the [Gemini provider](/providers/supported-providers/gemini): a prebuilt voice name such as `Kore`, optional multi-speaker voices, and `response_format` of `wav` (or none, which returns raw 24 kHz PCM).
+
+```bash
+curl -X POST http://localhost:8080/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "vertex/gemini-2.5-flash-tts",
+    "input": "Hello there, this is a short test.",
+    "voice": "Kore",
+    "response_format": "wav"
+  }' --output speech.wav
+```
+
+The same request works on the OpenAI-compatible routes and on the GenAI route (`/genai/v1beta/models/vertex/gemini-2.5-flash-tts:generateContent`).
