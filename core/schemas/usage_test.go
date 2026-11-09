@@ -416,3 +416,28 @@ func BenchmarkPreserveTokenCountZeros(b *testing.B) {
 		}
 	}
 }
+
+func TestBifrostLLMUsageAddTokenCounts(t *testing.T) {
+	total := &BifrostLLMUsage{PromptTokens: 100, CompletionTokens: 10, TotalTokens: 110}
+
+	total.AddTokenCounts(nil)
+	require.Equal(t, 110, total.TotalTokens, "nothing to add")
+	require.Nil(t, total.PromptTokensDetails)
+
+	total.AddTokenCounts(&BifrostLLMUsage{
+		PromptTokens:            150,
+		CompletionTokens:        60,
+		TotalTokens:             210,
+		PromptTokensDetails:     &ChatPromptTokensDetails{TextTokens: 100, AudioTokens: 50, CachedReadTokens: 7},
+		CompletionTokensDetails: &ChatCompletionTokensDetails{AudioTokens: 40, ReasoningTokens: 20},
+	})
+	require.Equal(t, 250, total.PromptTokens)
+	require.Equal(t, 70, total.CompletionTokens)
+	require.Equal(t, 320, total.TotalTokens)
+	require.Equal(t, ChatPromptTokensDetails{TextTokens: 100, AudioTokens: 50, CachedReadTokens: 7}, *total.PromptTokensDetails, "details the total did not have yet")
+	require.Equal(t, 20, total.CompletionTokensDetails.ReasoningTokens)
+
+	total.AddTokenCounts(&BifrostLLMUsage{PromptTokensDetails: &ChatPromptTokensDetails{AudioTokens: 5}})
+	require.Equal(t, 55, total.PromptTokensDetails.AudioTokens, "details it already had")
+	require.Equal(t, 250, total.PromptTokens)
+}
