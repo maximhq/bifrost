@@ -13,23 +13,26 @@ const errorBody = (message, type, code) => JSON.stringify({ error: { message, ty
 // deadline always fires first and short enough to stay inside any request timeout.
 const SLOW_MS = 2000;
 
+const completionResponse = (model, extraUsage = {}) => ({
+	status: 200,
+	headers: {},
+	body: JSON.stringify({
+		id: `chatcmpl-${model}`,
+		object: "chat.completion",
+		created: 1,
+		model,
+		choices: [{ index: 0, message: { role: "assistant", content: "hello" }, finish_reason: "stop" }],
+		usage: { prompt_tokens: 10, completion_tokens: 1, total_tokens: 11, ...extraUsage },
+	}),
+});
+
 const behaviours = {
 	"upstream-500": () => ({ status: 500, headers: {}, body: errorBody("internal server error", "server_error", "internal_error") }),
 	"upstream-503": () => ({ status: 503, headers: {}, body: errorBody("service unavailable", "server_error", "service_unavailable") }),
 	"upstream-429": () => ({ status: 429, headers: { "Retry-After": "7" }, body: errorBody("rate limit exceeded", "rate_limit_error", "rate_limit_exceeded") }),
 	"upstream-429-ms": () => ({ status: 429, headers: { "retry-after-ms": "2500" }, body: errorBody("rate limit exceeded", "rate_limit_error", "rate_limit_exceeded") }),
-	"upstream-ok": () => ({
-		status: 200,
-		headers: {},
-		body: JSON.stringify({
-			id: "chatcmpl-upstream-ok",
-			object: "chat.completion",
-			created: 1,
-			model: "upstream-ok",
-			choices: [{ index: 0, message: { role: "assistant", content: "hello" }, finish_reason: "stop" }],
-			usage: { prompt_tokens: 10, completion_tokens: 1, total_tokens: 11 },
-		}),
-	}),
+	"upstream-ok": () => completionResponse("upstream-ok"),
+	"upstream-zero-cost": () => completionResponse("upstream-zero-cost", { cost: 0 }),
 };
 // upstream-slow answers as upstream-ok does, after SLOW_MS.
 behaviours["upstream-slow"] = () => ({ ...behaviours["upstream-ok"](), delayMs: SLOW_MS });
