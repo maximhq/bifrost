@@ -5,6 +5,9 @@ const listLog = {
   id: 'mcp-detail-e2e',
   request_id: 'req-mcp-detail-e2e',
   llm_request_id: 'llm-mcp-detail-e2e',
+  virtual_key_id: 'vk-mcp-detail-e2e',
+  // Long enough to truncate in Request Details, so the full name has to come from the tooltip.
+  virtual_key_name: `mcp-detail-vk-${'long-name-'.repeat(12)}end`,
   timestamp: '2026-05-10T10:00:00Z',
   tool_name: 'search_docs',
   server_label: 'docs',
@@ -119,6 +122,29 @@ test.describe('MCP Log Detail Hydration', () => {
     await expect(mcpLogsPage.logDetailSheet.getByText('Result')).toBeVisible()
     await expect(page.getByText('hydrated-search-term')).toBeVisible()
     await expect(page.getByText('hydrated-result-value')).toBeVisible()
+
+    // The LLM request ID is shown once, as the header link to the LLM log, not repeated in Request Details.
+    await expect(mcpLogsPage.logDetailSheet.getByTestId('mcplogdetails-llm-request-id-link')).toHaveText(listLog.llm_request_id)
+    await expect(mcpLogsPage.logDetailSheet.getByText(listLog.llm_request_id, { exact: true })).toHaveCount(1)
+
+    // An ordinary successful execution has nothing to explain, so More details opens on Timings.
+    await expect(mcpLogsPage.logDetailSheet.getByTestId('mcplogdetails-status-description')).toHaveCount(0)
+
+    // The virtual key is shown once, in Request Details, as the link to the key. toHaveCount also counts
+    // hidden elements, so the link is pinned inside More details by being hidden until it opens.
+    await expect(mcpLogsPage.logDetailSheet.getByText(listLog.virtual_key_name, { exact: true })).toHaveCount(1)
+    const virtualKeyLink = mcpLogsPage.logDetailSheet.getByTestId('mcplogdetails-virtual-key-link')
+    await expect(virtualKeyLink).toHaveCount(1)
+    await expect(virtualKeyLink).toBeHidden()
+    await mcpLogsPage.logDetailSheet.getByTestId('mcplogdetails-more-details-toggle').click()
+    await expect(virtualKeyLink).toBeVisible()
+    await expect(virtualKeyLink).toHaveText(listLog.virtual_key_name)
+    const href = new URL((await virtualKeyLink.getAttribute('href')) ?? '', page.url())
+    expect(href.pathname).toMatch(/\/workspace\/governance\/virtual-keys$/)
+    expect(href.searchParams.get('selected_vk')).toBe(listLog.virtual_key_id)
+    // The link truncates, and hovering it shows the full name.
+    await virtualKeyLink.hover()
+    await expect(page.getByRole('tooltip')).toContainText(listLog.virtual_key_name)
   })
 
   test('opens the sheet from a selected_log link when that log is not on the loaded page', async ({ mcpLogsPage, page }) => {
@@ -224,6 +250,24 @@ test.describe('MCP Log Prompt and Resource Reads', () => {
 })
 
 const ROUND_TRIP = '0123456789abcdef'
+const AUTH_ERROR = 'Authentication required for oauth_peruser. Visit the auth link to connect your account.'
+
+// Shaped like Bifrost's tool-call failure: its own prefix and sentinel around the upstream error, which carries JSON.
+const WRAPPED_JSON_ERROR = `MCP tool call failed for Notion-notion-get-users: invalid params: Invalid tools/call request: [
+  {
+    "expected": "record",
+    "code": "invalid_type",
+    "path": [
+      "params",
+      "arguments"
+    ],
+    "message": "Invalid input: expected record, received null"
+  }
+]: mcp tool call failed`
+
+// Bifrost's wrapper around an upstream error with no text, which leaves nothing once the wrapper is dropped.
+const EMPTY_UPSTREAM_ERROR = 'MCP tool call failed for search: : mcp tool call failed'
+
 const roundTripLogs = [
   {
     ...listLog,
@@ -265,7 +309,67 @@ const roundTripLogs = [
     result: 'refreshed',
     metadata: { mcp_apps: true, app_only: true, ui_resource_uri: 'ui://dash/view', requested_name: 'refresh' },
   },
+  {
+    ...listLog,
+    id: 'mcp-error-auth',
+    request_id: 'req-mcp-error-auth',
+    tool_name: 'search',
+    server_label: 'oauth_peruser',
+    status: 'error',
+    error_details: {
+      is_bifrost_error: false,
+      error: { message: AUTH_ERROR, error: AUTH_ERROR },
+      extra_fields: { request_type: 'mcp_tool_execution' },
+    },
+  },
+  {
+    ...listLog,
+    id: 'mcp-error-structured',
+    request_id: 'req-mcp-error-structured',
+    tool_name: 'deploy',
+    server_label: 'deploy',
+    status: 'error',
+    error_details: {
+      is_bifrost_error: true,
+      status_code: 502,
+      error: { type: 'upstream_error', message: 'MCP server returned 502', error: { code: -32603, data: 'gateway timeout' } },
+      extra_fields: { request_type: 'mcp_tool_execution' },
+    },
+  },
+  {
+    ...listLog,
+    id: 'mcp-error-wrapped-json',
+    request_id: 'req-mcp-error-wrapped-json',
+    tool_name: 'notion-get-users',
+    server_label: 'Notion',
+    status: 'error',
+    error_details: {
+      is_bifrost_error: false,
+      error: { message: WRAPPED_JSON_ERROR, error: WRAPPED_JSON_ERROR },
+    },
+  },
+  {
+    ...listLog,
+    id: 'mcp-error-empty-upstream',
+    request_id: 'req-mcp-error-empty-upstream',
+    tool_name: 'search',
+    server_label: 'deploy',
+    status: 'error',
+    error_details: {
+      is_bifrost_error: false,
+      error: { message: EMPTY_UPSTREAM_ERROR, error: EMPTY_UPSTREAM_ERROR },
+    },
+  },
 ]
+
+// One option per scope dimension, as /api/mcp-logs/filterdata lists them.
+const SCOPE_OPTIONS = {
+  users: [{ id: 'user-1', name: 'Ada' }],
+  teams: [{ id: 'team-1', name: 'Platform' }],
+  customers: [{ id: 'customer-1', name: 'Acme' }],
+  business_units: [{ id: 'bu-1', name: 'Advisory' }],
+  projects: [{ id: 'project-1', name: 'Apollo' }],
+}
 
 // stubRoundTripLogs serves roundTripLogs, narrowed by round_trip_id like the API, and records each list request's round_trip_id.
 async function stubRoundTripLogs(page: Page, listedRoundTrips: string[]) {
@@ -287,7 +391,7 @@ async function stubRoundTripLogs(page: Page, listedRoundTrips: string[]) {
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
-        body: JSON.stringify({ tool_names: ['ask_environment', 'busy', 'refresh'], server_labels: ['deploy', 'dash'], virtual_keys: [] }),
+        body: JSON.stringify({ tool_names: ['ask_environment', 'busy', 'refresh'], server_labels: ['deploy', 'dash'], virtual_keys: [], ...SCOPE_OPTIONS }),
       })
       return
     }
@@ -319,6 +423,7 @@ test.describe('MCP Log Round Trips and MCP Apps', () => {
     const sheet = mcpLogsPage.logDetailSheet
     await expect(sheet.getByText('Needs input').first()).toBeVisible()
     await expect(sheet.getByTestId('mcplogdetails-input-requested')).toContainText('Which environment?')
+    await expect(sheet.getByTestId('mcplogdetails-status-description')).toContainText('asked the caller for input')
 
     const roundsTab = sheet.getByTestId('mcplogdetails-rounds-tab')
     await expect(roundsTab).toContainText('Rounds')
@@ -353,11 +458,90 @@ test.describe('MCP Log Round Trips and MCP Apps', () => {
 
     await mcpLogsPage.viewLogDetails(3)
     const sheet = mcpLogsPage.logDetailSheet
-    await sheet.getByText('More details').click()
+    await sheet.getByTestId('mcplogdetails-more-details-toggle').click()
     const apps = sheet.getByTestId('mcplogdetails-mcp-apps')
     for (const marker of ['Caller hosts MCP Apps', 'App-only tool', 'Opens ui://dash/view', 'Called as refresh']) {
       await expect(apps).toContainText(marker)
     }
+  })
+
+  test('a failed call shows its error message in the error card, not the raw error object', async ({ mcpLogsPage, page }) => {
+    await stubRoundTripLogs(page, [])
+    await mcpLogsPage.goto()
+    await expect(mcpLogsPage.logsTable).toBeVisible()
+
+    await mcpLogsPage.viewLogDetails(4)
+    const sheet = mcpLogsPage.logDetailSheet
+    const card = sheet.getByTestId('mcplogdetails-error')
+    await expect(card).toContainText(AUTH_ERROR)
+    // error.error repeats the message, so there is nothing more to expand.
+    await expect(sheet.getByTestId('mcplogdetails-error-details')).toHaveCount(0)
+    await expect(sheet.getByText('is_bifrost_error')).toHaveCount(0)
+    await expect(sheet.getByText('extra_fields')).toHaveCount(0)
+  })
+
+  test('a failed call with a structured error keeps it under Details', async ({ mcpLogsPage, page }) => {
+    await stubRoundTripLogs(page, [])
+    await mcpLogsPage.goto()
+    await expect(mcpLogsPage.logsTable).toBeVisible()
+
+    await mcpLogsPage.viewLogDetails(5)
+    const sheet = mcpLogsPage.logDetailSheet
+    await expect(sheet.getByTestId('mcplogdetails-error')).toContainText('MCP server returned 502')
+    const details = sheet.getByTestId('mcplogdetails-error-details')
+    await details.getByText('Details').click()
+    await expect(details).toContainText('-32603')
+    await expect(details).toContainText('gateway timeout')
+    await expect(sheet.getByText('extra_fields')).toHaveCount(0)
+  })
+
+  test('a failed call shows the upstream error with its JSON formatted, without Bifrost\'s wrapper', async ({ mcpLogsPage, page }) => {
+    await stubRoundTripLogs(page, [])
+    await mcpLogsPage.goto()
+    await expect(mcpLogsPage.logsTable).toBeVisible()
+
+    await mcpLogsPage.viewLogDetails(6)
+    const card = mcpLogsPage.logDetailSheet.getByTestId('mcplogdetails-error')
+    await expect(card.getByTestId('mcplogdetails-error-json')).toContainText('"code": "invalid_type"')
+    await expect(card).toContainText('invalid params: Invalid tools/call request:')
+    await expect(card).not.toContainText('MCP tool call failed for')
+    await expect(card).not.toContainText(': mcp tool call failed')
+  })
+
+  test('a failed call whose upstream error is empty says so instead of showing an empty card', async ({ mcpLogsPage, page }) => {
+    await stubRoundTripLogs(page, [])
+    await mcpLogsPage.goto()
+    await expect(mcpLogsPage.logsTable).toBeVisible()
+
+    await mcpLogsPage.viewLogDetails(7)
+    await expect(mcpLogsPage.logDetailSheet.getByTestId('mcplogdetails-error')).toContainText('The tool call failed without an error message.')
+  })
+
+  test('the sidebar lists users, teams, customers, business units and projects and filters by the one picked', async ({ mcpLogsPage, page }) => {
+    await stubRoundTripLogs(page, [])
+    await mcpLogsPage.goto()
+    await expect(mcpLogsPage.logsTable).toBeVisible()
+
+    for (const [prefix, option] of [
+      ['mcp-user-filter', SCOPE_OPTIONS.users[0]],
+      ['mcp-teams-filter', SCOPE_OPTIONS.teams[0]],
+      ['mcp-customers-filter', SCOPE_OPTIONS.customers[0]],
+      ['mcp-business-units-filter', SCOPE_OPTIONS.business_units[0]],
+      ['mcp-projects-filter', SCOPE_OPTIONS.projects[0]],
+    ] as const) {
+      const toggle = page.getByTestId(`${prefix}-toggle`)
+      await expect(toggle).toBeVisible()
+      if ((await toggle.getAttribute('data-state')) !== 'open') await toggle.click()
+      await expect(page.getByTestId(`${prefix}-checkbox-${option.id}`)).toContainText(option.name)
+    }
+
+    const listedWithTeam = page.waitForRequest((request) => {
+      const url = new URL(request.url())
+      return url.pathname === '/api/mcp-logs' && url.searchParams.get('team_ids') === 'team-1'
+    })
+    await page.getByTestId('mcp-teams-filter-checkbox-team-1').click()
+    await listedWithTeam
+    await expect(page).toHaveURL(/team_ids=team-1/)
   })
 
   test('the sidebar filters by round trip ID and labels every status', async ({ mcpLogsPage, page }) => {
