@@ -1362,7 +1362,7 @@ func (r *BedrockInvokeRequest) convertAnthropicTools() *BedrockToolConfig {
 		if name, ok := toolMap["name"].(string); ok {
 			spec.Name = name
 		}
-		if desc, ok := toolMap["description"].(string); ok {
+		if desc, ok := toolMap["description"].(string); ok && desc != "" {
 			spec.Description = &desc
 		}
 		if inputSchema, ok := toolMap["input_schema"]; ok {

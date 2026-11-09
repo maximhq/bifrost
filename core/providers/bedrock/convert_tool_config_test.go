@@ -1859,6 +1859,26 @@ func TestConverseToolEmptyDescriptionUsesFallback(t *testing.T) {
 		})
 	}
 
+	t.Run("native_converse_ingress_rejects_empty_description", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		converseReq := &BedrockConverseRequest{
+			ModelID:  "bedrock/us.anthropic.claude-sonnet-4-6",
+			Messages: []BedrockMessage{{Role: BedrockMessageRoleUser, Content: []BedrockContentBlock{{Text: schemas.Ptr("Weather in Paris?")}}}},
+			ToolConfig: &BedrockToolConfig{
+				Tools: []BedrockTool{{
+					ToolSpec: &BedrockToolSpec{
+						Name:        "get_weather",
+						Description: &empty,
+						InputSchema: BedrockToolInputSchema{JSON: json.RawMessage(`{"type":"object"}`)},
+					},
+				}},
+			},
+		}
+		if _, err := converseReq.ToBifrostResponsesRequest(ctx); err == nil {
+			t.Fatal("expected native Converse ingress to reject empty toolSpec.description")
+		}
+	})
+
 	if !testing.Short() {
 		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 		reqNil := responsesReq(nil)
