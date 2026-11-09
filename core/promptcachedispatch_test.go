@@ -415,6 +415,148 @@ func TestHoistResponsesAdditionalTools(test *testing.T) {
 	}
 }
 
+// Codex re-declares a tool in a later additional_tools item when its definition changes
+// mid-thread (a Codex upgrade or a plugin update on a resumed session). The later
+// declaration replaces the earlier one in the earlier one's position, so the hoisted
+// list never carries the same tool twice.
+func TestHoistResponsesAdditionalToolsRedeclaration(test *testing.T) {
+	type wantTool struct{ namespace, name, description string }
+	text := func(s *string) string {
+		if s == nil {
+			return ""
+		}
+		return *s
+	}
+	flatten := func(tools []schemas.ResponsesTool) []wantTool {
+		var out []wantTool
+		for _, tool := range tools {
+			if tool.Type != schemas.ResponsesToolTypeNamespace {
+				out = append(out, wantTool{"", *tool.Name, text(tool.Description)})
+				continue
+			}
+			for _, member := range tool.ResponsesToolNamespace.Tools {
+				out = append(out, wantTool{*tool.Name, *member.Name, text(member.Description)})
+			}
+		}
+		return out
+	}
+	for _, testCase := range []struct {
+		name  string
+		top   []schemas.ResponsesTool
+		items []string
+		want  []wantTool
+		count int
+	}{
+		{
+			name: "default namespace member re-declared alone keeps its siblings",
+			items: []string{
+				`[{"type":"namespace","name":"functions","tools":[{"type":"function","name":"exec","description":"v1"},{"type":"function","name":"wait","description":"w"}]}]`,
+				`[{"type":"namespace","name":"functions","tools":[{"type":"function","name":"exec","description":"v2"}]}]`,
+			},
+			want:  []wantTool{{"functions", "exec", "v2"}, {"functions", "wait", "w"}},
+			count: 1,
+		},
+		{
+			name: "top-level function re-declared",
+			items: []string{
+				`[{"type":"function","name":"exec","description":"v1"},{"type":"function","name":"wait","description":"w"}]`,
+				`[{"type":"function","name":"exec","description":"v2"}]`,
+			},
+			want:  []wantTool{{"", "exec", "v2"}, {"", "wait", "w"}},
+			count: 2,
+		},
+		{
+			name: "bare function re-declared under the default namespace",
+			items: []string{
+				`[{"type":"function","name":"exec","description":"v1"}]`,
+				`[{"type":"namespace","name":"functions","tools":[{"type":"function","name":"exec","description":"v2"},{"type":"function","name":"wait","description":"w"}]}]`,
+			},
+			want:  []wantTool{{"", "exec", "v2"}, {"functions", "wait", "w"}},
+			count: 2,
+		},
+		{
+			name: "default namespace member re-declared as a bare function",
+			items: []string{
+				`[{"type":"namespace","name":"functions","tools":[{"type":"function","name":"exec","description":"v1"}]}]`,
+				`[{"type":"function","name":"exec","description":"v2"}]`,
+			},
+			want:  []wantTool{{"functions", "exec", "v2"}},
+			count: 1,
+		},
+		{
+			name: "custom namespace member re-declared, same name elsewhere untouched",
+			items: []string{
+				`[{"type":"namespace","name":"mcp","tools":[{"type":"function","name":"read","description":"v1"}]},{"type":"function","name":"read","description":"top"}]`,
+				`[{"type":"namespace","name":"mcp","tools":[{"type":"function","name":"read","description":"v2"}]}]`,
+			},
+			want:  []wantTool{{"mcp", "read", "v2"}, {"", "read", "top"}},
+			count: 2,
+		},
+		{
+			name: "additional_tools item overrides a top-level tool",
+			top:  []schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeFunction, Name: new("exec"), Description: new("v1")}},
+			items: []string{
+				`[{"type":"function","name":"exec","description":"v2"}]`,
+			},
+			want:  []wantTool{{"", "exec", "v2"}},
+			count: 1,
+		},
+	} {
+		test.Run(testCase.name, func(test *testing.T) {
+			request := &schemas.BifrostResponsesRequest{}
+			if testCase.top != nil {
+				request.Params = &schemas.ResponsesParameters{Tools: testCase.top}
+			}
+			for _, raw := range testCase.items {
+				request.Input = append(request.Input, schemas.ResponsesMessage{
+					Type:            new(schemas.ResponsesMessageTypeAdditionalTools),
+					AdditionalTools: []byte(raw),
+				})
+			}
+			prepared, bifrostErr := hoistResponsesAdditionalTools(request)
+			require.Nil(test, bifrostErr)
+			require.Len(test, prepared.Params.Tools, testCase.count)
+			assert.Equal(test, testCase.want, flatten(prepared.Params.Tools))
+			if testCase.top != nil {
+				assert.Equal(test, "v1", *request.Params.Tools[0].Description, "caller's tools must not be mutated")
+			}
+
+			_, bifrostErr = providerUtils.UnwrapDefaultNamespaceTools(prepared)
+			assert.Nil(test, bifrostErr)
+		})
+	}
+}
+
+// BenchmarkHoistResponsesAdditionalTools measures the hoist for a Codex-shaped request:
+// one additional_tools item declaring a "functions" namespace of twelve tools, and the
+// same history with a second item re-declaring exec.
+func BenchmarkHoistResponsesAdditionalTools(b *testing.B) {
+	var members []string
+	for i := range 12 {
+		members = append(members, fmt.Sprintf(`{"type":"function","name":"tool_%d","description":"d","parameters":{"type":"object"}}`, i))
+	}
+	first := `[{"type":"namespace","name":"functions","tools":[` + strings.Join(members, ",") + `]}]`
+	second := `[{"type":"namespace","name":"functions","tools":[{"type":"function","name":"tool_0","description":"v2","parameters":{"type":"object"}}]}]`
+	item := func(raw string) schemas.ResponsesMessage {
+		return schemas.ResponsesMessage{Type: new(schemas.ResponsesMessageTypeAdditionalTools), AdditionalTools: []byte(raw)}
+	}
+	for _, bc := range []struct {
+		name  string
+		input []schemas.ResponsesMessage
+	}{
+		{"single declaration", []schemas.ResponsesMessage{item(first)}},
+		{"re-declaration", []schemas.ResponsesMessage{item(first), item(second)}},
+	} {
+		b.Run(bc.name, func(b *testing.B) {
+			request := &schemas.BifrostResponsesRequest{Input: bc.input}
+			b.ReportAllocs()
+			for b.Loop() {
+				_, _ = hoistResponsesAdditionalTools(request)
+			}
+		})
+	}
+}
+
 func promptCacheOn() *schemas.ProviderConfig {
 	return &schemas.ProviderConfig{PromptCache: &schemas.PromptCacheConfig{AutoInject: true}}
 }

@@ -250,11 +250,16 @@ const (
 
 // MCP filter dimensions for /api/mcp-logs/filterdata.
 const (
-	mcpFilterDimToolNames    = "tool_names"
-	mcpFilterDimServerLabels = "server_labels"
-	mcpFilterDimApps         = "apps"
-	mcpFilterDimUserAgents   = "user_agents"
-	mcpFilterDimVirtualKeys  = "virtual_keys"
+	mcpFilterDimToolNames     = "tool_names"
+	mcpFilterDimServerLabels  = "server_labels"
+	mcpFilterDimApps          = "apps"
+	mcpFilterDimUserAgents    = "user_agents"
+	mcpFilterDimVirtualKeys   = "virtual_keys"
+	mcpFilterDimUsers         = "users"
+	mcpFilterDimTeams         = "teams"
+	mcpFilterDimCustomers     = "customers"
+	mcpFilterDimBusinessUnits = "business_units"
+	mcpFilterDimProjects      = "projects"
 )
 
 var allFilterDimensions = []string{
@@ -266,6 +271,7 @@ var allFilterDimensions = []string{
 
 var allMCPFilterDimensions = []string{
 	mcpFilterDimToolNames, mcpFilterDimServerLabels, mcpFilterDimApps, mcpFilterDimUserAgents, mcpFilterDimVirtualKeys,
+	mcpFilterDimUsers, mcpFilterDimTeams, mcpFilterDimCustomers, mcpFilterDimBusinessUnits, mcpFilterDimProjects,
 }
 
 // parseFilterDimensions returns the requested subset of dimensions in a
@@ -466,6 +472,7 @@ func (h *LoggingHandler) RegisterRoutes(r *router.Router, middlewares ...schemas
 	r.GET("/api/mcp-logs/filterdata", lib.ChainMiddlewares(h.getMCPLogsFilterData, middlewares...))
 	r.GET("/api/mcp-logs/histogram", lib.ChainMiddlewares(h.getMCPHistogram, middlewares...))
 	r.GET("/api/mcp-logs/histogram/cost", lib.ChainMiddlewares(h.getMCPCostHistogram, middlewares...))
+	r.GET("/api/mcp-logs/histogram/latency", lib.ChainMiddlewares(h.getMCPLatencyHistogram, middlewares...))
 	r.GET("/api/mcp-logs/histogram/top-tools", lib.ChainMiddlewares(h.getMCPTopTools, middlewares...))
 	r.GET("/api/mcp-logs/{id}", lib.ChainMiddlewares(h.getMCPLogByID, middlewares...))
 	r.DELETE("/api/mcp-logs", lib.ChainMiddlewares(h.deleteMCPLogs, middlewares...))
@@ -3398,8 +3405,52 @@ func (h *LoggingHandler) getMCPLogsStats(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Stats calculation failed: %v", err))
 		return
 	}
+	if stats == nil {
+		logger.Error("MCP tool log stats returned no result")
+		SendError(ctx, fasthttp.StatusInternalServerError, "Stats calculation returned no result")
+		return
+	}
 
-	SendJSON(ctx, stats)
+	response := &MCPLogStatsResponse{MCPToolLogStats: *stats}
+
+	// compare_to_previous adds the same stats for the immediately preceding window of equal length, as
+	// /api/logs/stats does, so the metric strip can show the change against it. A window with no start
+	// and end has nothing before it, and a failed comparison degrades to none.
+	if compare := string(ctx.QueryArgs().Peek("compare_to_previous")); compare != "" {
+		if enabled, parseErr := strconv.ParseBool(compare); parseErr == nil && enabled && filters.StartTime != nil && filters.EndTime != nil && filters.EndTime.After(*filters.StartTime) {
+			previous, prevErr := h.logManager.GetMCPToolLogStats(ctx, previousMCPPeriodFilters(filters))
+			switch {
+			case prevErr != nil:
+				logger.Warn("failed to get previous period MCP tool log stats: %v", prevErr)
+			case previous != nil:
+				response.Previous = previous
+				response.HasPreviousPeriod = true
+			}
+		}
+	}
+
+	SendJSON(ctx, response)
+}
+
+// MCPLogStatsResponse is the GET /api/mcp-logs/stats payload: the current period's stats at the top level,
+// with the preceding period's beside them when compare_to_previous was asked for, as LogStatsResponse.
+type MCPLogStatsResponse struct {
+	logstore.MCPToolLogStats
+	Previous          *logstore.MCPToolLogStats `json:"previous,omitempty"`
+	HasPreviousPeriod bool                      `json:"has_previous_period"`
+}
+
+// previousMCPPeriodFilters is previousPeriodFilters for MCP tool log filters: the same filter over the
+// window of equal length that ends just before this one starts.
+func previousMCPPeriodFilters(filters *logstore.MCPToolLogSearchFilters) *logstore.MCPToolLogSearchFilters {
+	duration := filters.EndTime.Sub(*filters.StartTime)
+	prevStart := filters.StartTime.Add(-duration)
+	prevEnd := filters.StartTime.Add(-time.Nanosecond)
+
+	prev := *filters
+	prev.StartTime = &prevStart
+	prev.EndTime = &prevEnd
+	return &prev
 }
 
 // getMCPLogsFilterData handles GET /api/mcp-logs/filterdata - Get all unique filter data from MCP tool logs
@@ -3432,59 +3483,154 @@ func (h *LoggingHandler) getMCPLogsFilterData(ctx *fasthttp.RequestCtx) {
 		}
 	}()
 
-	var toolNames []string
+	var (
+		toolNames     []string
+		serverLabels  []string
+		apps          []string
+		userAgents    []string
+		virtualKeys   []logging.KeyPair
+		users         []logging.KeyPair
+		teams         []logging.KeyPair
+		customers     []logging.KeyPair
+		businessUnits []logging.KeyPair
+		projects      []logging.KeyPair
+		mu            sync.Mutex
+	)
+
+	// Run concurrently under the same cap as /api/logs/filterdata: a request naming no dimension
+	// issues ten SELECT DISTINCTs.
+	g, gCtx := errgroup.WithContext(ctx)
+	g.SetLimit(filterDataFanOutLimit)
+
 	if _, ok := want[mcpFilterDimToolNames]; ok {
-		var err error
-		toolNames, err = h.logManager.GetAvailableToolNames(ctx, defaultFilterDataLimit, query)
-		if err != nil {
-			logger.Error("failed to get available tool names: %v", err)
-			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get available tool names: %v", err))
-			return
-		}
+		g.Go(func() error {
+			result, err := h.logManager.GetAvailableToolNames(gCtx, defaultFilterDataLimit, query)
+			if err != nil {
+				return err
+			}
+			mu.Lock()
+			toolNames = result
+			mu.Unlock()
+			return nil
+		})
 	}
-
-	var serverLabels []string
 	if _, ok := want[mcpFilterDimServerLabels]; ok {
-		var err error
-		serverLabels, err = h.logManager.GetAvailableServerLabels(ctx, defaultFilterDataLimit, query)
-		if err != nil {
-			logger.Error("failed to get available server labels: %v", err)
-			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get available server labels: %v", err))
-			return
-		}
+		g.Go(func() error {
+			result, err := h.logManager.GetAvailableServerLabels(gCtx, defaultFilterDataLimit, query)
+			if err != nil {
+				return err
+			}
+			mu.Lock()
+			serverLabels = result
+			mu.Unlock()
+			return nil
+		})
 	}
-
-	var apps []string
 	if _, ok := want[mcpFilterDimApps]; ok {
-		var err error
-		apps, err = h.logManager.GetAvailableMCPApps(ctx, defaultFilterDataLimit, query)
-		if err != nil {
-			logger.Error("failed to get available MCP apps: %v", err)
-			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get available MCP apps: %v", err))
-			return
-		}
+		g.Go(func() error {
+			result, err := h.logManager.GetAvailableMCPApps(gCtx, defaultFilterDataLimit, query)
+			if err != nil {
+				return err
+			}
+			mu.Lock()
+			apps = result
+			mu.Unlock()
+			return nil
+		})
+	}
+	if _, ok := want[mcpFilterDimUserAgents]; ok {
+		g.Go(func() error {
+			result, err := h.logManager.GetAvailableMCPUserAgents(gCtx, defaultFilterDataLimit, query)
+			if err != nil {
+				return err
+			}
+			mu.Lock()
+			userAgents = result
+			mu.Unlock()
+			return nil
+		})
+	}
+	if _, ok := want[mcpFilterDimVirtualKeys]; ok {
+		g.Go(func() error {
+			result, err := h.logManager.GetAvailableMCPVirtualKeys(gCtx, defaultFilterDataLimit, query)
+			if err != nil {
+				return err
+			}
+			mu.Lock()
+			virtualKeys = result
+			mu.Unlock()
+			return nil
+		})
+	}
+	if _, ok := want[mcpFilterDimUsers]; ok {
+		g.Go(func() error {
+			result, err := h.logManager.GetAvailableMCPUsers(gCtx, defaultFilterDataLimit, query)
+			if err != nil {
+				return err
+			}
+			mu.Lock()
+			users = result
+			mu.Unlock()
+			return nil
+		})
+	}
+	if _, ok := want[mcpFilterDimTeams]; ok {
+		g.Go(func() error {
+			result, err := h.logManager.GetAvailableMCPTeams(gCtx, defaultFilterDataLimit, query)
+			if err != nil {
+				return err
+			}
+			mu.Lock()
+			teams = result
+			mu.Unlock()
+			return nil
+		})
+	}
+	if _, ok := want[mcpFilterDimCustomers]; ok {
+		g.Go(func() error {
+			result, err := h.logManager.GetAvailableMCPCustomers(gCtx, defaultFilterDataLimit, query)
+			if err != nil {
+				return err
+			}
+			mu.Lock()
+			customers = result
+			mu.Unlock()
+			return nil
+		})
+	}
+	if _, ok := want[mcpFilterDimBusinessUnits]; ok {
+		g.Go(func() error {
+			result, err := h.logManager.GetAvailableMCPBusinessUnits(gCtx, defaultFilterDataLimit, query)
+			if err != nil {
+				return err
+			}
+			mu.Lock()
+			businessUnits = result
+			mu.Unlock()
+			return nil
+		})
+	}
+	if _, ok := want[mcpFilterDimProjects]; ok {
+		g.Go(func() error {
+			result, err := h.logManager.GetAvailableMCPProjects(gCtx, defaultFilterDataLimit, query)
+			if err != nil {
+				return err
+			}
+			mu.Lock()
+			projects = result
+			mu.Unlock()
+			return nil
+		})
 	}
 
-	var userAgents []string
-	if _, ok := want[mcpFilterDimUserAgents]; ok {
-		var err error
-		userAgents, err = h.logManager.GetAvailableMCPUserAgents(ctx, defaultFilterDataLimit, query)
-		if err != nil {
-			logger.Error("failed to get available MCP user agents: %v", err)
-			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get available MCP user agents: %v", err))
-			return
-		}
+	if err := g.Wait(); err != nil {
+		logger.Error("failed to get MCP filter data: %v", err)
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get MCP filter data: %v", err))
+		return
 	}
 
 	var virtualKeysArray []tables.TableVirtualKey
 	if _, ok := want[mcpFilterDimVirtualKeys]; ok {
-		virtualKeys, err := h.logManager.GetAvailableMCPVirtualKeys(ctx, defaultFilterDataLimit, query)
-		if err != nil {
-			logger.Error("failed to get available MCP virtual keys: %v", err)
-			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get available MCP virtual keys: %v", err))
-			return
-		}
-
 		virtualKeyIDs := make([]string, len(virtualKeys))
 		for i, key := range virtualKeys {
 			virtualKeyIDs[i] = key.ID
@@ -3532,6 +3678,21 @@ func (h *LoggingHandler) getMCPLogsFilterData(ctx *fasthttp.RequestCtx) {
 	}
 	if _, ok := want[mcpFilterDimVirtualKeys]; ok {
 		payload[mcpFilterDimVirtualKeys] = virtualKeysArray
+	}
+	if _, ok := want[mcpFilterDimUsers]; ok {
+		payload[mcpFilterDimUsers] = users
+	}
+	if _, ok := want[mcpFilterDimTeams]; ok {
+		payload[mcpFilterDimTeams] = teams
+	}
+	if _, ok := want[mcpFilterDimCustomers]; ok {
+		payload[mcpFilterDimCustomers] = customers
+	}
+	if _, ok := want[mcpFilterDimBusinessUnits]; ok {
+		payload[mcpFilterDimBusinessUnits] = businessUnits
+	}
+	if _, ok := want[mcpFilterDimProjects]; ok {
+		payload[mcpFilterDimProjects] = projects
 	}
 	if useCache && entry != nil {
 		h.mcpFilterDataCache.store(entry, payload)
@@ -3590,6 +3751,26 @@ func (h *LoggingHandler) getMCPHistogram(ctx *fasthttp.RequestCtx) {
 	if err != nil {
 		logger.Error("failed to get MCP histogram: %v", err)
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("MCP histogram calculation failed: %v", err))
+		return
+	}
+
+	SendJSON(ctx, result)
+}
+
+// getMCPLatencyHistogram handles GET /api/mcp-logs/histogram/latency - Get time-bucketed latency percentiles
+// of finished MCP tool calls, in the /api/logs/histogram/latency shape
+func (h *LoggingHandler) getMCPLatencyHistogram(ctx *fasthttp.RequestCtx) {
+	filters, err := parseMCPHistogramFilters(ctx)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
+	bucketSizeSeconds := calculateBucketSize(filters.StartTime, filters.EndTime)
+
+	result, err := h.logManager.GetMCPLatencyHistogram(ctx, *filters, bucketSizeSeconds)
+	if err != nil {
+		logger.Error("failed to get MCP latency histogram: %v", err)
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("MCP latency histogram calculation failed: %v", err))
 		return
 	}
 
