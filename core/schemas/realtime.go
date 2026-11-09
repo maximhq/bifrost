@@ -404,6 +404,20 @@ type RealtimeTranslatorProvider interface {
 	NewRealtimeTranslator(key Key, model string) (RealtimeTranslator, *BifrostError)
 }
 
+// RealtimeTranslationSelector is optional for a RealtimeTranslatorProvider that serves some sessions
+// as they are and translates others, such as a provider with an agent protocol and a transcription
+// protocol. Without it, every session of a translator provider is translated.
+type RealtimeTranslationSelector interface {
+	TranslatesRealtime(model, intent string) bool
+}
+
+// RealtimeBootstrapDialer is optional for providers whose upstream URL depends on the settings the client
+// sends first, which a transcription session does when the provider fixes them at connect. frames are the
+// text frames the client sent before the session was admitted, in order.
+type RealtimeBootstrapDialer interface {
+	RealtimeWebSocketURLForBootstrap(ctx *BifrostContext, key Key, model, intent string, frames [][]byte) (string, *BifrostError)
+}
+
 // ParseRealtimeEvent decodes a client/provider realtime event while preserving
 // unknown top-level fields in ExtraParams for provider-specific round-tripping.
 func ParseRealtimeEvent(raw []byte) (*BifrostRealtimeEvent, error) {

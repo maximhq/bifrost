@@ -12,11 +12,23 @@ import (
 // openAIRealtimeWire supplies the OpenAI Realtime rules for the client side of a translated connection.
 var openAIRealtimeWire = &openaiProvider.OpenAIProvider{}
 
+// translatesRealtime reports whether a session of the provider is translated: the provider asks for a
+// translator, and its selector, when it has one, picks this model and intent.
+func translatesRealtime(provider schemas.RealtimeProvider, model, intent string) bool {
+	if _, ok := provider.(schemas.RealtimeTranslatorProvider); !ok {
+		return false
+	}
+	if selector, ok := provider.(schemas.RealtimeTranslationSelector); ok {
+		return selector.TranslatesRealtime(model, intent)
+	}
+	return true
+}
+
 // realtimeClientProtocol returns the provider whose realtime rules govern the stream the client sees: the
 // provider itself when its frames are relayed as they are, OpenAI's when a translator turns them into
 // OpenAI Realtime events.
-func realtimeClientProtocol(provider schemas.RealtimeProvider) schemas.RealtimeProvider {
-	if _, ok := provider.(schemas.RealtimeTranslatorProvider); ok {
+func realtimeClientProtocol(provider schemas.RealtimeProvider, model, intent string) schemas.RealtimeProvider {
+	if translatesRealtime(provider, model, intent) {
 		return openAIRealtimeWire
 	}
 	return provider
@@ -24,11 +36,11 @@ func realtimeClientProtocol(provider schemas.RealtimeProvider) schemas.RealtimeP
 
 // newRealtimeTranslator builds the connection's translator, or returns nil when the provider's frames are
 // relayed as they are.
-func newRealtimeTranslator(provider schemas.RealtimeProvider, key schemas.Key, model string) (schemas.RealtimeTranslator, *schemas.BifrostError) {
-	translating, ok := provider.(schemas.RealtimeTranslatorProvider)
-	if !ok {
+func newRealtimeTranslator(provider schemas.RealtimeProvider, key schemas.Key, model, intent string) (schemas.RealtimeTranslator, *schemas.BifrostError) {
+	if !translatesRealtime(provider, model, intent) {
 		return nil, nil
 	}
+	translating := provider.(schemas.RealtimeTranslatorProvider)
 	translator, bifrostErr := translating.NewRealtimeTranslator(key, model)
 	if bifrostErr == nil && translator == nil {
 		return nil, newRealtimeWireBifrostError(500, "server_error", "provider returned no realtime translator")
