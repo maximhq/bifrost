@@ -87,6 +87,16 @@ func permitWithModels(permitType PermitType, id, name, provider string, models .
 	}}, nil)
 }
 
+// permitWithBlacklist builds a permit allowing the listed models of one provider and blocking others.
+func permitWithBlacklist(permitType PermitType, id, name, provider string, allowed []string, blocked ...string) *Permit {
+	return NewPermit(permitType, id, name, true, false, []schemas.ProviderPermit{{
+		Provider:          provider,
+		AllowedModels:     allowed,
+		BlacklistedModels: blocked,
+		KeyIDs:            []string{"*"},
+	}}, nil)
+}
+
 // permitWithTools builds a permit permitting the listed tools of one MCP client.
 func permitWithTools(permitType PermitType, id, name, client string, tools ...string) *Permit {
 	return NewPermit(permitType, id, name, true, false, nil, []schemas.MCPPermit{{

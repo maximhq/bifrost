@@ -765,7 +765,26 @@ func (p *GovernancePlugin) Evaluate(ctx *schemas.BifrostContext, evaluationReque
 	// A settling error is held rather than refused on the spot: the ordering below puts identity
 	// refusals first, and a caller whose credential is dead must be told that before anything about
 	// how the request would have been funded.
-	limits, limitsErr := resolveLimits(ctx, p.store, evaluationRequest.Provider, evaluationRequest.Model)
+	//
+	// A model that runs as written (a literal batch item, a direct key, skip key selection) was admitted
+	// by the literal access, so its limits are gathered from that access too: the alias-aware one
+	// drops a permit whose blacklist names an alias target, and that permit's limits with it.
+	limits, limitsErr := func() (schemas.Limits, error) {
+		if evaluationRequest.LiteralModel {
+			prev, _ := ctx.Value(literalLimitsContextKey).(bool)
+			ctx.SetValue(literalLimitsContextKey, true)
+			defer ctx.SetValue(literalLimitsContextKey, prev)
+		}
+		g := ctx.Grant()
+		if g == nil {
+			return nil, nil
+		}
+		access := g.Access()
+		if access != nil && runsAsWritten(ctx) {
+			access = literalAccessFor(access, p.modelCatalog, p.inMemoryStore)
+		}
+		return resolveLimitsWith(ctx, p.store, access, evaluationRequest.Provider, evaluationRequest.Model)
+	}()
 
 	// The order of everything below is load bearing:
 	//
@@ -1048,27 +1067,97 @@ func (p *GovernancePlugin) ResolveAccess(ctx *schemas.BifrostContext) (schemas.A
 	if len(bases) == 0 && scoping == nil {
 		return nil, nil
 	}
-	access := grant.NewAccess(bases, scoping, mode, p.modelMatcher())
+	access := p.newAccess(ctx, bases, scoping, mode)
 	g.SetAccess(access)
 	return access, nil
+}
+
+// newAccess folds the permits into an access whose model checks resolve key aliases the way key
+// selection will for this request: through the model catalog, over the keys that can serve it.
+func (p *GovernancePlugin) newAccess(ctx *schemas.BifrostContext, bases []schemas.Permit, scoping schemas.Permit, mode grant.CompositionMode) *grant.Access {
+	return grant.NewAccess(bases, scoping, mode, nil).
+		WithKeyScopedMatcher(p.modelMatcher(ctx)).
+		WithAliasTargets(p.aliasTargets(ctx))
 }
 
 // modelMatcher is how an access resolves a model name against a provider's allowed-models list:
 // through the model catalog, with the provider's own configuration, so cross-provider naming and
 // provider-prefixed entries resolve exactly as they do everywhere else. Without a catalog, names
-// are matched as written.
-func (p *GovernancePlugin) modelMatcher() grant.ModelMatcher {
+// are matched as written. A name that only a key alias makes allowed is judged over the keys that
+// can serve this request (see allowedThroughKeys).
+func (p *GovernancePlugin) modelMatcher(ctx *schemas.BifrostContext) grant.KeyScopedModelMatcher {
 	if p.modelCatalog == nil {
 		return nil
 	}
-	return func(provider, model string, allowed []string) bool {
+	return func(provider, model string, allowed, keyIDs []string) bool {
 		var providerConfig *configstore.ProviderConfig
 		if p.inMemoryStore != nil {
 			if config, ok := configuredProvider(p.inMemoryStore, schemas.ModelProvider(provider)); ok {
 				providerConfig = &config
 			}
 		}
-		return p.modelCatalog.IsModelAllowedForProvider(schemas.ModelProvider(provider), model, providerConfig, schemas.WhiteList(allowed))
+		return allowedThroughKeys(contextOf(ctx), p.modelCatalog, schemas.ModelProvider(provider), model, providerConfig, allowed, keyIDs)
+	}
+}
+
+// contextOf is ctx as a context.Context, nil when ctx is. The access closures hold the concrete
+// pointer, a word smaller than the interface, since they are built for every request.
+func contextOf(ctx *schemas.BifrostContext) context.Context {
+	if ctx == nil {
+		return nil
+	}
+	return ctx
+}
+
+// allowedThroughKeys is IsModelAllowedForProvider with the key-alias rule held to the keys key
+// selection can pick for this request: only keys the permit's key restriction allows, and the pinned
+// key when the request pins one. providerConfig must be the caller's own copy.
+//
+// The pin is consulted only when the unpinned keys refuse the alias. Narrowing a set of keys that
+// all map the name to an allowed model can only turn the answer into a refusal where the pin names
+// no key that can serve the name, and core refuses that request at key selection anyway; so the
+// common alias request reads nothing from the context. A request that runs as written (a direct key,
+// skip key selection) never has an alias resolved, but is admitted on the literal access (see
+// literalAccessFor), so this access only widens what such a request may be told it reaches.
+func allowedThroughKeys(ctx context.Context, catalog *modelcatalog.ModelCatalog, provider schemas.ModelProvider, model string, providerConfig *configstore.ProviderConfig, allowed, keyIDs []string) bool {
+	if providerConfig == nil || !modelcatalog.HasKeyAliases(providerConfig.Keys) {
+		return catalog.IsModelAllowedForProvider(provider, model, providerConfig, schemas.WhiteList(allowed))
+	}
+	keys := providerConfig.Keys
+	providerConfig.Keys = nil // the direct match only; the alias rule runs below over the servable keys
+	if catalog.IsModelAllowedForProvider(provider, model, providerConfig, schemas.WhiteList(allowed)) {
+		return true
+	}
+	if !modelcatalog.MayBeKeyAlias(provider, model, keys) {
+		return false
+	}
+	if catalog.KeyAliasesResolveToAllowed(provider, model, keys, schemas.WhiteList(keyIDs), schemas.WhiteList(allowed)) {
+		return true
+	}
+	pinned, ok := pinnedKeys(ctx, keys)
+	if !ok || len(pinned) == len(keys) || runsAsWritten(ctx) {
+		return false
+	}
+	return catalog.KeyAliasesResolveToAllowed(provider, model, pinned, schemas.WhiteList(keyIDs), schemas.WhiteList(allowed))
+}
+
+// aliasTargets is how an access learns which models a requested name can become through the
+// provider's key aliases, resolved only at key selection: over the pinned key when the request pins
+// one, and over the keys the permit allows. A request that runs as written becomes nothing else.
+func (p *GovernancePlugin) aliasTargets(ctx *schemas.BifrostContext) grant.AliasTargets {
+	return func(provider, model string, keyIDs []string, visit func(target string)) {
+		if p.inMemoryStore == nil {
+			return
+		}
+		cfg, ok := configuredProvider(p.inMemoryStore, schemas.ModelProvider(provider))
+		if !ok || !modelcatalog.HasKeyAliases(cfg.Keys) || !modelcatalog.MayBeKeyAlias(schemas.ModelProvider(provider), model, cfg.Keys) || runsAsWritten(contextOf(ctx)) {
+			return
+		}
+		keys, ok := pinnedKeys(contextOf(ctx), cfg.Keys)
+		if !ok {
+			return
+		}
+		modelcatalog.KeyAliasTargets(model, keys, schemas.WhiteList(keyIDs), visit)
 	}
 }
 
@@ -1097,7 +1186,18 @@ func resolveLimits(ctx *schemas.BifrostContext, store GovernanceStore, provider 
 	if g == nil {
 		return nil, nil
 	}
-	budgets, rateLimits, err := store.GatherLimits(ctx, g.Access(), provider, model)
+	return resolveLimitsWith(ctx, store, g.Access(), provider, model)
+}
+
+// resolveLimitsWith is resolveLimits over a given access rather than the grant's own, for a request
+// whose model check used a different one (see literalAccessFor). The grant is still where the
+// settled limits are recorded.
+func resolveLimitsWith(ctx *schemas.BifrostContext, store GovernanceStore, access schemas.Access, provider schemas.ModelProvider, model string) (schemas.Limits, error) {
+	g := ctx.Grant()
+	if g == nil {
+		return nil, nil
+	}
+	budgets, rateLimits, err := store.GatherLimits(ctx, access, provider, model)
 	if err != nil {
 		return nil, err
 	}
@@ -1250,9 +1350,11 @@ func (p *GovernancePlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.
 	// pass, last, leaves the access as it would be without the extra passes. Nothing
 	// reached from here charges usage, so the passes cannot double-count it.
 	if req.RequestType == schemas.BatchCreateRequest && req.BatchCreateRequest != nil && len(req.BatchCreateRequest.Requests) > 0 {
+		itemModels := BatchItemModels(req)
 		for _, batchModel := range BatchCreateModels(req, model) {
 			batchEvaluationRequest := *evaluationRequest
 			batchEvaluationRequest.Model = batchModel
+			batchEvaluationRequest.LiteralModel = slices.Contains(itemModels, batchModel)
 			_, bifrostError := p.Evaluate(ctx, &batchEvaluationRequest)
 			if bifrostError != nil {
 				return req, &schemas.LLMPluginShortCircuit{
@@ -1537,6 +1639,35 @@ func isOpaqueBatchInput(req *schemas.BifrostRequest) bool {
 	return batch.InputFileID != "" || (batch.InputBlob != nil && strings.TrimSpace(*batch.InputBlob) != "")
 }
 
+// BatchItemModels returns the distinct models the inline items of a batch create name. They reach
+// the provider as written, unlike the request's own model, so governance holds them to the literal
+// name.
+func BatchItemModels(req *schemas.BifrostRequest) []string {
+	if req.RequestType != schemas.BatchCreateRequest || req.BatchCreateRequest == nil {
+		return nil
+	}
+	var models []string
+	for _, item := range req.BatchCreateRequest.Requests {
+		forEachItemModel(item, func(m string) {
+			if !slices.Contains(models, m) {
+				models = append(models, m)
+			}
+		})
+	}
+	return models
+}
+
+// forEachItemModel calls fn with every non-empty string "model" an inline batch item names, Body
+// first and then Params. Providers disagree on which map they send (Anthropic sends Params and
+// falls back to Body), so every model an item could run is visited rather than the first found.
+func forEachItemModel(item schemas.BatchRequestItem, fn func(model string)) {
+	for _, body := range [2]map[string]any{item.Body, item.Params} {
+		if m, ok := body["model"].(string); ok && m != "" {
+			fn(m)
+		}
+	}
+}
+
 // BatchCreateModels returns every distinct model an inline batch create will run,
 // starting with the request's own model.
 func BatchCreateModels(req *schemas.BifrostRequest, model string) []string {
@@ -1557,13 +1688,7 @@ func BatchCreateModels(req *schemas.BifrostRequest, model string) []string {
 	}
 	add(model)
 	for _, item := range req.BatchCreateRequest.Requests {
-		// Body is the OpenAI shape, Params the Anthropic one; an item carries one.
-		for _, body := range []map[string]any{item.Body, item.Params} {
-			if m, ok := body["model"].(string); ok {
-				add(m)
-				break
-			}
-		}
+		forEachItemModel(item, add)
 	}
 	if len(models) == 0 {
 		// No item named a model: fall back to the model-less evaluation so the
@@ -1979,7 +2104,7 @@ func (p *GovernancePlugin) PreA2AHook(ctx *schemas.BifrostContext, req *schemas.
 			scoping = access.Scoping()
 			mode = grant.CompositionMode(access.Mode())
 		}
-		access = grant.NewAccess(bases, scoping, mode, p.modelMatcher())
+		access = p.newAccess(ctx, bases, scoping, mode)
 	}
 	if refusal := unusablePermit(access); refusal != nil {
 		return deny(refusal.Decision, refusal.Reason)
@@ -2283,6 +2408,8 @@ func (p *GovernancePlugin) reportBatchModelUsage(ctx context.Context, usage joba
 	}
 
 	var errs []error
+	// Every model here is one a result row actually ran, as written, so no alias target is charged.
+	ctx = context.WithValue(ctx, literalLimitsContextKey, true)
 	for _, modelUsage := range usage.ModelUsage {
 		budgetIDs, rateLimitIDs := p.store.CollectModelScopedGovernanceIDs(ctx, usage.VirtualKeyID, usage.UserID, usage.Provider, modelUsage.Model)
 		if modelUsage.Cost > 0 {
