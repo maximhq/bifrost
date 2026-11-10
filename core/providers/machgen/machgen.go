@@ -4,6 +4,7 @@ package machgen
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -190,37 +191,70 @@ func (provider *MachGenProvider) downloadAsset(ctx *schemas.BifrostContext, key 
 // machgenImagePollingInterval is the interval between MachGen task status polls for image generation.
 const machgenImagePollingInterval = 2 * time.Second
 
-// pollTask polls a MachGen task until it completes, fails, or the request timeout elapses.
-func (provider *MachGenProvider) pollTask(ctx *schemas.BifrostContext, key schemas.Key, taskID string, sendBackRawResponse bool) (*MachGenTaskStatusResponse, interface{}, *schemas.BifrostError) {
+// awaitImage polls a submitted image task until it completes or fails, then downloads the
+// image, all within the request timeout. A transient status or download failure is retried
+// here on the same task: returned, it would let core retry the whole call, which submits a
+// second task and loses the first one's result.
+func (provider *MachGenProvider) awaitImage(ctx *schemas.BifrostContext, key schemas.Key, taskID string, sendBackRawResponse bool) (*MachGenTaskStatusResponse, interface{}, []byte, *schemas.BifrostError) {
 	pollCtx, cancel := schemas.NewBifrostContextWithTimeout(ctx, time.Duration(provider.networkConfig.DefaultRequestTimeoutInSeconds)*time.Second)
 	defer cancel()
 
 	ticker := time.NewTicker(machgenImagePollingInterval)
 	defer ticker.Stop()
 
+	var task *MachGenTaskStatusResponse
+	var rawResponse interface{}
 	for {
-		task, rawResponse, _, bifrostErr := provider.getTask(pollCtx, key, taskID, sendBackRawResponse)
-		if bifrostErr != nil {
-			return nil, nil, bifrostErr
-		}
-
-		switch task.Status {
-		case MachGenTaskStatusCompleted:
-			return task, rawResponse, nil
-		case MachGenTaskStatusFailed:
-			message := fmt.Sprintf("MachGen task %s failed", taskID)
-			if task.ErrorMsg != nil && *task.ErrorMsg != "" {
-				message = *task.ErrorMsg
+		if task == nil {
+			polled, raw, _, bifrostErr := provider.getTask(pollCtx, key, taskID, sendBackRawResponse)
+			if bifrostErr != nil && !isTransientMachGenError(bifrostErr) {
+				return nil, nil, nil, bifrostErr
 			}
-			return nil, nil, providerUtils.NewBifrostOperationError(message, nil)
+			if bifrostErr == nil {
+				switch polled.Status {
+				case MachGenTaskStatusCompleted:
+					task, rawResponse = polled, raw
+				case MachGenTaskStatusFailed:
+					message := fmt.Sprintf("MachGen task %s failed", taskID)
+					if polled.ErrorMsg != nil && *polled.ErrorMsg != "" {
+						message = *polled.ErrorMsg
+					}
+					return nil, nil, nil, providerUtils.NewBifrostOperationError(message, nil)
+				}
+			}
+		}
+		if task != nil {
+			image, _, _, bifrostErr := provider.downloadAsset(pollCtx, key, taskID)
+			if bifrostErr == nil {
+				return task, rawResponse, image, nil
+			}
+			if !isTransientMachGenError(bifrostErr) {
+				return nil, nil, nil, bifrostErr
+			}
 		}
 
 		select {
 		case <-pollCtx.Done():
-			return nil, nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestTimedOut, fmt.Errorf("MachGen task %s did not finish within the request timeout", taskID))
+			if errors.Is(pollCtx.Err(), context.Canceled) {
+				return nil, nil, nil, providerUtils.NewBifrostOperationError(schemas.ErrRequestCancelled, pollCtx.Err())
+			}
+			return nil, nil, nil, providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, fmt.Errorf("MachGen task %s did not finish within the request timeout", taskID))
 		case <-ticker.C:
 		}
 	}
+}
+
+// isTransientMachGenError reports whether a status or download call failed in a way worth
+// repeating on the same task: a lost connection, a rate limit or a 5xx from MachGen. Bifrost's
+// own timeouts and cancellations are not, and neither is any other MachGen error.
+func isTransientMachGenError(err *schemas.BifrostError) bool {
+	if err.IsBifrostError || err.StatusCode == nil {
+		return false
+	}
+	if err.Error != nil && err.Error.Type != nil && (*err.Error.Type == schemas.RequestTimedOut || *err.Error.Type == schemas.RequestCancelled) {
+		return false
+	}
+	return *err.StatusCode == fasthttp.StatusTooManyRequests || *err.StatusCode >= fasthttp.StatusInternalServerError
 }
 
 // handleImageTask submits an image task, waits for it, and returns the image inline. Shared by
@@ -235,14 +269,9 @@ func (provider *MachGenProvider) handleImageTask(ctx *schemas.BifrostContext, ke
 		return nil, bifrostErr
 	}
 
-	task, rawResponse, bifrostErr := provider.pollTask(ctx, key, taskResp.TaskID, sendBackRawResponse)
+	task, rawResponse, image, bifrostErr := provider.awaitImage(ctx, key, taskResp.TaskID, sendBackRawResponse)
 	if bifrostErr != nil {
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, sendBackRawRequest, sendBackRawResponse, latency)
-	}
-
-	image, _, _, bifrostErr := provider.downloadAsset(ctx, key, task.TaskID)
-	if bifrostErr != nil {
-		return nil, bifrostErr
 	}
 
 	bifrostResp := ToBifrostImageGenerationResponse(task, image)

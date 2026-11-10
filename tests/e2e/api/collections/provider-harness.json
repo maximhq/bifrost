@@ -315491,7 +315491,9 @@
                 "type": "text/javascript",
                 "exec": [
                   "var id = pm.collectionVariables.get('machgenVideoId');",
-                  "if (!id) { pm.test.skip('no video id produced upstream', function () {}); return; }",
+                  "pm.test('the submit row produced a video id', function () {",
+                  "  pm.expect(id, 'machgenVideoId was not set by the text-to-video submit row').to.be.a('string').that.is.not.empty;",
+                  "});",
                   "pm.test('retrieve resolves the provider from the id suffix', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
                   "});",

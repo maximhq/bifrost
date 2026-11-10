@@ -350,6 +350,88 @@ func TestMachGenImageGeneration_WaitsForTaskAndReturnsImageInline(t *testing.T) 
 	assert.JSONEq(t, `{"model":"FLUX.2-dev","task_type":"T2I","prompt":"a cozy reading nook","image_config":{"height":1024,"aspect_ratio":"1:1"}}`, string(*submitted))
 }
 
+// A transient status or download failure keeps working on the submitted task. Returning it
+// would let core retry the whole call, which submits a second task and loses the first.
+func TestMachGenImageGeneration_RidesOutTransientFailuresWithoutResubmitting(t *testing.T) {
+	image := []byte("\xff\xd8jpeg-bytes")
+	var mu sync.Mutex
+	submits, polls, downloads := 0, 0, 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == generatePath:
+			submits++
+			_, _ = w.Write([]byte(`{"task_id":"t-abc"}`))
+		case r.URL.Path == tasksPath+"t-abc":
+			polls++
+			if polls == 1 {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				_, _ = w.Write([]byte(`{"detail":"Service temporarily unavailable"}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"task_id":"t-abc","status":"COMPLETED","task_output":{"image":"x"}}`))
+		case r.URL.Path == assetsPath+"t-abc":
+			downloads++
+			if downloads == 1 {
+				w.WriteHeader(http.StatusBadGateway)
+				return
+			}
+			w.Header().Set("Content-Type", "image/jpeg")
+			_, _ = w.Write(image)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(server.Close)
+	provider := newTestProvider(t, server.URL)
+
+	ctx, cancel := schemas.NewBifrostContextWithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	resp, bErr := provider.ImageGeneration(ctx, testKey("MGA_test"), &schemas.BifrostImageGenerationRequest{
+		Model: "FLUX.2-dev",
+		Input: &schemas.ImageGenerationInput{Prompt: "p"},
+	})
+	require.Nil(t, bErr, "%v", bErr)
+	assert.Equal(t, base64.StdEncoding.EncodeToString(image), resp.Data[0].B64JSON)
+	assert.Equal(t, 1, submits)
+	assert.Equal(t, 2, polls)
+	assert.Equal(t, 2, downloads)
+}
+
+// When MachGen stays unavailable past the request timeout, the call ends as a timeout, which
+// core does not retry, rather than as the 5xx it would answer with a second submission.
+func TestMachGenImageGeneration_EndsAsTimeoutWhenStatusStaysUnavailable(t *testing.T) {
+	var mu sync.Mutex
+	submits := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		if r.Method == http.MethodPost && r.URL.Path == generatePath {
+			submits++
+			_, _ = w.Write([]byte(`{"task_id":"t-abc"}`))
+			return
+		}
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(server.Close)
+	provider, err := NewMachGenProvider(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL, DefaultRequestTimeoutInSeconds: 1, AllowPrivateNetwork: true},
+	}, testNoopLogger{})
+	require.NoError(t, err)
+
+	ctx, cancel := schemas.NewBifrostContextWithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	_, bErr := provider.ImageGeneration(ctx, testKey("MGA_test"), &schemas.BifrostImageGenerationRequest{
+		Model: "FLUX.2-dev",
+		Input: &schemas.ImageGenerationInput{Prompt: "p"},
+	})
+	require.NotNil(t, bErr)
+	require.NotNil(t, bErr.Error.Type, "%v", bErr)
+	assert.Equal(t, schemas.RequestTimedOut, *bErr.Error.Type)
+	assert.Equal(t, 1, submits)
+}
+
 // A video goes through submit, retrieve and download with the provider-suffixed id.
 func TestMachGenVideoLifecycle_SubmitRetrieveDownload(t *testing.T) {
 	video := []byte("mp4-bytes")
