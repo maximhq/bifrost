@@ -2004,3 +2004,96 @@ func BenchmarkConverseToolStrict(b *testing.B) {
 		})
 	}
 }
+
+// TestConvertToolConfigFromFiltered_EmptyToolsUnknownPinRejected covers the
+// case where no tools are submitted and a named pin targets a tool that was
+// never sent. The unknown pin must be rejected before the empty-tool early
+// return so the request does not silently proceed without a 400.
+func TestConvertToolConfigFromFiltered_EmptyToolsUnknownPinRejected(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	model := "global.anthropic.claude-sonnet-4-6"
+	params := &schemas.ChatParameters{
+		ToolChoice: &schemas.ChatToolChoice{
+			ChatToolChoiceStruct: &schemas.ChatToolChoiceStruct{
+				Type:     schemas.ChatToolChoiceTypeFunction,
+				Function: &schemas.ChatToolChoiceFunction{Name: "nonexistent"},
+			},
+		},
+	}
+	caps := schemas.ResolveModelCaps(schemas.Bedrock, model)
+	_, _, err := convertToolConfigFromFiltered(ctx, model, caps, params, nil)
+	if err == nil {
+		t.Fatalf("expected error for unknown tool_choice pin with empty tools, got nil")
+	}
+	if _, ok := providerUtils.AsBifrostBadRequestError(err); !ok {
+		t.Errorf("expected a 400 invalid-request error, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "nonexistent") || !strings.Contains(err.Error(), "is not defined in tools") {
+		t.Errorf("expected error to name the unknown tool, got %v", err)
+	}
+}
+
+// TestConvertToolConfigFromFiltered_FilteredOnlyUnknownPinRejected covers the
+// case where every submitted tool is filtered out by model capabilities and a
+// named pin targets a tool that was never sent. The unknown pin must be
+// rejected before the empty-tool early return.
+func TestConvertToolConfigFromFiltered_FilteredOnlyUnknownPinRejected(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	model := "global.anthropic.claude-sonnet-4-6"
+	params := &schemas.ChatParameters{
+		Tools: []schemas.ChatTool{
+			{Type: schemas.ChatToolType("web_search_20260209"), Name: "web_search"},
+		},
+		ToolChoice: &schemas.ChatToolChoice{
+			ChatToolChoiceStruct: &schemas.ChatToolChoiceStruct{
+				Type:     schemas.ChatToolChoiceTypeFunction,
+				Function: &schemas.ChatToolChoiceFunction{Name: "never_sent"},
+			},
+		},
+	}
+	// All submitted tools are filtered out (web_search stripped on Bedrock),
+	// so the filtered set is empty.
+	filtered := []schemas.ChatTool{}
+	caps := schemas.ResolveModelCaps(schemas.Bedrock, model)
+	_, _, err := convertToolConfigFromFiltered(ctx, model, caps, params, filtered)
+	if err == nil {
+		t.Fatalf("expected error for unknown pin when all tools filtered, got nil")
+	}
+	if _, ok := providerUtils.AsBifrostBadRequestError(err); !ok {
+		t.Errorf("expected a 400 invalid-request error, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "never_sent") || !strings.Contains(err.Error(), "is not defined in tools") {
+		t.Errorf("expected error to name the unknown tool, got %v", err)
+	}
+}
+
+// TestConvertToolConfigFromFiltered_FilteredOnlySubmittedPinSilentDrop covers
+// the case where every submitted tool is filtered out and the named pin
+// targets a tool that was submitted but stripped. The pin must be silently
+// dropped with no error and no ToolConfig.
+func TestConvertToolConfigFromFiltered_FilteredOnlySubmittedPinSilentDrop(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	model := "global.anthropic.claude-sonnet-4-6"
+	params := &schemas.ChatParameters{
+		Tools: []schemas.ChatTool{
+			{Type: schemas.ChatToolType("web_search_20260209"), Name: "web_search"},
+		},
+		ToolChoice: &schemas.ChatToolChoice{
+			ChatToolChoiceStruct: &schemas.ChatToolChoiceStruct{
+				Type:     schemas.ChatToolChoiceTypeFunction,
+				Function: &schemas.ChatToolChoiceFunction{Name: "web_search"},
+			},
+		},
+	}
+	// All submitted tools are filtered out (web_search stripped), so the
+	// filtered set is empty.
+	filtered := []schemas.ChatTool{}
+	caps := schemas.ResolveModelCaps(schemas.Bedrock, model)
+	toolConfig, _, err := convertToolConfigFromFiltered(ctx, model, caps, params, filtered)
+	if err != nil {
+		t.Fatalf("expected no error for submitted-but-filtered pin, got %v", err)
+	}
+	if toolConfig != nil {
+		t.Fatalf("expected nil ToolConfig when all tools filtered and pin dropped, got %+v", toolConfig)
+	}
+}

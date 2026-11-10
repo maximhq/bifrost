@@ -3357,15 +3357,6 @@ func convertToolConfigFromFiltered(ctx *schemas.BifrostContext, model string, ca
 		}
 	}
 
-	// Empty-guard: Bedrock's Converse API rejects {"toolConfig": {"tools": []}}
-	// with a 400 "The provided request is not valid". If every incoming tool
-	// was filtered out above (e.g. only server tools the target provider
-	// doesn't support), omit ToolConfig entirely so the request is valid and
-	// the model simply answers without tool access.
-	if len(bedrockTools) == 0 {
-		return nil, droppedForModel, nil
-	}
-
 	toolConfig := &BedrockToolConfig{
 		Tools: bedrockTools,
 	}
@@ -3439,6 +3430,15 @@ func convertToolConfigFromFiltered(ctx *schemas.BifrostContext, model string, ca
 				toolConfig.ToolChoice = toolChoice
 			}
 		}
+	}
+
+	// Empty-guard: Bedrock's Converse API rejects {"toolConfig": {"tools": []}}
+	// with a 400 "The provided request is not valid". If every incoming tool
+	// was filtered out above (e.g. only server tools the target provider
+	// doesn't support), omit ToolConfig entirely so the request is valid and
+	// the model simply answers without tool access.
+	if len(bedrockTools) == 0 {
+		return nil, droppedForModel, nil
 	}
 
 	return toolConfig, droppedForModel, nil
