@@ -2143,7 +2143,9 @@ func (provider *GeminiProvider) ImageGeneration(ctx *schemas.BifrostContext, key
 		ctx,
 		request,
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
-			return ToGeminiImageGenerationRequest(request), nil
+			reqBody := ToGeminiImageGenerationRequest(request)
+			stripGeminiAPIImageOutputOptions(reqBody)
+			return reqBody, nil
 		})
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -2367,7 +2369,9 @@ func (provider *GeminiProvider) ImageEdit(ctx *schemas.BifrostContext, key schem
 		ctx,
 		request,
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
-			return ToGeminiImageEditRequest(request), nil
+			reqBody := ToGeminiImageEditRequest(request)
+			stripGeminiAPIImageOutputOptions(reqBody)
+			return reqBody, nil
 		})
 	if bifrostErr != nil {
 		return nil, bifrostErr

@@ -80,7 +80,8 @@ func TestVertexGeminiResponsesNativeToolSubFieldsReachWire(t *testing.T) {
 	assert.Equal(t, searchRetrieval, gotSearchRetrieval, "googleSearchRetrieval must reach Vertex unchanged; body %s", wire)
 }
 
-// Vertex Gemini image requests must keep Bifrost output_format as imageOutputOptions.mimeType
+// Vertex Gemini image requests must keep Bifrost output_format/output_compression as imageOutputOptions
+// mimeType/compressionQuality
 // on the body Vertex receives, through the same strip/marshal/region-removal steps as ImageGeneration/ImageEdit.
 func TestVertexGeminiImageOutputFormatReachesWire(t *testing.T) {
 	png := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a}
@@ -89,7 +90,7 @@ func TestVertexGeminiImageOutputFormatReachesWire(t *testing.T) {
 		Provider: schemas.Vertex,
 		Model:    "gemini-2.5-flash-image",
 		Input:    &schemas.ImageGenerationInput{Prompt: "a red apple"},
-		Params:   &schemas.ImageGenerationParameters{OutputFormat: &jpeg},
+		Params:   &schemas.ImageGenerationParameters{OutputFormat: &jpeg, OutputCompression: schemas.Ptr(60)},
 	}
 	editReq := &schemas.BifrostImageEditRequest{
 		Provider: schemas.Vertex,
@@ -98,7 +99,7 @@ func TestVertexGeminiImageOutputFormatReachesWire(t *testing.T) {
 			Prompt: "make it pop",
 			Images: []schemas.ImageInput{{Image: png}},
 		},
-		Params: &schemas.ImageEditParameters{OutputFormat: &jpeg},
+		Params: &schemas.ImageEditParameters{OutputFormat: &jpeg, OutputCompression: schemas.Ptr(60)},
 	}
 
 	toWire := func(t *testing.T, reqBody *gemini.GeminiGenerationRequest) []byte {
@@ -118,5 +119,6 @@ func TestVertexGeminiImageOutputFormatReachesWire(t *testing.T) {
 	}
 	for name, body := range cases {
 		assert.Equal(t, "image/jpeg", gjson.GetBytes(body, "generationConfig.imageConfig.imageOutputOptions.mimeType").String(), "%s body %s", name, body)
+		assert.Equal(t, int64(60), gjson.GetBytes(body, "generationConfig.imageConfig.imageOutputOptions.compressionQuality").Int(), "%s body %s", name, body)
 	}
 }

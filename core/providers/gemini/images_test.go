@@ -1,7 +1,11 @@
 package gemini
 
 import (
+	"context"
 	"encoding/base64"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
@@ -250,7 +254,6 @@ func TestToGeminiImageGenerationRequest_OutputFormatMapsToMimeType(t *testing.T)
 		"png":       {format: "png", want: "image/png"},
 		"jpeg":      {format: "jpeg", want: "image/jpeg"},
 		"jpg_upper": {format: "JPG", want: "image/jpeg"},
-		"webp":      {format: "webp", want: "image/webp"},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -275,7 +278,6 @@ func TestToGeminiImageEditRequest_OutputFormatMapsToMimeType(t *testing.T) {
 		"png":       {format: "png", want: "image/png"},
 		"jpeg":      {format: "jpeg", want: "image/jpeg"},
 		"jpg_upper": {format: "JPG", want: "image/jpeg"},
-		"webp":      {format: "webp", want: "image/webp"},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -295,12 +297,14 @@ func TestToGeminiImageEditRequest_OutputFormatMapsToMimeType(t *testing.T) {
 	}
 }
 
-// An absent or unmappable output_format must not fail the request or emit an imageOutputOptions block.
+// An absent or unmappable output_format (webp included) must not fail the request or emit an imageOutputOptions block.
 func TestGeminiImageRequests_UnsupportedOrUnsetOutputFormatOmitsImageOutputOptions(t *testing.T) {
 	tiff := "tiff"
+	webp := "webp"
 	cases := map[string]*string{
 		"unset":       nil,
 		"unsupported": &tiff,
+		"webp":        &webp, // Gemini image models accept only image/png and image/jpeg
 	}
 	for name, format := range cases {
 		t.Run("generation_"+name, func(t *testing.T) {
@@ -327,6 +331,152 @@ func TestGeminiImageRequests_UnsupportedOrUnsetOutputFormatOmitsImageOutputOptio
 			assert.False(t, gjson.GetBytes(body, "generationConfig.imageConfig.imageOutputOptions").Exists(), "body %s", body)
 		})
 	}
+}
+
+// output_compression rides along as compressionQuality only with JPEG; it means nothing for PNG.
+func TestGeminiImageRequests_OutputCompressionMapsToCompressionQuality(t *testing.T) {
+	const qualityPath = "generationConfig.imageConfig.imageOutputOptions.compressionQuality"
+	cases := map[string]struct {
+		format      *string
+		compression *int
+		wantMime    string
+		wantQuality *int64
+	}{
+		"jpeg_with_compression": {format: schemas.Ptr("jpeg"), compression: schemas.Ptr(60), wantMime: "image/jpeg", wantQuality: schemas.Ptr(int64(60))},
+		"png_with_compression":  {format: schemas.Ptr("png"), compression: schemas.Ptr(60), wantMime: "image/png"},
+		"compression_only":      {compression: schemas.Ptr(60)},
+	}
+	for name, tc := range cases {
+		check := func(t *testing.T, body []byte) {
+			assert.Equal(t, tc.wantMime, gjson.GetBytes(body, geminiImageMimeTypePath).String(), "body %s", body)
+			quality := gjson.GetBytes(body, qualityPath)
+			if tc.wantQuality == nil {
+				assert.False(t, quality.Exists(), "body %s", body)
+				return
+			}
+			assert.Equal(t, *tc.wantQuality, quality.Int(), "body %s", body)
+		}
+		t.Run("generation_"+name, func(t *testing.T) {
+			bifrostReq := &schemas.BifrostImageGenerationRequest{
+				Provider: schemas.Vertex,
+				Model:    "gemini-2.5-flash-image",
+				Input:    &schemas.ImageGenerationInput{Prompt: "a red apple"},
+				Params:   &schemas.ImageGenerationParameters{OutputFormat: tc.format, OutputCompression: tc.compression},
+			}
+			check(t, geminiImageWireBody(t, ToGeminiImageGenerationRequest(bifrostReq)))
+		})
+		t.Run("edit_"+name, func(t *testing.T) {
+			bifrostReq := &schemas.BifrostImageEditRequest{
+				Provider: schemas.Vertex,
+				Model:    "gemini-2.5-flash-image",
+				Input: &schemas.ImageEditInput{
+					Prompt: "make it pop",
+					Images: []schemas.ImageInput{{Image: imageTestPNG(t)}},
+				},
+				Params: &schemas.ImageEditParameters{OutputFormat: tc.format, OutputCompression: tc.compression},
+			}
+			check(t, geminiImageWireBody(t, ToGeminiImageEditRequest(bifrostReq)))
+		})
+	}
+}
+
+// The Gemini API rejects imageConfig.imageOutputOptions (Google's SDK refuses output_mime_type
+// outside Vertex), so the direct Gemini provider must never send it, while keeping the rest of imageConfig.
+func TestGeminiProviderImageRequests_OmitImageOutputOptionsOnWire(t *testing.T) {
+	const okBody = `{"candidates":[{"content":{"role":"model","parts":[{"inlineData":{"mimeType":"image/png","data":"iVBORw0KGgo="}}]}}]}`
+	cases := map[string]struct {
+		aspectRatio *string
+		wantConfig  bool
+	}{
+		"output_format_only":     {},
+		"output_format_and_size": {aspectRatio: schemas.Ptr("3:2"), wantConfig: true},
+	}
+	for name, tc := range cases {
+		for _, op := range []string{"generation", "edit"} {
+			t.Run(op+"_"+name, func(t *testing.T) {
+				var captured []byte
+				ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					captured, _ = io.ReadAll(r.Body)
+					w.Header().Set("Content-Type", "application/json")
+					_, _ = w.Write([]byte(okBody))
+				}))
+				defer ts.Close()
+
+				provider := NewGeminiProvider(&schemas.ProviderConfig{
+					NetworkConfig: schemas.NetworkConfig{BaseURL: ts.URL + "/v1beta"},
+				}, testNoopLogger{})
+				ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+				key := schemas.Key{Value: *schemas.NewSecretVar("dummy-key")}
+
+				var bifrostErr *schemas.BifrostError
+				if op == "generation" {
+					_, bifrostErr = provider.ImageGeneration(ctx, key, &schemas.BifrostImageGenerationRequest{
+						Provider: schemas.Gemini,
+						Model:    "gemini-2.5-flash-image",
+						Input:    &schemas.ImageGenerationInput{Prompt: "a red apple"},
+						Params: &schemas.ImageGenerationParameters{
+							OutputFormat: schemas.Ptr("jpeg"), OutputCompression: schemas.Ptr(60), AspectRatio: tc.aspectRatio,
+						},
+					})
+				} else {
+					_, bifrostErr = provider.ImageEdit(ctx, key, &schemas.BifrostImageEditRequest{
+						Provider: schemas.Gemini,
+						Model:    "gemini-2.5-flash-image",
+						Input: &schemas.ImageEditInput{
+							Prompt: "make it pop",
+							Images: []schemas.ImageInput{{Image: imageTestPNG(t)}},
+						},
+						Params: &schemas.ImageEditParameters{
+							OutputFormat: schemas.Ptr("jpeg"), OutputCompression: schemas.Ptr(60), AspectRatio: tc.aspectRatio,
+						},
+					})
+				}
+				require.Nil(t, bifrostErr)
+				require.NotEmpty(t, captured)
+				assert.False(t, gjson.GetBytes(captured, "generationConfig.imageConfig.imageOutputOptions").Exists(), "body %s", captured)
+				assert.Equal(t, tc.wantConfig, gjson.GetBytes(captured, "generationConfig.imageConfig").Exists(), "body %s", captured)
+				if tc.wantConfig {
+					assert.Equal(t, "3:2", gjson.GetBytes(captured, "generationConfig.imageConfig.aspectRatio").String(), "body %s", captured)
+				}
+			})
+		}
+	}
+}
+
+// A GenAI-ingress request's imageConfig.imageOutputOptions must survive into Bifrost params so it
+// reaches Vertex (or another provider's output_format) instead of being dropped.
+func TestGeminiImageRequests_GenAIImageOutputOptionsMapToBifrostParams(t *testing.T) {
+	quality := 70
+	geminiReq := &GeminiGenerationRequest{
+		Model:    "vertex/gemini-2.5-flash-image",
+		Contents: []Content{{Role: "user", Parts: []*Part{{Text: "a red apple"}}}},
+		GenerationConfig: GenerationConfig{
+			ResponseModalities: []Modality{ModalityImage},
+			ImageConfig: &GeminiImageConfig{
+				ImageOutputOptions: &GeminiImageOutputOptions{MimeType: "image/jpeg", CompressionQuality: &quality},
+			},
+		},
+	}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	genReq := geminiReq.ToBifrostImageGenerationRequest(ctx)
+	require.NotNil(t, genReq)
+	require.NotNil(t, genReq.Params.OutputFormat)
+	assert.Equal(t, "jpeg", *genReq.Params.OutputFormat)
+	require.NotNil(t, genReq.Params.OutputCompression)
+	assert.Equal(t, 70, *genReq.Params.OutputCompression)
+
+	editReq := geminiReq.ToBifrostImageEditRequest(ctx)
+	require.NotNil(t, editReq)
+	require.NotNil(t, editReq.Params.OutputFormat)
+	assert.Equal(t, "jpeg", *editReq.Params.OutputFormat)
+	require.NotNil(t, editReq.Params.OutputCompression)
+	assert.Equal(t, 70, *editReq.Params.OutputCompression)
+
+	// Round trip: the Bifrost params rebuild the same Vertex wire block.
+	body := geminiImageWireBody(t, ToGeminiImageGenerationRequest(genReq))
+	assert.Equal(t, "image/jpeg", gjson.GetBytes(body, geminiImageMimeTypePath).String(), "body %s", body)
+	assert.Equal(t, int64(70), gjson.GetBytes(body, "generationConfig.imageConfig.imageOutputOptions.compressionQuality").Int(), "body %s", body)
 }
 
 func geminiImageWireBody(t *testing.T, geminiReq *GeminiGenerationRequest) []byte {

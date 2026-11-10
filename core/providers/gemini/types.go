@@ -1379,10 +1379,10 @@ type GeminiImageConfig struct {
 	ImageOutputOptions *GeminiImageOutputOptions `json:"imageOutputOptions,omitempty"`
 }
 
-// GeminiImageOutputOptions controls the encoding of generated images.
+// GeminiImageOutputOptions controls the encoding of generated images (Vertex AI only).
 type GeminiImageOutputOptions struct {
-	// MimeType is the encoding of generated images: "image/png", "image/jpeg" or "image/webp".
-	MimeType string `json:"mimeType,omitempty"`
+	MimeType           string `json:"mimeType,omitempty"`           // "image/png" or "image/jpeg"
+	CompressionQuality *int   `json:"compressionQuality,omitempty"` // 0-100, JPEG only
 }
 
 // ModelSelectionConfig represents configuration for model selection.
