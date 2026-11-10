@@ -315418,6 +315418,515 @@
           ]
         }
       ]
+    },
+    {
+      "name": "328. Vertex Claude cache prefix keys serialized last (vertex cache key order) (#6406)",
+      "description": "Vertex's Anthropic prompt cache is sensitive to the raw top-level key order of the request body: when the growing `messages` array is serialized before the stable `tools`/`system` prefix, turn-to-turn cache reads miss on a per-request coin flip and usually read only a short stale prefix, re-billing the rest of the context (#6406). Before the fix, every Vertex Claude body Bifrost built put `messages` first: the typed path follows AnthropicMessageRequest's field declaration order and the raw path keeps the client's order (Claude Code sends messages first). The fix (moveCachePrefixKeysLast in core/providers/anthropic/requestbuilder.go, gated by the Vertex-only CachePrefixKeysLast default) re-emits tools, system, messages as the last keys after every other body edit. Each route runs a two-turn pair on vertex/claude-sonnet-4-6 (not affected by the separate Vertex tools-bytes cache pathology the issue reports for Opus 5 / Fable 5) with a fresh per-run nonce in the system block, a tool, a system breakpoint and a rolling last-message breakpoint; turn 2 is turn 1 plus one appended exchange. Each case pins: (1) extra_fields.raw_request ends with tools, system, messages - deterministic, red before the fix; (2) turn 1 honors the breakpoints and turn 2 reads at least everything turn 1 cached - the live cost signature from the issue. Routes: native /anthropic/v1/messages (the Claude Code route), /v1/chat/completions and /v1/responses (neutral shapes converted by the typed builder path). Turns of a pair must run in the same newman process and in order.",
+      "item": [
+        {
+          "name": "vertex claude-sonnet-4-6 /anthropic/v1/messages cache prefix keys last, turn 1 writes the prefix - #6406",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('vertexKeyOrderNonce_native', Date.now().toString(36) + Math.random().toString(36).slice(2, 8));",
+                  "pm.collectionVariables.unset('vertexKeyOrderTurn1_native');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('/anthropic/v1/messages turn 1 returns 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var body = pm.response.json();",
+                  "function cacheUsage(b) {",
+                  "  var u = (b && b.usage) || {};",
+                  "  return { read: u.cache_read_input_tokens || 0, write: u.cache_creation_input_tokens || 0, raw: u };",
+                  "}",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + pm.response.text().slice(0, 300)).to.be.an('object');",
+                  "});",
+                  "if (rr && typeof rr === 'object') {",
+                  "  var keys = Object.keys(rr);",
+                  "  pm.test('Vertex body ends with tools, system, messages (stable cache prefix before the growing messages)', function () {",
+                  "    pm.expect(keys.slice(-3), 'top-level key order sent to Vertex: ' + JSON.stringify(keys)).to.eql(['tools', 'system', 'messages']);",
+                  "  });",
+                  "}",
+                  "var usage = cacheUsage(body);",
+                  "pm.test('turn 1 honors the cache breakpoints', function () {",
+                  "  pm.expect(usage.read + usage.write, 'usage=' + JSON.stringify(usage.raw)).to.be.above(0);",
+                  "});",
+                  "pm.collectionVariables.set('vertexKeyOrderTurn1_native', JSON.stringify({ read: usage.read, write: usage.write }));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/claude-sonnet-4-6\",\n  \"max_tokens\": 16,\n  \"tools\": [\n    {\n      \"name\": \"get_weather\",\n      \"description\": \"Look up the current weather for a city.\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"city\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"city\"\n        ]\n      }\n    }\n  ],\n  \"system\": [\n    {\n      \"type\": \"text\",\n      \"text\": \"[bf-328 {{{{vertexKeyOrderNonce_native}}}}] You are a terse assistant. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates.\",\n      \"cache_control\": {\n        \"type\": \"ephemeral\"\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"First question: reply with the single word OK.\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        }\n      ]\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "vertex claude-sonnet-4-6 /anthropic/v1/messages cache prefix keys last, turn 2 reads the whole turn-1 prefix - #6406",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get('vertexKeyOrderNonce_native')) { pm.collectionVariables.set('vertexKeyOrderNonce_native', 'cold-' + Date.now().toString(36)); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var turn1 = JSON.parse(pm.collectionVariables.get('vertexKeyOrderTurn1_native') || 'null');",
+                  "pm.test('turn 1 ran first in this newman process', function () {",
+                  "  pm.expect(turn1, 'turn 1 recorded no usage - it was filtered out, failed, or ran in another newman process, so this read started cold').to.not.equal(null);",
+                  "});",
+                  "pm.test('/anthropic/v1/messages turn 2 returns 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var body = pm.response.json();",
+                  "function cacheUsage(b) {",
+                  "  var u = (b && b.usage) || {};",
+                  "  return { read: u.cache_read_input_tokens || 0, write: u.cache_creation_input_tokens || 0, raw: u };",
+                  "}",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + pm.response.text().slice(0, 300)).to.be.an('object');",
+                  "});",
+                  "if (rr && typeof rr === 'object') {",
+                  "  var keys = Object.keys(rr);",
+                  "  pm.test('Vertex body ends with tools, system, messages (stable cache prefix before the growing messages)', function () {",
+                  "    pm.expect(keys.slice(-3), 'top-level key order sent to Vertex: ' + JSON.stringify(keys)).to.eql(['tools', 'system', 'messages']);",
+                  "  });",
+                  "}",
+                  "var usage = cacheUsage(body);",
+                  "if (turn1) {",
+                  "  var cachedByTurn1 = turn1.read + turn1.write;",
+                  "  pm.test('turn 2 reads the whole prefix turn 1 cached (no partial stale-prefix read)', function () {",
+                  "    pm.expect(usage.read, 'turn 1 cached ' + cachedByTurn1 + ' tokens; turn 2 usage=' + JSON.stringify(usage.raw)).to.be.at.least(cachedByTurn1);",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/claude-sonnet-4-6\",\n  \"max_tokens\": 16,\n  \"tools\": [\n    {\n      \"name\": \"get_weather\",\n      \"description\": \"Look up the current weather for a city.\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"city\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"city\"\n        ]\n      }\n    }\n  ],\n  \"system\": [\n    {\n      \"type\": \"text\",\n      \"text\": \"[bf-328 {{{{vertexKeyOrderNonce_native}}}}] You are a terse assistant. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates.\",\n      \"cache_control\": {\n        \"type\": \"ephemeral\"\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"First question: reply with the single word OK.\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": \"OK\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"Second question: reply with the single word DONE.\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        }\n      ]\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "vertex claude-sonnet-4-6 /v1/chat/completions cache prefix keys last, turn 1 writes the prefix - #6406",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('vertexKeyOrderNonce_chat', Date.now().toString(36) + Math.random().toString(36).slice(2, 8));",
+                  "pm.collectionVariables.unset('vertexKeyOrderTurn1_chat');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('/v1/chat/completions turn 1 returns 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var body = pm.response.json();",
+                  "function cacheUsage(b) {",
+                  "  var u = (b && b.usage) || {};",
+                  "  var d = u.prompt_tokens_details || {};",
+                  "  return { read: Math.max(d.cached_read_tokens || 0, d.cached_tokens || 0), write: Math.max(d.cached_write_tokens || 0, d.cache_write_tokens || 0), raw: u };",
+                  "}",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + pm.response.text().slice(0, 300)).to.be.an('object');",
+                  "});",
+                  "if (rr && typeof rr === 'object') {",
+                  "  var keys = Object.keys(rr);",
+                  "  pm.test('Vertex body ends with tools, system, messages (stable cache prefix before the growing messages)', function () {",
+                  "    pm.expect(keys.slice(-3), 'top-level key order sent to Vertex: ' + JSON.stringify(keys)).to.eql(['tools', 'system', 'messages']);",
+                  "  });",
+                  "}",
+                  "var usage = cacheUsage(body);",
+                  "pm.test('turn 1 honors the cache breakpoints', function () {",
+                  "  pm.expect(usage.read + usage.write, 'usage=' + JSON.stringify(usage.raw)).to.be.above(0);",
+                  "});",
+                  "pm.collectionVariables.set('vertexKeyOrderTurn1_chat', JSON.stringify({ read: usage.read, write: usage.write }));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/claude-sonnet-4-6\",\n  \"max_tokens\": 16,\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"get_weather\",\n        \"description\": \"Look up the current weather for a city.\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"city\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"city\"\n          ]\n        }\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"[bf-328 {{{{vertexKeyOrderNonce_chat}}}}] You are a terse assistant. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates.\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"First question: reply with the single word OK.\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        }\n      ]\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "vertex claude-sonnet-4-6 /v1/chat/completions cache prefix keys last, turn 2 reads the whole turn-1 prefix - #6406",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get('vertexKeyOrderNonce_chat')) { pm.collectionVariables.set('vertexKeyOrderNonce_chat', 'cold-' + Date.now().toString(36)); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var turn1 = JSON.parse(pm.collectionVariables.get('vertexKeyOrderTurn1_chat') || 'null');",
+                  "pm.test('turn 1 ran first in this newman process', function () {",
+                  "  pm.expect(turn1, 'turn 1 recorded no usage - it was filtered out, failed, or ran in another newman process, so this read started cold').to.not.equal(null);",
+                  "});",
+                  "pm.test('/v1/chat/completions turn 2 returns 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var body = pm.response.json();",
+                  "function cacheUsage(b) {",
+                  "  var u = (b && b.usage) || {};",
+                  "  var d = u.prompt_tokens_details || {};",
+                  "  return { read: Math.max(d.cached_read_tokens || 0, d.cached_tokens || 0), write: Math.max(d.cached_write_tokens || 0, d.cache_write_tokens || 0), raw: u };",
+                  "}",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + pm.response.text().slice(0, 300)).to.be.an('object');",
+                  "});",
+                  "if (rr && typeof rr === 'object') {",
+                  "  var keys = Object.keys(rr);",
+                  "  pm.test('Vertex body ends with tools, system, messages (stable cache prefix before the growing messages)', function () {",
+                  "    pm.expect(keys.slice(-3), 'top-level key order sent to Vertex: ' + JSON.stringify(keys)).to.eql(['tools', 'system', 'messages']);",
+                  "  });",
+                  "}",
+                  "var usage = cacheUsage(body);",
+                  "if (turn1) {",
+                  "  var cachedByTurn1 = turn1.read + turn1.write;",
+                  "  pm.test('turn 2 reads the whole prefix turn 1 cached (no partial stale-prefix read)', function () {",
+                  "    pm.expect(usage.read, 'turn 1 cached ' + cachedByTurn1 + ' tokens; turn 2 usage=' + JSON.stringify(usage.raw)).to.be.at.least(cachedByTurn1);",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/claude-sonnet-4-6\",\n  \"max_tokens\": 16,\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"get_weather\",\n        \"description\": \"Look up the current weather for a city.\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"city\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"city\"\n          ]\n        }\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"[bf-328 {{{{vertexKeyOrderNonce_chat}}}}] You are a terse assistant. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates.\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"First question: reply with the single word OK.\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": \"OK\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"Second question: reply with the single word DONE.\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        }\n      ]\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "vertex claude-sonnet-4-6 /v1/responses cache prefix keys last, turn 1 writes the prefix - #6406",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('vertexKeyOrderNonce_responses', Date.now().toString(36) + Math.random().toString(36).slice(2, 8));",
+                  "pm.collectionVariables.unset('vertexKeyOrderTurn1_responses');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('/v1/responses turn 1 returns 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var body = pm.response.json();",
+                  "function cacheUsage(b) {",
+                  "  var u = (b && b.usage) || {};",
+                  "  var d = u.input_tokens_details || {};",
+                  "  return { read: Math.max(d.cached_read_tokens || 0, d.cached_tokens || 0), write: Math.max(d.cached_write_tokens || 0, d.cache_write_tokens || 0), raw: u };",
+                  "}",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + pm.response.text().slice(0, 300)).to.be.an('object');",
+                  "});",
+                  "if (rr && typeof rr === 'object') {",
+                  "  var keys = Object.keys(rr);",
+                  "  pm.test('Vertex body ends with tools, system, messages (stable cache prefix before the growing messages)', function () {",
+                  "    pm.expect(keys.slice(-3), 'top-level key order sent to Vertex: ' + JSON.stringify(keys)).to.eql(['tools', 'system', 'messages']);",
+                  "  });",
+                  "}",
+                  "var usage = cacheUsage(body);",
+                  "pm.test('turn 1 honors the cache breakpoints', function () {",
+                  "  pm.expect(usage.read + usage.write, 'usage=' + JSON.stringify(usage.raw)).to.be.above(0);",
+                  "});",
+                  "pm.collectionVariables.set('vertexKeyOrderTurn1_responses', JSON.stringify({ read: usage.read, write: usage.write }));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/claude-sonnet-4-6\",\n  \"max_output_tokens\": 16,\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"get_weather\",\n      \"description\": \"Look up the current weather for a city.\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"city\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"city\"\n        ]\n      }\n    }\n  ],\n  \"input\": [\n    {\n      \"role\": \"system\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"[bf-328 {{{{vertexKeyOrderNonce_responses}}}}] You are a terse assistant. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates.\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"First question: reply with the single word OK.\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        }\n      ]\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "vertex claude-sonnet-4-6 /v1/responses cache prefix keys last, turn 2 reads the whole turn-1 prefix - #6406",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get('vertexKeyOrderNonce_responses')) { pm.collectionVariables.set('vertexKeyOrderNonce_responses', 'cold-' + Date.now().toString(36)); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var turn1 = JSON.parse(pm.collectionVariables.get('vertexKeyOrderTurn1_responses') || 'null');",
+                  "pm.test('turn 1 ran first in this newman process', function () {",
+                  "  pm.expect(turn1, 'turn 1 recorded no usage - it was filtered out, failed, or ran in another newman process, so this read started cold').to.not.equal(null);",
+                  "});",
+                  "pm.test('/v1/responses turn 2 returns 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var body = pm.response.json();",
+                  "function cacheUsage(b) {",
+                  "  var u = (b && b.usage) || {};",
+                  "  var d = u.input_tokens_details || {};",
+                  "  return { read: Math.max(d.cached_read_tokens || 0, d.cached_tokens || 0), write: Math.max(d.cached_write_tokens || 0, d.cache_write_tokens || 0), raw: u };",
+                  "}",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + pm.response.text().slice(0, 300)).to.be.an('object');",
+                  "});",
+                  "if (rr && typeof rr === 'object') {",
+                  "  var keys = Object.keys(rr);",
+                  "  pm.test('Vertex body ends with tools, system, messages (stable cache prefix before the growing messages)', function () {",
+                  "    pm.expect(keys.slice(-3), 'top-level key order sent to Vertex: ' + JSON.stringify(keys)).to.eql(['tools', 'system', 'messages']);",
+                  "  });",
+                  "}",
+                  "var usage = cacheUsage(body);",
+                  "if (turn1) {",
+                  "  var cachedByTurn1 = turn1.read + turn1.write;",
+                  "  pm.test('turn 2 reads the whole prefix turn 1 cached (no partial stale-prefix read)', function () {",
+                  "    pm.expect(usage.read, 'turn 1 cached ' + cachedByTurn1 + ' tokens; turn 2 usage=' + JSON.stringify(usage.raw)).to.be.at.least(cachedByTurn1);",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/claude-sonnet-4-6\",\n  \"max_output_tokens\": 16,\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"get_weather\",\n      \"description\": \"Look up the current weather for a city.\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"city\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"city\"\n        ]\n      }\n    }\n  ],\n  \"input\": [\n    {\n      \"role\": \"system\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"[bf-328 {{{{vertexKeyOrderNonce_responses}}}}] You are a terse assistant. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates.\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"First question: reply with the single word OK.\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": \"OK\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Second question: reply with the single word DONE.\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        }\n      ]\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
