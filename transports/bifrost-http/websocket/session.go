@@ -42,6 +42,8 @@ type Session struct {
 
 	// realtimeOutputText accumulates assistant/provider turn text until the terminal event.
 	realtimeOutputText string
+	// realtimeInterimUsage totals the generations of the current turn that did not end it.
+	realtimeInterimUsage *schemas.BifrostLLMUsage
 
 	// realtimeTurnInputs accumulates finalized user/tool inputs in arrival order so the
 	// completed assistant turn can persist the full turn history instead of only the
@@ -62,6 +64,9 @@ type Session struct {
 	// response.create and response.done.
 	realtimeTurnHooks *RealtimeTurnPluginState
 	realtimeTurnBusy  bool
+
+	realtimeTranslator   schemas.RealtimeTranslator // nil when the provider's frames map event by event
+	realtimeTranslatorMu sync.Mutex                 // orders translation and the provider writes it produces
 
 	closed bool
 }
@@ -262,6 +267,31 @@ func (s *Session) RealtimeVoiceType() string {
 	return s.realtimeVoiceType
 }
 
+// SetRealtimeTranslator pins the provider's translator to this session. Call it before the relays start.
+func (s *Session) SetRealtimeTranslator(translator schemas.RealtimeTranslator) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.realtimeTranslator = translator
+}
+
+// RealtimeTranslator returns the session's translator, or nil when the provider's frames map event by event.
+func (s *Session) RealtimeTranslator() schemas.RealtimeTranslator {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.realtimeTranslator
+}
+
+// LockRealtimeTranslator starts one translation step. Hold it from the translate call until the frames
+// it produced for the provider are written, so both relay directions keep the translator's frame order.
+func (s *Session) LockRealtimeTranslator() {
+	s.realtimeTranslatorMu.Lock()
+}
+
+// UnlockRealtimeTranslator ends the step started by LockRealtimeTranslator.
+func (s *Session) UnlockRealtimeTranslator() {
+	s.realtimeTranslatorMu.Unlock()
+}
+
 // AppendRealtimeOutputText appends provider output content for the current realtime turn.
 func (s *Session) AppendRealtimeOutputText(text string) {
 	if text == "" {
@@ -273,6 +303,32 @@ func (s *Session) AppendRealtimeOutputText(text string) {
 		return
 	}
 	s.realtimeOutputText += text
+}
+
+// AddRealtimeInterimUsage adds the usage of a generation that did not end the turn.
+func (s *Session) AddRealtimeInterimUsage(usage *schemas.BifrostLLMUsage) {
+	if usage == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return
+	}
+	if s.realtimeInterimUsage == nil {
+		s.realtimeInterimUsage = usage.DeepCopy()
+		return
+	}
+	s.realtimeInterimUsage.AddTokenCounts(usage)
+}
+
+// ConsumeRealtimeInterimUsage returns the usage added since the last turn ended and clears it.
+func (s *Session) ConsumeRealtimeInterimUsage() *schemas.BifrostLLMUsage {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	usage := s.realtimeInterimUsage
+	s.realtimeInterimUsage = nil
+	return usage
 }
 
 // ConsumeRealtimeOutputText returns the accumulated provider output and clears it.
@@ -470,6 +526,7 @@ func (s *Session) Close() {
 	s.realtimeVoice = ""
 	s.realtimeVoiceType = ""
 	s.realtimeOutputText = ""
+	s.realtimeInterimUsage = nil
 
 	if s.clientConn != nil {
 		_ = s.clientConn.Close()

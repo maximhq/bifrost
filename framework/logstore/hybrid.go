@@ -996,6 +996,11 @@ func (h *HybridLogStore) DeleteLogsBatch(ctx context.Context, cutoff time.Time, 
 	return h.inner.DeleteLogsBatch(ctx, cutoff, batchSize)
 }
 
+// RetentionInterval forwards to the inner store.
+func (h *HybridLogStore) RetentionInterval() time.Duration {
+	return h.inner.RetentionInterval()
+}
+
 // DeleteMCPToolLogsBatch deletes old MCP tool log rows in batches. Like
 // DeleteLogsBatch, object-store entries are left to the bucket lifecycle policy.
 func (h *HybridLogStore) DeleteMCPToolLogsBatch(ctx context.Context, cutoff time.Time, batchSize int) (int64, error) {
@@ -1691,6 +1696,11 @@ func (h *HybridLogStore) GetDistinctMetadataKeys(ctx context.Context, limit int,
 // count histogram bucketed by bucketSizeSeconds.
 func (h *HybridLogStore) GetMCPHistogram(ctx context.Context, filters MCPToolLogSearchFilters, bucketSizeSeconds int64) (*MCPHistogramResult, error) {
 	return h.inner.GetMCPHistogram(ctx, filters, bucketSizeSeconds)
+}
+
+// GetMCPLatencyHistogram delegates to the inner store.
+func (h *HybridLogStore) GetMCPLatencyHistogram(ctx context.Context, filters MCPToolLogSearchFilters, bucketSizeSeconds int64) (*LatencyHistogramResult, error) {
+	return h.inner.GetMCPLatencyHistogram(ctx, filters, bucketSizeSeconds)
 }
 
 // GetMCPCostHistogram returns the cost histogram for MCP tool logs.
@@ -2445,6 +2455,11 @@ func (h *HybridLogStore) GetAvailableServerLabels(ctx context.Context, limit int
 // GetAvailableMCPVirtualKeys returns a list of MCP tool log virtual keys that match the given query.
 func (h *HybridLogStore) GetAvailableMCPVirtualKeys(ctx context.Context, limit int, query string) ([]MCPToolLog, error) {
 	return h.inner.GetAvailableMCPVirtualKeys(ctx, limit, query)
+}
+
+// GetDistinctMCPKeyPairs delegates to the inner store.
+func (h *HybridLogStore) GetDistinctMCPKeyPairs(ctx context.Context, idCol, nameCol string, limit int, query string) ([]KeyPairResult, error) {
+	return h.inner.GetDistinctMCPKeyPairs(ctx, idCol, nameCol, limit, query)
 }
 
 // Async Job methods — delegated directly.

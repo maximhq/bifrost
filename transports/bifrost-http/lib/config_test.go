@@ -1617,6 +1617,24 @@ func (m *MockConfigStore) DeletePricingOverride(ctx context.Context, id string, 
 	return nil
 }
 
+// Datasheet overrides
+
+func (m *MockConfigStore) GetDatasheetOverrides(ctx context.Context) ([]tables.TableDatasheetOverride, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) GetDatasheetOverrideByID(ctx context.Context, id string) (*tables.TableDatasheetOverride, error) {
+	return nil, configstore.ErrNotFound
+}
+
+func (m *MockConfigStore) UpsertDatasheetOverride(ctx context.Context, override *tables.TableDatasheetOverride, tx ...*gorm.DB) error {
+	return nil
+}
+
+func (m *MockConfigStore) DeleteDatasheetOverride(ctx context.Context, id string, tx ...*gorm.DB) error {
+	return nil
+}
+
 // Model parameters
 
 func (m *MockConfigStore) GetModelParameters(ctx context.Context) ([]tables.TableModelParameters, error) {
@@ -19913,6 +19931,7 @@ func getSchemaTypeMappings() []schemaTypeMapping {
 
 		// Webhooks config
 		{"webhooks", reflect.TypeOf(WebhookEndpointConfig{}), true},
+		{"datasheet_overrides", reflect.TypeOf(DatasheetOverrideFileConfig{}), true},
 		{"client.webhook_config", reflect.TypeOf(tables.WebhookConfig{}), false},
 
 		// Governance config
@@ -24812,6 +24831,245 @@ func TestResolveGovernanceKeyReferences_RoutingFallbacks(t *testing.T) {
 	})
 }
 
+// configRoutingRule builds a config.json routing rule with one target. Every call returns fresh
+// slices, so a rule reused across simulated boots never shares state the merge wrote into.
+func configRoutingRule(id, name string, priority int, model string) tables.TableRoutingRule {
+	return tables.TableRoutingRule{
+		ID:            id,
+		Name:          name,
+		CelExpression: "true",
+		Scope:         "global",
+		Priority:      priority,
+		Targets:       []tables.TableRoutingTarget{{Provider: schemas.Ptr("openai"), Model: schemas.Ptr(model), Weight: 1}},
+	}
+}
+
+// bootRoutingRules runs the startup governance merge, as loadGovernanceConfig does, for a
+// config.json that declares only the given routing rules, and returns the stored rules by ID.
+func bootRoutingRules(t *testing.T, store configstore.ConfigStore, sourceOfTruth string, rules ...tables.TableRoutingRule) map[string]tables.TableRoutingRule {
+	t.Helper()
+	ctx := context.Background()
+	governanceConfig, err := store.GetGovernanceConfig(ctx)
+	require.NoError(t, err)
+	if governanceConfig == nil {
+		governanceConfig = &configstore.GovernanceConfig{}
+	}
+	config := &Config{ConfigStore: store, GovernanceConfig: governanceConfig}
+	configData := &ConfigData{
+		SourceOfTruth: sourceOfTruth,
+		Governance:    &configstore.GovernanceConfig{RoutingRules: append([]tables.TableRoutingRule{}, rules...)},
+	}
+	mergeGovernanceConfig(ctx, config, configData, governanceConfig)
+	return storedRoutingRules(t, store)
+}
+
+func storedRoutingRules(t *testing.T, store configstore.ConfigStore) map[string]tables.TableRoutingRule {
+	t.Helper()
+	stored, err := store.GetRoutingRules(context.Background())
+	require.NoError(t, err)
+	byID := make(map[string]tables.TableRoutingRule, len(stored))
+	for _, rule := range stored {
+		byID[rule.ID] = rule
+	}
+	return byID
+}
+
+func storedRoutingRuleByName(t *testing.T, rules map[string]tables.TableRoutingRule, name string) tables.TableRoutingRule {
+	t.Helper()
+	var found []tables.TableRoutingRule
+	for _, rule := range rules {
+		if rule.Name == name {
+			found = append(found, rule)
+		}
+	}
+	require.Len(t, found, 1, "expected exactly one stored rule named %q", name)
+	return found[0]
+}
+
+func routingRuleModel(rule tables.TableRoutingRule) string {
+	if len(rule.Targets) == 0 || rule.Targets[0].Model == nil {
+		return ""
+	}
+	return *rule.Targets[0].Model
+}
+
+// Changing a rule's id in split mode leaves the old row in place at the same priority. That
+// used to fail the whole governance sync (and stop startup with "routing rule with priority 7
+// already exists for scope 'global'"); now only the conflicting rule is skipped.
+func TestMergeGovernanceConfig_RoutingRuleIDChangeSkipsPriorityConflict(t *testing.T) {
+	initTestLogger()
+	store := createTestSQLiteConfigStore(t, t.TempDir())
+
+	bootRoutingRules(t, store, "", configRoutingRule("rule-a", "primary", 7, "gpt-4o"))
+
+	rules := bootRoutingRules(t, store, "",
+		configRoutingRule("rule-b", "primary-renamed", 7, "gpt-4.1"),
+		configRoutingRule("rule-c", "secondary", 8, "gpt-4o-mini"),
+	)
+
+	require.Contains(t, rules, "rule-a", "the stored rule keeps its priority")
+	assert.Equal(t, "gpt-4o", routingRuleModel(rules["rule-a"]))
+	assert.NotContains(t, rules, "rule-b", "the rule whose priority is taken is skipped")
+	require.Contains(t, rules, "rule-c", "the rest of the sync still applies")
+	assert.Len(t, rules, 2)
+}
+
+// A rule without an id is inserted once and then matched by name on every later boot: same
+// ID, same config hash, no rewrite. Editing it updates the row in place.
+func TestMergeGovernanceConfig_IDLessRoutingRuleIsStableAcrossBoots(t *testing.T) {
+	initTestLogger()
+	store := createTestSQLiteConfigStore(t, t.TempDir())
+
+	rules := bootRoutingRules(t, store, "", configRoutingRule("", "primary", 7, "gpt-4o"))
+	first := storedRoutingRuleByName(t, rules, "primary")
+	require.NotEmpty(t, first.ID, "a rule without an id gets one")
+	wantHash, err := configstore.GenerateRoutingRuleHash(configRoutingRule("", "primary", 7, "gpt-4o"))
+	require.NoError(t, err)
+	assert.Equal(t, wantHash, first.ConfigHash, "the hash is taken over the rule as written, without the generated ID")
+
+	rules = bootRoutingRules(t, store, "", configRoutingRule("", "primary", 7, "gpt-4o"))
+	require.Len(t, rules, 1)
+	second := rules[first.ID]
+	assert.Equal(t, first.ConfigHash, second.ConfigHash)
+	assert.True(t, first.UpdatedAt.Equal(second.UpdatedAt), "an unchanged rule is not rewritten")
+
+	rules = bootRoutingRules(t, store, "", configRoutingRule("", "primary", 7, "gpt-4.1"))
+	require.Len(t, rules, 1, "editing a rule without an id must not add a second row")
+	assert.Equal(t, "gpt-4.1", routingRuleModel(rules[first.ID]))
+}
+
+// The match key is (name, scope, scope_id): the same name in another scope is another rule, and
+// a rule created outside config.json is adopted when the key matches.
+func TestMergeGovernanceConfig_IDLessRoutingRuleMatchesByNameAndScope(t *testing.T) {
+	initTestLogger()
+	ctx := context.Background()
+	store := createTestSQLiteConfigStore(t, t.TempDir())
+	require.NoError(t, store.CreateTeam(ctx, &tables.TableTeam{ID: "team-1", Name: "Team 1"}))
+
+	teamRule := configRoutingRule("ui-team-rule", "shared", 1, "gpt-4o")
+	teamRule.Scope = "team"
+	teamRule.ScopeID = schemas.Ptr("team-1")
+	require.NoError(t, store.SyncRoutingRules(ctx, []tables.TableRoutingRule{
+		configRoutingRule("ui-global-rule", "shared", 1, "gpt-4o"),
+		teamRule,
+	}, nil))
+
+	fileTeamRule := configRoutingRule("", "shared", 1, "gpt-4.1")
+	fileTeamRule.Scope = "team"
+	fileTeamRule.ScopeID = schemas.Ptr("team-1")
+	rules := bootRoutingRules(t, store, "", fileTeamRule)
+
+	require.Len(t, rules, 2)
+	assert.Equal(t, "gpt-4.1", routingRuleModel(rules["ui-team-rule"]), "the team rule with the same name is updated")
+	assert.Equal(t, "gpt-4o", routingRuleModel(rules["ui-global-rule"]), "the global rule with the same name is untouched")
+}
+
+// A rule without an id is skipped when its name does not identify one rule: two stored global
+// rules share it (NULL scope_id is not covered by the unique index), or the file repeats it.
+func TestMergeGovernanceConfig_IDLessRoutingRuleSkippedWhenNameIsAmbiguous(t *testing.T) {
+	initTestLogger()
+	ctx := context.Background()
+	store := createTestSQLiteConfigStore(t, t.TempDir())
+	require.NoError(t, store.SyncRoutingRules(ctx, []tables.TableRoutingRule{
+		configRoutingRule("dup-1", "dup", 1, "gpt-4o"),
+		configRoutingRule("dup-2", "dup", 2, "gpt-4o"),
+	}, nil))
+
+	rules := bootRoutingRules(t, store, "",
+		configRoutingRule("", "dup", 3, "gpt-4.1"),
+		configRoutingRule("", "repeated", 4, "gpt-4o"),
+		configRoutingRule("", "repeated", 5, "gpt-4.1"),
+	)
+
+	require.Len(t, rules, 3)
+	assert.Equal(t, "gpt-4o", routingRuleModel(rules["dup-1"]))
+	assert.Equal(t, "gpt-4o", routingRuleModel(rules["dup-2"]))
+	repeated := storedRoutingRuleByName(t, rules, "repeated")
+	assert.Equal(t, 4, repeated.Priority, "the first declaration of a repeated name wins")
+}
+
+// Priority conflicts among the rules config.json writes: the first declared wins. Rules that
+// swap priorities do not conflict, because the check runs on the state after the sync.
+func TestMergeGovernanceConfig_RoutingRulePriorityConflictsWithinFile(t *testing.T) {
+	initTestLogger()
+
+	t.Run("same priority keeps the first rule", func(t *testing.T) {
+		store := createTestSQLiteConfigStore(t, t.TempDir())
+		rules := bootRoutingRules(t, store, "",
+			configRoutingRule("first", "first", 1, "gpt-4o"),
+			configRoutingRule("second", "second", 1, "gpt-4o"),
+		)
+		require.Len(t, rules, 1)
+		assert.Contains(t, rules, "first")
+	})
+
+	t.Run("swapped priorities both apply", func(t *testing.T) {
+		store := createTestSQLiteConfigStore(t, t.TempDir())
+		bootRoutingRules(t, store, "",
+			configRoutingRule("x", "x", 1, "gpt-4o"),
+			configRoutingRule("y", "y", 2, "gpt-4o"),
+		)
+		rules := bootRoutingRules(t, store, "",
+			configRoutingRule("x", "x", 2, "gpt-4o"),
+			configRoutingRule("y", "y", 1, "gpt-4o"),
+		)
+		assert.Equal(t, 2, rules["x"].Priority)
+		assert.Equal(t, 1, rules["y"].Priority)
+	})
+
+	t.Run("skipped update keeps the stored version", func(t *testing.T) {
+		store := createTestSQLiteConfigStore(t, t.TempDir())
+		bootRoutingRules(t, store, "", configRoutingRule("x", "x", 1, "gpt-4o"))
+		require.NoError(t, store.SyncRoutingRules(context.Background(), []tables.TableRoutingRule{
+			configRoutingRule("ui-rule", "ui", 2, "gpt-4o"),
+		}, nil))
+		rules := bootRoutingRules(t, store, "", configRoutingRule("x", "x", 2, "gpt-4.1"))
+		require.Len(t, rules, 2)
+		assert.Equal(t, 1, rules["x"].Priority)
+		assert.Equal(t, "gpt-4o", routingRuleModel(rules["x"]))
+	})
+}
+
+// With source_of_truth=config.json the rule with the old id is pruned in the same transaction,
+// so changing an id needs no skip, and a rule without an id is never pruned as undeclared.
+func TestMergeGovernanceConfig_ConfigJSONModeRoutingRuleIDs(t *testing.T) {
+	initTestLogger()
+	store := createTestSQLiteConfigStore(t, t.TempDir())
+
+	bootRoutingRules(t, store, SourceOfTruthConfigJSON, configRoutingRule("rule-a", "primary", 7, "gpt-4o"))
+	rules := bootRoutingRules(t, store, SourceOfTruthConfigJSON, configRoutingRule("rule-b", "primary", 7, "gpt-4.1"))
+	require.Len(t, rules, 1)
+	assert.Contains(t, rules, "rule-b")
+
+	rules = bootRoutingRules(t, store, SourceOfTruthConfigJSON, configRoutingRule("", "primary", 7, "gpt-4.1"))
+	require.Len(t, rules, 1)
+	assert.Contains(t, rules, "rule-b", "a rule without an id adopts the stored rule with its name")
+
+	rules = bootRoutingRules(t, store, SourceOfTruthConfigJSON, configRoutingRule("", "primary", 7, "gpt-4.1"))
+	require.Len(t, rules, 1)
+	assert.Contains(t, rules, "rule-b")
+}
+
+// A row an earlier release stored with an empty primary key (a rule without an id, before ids
+// were resolved) is matched by name and, since its hash still matches, left alone.
+func TestMergeGovernanceConfig_LegacyEmptyIDRoutingRuleIsUntouched(t *testing.T) {
+	initTestLogger()
+	store := createTestSQLiteConfigStore(t, t.TempDir())
+
+	legacy := configRoutingRule("", "primary", 7, "gpt-4o")
+	hash, err := configstore.GenerateRoutingRuleHash(legacy)
+	require.NoError(t, err)
+	legacy.ConfigHash = hash
+	require.NoError(t, store.SyncRoutingRules(context.Background(), []tables.TableRoutingRule{legacy}, nil))
+	before := storedRoutingRules(t, store)
+	require.Contains(t, before, "")
+
+	rules := bootRoutingRules(t, store, "", configRoutingRule("", "primary", 7, "gpt-4o"))
+	require.Len(t, rules, 1)
+	require.Contains(t, rules, "")
+	assert.True(t, before[""].UpdatedAt.Equal(rules[""].UpdatedAt), "the legacy row is not rewritten")
+}
+
 // Reconciliation writes carry metadata_json forward inside UpdateClientConfig's transaction, so UI
 // flags survive a restart that re-syncs the client section without any restore step afterwards.
 func TestLoadConfig_ClientConfigSyncPreservesClientMetadata(t *testing.T) {
@@ -26324,6 +26582,219 @@ func TestReconcileProviderKeys_LegacyAliasHashKeepsStoredEdits(t *testing.T) {
 	})
 }
 
+// TestMergeProviderWithHash_LegacyOverrideHashKeepsStoredKeys pins the upgrade path from the
+// unsorted request_path_overrides hash: a stored provider config_hash computed under any
+// override order still means "config.json unchanged", so keys added through the API survive
+// the first restart on the sorted encoding and the stored hash is rewritten to the sorted
+// form. A real file edit still syncs from the file.
+func TestMergeProviderWithHash_LegacyOverrideHashKeepsStoredKeys(t *testing.T) {
+	SetLogger(&testLogger{})
+	provider := schemas.ModelProvider("custom-openai")
+	fileKey := schemas.Key{ID: "file-key", Name: "file", Value: *schemas.NewSecretVar("sk"), Weight: 1}
+	build := func() configstore.ProviderConfig {
+		return configstore.ProviderConfig{
+			Keys: []schemas.Key{fileKey},
+			CustomProviderConfig: &schemas.CustomProviderConfig{
+				BaseProviderType: schemas.OpenAI,
+				RequestPathOverrides: map[schemas.RequestType]string{
+					schemas.ChatCompletionRequest: "/v1/chat",
+					schemas.EmbeddingRequest:      "/v1/embed",
+					schemas.TextCompletionRequest: "/v1/text",
+				},
+			},
+		}
+	}
+	stored := func(t *testing.T) configstore.ProviderConfig {
+		cfg := build()
+		legacy, err := cfg.LegacyOverrideOrderConfigHash(string(provider), []schemas.RequestType{
+			schemas.TextCompletionRequest, schemas.ChatCompletionRequest, schemas.EmbeddingRequest,
+		})
+		require.NoError(t, err)
+		fileKeyHash, err := configstore.GenerateKeyHash(fileKey)
+		require.NoError(t, err)
+		storedFileKey := fileKey
+		storedFileKey.ConfigHash = fileKeyHash
+		apiKey := schemas.Key{ID: "api-key", Name: "added-through-api", Value: *schemas.NewSecretVar("sk-api"), Weight: 1}
+		cfg.Keys = []schemas.Key{storedFileKey, apiKey}
+		cfg.ConfigHash = legacy
+		return cfg
+	}
+
+	t.Run("unchanged file keeps API-added keys", func(t *testing.T) {
+		fileCfg := build()
+		sorted, err := fileCfg.GenerateConfigHash(string(provider))
+		require.NoError(t, err)
+		fileCfg.ConfigHash = sorted
+		dbCfg := stored(t)
+		require.NotEqual(t, sorted, dbCfg.ConfigHash)
+
+		providers := map[schemas.ModelProvider]configstore.ProviderConfig{provider: dbCfg}
+		mergeProviderWithHash(provider, fileCfg, providers)
+		merged := providers[provider]
+		require.Equal(t, sorted, merged.ConfigHash, "the stored hash must be upgraded to the sorted form")
+		names := []string{}
+		for _, k := range merged.Keys {
+			names = append(names, k.Name)
+		}
+		require.ElementsMatch(t, []string{"file", "added-through-api"}, names, "the API-added key must survive the hash format change")
+	})
+
+	t.Run("edited file still syncs from the file", func(t *testing.T) {
+		fileCfg := build()
+		fileCfg.CustomProviderConfig.IsKeyLess = true
+		edited, err := fileCfg.GenerateConfigHash(string(provider))
+		require.NoError(t, err)
+		fileCfg.ConfigHash = edited
+
+		providers := map[schemas.ModelProvider]configstore.ProviderConfig{provider: stored(t)}
+		mergeProviderWithHash(provider, fileCfg, providers)
+		merged := providers[provider]
+		require.Equal(t, edited, merged.ConfigHash)
+		require.True(t, merged.CustomProviderConfig.IsKeyLess, "a changed config.json must still replace the stored provider")
+	})
+}
+
+// TestMergeProviderWithHash_UnverifiableLegacyOverrideHashKeepsAPIKeys covers a provider with
+// more request_path_overrides than the legacy hash search can enumerate. Its stored hash may
+// come from an older build, so a mismatch is not proof of a file edit: the file's provider
+// settings still apply, as they did on every boot before the hash was sorted, but keys added
+// through the API survive and the new hash is stored so later edits are detected normally.
+func TestMergeProviderWithHash_UnverifiableLegacyOverrideHashKeepsAPIKeys(t *testing.T) {
+	SetLogger(&testLogger{})
+	provider := schemas.ModelProvider("custom-openai")
+	requestTypes := []schemas.RequestType{
+		schemas.TextCompletionRequest, schemas.ChatCompletionRequest, schemas.EmbeddingRequest,
+		schemas.SpeechRequest, schemas.TranscriptionRequest, schemas.ImageGenerationRequest,
+		schemas.RerankRequest, schemas.ResponsesRequest, schemas.CountTokensRequest,
+	}
+	fileKey := schemas.Key{ID: "file-key", Name: "file", Value: *schemas.NewSecretVar("sk"), Weight: 1}
+	build := func() configstore.ProviderConfig {
+		overrides := map[schemas.RequestType]string{}
+		for _, rt := range requestTypes {
+			overrides[rt] = "/v1/" + string(rt)
+		}
+		return configstore.ProviderConfig{
+			Keys:                 []schemas.Key{fileKey},
+			CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI, RequestPathOverrides: overrides},
+		}
+	}
+	stored := func(t *testing.T) configstore.ProviderConfig {
+		cfg := build()
+		order := append([]schemas.RequestType{}, requestTypes...)
+		slices.Reverse(order)
+		legacy, err := cfg.LegacyOverrideOrderConfigHash(string(provider), order)
+		require.NoError(t, err)
+		fileKeyHash, err := configstore.GenerateKeyHash(fileKey)
+		require.NoError(t, err)
+		storedFileKey := fileKey
+		storedFileKey.ConfigHash = fileKeyHash
+		apiKey := schemas.Key{ID: "api-key", Name: "added-through-api", Value: *schemas.NewSecretVar("sk-api"), Weight: 1}
+		cfg.Keys = []schemas.Key{storedFileKey, apiKey}
+		cfg.ConfigHash = legacy
+		return cfg
+	}
+	keyNames := func(cfg configstore.ProviderConfig) []string {
+		names := []string{}
+		for _, k := range cfg.Keys {
+			names = append(names, k.Name)
+		}
+		return names
+	}
+
+	t.Run("unchanged file keeps API-added keys and upgrades the hash", func(t *testing.T) {
+		fileCfg := build()
+		current, err := fileCfg.GenerateConfigHash(string(provider))
+		require.NoError(t, err)
+		fileCfg.ConfigHash = current
+		dbCfg := stored(t)
+		require.NotEqual(t, current, dbCfg.ConfigHash)
+
+		providers := map[schemas.ModelProvider]configstore.ProviderConfig{provider: dbCfg}
+		mergeProviderWithHash(provider, fileCfg, providers)
+		merged := providers[provider]
+		require.Equal(t, current, merged.ConfigHash, "the stored hash must move to the sorted form so this runs once")
+		require.ElementsMatch(t, []string{"file", "added-through-api"}, keyNames(merged), "the API-added key must survive")
+	})
+
+	t.Run("edited file still applies its provider settings", func(t *testing.T) {
+		fileCfg := build()
+		fileCfg.CustomProviderConfig.IsKeyLess = true
+		edited, err := fileCfg.GenerateConfigHash(string(provider))
+		require.NoError(t, err)
+		fileCfg.ConfigHash = edited
+
+		providers := map[schemas.ModelProvider]configstore.ProviderConfig{provider: stored(t)}
+		mergeProviderWithHash(provider, fileCfg, providers)
+		merged := providers[provider]
+		require.Equal(t, edited, merged.ConfigHash)
+		require.True(t, merged.CustomProviderConfig.IsKeyLess, "a changed config.json must still replace the provider settings")
+		require.ElementsMatch(t, []string{"file", "added-through-api"}, keyNames(merged))
+	})
+
+	t.Run("edited file key is still updated", func(t *testing.T) {
+		fileCfg := build()
+		fileCfg.Keys = []schemas.Key{fileKey}
+		fileCfg.Keys[0].Weight = 2
+		current, err := fileCfg.GenerateConfigHash(string(provider))
+		require.NoError(t, err)
+		fileCfg.ConfigHash = current
+
+		providers := map[schemas.ModelProvider]configstore.ProviderConfig{provider: stored(t)}
+		mergeProviderWithHash(provider, fileCfg, providers)
+		found := false
+		for _, k := range providers[provider].Keys {
+			if k.Name == "file" {
+				found = true
+				require.Equal(t, float64(2), k.Weight, "a key edited in config.json must still replace the stored key")
+			}
+		}
+		require.True(t, found, "the file key must remain in the merged keys")
+	})
+
+	t.Run("upgrade boot is recorded as a file sync", func(t *testing.T) {
+		DrainStartupAuditChanges()
+		fileCfg := build()
+		current, err := fileCfg.GenerateConfigHash(string(provider))
+		require.NoError(t, err)
+		fileCfg.ConfigHash = current
+		providers := map[schemas.ModelProvider]configstore.ProviderConfig{provider: stored(t)}
+		mergeProviderWithHash(provider, fileCfg, providers)
+		changes := DrainStartupAuditChanges()
+		require.Len(t, changes, 1, "provider settings were taken from config.json, so the sync is audited")
+		require.Equal(t, string(provider), changes[0].TargetID)
+	})
+
+	t.Run("a later edit after the upgrade takes the normal edit path", func(t *testing.T) {
+		// First boot on the sorted build: legacy hash, unverifiable, keys reconciled.
+		fileCfg := build()
+		current, err := fileCfg.GenerateConfigHash(string(provider))
+		require.NoError(t, err)
+		fileCfg.ConfigHash = current
+		providers := map[schemas.ModelProvider]configstore.ProviderConfig{provider: stored(t)}
+		mergeProviderWithHash(provider, fileCfg, providers)
+		upgraded := providers[provider]
+		require.Equal(t, current, upgraded.ConfigHash)
+
+		// Second boot: config.json really changed (provider setting edited, the file key removed).
+		DrainStartupAuditChanges()
+		edited := build()
+		edited.CustomProviderConfig.IsKeyLess = true
+		edited.Keys = nil
+		editedHash, err := edited.GenerateConfigHash(string(provider))
+		require.NoError(t, err)
+		edited.ConfigHash = editedHash
+		require.False(t, edited.ConfigHashLegacyOverrideOrderUnverifiable(upgraded.ConfigHash), "a sorted-era stored hash is never unverifiable")
+
+		providers = map[schemas.ModelProvider]configstore.ProviderConfig{provider: upgraded}
+		mergeProviderWithHash(provider, edited, providers)
+		merged := providers[provider]
+		require.Equal(t, editedHash, merged.ConfigHash)
+		require.True(t, merged.CustomProviderConfig.IsKeyLess)
+		require.NotContains(t, keyNames(merged), "file", "a key removed from config.json must be removed once the hash is sorted-era")
+		require.Len(t, DrainStartupAuditChanges(), 1, "the edit is audited")
+	})
+}
+
 // TestPrepareOpenAPIClientFromFile covers how an openapi client declared in
 // config.json is normalized at load: spec_file is read relative to the config
 // directory and inlined, the server-computed metadata is filled from a parse,
@@ -26906,4 +27377,20 @@ func TestAgentGrantsFromConfigFile_NewKeyUnknownAgent(t *testing.T) {
 		require.NoError(t, err, "virtual key %s is stored", id)
 		assert.Empty(t, vk.AgentGrants)
 	}
+}
+
+func TestNormalizeUsageEstimationTokenizers(t *testing.T) {
+	got, err := NormalizeUsageEstimationTokenizers([]string{" Anthropic ", "", "llama3", "anthropic", "ALL"})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"anthropic", "llama3", "all"}, got)
+
+	got, err = NormalizeUsageEstimationTokenizers([]string{" ", ""})
+	require.NoError(t, err)
+	assert.Nil(t, got, "nothing left is a single nil representation")
+
+	_, err = NormalizeUsageEstimationTokenizers([]string{"anthropic", "gpt2"})
+	require.ErrorContains(t, err, `"gpt2"`)
+
+	// config.json and stored rows reach the runtime through validateClientConfig.
+	require.Error(t, validateClientConfig(&configstore.ClientConfig{UsageEstimationTokenizers: []string{"gpt2"}}))
 }

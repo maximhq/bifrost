@@ -196,20 +196,14 @@ func Init(ctx context.Context, config *Config, configStore configstore.ConfigSto
 				mc.wg.Add(1)
 				go func() {
 					defer mc.wg.Done()
-					if err := mc.withDistributedLock(mc.syncCtx, "model_catalog_params_startup_sync", 10, func() error {
-						_, err := mc.runParamsSync(mc.syncCtx)
-						return err
-					}); err != nil {
+					if _, err := mc.runParamsSync(mc.syncCtx); err != nil {
 						logger.Warn("background startup model parameters sync failed: %v", err)
 					} else {
 						logger.Info("background startup model parameters sync completed successfully")
 					}
 				}()
 			} else {
-				if err := mc.withDistributedLock(ctx, "model_catalog_params_startup_sync", 10, func() error {
-					_, err := mc.runParamsSync(ctx)
-					return err
-				}); err != nil {
+				if _, err := mc.runParamsSync(ctx); err != nil {
 					paramsErr = fmt.Errorf("failed to sync model parameters data: %w", err)
 				}
 			}
@@ -220,6 +214,11 @@ func Init(ctx context.Context, config *Config, configStore configstore.ConfigSto
 		}
 		if paramsErr != nil {
 			return nil, paramsErr
+		}
+		// Datasheet overrides go on after the first load; every later load and
+		// sync re-applies them on its own.
+		if err := mc.datasheet.ReloadEntryOverrides(ctx); err != nil {
+			return nil, err
 		}
 
 		// MCP library catalog follows the datasheet bootstrap pattern: if the DB
@@ -299,9 +298,13 @@ func (mc *ModelCatalog) SetAfterSyncHook(fn func(ctx context.Context)) {
 	mc.afterSyncHook = fn
 }
 
-// ReloadFromDB reloads pricing + model-parameters caches from the database.
-// Gossip handler on non-leader pods.
+// ReloadFromDB reloads datasheet overrides, pricing and model-parameters
+// caches from the database. Gossip handler on non-leader pods.
 func (mc *ModelCatalog) ReloadFromDB(ctx context.Context) error {
+	// Overrides first: both loads below re-apply whatever set is installed.
+	if err := mc.datasheet.LoadEntryOverridesFromStore(ctx); err != nil {
+		return err
+	}
 	if err := mc.datasheet.LoadFromDB(ctx); err != nil {
 		return err
 	}
@@ -579,14 +582,26 @@ func (mc *ModelCatalog) runPricingSync(ctx context.Context) (ran bool, err error
 	return true, mc.datasheet.SyncFromURL(ctx)
 }
 
-// runParamsSync wraps the datasheet params sync with the gate check. ran is
-// false when the gate skipped the sync.
+// runParamsSync serializes the DB snapshot, upsert and cache publication across
+// gateways. ran is false when the gate skips the sync, including after a lock
+// wait, so callers do not publish a skipped update.
 func (mc *ModelCatalog) runParamsSync(ctx context.Context) (ran bool, err error) {
 	if !mc.syncGateOpen(ctx) {
 		mc.logger.Debug("model parameters sync cancelled by custom gate")
 		return false, nil
 	}
-	return true, mc.datasheet.SyncModelParamsFromURL(ctx)
+	if mc.configStore == nil {
+		return true, mc.datasheet.SyncModelParamsFromURL(ctx)
+	}
+	heldCtx, release, err := mc.distributedLockManager.AcquireWithRetry(ctx, "model_catalog_params_sync", 10)
+	if err != nil {
+		return false, fmt.Errorf("failed to acquire model parameters sync lock: %w", err)
+	}
+	defer release()
+	if !mc.syncGateOpen(heldCtx) {
+		return false, nil
+	}
+	return true, mc.datasheet.SyncModelParamsFromURL(heldCtx)
 }
 
 // withDistributedLock acquires a named distributed lock and runs fn under

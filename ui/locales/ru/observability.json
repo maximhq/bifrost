@@ -665,7 +665,8 @@
 			"success": "Успех",
 			"error": "Ошибка",
 			"processing": "Обработка",
-			"cancelled": "Отменено"
+			"cancelled": "Отменено",
+			"input_required": "Требуется ввод"
 		},
 		"rowsPerPage": "Строк на странице",
 		"resetZoom": "Сбросить масштабирование",
@@ -994,6 +995,9 @@
 		"copyToClipboard": "Копировать в буфер обмена",
 		"stats": {
 			"totalExecutions": "Всего выполнений",
+			"executions": "Выполнения",
+			"ofAllExecutions": "Из всех вызовов инструментов MCP за этот период",
+			"perExecution": "{{value}}/вызов",
 			"successRate": "Доля успеха",
 			"avgLatency": "Сред. задержка",
 			"totalCost": "Общая стоимость"
@@ -1023,7 +1027,6 @@
 			"toolName": "Имя инструмента",
 			"server": "Сервер",
 			"virtualKey": "Виртуальный ключ",
-			"llmRequestId": "ID запроса LLM",
 			"metadata": "Метаданные",
 			"deleteFailed": "Не удалось удалить журнал",
 			"invalidDate": "Недействительная дата",
@@ -1038,6 +1041,11 @@
 			"localNative": "Локальный · Native",
 			"requestId": "ID запроса",
 			"decision": "Решение",
+			"mcpApps": "MCP Apps",
+			"appsHost": "Вызывающая сторона поддерживает MCP Apps",
+			"appOnly": "Инструмент только для приложений",
+			"opensUi": "Открывает {{uri}}",
+			"calledAs": "Вызван как {{name}}",
 			"nativeTool": "Native-инструмент",
 			"mcpTool": "Инструмент MCP",
 			"inspectionTime": "Время проверки",
@@ -1063,8 +1071,13 @@
 		"showOriginal": "Показать исходные значения",
 		"arguments": "Аргументы",
 		"result": "Результат",
+		"inputRequested": "Запрошенный ввод",
+		"retryLater": "Сервер попросил вызывающую сторону повторить попытку позже, не запрашивая ввод.",
+		"inputAnswered": "Ответ",
+		"rounds": "Раунды",
 		"execution": "Выполнение",
 		"errorDetails": "Сведения об ошибке",
+		"errorNoMessage": "Вызов инструмента завершился ошибкой без сообщения об ошибке.",
 		"pluginLogs": "Журналы плагинов",
 		"loading": "Загрузка журналов MCP...",
 		"native": "Нативный",
@@ -1079,11 +1092,14 @@
 			"succeeded": "Успех",
 			"failed": "Сбой",
 			"cancelled": "Отменено",
+			"inputRequired": "Требуется ввод",
+			"retryLater": "Повторить позже",
 			"processing": "Обработка",
 			"approvedDescription": "Разрешено до выполнения. Результат выполнения в этой записи не сохраняется.",
 			"blockedDescription": "Заблокировано до выполнения.",
 			"observedDescription": "Активность инструмента зафиксирована, но исход выполнения неизвестен.",
-			"executionDescription": "Записан исход выполнения инструмента."
+			"inputRequiredDescription": "MCP-сервер запросил у вызывающей стороны ввод до завершения. Повторный запрос с ответом — отдельная запись.",
+			"retryLaterDescription": "MCP-сервер попросил вызывающую сторону повторить попытку позже, не запрашивая ввод. Повторная попытка — отдельная запись."
 		},
 		"noResults": "Ничего не найдено. Измените фильтры и/или диапазон времени.",
 		"observedRoundTrip": "Наблюдаемый round trip"
@@ -1263,6 +1279,8 @@
 		"searchAgents": "Поиск агентов",
 		"agentCorrelationID": "ID корреляции агента",
 		"exactAgentCorrelationID": "Точный ID корреляции агента",
+		"roundTripID": "ID цикла запросов",
+		"exactRoundTripID": "Точный ID цикла запросов",
 		"nothingRecorded": "За этот период ничего не записано",
 		"topics": "Темы",
 		"searchTopics": "Поиск тем"

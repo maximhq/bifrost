@@ -352,7 +352,7 @@ export default function MCPView() {
 						id="mcp-agent-depth"
 						data-testid="mcp-agent-depth-input"
 						type="number"
-						className="w-24"
+						className="w-24 shrink-0"
 						value={localValues.mcp_agent_depth}
 						onChange={(e) => handleAgentDepthChange(e.target.value)}
 						min="1"
@@ -371,7 +371,7 @@ export default function MCPView() {
 						id="mcp-tool-execution-timeout"
 						data-testid="mcp-tool-timeout-input"
 						type="number"
-						className="w-24"
+						className="w-24 shrink-0"
 						value={localValues.mcp_tool_execution_timeout}
 						onChange={(e) => handleToolExecutionTimeoutChange(e.target.value)}
 						min="1"
@@ -390,7 +390,7 @@ export default function MCPView() {
 						id="mcp-tool-sync-interval"
 						data-testid="mcp-tool-sync-interval-input"
 						type="number"
-						className="w-24"
+						className="w-24 shrink-0"
 						value={localValues.mcp_tool_sync_interval}
 						onChange={(e) => handleToolSyncIntervalChange(e.target.value)}
 						min="0"
@@ -499,7 +499,7 @@ export default function MCPView() {
 						id="mcp-max-instructions-per-client"
 						data-testid="mcp-max-instructions-per-client-input"
 						type="number"
-						className="w-24"
+						className="w-24 shrink-0"
 						value={localValues.mcp_max_instructions_per_client}
 						onChange={(e) => handleMaxInstructionsPerClientChange(e.target.value)}
 						min="0"
@@ -520,7 +520,7 @@ export default function MCPView() {
 						id="mcp-max-instructions-total"
 						data-testid="mcp-max-instructions-total-input"
 						type="number"
-						className="w-24"
+						className="w-24 shrink-0"
 						value={localValues.mcp_max_instructions_total}
 						onChange={(e) => handleMaxInstructionsTotalChange(e.target.value)}
 						min="0"
@@ -528,62 +528,72 @@ export default function MCPView() {
 					/>
 				</div>
 
-				{/* Code Mode Binding Level */}
-				<div className="space-y-4 rounded-sm border p-4">
-					<div className="space-y-0.5">
-						<label htmlFor="mcp-binding-level" className="text-sm font-medium">
-							{t("mcpSettings.codeModeBinding")}
-						</label>
-						<p className="text-muted-foreground text-sm">{t("mcpSettings.bindingHelp")}</p>
-					</div>
-					<Select value={localValues.mcp_code_mode_binding_level} onValueChange={handleCodeModeBindingLevelChange}>
-						<SelectTrigger id="mcp-binding-level" data-testid="mcp-binding-level" className="w-56">
-							<SelectValue placeholder={t("mcpSettings.selectBindingLevel")} />
-						</SelectTrigger>
-						<SelectContent>
-							<SelectItem value="server">{t("mcpSettings.serverLevel")}</SelectItem>
-							<SelectItem value="tool">{t("mcpSettings.toolLevel")}</SelectItem>
-						</SelectContent>
-					</Select>
-
-					{/* Visual Example */}
-					<div className="mt-6 space-y-2">
-						<p className="text-foreground text-xs font-semibold tracking-wide uppercase">{t("mcpSettings.vFSStructure")}</p>
-
-						{localValues.mcp_code_mode_binding_level === "server" ? (
-							<div className="bg-muted border-border rounded-sm border p-4">
-								<div className="text-foreground space-y-1 font-mono text-xs">
-									<div>servers/</div>
-									<div className="pl-3">├─ calculator.py</div>
-									<div className="pl-3">├─ youtube.py</div>
-									<div className="pl-3">└─ weather.py</div>
+				{/* Code Mode Settings — binding level and execution limits, collapsed like Advanced Settings. */}
+				<Accordion type="single" collapsible className="rounded-sm border px-4">
+					<AccordionItem value="code-mode-settings" className="border-b-0">
+						<AccordionTrigger data-testid="mcp-settings-code-mode-trigger">
+							<span className="text-sm font-medium">{t("mcpSettings.codeModeSettings")}</span>
+						</AccordionTrigger>
+						<AccordionContent className="space-y-6 pt-2">
+							<div className="space-y-4">
+								<div className="space-y-0.5">
+									<label htmlFor="mcp-binding-level" className="text-sm font-medium">
+										{t("mcpSettings.codeModeBinding")}
+									</label>
+									<p className="text-muted-foreground text-sm">{t("mcpSettings.bindingHelp")}</p>
 								</div>
-								<p className="text-muted-foreground mt-3 text-xs">{t("mcpSettings.allToolsPerServerInASinglePyFile")}</p>
-							</div>
-						) : (
-							<div className="bg-muted border-border rounded-sm border p-4">
-								<div className="text-foreground space-y-1 font-mono text-xs">
-									<div>servers/</div>
-									<div className="pl-3">├─ calculator/</div>
-									<div className="pl-6">├─ add.py</div>
-									<div className="pl-6">└─ subtract.py</div>
-									<div className="pl-3">├─ youtube/</div>
-									<div className="pl-6">├─ GET_CHANNELS.py</div>
-									<div className="pl-6">└─ SEARCH_VIDEOS.py</div>
-									<div className="pl-3">└─ weather/</div>
-									<div className="pl-6">└─ get_forecast.py</div>
-								</div>
-								<p className="text-muted-foreground mt-3 text-xs">{t("mcpSettings.individualPyFileForEachTool")}</p>
-							</div>
-						)}
-					</div>
-				</div>
+								<Select value={localValues.mcp_code_mode_binding_level} onValueChange={handleCodeModeBindingLevelChange}>
+									<SelectTrigger id="mcp-binding-level" data-testid="mcp-binding-level" className="w-56">
+										<SelectValue placeholder={t("mcpSettings.selectBindingLevel")} />
+									</SelectTrigger>
+									<SelectContent>
+										<SelectItem value="server">{t("mcpSettings.serverLevel")}</SelectItem>
+										<SelectItem value="tool">{t("mcpSettings.toolLevel")}</SelectItem>
+									</SelectContent>
+								</Select>
 
-				<CodeModeLimitsSection
-					value={localConfig.mcp_code_mode_limits}
-					onChange={handleCodeModeLimitsChange}
-					disabled={!hasSettingsUpdateAccess}
-				/>
+								{/* Visual Example */}
+								<div className="mt-6 space-y-2">
+									<p className="text-foreground text-xs font-semibold tracking-wide uppercase">{t("mcpSettings.vFSStructure")}</p>
+
+									{localValues.mcp_code_mode_binding_level === "server" ? (
+										<div className="bg-muted border-border rounded-sm border p-4">
+											<div className="text-foreground space-y-1 font-mono text-xs">
+												<div>servers/</div>
+												<div className="pl-3">├─ calculator.py</div>
+												<div className="pl-3">├─ youtube.py</div>
+												<div className="pl-3">└─ weather.py</div>
+											</div>
+											<p className="text-muted-foreground mt-3 text-xs">{t("mcpSettings.allToolsPerServerInASinglePyFile")}</p>
+										</div>
+									) : (
+										<div className="bg-muted border-border rounded-sm border p-4">
+											<div className="text-foreground space-y-1 font-mono text-xs">
+												<div>servers/</div>
+												<div className="pl-3">├─ calculator/</div>
+												<div className="pl-6">├─ add.py</div>
+												<div className="pl-6">└─ subtract.py</div>
+												<div className="pl-3">├─ youtube/</div>
+												<div className="pl-6">├─ GET_CHANNELS.py</div>
+												<div className="pl-6">└─ SEARCH_VIDEOS.py</div>
+												<div className="pl-3">└─ weather/</div>
+												<div className="pl-6">└─ get_forecast.py</div>
+											</div>
+											<p className="text-muted-foreground mt-3 text-xs">{t("mcpSettings.individualPyFileForEachTool")}</p>
+										</div>
+									)}
+								</div>
+							</div>
+
+							<CodeModeLimitsSection
+								value={localConfig.mcp_code_mode_limits}
+								onChange={handleCodeModeLimitsChange}
+								disabled={!hasSettingsUpdateAccess}
+							/>
+						</AccordionContent>
+					</AccordionItem>
+				</Accordion>
+
 				{/* Advanced Settings — collapsed by default so people don't accidentally
 				    edit the redirect_uri, which would break already-authorized MCP clients. */}
 				<Accordion type="single" collapsible className="rounded-sm border px-4">

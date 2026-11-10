@@ -794,6 +794,9 @@ func DeepCopyChatMessage(original ChatMessage) ChatMessage {
 			copyRefusal := *original.ChatAssistantMessage.Refusal
 			copy.ChatAssistantMessage.Refusal = &copyRefusal
 		}
+		if len(original.ChatAssistantMessage.Context) > 0 {
+			copy.ChatAssistantMessage.Context = append(json.RawMessage(nil), original.ChatAssistantMessage.Context...)
+		}
 
 		// Deep copy Annotations
 		if original.ChatAssistantMessage.Annotations != nil {
@@ -959,6 +962,10 @@ func deepCopyChatContentBlock(original ChatContentBlock) ChatContentBlock {
 		if original.PromptCacheBreakpoint.Mode != nil {
 			copyMode := *original.PromptCacheBreakpoint.Mode
 			copyPromptCacheBreakpoint.Mode = &copyMode
+		}
+		if original.PromptCacheBreakpoint.TTL != nil {
+			copyTTL := *original.PromptCacheBreakpoint.TTL
+			copyPromptCacheBreakpoint.TTL = &copyTTL
 		}
 		copy.PromptCacheBreakpoint = copyPromptCacheBreakpoint
 	}
@@ -2015,6 +2022,10 @@ func deepCopyResponsesMessageContentBlock(original ResponsesMessageContentBlock)
 		if original.PromptCacheBreakpoint.Mode != nil {
 			copyMode := *original.PromptCacheBreakpoint.Mode
 			copyPromptCacheBreakpoint.Mode = &copyMode
+		}
+		if original.PromptCacheBreakpoint.TTL != nil {
+			copyTTL := *original.PromptCacheBreakpoint.TTL
+			copyPromptCacheBreakpoint.TTL = &copyTTL
 		}
 		copy.PromptCacheBreakpoint = copyPromptCacheBreakpoint
 	}

@@ -1,4 +1,5 @@
 - feat: sarvam - move chat and model listing to Token Factory v2 and add Sarvam Prism decisions; `sarvam-30b` is no longer served, use `sarvam-105b` [@vikashmaddi-sarvam](https://github.com/vikashmaddi-sarvam)
-- fix: anthropic - Responses requests drop empty text blocks instead of forwarding them for a 400 (#9318) [@david-choi-querypie](https://github.com/david-choi-querypie)
-- fix: anthropic - preserve explicit web search and web fetch versions, and keep a declared code execution tool beside versions that do not auto-inject it (#9258) [@ykakade](https://github.com/ykakade)
-- fix: multi-key providers - follow-up calls on a stored response, container or video now find the key that created it instead of returning 404 from another key; video list pages across every key
+- fix: chat completion requests with no messages return a 400 instead of crashing the gateway, and a converter that returns a nil request body yields an error on every provider
+- fix: gemini - skip null entries in `parts` and `functionDeclarations` on Gemini and Vertex requests and responses instead of panicking
+- fix: recover panics on provider stream goroutines and in plugin post-hooks; the stream ends with one terminal 500 error chunk, and the remaining post-hooks still run
+- fix: anthropic - Messages requests whose history holds mcp_tool_use / mcp_tool_result blocks (or server-tool blocks such as web_search) no longer send a roleless message to chat-only (OpenAI-compatible) providers; Responses items with no chat equivalent (mcp_call, mcp_list_tools, mcp approvals, web_search_call, item_reference, ...) are dropped on the Responses-to-Chat fallback (thanks [@1AbdullahButt](https://github.com/1AbdullahButt)!)

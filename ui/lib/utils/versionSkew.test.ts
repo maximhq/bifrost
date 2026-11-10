@@ -1,10 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+	classifyLoadFailure,
 	clearAutoReloadGuard,
 	consumeAutoReload,
+	extractAssetUrl,
 	getSkewMode,
+	getSkewState,
 	isSkewError,
 	MAX_AUTO_RELOADS,
+	MISSING_ASSET_BODY_PREFIX,
+	PROBE_TIMEOUT_MS,
+	resolveProbeUrl,
 	POLL_INTERVAL_MS,
 	POLL_TIMEOUT_MS,
 	reportSkew,
@@ -42,6 +48,10 @@ describe("isSkewError", () => {
 		expect(isSkewError("Failed to fetch dynamically imported module")).toBe(true);
 	});
 
+	it("detects Vite CSS preload failures", () => {
+		expect(isSkewError(new Error("Unable to preload CSS for /assets/logs-A1.css"))).toBe(true);
+	});
+
 	it("does not misclassify ordinary application errors", () => {
 		expect(isSkewError(new TypeError("x is not a function"))).toBe(false);
 		expect(isSkewError(new Error("Request failed with status 500"))).toBe(false);
@@ -51,8 +61,144 @@ describe("isSkewError", () => {
 	});
 });
 
+const ORIGIN = "https://bifrost.test";
+
+function installWindow() {
+	vi.stubGlobal("window", { location: { href: `${ORIGIN}/workspace/logs`, origin: ORIGIN } });
+}
+
+function stubFetch(impl: (url: string) => Promise<Response>) {
+	const fetchMock = vi.fn((url: string) => impl(url));
+	vi.stubGlobal("fetch", fetchMock);
+	return fetchMock;
+}
+
+const textResponse = (status: number, body: string) => ({ status, ok: status < 400, text: async () => body }) as unknown as Response;
+const bifrostMissing = (path: string) => textResponse(404, `${MISSING_ASSET_BODY_PREFIX}: ${path}`);
+
+describe("extractAssetUrl", () => {
+	it("pulls the chunk URL out of Chromium and Firefox import errors", () => {
+		expect(extractAssetUrl(new TypeError("Failed to fetch dynamically imported module: https://x/assets/logs-A1.js"))).toBe(
+			"https://x/assets/logs-A1.js",
+		);
+		expect(extractAssetUrl(new TypeError("error loading dynamically imported module: https://x/bifrost/assets/a-B2.js"))).toBe(
+			"https://x/bifrost/assets/a-B2.js",
+		);
+	});
+
+	it("pulls a root-relative path out of a Vite CSS preload error", () => {
+		expect(extractAssetUrl(new Error("Unable to preload CSS for /assets/logs-A1.css"))).toBe("/assets/logs-A1.css");
+	});
+
+	it("returns undefined when the browser does not name the chunk", () => {
+		expect(extractAssetUrl(new TypeError("Importing a module script failed."))).toBeUndefined();
+		expect(extractAssetUrl(undefined)).toBeUndefined();
+	});
+});
+
+describe("resolveProbeUrl", () => {
+	beforeEach(installWindow);
+	afterEach(() => vi.unstubAllGlobals());
+
+	it("prefers the failed same-origin chunk", () => {
+		expect(resolveProbeUrl("/assets/a-1.js", `${ORIGIN}/assets/index-9.js`)).toBe(`${ORIGIN}/assets/a-1.js`);
+	});
+
+	it("falls back to the running chunk when the failed URL is unknown or foreign", () => {
+		expect(resolveProbeUrl(undefined, `${ORIGIN}/assets/index-9.js`)).toBe(`${ORIGIN}/assets/index-9.js`);
+		expect(resolveProbeUrl("https://cdn.example/assets/a-1.js", `${ORIGIN}/assets/index-9.js`)).toBe(`${ORIGIN}/assets/index-9.js`);
+	});
+
+	it("has nothing to probe outside a built bundle", () => {
+		expect(resolveProbeUrl(undefined, `${ORIGIN}/lib/utils/versionSkew.ts`)).toBeUndefined();
+	});
+});
+
+describe("classifyLoadFailure", () => {
+	afterEach(() => {
+		vi.unstubAllGlobals();
+		vi.useRealTimers();
+	});
+
+	it("reports an upgrade only for Bifrost's own missing-asset 404", async () => {
+		stubFetch(async () => bifrostMissing("/assets/trending-up-CnicU8gss.js"));
+		expect(await classifyLoadFailure(`${ORIGIN}/assets/trending-up-CnicU8gss.js`)).toBe("upgrade");
+	});
+
+	it("treats a 404 from anything other than Bifrost as blocked", async () => {
+		stubFetch(async () => textResponse(404, "<html>Not Found</html>"));
+		expect(await classifyLoadFailure(`${ORIGIN}/assets/a-1.js`)).toBe("blocked");
+	});
+
+	it("treats a reachable asset or a proxy rejection as blocked", async () => {
+		for (const status of [200, 403, 407, 502]) {
+			stubFetch(async () => textResponse(status, MISSING_ASSET_BODY_PREFIX));
+			expect(await classifyLoadFailure(`${ORIGIN}/assets/a-1.js`), String(status)).toBe("blocked");
+		}
+	});
+
+	it("treats a network failure as blocked", async () => {
+		stubFetch(async () => {
+			throw new TypeError("Failed to fetch");
+		});
+		expect(await classifyLoadFailure(`${ORIGIN}/assets/a-1.js`)).toBe("blocked");
+	});
+
+	it("does not probe when there is no URL", async () => {
+		const fetchMock = stubFetch(async () => bifrostMissing("/assets/a-1.js"));
+		expect(await classifyLoadFailure(undefined)).toBe("blocked");
+		expect(fetchMock).not.toHaveBeenCalled();
+	});
+
+	it("gives up on a probe that never settles", async () => {
+		vi.useFakeTimers();
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(
+				(_url: string, init: RequestInit) =>
+					new Promise<Response>((_, reject) => init.signal?.addEventListener("abort", () => reject(new Error("aborted")))),
+			),
+		);
+		const result = classifyLoadFailure(`${ORIGIN}/assets/a-1.js`);
+		await vi.advanceTimersByTimeAsync(PROBE_TIMEOUT_MS);
+		expect(await result).toBe("blocked");
+	});
+});
+
 describe("skew store", () => {
 	beforeEach(() => __resetSkewForTests());
+	afterEach(() => vi.unstubAllGlobals());
+
+	it("records an upgrade when the failed chunk is gone from the server", async () => {
+		installWindow();
+		const fetchMock = stubFetch(async () => bifrostMissing("/assets/a-1.js"));
+
+		reportSkew("soft", `${ORIGIN}/assets/a-1.js`);
+		expect(getSkewState()).toEqual({ mode: "soft", cause: null });
+
+		await vi.waitFor(() => expect(getSkewState().cause).toBe("upgrade"));
+		expect(fetchMock).toHaveBeenCalledWith(`${ORIGIN}/assets/a-1.js`, expect.objectContaining({ cache: "no-store" }));
+	});
+
+	it("records blocked when the server still has the chunk", async () => {
+		installWindow();
+		stubFetch(async () => textResponse(200, "export {}"));
+
+		reportSkew("hard", `${ORIGIN}/assets/a-1.js`);
+		await vi.waitFor(() => expect(getSkewState()).toEqual({ mode: "hard", cause: "blocked" }));
+	});
+
+	it("probes once however many chunks fail", async () => {
+		installWindow();
+		const fetchMock = stubFetch(async () => bifrostMissing("/assets/a-1.js"));
+
+		reportSkew("soft", `${ORIGIN}/assets/a-1.js`);
+		reportSkew("soft", `${ORIGIN}/assets/b-2.js`);
+		reportSkew("hard", `${ORIGIN}/assets/c-3.js`);
+
+		await vi.waitFor(() => expect(getSkewState()).toEqual({ mode: "hard", cause: "upgrade" }));
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+	});
 
 	it("notifies subscribers once per level change", () => {
 		const onChange = vi.fn();
