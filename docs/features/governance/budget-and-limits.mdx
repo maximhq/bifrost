@@ -146,7 +146,7 @@ A reset period may be used **once per scope** on one owner: `1M` + `shared` besi
 MCP tool executions name no provider and no model, so they are only charged by budgets that bind every request a holder makes: a **virtual key's own budgets**, **team** and **customer** budgets, the own budgets of an **Enterprise project** or **access profile**, and **model limits for all models (`*`) with no provider**. Those are the only places the `mcp` scope is accepted. Provider-config budgets, provider governance budgets and model limits for a specific model or provider are never reached by MCP traffic, so they take `shared` or `model` and the API rejects `mcp` there. On those owners `model` charges exactly what `shared` does, since only model requests reach them. The provider and model budgets inside an Enterprise project or access profile take `shared` only.
 
 <Note>
-Scope applies to budgets only. Rate limits still count model requests and MCP tool executions together.
+Request limits take a scope too, with the same rules (see [Request limit scope](#request-limit-scope)). A token limit (**Max Tokens**) has no scope: it counts model requests only.
 </Note>
 
 ### MCP budgets
@@ -155,9 +155,9 @@ A holder's own limits are one set of budget lines, each **Shared** (`shared`), *
 
 An MCP tool execution answers to the holder-level limits of the deployment and of the virtual key it runs under, and to the budgets of the key's team and customer. It is charged by their **Shared** and **MCP** lines and never by a **Model** line. Model limits for a specific model or provider never apply to it.
 
-**MCP Gateway → Budgets & Limits** lists the deployment and every virtual key whose holder-level limit has a Shared or MCP line, and edits those lines. A new line is **MCP** by default and can be set to **Shared**. **Models → Budgets & Limits** shows the Shared and Model lines of the same rows. Saving on either page keeps the lines only the other page shows, and their usage too, unless you choose to reset usage: that choice is sent with the row's full set of lines, so it also clears the usage of the hidden lines (the Model lines when you edit the MCP page, the MCP lines when you edit the Models page), which makes those budgets available for spending again. Removing a holder's limits on one page removes only that page's lines: the row is deleted once nothing is left on it. The rate limit on a holder-level model limit is edited on the Models page. On the Models page every line can be set to **Shared** or **Model** whatever model and provider the limit covers; a line on a specific model or provider is reached by model requests only, so the two charge the same there. On both pages only Shared lines of a holder-level limit are marked, since an unmarked line is the page's own traffic only. The virtual key, team and customer views mark every line **Shared**, **Model** or **MCP**.
+**MCP Gateway → Budgets & Limits** lists the deployment and every virtual key whose holder-level limit has a Shared or MCP line, and edits those lines. A new line is **MCP** by default and can be set to **Shared**. **Models → Budgets & Limits** shows the Shared and Model lines of the same rows. Saving on either page keeps the lines only the other page shows, and their usage too, unless you choose to reset usage: that choice is sent with the row's full set of lines, so it also clears the usage of the hidden lines (the Model lines when you edit the MCP page, the MCP lines when you edit the Models page), which makes those budgets available for spending again. Removing a holder's limits on one page removes only that page's lines: the row is deleted once nothing is left on it. Request limits are lines like budgets and follow the same rules, while the token limit on a holder-level model limit is edited on the Models page. On the Models page every line can be set to **Shared** or **Model** whatever model and provider the limit covers; a line on a specific model or provider is reached by model requests only, so the two charge the same there. On both pages only Shared lines of a holder-level limit are marked, since an unmarked line is the page's own traffic only. The virtual key, team and customer views mark every line **Shared**, **Model** or **MCP**.
 
-Through the API, the MCP page's list is the model-config list filtered with `applies_to=mcp`, which keeps holder-level rows that carry a `shared` or `mcp` budget:
+Through the API, the MCP page's list is the model-config list filtered with `applies_to=mcp`, which keeps holder-level rows that carry a `shared` or `mcp` budget or request limit:
 
 ```bash
 curl "http://localhost:8080/api/governance/model-configs?applies_to=mcp&scope=global,virtual_key"
@@ -177,11 +177,11 @@ curl "http://localhost:8080/api/governance/model-configs?scope=virtual_key&scope
 
 If the holder has no such row, create it with `POST /api/governance/model-configs` (`model_name` `*`, the `scope` and `scope_id` of the holder, and the lines to add); otherwise update the row you found.
 
-To change a holder's MCP lines, update its holder-level model config (`PUT /api/governance/model-configs/{id}`) with its full `budgets` list: send the lines you keep with their `id`, including its `model` lines, since a line left out is removed.
+To change a holder's MCP lines, update its holder-level model config (`PUT /api/governance/model-configs/{id}`) with its full `budgets` and `request_limits` lists: send the lines you keep with their `id`, including its `model` lines, since a line left out is removed.
 
 ## Rate Limiting
 
-Rate limits protect your system from abuse and manage traffic by setting thresholds on request frequency and token usage over a specific time window. Rate limits can be configured at the **Provider Config**, **Virtual Key**, **Team**, and **Customer** levels. A team or customer has at most one rate limit of its own.
+Rate limits protect your system from abuse and manage traffic by setting thresholds on request frequency and token usage over a specific time window. Rate limits can be configured at the **Provider Config**, **Virtual Key**, **Team**, and **Customer** levels. A holder has at most one token limit of its own and any number of request limits, one per reset period and scope (see [Request limit scope](#request-limit-scope)).
 
 Bifrost supports two types of rate limits that work in parallel:
 - **Request Limits**: Control the maximum number of API calls that can be made within a set duration (e.g., 100 requests per minute).
@@ -197,7 +197,29 @@ Rate limits are checked in hierarchical order:
 4. ✓ Customer Rate Limit (if the customer has one)
 ```
 
-For a request to be allowed, it must pass both the request limit and token limit checks at **all applicable levels**. If a provider config exceeds its rate limits, that provider is excluded from routing, but other providers within the same virtual key remain available.
+For a model request to be allowed, it must pass every **Shared** and **Model** request limit and every token limit at **all applicable levels**. An MCP tool execution is checked only against the **Shared** and **MCP** request limits of the deployment, its virtual key, team and customer; token limits never apply to it. If a provider config exceeds its rate limits, that provider is excluded from routing, but other providers within the same virtual key remain available.
+
+### Request limit scope
+
+A holder's own request limits (**Max Requests**) are a set of limits, each with a scope like a budget's: **Shared** (`shared`, the default) counts model requests and MCP tool executions together, **Model** (`model`) counts model requests only and **MCP** (`mcp`) counts MCP tool executions only. A holder takes one request limit per reset period and scope: `100` per `1m` Shared beside `20` per `1m` MCP is accepted, while two MCP limits on `1m` are rejected with `400`.
+
+```json
+{
+  "rate_limit": { "token_max_limit": 50000, "token_reset_duration": "1h" },
+  "request_limits": [
+    { "max_limit": 100, "reset_duration": "1m" },
+    { "max_limit": 20, "reset_duration": "1m", "scope": "mcp" }
+  ]
+}
+```
+
+Scopes follow what MCP traffic reaches, as for budgets. `mcp` is accepted on a virtual key's own limits (stored on its holder-level model limit), on the deployment's holder-level model limit (`*` with no provider), and on teams and customers. Model limits for a specific model or provider, provider configs and provider governance take **Shared** and **Model** request limits, which count the same there since only model requests reach them, and refuse **MCP**.
+
+**Max Tokens** is model-only. A token limit counts model requests, and an MCP tool execution is never checked against it.
+
+Request limits created before scopes existed are **Shared**, so they keep counting both kinds of traffic. On upgrade, the request limit of each team, customer and model limit moves into a Shared request limit that keeps its usage and reset timing, and the rate limit it came from keeps only the token limit. A rate limit shared by several holders stays combined.
+
+`request_limits` is the holder's full set. A request limit matches a stored one by `id`, else by reset period and scope, and keeps its usage when it does; one left out is removed and `[]` removes them all. Omitting `request_limits` keeps them unless the body sets `rate_limit`: a client that predates scopes and sends `rate_limit` without `request_limits` is read as sending the holder's full combined state, so its `request_max_limit` and `request_reset_duration` replace all of the holder's request limits, of every scope, with one Shared limit, and a `rate_limit` without request fields removes them. Request fields in `rate_limit` together with `request_limits` are rejected with `400`.
 
 ### Provider-Level Rate Limiting
 

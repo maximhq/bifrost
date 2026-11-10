@@ -2309,6 +2309,8 @@ components:
       $ref: "./schemas/management/governance.yaml#/BudgetRequest"
     BudgetRequestBudgetSnapshot:
       $ref: "./schemas/management/governance.yaml#/BudgetRequestBudgetSnapshot"
+    RequestLimitRequest:
+      $ref: "./schemas/management/governance.yaml#/RequestLimitRequest"
     CreateRateLimitRequest:
       $ref: "./schemas/management/governance.yaml#/CreateRateLimitRequest"
     UpdateRateLimitRequest:

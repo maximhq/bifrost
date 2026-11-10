@@ -54022,7 +54022,7 @@
           {
             "name": "applies_to",
             "in": "query",
-            "description": "`mcp` lists only the rows MCP tool executions are charged by: holder-level model configs (`model_name` `*`, no provider), which hold the deployment's or a scope target's own limits, with at least one `shared` or `mcp` budget. Combined with `scope=global,virtual_key` it is the list of the MCP Budgets & Limits page. Any other value is rejected with 400.",
+            "description": "`mcp` lists only the rows MCP tool executions are charged by: holder-level model configs (`model_name` `*`, no provider), which hold the deployment's or a scope target's own limits, with at least one `shared` or `mcp` budget or request limit. Combined with `scope=global,virtual_key` it is the list of the MCP Budgets & Limits page. Any other value is rejected with 400.",
             "schema": {
               "type": "string",
               "enum": [
@@ -138655,6 +138655,13 @@
           "rate_limit": {
             "$ref": "#/components/schemas/RateLimit"
           },
+          "request_limits": {
+            "type": "array",
+            "description": "Request limits of the key itself, from its holder-level model config (`model_name` `*`, no provider). For a key managed by an enterprise access profile, the request limits of the profiles governing it. Returned as rate-limit rows; see RequestLimitRequest for the fields a request takes.\n",
+            "items": {
+              "$ref": "#/components/schemas/RateLimit"
+            }
+          },
           "assigned_user": {
             "type": [
               "object",
@@ -138773,6 +138780,13 @@
           "rate_limit": {
             "$ref": "#/components/schemas/RateLimit"
           },
+          "request_limits": {
+            "type": "array",
+            "description": "Request limits of this provider tier, held by its VK-scoped model config.\n",
+            "items": {
+              "$ref": "#/components/schemas/RateLimit"
+            }
+          },
           "keys": {
             "type": [
               "array",
@@ -138860,6 +138874,7 @@
           "budgets",
           "rate_limit",
           "rate_limits",
+          "request_limits",
           "provider_configs",
           "model_configs"
         ],
@@ -138946,7 +138961,7 @@
             }
           },
           "rate_limit": {
-            "description": "The single effective rate limit for this key. For a key managed by an enterprise access profile this is the tightest-per-dimension merge of every profile governing the key, and carries the real usage. Kept for readers that expect one value; see `rate_limits` for the unmerged list.\n",
+            "description": "The single effective rate limit for this key. For a key managed by an enterprise access profile this is the tightest-per-dimension merge of every profile governing the key, and carries the real usage. Kept for readers that expect one value; see `rate_limits` for the unmerged list. A key's own rate limit carries its token limit only; its request limits are in `request_limits`.\n",
             "oneOf": [
               {
                 "$ref": "#/components/schemas/RateLimit"
@@ -138958,7 +138973,7 @@
           },
           "rate_limits": {
             "type": "array",
-            "description": "Every rate limit `rate_limit` was merged from, each tagged with its source, so a caller can see which one is actually binding rather than only the merged result. A user may hold several enterprise access profiles at once, each contributing its own rate limit, so this can carry more than one entry. Always present; empty when the key has no rate limit at all.\n",
+            "description": "Every rate limit `rate_limit` was merged from, each tagged with its source, so a caller can see which one is actually binding rather than only the merged result. A user may hold several enterprise access profiles at once, each contributing its own rate limit, so this can carry more than one entry. For a key governing itself it lists the key's rate limit followed by each of its request limits. Always present; empty when the key has no rate limit at all.\n",
             "items": {
               "description": "A rate limit tagged with what governs it. The source fields are empty when there is nothing to disambiguate, e.g. a virtual key's own rate-limit row.\n",
               "allOf": [
@@ -138985,6 +139000,13 @@
               ]
             }
           },
+          "request_limits": {
+            "type": "array",
+            "description": "The key's own request limits (from its holder-level model config), each with its `scope` and current usage. Always present; empty when the key has none. For a key managed by an enterprise access profile, the request limits of the profiles governing it.\n",
+            "items": {
+              "$ref": "#/components/schemas/RateLimit"
+            }
+          },
           "provider_configs": {
             "type": [
               "array",
@@ -139000,7 +139022,7 @@
             "description": "Per-model budget quotas and rate limits configured for this virtual key (model-level limits). Always an array — the endpoint fails closed (500) rather than returning null when the model-config lookup errors.\n",
             "items": {
               "type": "object",
-              "description": "Per-model budgets and rate limit (with current usage) for a model governed under a virtual key",
+              "description": "Per-model budgets, rate limit and request limits (with current usage) for a model governed under a virtual key",
               "required": [
                 "model_name"
               ],
@@ -139032,6 +139054,13 @@
                       "type": "null"
                     }
                   ]
+                },
+                "request_limits": {
+                  "type": "array",
+                  "description": "Request limits for this model; omitted when there are none",
+                  "items": {
+                    "$ref": "#/components/schemas/RateLimit"
+                  }
                 }
               }
             }
@@ -139114,6 +139143,13 @@
                 "rate_limit": {
                   "$ref": "#/components/schemas/CreateRateLimitRequest"
                 },
+                "request_limits": {
+                  "type": "array",
+                  "description": "Request limits of this provider tier, one per reset duration and scope. Scopes `shared` and `model` are accepted; `mcp` is refused, since MCP tool executions never reach this tier. Sending `rate_limit.request_max_limit` or `rate_limit.request_reset_duration` together with this field is rejected with 400.\n",
+                  "items": {
+                    "$ref": "#/components/schemas/RequestLimitRequest"
+                  }
+                },
                 "key_ids": {
                   "type": "array",
                   "description": "Provider API key IDs allowed for this config. `[\"*\"]` allows every key for the provider; an empty or omitted array denies all keys.",
@@ -139157,6 +139193,13 @@
           },
           "rate_limit": {
             "$ref": "#/components/schemas/CreateRateLimitRequest"
+          },
+          "request_limits": {
+            "type": "array",
+            "description": "Request limits of the key, one per reset duration and scope. Scopes `shared`, `model` and `mcp` are accepted. They are stored on the key's holder-level model config, next to its budgets. Sending `rate_limit.request_max_limit` or `rate_limit.request_reset_duration` together with this field is rejected with 400.\n",
+            "items": {
+              "$ref": "#/components/schemas/RequestLimitRequest"
+            }
           },
           "is_active": {
             "type": "boolean"
@@ -139309,6 +139352,13 @@
                 "rate_limit": {
                   "$ref": "#/components/schemas/UpdateRateLimitRequest"
                 },
+                "request_limits": {
+                  "type": "array",
+                  "description": "Full desired set of request limits, one per reset duration and scope: `[]` removes them all, and omitting it leaves them unchanged unless `rate_limit` is sent (see UpdateRateLimitRequest). A limit matches an existing one by `id`, else by reset duration and scope, and keeps its usage when it does. Scopes `shared` and `model` are accepted; `mcp` is refused, since MCP tool executions never reach this tier. Sending `rate_limit.request_max_limit` or `rate_limit.request_reset_duration` together with this field is rejected with 400.\n",
+                  "items": {
+                    "$ref": "#/components/schemas/RequestLimitRequest"
+                  }
+                },
                 "key_ids": {
                   "type": "array",
                   "description": "Provider API key IDs allowed for this config. `[\"*\"]` allows every key for the provider; an empty or omitted array denies all keys.",
@@ -139354,6 +139404,13 @@
           },
           "rate_limit": {
             "$ref": "#/components/schemas/UpdateRateLimitRequest"
+          },
+          "request_limits": {
+            "type": "array",
+            "description": "Full desired set of request limits, one per reset duration and scope: `[]` removes them all, and omitting it leaves them unchanged unless `rate_limit` is sent (see UpdateRateLimitRequest). A limit matches an existing one by `id`, else by reset duration and scope, and keeps its usage when it does. Scopes `shared`, `model` and `mcp` are accepted. When provided, this list replaces all of the key's own request limits, of every scope, so send the full list (mapped from the response fields as RequestLimitRequest describes); a list without the `mcp` limits removes them. Sending `rate_limit.request_max_limit` or `rate_limit.request_reset_duration` together with this field is rejected with 400.\n",
+            "items": {
+              "$ref": "#/components/schemas/RequestLimitRequest"
+            }
           },
           "is_active": {
             "type": "boolean"
@@ -139455,6 +139512,13 @@
               "$ref": "#/components/schemas/Budget"
             }
           },
+          "request_limits": {
+            "type": "array",
+            "description": "Request limits owned by this team, one per reset duration and scope.\n",
+            "items": {
+              "$ref": "#/components/schemas/RateLimit"
+            }
+          },
           "virtual_keys": {
             "type": [
               "array",
@@ -139552,6 +139616,13 @@
             "items": {
               "$ref": "#/components/schemas/CreateBudgetRequest"
             }
+          },
+          "request_limits": {
+            "type": "array",
+            "description": "Request limits to create for this team, one per reset duration and scope. Scopes `shared`, `model` and `mcp` are accepted. Sending `rate_limit.request_max_limit` or `rate_limit.request_reset_duration` together with this field is rejected with 400.\n",
+            "items": {
+              "$ref": "#/components/schemas/RequestLimitRequest"
+            }
           }
         }
       },
@@ -139570,6 +139641,13 @@
             "description": "Replacement set of budgets for this team; reset durations must be unique",
             "items": {
               "$ref": "#/components/schemas/CreateBudgetRequest"
+            }
+          },
+          "request_limits": {
+            "type": "array",
+            "description": "Full desired set of request limits, one per reset duration and scope: `[]` removes them all, and omitting it leaves them unchanged unless `rate_limit` is sent (see UpdateRateLimitRequest). A limit matches an existing one by `id`, else by reset duration and scope, and keeps its usage when it does. Scopes `shared`, `model` and `mcp` are accepted. Sending `rate_limit.request_max_limit` or `rate_limit.request_reset_duration` together with this field is rejected with 400.\n",
+            "items": {
+              "$ref": "#/components/schemas/RequestLimitRequest"
             }
           },
           "reset_budget_usage": {
@@ -139593,6 +139671,13 @@
           },
           "budget": {
             "$ref": "#/components/schemas/Budget"
+          },
+          "request_limits": {
+            "type": "array",
+            "description": "Request limits owned by this customer, one per reset duration and scope.\n",
+            "items": {
+              "$ref": "#/components/schemas/RateLimit"
+            }
           },
           "teams": {
             "type": "array",
@@ -139679,6 +139764,13 @@
           },
           "budget": {
             "$ref": "#/components/schemas/CreateBudgetRequest"
+          },
+          "request_limits": {
+            "type": "array",
+            "description": "Request limits to create for this customer, one per reset duration and scope. Scopes `shared`, `model` and `mcp` are accepted. Sending `rate_limit.request_max_limit` or `rate_limit.request_reset_duration` together with this field is rejected with 400.\n",
+            "items": {
+              "$ref": "#/components/schemas/RequestLimitRequest"
+            }
           }
         }
       },
@@ -139691,6 +139783,13 @@
           },
           "budget": {
             "$ref": "#/components/schemas/UpdateBudgetRequest"
+          },
+          "request_limits": {
+            "type": "array",
+            "description": "Full desired set of request limits, one per reset duration and scope: `[]` removes them all, and omitting it leaves them unchanged unless `rate_limit` is sent (see UpdateRateLimitRequest). A limit matches an existing one by `id`, else by reset duration and scope, and keeps its usage when it does. Scopes `shared`, `model` and `mcp` are accepted. Sending `rate_limit.request_max_limit` or `rate_limit.request_reset_duration` together with this field is rejected with 400.\n",
+            "items": {
+              "$ref": "#/components/schemas/RequestLimitRequest"
+            }
           },
           "reset_budget_usage": {
             "type": "boolean",
@@ -139858,6 +139957,28 @@
           "request_last_reset": {
             "type": "string",
             "format": "date-time"
+          },
+          "scope": {
+            "type": "string",
+            "enum": [
+              "shared",
+              "model",
+              "mcp"
+            ],
+            "default": "shared",
+            "description": "Traffic a request limit counts: `shared` (model requests and MCP tool executions), `model` (model requests only) or `mcp` (MCP tool executions only). Always `shared` on a rate limit that is not a request limit.\n"
+          },
+          "model_config_id": {
+            "type": "string",
+            "description": "Set on a request limit owned by a model config. A request limit carries request fields only."
+          },
+          "team_id": {
+            "type": "string",
+            "description": "Set on a request limit owned by a team."
+          },
+          "customer_id": {
+            "type": "string",
+            "description": "Set on a request limit owned by a customer."
           },
           "config_hash": {
             "type": [
@@ -140219,9 +140340,42 @@
           }
         }
       },
+      "RequestLimitRequest": {
+        "type": "object",
+        "description": "One request limit - at most `max_limit` requests per `reset_duration`, counted for the traffic `scope` selects. Responses return request limits as governance rate-limit rows (`RateLimit`: `id`, `request_max_limit`, `request_reset_duration`, `scope`, plus usage), while requests take `{id, max_limit, reset_duration, scope}`, so a GET-modify-PUT must map `request_max_limit` to `max_limit` and `request_reset_duration` to `reset_duration`.\n",
+        "required": [
+          "max_limit",
+          "reset_duration"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "ID of an existing request limit of this holder to update in place; omitted matches by reset duration and scope."
+          },
+          "max_limit": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 1,
+            "description": "Maximum requests per reset window"
+          },
+          "reset_duration": {
+            "type": "string",
+            "description": "Reset duration (e.g., \"30s\", \"5m\", \"1h\", \"1d\", \"1w\", \"1M\")"
+          },
+          "scope": {
+            "type": "string",
+            "enum": [
+              "shared",
+              "model",
+              "mcp"
+            ],
+            "description": "Traffic the limit counts: `shared` (default), `model` or `mcp`. Which scopes a holder accepts follows what reaches it, as for budgets.\n"
+          }
+        }
+      },
       "CreateRateLimitRequest": {
         "type": "object",
-        "description": "Create rate limit request",
+        "description": "Create rate limit request. The rate limit carries the token limit; request limits are sent in `request_limits`. A `request_max_limit` here without `request_limits` is still accepted and stored as one request limit of the default scope.\n",
         "properties": {
           "token_max_limit": {
             "type": "integer",
@@ -140241,7 +140395,7 @@
       },
       "UpdateRateLimitRequest": {
         "type": "object",
-        "description": "Update rate limit request",
+        "description": "Update rate limit request. The rate limit carries the token limit; request limits are sent in `request_limits`. A `rate_limit` sent without `request_limits` is read as the combined state it used to be: its `request_max_limit` / `request_reset_duration` replace the holder's request limits with one of the default scope, and naming no request fields removes the holder's request limits. Only a body that omits both `rate_limit` and `request_limits` leaves the request limits unchanged. A rate limit naming no maximum removes the token limit. When the holder's rate limit still carries a request limit from an earlier release, an update that sets `rate_limit` or `request_limits` leaves the holder's request limits as exactly its `request_limits`: a row only this holder uses drops its request fields, a row other holders share is left to them and this holder gets a token-only copy, and a new request limit of the same reset duration (scope `shared`) keeps the old counter.\n",
         "properties": {
           "token_max_limit": {
             "type": "integer",
@@ -141521,6 +141675,13 @@
             "$ref": "#/components/schemas/RateLimit",
             "description": "Rate limit configuration for this model"
           },
+          "request_limits": {
+            "type": "array",
+            "description": "Request limits owned by this model config, one per reset duration and scope.\n",
+            "items": {
+              "$ref": "#/components/schemas/RateLimit"
+            }
+          },
           "created_at": {
             "type": "string",
             "format": "date-time",
@@ -141612,6 +141773,13 @@
           "rate_limit": {
             "$ref": "#/components/schemas/CreateRateLimitRequest",
             "description": "Rate limit configuration"
+          },
+          "request_limits": {
+            "type": "array",
+            "description": "Request limits to create for this config, one per reset duration and scope. A config that covers every model on every provider (`model_name: \"*\"`, no provider) holds its scope's own limits and takes `shared`, `model` and `mcp`; a narrower config takes `shared` and `model`. Sending `rate_limit.request_max_limit` or `rate_limit.request_reset_duration` together with this field is rejected with 400.\n",
+            "items": {
+              "$ref": "#/components/schemas/RequestLimitRequest"
+            }
           }
         }
       },
@@ -141638,6 +141806,13 @@
             "$ref": "#/components/schemas/UpdateRateLimitRequest",
             "description": "Rate limit configuration"
           },
+          "request_limits": {
+            "type": "array",
+            "description": "Full desired set of request limits, one per reset duration and scope: `[]` removes them all, and omitting it leaves them unchanged unless `rate_limit` is sent (see UpdateRateLimitRequest). A limit matches an existing one by `id`, else by reset duration and scope, and keeps its usage when it does. A config that covers every model on every provider (`model_name: \"*\"`, no provider) takes `shared`, `model` and `mcp`; a narrower config takes `shared` and `model`. The set holds every scope, so a client that edits only some scopes (the Models or the MCP Budgets & Limits page) sends back the others as returned. Sending `rate_limit.request_max_limit` or `rate_limit.request_reset_duration` together with this field is rejected with 400.\n",
+            "items": {
+              "$ref": "#/components/schemas/RequestLimitRequest"
+            }
+          },
           "reset_budget_usage": {
             "type": "boolean",
             "description": "When true, zeroes current usage on the budgets reconciled by this update. The reset window is left alone: last_reset only ever advances, and never as a side effect of a configuration write, so the current window keeps its existing start and end.\n"
@@ -141659,6 +141834,13 @@
           "rate_limit": {
             "$ref": "#/components/schemas/RateLimit",
             "description": "Rate limit configuration for this provider"
+          },
+          "request_limits": {
+            "type": "array",
+            "description": "Request limits of this provider.\n",
+            "items": {
+              "$ref": "#/components/schemas/RateLimit"
+            }
           }
         }
       },
@@ -141684,6 +141866,13 @@
           "rate_limit": {
             "$ref": "#/components/schemas/RateLimit",
             "description": "Rate limit configuration"
+          },
+          "request_limits": {
+            "type": "array",
+            "description": "Request limits of this provider.\n",
+            "items": {
+              "$ref": "#/components/schemas/RateLimit"
+            }
           },
           "calendar_aligned": {
             "type": "boolean",
@@ -141727,6 +141916,13 @@
           "rate_limit": {
             "$ref": "#/components/schemas/UpdateRateLimitRequest",
             "description": "Rate limit configuration"
+          },
+          "request_limits": {
+            "type": "array",
+            "description": "Full desired set of request limits, one per reset duration and scope: `[]` removes them all, and omitting it leaves them unchanged unless `rate_limit` is sent (see UpdateRateLimitRequest). A limit matches an existing one by `id`, else by reset duration and scope, and keeps its usage when it does. Scopes `shared` and `model` are accepted; `mcp` is refused, since MCP tool executions never reach this tier. Sending `rate_limit.request_max_limit` or `rate_limit.request_reset_duration` together with this field is rejected with 400.\n",
+            "items": {
+              "$ref": "#/components/schemas/RequestLimitRequest"
+            }
           },
           "calendar_aligned": {
             "type": "boolean",

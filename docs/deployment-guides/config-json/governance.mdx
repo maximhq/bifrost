@@ -168,8 +168,55 @@ Rate limits cap requests or tokens over a rolling window:
 | `request_reset_duration` | No | Window for request counter |
 | `token_max_limit` | No | Maximum tokens (input + output) in window |
 | `token_reset_duration` | No | Window for token counter |
+| `scope` | No | `"shared"` (default), `"model"` or `"mcp"`: which traffic a request limit counts. Only valid on a request limit (a row with an owner below); an unowned rate limit is always `"shared"`. `"mcp"` is accepted on team and customer rules and on rules of a model config for `*` with no provider; every other owner takes `"shared"` or `"model"`. See [Request limit scope](/features/governance/budget-and-limits#request-limit-scope) |
+| `model_config_id` | No | Make the row a request limit owned by this model config |
+| `team_id` | No | Make the row a request limit owned by this team |
+| `customer_id` | No | Make the row a request limit owned by this customer |
 
 Attach a rate limit to a virtual key via `virtual_keys[].rate_limit_id`, or to a provider config via `virtual_keys[].provider_configs[].rate_limit_id`.
+
+### Request limits
+
+A row with an owner (`model_config_id`, `team_id` or `customer_id`, at most one) is a **request limit**: one of the owner's request limits. It sets `request_max_limit` and `request_reset_duration` only, never a token limit, and is not referenced through a `rate_limit_id`. An owner can hold several, one per reset duration and scope; a second rule with the same reset duration and scope fails the config load. A virtual key's own request limits belong to its holder-level model config (`model_name` `"*"`, no provider, `scope` `"virtual_key"`), and the deployment's to the global model config for `"*"` with no provider:
+
+```json
+{
+  "governance": {
+    "model_configs": [
+      {
+        "id": "mc-vk-dev-toplevel",
+        "model_name": "*",
+        "scope": "virtual_key",
+        "scope_id": "vk-dev-all"
+      }
+    ],
+    "rate_limits": [
+      {
+        "id": "rl-vk-dev-requests",
+        "request_max_limit": 600,
+        "request_reset_duration": "1m",
+        "model_config_id": "mc-vk-dev-toplevel"
+      },
+      {
+        "id": "rl-vk-dev-mcp",
+        "request_max_limit": 60,
+        "request_reset_duration": "1m",
+        "scope": "mcp",
+        "model_config_id": "mc-vk-dev-toplevel"
+      },
+      {
+        "id": "rl-team-ml-model",
+        "request_max_limit": 1000,
+        "request_reset_duration": "1h",
+        "scope": "model",
+        "team_id": "team-ml"
+      }
+    ]
+  }
+}
+```
+
+A rate limit with request fields and no owner, referenced by exactly one holder through `rate_limit_id`, still loads as before: its request limit becomes one Shared request limit of that holder, as on upgrade, and the row keeps its token limit. A row several holders reference stays combined.
 
 ---
 
