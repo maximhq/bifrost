@@ -134,6 +134,7 @@ type ClientConfig struct {
 	SkipAccessProfileUserVirtualKeyCreation bool                                  `json:"skip_access_profile_user_virtual_key_creation"` // Enterprise: a user's first access profile does not create a virtual key for them
 	SkipAccessProfileUserVirtualKeyDeletion bool                                  `json:"skip_access_profile_user_virtual_key_deletion"` // Enterprise: losing the last access profile does not delete the user's virtual keys
 	HiddenRequestTypes                      []string                              `json:"hidden_request_types,omitempty"`                // Request types excluded from dashboard and log API reads; logs are still written
+	UsageEstimationTokenizers               []string                              `json:"usage_estimation_tokenizers,omitempty"`         // Embedded tokenizer families ("anthropic", "deepseek", "llama2", "llama3", "all") used to estimate a cancelled stream's usage; empty uses only o200k_base/cl100k_base
 	RoutingChainMaxDepth                    int                                   `json:"routing_chain_max_depth"`                       // Maximum depth for routing rule chain evaluation (default: 10)
 	MCPExternalClientURL                    *schemas.SecretVar                    `json:"mcp_external_client_url,omitempty"`             // Public base URL used as redirect_uri when Bifrost acts as an OAuth client to upstream MCP servers. Supports env var syntax ("env.MY_VAR")
 	SkillsExternalClientURL                 *schemas.SecretVar                    `json:"skills_external_client_url,omitempty"`          // Public base URL for Skills Repository marketplaces; empty disables marketplace serving
@@ -475,6 +476,20 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 			return "", err
 		}
 		hash.Write([]byte("hiddenRequestTypes:"))
+		hash.Write(data)
+	}
+
+	// Hash UsageEstimationTokenizers (sorted for deterministic hashing). Only
+	// hashed when set so existing config hashes do not churn on upgrade.
+	if len(c.UsageEstimationTokenizers) > 0 {
+		sortedTokenizers := make([]string, len(c.UsageEstimationTokenizers))
+		copy(sortedTokenizers, c.UsageEstimationTokenizers)
+		sort.Strings(sortedTokenizers)
+		data, err := sonic.Marshal(sortedTokenizers)
+		if err != nil {
+			return "", err
+		}
+		hash.Write([]byte("usageEstimationTokenizers:"))
 		hash.Write(data)
 	}
 

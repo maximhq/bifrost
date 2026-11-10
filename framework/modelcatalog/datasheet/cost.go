@@ -193,6 +193,14 @@ func (s *Store) CalculateCostForUsage(usage *schemas.BifrostLLMUsage, provider s
 // bare usage object (failed/cancelled requests) can denormalize the input /
 // output / additional split, not just the scalar total. Returns nil when there
 // is no cost to record.
+//
+// Every consumer of a cancelled stream's BilledUsage (tracing, governance,
+// logging, telemetry, the live meter) prices it here, so they agree. The order:
+//  1. a usable provider-reported usage.Cost wins, even when usage.Estimation is
+//     set (unless the provider is configured with ignore_provider_cost);
+//  2. otherwise the tokens are priced at catalog rates. Estimated fields
+//     (usage.Estimation, filled by core/streamusage only where the provider
+//     reported nothing) are priced exactly like reported ones.
 func (s *Store) CalculateCostBreakdownForUsage(usage *schemas.BifrostLLMUsage, provider schemas.ModelProvider, model string, requestType schemas.RequestType, scopes *LookupScopes) *schemas.BifrostCost {
 	if usage == nil {
 		return nil
