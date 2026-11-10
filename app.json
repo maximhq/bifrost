@@ -1,0 +1,49 @@
+{
+  "name": "Bifrost",
+  "description": "Bifrost AI gateway: one OpenAI-compatible API in front of every model provider, with a dashboard, logging, caching and governance. PostgreSQL-backed configuration and log stores.",
+  "repository": "https://github.com/maximhq/bifrost",
+  "logo": "https://raw.githubusercontent.com/maximhq/bifrost/main/docs/favicon.png",
+  "keywords": [
+    "ai",
+    "llm",
+    "gateway",
+    "openai",
+    "anthropic",
+    "proxy"
+  ],
+  "website": "https://www.getbifrost.ai",
+  "success_url": "/",
+  "stack": "container",
+  "addons": [
+    {
+      "plan": "heroku-postgresql:essential-0",
+      "as": "DATABASE"
+    }
+  ],
+  "env": {
+    "APP_HOST": {
+      "description": "Bind address inside the dyno.",
+      "value": "0.0.0.0",
+      "required": true
+    },
+    "BIFROST_CONFIG_JSON": {
+      "description": "Bifrost config.json. Every value is an env reference; the entrypoint writes it on first boot and derives PG_* from DATABASE_URL.",
+      "value": "{\n  \"$schema\": \"https://www.getbifrost.ai/schema\",\n  \"encryption_key\": \"env.BIFROST_ENCRYPTION_KEY\",\n  \"setup_token\": \"env.BIFROST_SETUP_TOKEN\",\n  \"client\": {\n    \"enforce_auth_on_inference\": true\n  },\n  \"config_store\": {\n    \"enabled\": true,\n    \"type\": \"postgres\",\n    \"config\": {\n      \"host\": \"env.PG_HOST\",\n      \"port\": \"env.PG_PORT\",\n      \"user\": \"env.PG_USER\",\n      \"password\": \"env.PG_PASSWORD\",\n      \"db_name\": \"env.PG_DATABASE\",\n      \"ssl_mode\": \"env.PG_SSL_MODE\"\n    }\n  },\n  \"logs_store\": {\n    \"enabled\": true,\n    \"type\": \"postgres\",\n    \"config\": {\n      \"host\": \"env.PG_HOST\",\n      \"port\": \"env.PG_PORT\",\n      \"user\": \"env.PG_USER\",\n      \"password\": \"env.PG_PASSWORD\",\n      \"db_name\": \"env.PG_DATABASE\",\n      \"ssl_mode\": \"env.PG_SSL_MODE\"\n    }\n  }\n}",
+      "required": true
+    },
+    "BIFROST_ENCRYPTION_KEY": {
+      "description": "Stable key protecting persisted credentials. Generated once; never change it afterwards.",
+      "generator": "secret"
+    },
+    "BIFROST_SETUP_TOKEN": {
+      "description": "One-time token for creating the first admin account. Read it from the app's config vars after deploy.",
+      "generator": "secret"
+    }
+  },
+  "formation": {
+    "web": {
+      "quantity": 1,
+      "size": "basic"
+    }
+  }
+}

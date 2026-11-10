@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # Pins the one-click deploy templates to a freshly released transport version.
 #
-# Today that is render.yaml at the repository root (the "Deploy to Render"
-# Blueprint). The Railway template tracks :latest and needs nothing here.
+# render.yaml (Render Blueprint), .do/deploy.template.yaml (DigitalOcean App
+# Platform) and deploy/heroku/Dockerfile (Heroku container build) pin the tag.
+# The Railway template, the Koyeb button and the Fly.io config track :latest
+# and need nothing here.
 #
 # Only stable versions are pinned, matching create-docker-manifest.sh which
 # only moves the :latest tag for stable versions.
@@ -21,22 +23,23 @@ if [[ "$VERSION" == *-* ]]; then
 fi
 
 TAG="v$VERSION"
-FILES=(render.yaml)
+FILES=(render.yaml .do/deploy.template.yaml deploy/heroku/Dockerfile)
 CHANGED=()
 
 for file in "${FILES[@]}"; do
-  if ! grep -qE 'maximhq/bifrost:v[0-9][0-9A-Za-z.+-]*' "$file"; then
+  if ! grep -qE 'maximhq/bifrost:v[0-9][0-9A-Za-z.+-]*|^ *tag: v[0-9][0-9A-Za-z.+-]*' "$file"; then
     echo "::warning::$file has no pinned maximhq/bifrost tag; skipping"
     continue
   fi
   # Exact tag only: a pinned prerelease such as v2.5.0-rc1 must not count as
   # v2.5.0 being pinned, so escape the dots and require the tag to end here.
-  if grep -qE "maximhq/bifrost:${TAG//./\\.}([^0-9A-Za-z.+-]|\$)" "$file"; then
+  # Covers both the image reference form and DigitalOcean's `tag:` field.
+  if grep -qE "(maximhq/bifrost:|^ *tag: )${TAG//./\\.}([^0-9A-Za-z.+-]|\$)" "$file"; then
     echo "$file already pins $TAG"
     continue
   fi
   # Write through a temp file: BSD sed treats "-i -E" as a backup suffix.
-  sed -E "s#(maximhq/bifrost:)v[0-9][0-9A-Za-z.+-]*#\1$TAG#g" "$file" > "$file.tmp"
+  sed -E "s#(maximhq/bifrost:)v[0-9][0-9A-Za-z.+-]*#\1$TAG#g; s#^( *tag: )v[0-9][0-9A-Za-z.+-]*#\1$TAG#" "$file" > "$file.tmp"
   mv "$file.tmp" "$file"
   CHANGED+=("$file")
   echo "Pinned $file to $TAG"

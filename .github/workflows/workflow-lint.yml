@@ -17,6 +17,13 @@ on:
       - "transports/Dockerfile.local"
       - "transports/Dockerfile.redhat"
       - "deploy/**"
+      - ".do/**"
+      - "app.json"
+      - "heroku.yml"
+      - "render.yaml"
+      - "README.md"
+      - "docs/quickstart/gateway/setting-up.mdx"
+      - "docs/deployment-guides/platforms/koyeb.mdx"
 
 permissions:
   contents: read
@@ -99,3 +106,6 @@ jobs:
 
       - name: Check the Fly.io one-click deploy script
         run: bash ./deploy/fly/deploy.test.sh
+
+      - name: Check the Heroku, DigitalOcean and Koyeb templates
+        run: bash ./deploy/templates.test.sh

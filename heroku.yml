@@ -1,0 +1,6 @@
+# Heroku container-stack manifest for the "Deploy to Heroku" button.
+# The image is the published Bifrost release (see deploy/heroku/Dockerfile);
+# Heroku supplies PORT and DATABASE_URL, which the image entrypoint honours.
+build:
+  docker:
+    web: deploy/heroku/Dockerfile

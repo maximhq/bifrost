@@ -1,0 +1,78 @@
+# DigitalOcean App Platform template for the "Deploy to DigitalOcean" button.
+#
+# One web service running the published Bifrost image plus a dev PostgreSQL
+# database bound through DATABASE_URL, which the image entrypoint turns into
+# the PG_* settings the config.json references. The two SECRET placeholders
+# must be replaced on the review screen before the first deploy. The image tag
+# is pinned and bumped by the release pipeline.
+spec:
+  name: bifrost
+  region: nyc
+  services:
+    - name: bifrost
+      image:
+        registry_type: DOCKER_HUB
+        registry: maximhq
+        repository: bifrost
+        tag: v2.5.0
+      http_port: 8080
+      instance_count: 1
+      instance_size_slug: apps-s-1vcpu-2gb
+      health_check:
+        http_path: /health
+        initial_delay_seconds: 30
+        period_seconds: 30
+      envs:
+        - key: APP_HOST
+          scope: RUN_TIME
+          value: "0.0.0.0"
+        - key: DATABASE_URL
+          scope: RUN_TIME
+          value: ${bifrost-db.DATABASE_URL}
+        - key: BIFROST_ENCRYPTION_KEY
+          scope: RUN_TIME
+          type: SECRET
+          value: REPLACE_WITH_A_LONG_RANDOM_STRING_AND_NEVER_CHANGE_IT
+        - key: BIFROST_SETUP_TOKEN
+          scope: RUN_TIME
+          type: SECRET
+          value: REPLACE_WITH_A_RANDOM_STRING_YOU_WILL_USE_ONCE
+        # Same document as deploy/config.postgres.json.
+        - key: BIFROST_CONFIG_JSON
+          scope: RUN_TIME
+          value: |
+            {
+              "$schema": "https://www.getbifrost.ai/schema",
+              "encryption_key": "env.BIFROST_ENCRYPTION_KEY",
+              "setup_token": "env.BIFROST_SETUP_TOKEN",
+              "client": { "enforce_auth_on_inference": true },
+              "config_store": {
+                "enabled": true,
+                "type": "postgres",
+                "config": {
+                  "host": "env.PG_HOST",
+                  "port": "env.PG_PORT",
+                  "user": "env.PG_USER",
+                  "password": "env.PG_PASSWORD",
+                  "db_name": "env.PG_DATABASE",
+                  "ssl_mode": "env.PG_SSL_MODE"
+                }
+              },
+              "logs_store": {
+                "enabled": true,
+                "type": "postgres",
+                "config": {
+                  "host": "env.PG_HOST",
+                  "port": "env.PG_PORT",
+                  "user": "env.PG_USER",
+                  "password": "env.PG_PASSWORD",
+                  "db_name": "env.PG_DATABASE",
+                  "ssl_mode": "env.PG_SSL_MODE"
+                }
+              }
+            }
+  databases:
+    - name: bifrost-db
+      engine: PG
+      version: "16"
+      production: false
