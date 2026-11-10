@@ -316404,11 +316404,11 @@
       ]
     },
     {
-      "name": "332. OpenAI passthrough-encoding (#9764)",
+      "name": "332. OpenAI passthrough-encoding (#9764 / PR #9804)",
       "description": "Local gzip regression. Raw JSON and Responses bodies retain encoding metadata. Buffered JSON remains decoded and unlabeled. The delayed gzip Responses case detects plaintext heartbeat or failure injection. Newman decodes HTTP gzip, so these cases assert the exact decoded body and response header. Go transport tests also compare raw wire bytes. A truncated gzip response before its first body byte must produce an unlabeled JSON error. No paid provider calls. Start: node tests/e2e/api/runners/run-passthrough-encoding-fixture.mjs /tmp/bifrost-passthrough-encoding. Start a gateway from this checkout: make dev PORT=3024 APP_DIR=/tmp/bifrost-passthrough-encoding. Verify port 3024 is free first and wait for /health. Log in at POST /api/session/login using encoding-fixture / fixture-only-password and export its token cookie as BIFROST_E2E_AUTH_HEADER=\"Bearer <token>\". Run: make run-provider-harness-test PROVIDER=openai FEATURE=\"passthrough-encoding\" INCLUDE_PREVIEW=1 PARALLEL=0 COMPAT=off DB_VERIFY=0 SKIP_STREAM_CANCEL=1 BASE_URL=http://localhost:3024. Stop both servers and remove the temporary profile afterward. PREVIEW keeps these fixture cases out of paid sweeps.",
       "item": [
         {
-          "name": "[PREVIEW] OpenAI passthrough-encoding raw JSON gzip - #9764",
+          "name": "[PREVIEW] OpenAI passthrough-encoding raw JSON gzip (gzip-fixture) - #9764",
           "event": [
             {
               "listen": "test",
@@ -316440,7 +316440,7 @@
           }
         },
         {
-          "name": "[PREVIEW] OpenAI passthrough-encoding buffered JSON gzip - #9764",
+          "name": "[PREVIEW] OpenAI passthrough-encoding buffered JSON gzip (gzip-fixture) - #9764",
           "event": [
             {
               "listen": "test",
@@ -316472,7 +316472,7 @@
           }
         },
         {
-          "name": "[PREVIEW] OpenAI passthrough-encoding raw Responses gzip idle - #9764",
+          "name": "[PREVIEW] OpenAI passthrough-encoding raw Responses gzip idle (gzip-fixture) - #9764",
           "event": [
             {
               "listen": "test",
@@ -316504,7 +316504,7 @@
           }
         },
         {
-          "name": "[PREVIEW] OpenAI passthrough-encoding raw Responses identity - #9764",
+          "name": "[PREVIEW] OpenAI passthrough-encoding raw Responses identity (identity-fixture) - #9764",
           "event": [
             {
               "listen": "test",
@@ -316536,7 +316536,7 @@
           }
         },
         {
-          "name": "[PREVIEW] [EXPECT-500] OpenAI passthrough-encoding pre-body gzip read error - #9764",
+          "name": "[PREVIEW] [EXPECT-500] OpenAI passthrough-encoding pre-body gzip read error (gzip-error-fixture) - #9764",
           "event": [
             {
               "listen": "test",
