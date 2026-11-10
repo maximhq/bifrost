@@ -156,15 +156,16 @@ func omittedEffortReasons(caps schemas.ModelCaps, model string) bool {
 // datasheet's per-level booleans take precedence when a row exists.
 func defaultEffortControl(provider schemas.ModelProvider, model string) *schemas.EffortControl {
 	levels := []string{schemas.ReasoningEffortLow, schemas.ReasoningEffortMedium, schemas.ReasoningEffortHigh}
-	// BytePlus Ark accepts minimal/low/medium/high on every reasoning model.
-	if acceptsMinimalEffort(model) || provider == schemas.BytePlus {
+	// BytePlus Ark accepts minimal/low/medium/high on every reasoning model; Baseten
+	// Model APIs accepts minimal through max, and models without a level ignore it.
+	if acceptsMinimalEffort(model) || provider == schemas.BytePlus || provider == schemas.Baseten {
 		levels = append([]string{schemas.ReasoningEffortMinimal}, levels...)
 	}
 	if includeXHighInDefaultLadder(provider, model) {
 		levels = append(levels, schemas.ReasoningEffortXHigh)
 	}
 	// MiniMax accepts "max" on every chat model (and defaults to it); M2.x ignores effort entirely.
-	if acceptsMaxEffort(model) || provider == schemas.MiniMax {
+	if acceptsMaxEffort(model) || provider == schemas.MiniMax || provider == schemas.Baseten {
 		levels = append(levels, schemas.ReasoningEffortMax)
 	}
 	return &schemas.EffortControl{Levels: levels}

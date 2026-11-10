@@ -511,6 +511,7 @@
 		"grpcHostPortFormat": "gRPC では <host>:<port> の形式にしてください (例: {{example}})",
 		"invalidInput": "入力が無効です",
 		"vertexEndpointId": "Vertex エンドポイント ID を入力するか、対応するエンドポイント URL を貼り付けてください",
+		"basetenDeploymentUrl": "デプロイメント URL は絶対 https URL である必要があります",
 		"mcp": {
 			"privateKeyRequired": "private_key_jwt には秘密鍵が必要です",
 			"secretRequiredForMethod": "送信方法を選択するにはクライアントシークレットが必要です",

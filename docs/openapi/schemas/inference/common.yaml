@@ -41,6 +41,7 @@ ModelProvider:
     - minimax
     - byteplus
     - machgen
+    - baseten
 
 Fallback:
   type: object

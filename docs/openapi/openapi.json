@@ -118072,7 +118072,8 @@
           "typesafe",
           "minimax",
           "byteplus",
-          "machgen"
+          "machgen",
+          "baseten"
         ]
       },
       "Fallback": {

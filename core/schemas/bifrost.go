@@ -92,6 +92,7 @@ const (
 	MiniMax       ModelProvider = "minimax"
 	BytePlus      ModelProvider = "byteplus"
 	MachGen       ModelProvider = "machgen"
+	Baseten       ModelProvider = "baseten"
 )
 
 // SupportedBaseProviders is the list of base providers allowed for custom providers.
@@ -146,6 +147,7 @@ var StandardProviders = []ModelProvider{
 	MiniMax,
 	BytePlus,
 	MachGen,
+	Baseten,
 }
 
 // RequestType represents the type of request being made to a provider.
