@@ -529,6 +529,19 @@ func TestRunRequestUsageWriteFailureReturnsError(t *testing.T) {
 	}
 }
 
+// TestRunRequestUsageListsProjectFlags keeps the help in step with the
+// project selectors the command accepts.
+func TestRunRequestUsageListsProjectFlags(t *testing.T) {
+	var out bytes.Buffer
+	runner := &Runner{Out: &out}
+	if err := runner.runRequest(context.Background(), nil, []string{"--help"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "[--project-id ID|--project-name NAME]") {
+		t.Fatalf("usage does not list the project flags: %q", out.String())
+	}
+}
+
 // TestRunResourcesUsageWriteFailureReturnsError verifies a broken output
 // pipe while printing "bifrost resources" usage is reported.
 func TestRunResourcesUsageWriteFailureReturnsError(t *testing.T) {
@@ -944,5 +957,65 @@ func TestConfigureExistingJSONAgentsRestoresOriginalBytes(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestProjectConfigureRoundTrip verifies switching selectors and receipt-backed restoration.
+func TestProjectConfigureRoundTrip(t *testing.T) {
+	for _, agent := range []string{"claude", "codex", "opencode", "pi"} {
+		t.Run(agent, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			t.Setenv("CODEX_HOME", filepath.Join(home, "codex"))
+			t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "xdg"))
+			t.Setenv("PI_CODING_AGENT_DIR", filepath.Join(home, "pi"))
+			t.Setenv("BIFROST_VIRTUAL_KEY", "sk-bf-test")
+			runner, _, _ := newTestRunner(t, testRoundTripFunc(func(req *http.Request) (*http.Response, error) { t.Fatal("configure made a request"); return nil, nil }))
+			for _, flags := range [][]string{{"--project-id", "project-old"}, {"--project-name", "project-new"}} {
+				args := append([]string{"configure", agent, "--model", "test/model"}, flags...)
+				if err := runner.Run(context.Background(), args); err != nil {
+					t.Fatal(err)
+				}
+			}
+			paths, err := nativeConfigPaths(agent)
+			if err != nil {
+				t.Fatal(err)
+			}
+			body, err := os.ReadFile(paths[0])
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(body), "project-new") || strings.Contains(string(body), "project-old") {
+				t.Fatalf("wrong selection: %s", body)
+			}
+			if err := runner.Run(context.Background(), []string{"unconfigure", agent}); err != nil {
+				t.Fatal(err)
+			}
+			for _, path := range paths {
+				if _, err := os.Stat(path); !os.IsNotExist(err) {
+					t.Fatalf("generated file remains: %s (%v)", path, err)
+				}
+			}
+		})
+	}
+}
+
+// TestUnsupportedProjectConfigureDoesNotWrite prevents silently unattributed native sessions.
+func TestUnsupportedProjectConfigureDoesNotWrite(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("BIFROST_VIRTUAL_KEY", "sk-bf-test")
+	runner, _, _ := newTestRunner(t, nil)
+	for _, agent := range []string{"gemini", "antigravity"} {
+		if err := runner.Run(context.Background(), []string{"configure", agent, "--project-id", "p"}); err == nil {
+			t.Fatalf("accepted %s", agent)
+		}
+	}
+	entries, err := os.ReadDir(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("wrote unsupported configuration: %v", entries)
 	}
 }

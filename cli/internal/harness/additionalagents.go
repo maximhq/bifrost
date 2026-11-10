@@ -45,10 +45,26 @@ func writePiConfig(paths []string, baseURL, apiKey, model string) error {
 		return err
 	}
 	// Replace only our provider, removing stale per-model URLs, headers and keys.
-	providers["bifrost"] = map[string]any{
+	// A saved project selector is kept so a plain reconfigure does not drop
+	// project attribution; WriteProjectConfig replaces it when one is given.
+	provider := map[string]any{
 		"name": "Bifrost", "baseUrl": openAIBaseURL(baseURL), "api": "openai-completions", "authHeader": true,
 		"models": []any{map[string]any{"id": model, "name": model}},
 	}
+	if previous, ok := providers["bifrost"].(map[string]any); ok {
+		if headers, ok := previous["headers"].(map[string]any); ok {
+			kept := map[string]any{}
+			for key, value := range headers {
+				if config.IsProjectHeader(key) {
+					kept[key] = value
+				}
+			}
+			if len(kept) > 0 {
+				provider["headers"] = kept
+			}
+		}
+	}
+	providers["bifrost"] = provider
 	// Saved credentials take precedence over models.json; update the same provider
 	// in auth.json, retaining all other providers' credentials.
 	auth["bifrost"] = map[string]any{"type": "api_key", "key": apiKey}

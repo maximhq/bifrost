@@ -1,1 +1,2 @@
+[feat]: CLI project ID/name selection for inference and coding harnesses, reversible native configuration, and Claude Desktop credential-helper JSON [@R-droid101](https://github.com/R-droid101)
 [feat]: add optional browser login to auth print-token [@CallumWayve](https://github.com/CallumWayve)

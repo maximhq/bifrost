@@ -6,6 +6,21 @@ icon: "list"
 
 Commands use the current [context](/quickstart/cli/contexts) and load only the credentials they need: inference commands use the virtual key or SSO session, and administrative commands use the management credential. Run `bifrost help` for the full command list and `bifrost <command> --help` for details.
 
+## Project-scoped inference
+
+```bash
+bifrost chat --model anthropic/claude-sonnet-4-6 --message "Hello" --project-name customer-alpha
+bifrost infer responses --file request.json --project-id PROJECT_ID --stream
+bifrost request POST /anthropic/v1/messages --file message.json --project-id PROJECT_ID
+```
+
+The `chat`, `infer`, and `request` commands accept mutually exclusive `--project-id` and `--project-name` flags. `request` requires inference authentication for these flags (automatic for non-management paths, or explicit with `--auth inference`). The selected header replaces any project ID or name supplied through `--header`, and applies to buffered and streaming requests. Unrelated headers and authentication are preserved. Project flags are command options, not global options for management commands.
+
+For harness launches and reversible native configuration, see [project selection](/quickstart/cli/coding-agents#attribute-requests-to-a-project).
+
+`bifrost auth print-token --format claude-desktop --project-id PROJECT_ID` emits a Desktop credential-helper JSON object containing `token` and `headers`. It validates the SSO credential against the project-scoped model endpoint before printing. Keep stdout private: it contains a credential. The default `text` format remains token-only and does not accept project selectors.
+
+
 ## Inspect the gateway and your access
 
 ```bash
