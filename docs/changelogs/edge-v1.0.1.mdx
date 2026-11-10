@@ -1,0 +1,20 @@
+---
+title: "v1.0.1"
+description: "Edge v1.0.1 changelog - 2026-11-06"
+---
+
+<Update label="Bifrost Edge" description="v1.0.1">
+
+## Changelog
+
+v1.0.1 is a fix release for Claude Desktop and gateway model lists. Desktop gateway Chat keeps its conversation history across follow-ups and resends, the Effort menu shows for every model in the Chat, Code and Cowork pickers, and large gateway model lists load at startup.
+
+## 🐞 Fixed
+
+- **Desktop Chat History** - A Claude Desktop gateway Chat follow-up that omits its parent continues from the current turn instead of starting a new branch, so earlier turns are kept.
+- **Desktop Chat Resend** - A resent failed message stays on the branch its first send chose.
+- **Effort Menu in Claude Desktop** - The Effort menu shows for every model in the Chat, Code and Cowork pickers, including provider-qualified Claude ids and non-Claude models. The gateway translates or drops effort per provider.
+- **Gateway Model List at Startup** - Gateways with thousands of models load the full model list at startup. The time limit applies per page, and a failed load retries after 30 seconds, backing off to 2 minutes, instead of waiting 10 minutes.
+- **Gateway Base Path** - Edge keeps the gateway URL's path (`server.base_path`) in front of the integration route, including for Cursor requests.
+
+</Update>

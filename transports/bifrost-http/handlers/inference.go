@@ -2487,7 +2487,7 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, bi
 			// Fallback: on early-return paths (client disconnect, interceptor error)
 			// we never reached the pre-[DONE] invocation, so run it now. Any error is
 			// logged server-side only — the stream is already closing.
-			runCompleter(false)
+			lib.RunRecovered("stream transport post-hook completer", func() { runCompleter(false) })
 			// Safe now: the heartbeat goroutine has fully exited (waited on above), so no
 			// other goroutine can be mid-send on eventCh when this closes it. Closing it
 			// while a send was still in flight would panic ("send on closed channel").
@@ -2495,9 +2495,20 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, bi
 			// Complete the trace after streaming finishes, passing transport plugin logs.
 			// This ensures all spans (including llm.call) are properly ended before the trace is sent to OTEL.
 			if traceCompleter != nil {
-				traceCompleter(transportLogs)
+				lib.RunRecovered("stream trace completer", func() { traceCompleter(transportLogs) })
 			}
 		}()
+		// Registered after the teardown above so it runs first: a panic while converting a
+		// chunk is logged, an error frame goes to the client, upstream is cancelled and
+		// drained, then the teardown closes the stream.
+		defer lib.RecoverStreamProducer(cancel, stream, func() {
+			if errorJSON, err := sonic.Marshal(lib.SanitizeBifrostErrorForClient(lib.StreamProducerPanicError())); err == nil {
+				if stripExtraFields {
+					errorJSON = lib.StripExtraFields(errorJSON)
+				}
+				reader.SendError(errorJSON)
+			}
+		})
 
 		var includeEventType bool
 		var skipDoneMarker bool

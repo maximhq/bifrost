@@ -29,6 +29,20 @@ const geminiBody = JSON.stringify({
 	usageMetadata: { promptTokenCount: 1, candidatesTokenCount: 1, totalTokenCount: 2 },
 	modelVersion: "gemini-2.5-flash",
 });
+// A prompt carrying NULL_PART_MARKER gets Gemini replies whose candidate parts hold a JSON
+// null beside the text, the shape that used to crash the gateway's response converters.
+// Every other request keeps the plain bodies.
+const NULL_PART_MARKER = "null-part-fixture";
+const geminiUsage = { promptTokenCount: 1, candidatesTokenCount: 1, totalTokenCount: 2 };
+const geminiNullPartBody = JSON.stringify({
+	candidates: [{ content: { role: "model", parts: [null, { text: "hello" }] }, finishReason: "STOP", index: 0 }],
+	usageMetadata: geminiUsage,
+	modelVersion: "gemini-2.5-flash",
+});
+const geminiNullPartStream = [
+	{ data: `data: ${JSON.stringify({ candidates: [{ content: { role: "model", parts: [null, { text: "hello" }] }, index: 0 }], modelVersion: "gemini-2.5-flash" })}\r\n\r\n` },
+	{ data: `data: ${JSON.stringify({ candidates: [{ content: { role: "model", parts: [null] }, finishReason: "STOP", index: 0 }], usageMetadata: geminiUsage, modelVersion: "gemini-2.5-flash" })}\r\n\r\n` },
+];
 const claudeBody = JSON.stringify({
 	id: "msg_fixture",
 	type: "message",
@@ -71,6 +85,10 @@ const proxy = createInterceptProxy({
 				};
 			}
 			return { status: 200, body: JSON.stringify({ ...base, object: "chat.completion", choices: [{ index: 0, message: { role: "assistant", content: "hello" }, finish_reason: "stop" }], usage }) };
+		}
+		if (body.includes(NULL_PART_MARKER)) {
+			if (/:streamGenerateContent/.test(req.url)) return { status: 200, headers: { "Content-Type": "text/event-stream" }, chunks: geminiNullPartStream };
+			if (/:generateContent/.test(req.url)) return { status: 200, body: geminiNullPartBody };
 		}
 		if (/:generateContent/.test(req.url)) return { status: 200, body: geminiBody };
 		if (/:rawPredict/.test(req.url)) return { status: 200, body: claudeBody };

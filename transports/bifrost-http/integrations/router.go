@@ -3027,7 +3027,7 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 			// The error path has its own release in ErrorConverter; this is the normal
 			// close, including a stream that ended without a terminal frame.
 			if config.StreamConfig != nil && config.StreamConfig.Cleanup != nil {
-				config.StreamConfig.Cleanup(bifrostCtx)
+				lib.RunRecovered("stream cleanup", func() { config.StreamConfig.Cleanup(bifrostCtx) })
 			}
 			// Must run before reader.Done(): closing eventCh while the heartbeat goroutine
 			// could still be mid-send on it panics ("send on closed channel"). See
@@ -3044,9 +3044,19 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 			// Complete the trace after streaming finishes
 			// This ensures all spans (including llm.call) are properly ended before the trace is sent to OTEL
 			if traceCompleter != nil {
-				traceCompleter(nil)
+				lib.RunRecovered("stream trace completer", func() { traceCompleter(nil) })
 			}
 		}()
+		// Registered after the teardown above so it runs first: a panic while converting a
+		// chunk is logged, an error frame in the route's format goes to the client, upstream
+		// is cancelled and drained, then the teardown closes the stream. sendPanicError is
+		// assigned once sendConvertedStreamError exists below.
+		var sendPanicError func()
+		defer lib.RecoverStreamProducer(cancel, streamChan, func() {
+			if sendPanicError != nil {
+				sendPanicError()
+			}
+		})
 
 		// sendConvertedStreamError converts a sanitized BifrostError through the
 		// integration's error converter and emits it in the route's native SSE
@@ -3118,6 +3128,8 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 				reader.SendEvent(streamErrorEventType(config, bifrostErr, streamRequestType), errorJSON)
 			}
 		}
+
+		sendPanicError = func() { sendConvertedStreamError(lib.StreamProducerPanicError()) }
 
 		shouldSendDoneMarker := true
 		if config.Type == RouteConfigTypeAnthropic || strings.Contains(config.Path, "/responses") || strings.Contains(config.Path, "/images/generations") {
@@ -4171,7 +4183,7 @@ func (g *GenericRouter) handlePassthroughStream(
 				lib.StopSSEHeartbeat(reader, heartbeatDone, heartbeatExited)
 			}
 			if traceCompleter != nil {
-				traceCompleter(nil)
+				lib.RunRecovered("passthrough stream trace completer", func() { traceCompleter(nil) })
 			}
 			reader.Done()
 			cancel()
@@ -4181,6 +4193,15 @@ func (g *GenericRouter) handlePassthroughStream(
 		if endsWithResponsesFailed {
 			frames = &responsesFrameRelay{}
 		}
+		// Runs before the teardown above. Raw passthrough bytes are not always SSE, so a
+		// terminal frame is written only on a Responses relay that has not ended yet.
+		defer lib.RecoverStreamProducer(cancel, stream, func() {
+			if frames != nil && !frames.sawTerminal {
+				if frame := frames.failedFrame(lib.StreamProducerPanicError()); frame != nil {
+					reader.Send(frame)
+				}
+			}
+		})
 		send := func(body []byte) bool {
 			if frames != nil {
 				body = frames.complete(body)
