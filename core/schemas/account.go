@@ -272,6 +272,24 @@ func (e *VertexEndpoint) Validate() error {
 	}
 }
 
+// Validate requires an absolute https URL with a host when a literal deployment_url
+// is set. Env and vault references and redacted placeholders are skipped: their value
+// is not known here.
+func (c *BasetenAliasCfg) Validate() error {
+	if c == nil || c.DeploymentURL == nil || c.DeploymentURL.IsFromSecret() || c.DeploymentURL.IsRedacted() {
+		return nil
+	}
+	raw := strings.TrimSpace(c.DeploymentURL.GetValue())
+	if raw == "" {
+		return nil
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme != "https" || u.Host == "" {
+		return fmt.Errorf("baseten deployment_url must be an absolute https URL")
+	}
+	return nil
+}
+
 // BedrockAliasCfg holds Bedrock-specific overrides that apply to a single alias.
 type BedrockAliasCfg struct {
 	InferenceProfileARN *SecretVar `json:"inference_profile_arn,omitempty"`
@@ -280,6 +298,13 @@ type BedrockAliasCfg struct {
 // ReplicateAliasCfg holds Replicate-specific overrides that apply to a single alias.
 type ReplicateAliasCfg struct {
 	UseDeploymentsEndpoint *bool `json:"use_deployments_endpoint,omitempty"`
+}
+
+// BasetenAliasCfg routes a Baseten alias to a dedicated deployment instead of the
+// shared Model APIs host. The JSON name differs from AzureAliasCfg's "endpoint" so
+// the two embedded sub-configs never share a key at the same depth.
+type BasetenAliasCfg struct {
+	DeploymentURL *SecretVar `json:"deployment_url,omitempty"` // OpenAI-compatible base, e.g. https://model-<id>.api.baseten.co/environments/production/sync/v1
 }
 
 // AliasConfig is the rich value type held by KeyAliases. It carries everything
@@ -307,6 +332,7 @@ type AliasConfig struct {
 	*VertexAliasCfg
 	*BedrockAliasCfg
 	*ReplicateAliasCfg
+	*BasetenAliasCfg
 }
 
 // Redacted copies the alias and its secret-bearing sub-configs, masking resolved
@@ -335,6 +361,11 @@ func (ac AliasConfig) Redacted() AliasConfig {
 		bedrock.InferenceProfileARN = bedrock.InferenceProfileARN.RedactedIfSecret()
 		ac.BedrockAliasCfg = &bedrock
 	}
+	if ac.BasetenAliasCfg != nil {
+		baseten := *ac.BasetenAliasCfg
+		baseten.DeploymentURL = baseten.DeploymentURL.RedactedIfSecret()
+		ac.BasetenAliasCfg = &baseten
+	}
 	return ac
 }
 
@@ -353,7 +384,8 @@ func (ac AliasConfig) isLegacyShape() bool {
 		ac.AzureAliasCfg == nil &&
 		ac.VertexAliasCfg == nil &&
 		ac.BedrockAliasCfg == nil &&
-		ac.ReplicateAliasCfg == nil
+		ac.ReplicateAliasCfg == nil &&
+		ac.BasetenAliasCfg == nil
 }
 
 // MarshalJSON emits the legacy string wire shape when only ModelID is set, so
@@ -434,6 +466,14 @@ func (ka KeyAliases) Validate(providerKey ModelProvider) error {
 		}
 		if ac.ReplicateAliasCfg != nil && providerKey != Replicate {
 			return fmt.Errorf("alias %q: replicate sub-config is only valid on Replicate keys (got provider %q)", from, providerKey)
+		}
+		if ac.BasetenAliasCfg != nil && providerKey != Baseten {
+			return fmt.Errorf("alias %q: baseten sub-config is only valid on Baseten keys (got provider %q)", from, providerKey)
+		}
+		if ac.BasetenAliasCfg != nil {
+			if err := ac.BasetenAliasCfg.Validate(); err != nil {
+				return fmt.Errorf("alias %q: %w", from, err)
+			}
 		}
 		normalized := strings.ToLower(from)
 		if _, ok := seen[normalized]; ok {
