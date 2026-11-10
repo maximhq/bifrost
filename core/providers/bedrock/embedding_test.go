@@ -905,7 +905,7 @@ func TestToBedrockCohereEmbeddingRequestWireBody(t *testing.T) {
 	wireBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		context.Background(),
 		bifrostReq,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*BedrockCohereEmbeddingRequest, error) {
 			return ToBedrockCohereEmbeddingRequest(bifrostReq)
 		},
 	)

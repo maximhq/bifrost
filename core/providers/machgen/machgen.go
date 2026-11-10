@@ -300,7 +300,7 @@ func (provider *MachGenProvider) ImageGeneration(ctx *schemas.BifrostContext, ke
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		bifrostReq,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*MachGenGenerateRequest, error) {
 			return ToMachGenImageGenerationRequest(bifrostReq)
 		})
 	if bifrostErr != nil {
@@ -314,7 +314,7 @@ func (provider *MachGenProvider) ImageEdit(ctx *schemas.BifrostContext, key sche
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		bifrostReq,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*MachGenGenerateRequest, error) {
 			return ToMachGenImageEditRequest(bifrostReq)
 		})
 	if bifrostErr != nil {
@@ -330,7 +330,7 @@ func (provider *MachGenProvider) VideoGeneration(ctx *schemas.BifrostContext, ke
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		bifrostReq,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*MachGenGenerateRequest, error) {
 			return ToMachGenVideoGenerationRequest(bifrostReq)
 		})
 	if bifrostErr != nil {
