@@ -14,6 +14,7 @@
 		"logsSettings": "Ajustes de registros",
 		"models": "Modelos",
 		"modelCatalog": "Catálogo de modelos",
+		"datasheet": "Editor de fichas técnicas",
 		"modelProviders": "Proveedores de modelos",
 		"budgetsLimits": "Presupuestos y límites",
 		"routingRules": "Reglas de enrutamiento",
@@ -96,6 +97,7 @@
 		"logsSettings": "Configuración de registros",
 		"models": "Configurar modelos",
 		"modelCatalog": "Resumen de proveedores, claves y uso",
+		"datasheet": "Edita límites, capacidades y precios de modelos",
 		"modelProviders": "Configurar modelos",
 		"budgetsLimits": "Presupuestos y límites de tasa",
 		"routingRules": "Reglas de enrutamiento inteligente",
@@ -350,6 +352,12 @@
 		"descriptionWaitingEnterprise": "Tu organización ha decidido desplegar una nueva versión de Bifrost. El despliegue avanza instancia por instancia. Esta página se recargará automáticamente cuando el despliegue termine en todas las instancias.",
 		"descriptionStuckEnterprise": "El despliegue sigue en curso. Recarga para comprobarlo de nuevo en un minuto. Si no funciona, contacta con el administrador de tu implementación de Bifrost.",
 		"waitingEnterprise": "Esperando a que termine el despliegue…"
+	},
+	"assetLoadFailed": {
+		"bannerTitle": "No se pudo cargar parte del panel",
+		"bannerDescription": "Revisa tu red, tu proxy o las extensiones del navegador y vuelve a cargar.",
+		"screenTitle": "No se pudo cargar esta página",
+		"screenDescription": "Tu navegador no pudo descargar algunos archivos del panel. Es posible que un proxy, un firewall o una extensión del navegador los esté bloqueando. Revisa tu red y vuelve a cargar."
 	},
 	"onboarding": {
 		"expandSetupChecklist": "Expandir lista de configuración",

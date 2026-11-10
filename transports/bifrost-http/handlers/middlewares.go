@@ -13,7 +13,6 @@ import (
 	"fmt"
 	"io"
 	"maps"
-	"runtime"
 	"runtime/debug"
 	"slices"
 	"strconv"
@@ -87,7 +86,7 @@ func RecoveryMiddleware(cors *CorsMiddleware) schemas.BifrostHTTPMiddleware {
 			defer func() {
 				if r := recover(); r != nil {
 					// Never format r with %v: a panic value can wrap request content or secrets.
-					logger.Error(fmt.Sprintf("recovered from panic in request handler: %s\n%s", panicSummary(r), debug.Stack()))
+					logger.Error(fmt.Sprintf("recovered from panic in request handler: %s\n%s", lib.PanicSummary(r), debug.Stack()))
 					// Reset drops partial handler output, including the headers the outer
 					// SecurityHeaders and CORS middlewares set before the panic, so re-apply them.
 					ctx.Response.Reset()
@@ -166,16 +165,6 @@ func webSocketPeer(conn *ws.Conn) (remote string) {
 		return ""
 	}
 	return conn.RemoteAddr().String()
-}
-
-// panicSummary describes a recovered panic value without echoing arbitrary content.
-// Runtime errors keep their message (runtime-generated, no request data); any other
-// value is reduced to its type.
-func panicSummary(r any) string {
-	if rerr, ok := r.(runtime.Error); ok {
-		return rerr.Error()
-	}
-	return fmt.Sprintf("%T", r)
 }
 
 // ServerRootHandler wraps the router with the server-level middlewares. The
@@ -368,17 +357,23 @@ func (c *CorsMiddleware) UpdateConfig(config *lib.Config) {
 	c.config.Store(newCorsMiddlewareConfig(config))
 }
 
-// logRequestTarget is the request target for the access log with an api-key query value redacted: the
-// Azure Voice Live JavaScript SDK always sends its key, a virtual key here, in the query string. The
-// parsed names are checked, so a percent-encoded api-key name is redacted too.
+// logRequestTarget is the request target for the access log with api-key and key query values redacted: the
+// Azure Voice Live JavaScript SDK always sends its key, a virtual key here, as api-key, and a Gemini Live
+// client may send its own as key. The parsed names are checked, so a percent-encoded name is redacted too.
 func logRequestTarget(ctx *fasthttp.RequestCtx) string {
 	uri := ctx.RequestURI()
-	if bytes.IndexByte(uri, '?') < 0 || !ctx.QueryArgs().Has("api-key") {
+	if bytes.IndexByte(uri, '?') < 0 || (!ctx.QueryArgs().Has("api-key") && !ctx.QueryArgs().Has("key")) {
 		return string(uri)
 	}
+	// Args.Set would replace only the first of a repeated name, so every pair is rebuilt.
 	var args fasthttp.Args
-	ctx.QueryArgs().CopyTo(&args)
-	args.Set("api-key", schemas.RedactedAttrValue)
+	for name, value := range ctx.QueryArgs().All() {
+		if string(name) == "api-key" || string(name) == "key" {
+			args.AddBytesK(name, schemas.RedactedAttrValue)
+			continue
+		}
+		args.AddBytesKV(name, value)
+	}
 	return string(ctx.Request.URI().PathOriginal()) + "?" + args.String()
 }
 
@@ -1408,6 +1403,9 @@ func buildRealtimeTransportPathSet() map[string]struct{} {
 		paths[path] = struct{}{}
 	}
 	for _, path := range integrations.OpenAIRealtimeWebRTCCallsPaths("/openai") {
+		paths[path] = struct{}{}
+	}
+	for _, path := range integrations.GenAIRealtimePaths("/genai") {
 		paths[path] = struct{}{}
 	}
 	return paths

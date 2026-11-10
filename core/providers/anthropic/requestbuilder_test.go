@@ -3763,3 +3763,127 @@ func TestBuildAnthropicResponsesRequestBody_UnsignedThinkingReplay(t *testing.T)
 		})
 	}
 }
+
+// topLevelKeys returns the top-level keys of a JSON object in wire order.
+func topLevelKeys(b []byte) []string {
+	var ks []string
+	gjson.ParseBytes(b).ForEach(func(k, _ gjson.Result) bool {
+		ks = append(ks, k.String())
+		return true
+	})
+	return ks
+}
+
+// Vertex's Anthropic prompt cache misses when the growing messages array precedes
+// the stable tools/system prefix in the raw body (#6406). Every Vertex build path
+// must end with tools, system, messages; other providers keep their bytes.
+func TestBuildAnthropicRequestBody_CachePrefixKeyOrder(t *testing.T) {
+	raw := []byte(`{"model":"claude-sonnet-4-5","max_tokens":1024,"messages":[{"role":"user","content":"hello"}],"system":"be nice","tools":[{"name":"t","description":"d","input_schema":{"type":"object"}}],"metadata":{"user_id":"u"}}`)
+	chatInput := []schemas.ChatMessage{
+		{Role: schemas.ChatMessageRoleSystem, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("be nice")}},
+		{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")}},
+	}
+	chatTools := []schemas.ChatTool{{Type: schemas.ChatToolTypeFunction, Function: &schemas.ChatToolFunction{Name: "t", Description: schemas.Ptr("d"), Parameters: &schemas.ToolFunctionParameters{Type: "object"}}}}
+	respTools := []schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeFunction, Name: schemas.Ptr("t"), Description: schemas.Ptr("d"), ResponsesToolFunction: &schemas.ResponsesToolFunction{Parameters: &schemas.ToolFunctionParameters{Type: "object"}}}}
+
+	for _, provider := range []schemas.ModelProvider{schemas.Vertex, schemas.Anthropic, schemas.Bedrock, schemas.Azure} {
+		for _, useRaw := range []bool{false, true} {
+			for _, chat := range []bool{false, true} {
+				for _, streaming := range []bool{false, true} {
+					t.Run(fmt.Sprintf("%s/raw=%v/chat=%v/stream=%v", provider, useRaw, chat, streaming), func(t *testing.T) {
+						ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+						ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, useRaw)
+						// A beta that Vertex embeds as anthropic_beta, appended after the body is built.
+						ctx.SetValue(schemas.BifrostContextKeyExtraHeaders, map[string][]string{"anthropic-beta": {"context-1m-2025-08-07"}})
+						cfg := AnthropicRequestBuildConfig{Provider: provider, Model: "claude-sonnet-4-5", IsStreaming: streaming}
+						var out []byte
+						var bErr *schemas.BifrostError
+						if chat {
+							out, bErr = BuildAnthropicChatRequestBody(ctx, &schemas.BifrostChatRequest{Provider: provider, Model: "claude-sonnet-4-5", RawRequestBody: raw, Input: chatInput, Params: &schemas.ChatParameters{Tools: chatTools}}, cfg)
+						} else {
+							out, bErr = BuildAnthropicResponsesRequestBody(ctx, &schemas.BifrostResponsesRequest{Provider: provider, Model: "claude-sonnet-4-5", RawRequestBody: raw, Input: makeSimpleInput("hello"), Params: &schemas.ResponsesParameters{Instructions: schemas.Ptr("be nice"), Tools: respTools}}, cfg)
+						}
+						if bErr != nil {
+							t.Fatalf("build: %v", bErr.Error.Message)
+						}
+						if !json.Valid(out) {
+							t.Fatalf("invalid JSON: %s", out)
+						}
+						keys := topLevelKeys(out)
+						for _, k := range []string{"messages", "system", "tools"} {
+							if !slices.Contains(keys, k) {
+								t.Fatalf("missing %q in %v: %s", k, keys, out)
+							}
+						}
+						if provider == schemas.Vertex {
+							if got := keys[len(keys)-3:]; !slices.Equal(got, []string{"tools", "system", "messages"}) {
+								t.Fatalf("vertex body must end with tools, system, messages; got %v", keys)
+							}
+							return
+						}
+						if slices.Index(keys, "messages") > slices.Index(keys, "system") {
+							t.Fatalf("non-vertex key order changed: %v", keys)
+						}
+					})
+				}
+			}
+		}
+	}
+}
+
+func TestMoveCachePrefixKeysLast(t *testing.T) {
+	cases := []struct {
+		name, in, want string
+	}{
+		{"reorders", `{"max_tokens":8,"messages":[1],"system":"s","tools":[2],"stream":true}`, `{"max_tokens":8,"stream":true,"tools":[2],"system":"s","messages":[1]}`},
+		{"already ordered", `{"a":1,"tools":[],"system":"s","messages":[]}`, `{"a":1,"tools":[],"system":"s","messages":[]}`},
+		{"subset", `{"messages":[{"role":"user","content":"tools"}],"a":{"system":1}}`, `{"a":{"system":1},"messages":[{"role":"user","content":"tools"}]}`},
+		{"none present", `{"a":1,"b":[1,2]}`, `{"a":1,"b":[1,2]}`},
+		{"whitespace and escapes", "{ \"messages\" : [ \"x\\\"y\" ] ,\n \"system\":\"s\\u0041\", \"z\" : null }", "{\"z\" : null,\"system\":\"s\\u0041\",\"messages\" : [ \"x\\\"y\" ]}"},
+		{"only messages", `{"messages":[]}`, `{"messages":[]}`},
+		{"not an object", `[1,2]`, `[1,2]`},
+		{"empty object", `{}`, `{}`},
+		{"duplicate key left alone", `{"messages":[1],"system":"s","messages":[2]}`, `{"messages":[1],"system":"s","messages":[2]}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := moveCachePrefixKeysLast([]byte(tc.in))
+			if string(got) != tc.want {
+				t.Fatalf("got  %s\nwant %s", got, tc.want)
+			}
+			if json.Valid([]byte(tc.in)) && !json.Valid(got) {
+				t.Fatalf("produced invalid JSON: %s", got)
+			}
+		})
+	}
+}
+
+// BenchmarkMoveCachePrefixKeysLast measures the Vertex-only reorder on a long
+// multi-turn body (the case it exists for) and the already-ordered fast path.
+func BenchmarkMoveCachePrefixKeysLast(b *testing.B) {
+	var sb strings.Builder
+	sb.WriteString(`{"max_tokens":4096,"messages":[`)
+	for i := 0; i < 400; i++ {
+		if i > 0 {
+			sb.WriteByte(',')
+		}
+		sb.WriteString(`{"role":"user","content":[{"type":"text","text":"` + strings.Repeat("lorem ipsum ", 40) + `"}]}`)
+	}
+	sb.WriteString(`],"system":[{"type":"text","text":"you are helpful","cache_control":{"type":"ephemeral"}}],"tools":[{"name":"t","input_schema":{"type":"object"}}],"stream":true,"anthropic_version":"vertex-2023-10-16"}`)
+	unordered := []byte(sb.String())
+	ordered := moveCachePrefixKeysLast(unordered)
+	b.Run("reorder", func(b *testing.B) {
+		b.SetBytes(int64(len(unordered)))
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			_ = moveCachePrefixKeysLast(unordered)
+		}
+	})
+	b.Run("already_ordered", func(b *testing.B) {
+		b.SetBytes(int64(len(ordered)))
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			_ = moveCachePrefixKeysLast(ordered)
+		}
+	})
+}
