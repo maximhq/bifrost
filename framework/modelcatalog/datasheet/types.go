@@ -506,7 +506,7 @@ func normalizeProvider(p string) string {
 		return string(schemas.Fireworks)
 	case strings.Contains(p, "github_copilot"):
 		return string(schemas.GithubCopilot)
-	case p == "opencode_go":
+	case strings.Contains(p, "opencode_go"):
 		return string(schemas.OpencodeGo)
 	default:
 		return p
