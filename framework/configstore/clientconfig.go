@@ -9,7 +9,6 @@ import (
 	"hash"
 	"math"
 	"net/url"
-	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -947,7 +946,6 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 			databricksConfig := &schemas.DatabricksKeyConfig{
 				APIFormat:          key.DatabricksKeyConfig.APIFormat,
 				ForwardGatewayTags: key.DatabricksKeyConfig.ForwardGatewayTags,
-				Scopes:             slices.Clone(key.DatabricksKeyConfig.Scopes),
 			}
 			// The workspace URL is a hostname, not a credential — surface it in
 			// plaintext so the UI can round-trip it, mirroring the Azure endpoint.

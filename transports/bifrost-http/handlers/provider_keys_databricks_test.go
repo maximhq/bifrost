@@ -24,7 +24,6 @@ func TestDatabricksKey_RedactedUpdateRoundTrip(t *testing.T) {
 			ClientID:           svp("dbx-client-id-value"),
 			ClientSecret:       svp("dbx-client-secret-value"),
 			ForwardGatewayTags: true,
-			Scopes:             []string{"model-serving-inference", "model-serving"},
 		},
 	}
 
@@ -63,9 +62,6 @@ func TestDatabricksKey_RedactedUpdateRoundTrip(t *testing.T) {
 	if !cfg.ForwardGatewayTags {
 		t.Error("forward_gateway_tags lost on round trip")
 	}
-	if got := strings.Join(cfg.Scopes, " "); got != "model-serving-inference model-serving" {
-		t.Errorf("scopes lost on round trip: got %q", got)
-	}
 	if err := validateProviderKeyURL(schemas.Databricks, merged); err != nil {
 		t.Errorf("round-tripped key failed validation: %v", err)
 	}
@@ -91,9 +87,6 @@ func TestDatabricksKey_Validate(t *testing.T) {
 		{"bad api_format", schemas.Key{Value: sv("dapi"), DatabricksKeyConfig: &schemas.DatabricksKeyConfig{WorkspaceURL: url, APIFormat: "nope"}}, "api_format"},
 		{"env-ref workspace url", schemas.Key{Value: sv("dapi"), DatabricksKeyConfig: &schemas.DatabricksKeyConfig{WorkspaceURL: sv("env.DBX_URL")}}, ""},
 		{"env-ref pat", schemas.Key{Value: sv("env.DBX_TOKEN"), DatabricksKeyConfig: &schemas.DatabricksKeyConfig{WorkspaceURL: url}}, ""},
-		{"scoped oauth ok", schemas.Key{DatabricksKeyConfig: &schemas.DatabricksKeyConfig{WorkspaceURL: url, ClientID: svp("a"), ClientSecret: svp("b"), Scopes: []string{"model-serving-inference", "model-serving"}}}, ""},
-		{"blank scope", schemas.Key{DatabricksKeyConfig: &schemas.DatabricksKeyConfig{WorkspaceURL: url, ClientID: svp("a"), ClientSecret: svp("b"), Scopes: []string{""}}}, "scopes[0]"},
-		{"space-joined scope", schemas.Key{DatabricksKeyConfig: &schemas.DatabricksKeyConfig{WorkspaceURL: url, ClientID: svp("a"), ClientSecret: svp("b"), Scopes: []string{"model-serving", "model-serving-inference ai-functions"}}}, "scopes[1]"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

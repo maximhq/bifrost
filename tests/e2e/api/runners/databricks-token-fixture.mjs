@@ -10,9 +10,10 @@ import { argValue, createInterceptProxy } from "./lib/tls-intercept-proxy.mjs";
 //
 // One host is different: SCOPED_HOST stands in for a workspace whose service principal secret was
 // created with only the model-serving-inference scope. Its token endpoint refuses any requested
-// scope outside that set with the 403 Databricks sends, and mints a token otherwise; its chat
-// completions endpoint answers a canned reply for that token. A gateway that ignores the key's
-// scopes and asks for all-apis is refused, which is the bug the harness row pins.
+// scope outside that set with the 403 Databricks sends, which names the scopes the secret has,
+// and mints a token otherwise; its chat completions endpoint answers a canned reply for that
+// token. A gateway that asks for all-apis and stops at the 403 fails the harness row; one that
+// retries with the named scopes is served.
 //
 //   node databricks-token-fixture.mjs [--port 8795]
 //

@@ -731,7 +731,6 @@
 			"projectIdOptional": "Project ID（可選）",
 			"mantleProjectHelp": "將推理和模型列表限定到特定 Bedrock 專案（作為 OpenAI-Project / anthropic-workspace-id 請求頭髮送）。留空則使用帳戶預設專案。",
 			"oauthM2mHelp": "Databricks 建議生產環境使用 OAuth machine-to-machine。Token 由 workspace OIDC 端點簽發並自動重新整理。",
-			"databricksScopesHelp": "留空則請求 all-apis。如果服務主體的 OAuth 密鑰建立時指定了 scope，請在此列出。若權杖請求包含密鑰沒有的 scope，Databricks 會拒絕該請求。Model Serving 推論需要 model-serving-inference，decisions 需要 ai-functions。",
 			"vllmUrlPlaceholder": "http://vllm-server:8000",
 			"vllmModelPlaceholder": "meta-llama/Llama-3-70b-hf",
 			"databricksWorkspacePlaceholder": "https://dbc-1234abcd-5678.cloud.databricks.com",

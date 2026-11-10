@@ -8591,15 +8591,6 @@
                 "forward_gateway_tags": {
                   "type": "boolean",
                   "description": "Forward Bifrost governance labels (virtual key, team, customer names) to Databricks as the Databricks-Ai-Gateway-Request-Tags header for usage attribution (default: false)"
-                },
-                "scopes": {
-                  "type": "array",
-                  "items": {
-                    "type": "string",
-                    "minLength": 1,
-                    "pattern": "^\\S+$"
-                  },
-                  "description": "OAuth M2M scopes requested when minting a token (default: [\"all-apis\"]). Set this when the service principal's OAuth secret was created with scopes. Databricks rejects a token request that names any scope the secret does not have. Model Serving inference needs model-serving-inference, and /v1/decisions needs ai-functions."
                 }
               },
               "required": [

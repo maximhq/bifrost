@@ -81,30 +81,6 @@ func TestTableKey_DatabricksRoundTrip(t *testing.T) {
 	require.NoError(t, db.First(&foundTags, tagsOnly.ID).Error)
 	require.NotNil(t, foundTags.DatabricksKeyConfig, "config carrying only forward_gateway_tags was wiped on reload")
 	assert.True(t, foundTags.DatabricksKeyConfig.ForwardGatewayTags)
-
-	// 5. OAuth scopes round-trip in order, and clearing them falls back to the all-apis default.
-	scoped := &TableKey{
-		Name: "dbx-scoped", ProviderID: 1, Provider: "databricks", KeyID: "dbx-4",
-		Value: *schemas.NewSecretVar(""),
-		DatabricksKeyConfig: &schemas.DatabricksKeyConfig{
-			WorkspaceURL: *schemas.NewSecretVar("https://dbc-1.cloud.databricks.com"),
-			ClientID:     schemas.NewSecretVar("client-id-value"),
-			ClientSecret: schemas.NewSecretVar("client-secret-value"),
-			Scopes:       []string{"model-serving-inference", "model-serving"},
-		},
-	}
-	require.NoError(t, db.Create(scoped).Error)
-	var foundScoped TableKey
-	require.NoError(t, db.First(&foundScoped, scoped.ID).Error)
-	require.NotNil(t, foundScoped.DatabricksKeyConfig)
-	assert.Equal(t, []string{"model-serving-inference", "model-serving"}, foundScoped.DatabricksKeyConfig.Scopes, "scopes lost on reload")
-
-	foundScoped.DatabricksKeyConfig.Scopes = nil
-	require.NoError(t, db.Save(&foundScoped).Error)
-	var cleared TableKey
-	require.NoError(t, db.First(&cleared, scoped.ID).Error)
-	require.NotNil(t, cleared.DatabricksKeyConfig)
-	assert.Empty(t, cleared.DatabricksKeyConfig.Scopes, "cleared scopes survived the save")
 }
 
 // TestMarshalVertexAWSWorkloadIdentityJSON_PersistsReferencesNotSecrets pins the storage form of the

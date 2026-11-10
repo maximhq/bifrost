@@ -84,6 +84,58 @@ func TestResolveBearer(t *testing.T) {
 	})
 }
 
+func TestResolveBearerWithScopeRetry(t *testing.T) {
+	denied := func(t *testing.T) *tokenServer {
+		ts := newTokenServer(t)
+		ts.set(http.StatusForbidden, `{"error":"access_denied"}`, nil)
+		return ts
+	}
+
+	t.Run("a retry naming other scopes re-mints once with them", func(t *testing.T) {
+		ts := denied(t)
+		var seen *schemas.BifrostError
+		_, bErr := ResolveBearerWithScopeRetry(context.Background(), New[string](Options{}), *ccConfig(ts.URL), authClient(t), func(e *schemas.BifrostError) []string {
+			seen = e
+			return []string{"narrow"}
+		})
+		require.NotNil(t, bErr)
+		require.NotNil(t, seen, "the retry must see the first mint's error")
+		assert.Equal(t, http.StatusForbidden, *seen.StatusCode)
+		hits, form, _, _, _ := ts.snapshot()
+		assert.Equal(t, 2, hits, "one denied mint, then exactly one retry")
+		assert.Equal(t, "narrow", form.Get("scope"), "the retry carries the scopes it was given")
+	})
+
+	t.Run("a retry naming the same scopes does not loop", func(t *testing.T) {
+		ts := denied(t)
+		_, bErr := ResolveBearerWithScopeRetry(context.Background(), New[string](Options{}), *ccConfig(ts.URL), authClient(t), func(*schemas.BifrostError) []string {
+			return []string{"all-apis"}
+		})
+		require.NotNil(t, bErr)
+		hits, _, _, _, _ := ts.snapshot()
+		assert.Equal(t, 1, hits)
+	})
+
+	t.Run("a retry that declines returns the original error", func(t *testing.T) {
+		ts := denied(t)
+		_, bErr := ResolveBearerWithScopeRetry(context.Background(), New[string](Options{}), *ccConfig(ts.URL), authClient(t), func(*schemas.BifrostError) []string { return nil })
+		require.NotNil(t, bErr)
+		assert.Contains(t, bErr.Error.Message, "access_denied")
+		hits, _, _, _, _ := ts.snapshot()
+		assert.Equal(t, 1, hits)
+	})
+
+	t.Run("a successful mint never consults the retry", func(t *testing.T) {
+		ts := newTokenServer(t)
+		h, bErr := ResolveBearerWithScopeRetry(context.Background(), New[string](Options{}), *ccConfig(ts.URL), authClient(t), func(*schemas.BifrostError) []string {
+			t.Fatal("retry consulted on a successful mint")
+			return nil
+		})
+		require.Nil(t, bErr)
+		assert.Equal(t, "Bearer minted", h["Authorization"])
+	})
+}
+
 func TestMinterForConfig(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -271,33 +323,6 @@ func TestDatabricksOAuthConfig(t *testing.T) {
 		_, mint, bErr := MinterForConfig(&cfg, nil)
 		assert.Nil(t, bErr)
 		assert.NotNil(t, mint)
-	})
-
-	t.Run("configured scopes replace the default", func(t *testing.T) {
-		scopes := []string{"model-serving-inference", "ai-functions"}
-		cfg, ok := (&schemas.DatabricksKeyConfig{
-			ClientID:     schemas.NewSecretVar("sp"),
-			ClientSecret: schemas.NewSecretVar("s"),
-			Scopes:       scopes,
-		}).OAuthConfig("dbc-1.cloud.databricks.com")
-		require.True(t, ok)
-		assert.Equal(t, scopes, cfg.Scopes)
-	})
-
-	t.Run("keys that differ only in scopes never share a token", func(t *testing.T) {
-		base := schemas.DatabricksKeyConfig{ClientID: schemas.NewSecretVar("sp"), ClientSecret: schemas.NewSecretVar("s")}
-		scoped := base
-		scoped.Scopes = []string{"model-serving-inference"}
-		defaultCfg, _ := base.OAuthConfig("h")
-		scopedCfg, _ := scoped.OAuthConfig("h")
-		assert.NotEqual(t, oauthKeyCacheKey(&defaultCfg, "https://h/oidc/v1/token"), oauthKeyCacheKey(&scopedCfg, "https://h/oidc/v1/token"))
-	})
-
-	t.Run("scope validation", func(t *testing.T) {
-		assert.NoError(t, (&schemas.DatabricksKeyConfig{Scopes: []string{"model-serving", "all-apis:read"}}).ValidateScopes())
-		assert.NoError(t, (*schemas.DatabricksKeyConfig)(nil).ValidateScopes())
-		assert.Error(t, (&schemas.DatabricksKeyConfig{Scopes: []string{""}}).ValidateScopes())
-		assert.Error(t, (&schemas.DatabricksKeyConfig{Scopes: []string{"model-serving ai-functions"}}).ValidateScopes())
 	})
 
 	t.Run("a missing half yields nothing", func(t *testing.T) {

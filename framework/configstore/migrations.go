@@ -593,7 +593,6 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_usage_estimation_tokenizers_json_column"}, run: migrationAddUsageEstimationTokenizersJSONColumn},
 	{IDs: []string{"add_budget_business_unit_id_column"}, run: migrationAddBudgetBusinessUnitIDColumn},
 	{IDs: []string{"add_budget_business_unit_id_index"}, run: migrationAddBudgetBusinessUnitIDIndex},
-	{IDs: []string{"add_databricks_scopes_column"}, run: migrationAddDatabricksScopesColumn},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -17233,41 +17232,4 @@ func budgetBusinessUnitIDIndexMigration(ctx context.Context, id string) *migrato
 			return dropIndexConcurrently(tx.WithContext(ctx), "governance_budgets", name)
 		},
 	}
-}
-
-// migrationAddDatabricksScopesColumn adds the databricks_scopes column to config_keys. There is
-// nothing to backfill: a NULL column keeps the key on the all-apis default it already requested.
-func migrationAddDatabricksScopesColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
-	migrationName := "add_databricks_scopes_column"
-	logger.Info("[configstore] starting migration %s", migrationName)
-	defer logger.Info("[configstore] finished migration %s", migrationName)
-	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: migrationName,
-		Migrate: func(tx *gorm.DB) error {
-			tx = tx.WithContext(ctx)
-			if tx.Dialector.Name() == "postgres" {
-				// Bound the ACCESS EXCLUSIVE wait on config_keys, as add_oauth_key_config_columns
-				// does, so a long transaction fails this boot's migration instead of queueing
-				// every key read behind it. The next boot retries.
-				if err := tx.Exec("SET LOCAL lock_timeout = '5s'").Error; err != nil {
-					return fmt.Errorf("failed to bound the config_keys lock wait: %w", err)
-				}
-			}
-			if err := addColumnIfNotExists(tx, logger, &tables.TableKey{}, "databricks_scopes"); err != nil {
-				return fmt.Errorf("failed to add databricks_scopes column: %w", err)
-			}
-			return nil
-		},
-		Rollback: func(tx *gorm.DB) error {
-			tx = tx.WithContext(ctx)
-			if err := dropColumnIfExists(tx, logger, &tables.TableKey{}, "databricks_scopes"); err != nil {
-				return fmt.Errorf("failed to drop databricks_scopes column: %w", err)
-			}
-			return nil
-		},
-	}})
-	if err := m.Migrate(); err != nil {
-		return fmt.Errorf("error running %s migration: %w", migrationName, err)
-	}
-	return nil
 }

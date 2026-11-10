@@ -39,6 +39,18 @@ func ResolveBearer(ctx context.Context, cache *Cache[string], value string, cfg 
 // ResolveBearerFrom is ResolveBearer for a config that is known to exist, taken by value so a
 // provider that derives it per request (Databricks) keeps it on the stack.
 func ResolveBearerFrom(ctx context.Context, cache *Cache[string], cfg schemas.OAuthKeyConfig, hc *http.Client) (map[string]string, *schemas.BifrostError) {
+	return ResolveBearerWithScopeRetry(ctx, cache, cfg, hc, nil)
+}
+
+// ScopeRetry inspects a failed mint and returns the scopes to request instead, or nil to give
+// up and return the original error. It runs only on the cold path, after a mint has failed.
+type ScopeRetry func(mintErr *schemas.BifrostError) []string
+
+// ResolveBearerWithScopeRetry is ResolveBearerFrom with one extra attempt: when the mint fails
+// and retry names other scopes, the token is minted once more with them. The token is cached
+// under the original config's key, so the credential keeps one cache entry whichever scopes it
+// ended up with. A nil retry behaves exactly like ResolveBearerFrom.
+func ResolveBearerWithScopeRetry(ctx context.Context, cache *Cache[string], cfg schemas.OAuthKeyConfig, hc *http.Client, retry ScopeRetry) (map[string]string, *schemas.BifrostError) {
 	// The minter is built only on the cold path: a warm request pays for the cache key and
 	// the lookup, not for a clientcredentials.Config it will never use.
 	cacheKey, bErr := validateConfig(&cfg)
@@ -50,7 +62,21 @@ func ResolveBearerFrom(ctx context.Context, cache *Cache[string], cfg schemas.OA
 		if bErr != nil {
 			return nil, bErr
 		}
-		return mint(ctx, prev)
+		entry, mintErr := mint(ctx, prev)
+		if mintErr == nil || retry == nil {
+			return entry, mintErr
+		}
+		scopes := retry(mintErr)
+		if len(scopes) == 0 || slices.Equal(scopes, cfg.Scopes) {
+			return nil, mintErr
+		}
+		narrowed := cfg
+		narrowed.Scopes = scopes
+		_, retryMint, bErr := MinterForConfig(&narrowed, hc)
+		if bErr != nil {
+			return nil, mintErr
+		}
+		return retryMint(ctx, prev)
 	})
 	if bErr != nil {
 		return nil, bErr

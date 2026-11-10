@@ -719,7 +719,6 @@
 			"projectIdOptional": "ID de projet (facultatif)",
 			"mantleProjectHelp": "Restreint l’inférence et la liste des modèles à un projet Bedrock spécifique (envoyé dans l’en-tête OpenAI-Project / anthropic-workspace-id). Laissez vide pour utiliser le projet par défaut du compte.",
 			"oauthM2mHelp": "Databricks recommande OAuth machine-to-machine pour la production. Les jetons sont générés à partir du point de terminaison OIDC de l’espace de travail et actualisés automatiquement.",
-			"databricksScopesHelp": "Laissez vide pour demander all-apis. Si le secret OAuth du principal de service a été créé avec des scopes, indiquez-les ici. Databricks refuse une demande de jeton qui nomme un scope absent du secret. L’inférence Model Serving nécessite model-serving-inference, et les décisions nécessitent ai-functions.",
 			"vllmUrlPlaceholder": "http://vllm-server:8000",
 			"vllmModelPlaceholder": "meta-llama/Llama-3-70b-hf",
 			"databricksWorkspacePlaceholder": "https://dbc-1234abcd-5678.cloud.databricks.com",

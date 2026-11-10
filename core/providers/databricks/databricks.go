@@ -27,9 +27,11 @@ import (
 	"context"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/maximhq/bifrost/core/providers/openai"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
@@ -45,9 +47,8 @@ const (
 	// aiGatewayBasePath is the OpenAI-compatible base path for Unity AI Gateway model APIs.
 	aiGatewayBasePath = "/ai-gateway/mlflow/v1"
 
-	// oauthTokenPath is fixed per workspace and oauthScope is the default when a key names no
-	// scopes; DatabricksKeyConfig.OAuthConfig folds them into the common OAuth key config the
-	// shared token cache mints from.
+	// oauthTokenPath and oauthScope are fixed per workspace; DatabricksKeyConfig.OAuthConfig
+	// folds them into the common OAuth key config the shared token cache mints from.
 	oauthTokenPath = schemas.DatabricksOAuthTokenPath
 	oauthScope     = schemas.DatabricksOAuthScope
 
@@ -274,7 +275,34 @@ func (provider *DatabricksProvider) authHeader(ctx context.Context, key schemas.
 		return nil, bErr
 	}
 	oauthCfg, _ := cfg.OAuthConfig(host)
-	return tokencache.ResolveBearerFrom(ctx, provider.tokens, oauthCfg, provider.authHTTPClient)
+	return tokencache.ResolveBearerWithScopeRetry(ctx, provider.tokens, oauthCfg, provider.authHTTPClient, grantedScopesFromRejection)
+}
+
+// grantedScopesRe captures the scope list Databricks names when it refuses a token request
+// from a scoped secret: "...; the client has scope(s) [all-apis:read] that cannot send this
+// request".
+var grantedScopesRe = regexp.MustCompile(`the client has scope\(s\) \[([^\]]*)\]`)
+
+// grantedScopesFromRejection lets a scoped service principal secret authenticate with no
+// configuration. Bifrost asks for all-apis, which every unscoped secret has. A secret created
+// with scopes can only mint within them, and Databricks refuses the all-apis request with a 403
+// access_denied that lists the scopes the secret does have. Those are returned so the mint is
+// retried once with them; the resulting token is cached like any other, and if it lacks a
+// permission the call needs, the serving endpoint rejects that call. Any other failure, or a
+// message that no longer matches, returns nil and the original error stands.
+func grantedScopesFromRejection(mintErr *schemas.BifrostError) []string {
+	if mintErr == nil || mintErr.StatusCode == nil || *mintErr.StatusCode != http.StatusForbidden || mintErr.Error == nil {
+		return nil
+	}
+	msg := mintErr.Error.Message
+	if !strings.Contains(msg, "access_denied") {
+		return nil
+	}
+	m := grantedScopesRe.FindStringSubmatch(msg)
+	if m == nil {
+		return nil
+	}
+	return strings.FieldsFunc(m[1], func(r rune) bool { return r == ',' || unicode.IsSpace(r) })
 }
 
 // gatewayTagsHeader returns the Databricks-Ai-Gateway-Request-Tags value for this request when

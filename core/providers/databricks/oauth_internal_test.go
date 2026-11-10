@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"sync"
 
 	"github.com/maximhq/bifrost/core/providers/openai"
@@ -38,20 +39,7 @@ func (testLogger) LogHTTPRequest(schemas.LogLevel, string) schemas.LogEventBuild
 //
 // This lives in the package's own test binary so it can point the token exchange at a stub
 // without exposing a test hook on the public API.
-//
-// The scoped case pins the fix for a service principal secret created with scopes: Databricks
-// refuses a token request naming any scope the secret lacks, so a key that sets scopes must
-// send exactly those and never the all-apis default.
 func TestOAuthM2M(t *testing.T) {
-	t.Run("default scope", func(t *testing.T) {
-		runOAuthM2M(t, nil, oauthScope)
-	})
-	t.Run("configured scopes replace all-apis", func(t *testing.T) {
-		runOAuthM2M(t, []string{"model-serving-inference", "model-serving"}, "model-serving-inference model-serving")
-	})
-}
-
-func runOAuthM2M(t *testing.T, scopes []string, wantScope string) {
 	var mu sync.Mutex
 	var tokenMints int
 	var gotGrantType, gotScope, gotBasicUser, gotBasicPass, gotAuth string
@@ -106,7 +94,6 @@ func runOAuthM2M(t *testing.T, scopes []string, wantScope string) {
 			WorkspaceURL: *schemas.NewSecretVar(u.Host),
 			ClientID:     schemas.NewSecretVar("sp-client-id"),
 			ClientSecret: schemas.NewSecretVar("sp-client-secret"),
-			Scopes:       scopes,
 		},
 	}
 	request := &schemas.BifrostChatRequest{
@@ -130,8 +117,8 @@ func runOAuthM2M(t *testing.T, scopes []string, wantScope string) {
 	if gotGrantType != "client_credentials" {
 		t.Errorf("grant_type: got %q, want %q", gotGrantType, "client_credentials")
 	}
-	if gotScope != wantScope {
-		t.Errorf("scope: got %q, want %q", gotScope, wantScope)
+	if gotScope != oauthScope {
+		t.Errorf("scope: got %q, want %q", gotScope, oauthScope)
 	}
 	if gotBasicUser != "sp-client-id" || gotBasicPass != "sp-client-secret" {
 		t.Errorf("basic auth: got %q/%q, want the service principal credentials", gotBasicUser, gotBasicPass)
@@ -141,6 +128,142 @@ func runOAuthM2M(t *testing.T, scopes []string, wantScope string) {
 	}
 	if tokenMints != 1 {
 		t.Errorf("token mints: got %d, want 1 (the token source must cache across requests)", tokenMints)
+	}
+}
+
+// TestOAuthM2MScopedSecret covers a service principal secret created with scopes. The token
+// endpoint stands in for Databricks: it refuses any scope the secret lacks with the 403 it
+// sends in production, naming the scopes the secret has. With no configuration, the provider
+// must retry once with those scopes, serve the request with the narrower token, and cache it
+// so the next request mints nothing. A 403 that names no scopes must surface unchanged after a
+// single attempt, so a genuinely rejected client is not retried.
+func TestOAuthM2MScopedSecret(t *testing.T) {
+	cases := []struct {
+		name       string
+		denial     string
+		wantScopes []string
+		wantErr    string
+	}{
+		{
+			name:       "retries with the granted scopes",
+			denial:     "Scopes 'all-apis' are not assigned to the client sp-client-id; the client has scope(s) [model-serving-inference] that cannot send this request",
+			wantScopes: []string{"all-apis", "model-serving-inference"},
+		},
+		{
+			name:       "a denial without a scope list is returned as is",
+			denial:     "client is disabled",
+			wantScopes: []string{"all-apis"},
+			wantErr:    "client is disabled",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var mu sync.Mutex
+			var requested []string
+			var gotAuth string
+
+			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				if r.URL.Path == oauthTokenPath {
+					body, _ := io.ReadAll(r.Body)
+					form, _ := url.ParseQuery(string(body))
+					scope := form.Get("scope")
+					mu.Lock()
+					requested = append(requested, scope)
+					mu.Unlock()
+					if scope != "model-serving-inference" {
+						w.WriteHeader(http.StatusForbidden)
+						_, _ = w.Write([]byte(`{"error":"access_denied","error_description":"` + tc.denial + `"}`))
+						return
+					}
+					_, _ = w.Write([]byte(`{"access_token":"scoped-token","token_type":"Bearer","expires_in":3600}`))
+					return
+				}
+				mu.Lock()
+				gotAuth = r.Header.Get("Authorization")
+				mu.Unlock()
+				_, _ = w.Write([]byte(`{"id":"chatcmpl-1","object":"chat.completion","created":1700000000,"model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+			}))
+			defer server.Close()
+
+			provider, err := NewDatabricksProvider(&schemas.ProviderConfig{
+				NetworkConfig: schemas.NetworkConfig{DefaultRequestTimeoutInSeconds: 10, InsecureSkipVerify: true, AllowPrivateNetwork: true},
+			}, testLogger{})
+			if err != nil {
+				t.Fatalf("NewDatabricksProvider: %v", err)
+			}
+			u, _ := url.Parse(server.URL)
+			key := schemas.Key{
+				Models: []string{"*"},
+				DatabricksKeyConfig: &schemas.DatabricksKeyConfig{
+					WorkspaceURL: *schemas.NewSecretVar(u.Host),
+					ClientID:     schemas.NewSecretVar("sp-client-id"),
+					ClientSecret: schemas.NewSecretVar("sp-client-secret"),
+				},
+			}
+			request := &schemas.BifrostChatRequest{
+				Provider: schemas.Databricks,
+				Model:    "databricks-gpt-oss-120b",
+				Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}}},
+			}
+
+			attempts := 2
+			if tc.wantErr != "" {
+				attempts = 1
+			}
+			for i := range attempts {
+				ctx, cancel := schemas.NewBifrostContextWithTimeout(context.Background(), 10*time.Second)
+				_, bErr := provider.ChatCompletion(ctx, key, request)
+				cancel()
+				if tc.wantErr == "" && bErr != nil {
+					t.Fatalf("ChatCompletion (attempt %d) returned an error: %v", i+1, bErr)
+				}
+				if tc.wantErr != "" {
+					if bErr == nil || bErr.Error == nil || !strings.Contains(bErr.Error.Message, tc.wantErr) {
+						t.Fatalf("expected the original denial %q, got %+v", tc.wantErr, bErr)
+					}
+				}
+			}
+
+			mu.Lock()
+			defer mu.Unlock()
+			if strings.Join(requested, "|") != strings.Join(tc.wantScopes, "|") {
+				t.Errorf("token requests: got scopes %q, want %q (one all-apis attempt, then at most one retry, then cached)", requested, tc.wantScopes)
+			}
+			if tc.wantErr == "" && gotAuth != "Bearer scoped-token" {
+				t.Errorf("Authorization: got %q, want the narrowed token", gotAuth)
+			}
+		})
+	}
+}
+
+func TestGrantedScopesFromRejection(t *testing.T) {
+	denied := func(status int, msg string) *schemas.BifrostError {
+		return &schemas.BifrostError{StatusCode: schemas.Ptr(status), Error: &schemas.ErrorField{Message: msg}}
+	}
+	const prod = "oauth token request to https://dbc-1.cloud.databricks.com/oidc/v1/token failed (403): access_denied Scopes 'all-apis' are not assigned to the client [redacted]; the client has scope(s) [all-apis:read] that cannot send this request"
+	cases := []struct {
+		name string
+		err  *schemas.BifrostError
+		want []string
+	}{
+		{"the reported production message", denied(403, prod), []string{"all-apis:read"}},
+		{"several scopes, comma separated", denied(403, "access_denied ...; the client has scope(s) [model-serving-inference, ai-functions] that cannot send this request"), []string{"model-serving-inference", "ai-functions"}},
+		{"several scopes, space separated", denied(403, "access_denied ...; the client has scope(s) [sql jobs] that cannot"), []string{"sql", "jobs"}},
+		{"an empty scope list", denied(403, "access_denied ...; the client has scope(s) [] that cannot"), nil},
+		{"not a 403", denied(401, prod), nil},
+		{"a 403 that is not access_denied", denied(403, "invalid_client the client has scope(s) [sql]"), nil},
+		{"no scope list", denied(403, "access_denied client is disabled"), nil},
+		{"no status", &schemas.BifrostError{Error: &schemas.ErrorField{Message: prod}}, nil},
+		{"nil", nil, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := grantedScopesFromRejection(tc.err)
+			if strings.Join(got, "|") != strings.Join(tc.want, "|") {
+				t.Errorf("got %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 
