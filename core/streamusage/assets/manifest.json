@@ -1,0 +1,24 @@
+{
+  "assets": [
+    {
+      "kind": "anthropic",
+      "url": "https://raw.githubusercontent.com/anthropics/anthropic-sdk-python/14afc93ffd809e60666a267763a57a328184c5e4/src/anthropic/tokenizer.json",
+      "sha256": "c241737df24b4e7f7c9af4fdcee29a0ca903dcb288a8b753bc346a3092911767"
+    },
+    {
+      "kind": "deepseek",
+      "url": "https://huggingface.co/deepseek-ai/DeepSeek-V3/resolve/e815299b0bcbac849fa540c768ef21845365c9eb/tokenizer.json",
+      "sha256": "621ac2e32d0dba658404412318818aaa8ce8cda492e59830109d8da6b517fb41"
+    },
+    {
+      "kind": "llama2",
+      "url": "https://huggingface.co/hf-internal-testing/llama-tokenizer/resolve/d02ad6cb9dd2c2296a6332199fa2fdca5938fef0/tokenizer.json",
+      "sha256": "8eea70c4866c4f1320ba096fc986ac82038a8374dbe135212ba7628835b4a6f1"
+    },
+    {
+      "kind": "llama3",
+      "url": "https://huggingface.co/Xenova/llama-3-tokenizer/resolve/72bff9ee09897a16b3b4b2b9995fecb0bfa7dbe6/tokenizer.json",
+      "sha256": "c05a3c2174e9edd5be19dc5a0748c42a9037bec2811ce062728bfd71f8702d78"
+    }
+  ]
+}

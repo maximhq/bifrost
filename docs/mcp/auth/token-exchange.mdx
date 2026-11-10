@@ -210,7 +210,7 @@ Verification requires an identity-authenticated session or request: an SSO dashb
 
 ### Admin discovery credential
 
-The token exchanged during verification is retained as a client-level **admin discovery credential**, used only for periodic tool-list refresh and never for end-user tool calls, which always exchange the caller's own token or Bifrost sign-in. It renews automatically via the refresh token your identity provider issues alongside the exchange, provided your configured `scopes` include `offline_access` (or your provider's equivalent).
+The token exchanged during verification is retained as a client-level **admin discovery credential**, used only for periodic tool-list refresh and never for end-user tool calls, which always exchange the caller's own token or Bifrost sign-in. A client with [Per-Caller Discovery](../per-caller-discovery) on retains nothing: verification only checks the exchange, each caller's tools are discovered with their own exchanged token, and **Re-verify as me** has nothing to repair (`verify-exchange` returns `400` once the client is verified). It renews automatically via the refresh token your identity provider issues alongside the exchange, provided your configured `scopes` include `offline_access` (or your provider's equivalent).
 
 Without a refresh token, the admin credential expires within its own lifetime and the client shows **`needs_reauth`** until an admin clicks **Re-verify as me**. End-user tool calls are unaffected either way — only the periodic tool-list refresh pauses.
 
@@ -279,5 +279,6 @@ Using a stored sign-in is the default. Before v2.4.0, calls from Bifrost Edge an
 ## Next Steps
 
 - [Per-User OAuth](./per-user-oauth) — when the upstream server runs its own OAuth and doesn't trust your IdP
+- [Per-Caller Discovery](../per-caller-discovery) — each caller sees the tools their own identity reaches
 - [MCP Authentication Overview](./overview) — compare all auth types
 - [Gateway Authentication](../gateway-auth) — identity modes and dual-credential behavior

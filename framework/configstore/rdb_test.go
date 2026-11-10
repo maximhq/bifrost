@@ -2862,6 +2862,79 @@ func TestUpdateClientConfig_MCPCodeModeLimitsRoundTrip(t *testing.T) {
 	assert.Nil(t, result.MCPCodeModeLimits, "clearing the limits must persist")
 }
 
+func TestUpdateClientConfig_UsageEstimationTokenizersRoundTrip(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	err := store.UpdateClientConfig(ctx, &ClientConfig{
+		EnableLogging:             new(true),
+		InitialPoolSize:           100,
+		LogRetentionDays:          30,
+		MaxRequestBodySizeMB:      50,
+		UsageEstimationTokenizers: []string{"anthropic", "llama3"},
+	})
+	require.NoError(t, err)
+
+	result, err := store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"anthropic", "llama3"}, result.UsageEstimationTokenizers)
+}
+
+// The upgrade path: a database whose config_client predates usage_estimation_tokenizers_json
+// already holds a row. The migration must add the column without touching that row, the row
+// must still read (with no tokenizer families), and running the step again must be a no-op.
+func TestMigrationAddUsageEstimationTokenizersJSONColumn_ExistingRow(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+	db := store.DB()
+	const column = "usage_estimation_tokenizers_json"
+
+	require.NoError(t, store.UpdateClientConfig(ctx, &ClientConfig{
+		EnableLogging:        new(true),
+		InitialPoolSize:      137,
+		LogRetentionDays:     45,
+		MaxRequestBodySizeMB: 50,
+	}))
+	// Return the table to its shape before this migration.
+	require.NoError(t, db.Exec("ALTER TABLE config_client DROP COLUMN "+column).Error)
+	require.False(t, db.Migrator().HasColumn(&tables.TableClientConfig{}, column), "precondition: the old table has no tokenizer column")
+
+	require.NoError(t, migrationAddUsageEstimationTokenizersJSONColumn(ctx, db, testMigrationLogger))
+	require.True(t, db.Migrator().HasColumn(&tables.TableClientConfig{}, column))
+
+	existing, err := store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, existing, "the pre-migration row is still readable")
+	assert.Equal(t, 137, existing.InitialPoolSize, "the row's other settings survive the migration")
+	assert.Equal(t, 45, existing.LogRetentionDays)
+	assert.Empty(t, existing.UsageEstimationTokenizers, "an upgraded row estimates with the base encodings")
+
+	existing.UsageEstimationTokenizers = []string{"anthropic", "llama3"}
+	require.NoError(t, store.UpdateClientConfig(ctx, existing))
+	saved, err := store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"anthropic", "llama3"}, saved.UsageEstimationTokenizers, "the new column stores a list")
+
+	require.NoError(t, migrationAddUsageEstimationTokenizersJSONColumn(ctx, db, testMigrationLogger), "a second run is a no-op")
+	again, err := store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"anthropic", "llama3"}, again.UsageEstimationTokenizers, "a second run leaves the stored list")
+}
+
+func TestGenerateClientConfigHash_UsageEstimationTokenizers(t *testing.T) {
+	hash := func(families []string) string {
+		h, err := (&ClientConfig{InitialPoolSize: 100, LogRetentionDays: 30, UsageEstimationTokenizers: families}).GenerateClientConfigHash()
+		require.NoError(t, err)
+		return h
+	}
+	baseHash, err := (&ClientConfig{InitialPoolSize: 100, LogRetentionDays: 30}).GenerateClientConfigHash()
+	require.NoError(t, err)
+	assert.Equal(t, baseHash, hash(nil), "unset tokenizers must not change existing hashes")
+	assert.NotEqual(t, baseHash, hash([]string{"anthropic"}))
+	assert.NotEqual(t, hash([]string{"anthropic"}), hash([]string{"llama3"}))
+	assert.Equal(t, hash([]string{"anthropic", "llama3"}), hash([]string{"llama3", "anthropic"}), "order must not change the hash")
+}
+
 func TestGenerateClientConfigHash_MCPCodeModeLimits(t *testing.T) {
 	hash := func(limits *schemas.MCPCodeModeLimits) string {
 		h, err := (&ClientConfig{InitialPoolSize: 100, LogRetentionDays: 30, MCPCodeModeLimits: limits}).GenerateClientConfigHash()
