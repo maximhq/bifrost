@@ -4147,10 +4147,13 @@ func (g *GenericRouter) handlePassthroughStream(
 	// unrecognized Bedrock EventStream event-type, there is no protocol guarantee that extra
 	// bytes here are safely ignorable. So the heartbeat only runs when the resolved
 	// content-type is actually SSE.
-	endsWithResponsesFailed := passthroughEndsWithResponsesFailed(bifrostCtx, provider, req.Path, contentType)
+	// Encoded bodies are opaque here. Parsing or injecting SSE bytes would corrupt them.
+	contentEncoding := ctx.Response.Header.ContentEncoding()
+	canInspectBody := len(contentEncoding) == 0 || bytes.EqualFold(contentEncoding, []byte("identity"))
+	endsWithResponsesFailed := canInspectBody && passthroughEndsWithResponsesFailed(bifrostCtx, provider, req.Path, contentType)
 	var heartbeatDone chan struct{}
 	var heartbeatExited <-chan struct{}
-	if passthroughHeartbeatEligible(provider, contentType) {
+	if canInspectBody && passthroughHeartbeatEligible(provider, contentType) {
 		heartbeatDone, heartbeatExited = lib.StartSSEHeartbeat(lib.DefaultSSEHeartbeatInterval, reader.SendHeartbeat, cancel)
 	}
 

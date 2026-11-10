@@ -23,6 +23,7 @@
 
 ## 🐞 Fixed
 
+- **Encoded Passthrough Streams** - Preserve raw encoded bodies without injecting plaintext SSE heartbeats or failure frames. Remove encoding metadata from synthetic JSON errors.
 - **Anthropic Prompt Caching on Chat Messages** - Message-level `cache_control` is kept on chat completion messages, and OpenAI-style `prompt_cache_breakpoint` markers become `cache_control` for Claude on Anthropic and Bedrock (thanks [@Atharva-Kanherkar](https://github.com/Atharva-Kanherkar)!)
 - **Zero Token Usage** - Explicitly reported zero token counts from OpenAI-compatible providers are preserved instead of dropped (thanks [@Constantine3](https://github.com/Constantine3)!)
 - **Anthropic Web Tool Versions** - Explicit web search and web fetch versions are kept instead of upgraded, and web search and code execution are dropped for Claude on Bedrock (thanks [@ykakade](https://github.com/ykakade)!)

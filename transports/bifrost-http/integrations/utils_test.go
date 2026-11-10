@@ -2,6 +2,7 @@ package integrations
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"strings"
 	"testing"
@@ -433,5 +434,32 @@ func TestSendHelpers_ExtraFieldsPlacement(t *testing.T) {
 		router.sendStreamError(streamErrCtx, newTestBifrostContext(), RouteConfig{ErrorConverter: converter}, newErr())
 		assert.Equal(t, !inHeaders, strings.Contains(string(streamErrCtx.Response.Body()), `"extra_fields"`), "stream error headers=%v", inHeaders)
 		assert.Equal(t, "openai", string(streamErrCtx.Response.Header.Peek(lib.HeaderBifrostProvider)))
+	}
+}
+
+func TestSyntheticErrorsDropEncodingWithoutMutatingContext(t *testing.T) {
+	for _, streaming := range []bool{false, true} {
+		t.Run(fmt.Sprint(streaming), func(t *testing.T) {
+			for _, name := range []string{"Content-Encoding", "content-encoding"} {
+				ctx := &fasthttp.RequestCtx{}
+				bfCtx := newTestBifrostContext()
+				headers := map[string]string{name: "gzip", "X-Request-ID": "upstream", "x-bifrost-provider": "untrusted"}
+				bfCtx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, headers)
+				converter := func(_ *schemas.BifrostContext, err *schemas.BifrostError) interface{} { return err }
+				bifrostErr := &schemas.BifrostError{StatusCode: ptr(502), Error: &schemas.ErrorField{Message: "read failed"}}
+				router := newTestGenericRouter()
+				if streaming {
+					router.sendStreamError(ctx, bfCtx, RouteConfig{ErrorConverter: converter}, bifrostErr)
+				} else {
+					router.sendError(ctx, bfCtx, converter, bifrostErr)
+				}
+				assert.Empty(t, ctx.Response.Header.ContentEncoding())
+				assert.Equal(t, 502, ctx.Response.StatusCode())
+				assert.True(t, sonic.Valid(ctx.Response.Body()))
+				assert.Equal(t, "upstream", string(ctx.Response.Header.Peek("X-Request-ID")))
+				assert.NotEqual(t, "untrusted", string(ctx.Response.Header.Peek("x-bifrost-provider")))
+				assert.Equal(t, "gzip", headers[name], "raw SDK header context must not change")
+			}
+		})
 	}
 }
