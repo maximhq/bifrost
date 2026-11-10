@@ -102,7 +102,7 @@ func (provider *VLLMProvider) Decision(ctx *schemas.BifrostContext, key schemas.
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*VLLMDecisionRequest, error) {
 			return ToVLLMDecisionRequest(request)
 		})
 	if bifrostErr != nil {
