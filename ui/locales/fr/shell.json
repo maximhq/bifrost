@@ -353,6 +353,12 @@
 		"descriptionStuckEnterprise": "Le déploiement est toujours en cours. Actualisez la page dans une minute pour vérifier. Si le problème persiste, contactez l’administrateur de votre déploiement Bifrost.",
 		"waitingEnterprise": "En attente de la fin du déploiement…"
 	},
+	"assetLoadFailed": {
+		"bannerTitle": "Une partie du tableau de bord n'a pas pu être chargée",
+		"bannerDescription": "Vérifiez votre réseau, votre proxy ou vos extensions de navigateur, puis rechargez.",
+		"screenTitle": "Cette page n'a pas pu être chargée",
+		"screenDescription": "Votre navigateur n'a pas pu télécharger certains fichiers du tableau de bord. Un proxy, un pare-feu ou une extension de navigateur les bloque peut-être. Vérifiez votre réseau et rechargez."
+	},
 	"onboarding": {
 		"expandSetupChecklist": "Développer la liste de configuration",
 		"setupChecklist": "Liste de configuration",
