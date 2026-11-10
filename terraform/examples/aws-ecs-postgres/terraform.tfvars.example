@@ -1,0 +1,40 @@
+# =============================================================================
+# AWS ECS + RDS Example — terraform.tfvars
+# WARNING: Do NOT commit this file with real secrets (API keys, passwords).
+# =============================================================================
+
+region      = "us-east-1"
+name_prefix = "bifrost"
+
+# Pin a released version for production.
+image_tag = "latest"
+
+# Enterprise: use the registry path issued for your organization.
+# image_repository = "123456789.dkr.ecr.us-east-1.amazonaws.com/bifrost-enterprise"
+
+# -----------------------------------------------------------------------------
+# Database
+# -----------------------------------------------------------------------------
+database_instance_class      = "db.t4g.small"
+database_storage_gb          = 20
+database_deletion_protection = false
+# Set false to keep a final snapshot (<name_prefix>-db-final) when the stack is destroyed.
+database_skip_final_snapshot = true
+
+# -----------------------------------------------------------------------------
+# Access
+# -----------------------------------------------------------------------------
+enforce_auth_on_inference = true
+allowed_cidr              = "0.0.0.0/0"
+
+# Optional: seed providers now instead of through the dashboard.
+# providers_config = {
+#   openai = { keys = [{ value = "sk-...", weight = 1 }] }
+# }
+
+# -----------------------------------------------------------------------------
+# Compute
+# -----------------------------------------------------------------------------
+desired_count = 1
+cpu           = 1024
+memory        = 2048

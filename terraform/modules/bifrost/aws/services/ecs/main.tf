@@ -144,7 +144,7 @@ resource "aws_lb" "bifrost" {
   name               = "${var.name_prefix}-alb"
   internal           = false
   load_balancer_type = "application"
-  security_groups    = var.security_group_ids
+  security_groups    = var.load_balancer_security_group_ids != null ? var.load_balancer_security_group_ids : var.security_group_ids
   subnets            = var.subnet_ids
 
   tags = merge(var.tags, {
