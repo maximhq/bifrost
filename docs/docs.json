@@ -746,7 +746,10 @@
               "deployment-guides/fly",
               "deployment-guides/platforms/cloud-run",
               "deployment-guides/platforms/render",
-              "deployment-guides/platforms/railway"
+              "deployment-guides/platforms/railway",
+              "deployment-guides/platforms/digitalocean",
+              "deployment-guides/platforms/koyeb",
+              "deployment-guides/platforms/heroku"
             ]
           },
           {

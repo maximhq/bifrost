@@ -1,0 +1,60 @@
+---
+title: "DigitalOcean App Platform"
+sidebarTitle: "DigitalOcean"
+description: "Deploy the Bifrost container on DigitalOcean App Platform with a managed PostgreSQL database"
+icon: "digital-ocean"
+---
+
+import { DigitalOceanMark } from "/snippets/deploy-marks.jsx";
+
+App Platform runs the published Bifrost image as a web service and binds a DigitalOcean PostgreSQL database to it. The one-click button below reads the template at the root of the Bifrost repository.
+
+<Note>
+**Support level: Preview.** This guide is not continuously exercised against a live DigitalOcean account.
+</Note>
+
+## One-click deploy
+
+<a className="deploy-btn" href="https://cloud.digitalocean.com/apps/new?repo=https://github.com/maximhq/bifrost/tree/main" target="_blank" rel="noopener noreferrer"><DigitalOceanMark />Deploy on DigitalOcean</a>
+
+The button reads [`.do/deploy.template.yaml`](https://github.com/maximhq/bifrost/blob/main/.do/deploy.template.yaml) and creates:
+
+| Resource | What it is |
+|---|---|
+| Web service `bifrost` | The pinned `maximhq/bifrost` release image, `apps-s-1vcpu-2gb`, one instance, HTTP port `8080`, health check on `/health` |
+| Dev database `bifrost-db` | DigitalOcean PostgreSQL 16, bound to the service as `DATABASE_URL` |
+
+The service receives `config.json` through `BIFROST_CONFIG_JSON` (every value in it is an `env.` reference). The image entrypoint derives `PG_HOST`, `PG_PORT`, `PG_USER`, `PG_PASSWORD`, `PG_DATABASE`, and `PG_SSL_MODE` from the bound `DATABASE_URL`, so both stores land in PostgreSQL with no manual wiring. Inference routes require a virtual key.
+
+Two values are placeholders that you replace on the review screen before the first deploy:
+
+| Variable | What to enter |
+|---|---|
+| `BIFROST_ENCRYPTION_KEY` | A long random string. Never change it afterwards; persisted credentials are encrypted with it |
+| `BIFROST_SETUP_TOKEN` | A random string used once to create the first admin account |
+
+After the deploy reports live:
+
+1. Open the app URL and [create the first admin account](/quickstart/gateway/setting-up-auth) with your setup token.
+2. Add a provider key and [create a virtual key](/features/governance/virtual-keys).
+
+The button provisions a **dev** database, which is sized for evaluation. For production, create a managed PostgreSQL cluster and point the `DATABASE_URL` variable (or explicit `PG_*` variables) at it; the entrypoint keeps explicit `PG_*` values over the derived ones. Switching the URL alone starts Bifrost against an empty database, without the admin account, providers and virtual keys created so far: first copy the dev database into the new cluster (`pg_dump -Fc` from the dev database, `pg_restore` into the cluster; `pg_restore` reads only the custom format, a plain SQL dump goes through `psql` instead), keep `BIFROST_ENCRYPTION_KEY` unchanged so the stored credentials remain readable, then change the URL. Pin a release tag in the service settings before relying on the deployment; the release pipeline moves the pinned tag in the template on every stable release.
+
+**Enterprise:** the button reads the template from a public repository, so never put `registry_credentials` into a copy of it. Instead, extract the app spec from the template (the file wraps it in a top-level `spec:` key for the button, which `doctl` does not expect): `(umask 077 && yq '.spec' .do/deploy.template.yaml > ~/bifrost-app.yaml)` (owner-only and outside the clone; delete it after the deploy, since it will hold the credential and the secrets), App Platform pulls only from DigitalOcean Container Registry, Docker Hub and GitHub Container Registry, not from the Artifact Registry path the enterprise guide issues, so first mirror the Enterprise image into one of those (DOCR is the simplest), then set the image fields in that private file: for DOCR, `registry_type: DOCR`, an empty `registry` (App Platform requires it empty for DOCR; the template carries `maximhq`), `repository` and `tag` (the mirrored tag; the template pins the OSS release); for Docker Hub or GHCR, `registry` is the organization and `registry_credentials` is `username:token`. App Platform runs `linux/amd64` images only, so mirror that architecture. replace the two `REPLACE_WITH_` secret placeholders (`BIFROST_ENCRYPTION_KEY`, `BIFROST_SETUP_TOKEN`) with your own random values (the public template's values are known to everyone, and the setup token creates the first admin account), and create the app with `doctl apps create --spec ~/bifrost-app.yaml`, or create the app in the control panel and attach the registry credential there; App Platform encrypts the credential only once it has been submitted. Enterprise requires PostgreSQL for both stores, which this template provides.
+
+## Platform requirements
+
+| Setting | Value |
+|---|---|
+| Container port | `8080`; App Platform also sets `PORT=8080`, which the entrypoint honours |
+| Health check | `GET /health` |
+| Storage | PostgreSQL for both stores; App Platform has no persistent disk, so SQLite is not durable here |
+| Instances | One. OSS replicas do not share live configuration |
+
+See [Bifrost Deployment Requirements](/deployment-guides/runtime-contract) for the shared container values.
+
+## Troubleshooting
+
+- Deploy fails with a config error about `BIFROST_ENCRYPTION_KEY` or `BIFROST_SETUP_TOKEN`: the placeholders were not replaced. Edit the variables in the app settings and redeploy.
+- `/health` returns 503: the database binding is not ready or the dev database is still provisioning. Check the service logs for the PostgreSQL connection message.
+- Configuration disappears after a redeploy: both stores must be `postgres` (they are in the shipped template); check that `BIFROST_CONFIG_JSON` was not edited to SQLite.
