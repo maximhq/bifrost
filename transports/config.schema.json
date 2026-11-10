@@ -334,6 +334,16 @@
           "default": [],
           "description": "Request types excluded from dashboard and log API reads. Logs are still stored; an empty array shows all request types. Editable from the UI under Logs Settings."
         },
+        "usage_estimation_tokenizers": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": ["anthropic", "deepseek", "llama2", "llama3", "all"]
+          },
+          "uniqueItems": true,
+          "default": [],
+          "description": "Embedded tokenizer vocabularies used to estimate the usage of a cancelled or timed-out stream whose provider never reported it. An empty array counts every model with o200k_base or cl100k_base. Each listed family preloads in the background at startup and keeps 4-18 MB in memory; \"all\" enables every family."
+        },
         "allowed_headers": {
           "type": "array",
           "items": {
@@ -727,6 +737,9 @@
           "$ref": "#/$defs/provider"
         },
         "byteplus": {
+          "$ref": "#/$defs/provider"
+        },
+        "baseten": {
           "$ref": "#/$defs/provider"
         },
         "cloudflare": {
@@ -4550,7 +4563,8 @@
                         "huggingface",
                         "databricks",
                         "cloudflare",
-                        "byteplus"
+                        "byteplus",
+                        "baseten"
                       ]
                     },
                     "embedding_model": {
@@ -7961,6 +7975,10 @@
                   "use_deployments_endpoint": {
                     "type": "boolean",
                     "description": "Replicate: use the deployments endpoint instead of the predictions endpoint for this alias."
+                  },
+                  "deployment_url": {
+                    "type": "string",
+                    "description": "Baseten: OpenAI-compatible base URL of a dedicated deployment, e.g. https://model-<id>.api.baseten.co/environments/production/sync/v1. Requests for this alias go there instead of Model APIs, and model_id is the served model name; Engine-Builder and BEI deployments ignore it, so any value works, such as not-required. Must be https (can use env. prefix)."
                   },
                   "use_anthropic_endpoints": {
                     "type": "boolean",
