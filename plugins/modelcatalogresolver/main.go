@@ -62,8 +62,8 @@ func (p *Plugin) Cleanup() error { return nil }
 //
 // If the catalog returns zero providers, the resolver leaves req.Provider empty — the
 // empty-provider validation in handleRequest/handleStreamRequest then returns a clear error.
-// Exception: key-selection-bypass requests (BifrostContextKeySkipKeySelection) are pinned to
-// the integration's canonical provider regardless of catalog contents — see
+// Exception: a key-selection-bypass request (BifrostContextKeySkipKeySelection) that the catalog
+// cannot resolve is pinned to the integration's canonical provider instead — see
 // ResolveProviderFromCatalog for why a zero-key OAuth-passthrough provider needs this.
 func (p *Plugin) PreRequestHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) error {
 	if req.RequestType == schemas.PassthroughRequest || req.RequestType == schemas.PassthroughStreamRequest {
@@ -74,7 +74,7 @@ func (p *Plugin) PreRequestHook(ctx *schemas.BifrostContext, req *schemas.Bifros
 		return nil
 	}
 
-	selected, candidates := ResolveProviderFromCatalog(ctx, p.catalog, model)
+	selected, candidates, pinned := resolveProvider(ctx, p.catalog, model)
 	if selected == "" {
 		// ResolveProviderFromCatalog already logged *why* it could not pick
 		// (empty catalog vs allowlist pruned everything). This records the
@@ -88,11 +88,11 @@ func (p *Plugin) PreRequestHook(ctx *schemas.BifrostContext, req *schemas.Bifros
 	}
 	req.SetProvider(selected)
 
-	// A selection with no candidates only comes from the key-selection-bypass branch, which never
-	// consults the catalog; say so instead of reporting zero catalog options.
-	if len(candidates) == 0 {
+	// The catalog had no usable provider and key selection is bypassed: the selection is the
+	// integration's own provider, not a catalog option, and it gets no catalog fallbacks.
+	if pinned {
 		ctx.AppendRoutingEngineLog(schemas.RoutingEngineModelCatalog, schemas.LogLevelInfo, fmt.Sprintf(
-			"No provider specified for model %s, key selection is bypassed: pinned to the integration's provider %s without a catalog lookup",
+			"No provider specified for model %s and the model catalog could not resolve one; key selection is bypassed, so pinned to the integration's provider %s",
 			model, selected,
 		))
 		schemas.AppendToContextList(ctx, schemas.BifrostContextKeyRoutingEnginesUsed, schemas.RoutingEngineModelCatalog)
@@ -161,25 +161,57 @@ func (p *Plugin) PreRequestHook(ctx *schemas.BifrostContext, req *schemas.Bifros
 // candidates. Side effect: routing-engine logs are written to ctx when allowlist filtering
 // is applied (nil ctx skips logging).
 //
-// Key-selection-bypass requests (BifrostContextKeySkipKeySelection — currently set only by
-// checkAnthropicPassthrough for Claude Code OAuth/Max-mode passthrough) are pinned to the
-// integration's canonical provider unconditionally, before any catalog lookup: the OAuth
-// credential such a request carries is only ever valid against that one provider, and a
-// zero-key passthrough provider (e.g. `anthropic` configured with `"keys": []`) by design
-// contributes nothing to the catalog, so it could otherwise never be resolved this way. This
-// restores, at this consolidated layer, the behavior the now-removed core/providers/utils.
-// CheckAndSetDefaultProvider used to provide for every ToBifrost*Request converter before #4177.
+// A key-selection-bypass request (BifrostContextKeySkipKeySelection) that the catalog leaves
+// unresolved is pinned to the integration's canonical provider, with no candidates. A zero-key
+// OAuth-passthrough provider (`anthropic` with `"keys": []` for Claude Code Max mode) contributes
+// nothing to the catalog, so without this its bare-model requests fail provider validation.
+// Whenever the catalog does resolve, its pick, candidates and fallbacks stand unchanged:
+// isKeySkippingAllowed gates the flag per attempt, so a non-Anthropic fallback uses its own
+// stored keys. The pin also respects the routing allowlist; governance would refuse a provider
+// the allowlist excludes. On the HTTP routes only checkAnthropicPassthrough sets the flag for a
+// request that reaches this resolver: applyPassthroughCallerAuth sets it for generic passthrough,
+// which PreRequestHook skips, and the realtime callers pass a nil ctx.
 func ResolveProviderFromCatalog(ctx *schemas.BifrostContext, catalog *modelcatalog.ModelCatalog, model string) (schemas.ModelProvider, []schemas.ModelProvider) {
-	if ctx != nil {
-		if skip, ok := ctx.Value(schemas.BifrostContextKeySkipKeySelection).(bool); ok && skip {
-			if integrationType, ok := ctx.Value(schemas.BifrostContextKeyIntegrationType).(string); ok {
-				if integrationDefault, mapped := integrationTypeToDefaultProvider[integrationType]; mapped && integrationDefault != "" {
-					return integrationDefault, nil
-				}
-			}
-		}
-	}
+	selected, candidates, _ := resolveProvider(ctx, catalog, model)
+	return selected, candidates
+}
 
+// resolveProvider is ResolveProviderFromCatalog plus whether the selection was pinned by the
+// key-selection bypass rather than picked from the catalog.
+func resolveProvider(ctx *schemas.BifrostContext, catalog *modelcatalog.ModelCatalog, model string) (schemas.ModelProvider, []schemas.ModelProvider, bool) {
+	selected, candidates := resolveFromCatalog(ctx, catalog, model)
+	if selected != "" {
+		return selected, candidates, false
+	}
+	if provider := keySelectionBypassProvider(ctx); provider != "" {
+		return provider, nil, true
+	}
+	return "", candidates, false
+}
+
+// keySelectionBypassProvider returns the integration's canonical provider for a request that skips
+// key selection, or "" when the flag is unset, the route has no canonical provider, or a routing
+// allowlist excludes that provider.
+func keySelectionBypassProvider(ctx *schemas.BifrostContext) schemas.ModelProvider {
+	if ctx == nil {
+		return ""
+	}
+	if skip, _ := ctx.Value(schemas.BifrostContextKeySkipKeySelection).(bool); !skip {
+		return ""
+	}
+	integrationType, _ := ctx.Value(schemas.BifrostContextKeyIntegrationType).(string)
+	provider := integrationTypeToDefaultProvider[integrationType]
+	if provider == "" {
+		return ""
+	}
+	if allowed, ok := ctx.Value(schemas.BifrostContextKeyRoutingAllowedProviders).([]schemas.ModelProvider); ok && !slices.Contains(allowed, provider) {
+		return ""
+	}
+	return provider
+}
+
+// resolveFromCatalog is the catalog-only pick behind ResolveProviderFromCatalog.
+func resolveFromCatalog(ctx *schemas.BifrostContext, catalog *modelcatalog.ModelCatalog, model string) (schemas.ModelProvider, []schemas.ModelProvider) {
 	if catalog == nil || model == "" {
 		return "", nil
 	}
