@@ -316404,7 +316404,503 @@
       ]
     },
     {
-      "name": "332. OpenAI passthrough-encoding (#9764 / PR #9804)",
+      "name": "332. Image output_format maps to imageOutputOptions mimeType (image output format) (PR #8627)",
+      "description": "output_format was ignored for Gemini image models (gemini-*-image), which always returned PNG. On Vertex it now maps to generationConfig.imageConfig.imageOutputOptions.mimeType (png/jpeg; webp is dropped rather than rejected) and output_compression to compressionQuality for JPEG, on /v1/images/generations, /v1/images/edits and /genai generateContent. The Gemini API (AI Studio) does not accept imageOutputOptions, so the direct provider must omit it and still succeed. Edit cases send the existing PNG fixture as multipart input.",
+      "item": [
+        {
+          "name": "vertex/gemini-2.5-flash-image /v1/images/generations jpeg output_format returns JPEG bytes - image output format",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Vertex Gemini returns JPEG bytes', function () {",
+                  "  var text = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'failed: ' + text.slice(0, 500)).to.eql(200);",
+                  "  var data = pm.response.json().data;",
+                  "  pm.expect(data, 'missing image data: ' + text.slice(0, 500)).to.be.an('array').that.is.not.empty;",
+                  "  pm.expect(data[0].b64_json, 'missing base64 image: ' + text.slice(0, 500)).to.be.a('string').that.is.not.empty;",
+                  "  var bytes = Buffer.from(data[0].b64_json, 'base64');",
+                  "  pm.expect(bytes.length, 'empty or truncated JPEG').to.be.above(4);",
+                  "  pm.expect(bytes.slice(0, 3).toString('hex'), 'not a JPEG start marker').to.equal('ffd8ff');",
+                  "  pm.expect(bytes.slice(-2).toString('hex'), 'not a JPEG end marker').to.equal('ffd9');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/gemini-2.5-flash-image\",\n  \"prompt\": \"A red apple on a white background\",\n  \"output_format\": \"jpeg\",\n  \"response_format\": \"b64_json\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/images/generations",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "images",
+                "generations"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "vertex/gemini-2.5-flash-image /v1/images/edits jpeg output_format returns JPEG bytes - image output format",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Vertex Gemini returns JPEG bytes', function () {",
+                  "  var text = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'failed: ' + text.slice(0, 500)).to.eql(200);",
+                  "  var data = pm.response.json().data;",
+                  "  pm.expect(data, 'missing image data: ' + text.slice(0, 500)).to.be.an('array').that.is.not.empty;",
+                  "  pm.expect(data[0].b64_json, 'missing base64 image: ' + text.slice(0, 500)).to.be.a('string').that.is.not.empty;",
+                  "  var bytes = Buffer.from(data[0].b64_json, 'base64');",
+                  "  pm.expect(bytes.length, 'empty or truncated JPEG').to.be.above(4);",
+                  "  pm.expect(bytes.slice(0, 3).toString('hex'), 'not a JPEG start marker').to.equal('ffd8ff');",
+                  "  pm.expect(bytes.slice(-2).toString('hex'), 'not a JPEG end marker').to.equal('ffd9');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "vertex/gemini-2.5-flash-image",
+                  "type": "text"
+                },
+                {
+                  "key": "prompt",
+                  "value": "Add a small red circle to this image",
+                  "type": "text"
+                },
+                {
+                  "key": "output_format",
+                  "value": "jpeg",
+                  "type": "text"
+                },
+                {
+                  "key": "response_format",
+                  "value": "b64_json",
+                  "type": "text"
+                },
+                {
+                  "key": "image",
+                  "src": "tests/e2e/api/fixtures/sample.png",
+                  "type": "file"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/images/edits",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "images",
+                "edits"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "vertex/gemini-2.5-flash-image /v1/images/generations jpeg output_compression forwards compressionQuality - image output format",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function rawImageConfig(body, text) {",
+                  "  var raw = (body.extra_fields || {}).raw_request;",
+                  "  pm.expect(raw, 'raw provider request missing: ' + text.slice(0, 500)).to.exist;",
+                  "  var request = typeof raw === 'string' ? JSON.parse(raw) : raw;",
+                  "  return (request.generationConfig || {}).imageConfig || {};",
+                  "}",
+                  "pm.test('Vertex Gemini forwards mimeType and compressionQuality', function () {",
+                  "  var text = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'failed: ' + text.slice(0, 500)).to.eql(200);",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.data, 'missing image data: ' + text.slice(0, 500)).to.be.an('array').that.is.not.empty;",
+                  "  pm.expect(body.data[0].b64_json, 'missing base64 image: ' + text.slice(0, 500)).to.be.a('string').that.is.not.empty;",
+                  "  var imageConfig = rawImageConfig(body, text);",
+                  "  var options = imageConfig.imageOutputOptions || {};",
+                  "  pm.expect(options.mimeType, 'mimeType not forwarded: ' + JSON.stringify(imageConfig)).to.equal('image/jpeg');",
+                  "  pm.expect(options.compressionQuality, 'output_compression not forwarded: ' + JSON.stringify(imageConfig)).to.equal(60);",
+                  "  var bytes = Buffer.from(body.data[0].b64_json, 'base64');",
+                  "  pm.expect(bytes.slice(0, 3).toString('hex'), 'not a JPEG start marker').to.equal('ffd8ff');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/gemini-2.5-flash-image\",\n  \"prompt\": \"A red apple on a white background\",\n  \"output_format\": \"jpeg\",\n  \"output_compression\": 60,\n  \"response_format\": \"b64_json\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/images/generations",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "images",
+                "generations"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "vertex/gemini-2.5-flash-image /v1/images/generations webp output_format is not forwarded and still succeeds - image output format",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function rawImageConfig(body, text) {",
+                  "  var raw = (body.extra_fields || {}).raw_request;",
+                  "  pm.expect(raw, 'raw provider request missing: ' + text.slice(0, 500)).to.exist;",
+                  "  var request = typeof raw === 'string' ? JSON.parse(raw) : raw;",
+                  "  return (request.generationConfig || {}).imageConfig || {};",
+                  "}",
+                  "pm.test('Vertex Gemini drops the unsupported webp mimeType instead of failing', function () {",
+                  "  var text = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'failed: ' + text.slice(0, 500)).to.eql(200);",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.data, 'missing image data: ' + text.slice(0, 500)).to.be.an('array').that.is.not.empty;",
+                  "  pm.expect(body.data[0].b64_json, 'missing base64 image: ' + text.slice(0, 500)).to.be.a('string').that.is.not.empty;",
+                  "  var imageConfig = rawImageConfig(body, text);",
+                  "  pm.expect(imageConfig.imageOutputOptions, 'webp must not be sent to Gemini image models: ' + JSON.stringify(imageConfig)).to.be.undefined;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/gemini-2.5-flash-image\",\n  \"prompt\": \"A red apple on a white background\",\n  \"output_format\": \"webp\",\n  \"response_format\": \"b64_json\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/images/generations",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "images",
+                "generations"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "gemini/gemini-2.5-flash-image /v1/images/generations jpeg output_format omits imageOutputOptions and still succeeds - image output format",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function rawImageConfig(body, text) {",
+                  "  var raw = (body.extra_fields || {}).raw_request;",
+                  "  pm.expect(raw, 'raw provider request missing: ' + text.slice(0, 500)).to.exist;",
+                  "  var request = typeof raw === 'string' ? JSON.parse(raw) : raw;",
+                  "  return (request.generationConfig || {}).imageConfig || {};",
+                  "}",
+                  "pm.test('Gemini API request omits imageOutputOptions (Vertex-only field)', function () {",
+                  "  var text = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'failed: ' + text.slice(0, 500)).to.eql(200);",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.data, 'missing image data: ' + text.slice(0, 500)).to.be.an('array').that.is.not.empty;",
+                  "  pm.expect(body.data[0].b64_json, 'missing base64 image: ' + text.slice(0, 500)).to.be.a('string').that.is.not.empty;",
+                  "  var imageConfig = rawImageConfig(body, text);",
+                  "  pm.expect(imageConfig.imageOutputOptions, 'imageOutputOptions is Vertex-only and must not reach the Gemini API: ' + JSON.stringify(imageConfig)).to.be.undefined;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash-image\",\n  \"prompt\": \"A red apple on a white background\",\n  \"output_format\": \"jpeg\",\n  \"output_compression\": 60,\n  \"response_format\": \"b64_json\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/images/generations",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "images",
+                "generations"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "gemini/gemini-2.5-flash-image /v1/images/edits jpeg output_format omits imageOutputOptions and still succeeds - image output format",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function rawImageConfig(body, text) {",
+                  "  var raw = (body.extra_fields || {}).raw_request;",
+                  "  pm.expect(raw, 'raw provider request missing: ' + text.slice(0, 500)).to.exist;",
+                  "  var request = typeof raw === 'string' ? JSON.parse(raw) : raw;",
+                  "  return (request.generationConfig || {}).imageConfig || {};",
+                  "}",
+                  "pm.test('Gemini API request omits imageOutputOptions (Vertex-only field)', function () {",
+                  "  var text = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'failed: ' + text.slice(0, 500)).to.eql(200);",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.data, 'missing image data: ' + text.slice(0, 500)).to.be.an('array').that.is.not.empty;",
+                  "  pm.expect(body.data[0].b64_json, 'missing base64 image: ' + text.slice(0, 500)).to.be.a('string').that.is.not.empty;",
+                  "  var imageConfig = rawImageConfig(body, text);",
+                  "  pm.expect(imageConfig.imageOutputOptions, 'imageOutputOptions is Vertex-only and must not reach the Gemini API: ' + JSON.stringify(imageConfig)).to.be.undefined;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "gemini/gemini-2.5-flash-image",
+                  "type": "text"
+                },
+                {
+                  "key": "prompt",
+                  "value": "Add a small red circle to this image",
+                  "type": "text"
+                },
+                {
+                  "key": "output_format",
+                  "value": "jpeg",
+                  "type": "text"
+                },
+                {
+                  "key": "response_format",
+                  "value": "b64_json",
+                  "type": "text"
+                },
+                {
+                  "key": "image",
+                  "src": "tests/e2e/api/fixtures/sample.png",
+                  "type": "file"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/images/edits",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "images",
+                "edits"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "vertex/gemini-2.5-flash-image /genai generateContent imageOutputOptions jpeg returns JPEG bytes - image output format",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('GenAI imageOutputOptions reaches Vertex and returns JPEG bytes', function () {",
+                  "  var text = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'failed: ' + text.slice(0, 500)).to.eql(200);",
+                  "  var parts = (((pm.response.json().candidates || [])[0] || {}).content || {}).parts || [];",
+                  "  var image = parts.filter(function (p) { return p.inlineData && p.inlineData.data; })[0];",
+                  "  pm.expect(image, 'no inline image in response: ' + text.slice(0, 500)).to.exist;",
+                  "  var bytes = Buffer.from(image.inlineData.data, 'base64');",
+                  "  pm.expect(bytes.slice(0, 3).toString('hex'), 'not a JPEG start marker').to.equal('ffd8ff');",
+                  "  pm.expect(bytes.slice(-2).toString('hex'), 'not a JPEG end marker').to.equal('ffd9');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-goog-api-key",
+                "value": "{{genaiKey}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"A red apple on a white background\"\n        }\n      ]\n    }\n  ],\n  \"generationConfig\": {\n    \"responseModalities\": [\n      \"IMAGE\"\n    ],\n    \"imageConfig\": {\n      \"imageOutputOptions\": {\n        \"mimeType\": \"image/jpeg\"\n      }\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/vertex/gemini-2.5-flash-image:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "vertex/gemini-2.5-flash-image:generateContent"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "336. Claude Code OAuth bare model pinned to the route provider (claude code bare model) (#5792 / PR #5904)",
+      "description": "Claude Code OAuth (Max mode) passthrough with a bare model name was rejected with HTTP 400 'could not auto resolve a provider' whenever the model catalog had no provider for it - which is always the case for the documented zero-key setup (anthropic with \"keys\": []), since a provider without keys contributes nothing to the catalog. checkAnthropicPassthrough sets SkipKeySelection for an OAuth bearer on /anthropic/v1/messages; the model-catalog resolver now pins such a request to the route's provider (anthropic) when the catalog cannot resolve the model, and leaves the catalog pick and fallbacks alone when it can. The shared profile gives anthropic keys, so the case reaches the unresolved branch with a Claude-named model no catalog lists. It sends a deliberately invalid sk-ant-oat bearer: no tokens are spent, and the pin is proven by Anthropic itself answering 401 authentication_error instead of Bifrost answering 400 before dispatch.",
+      "item": [
+        {
+          "name": "Anthropic Claude Code OAuth bare unlisted claude model reaches anthropic instead of failing provider resolution [EXPECT-401] - #5792",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Before the fix Bifrost answered 400 'could not auto resolve a provider' without dispatching.",
+                  "// After it the request is pinned to anthropic, which rejects the deliberately invalid OAuth token.",
+                  "pm.test('bare claude model with an OAuth bearer is routed to anthropic - #5792', function () {",
+                  "  var text = pm.response.text() || '';",
+                  "  pm.expect(text.indexOf('could not auto resolve a provider'), 'provider resolution still fails: ' + text).to.equal(-1);",
+                  "  pm.expect(pm.response.code, 'expected anthropic to reject the invalid OAuth token with 401: ' + text).to.equal(401);",
+                  "  pm.expect(text, 'the 401 did not come from anthropic auth: ' + text).to.include('authentication_error');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer sk-ant-oat01-bifrost-harness-invalid-token"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "User-Agent",
+                "value": "claude-cli/1.0"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"claude-harness-unlisted-5\", \"max_tokens\": 16, \"messages\": [{\"role\": \"user\", \"content\": \"hi\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "337. OpenAI passthrough-encoding (#9764 / PR #9804)",
       "description": "Local gzip regression. Raw JSON and Responses bodies retain encoding metadata. Buffered JSON remains decoded and unlabeled. The delayed gzip Responses case detects plaintext heartbeat or failure injection. Newman decodes HTTP gzip, so these cases assert the exact decoded body and response header. Go transport tests also compare raw wire bytes. A truncated gzip response before its first body byte must produce an unlabeled JSON error. No paid provider calls. Start: node tests/e2e/api/runners/run-passthrough-encoding-fixture.mjs /tmp/bifrost-passthrough-encoding. Start a gateway from this checkout: make dev PORT=3024 APP_DIR=/tmp/bifrost-passthrough-encoding. Verify port 3024 is free first and wait for /health. Log in at POST /api/session/login using encoding-fixture / fixture-only-password and export its token cookie as BIFROST_E2E_AUTH_HEADER=\"Bearer <token>\". Run: make run-provider-harness-test PROVIDER=openai FEATURE=\"passthrough-encoding\" INCLUDE_PREVIEW=1 PARALLEL=0 COMPAT=off DB_VERIFY=0 SKIP_STREAM_CANCEL=1 BASE_URL=http://localhost:3024. Stop both servers and remove the temporary profile afterward. PREVIEW keeps these fixture cases out of paid sweeps.",
       "item": [
         {

@@ -353,6 +353,12 @@
 		"descriptionStuckEnterprise": "The rollout is still in progress. Reload to check again in a minute. If this doesn't work, contact the administrator of your Bifrost deployment.",
 		"waitingEnterprise": "Waiting for the rollout to complete…"
 	},
+	"assetLoadFailed": {
+		"bannerTitle": "Part of the dashboard couldn't load",
+		"bannerDescription": "Check your network, proxy or browser extensions, then reload.",
+		"screenTitle": "This page couldn't load",
+		"screenDescription": "Your browser couldn't download some dashboard files. A proxy, firewall or browser extension may be blocking them. Check your network and reload."
+	},
 	"onboarding": {
 		"expandSetupChecklist": "Expand setup checklist",
 		"setupChecklist": "Setup checklist",

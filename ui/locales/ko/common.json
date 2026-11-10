@@ -511,6 +511,7 @@
 		"grpcHostPortFormat": "gRPC는 <host>:<port> 형식이어야 해요 (예: {{example}})",
 		"invalidInput": "잘못된 입력이에요",
 		"vertexEndpointId": "Vertex 엔드포인트 ID를 입력하거나 지원되는 엔드포인트 URL을 붙여넣으세요",
+		"basetenDeploymentUrl": "배포 URL은 절대 https URL이어야 합니다",
 		"mcp": {
 			"privateKeyRequired": "private_key_jwt에는 개인 키가 필요합니다",
 			"secretRequiredForMethod": "전송 방식을 선택하려면 클라이언트 시크릿이 필요합니다",

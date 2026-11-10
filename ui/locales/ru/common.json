@@ -529,6 +529,7 @@
 		"grpcHostPortFormat": "Для gRPC укажите в формате <host>:<port> (например, {{example}})",
 		"invalidInput": "Некорректные данные",
 		"vertexEndpointId": "Введите ID конечной точки Vertex или вставьте поддерживаемый URL конечной точки",
+		"basetenDeploymentUrl": "URL развёртывания должен быть абсолютным https URL",
 		"mcp": {
 			"privateKeyRequired": "Для private_key_jwt требуется закрытый ключ",
 			"secretRequiredForMethod": "Для выбора способа отправки требуется секрет клиента",
