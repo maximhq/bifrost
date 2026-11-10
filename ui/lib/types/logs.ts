@@ -1552,9 +1552,19 @@ export interface MCPToolLogFilters {
 // MCP Tool Log Statistics
 export interface MCPToolLogStats {
 	total_executions: number;
+	success_count: number;
+	error_count: number;
+	cancelled_count: number;
+	/** Over finished calls, cancelled ones counted, as the LLM logs stats measure it. */
 	success_rate: number;
 	average_latency: number;
 	total_cost: number; // Total cost in dollars
+}
+
+/** GET /api/mcp-logs/stats with compare_to_previous=true: the window's stats plus the preceding window's. */
+export interface MCPToolLogStatsResponse extends MCPToolLogStats {
+	previous?: MCPToolLogStats;
+	has_previous_period?: boolean;
 }
 
 // MCP Tool Log Search Response
@@ -1565,12 +1575,23 @@ export interface MCPToolLogsResponse {
 }
 
 // MCP Tool Log Filter Data Response
+// An id and its display name, as an MCP log filter dimension offers it.
+export interface MCPToolLogFilterEntity {
+	id: string;
+	name: string;
+}
+
 export interface MCPToolLogFilterData {
 	tool_names: string[];
 	server_labels: string[];
 	apps: string[];
 	user_agents: string[];
 	virtual_keys: VirtualKey[];
+	users: MCPToolLogFilterEntity[];
+	teams: MCPToolLogFilterEntity[];
+	customers: MCPToolLogFilterEntity[];
+	business_units: MCPToolLogFilterEntity[];
+	projects: MCPToolLogFilterEntity[];
 }
 
 // WebSocket message types for MCP tool logs

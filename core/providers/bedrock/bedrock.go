@@ -1605,6 +1605,8 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 		streamState := NewBedrockStreamStateWithContext(ctx)
 		var isAccumulatingStructuredOutput bool
 		var structuredOutputBuilder strings.Builder
+		sendRaw := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
+		var held heldStreamRaw
 
 		// sendEvent converts one Converse event and sends it; false means an error was sent.
 		sendEvent := func(ev *BedrockStreamEvent, payload []byte) bool {
@@ -1627,12 +1629,18 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 				chunkIndex++
 				lastChunkTime = time.Now()
 
-				if payload != nil && providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
-					response.ExtraFields.RawResponse = string(payload)
-					response.ExtraFields.RawResponseFormat = schemas.RawResponseFormatBedrockConverseStreamEvent
+				if sendRaw {
+					if payload != nil {
+						response.ExtraFields.RawResponse = string(payload)
+						response.ExtraFields.RawResponseFormat = schemas.RawResponseFormatBedrockConverseStreamEvent
+					} else {
+						held.attach(&response.ExtraFields, false)
+					}
 				}
 
 				providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, response, nil, nil, nil, nil), responseChan, postHookSpanFinalizer)
+			} else if sendRaw && payload != nil {
+				held.hold(payload)
 			}
 			return true
 		}
@@ -1831,6 +1839,9 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 
 		// Send final chunk with accumulated usage
 		response := providerUtils.CreateBifrostChatCompletionChunkResponse(id, usage, finishReason, chunkIndex, request.Model, 0)
+		if sendRaw {
+			held.attach(&response.ExtraFields, true)
+		}
 		// Set raw request if enabled
 		if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
 			providerUtils.ParseAndSetRawRequest(&response.ExtraFields, jsonData)
@@ -2053,6 +2064,8 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 		lastChunkTime := startTime
 		decoder := eventstream.NewDecoder()
 		payloadBuf := make([]byte, 0, 1024*1024) // 1MB payload buffer
+		sendRaw := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
+		var held heldStreamRaw
 
 		// sendEvent converts one Converse event and sends it; false means an error was sent.
 		sendEvent := func(ev *BedrockStreamEvent, payload []byte) bool {
@@ -2067,6 +2080,7 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 			}
 			// Attach the upstream event to exactly one response: the one streaming its text or arguments.
 			rawIdx := providerUtils.ResponsesStreamRawIndex(responses, len(responses)-1)
+			sent := false
 			for i, response := range responses {
 				if response != nil {
 					response.ExtraFields = schemas.BifrostResponseExtraFields{
@@ -2076,13 +2090,22 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 					chunkIndex++
 					lastChunkTime = time.Now()
 
-					if payload != nil && providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) && i == rawIdx {
-						response.ExtraFields.RawResponse = string(payload)
-						response.ExtraFields.RawResponseFormat = schemas.RawResponseFormatBedrockConverseStreamEvent
+					if sendRaw {
+						if payload != nil && i == rawIdx {
+							response.ExtraFields.RawResponse = string(payload)
+							response.ExtraFields.RawResponseFormat = schemas.RawResponseFormatBedrockConverseStreamEvent
+						} else if payload == nil || i < rawIdx {
+							// Only responses ahead of this event's own payload take held events, keeping the record in order.
+							held.attach(&response.ExtraFields, false)
+						}
 					}
 
 					providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, response, nil, nil, nil), responseChan, postHookSpanFinalizer)
+					sent = true
 				}
+			}
+			if !sent && sendRaw && payload != nil {
+				held.hold(payload)
 			}
 			return true
 		}
@@ -2117,8 +2140,9 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 						chunkIndex++
 						lastChunkTime = time.Now()
 
-						if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
-							finalResponse.ExtraFields.RawResponse = "{}" // Final event has no payload
+						if sendRaw {
+							// The stream's held events (messageStop, metadata, ...) ride on its closing chunks.
+							held.attach(&finalResponse.ExtraFields, i == len(finalResponses)-1)
 						}
 
 						if i == len(finalResponses)-1 {
@@ -3142,7 +3166,7 @@ func (provider *BedrockProvider) FileRetrieve(ctx *schemas.BifrostContext, keys 
 		return nil, bucketErr
 	}
 
-	var lastErr *schemas.BifrostError
+	var keyErrs s3KeyErrors
 	for _, key := range keys {
 		region := DefaultBedrockRegion
 		if key.BedrockKeyConfig.Region != nil && key.BedrockKeyConfig.Region.GetValue() != "" {
@@ -3155,13 +3179,13 @@ func (provider *BedrockProvider) FileRetrieve(ctx *schemas.BifrostContext, keys 
 
 		httpReq, err := http.NewRequestWithContext(ctx, http.MethodHead, reqURL, nil)
 		if err != nil {
-			lastErr = providerUtils.NewBifrostOperationError("error creating request", err)
+			keyErrs.local = providerUtils.NewBifrostOperationError("error creating request", err)
 			continue
 		}
 
 		// Sign request for S3
 		if err := signAWSRequest(ctx, httpReq, key.BedrockKeyConfig, region, "s3"); err != nil {
-			lastErr = err
+			keyErrs.local = err
 			continue
 		}
 
@@ -3180,13 +3204,13 @@ func (provider *BedrockProvider) FileRetrieve(ctx *schemas.BifrostContext, keys 
 					},
 				}
 			}
-			lastErr = providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, err)
+			keyErrs.local = providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, err)
 			continue
 		}
 
 		if resp.StatusCode != http.StatusOK {
 			resp.Body.Close()
-			lastErr = providerUtils.NewProviderAPIError(fmt.Sprintf("S3 HEAD failed with status %d", resp.StatusCode), nil, resp.StatusCode, nil, nil)
+			keyErrs.status(resp.StatusCode, resp.Header, bucketName, region, providerUtils.NewProviderAPIError(fmt.Sprintf("S3 HEAD failed with status %d", resp.StatusCode), nil, resp.StatusCode, nil, nil))
 			continue
 		}
 
@@ -3221,7 +3245,7 @@ func (provider *BedrockProvider) FileRetrieve(ctx *schemas.BifrostContext, keys 
 		}, nil
 	}
 
-	return nil, lastErr
+	return nil, keyErrs.result()
 }
 
 // FileDelete deletes an S3 object used for Bedrock batch processing by trying each key until successful.
@@ -3243,7 +3267,7 @@ func (provider *BedrockProvider) FileDelete(ctx *schemas.BifrostContext, keys []
 		return nil, bucketErr
 	}
 
-	var lastErr *schemas.BifrostError
+	var keyErrs s3KeyErrors
 	for _, key := range keys {
 		region := DefaultBedrockRegion
 		if key.BedrockKeyConfig.Region != nil && key.BedrockKeyConfig.Region.GetValue() != "" {
@@ -3256,13 +3280,13 @@ func (provider *BedrockProvider) FileDelete(ctx *schemas.BifrostContext, keys []
 
 		httpReq, err := http.NewRequestWithContext(ctx, http.MethodDelete, reqURL, nil)
 		if err != nil {
-			lastErr = providerUtils.NewBifrostOperationError("error creating request", err)
+			keyErrs.local = providerUtils.NewBifrostOperationError("error creating request", err)
 			continue
 		}
 
 		// Sign request for S3
 		if err := signAWSRequest(ctx, httpReq, key.BedrockKeyConfig, region, "s3"); err != nil {
-			lastErr = err
+			keyErrs.local = err
 			continue
 		}
 
@@ -3281,7 +3305,7 @@ func (provider *BedrockProvider) FileDelete(ctx *schemas.BifrostContext, keys []
 					},
 				}
 			}
-			lastErr = providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, err)
+			keyErrs.local = providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, err)
 			continue
 		}
 
@@ -3289,7 +3313,7 @@ func (provider *BedrockProvider) FileDelete(ctx *schemas.BifrostContext, keys []
 		if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusOK {
 			body, _ := io.ReadAll(resp.Body)
 			resp.Body.Close()
-			lastErr = providerUtils.NewProviderAPIError(fmt.Sprintf("S3 DELETE failed: %s", string(body)), nil, resp.StatusCode, nil, nil)
+			keyErrs.status(resp.StatusCode, resp.Header, bucketName, region, providerUtils.NewProviderAPIError(fmt.Sprintf("S3 DELETE failed: %s", string(body)), nil, resp.StatusCode, nil, nil))
 			continue
 		}
 
@@ -3305,7 +3329,7 @@ func (provider *BedrockProvider) FileDelete(ctx *schemas.BifrostContext, keys []
 		}, nil
 	}
 
-	return nil, lastErr
+	return nil, keyErrs.result()
 }
 
 // FileContent downloads S3 object content for Bedrock batch processing by trying each key until found.
@@ -3327,7 +3351,7 @@ func (provider *BedrockProvider) FileContent(ctx *schemas.BifrostContext, keys [
 		return nil, bucketErr
 	}
 
-	var lastErr *schemas.BifrostError
+	var keyErrs s3KeyErrors
 	for _, key := range keys {
 		region := DefaultBedrockRegion
 		if key.BedrockKeyConfig.Region != nil && key.BedrockKeyConfig.Region.GetValue() != "" {
@@ -3340,13 +3364,13 @@ func (provider *BedrockProvider) FileContent(ctx *schemas.BifrostContext, keys [
 
 		httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
 		if err != nil {
-			lastErr = providerUtils.NewBifrostOperationError("error creating request", err)
+			keyErrs.local = providerUtils.NewBifrostOperationError("error creating request", err)
 			continue
 		}
 
 		// Sign request for S3
 		if err := signAWSRequest(ctx, httpReq, key.BedrockKeyConfig, region, "s3"); err != nil {
-			lastErr = err
+			keyErrs.local = err
 			continue
 		}
 
@@ -3365,21 +3389,21 @@ func (provider *BedrockProvider) FileContent(ctx *schemas.BifrostContext, keys [
 					},
 				}
 			}
-			lastErr = providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, err)
+			keyErrs.local = providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, err)
 			continue
 		}
 
 		if resp.StatusCode != http.StatusOK {
 			body, _ := io.ReadAll(resp.Body)
 			resp.Body.Close()
-			lastErr = providerUtils.NewProviderAPIError(fmt.Sprintf("S3 GET failed: %s", string(body)), nil, resp.StatusCode, nil, nil)
+			keyErrs.status(resp.StatusCode, resp.Header, bucketName, region, providerUtils.NewProviderAPIError(fmt.Sprintf("S3 GET failed: %s", string(body)), nil, resp.StatusCode, nil, nil))
 			continue
 		}
 
 		body, err := io.ReadAll(resp.Body)
 		resp.Body.Close()
 		if err != nil {
-			lastErr = providerUtils.NewBifrostOperationError("error reading S3 object content", err)
+			keyErrs.local = providerUtils.NewBifrostOperationError("error reading S3 object content", err)
 			continue
 		}
 
@@ -3398,7 +3422,7 @@ func (provider *BedrockProvider) FileContent(ctx *schemas.BifrostContext, keys [
 		}, nil
 	}
 
-	return nil, lastErr
+	return nil, keyErrs.result()
 }
 
 // BatchCreate creates a new batch inference job on AWS Bedrock.

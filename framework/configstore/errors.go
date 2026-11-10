@@ -15,6 +15,12 @@ var ErrAlreadyExists = errors.New("already exists")
 // priority check for it, since a duplicate name surfaces as ErrAlreadyExists too.
 var ErrRoutingRulePriorityTaken = fmt.Errorf("%w", ErrAlreadyExists)
 
+// ErrDatasheetPricingClaimTaken is returned when a datasheet override's pricing
+// patch targets a pricing row another override already patches (for example
+// bedrock and bedrock_mantle, which share pricing rows). It wraps
+// ErrAlreadyExists.
+var ErrDatasheetPricingClaimTaken = fmt.Errorf("pricing for this datasheet row is already set by another override: %w", ErrAlreadyExists)
+
 // ErrInvalidAgentGrant marks malformed Agent grant input supplied by a caller.
 var ErrInvalidAgentGrant = errors.New("invalid agent grant")
 

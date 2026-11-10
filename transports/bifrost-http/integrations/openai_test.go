@@ -14,8 +14,11 @@ import (
 
 	"github.com/fasthttp/router"
 	bifrost "github.com/maximhq/bifrost/core"
+	"github.com/maximhq/bifrost/core/providers/gemini"
 	"github.com/maximhq/bifrost/core/providers/openai"
+	"github.com/maximhq/bifrost/core/providers/vertex"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 	"github.com/valyala/fasthttp"
@@ -573,6 +576,35 @@ func TestOpenAISpeechRoutesReturnRawAudio(t *testing.T) {
 	}
 }
 
+// TestOpenAISpeechRoutesCarryVertexChirp pins that every SDK prefix reusing the OpenAI speech route
+// hands a Chirp 3 HD request to the Vertex provider with its voice, format and speed intact.
+func TestOpenAISpeechRoutesCarryVertexChirp(t *testing.T) {
+	for _, prefix := range []string{"/openai", "/litellm", "/langchain", "/pydanticai"} {
+		for _, path := range []string{"/v1/audio/speech", "/audio/speech"} {
+			t.Run(prefix+path, func(t *testing.T) {
+				route := findOpenAIRoute(prefix, prefix+path)
+				require.NotNil(t, route, "POST %s%s not registered", prefix, path)
+
+				req := &openai.OpenAISpeechRequest{}
+				require.NoError(t, json.Unmarshal([]byte(`{"model":"vertex/chirp-3-hd","input":"नमस्ते","voice":"hi-IN-Chirp3-HD-Erinome","response_format":"wav","speed":1.2}`), req))
+				converted, err := route.RequestConverter(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), req)
+				require.NoError(t, err)
+				require.NotNil(t, converted.SpeechRequest)
+				assert.Equal(t, schemas.Vertex, converted.SpeechRequest.Provider)
+				assert.Equal(t, "chirp-3-hd", converted.SpeechRequest.Model)
+
+				request, err := vertex.ToVertexSpeechRequest(converted.SpeechRequest)
+				require.NoError(t, err)
+				assert.Equal(t, "hi-IN", request.Voice.LanguageCode)
+				assert.Equal(t, "hi-IN-Chirp3-HD-Erinome", request.Voice.Name)
+				assert.Equal(t, "LINEAR16", request.AudioConfig.AudioEncoding)
+				require.NotNil(t, request.AudioConfig.SpeakingRate)
+				assert.Equal(t, 1.2, *request.AudioConfig.SpeakingRate)
+			})
+		}
+	}
+}
+
 // azureDataSourcesJSON is an Azure "On Your Data" data_sources value, the
 // extension the Azure OpenAI SDK sends at the top level of a chat body.
 const azureDataSourcesJSON = `[{"type":"azure_search","parameters":{"endpoint":"https://unreachable.search.windows.net","index_name":"idx","authentication":{"type":"api_key","key":"k"}}}]`
@@ -580,15 +612,16 @@ const azureDataSourcesJSON = `[{"type":"azure_search","parameters":{"endpoint":"
 // chatUpstream records the last chat body the provider sent and answers it,
 // as SSE when the body asked to stream.
 type chatUpstream struct {
-	mu   sync.Mutex
-	path string
-	body []byte
+	mu    sync.Mutex
+	path  string
+	query string
+	body  []byte
 }
 
 func (u *chatUpstream) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	body, _ := io.ReadAll(r.Body)
 	u.mu.Lock()
-	u.path, u.body = r.URL.Path, body
+	u.path, u.query, u.body = r.URL.Path, r.URL.RawQuery, body
 	u.mu.Unlock()
 	var probe struct {
 		Stream bool `json:"stream"`
@@ -638,6 +671,7 @@ func TestAzureDeploymentChatForwardsUnknownTopLevelFields(t *testing.T) {
 		body        string
 		headers     map[string]string
 		wantPath    string
+		wantQuery   string
 		wantFields  map[string]string
 		wantMissing []string
 	}{
@@ -645,14 +679,16 @@ func TestAzureDeploymentChatForwardsUnknownTopLevelFields(t *testing.T) {
 			name:       "azure deployment unary",
 			uri:        deploymentURI,
 			body:       `{"messages":[{"role":"user","content":"hi"}],"temperature":0.2,"data_sources":` + azureDataSourcesJSON + `,"x_future_field":{"a":1}}`,
-			wantPath:   "/openai/v1/chat/completions",
+			wantPath:   "/openai/deployments/gpt-4o/chat/completions",
+			wantQuery:  "api-version=2024-10-21", // the caller's version, not Bifrost's default
 			wantFields: map[string]string{"data_sources": azureDataSourcesJSON, "x_future_field": `{"a":1}`, "temperature": "0.2"},
 		},
 		{
 			name:       "azure deployment stream",
 			uri:        deploymentURI,
 			body:       `{"messages":[{"role":"user","content":"hi"}],"stream":true,"data_sources":` + azureDataSourcesJSON + `}`,
-			wantPath:   "/openai/v1/chat/completions",
+			wantPath:   "/openai/deployments/gpt-4o/chat/completions",
+			wantQuery:  "api-version=2024-10-21", // the caller's version, not Bifrost's default
 			wantFields: map[string]string{"data_sources": azureDataSourcesJSON, "stream": "true"},
 		},
 		{
@@ -660,7 +696,8 @@ func TestAzureDeploymentChatForwardsUnknownTopLevelFields(t *testing.T) {
 			uri:         deploymentURI,
 			body:        `{"messages":[{"role":"user","content":"hi"}],"data_sources":` + azureDataSourcesJSON + `,"x_dup":"top","extra_params":{"x_dup":"nested"}}`,
 			headers:     map[string]string{"x-bf-passthrough-extra-params": "true"},
-			wantPath:    "/openai/v1/chat/completions",
+			wantPath:    "/openai/deployments/gpt-4o/chat/completions",
+			wantQuery:   "api-version=2024-10-21", // the caller's version, not Bifrost's default
 			wantFields:  map[string]string{"data_sources": azureDataSourcesJSON, "x_dup": `"nested"`},
 			wantMissing: []string{"extra_params"},
 		},
@@ -703,6 +740,12 @@ func TestAzureDeploymentChatForwardsUnknownTopLevelFields(t *testing.T) {
 
 			path, sent := upstream.last()
 			require.Equal(t, tc.wantPath, path, "upstream body: %s", sent)
+			if tc.wantQuery != "" {
+				upstream.mu.Lock()
+				query := upstream.query
+				upstream.mu.Unlock()
+				require.Equal(t, tc.wantQuery, query, "upstream query for %s", tc.uri)
+			}
 			for field, want := range tc.wantFields {
 				got := gjson.GetBytes(sent, field)
 				require.True(t, got.Exists(), "%s missing from the provider body: %s", field, sent)
@@ -727,6 +770,8 @@ func BenchmarkAzureEndpointPreHookChat(b *testing.B) {
 		body := []byte(bodies[name])
 		b.Run(name, func(b *testing.B) {
 			var ctx fasthttp.RequestCtx
+			// The Azure SDK always sends api-version on this route.
+			ctx.Request.SetRequestURI("/openai/deployments/gpt-4o/chat/completions?api-version=2024-10-21")
 			ctx.Request.SetBody(body)
 			ctx.SetUserValue("deploymentPath", "gpt-4o/chat/completions")
 			b.ReportAllocs()
@@ -955,4 +1000,31 @@ func TestRewriteOpenAIRawRequestBodyRejectsUnmappedLiteral(t *testing.T) {
 		map[string]string{"alice@example.com": "[EMAIL]"},
 	)
 	require.Error(t, err)
+}
+
+// TestOpenAISpeechRoutesCarryVertexGeminiTTS pins that every SDK prefix reusing the OpenAI speech route
+// hands a Gemini TTS request for Vertex to the provider with its voice and wav format intact.
+func TestOpenAISpeechRoutesCarryVertexGeminiTTS(t *testing.T) {
+	for _, prefix := range []string{"/openai", "/litellm", "/langchain", "/pydanticai"} {
+		for _, path := range []string{"/v1/audio/speech", "/audio/speech"} {
+			t.Run(prefix+path, func(t *testing.T) {
+				route := findOpenAIRoute(prefix, prefix+path)
+				require.NotNil(t, route, "POST %s%s not registered", prefix, path)
+
+				req := &openai.OpenAISpeechRequest{}
+				require.NoError(t, json.Unmarshal([]byte(`{"model":"vertex/gemini-2.5-flash-tts","input":"hello","voice":"Kore","response_format":"wav"}`), req))
+				converted, err := route.RequestConverter(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), req)
+				require.NoError(t, err)
+				require.NotNil(t, converted.SpeechRequest)
+				assert.Equal(t, schemas.Vertex, converted.SpeechRequest.Provider)
+				assert.Equal(t, "gemini-2.5-flash-tts", converted.SpeechRequest.Model)
+				assert.Equal(t, "wav", converted.SpeechRequest.Params.ResponseFormat)
+
+				request, err := gemini.ToGeminiSpeechRequest(converted.SpeechRequest)
+				require.NoError(t, err)
+				require.NotNil(t, request.GenerationConfig.SpeechConfig)
+				assert.Equal(t, "Kore", request.GenerationConfig.SpeechConfig.VoiceConfig.PrebuiltVoiceConfig.VoiceName)
+			})
+		}
+	}
 }
