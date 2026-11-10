@@ -509,7 +509,7 @@ func TestDumpBudgetsPersistsUsageAndNeverRewindsBoundary(t *testing.T) {
 		live := store.LoadBudget(ctx, seeded.ID)
 		require.NotNil(t, live)
 		require.True(t, live.LastReset.Equal(now), "precondition: no sweep should have moved the boundary")
-		require.NoError(t, store.DumpBudgets(ctx, nil))
+		require.NoError(t, store.GetBudgetDumper(ctx, nil)(ctx))
 
 		persisted, err := configStore.GetBudget(ctx, seeded.ID)
 		require.NoError(t, err)
@@ -530,7 +530,7 @@ func TestDumpBudgetsPersistsUsageAndNeverRewindsBoundary(t *testing.T) {
 		rewound.CurrentUsage = 5
 		store.budgets.Store(seeded.ID, &rewound)
 
-		require.NoError(t, store.DumpBudgets(ctx, nil))
+		require.NoError(t, store.GetBudgetDumper(ctx, nil)(ctx))
 
 		persisted, err := configStore.GetBudget(ctx, seeded.ID)
 		require.NoError(t, err)
@@ -835,7 +835,7 @@ func TestDumpBudgetsCannotUndoOperatorReset(t *testing.T) {
 	// The drop is scoped to the reset, not permanent: the next cycle persists the
 	// post-reset value normally.
 	require.NoError(t, store.BumpBudgetUsage(ctx, seed.ID, 7.5))
-	require.NoError(t, store.DumpBudgets(ctx, nil))
+	require.NoError(t, store.GetBudgetDumper(ctx, nil)(ctx))
 	persisted, err = configStore.GetBudget(ctx, seed.ID)
 	require.NoError(t, err)
 	assert.Equal(t, 7.5, persisted.CurrentUsage,

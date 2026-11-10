@@ -206,3 +206,251 @@ func TestAdoptCalendarAlignmentInMemoryPreservesConcurrentSpend(t *testing.T) {
 	assert.Equal(t, float64(bumps), live.CurrentUsage,
 		"every concurrent bump survived: adoption changed the boundary, not the accounting")
 }
+
+// TestApplyBaselinesPreservesChargesAndWindows checks same-window shifts and
+// rejects old-window values independently for token and request counters.
+func TestApplyBaselinesPreservesChargesAndWindows(t *testing.T) {
+	ctx := context.Background()
+	store := newStandaloneStore(t)
+	boundary := time.Now().Truncate(time.Hour)
+	store.budgets.Store("budget", &configstoreTables.TableBudget{ID: "budget", CurrentUsage: 107, LastReset: boundary})
+	store.LastDBUsagesBudgets["budget"] = 100
+	require.True(t, store.ApplyBudgetBaseline(ctx, "budget", 150, boundary))
+	require.Equal(t, 157.0, store.LoadBudget(ctx, "budget").CurrentUsage)
+	next := boundary.Add(time.Hour)
+	_, reset := store.ResetBudgetAt(ctx, "budget", next)
+	require.True(t, reset)
+	require.False(t, store.ApplyBudgetBaseline(ctx, "budget", 200, boundary))
+	require.Zero(t, store.LoadBudget(ctx, "budget").CurrentUsage)
+	require.Zero(t, store.LastDBUsagesBudgets["budget"])
+	store.rateLimits.Store("rate", &configstoreTables.TableRateLimit{ID: "rate", TokenCurrentUsage: 11, RequestCurrentUsage: 7, TokenLastReset: next, RequestLastReset: boundary})
+	store.LastDBUsagesTokensRateLimits["rate"] = 0
+	store.LastDBUsagesRequestsRateLimits["rate"] = 5
+	tokens, requests := store.ApplyRateLimitBaselines(ctx, "rate", 200, 10, boundary, boundary)
+	require.False(t, tokens)
+	require.True(t, requests)
+	require.Equal(t, int64(11), store.LoadRateLimit(ctx, "rate").TokenCurrentUsage)
+	require.Equal(t, int64(12), store.LoadRateLimit(ctx, "rate").RequestCurrentUsage)
+	require.Zero(t, store.LastDBUsagesTokensRateLimits["rate"])
+	require.Equal(t, int64(10), store.LastDBUsagesRequestsRateLimits["rate"])
+}
+
+// TestApplyBaselinesConcurrentReset keeps a completed reset's zero baselines
+// paired with its counters, regardless of which operation wins the CAS.
+func TestApplyBaselinesConcurrentReset(t *testing.T) {
+	ctx := context.Background()
+	store := newStandaloneStore(t)
+	boundary := time.Now().Truncate(time.Hour)
+	for range 500 {
+		store.budgets.Store("budget", &configstoreTables.TableBudget{ID: "budget", CurrentUsage: 107, LastReset: boundary})
+		store.LastDBUsagesBudgets["budget"] = 100
+		store.rateLimits.Store("rate", &configstoreTables.TableRateLimit{ID: "rate", TokenCurrentUsage: 107, RequestCurrentUsage: 107, TokenLastReset: boundary, RequestLastReset: boundary})
+		store.LastDBUsagesTokensRateLimits["rate"], store.LastDBUsagesRequestsRateLimits["rate"] = 100, 100
+		var wg sync.WaitGroup
+		wg.Add(2)
+		start := make(chan struct{})
+		go func() {
+			defer wg.Done()
+			<-start
+			store.ApplyBudgetBaseline(ctx, "budget", 150, boundary)
+			store.ApplyRateLimitBaselines(ctx, "rate", 150, 150, boundary, boundary)
+		}()
+		go func() {
+			defer wg.Done()
+			<-start
+			next := boundary.Add(time.Hour)
+			store.ResetBudgetAt(ctx, "budget", next)
+			store.ResetRateLimitAt(ctx, "rate", &next, &next)
+		}()
+		close(start)
+		wg.Wait()
+		require.Zero(t, store.LoadBudget(ctx, "budget").CurrentUsage)
+		require.Zero(t, store.LastDBUsagesBudgets["budget"])
+		require.Zero(t, store.LoadRateLimit(ctx, "rate").TokenCurrentUsage)
+		require.Zero(t, store.LoadRateLimit(ctx, "rate").RequestCurrentUsage)
+		require.Zero(t, store.LastDBUsagesTokensRateLimits["rate"])
+		require.Zero(t, store.LastDBUsagesRequestsRateLimits["rate"])
+	}
+}
+
+// TestSeedConfigWaitsForAccountingCapture prevents publication while a capture
+// holds the baseline read lock, including either rate-limit dimension.
+func TestSeedConfigWaitsForAccountingCapture(t *testing.T) {
+	for _, dimension := range []string{"budget", "requests", "tokens"} {
+		t.Run(dimension, func(t *testing.T) {
+			store := newStandaloneStore(t)
+			ctx := context.Background()
+			var mu *sync.RWMutex
+			if dimension == "budget" {
+				mu = &store.LastDBUsagesBudgetsMu
+			} else if dimension == "requests" {
+				mu = &store.LastDBUsagesRateLimitsRequestsMu
+			} else {
+				mu = &store.LastDBUsagesRateLimitsTokensMu
+			}
+			mu.RLock()
+			started, done := make(chan struct{}), make(chan struct{})
+			go func() {
+				close(started)
+				if dimension == "budget" {
+					store.SeedBudgetConfig(ctx, "seed", &configstoreTables.TableBudget{ID: "seed", CurrentUsage: 100})
+				} else {
+					store.SeedRateLimitConfig(ctx, "seed", &configstoreTables.TableRateLimit{ID: "seed", TokenCurrentUsage: 100, RequestCurrentUsage: 20})
+				}
+				close(done)
+			}()
+			<-started
+			// Give the publisher time to reach the held lock. A capture must
+			// still see no counter, rather than a counter with baseline zero.
+			select {
+			case <-done:
+				t.Error("seed completed while accounting capture held its lock")
+			case <-time.After(20 * time.Millisecond):
+			}
+			if dimension == "budget" {
+				assert.Nil(t, store.LoadBudget(ctx, "seed"))
+			} else {
+				assert.Nil(t, store.LoadRateLimit(ctx, "seed"))
+			}
+			mu.RUnlock()
+			<-done
+		})
+	}
+}
+
+// TestSeedConfigPreservesUsageAndReset keeps imported usage paired with its
+// baseline across first publication, concurrent resets, and later config reloads.
+func TestSeedConfigPreservesUsageAndReset(t *testing.T) {
+	ctx := context.Background()
+	boundary := time.Now().Truncate(time.Hour)
+	next := boundary.Add(time.Hour)
+	for range 200 {
+		store := newStandaloneStore(t)
+		budget := &configstoreTables.TableBudget{ID: "budget", CurrentUsage: 100, LastReset: boundary}
+		rate := &configstoreTables.TableRateLimit{ID: "rate", TokenCurrentUsage: 200, RequestCurrentUsage: 20, TokenLastReset: boundary, RequestLastReset: boundary}
+		var wg sync.WaitGroup
+		wg.Add(2)
+		start := make(chan struct{})
+		go func() {
+			defer wg.Done()
+			<-start
+			store.SeedBudgetConfig(ctx, budget.ID, budget)
+			store.SeedRateLimitConfig(ctx, rate.ID, rate)
+		}()
+		go func() {
+			defer wg.Done()
+			<-start
+			store.ResetBudgetAt(ctx, budget.ID, next)
+			store.ResetRateLimitAt(ctx, rate.ID, &next, &next)
+		}()
+		close(start)
+		wg.Wait()
+		b := store.LoadBudget(ctx, budget.ID)
+		r := store.LoadRateLimit(ctx, rate.ID)
+		require.Equal(t, b.CurrentUsage, store.LastDBUsagesBudgets[budget.ID])
+		require.Equal(t, r.TokenCurrentUsage, store.LastDBUsagesTokensRateLimits[rate.ID])
+		require.Equal(t, r.RequestCurrentUsage, store.LastDBUsagesRequestsRateLimits[rate.ID])
+		require.NoError(t, store.BumpBudgetUsageBy(ctx, budget.ID, 7))
+		require.NoError(t, store.BumpRateLimitUsageBy(ctx, rate.ID, 11, 3))
+		store.SeedBudgetConfig(ctx, budget.ID, budget)
+		store.SeedRateLimitConfig(ctx, rate.ID, rate)
+		require.Equal(t, b.CurrentUsage+7, store.LoadBudget(ctx, budget.ID).CurrentUsage)
+		require.Equal(t, b.LastReset, store.LoadBudget(ctx, budget.ID).LastReset)
+		require.Equal(t, r.TokenCurrentUsage+11, store.LoadRateLimit(ctx, rate.ID).TokenCurrentUsage)
+		require.Equal(t, r.RequestCurrentUsage+3, store.LoadRateLimit(ctx, rate.ID).RequestCurrentUsage)
+		require.Equal(t, r.TokenLastReset, store.LoadRateLimit(ctx, rate.ID).TokenLastReset)
+		require.Equal(t, r.RequestLastReset, store.LoadRateLimit(ctx, rate.ID).RequestLastReset)
+		require.Equal(t, b.CurrentUsage, store.LastDBUsagesBudgets[budget.ID])
+		require.Equal(t, r.TokenCurrentUsage, store.LastDBUsagesTokensRateLimits[rate.ID])
+		require.Equal(t, r.RequestCurrentUsage, store.LastDBUsagesRequestsRateLimits[rate.ID])
+	}
+}
+
+// TestDeleteConfigWaitsForBaselineLock verifies counter removal and baseline
+// cleanup share the locks used by first-time seeding.
+func TestDeleteConfigWaitsForBaselineLock(t *testing.T) {
+	for _, dimension := range []string{"budget", "requests", "tokens"} {
+		t.Run(dimension, func(t *testing.T) {
+			store := newStandaloneStore(t)
+			ctx := context.Background()
+			store.SeedBudgetConfig(ctx, "seed", &configstoreTables.TableBudget{ID: "seed", CurrentUsage: 100})
+			store.SeedRateLimitConfig(ctx, "seed", &configstoreTables.TableRateLimit{ID: "seed", TokenCurrentUsage: 100, RequestCurrentUsage: 20})
+			mu := &store.LastDBUsagesBudgetsMu
+			if dimension == "requests" {
+				mu = &store.LastDBUsagesRateLimitsRequestsMu
+			} else if dimension == "tokens" {
+				mu = &store.LastDBUsagesRateLimitsTokensMu
+			}
+			mu.Lock()
+			started, done := make(chan struct{}), make(chan struct{})
+			go func() {
+				close(started)
+				if dimension == "budget" {
+					store.DeleteBudget(ctx, "seed")
+				} else {
+					store.DeleteRateLimit(ctx, "seed")
+				}
+				close(done)
+			}()
+			<-started
+			select {
+			case <-done:
+				t.Error("deletion completed while baseline lock was held")
+			case <-time.After(20 * time.Millisecond):
+			}
+			if dimension == "budget" {
+				assert.NotNil(t, store.LoadBudget(ctx, "seed"))
+			} else {
+				assert.NotNil(t, store.LoadRateLimit(ctx, "seed"))
+			}
+			mu.Unlock()
+			<-done
+			if dimension == "budget" {
+				assert.Nil(t, store.LoadBudget(ctx, "seed"))
+				assert.NotContains(t, store.LastDBUsagesBudgets, "seed")
+			} else {
+				assert.Nil(t, store.LoadRateLimit(ctx, "seed"))
+				assert.NotContains(t, store.LastDBUsagesTokensRateLimits, "seed")
+				assert.NotContains(t, store.LastDBUsagesRequestsRateLimits, "seed")
+			}
+		})
+	}
+}
+
+// TestSeedConfigConcurrentDeletion leaves either a complete seeded pair or no
+// counter and no baseline, whichever operation finishes last.
+func TestSeedConfigConcurrentDeletion(t *testing.T) {
+	ctx := context.Background()
+	for range 200 {
+		store := newStandaloneStore(t)
+		var wg sync.WaitGroup
+		wg.Add(2)
+		start := make(chan struct{})
+		go func() {
+			defer wg.Done()
+			<-start
+			store.SeedBudgetConfig(ctx, "budget", &configstoreTables.TableBudget{ID: "budget", CurrentUsage: 100})
+			store.SeedRateLimitConfig(ctx, "rate", &configstoreTables.TableRateLimit{ID: "rate", TokenCurrentUsage: 200, RequestCurrentUsage: 20})
+		}()
+		go func() {
+			defer wg.Done()
+			<-start
+			store.DeleteBudget(ctx, "budget")
+			store.DeleteRateLimit(ctx, "rate")
+		}()
+		close(start)
+		wg.Wait()
+		if budget := store.LoadBudget(ctx, "budget"); budget != nil {
+			require.Equal(t, budget.CurrentUsage, store.LastDBUsagesBudgets["budget"])
+		} else {
+			require.NotContains(t, store.LastDBUsagesBudgets, "budget")
+		}
+		if rate := store.LoadRateLimit(ctx, "rate"); rate != nil {
+			require.Equal(t, rate.TokenCurrentUsage, store.LastDBUsagesTokensRateLimits["rate"])
+			require.Equal(t, rate.RequestCurrentUsage, store.LastDBUsagesRequestsRateLimits["rate"])
+		} else {
+			require.NotContains(t, store.LastDBUsagesTokensRateLimits, "rate")
+			require.NotContains(t, store.LastDBUsagesRequestsRateLimits, "rate")
+		}
+	}
+}

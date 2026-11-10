@@ -1,5 +1,7 @@
 import { expect, test } from '../../core/fixtures/base.fixture'
-import type { Page } from '@playwright/test'
+import type { Page, WebSocketRoute } from '@playwright/test'
+import { existsSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { ConfigSettingsState } from './pages/config-settings.page'
 import { DefaultCoreConfig } from '../../../../ui/lib/types/config'
 
@@ -108,6 +110,34 @@ async function mockUnconfiguredInstance(page: Page, state = { disableOnboarding:
 
 test.describe('Onboarding widget snooze', () => {
   test.use({ skipAutoLogin: true })
+
+  test('checklist reads one virtual key on load and after a change notification', async ({ page }) => {
+    test.skip(!existsSync(resolve(__dirname, '../../../../ui/app/enterprise')), 'Virtual-key checklist requires an enterprise UI build')
+    const queries: URL[] = []
+    let socket: WebSocketRoute | undefined
+    await page.routeWebSocket('**/ws*', ws => { socket = ws })
+    await mockUnconfiguredInstance(page)
+    await page.route('**/api/scim/providers', route => route.fulfill({ json: { providers: [] } }))
+    await page.route('**/api/governance/users/me/permissions', route => route.fulfill({ json: {
+      permissions: { VirtualKeys: { View: true }, Governance: { View: true }, UserProvisioning: { View: true } },
+      role_dac: 'all_data',
+    } }))
+    await page.route('**/api/governance/virtual-keys*', async route => {
+      queries.push(new URL(route.request().url()))
+      await route.fulfill({ json: { virtual_keys: [], count: 0, total_count: 45087, limit: 1, offset: 0 } })
+    })
+    await page.goto('/workspace/config/client-settings')
+    await expect(page.getByTestId('onboarding-step-virtual-keys')).toBeVisible()
+    await expect.poll(() => queries.length).toBeGreaterThan(0)
+    await expect.poll(() => socket !== undefined).toBe(true)
+    expect(queries.every(url => url.searchParams.get('limit') === '1' && url.searchParams.get('offset') === '0')).toBe(true)
+
+    await page.getByTestId('onboarding-widget-close').click()
+    const count = queries.length
+    socket!.send(JSON.stringify({ type: 'store_update', tags: ['VirtualKeys'] }))
+    await expect.poll(() => queries.length).toBeGreaterThan(count)
+    expect(queries.every(url => url.searchParams.get('limit') === '1' && url.searchParams.get('offset') === '0')).toBe(true)
+  })
 
   test('remind me later opens a picker above the widget and snoozes it', async ({ page }) => {
     await mockUnconfiguredInstance(page)

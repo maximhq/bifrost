@@ -566,25 +566,29 @@ func (s *cleanupOrderingStore) ResetExpiredBudgets(context.Context, []*configsto
 	return nil
 }
 
-func (s *cleanupOrderingStore) DumpBudgets(context.Context, map[string]float64) error {
-	return nil
+// GetBudgetDumper returns the final-flush writer without issuing database work.
+func (s *cleanupOrderingStore) GetBudgetDumper(context.Context, map[string]float64) func(context.Context) error {
+	return func(context.Context) error { return nil }
 }
 
-func (s *cleanupOrderingStore) DumpRateLimits(ctx context.Context, _ map[string]int64, _ map[string]int64) error {
-	if ctx.Done() == nil {
-		select {
-		case <-s.periodicExited:
-		default:
-			s.finalBeforeWorkerExit.Store(true)
+// GetRateLimitDumper simulates a database write that must exit before the final flush.
+func (s *cleanupOrderingStore) GetRateLimitDumper(ctx context.Context, _ map[string]int64, _ map[string]int64) func(context.Context) error {
+	return func(ctx context.Context) error {
+		if ctx.Done() == nil {
+			select {
+			case <-s.periodicExited:
+			default:
+				s.finalBeforeWorkerExit.Store(true)
+			}
+			close(s.finalDumped)
+			return nil
 		}
-		close(s.finalDumped)
-		return nil
-	}
 
-	close(s.periodicEntered)
-	<-ctx.Done()
-	close(s.periodicExited)
-	return fmt.Errorf("failed to dump rate limits to database: failed to dump 4 rate limits: %w", ctx.Err())
+		close(s.periodicEntered)
+		<-ctx.Done()
+		close(s.periodicExited)
+		return fmt.Errorf("failed to dump rate limits to database: failed to dump 4 rate limits: %w", ctx.Err())
+	}
 }
 
 // Cleanup must first cancel and join an in-flight periodic dump, then take the
