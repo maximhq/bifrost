@@ -10,6 +10,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/maximhq/bifrost/cli/internal/browserauth"
 	"github.com/maximhq/bifrost/cli/internal/client"
 	"github.com/maximhq/bifrost/cli/internal/config"
 	"github.com/maximhq/bifrost/cli/internal/output"
@@ -189,22 +190,36 @@ func (r *Runner) authLogin(ctx context.Context, env *environment, args []string)
 	var username string
 	var passwordStdin bool
 	var noBrowser bool
+	var callbackPort string
 	fs.StringVar(&username, "username", "", "dashboard admin username")
 	fs.BoolVar(&passwordStdin, "password-stdin", false, "read the password from stdin")
 	fs.BoolVar(&noBrowser, "no-browser", false, "print the sign-in URL without opening a browser")
+	fs.StringVar(&callbackPort, "callback-port", os.Getenv(browserauth.CallbackPortEnv), "fixed loopback port for the SSO callback (default: any free port; env "+browserauth.CallbackPortEnv+")")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if strings.TrimSpace(username) == "" {
-		return r.authBrowserLogin(ctx, env, noBrowser)
+		port, err := browserauth.ParseCallbackPort(callbackPort)
+		if err != nil {
+			return err
+		}
+		return r.authBrowserLogin(ctx, env, noBrowser, port)
 	}
 	return r.authPasswordLogin(ctx, env, username, passwordStdin)
 }
 
 // authBrowserLogin completes Enterprise SSO and stores only opaque Bifrost credentials.
-func (r *Runner) authBrowserLogin(ctx context.Context, env *environment, noBrowser bool) error {
+// When stdin is a terminal, the user can also paste the address the browser
+// was redirected to, which completes sign-in when the browser cannot reach this
+// machine's loopback listener (SSH sessions, containers).
+func (r *Runner) authBrowserLogin(ctx context.Context, env *environment, noBrowser bool, callbackPort int) error {
 	if env.BrowserAuth == nil {
 		return fmt.Errorf("browser authentication is unavailable")
+	}
+	env.BrowserAuth.CallbackPort = callbackPort
+	env.BrowserAuth.PastedCallback = nil
+	if r.stdinIsTerminal() {
+		env.BrowserAuth.PastedCallback = r.In
 	}
 	env.BrowserAuth.Authorization = func(target string) {
 		if noBrowser {
@@ -214,6 +229,10 @@ func (r *Runner) authBrowserLogin(ctx context.Context, env *environment, noBrows
 			fmt.Fprintln(r.ErrOut, "If the browser does not open, use this URL:")
 		}
 		fmt.Fprintln(r.ErrOut, target)
+		if env.BrowserAuth.PastedCallback != nil {
+			fmt.Fprintln(r.ErrOut, "If the browser cannot reach this machine (for example over SSH or in a container),")
+			fmt.Fprintln(r.ErrOut, "paste the address it was redirected to here and press Enter.")
+		}
 		fmt.Fprintln(r.ErrOut, "Waiting for authentication...")
 	}
 	env.BrowserAuth.Warning = func(err error) { fmt.Fprintf(r.ErrOut, "Warning: %v\n", err) }
@@ -504,7 +523,7 @@ func (r *Runner) readSecret(prompt string, fromStdin bool) (string, error) {
 		return value, nil
 	}
 	file, ok := r.In.(*os.File)
-	if !ok || !term.IsTerminal(int(file.Fd())) {
+	if !ok || !r.stdinIsTerminal() {
 		return "", fmt.Errorf("stdin is not a terminal; use --stdin or --password-stdin")
 	}
 	if _, err := fmt.Fprint(r.ErrOut, prompt); err != nil {
@@ -522,4 +541,10 @@ func (r *Runner) readSecret(prompt string, fromStdin bool) (string, error) {
 		return "", fmt.Errorf("credential cannot be empty")
 	}
 	return secret, nil
+}
+
+// stdinIsTerminal reports whether the runner reads input from an interactive terminal.
+func (r *Runner) stdinIsTerminal() bool {
+	file, ok := r.In.(*os.File)
+	return ok && term.IsTerminal(int(file.Fd()))
 }
