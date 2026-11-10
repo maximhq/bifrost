@@ -2652,3 +2652,81 @@ func TestChatToResponsesKeepsPromptCacheBreakpoint(t *testing.T) {
 		})
 	}
 }
+
+func TestToBifrostResponsesStreamResponse_ClosesEachToolCallBeforeTheNext(t *testing.T) {
+	state := AcquireChatToResponsesStreamState()
+	defer ReleaseChatToResponsesStreamState(state)
+
+	funcName := "bash"
+	toolCallsFinish := string(BifrostFinishReasonToolCalls)
+	chunk := func(delta *ChatStreamResponseChoiceDelta, finish *string) *BifrostChatResponse {
+		return &BifrostChatResponse{
+			ID:    "chatcmpl-test",
+			Model: "test-model",
+			Choices: []BifrostResponseChoice{
+				{
+					FinishReason:             finish,
+					ChatStreamResponseChoice: &ChatStreamResponseChoice{Delta: delta},
+				},
+			},
+		}
+	}
+
+	var all []*BifrostResponsesStreamResponse
+	ids := []string{"call_0", "call_1", "call_2"}
+	commands := []string{"ls", "pwd", "cat a.txt"}
+	for i, id := range ids {
+		callID := id
+		all = append(all, chunk(&ChatStreamResponseChoiceDelta{
+			ToolCalls: []ChatAssistantMessageToolCall{
+				{Index: uint16(i), ID: &callID, Function: ChatAssistantMessageToolCallFunction{Name: &funcName, Arguments: `{"command":`}},
+			},
+		}, nil).ToBifrostResponsesStreamResponse(state)...)
+		all = append(all, chunk(&ChatStreamResponseChoiceDelta{
+			ToolCalls: []ChatAssistantMessageToolCall{
+				{Index: uint16(i), Function: ChatAssistantMessageToolCallFunction{Arguments: `"` + commands[i] + `"}`}},
+			},
+		}, nil).ToBifrostResponsesStreamResponse(state)...)
+	}
+	all = append(all, chunk(&ChatStreamResponseChoiceDelta{}, &toolCallsFinish).ToBifrostResponsesStreamResponse(state)...)
+
+	// Each function call item must be done before the next one is added, and no
+	// argument delta may arrive for an item that is not the open one.
+	open := -1
+	var doneOrder []int
+	for _, evt := range all {
+		if evt == nil || evt.OutputIndex == nil {
+			continue
+		}
+		switch evt.Type {
+		case ResponsesStreamResponseTypeOutputItemAdded:
+			if open != -1 {
+				t.Fatalf("output_item.added for index %d while index %d is still open", *evt.OutputIndex, open)
+			}
+			open = *evt.OutputIndex
+		case ResponsesStreamResponseTypeFunctionCallArgumentsDelta:
+			if *evt.OutputIndex != open {
+				t.Fatalf("arguments delta for index %d while index %d is open", *evt.OutputIndex, open)
+			}
+		case ResponsesStreamResponseTypeOutputItemDone:
+			if *evt.OutputIndex != open {
+				t.Fatalf("output_item.done for index %d while index %d is open", *evt.OutputIndex, open)
+			}
+			doneOrder = append(doneOrder, open)
+			if evt.Item == nil || evt.Item.Arguments == nil {
+				t.Fatalf("output_item.done for index %d has no arguments", open)
+			}
+			want := `{"command":"` + commands[len(doneOrder)-1] + `"}`
+			if *evt.Item.Arguments != want {
+				t.Fatalf("output_item.done for index %d: expected arguments %q, got %q", open, want, *evt.Item.Arguments)
+			}
+			open = -1
+		}
+	}
+	if open != -1 {
+		t.Fatalf("index %d was never closed", open)
+	}
+	if len(doneOrder) != len(ids) {
+		t.Fatalf("expected %d output_item.done events, got %d", len(ids), len(doneOrder))
+	}
+}
