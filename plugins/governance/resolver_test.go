@@ -1621,6 +1621,84 @@ func TestAllowedModelsMatchKeyAliasesThroughTheHookChain(t *testing.T) {
 	}
 }
 
+// A model-scoped limit on the alias target applies to a request that names the alias (#6620 review),
+// through the whole hook chain: an exhausted limit on gpt-4o refuses best-gpt with a 429, and a
+// best-gpt request within the limit is charged against it.
+func TestModelLimitOnAliasTargetGovernsTheAliasThroughTheHookChain(t *testing.T) {
+	newPlugin := func(t *testing.T, modelRL *configstoreTables.TableRateLimit) (*GovernancePlugin, *LocalGovernanceStore) {
+		store := &mockInMemoryStore{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{
+			schemas.OpenAI: {Keys: []schemas.Key{{ID: "k1", Models: schemas.WhiteList{"*"}, Aliases: schemas.KeyAliases{
+				"best-gpt":  {ModelID: "gpt-4o"},
+				"cheap-gpt": {ModelID: "gpt-4o-mini"},
+			}}}},
+		}}
+		vk := buildVirtualKeyWithProviders("vk-alias-limit", mcpTestVKValue, "alias-limit-vk", []configstoreTables.TableVirtualKeyProviderConfig{
+			buildProviderConfig("openai", []string{"gpt-4o", "gpt-4o-mini"}),
+		})
+		logger := NewMockLogger()
+		local, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+			VirtualKeys:  []configstoreTables.TableVirtualKey{*vk},
+			ModelConfigs: []configstoreTables.TableModelConfig{*buildModelConfig("mc-gpt-4o", "gpt-4o", nil, nil, modelRL)},
+			RateLimits:   []configstoreTables.TableRateLimit{*modelRL},
+		}, nil, store)
+		require.NoError(t, err)
+		plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, local, nil, modelcatalog.NewTestCatalog(nil), nil, store)
+		require.NoError(t, err)
+		t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
+		return plugin, local
+	}
+	chat := func(model string) *schemas.BifrostRequest {
+		return &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: model}}
+	}
+
+	t.Run("an exhausted limit on the target refuses the alias", func(t *testing.T) {
+		plugin, _ := newPlugin(t, buildRateLimitWithUsage("rl-gpt-4o", 1_000_000, 0, 1, 1))
+		for _, tc := range []struct {
+			model   string
+			refused bool
+		}{
+			{"best-gpt", true},   // an alias of the limited model
+			{"gpt-4o", true},     // the limited model itself
+			{"cheap-gpt", false}, // an alias of a model with no limit
+		} {
+			ctx := presentCtx(mcpTestVKValue)
+			req := chat(tc.model)
+			require.NoError(t, plugin.PreRequestHook(ctx, req))
+			_, shortCircuit, err := plugin.PreLLMHook(ctx, req)
+			require.NoError(t, err)
+			if !tc.refused {
+				assert.Nil(t, shortCircuit, "%s answers to no model limit", tc.model)
+				continue
+			}
+			require.NotNil(t, shortCircuit, "%s must answer to the limit on gpt-4o", tc.model)
+			require.NotNil(t, shortCircuit.Error)
+			require.NotNil(t, shortCircuit.Error.StatusCode)
+			assert.Equal(t, 429, *shortCircuit.Error.StatusCode, "%s: refused by the model's rate limit: %+v", tc.model, shortCircuit.Error.Error)
+		}
+	})
+
+	t.Run("a successful alias request is charged against the target's limit", func(t *testing.T) {
+		plugin, local := newPlugin(t, buildRateLimitWithUsage("rl-gpt-4o", 1_000_000, 0, 100, 0))
+		ctx := presentCtx(mcpTestVKValue)
+		req := chat("best-gpt")
+		require.NoError(t, plugin.PreRequestHook(ctx, req))
+		_, shortCircuit, err := plugin.PreLLMHook(ctx, req)
+		require.NoError(t, err)
+		require.Nil(t, shortCircuit)
+
+		resp := countableResponse()
+		resp.ChatResponse.ExtraFields.OriginalModelRequested = "best-gpt"
+		_, _, err = plugin.PostLLMHook(ctx, resp, nil)
+		require.NoError(t, err)
+		plugin.wg.Wait()
+
+		rl := local.GetGovernanceData(context.Background()).RateLimits["rl-gpt-4o"]
+		require.NotNil(t, rl)
+		assert.Positive(t, rl.TokenCurrentUsage, "the alias request's tokens count against gpt-4o's limit")
+		assert.Equal(t, int64(1), rl.RequestCurrentUsage, "the alias request counts against gpt-4o's request limit")
+	})
+}
+
 // A blacklist wins over a key alias (#6620 review): a virtual key that allows claude-* and blocks
 // claude-opus-4-6 refuses a request that names the blocked model through an alias, through the whole
 // hook chain, while an alias of a model it does not block is still admitted. A virtual key with no
