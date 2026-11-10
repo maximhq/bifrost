@@ -2978,6 +2978,28 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 		bedrockToolChoice := convertResponsesToolChoice(*bifrostReq.Params.ToolChoice)
 		if bedrockToolChoice != nil && bedrockToolChoice.Tool != nil && bedrockToolChoice.Tool.Name != "" {
 			bedrockToolChoice.Tool.Name = bedrockAliasToolName(ctx, bedrockToolChoice.Tool.Name)
+			// Validate the pin against the tool list AS THE CLIENT SENT IT
+			// (bifrostReq.Params.Tools), before server-tool filtering. A name
+			// the client never sent is a client error; a name present in the
+			// original list but stripped by filtering keeps the silent drop
+			// below.
+			sentToolNames := make(map[string]struct{}, len(bifrostReq.Params.Tools))
+			for _, tool := range bifrostReq.Params.Tools {
+				name := ""
+				if tool.Name != nil {
+					name = *tool.Name
+				}
+				if name == "" {
+					continue
+				}
+				sentToolNames[bedrockAliasToolName(ctx, name)] = struct{}{}
+			}
+			if _, sent := sentToolNames[bedrockToolChoice.Tool.Name]; !sent {
+				return nil, providerUtils.InvalidRequestErrorf(
+					"The tool %s at toolConfig.toolChoice.name is not defined in tools.",
+					bedrockToolChoice.Tool.Name,
+				)
+			}
 			// Reconcile the pinned tool against the converted (filtered) tool set.
 			// Tools dropped by ValidateResponsesToolsForProvider above (e.g. an
 			// unsupported `mcp` server tool) never reach bedrockReq.ToolConfig.Tools,
