@@ -243,6 +243,33 @@ func ParseFileCell(value string) ([]FileRef, error) {
 	return refs, nil
 }
 
+// rewriteFileCell points the uploaded files of a stored file cell at other records: each
+// file whose ID refs names takes that reference's ID and URL. A cell with none of them, or
+// one that does not parse, is returned as stored.
+func rewriteFileCell(value string, refs map[string]FileRef) (string, error) {
+	parsed, err := ParseFileCell(value)
+	if err != nil {
+		return value, nil
+	}
+	changed := false
+	for i := range parsed {
+		to, ok := refs[parsed[i].ID]
+		if parsed[i].ID == "" || !ok {
+			continue
+		}
+		parsed[i].ID, parsed[i].URL = to.ID, to.URL
+		changed = true
+	}
+	if !changed {
+		return value, nil
+	}
+	data, err := providerUtils.MarshalSorted(parsed)
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}
+
 // RowVariables turns a row into the variables an evaluator reads. It is the one place
 // this rule lives: the evaluator test panel and test runs both call it.
 //

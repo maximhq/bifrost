@@ -346,7 +346,7 @@ func TestEvalExecutionLifecycle(t *testing.T) {
 
 	_, err = store.RouteEvalExecution(ctx, execution.ID, "", "key-evals")
 	require.NoError(t, err)
-	claimed, err := store.StartEvalExecution(ctx, execution.ID, "key-evals", "delivery-1", time.Time{})
+	claimed, err := store.StartEvalExecution(ctx, execution.ID, "key-evals", "delivery-1", time.Time{}, time.Time{})
 	require.NoError(t, err)
 	require.True(t, claimed)
 	got, err = store.GetEvalExecution(ctx, execution.ID)
@@ -364,7 +364,7 @@ func TestEvalExecutionLifecycle(t *testing.T) {
 
 	_, err = store.GetEvalExecution(ctx, "missing")
 	require.ErrorIs(t, err, ErrNotFound)
-	_, err = store.StartEvalExecution(ctx, "missing", "", "d", time.Time{})
+	_, err = store.StartEvalExecution(ctx, "missing", "", "d", time.Time{}, time.Time{})
 	require.ErrorIs(t, err, ErrNotFound)
 	require.ErrorIs(t, store.CompleteEvalExecution(ctx, "missing", json.RawMessage(`{}`)), ErrNotFound)
 }
@@ -379,7 +379,7 @@ func TestEvalExecutionCompletionIsIdempotent(t *testing.T) {
 	require.NoError(t, store.CreateEvalExecution(ctx, execution))
 	require.NoError(t, store.CompleteEvalExecution(ctx, execution.ID, json.RawMessage(`{"n":1}`)))
 	require.NoError(t, store.CompleteEvalExecution(ctx, execution.ID, json.RawMessage(`{"n":2}`)), "a repeat completion is not an error")
-	claimed, err := store.StartEvalExecution(ctx, execution.ID, "", "late", time.Time{})
+	claimed, err := store.StartEvalExecution(ctx, execution.ID, "", "late", time.Time{}, time.Time{})
 	require.NoError(t, err, "nor is a repeat start")
 	assert.False(t, claimed, "a completed execution is not claimed again")
 
@@ -482,7 +482,7 @@ func TestEvalExecutionRouting(t *testing.T) {
 	assert.Equal(t, "key-b", got.KeyID)
 	assert.Equal(t, tables.EvalExecutionQueued, got.Status, "routing does not start a job")
 
-	_, err = store.StartEvalExecution(ctx, execution.ID, "key-b", "d", time.Time{})
+	_, err = store.StartEvalExecution(ctx, execution.ID, "key-b", "d", time.Time{}, time.Time{})
 	require.NoError(t, err)
 	moved, err = store.RouteEvalExecution(ctx, execution.ID, "key-b", "key-c")
 	require.NoError(t, err)
@@ -499,7 +499,7 @@ func TestEvalExecutionSweepQueries(t *testing.T) {
 		return execution.ID
 	}
 	waiting, running, finished := create(), create(), create()
-	_, err := store.StartEvalExecution(ctx, running, "", "d", time.Time{})
+	_, err := store.StartEvalExecution(ctx, running, "", "d", time.Time{}, time.Time{})
 	require.NoError(t, err)
 	require.NoError(t, store.CompleteEvalExecution(ctx, finished, json.RawMessage(`{}`)))
 
@@ -558,28 +558,75 @@ func TestEvalExecutionStartIsAClaim(t *testing.T) {
 	_, err := store.RouteEvalExecution(ctx, execution.ID, "", "key-a")
 	require.NoError(t, err)
 
-	claimed, err := store.StartEvalExecution(ctx, execution.ID, "key-b", "d1", time.Time{})
+	claimed, err := store.StartEvalExecution(ctx, execution.ID, "key-b", "d1", time.Time{}, time.Time{})
 	require.NoError(t, err)
 	assert.False(t, claimed, "a message on another key's topic does not start it")
 
-	claimed, err = store.StartEvalExecution(ctx, execution.ID, "key-a", "d1", time.Time{})
+	claimed, err = store.StartEvalExecution(ctx, execution.ID, "key-a", "d1", time.Time{}, time.Time{})
 	require.NoError(t, err)
 	assert.True(t, claimed)
 
-	claimed, err = store.StartEvalExecution(ctx, execution.ID, "key-a", "d2", time.Time{})
+	claimed, err = store.StartEvalExecution(ctx, execution.ID, "key-a", "d2", time.Time{}, time.Time{})
 	require.NoError(t, err)
 	assert.False(t, claimed, "a second message for the same job is refused")
 
-	claimed, err = store.StartEvalExecution(ctx, execution.ID, "key-a", "d1", time.Time{})
+	claimed, err = store.StartEvalExecution(ctx, execution.ID, "key-a", "d1", time.Time{}, time.Time{})
 	require.NoError(t, err)
 	assert.True(t, claimed, "a redelivery of the claiming message runs it again")
 
-	claimed, err = store.StartEvalExecution(ctx, execution.ID, "key-a", "d3", time.Now().Add(time.Minute))
+	claimed, err = store.StartEvalExecution(ctx, execution.ID, "key-a", "d3", time.Now().Add(time.Minute), time.Time{})
 	require.NoError(t, err)
 	assert.True(t, claimed, "a job that started before the runner did is taken over")
 	got, err := store.GetEvalExecution(ctx, execution.ID)
 	require.NoError(t, err)
 	assert.Equal(t, "d3", got.ClaimID)
+
+	assertExecutionRecoveryClaim(t, store)
+}
+
+// assertExecutionRecoveryClaim checks the sweep's recovery claim: it takes back a running
+// execution only at the exact start it names, so a redelivery of the same message that
+// restarted it since then is left alone.
+func assertExecutionRecoveryClaim(t *testing.T, store *RDBConfigStore) {
+	t.Helper()
+	ctx := context.Background()
+	execution := &tables.TableEvalExecution{Definition: json.RawMessage(`{}`), Variables: json.RawMessage(`{}`)}
+	require.NoError(t, store.CreateEvalExecution(ctx, execution))
+	_, err := store.RouteEvalExecution(ctx, execution.ID, "", "key-a")
+	require.NoError(t, err)
+	claimed, err := store.StartEvalExecution(ctx, execution.ID, "key-a", "d1", time.Time{}, time.Time{})
+	require.NoError(t, err)
+	require.True(t, claimed)
+	listed, err := store.GetEvalExecution(ctx, execution.ID)
+	require.NoError(t, err)
+	require.NotNil(t, listed.StartedAt)
+
+	// The same delivery restarts it after the sweep read it.
+	time.Sleep(2 * time.Millisecond)
+	claimed, err = store.StartEvalExecution(ctx, execution.ID, "key-a", "d1", time.Time{}, time.Time{})
+	require.NoError(t, err)
+	require.True(t, claimed)
+	claimed, err = store.StartEvalExecution(ctx, execution.ID, "key-a", "d1", time.Time{}, *listed.StartedAt)
+	require.NoError(t, err)
+	assert.False(t, claimed, "a recovery claim of an earlier start is refused, though the delivery matches")
+
+	current, err := store.GetEvalExecution(ctx, execution.ID)
+	require.NoError(t, err)
+	claimed, err = store.StartEvalExecution(ctx, execution.ID, "key-a", "d2", time.Time{}, *current.StartedAt)
+	require.NoError(t, err)
+	assert.False(t, claimed, "a recovery claim names the delivery too")
+	claimed, err = store.StartEvalExecution(ctx, execution.ID, "key-a", "d1", time.Time{}, *current.StartedAt)
+	require.NoError(t, err)
+	assert.True(t, claimed, "the start as read is taken back")
+}
+
+// The recovery claim compares the start time as Postgres stores it, in microseconds.
+func TestEvalExecutionRecoveryClaimPostgres(t *testing.T) {
+	store := trySetupPostgresSchemaStore(t, "configstore_evalexec_pg_test", &tables.TableEvaluator{}, &tables.TableEvalExecution{})
+	if store == nil {
+		t.Skip("Postgres not available")
+	}
+	assertExecutionRecoveryClaim(t, store)
 }
 
 // Routing records when a job was put on a key's queue. The sweep listing brings back a
@@ -619,7 +666,7 @@ func TestEvalExecutionListingReturnsLostStartedJobs(t *testing.T) {
 			_, err := store.RouteEvalExecution(ctx, execution.ID, "", keyID)
 			require.NoError(t, err)
 		}
-		claimed, err := store.StartEvalExecution(ctx, execution.ID, keyID, "d-"+execution.ID, time.Time{})
+		claimed, err := store.StartEvalExecution(ctx, execution.ID, keyID, "d-"+execution.ID, time.Time{}, time.Time{})
 		require.NoError(t, err)
 		require.True(t, claimed)
 		return execution.ID

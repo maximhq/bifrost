@@ -33,7 +33,7 @@ func (f *fakeExecutionStore) GetEvalExecution(_ context.Context, id string) (*ta
 	return &copied, nil
 }
 
-func (f *fakeExecutionStore) StartEvalExecution(_ context.Context, id, keyID, _ string, _ time.Time) (bool, error) {
+func (f *fakeExecutionStore) StartEvalExecution(_ context.Context, id, keyID, _ string, _, _ time.Time) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.rows[id].Status, f.rows[id].KeyID = tables.EvalExecutionRunning, keyID

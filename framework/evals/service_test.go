@@ -34,6 +34,7 @@ type memoryServiceStore struct {
 	completeHadDeadline []bool // per completion write: whether its context had a deadline
 	completions         int    // completion writes that stored a result
 	starts              int    // StartEvalExecution calls: one per run
+	failComplete        bool   // completion writes fail, as a database error would
 }
 
 func newMemoryServiceStore() *memoryServiceStore {
@@ -195,7 +196,7 @@ func (m *memoryServiceStore) GetEvalExecution(ctx context.Context, id string) (*
 	return &copied, nil
 }
 
-func (m *memoryServiceStore) StartEvalExecution(_ context.Context, id, keyID, _ string, _ time.Time) (bool, error) {
+func (m *memoryServiceStore) StartEvalExecution(_ context.Context, id, keyID, _ string, _, _ time.Time) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	execution, ok := m.executions[id]
@@ -248,6 +249,9 @@ func (m *memoryServiceStore) CompleteEvalExecution(ctx context.Context, id strin
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.failComplete {
+		return errors.New("the store is unavailable")
+	}
 	execution, ok := m.executions[id]
 	if !ok {
 		return configstore.ErrNotFound
@@ -576,6 +580,17 @@ func TestService_ListSuppliesEvalKeyProvidersForTheStatusFilter(t *testing.T) {
 	assert.Empty(t, h.store.lastList.KeyProviders, "no key lookup without the filter")
 }
 
+// The status filter's providers are built in a new slice: a caller's KeyProviders slice
+// must not be overwritten through its backing array.
+func TestService_ListLeavesTheCallersProviderSliceAlone(t *testing.T) {
+	h := newServiceHarness(t, []EvalKey{{ID: "k2", Provider: "p2", Concurrency: 1}})
+	callers := []string{"p1"}
+	_, _, err := h.service.List(context.Background(), configstore.EvaluatorListParams{KeyStatus: configstore.EvaluatorKeyStatusMissing, KeyProviders: callers})
+	require.NoError(t, err)
+	assert.Equal(t, "p1", callers[0], "the caller's slice is untouched")
+	assert.Equal(t, []string{"p2"}, h.store.lastList.KeyProviders)
+}
+
 func TestService_Validate(t *testing.T) {
 	h := newServiceHarness(t, nil)
 
@@ -678,6 +693,8 @@ func TestService_ExecuteSavedEvaluator(t *testing.T) {
 	assert.ErrorIs(t, err, configstore.ErrNotFound)
 	_, err = h.service.Execute(ctx, ExecuteInput{})
 	assert.True(t, IsInvalid(err))
+	_, err = h.service.Execute(ctx, ExecuteInput{EvaluatorID: created.ID, Version: -1, Variables: map[string]string{"output": "hello"}})
+	assert.True(t, IsInvalid(err), "a negative version is refused, not read as the current one: %v", err)
 }
 
 // An editor's test panel runs a config that has not been saved.
@@ -717,7 +734,8 @@ func TestService_ExecuteFailureWriteHasADeadline(t *testing.T) {
 	}()
 	select {
 	case err := <-done:
-		assert.ErrorIs(t, err, ErrNoEvalKey)
+		// The write never landed, so the execution stays queued and is returned to poll.
+		assert.NoError(t, err)
 	case <-time.After(completeWriteTimeout + 2*time.Second):
 		t.Fatal("Execute waited on the failure write with no deadline")
 	}
@@ -727,6 +745,24 @@ func TestService_ExecuteFailureWriteHasADeadline(t *testing.T) {
 	for _, hadDeadline := range h.store.completeHadDeadline {
 		assert.True(t, hadDeadline, "the failure write carries a deadline")
 	}
+}
+
+// When the submit fails and the write that would close the execution fails too, the row
+// stays queued and the runner's sweep picks it up later. The caller gets its ID and the
+// queued status to poll, not an error that hides an execution that will still finish.
+func TestService_ExecuteReturnsAnExecutionItCouldNotClose(t *testing.T) {
+	h := newServiceHarness(t, nil)
+	h.store.mu.Lock()
+	h.store.failComplete = true
+	h.store.mu.Unlock()
+	view, err := h.service.Execute(context.Background(), ExecuteInput{
+		Draft:     &DraftEvaluator{Type: EvaluatorTypeAI, Config: json.RawMessage(`{"instructions":"Is {{output}} polite?","grading_style":"yes_no","provider":"openai","model":"gpt-4o-mini"}`)},
+		Variables: map[string]string{"output": "thanks"},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, view)
+	assert.NotEmpty(t, view.ID)
+	assert.Equal(t, tables.EvalExecutionQueued, view.Status)
 }
 
 func TestService_ExecuteAIEvaluatorNeedsAnEvalKey(t *testing.T) {

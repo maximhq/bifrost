@@ -225,12 +225,14 @@ func (s *Service) List(ctx context.Context, params configstore.EvaluatorListPara
 		if err != nil {
 			return nil, 0, err
 		}
-		params.KeyProviders = params.KeyProviders[:0]
+		// A new slice: the caller's KeyProviders must not be overwritten in place.
+		providers := make([]string, 0, len(keys))
 		for _, key := range keys {
-			if !slices.Contains(params.KeyProviders, key.Provider) {
-				params.KeyProviders = append(params.KeyProviders, key.Provider)
+			if !slices.Contains(providers, key.Provider) {
+				providers = append(providers, key.Provider)
 			}
 		}
+		params.KeyProviders = providers
 	}
 	evaluators, total, err := s.store.ListEvaluators(ctx, params)
 	if err != nil {
@@ -573,6 +575,9 @@ func (s *Service) Execute(ctx context.Context, in ExecuteInput) (*ExecutionView,
 	if s.runner == nil {
 		return nil, errors.New("evaluations are not available: no queue is configured")
 	}
+	if in.Version < 0 {
+		return nil, invalid("version must be 0 or more")
+	}
 	def, err := s.definitionFor(ctx, in)
 	if err != nil {
 		return nil, err
@@ -626,13 +631,20 @@ func (s *Service) Execute(ctx context.Context, in ExecuteInput) (*ExecutionView,
 			return s.await(ctx, queuedView(execution), done, waitFor(in.WaitMs))
 		}
 		// The write has its own deadline: a store that stops answering must not hold the API
-		// call open. A row it leaves queued is picked up by the runner's sweep.
+		// call open.
+		closed := false
 		if failed, marshalErr := json.Marshal(errorResult(err)); marshalErr == nil {
 			writeCtx, cancelWrite := context.WithTimeout(context.WithoutCancel(ctx), completeWriteTimeout)
-			_ = s.store.CompleteEvalExecution(writeCtx, execution.ID, failed)
+			closed = s.store.CompleteEvalExecution(writeCtx, execution.ID, failed) == nil
 			cancelWrite()
 		}
-		return nil, err
+		if closed {
+			return nil, err
+		}
+		// The row stays queued and the runner's sweep picks it up, so the execution still
+		// ends. The caller gets its ID and the queued status to poll, rather than an error
+		// that hides it. Nothing will run it before the sweep, so this does not wait.
+		return queuedView(execution), nil
 	}
 	return s.await(ctx, queuedView(execution), done, waitFor(in.WaitMs))
 }
@@ -697,6 +709,17 @@ func (s *Service) definitionFor(ctx context.Context, in ExecuteInput) (Definitio
 		ID: evaluator.ID, Name: evaluator.Name, Type: EvaluatorType(evaluator.Type),
 		BuiltinKey: deref(evaluator.BuiltinKey), Version: version.Version, Config: version.Config,
 	}, nil
+}
+
+// Definition returns everything the engine needs to run a saved evaluator: the given
+// version, or its current one when version is 0. A test run copies it at start.
+func (s *Service) Definition(ctx context.Context, evaluatorID string, version int) (Definition, error) {
+	return s.definitionFor(ctx, ExecuteInput{EvaluatorID: evaluatorID, Version: version})
+}
+
+// Describe reports the variables a definition reads.
+func (s *Service) Describe(def Definition) Validation {
+	return s.describe(def)
 }
 
 // waitFor bounds the requested wait.

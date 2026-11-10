@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"unicode/utf8"
+
+	"github.com/maximhq/bifrost/framework/evals"
 )
 
 // bufferPool holds the scratch buffers import and export build each row in, so a
@@ -203,7 +205,7 @@ func NewRowWriter(out io.Writer, format string, columns []Column) (*RowWriter, e
 		w.csv = csv.NewWriter(out)
 		w.record = make([]string, len(columns))
 		for i, column := range columns {
-			w.record[i] = column.Name
+			w.record[i] = evals.CSVCell(column.Name)
 		}
 		if err := w.csv.Write(w.record); err != nil {
 			return nil, err
@@ -224,8 +226,9 @@ func (w *RowWriter) Write(cellsJSON string) error {
 		}
 	}
 	if w.format == FormatCSV {
+		// A cell a spreadsheet would run as a formula is written as text; JSONL keeps it as stored.
 		for i, column := range w.columns {
-			w.record[i] = w.cells[column.ID]
+			w.record[i] = evals.CSVCell(w.cells[column.ID])
 		}
 		return w.csv.Write(w.record)
 	}

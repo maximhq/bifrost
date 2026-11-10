@@ -1183,6 +1183,28 @@ def test_pricing_patch_above_12hr_fields():
     assert not problems, "PricingPatch 1hr+ tier drift:\n    " + "\n    ".join(problems)
 
 
+def test_bundled_internal_refs_point_into_components():
+    """Every internal $ref in a bundle names a registered component. A schema that refers to
+    itself by its fragment name (`#/RunEntry`) bundles to a pointer that resolves nowhere unless
+    the schema is registered under components."""
+
+    def walk(node, where, problems):
+        if isinstance(node, dict):
+            ref = node.get("$ref")
+            if isinstance(ref, str) and ref.startswith("#/") and not ref.startswith("#/components/"):
+                problems.append(f"{where}: {ref}")
+            for key, value in node.items():
+                walk(value, f"{where}/{key}", problems)
+        elif isinstance(node, list):
+            for i, value in enumerate(node):
+                walk(value, f"{where}/{i}", problems)
+
+    problems = []
+    for name in ("openapi.json", "openapi-oss.json"):
+        walk(json.loads((HERE / name).read_text(encoding="utf-8")), name, problems)
+    assert not problems, "internal refs outside #/components/:\n    " + "\n    ".join(problems[:20])
+
+
 check("legacy aliases are mounted and their successors documented", test_legacy_aliases_mount_legacy_fragments)
 check("secret-capable values accept bare strings (EnvVar oneOf)", test_secret_capable_values_accept_bare_strings)
 check("vertex aws_workload_identity matches config.schema.json", test_vertex_aws_workload_identity_contract)
@@ -1206,5 +1228,6 @@ check("adaptive routing PUT descriptions state that an empty reroute_target is s
 
 check("pricing patch OpenAI 12h cache-creation rates are non-negative numbers in source and bundle", test_pricing_patch_above_12hr_fields)
 check("clamped list endpoints document limit maximum 100 and default 25", test_clamped_list_endpoints_document_the_page_bounds)
+check("bundled internal refs point into #/components/", test_bundled_internal_refs_point_into_components)
 print(f"\n{passed} passed, {failed} failed")
 sys.exit(0 if failed == 0 else 1)

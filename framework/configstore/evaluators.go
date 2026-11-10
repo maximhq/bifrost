@@ -379,12 +379,19 @@ func (s *RDBConfigStore) GetEvalExecution(ctx context.Context, id string) (*tabl
 // started before reclaimStartedBefore (a gateway on a queue that forgets takes over the
 // work of the one that stopped). A completed execution is never claimed, and another
 // delivery of a running one is refused, so a duplicate message does not run it twice.
-func (s *RDBConfigStore) StartEvalExecution(ctx context.Context, id, keyID, claimID string, reclaimStartedBefore time.Time) (bool, error) {
-	result := s.DB().WithContext(ctx).Model(&tables.TableEvalExecution{}).
-		Where("id = ? AND key_id = ?", id, keyID).
-		Where("status = ? OR (status = ? AND (claim_id = ? OR started_at < ?))",
-			tables.EvalExecutionQueued, tables.EvalExecutionRunning, claimID, reclaimStartedBefore).
-		Updates(map[string]any{"status": tables.EvalExecutionRunning, "claim_id": claimID, "started_at": time.Now()})
+//
+// A nonzero recoverStartedAt replaces all of that with one exact match: the execution is
+// running on keyID under claimID and started at recoverStartedAt. The sweep ends a lost
+// execution this way, so one restarted since the sweep read it is left to that start.
+func (s *RDBConfigStore) StartEvalExecution(ctx context.Context, id, keyID, claimID string, reclaimStartedBefore, recoverStartedAt time.Time) (bool, error) {
+	query := s.DB().WithContext(ctx).Model(&tables.TableEvalExecution{}).Where("id = ? AND key_id = ?", id, keyID)
+	if recoverStartedAt.IsZero() {
+		query = query.Where("status = ? OR (status = ? AND (claim_id = ? OR started_at < ?))",
+			tables.EvalExecutionQueued, tables.EvalExecutionRunning, claimID, reclaimStartedBefore)
+	} else {
+		query = query.Where("status = ? AND claim_id = ? AND started_at = ?", tables.EvalExecutionRunning, claimID, recoverStartedAt)
+	}
+	result := query.Updates(map[string]any{"status": tables.EvalExecutionRunning, "claim_id": claimID, "started_at": time.Now()})
 	if err := s.evalExecutionWriteOutcome(ctx, id, result); err != nil {
 		return false, err
 	}

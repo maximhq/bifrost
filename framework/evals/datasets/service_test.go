@@ -19,6 +19,7 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/evals"
 	"github.com/maximhq/bifrost/framework/logstore"
+	"github.com/maximhq/bifrost/framework/queryscope"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -192,6 +193,21 @@ func TestServiceCreateAndEditRows(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, page.Rows, 3)
 	assert.Equal(t, "pasted one", page.Rows[0].Cells[input])
+
+	// A reader that only walks the rows, as run planning does, skips the count.
+	db := svc.store.(*configstore.RDBConfigStore).DB()
+	counts := 0
+	require.NoError(t, db.Callback().Query().After("gorm:query").Register("count_row_counts", func(tx *gorm.DB) {
+		if tx.Statement.Table == "evals_dataset_rows" && strings.Contains(strings.ToLower(tx.Statement.SQL.String()), "count(") {
+			counts++
+		}
+	}))
+	t.Cleanup(func() { _ = db.Callback().Query().Remove("count_row_counts") })
+	walked, err := svc.Rows(ctx, view.ID, RowQuery{SkipTotal: true})
+	require.NoError(t, err)
+	require.Len(t, walked.Rows, 3)
+	assert.Zero(t, walked.Total)
+	assert.Zero(t, counts, "SkipTotal reads no count")
 }
 
 func TestServiceSaveRules(t *testing.T) {
@@ -264,6 +280,16 @@ func TestServiceImport(t *testing.T) {
 		{Index: 0, Name: "copy", Type: ColumnVariable},
 	}})
 	require.True(t, evals.IsInvalid(err), "a field mapped twice: %v", err)
+	// A position past the header, or past any CSV's field limit, is refused before a slice of
+	// that size is made.
+	_, err = svc.Import(ctx, view.ID, strings.NewReader(file), ImportOptions{HasHeader: true, Mapping: []ImportColumn{
+		{Index: 4, ColumnID: columnID(t, view, "input")},
+	}})
+	require.True(t, evals.IsInvalid(err), "a position past the header: %v", err)
+	_, err = svc.Import(ctx, view.ID, strings.NewReader("a\n"), ImportOptions{Mapping: []ImportColumn{
+		{Index: 1 << 20, ColumnID: columnID(t, view, "input")},
+	}})
+	require.True(t, evals.IsInvalid(err), "a position past the field limit: %v", err)
 	unchanged, err := svc.Get(ctx, view.ID)
 	require.NoError(t, err)
 	assert.Zero(t, unchanged.RowCount)
@@ -379,6 +405,18 @@ func TestServiceExportRoundTrip(t *testing.T) {
 	assert.JSONEq(t, `{"input":"two\nlines","expected_output":""}`, strings.TrimSpace(out.String()))
 
 	require.ErrorIs(t, svc.Export(ctx, view.ID, io.Discard, FormatCSV, 9, ""), configstore.ErrNotFound)
+
+	// A cell a spreadsheet would run as a formula is written as text in CSV; JSONL keeps it.
+	formula, err := svc.Create(ctx, DatasetInput{Name: "formula", Template: "qa"})
+	require.NoError(t, err)
+	_, err = svc.AddRows(ctx, formula.ID, []map[string]string{{"input": "=1+1", "expected_output": "-2"}}, "", "tester")
+	require.NoError(t, err)
+	out.Reset()
+	require.NoError(t, svc.Export(ctx, formula.ID, &out, FormatCSV, 0, ""))
+	assert.Equal(t, "input,expected_output\n'=1+1,'-2\n", out.String())
+	out.Reset()
+	require.NoError(t, svc.Export(ctx, formula.ID, &out, FormatJSONL, 0, ""))
+	assert.JSONEq(t, `{"input":"=1+1","expected_output":"-2"}`, strings.TrimSpace(out.String()))
 }
 
 func TestServiceAddFromLogsAndSessions(t *testing.T) {
@@ -492,6 +530,23 @@ func TestServiceAddFromLogsAndSessions(t *testing.T) {
 	assert.Zero(t, long.RowsAdded)
 	require.Len(t, long.Skipped, 1)
 	assert.Equal(t, fmt.Sprintf("the session has more than %d requests", maxSessionLogs), long.Skipped[0].Reason)
+
+	// A turn that fails to read is not a missing turn: the session is skipped, not saved short.
+	logs.logs["broken-1"] = chatLog("broken-1", []schemas.ChatMessage{chatMessage(schemas.ChatMessageRoleUser, "q1")}, "a1")
+	logs.logs["broken-2"] = chatLog("broken-2", []schemas.ChatMessage{chatMessage(schemas.ChatMessageRoleUser, "q2")}, "a2")
+	logs.sessions["sess-broken"] = []string{"broken-1", "broken-2"}
+	logs.errs = map[string]error{"broken-2": errors.New("connection refused")}
+	rowsBefore = page.Total
+	broken, err := svc.AddFromSessions(ctx, view.ID, []string{"sess-broken"}, "", "tester")
+	logs.errs = nil
+	require.NoError(t, err)
+	assert.Zero(t, broken.RowsAdded)
+	require.Len(t, broken.Skipped, 1)
+	assert.Equal(t, "sess-broken", broken.Skipped[0].ID)
+	assert.Equal(t, "a request of the session could not be read", broken.Skipped[0].Reason)
+	page, err = svc.Rows(ctx, view.ID, RowQuery{})
+	require.NoError(t, err)
+	assert.Equal(t, rowsBefore, page.Total, "no partial transcript is saved")
 }
 
 // A restore with unsaved edits saves them first. Under a version cap that save prunes
@@ -535,6 +590,35 @@ func TestServiceRestoreUnderTheVersionCap(t *testing.T) {
 	after, err := svc.Versions(ctx, view.ID)
 	require.NoError(t, err)
 	assert.Len(t, after, 2, "nothing new was saved")
+
+	// A version a run reads is stepped over, and the next oldest goes instead, so the
+	// count still comes down to the cap.
+	pinned, err := svc.Create(ctx, DatasetInput{Name: "pinned", Template: "qa"})
+	require.NoError(t, err)
+	row, err := svc.AddRows(ctx, pinned.ID, []map[string]string{{"input": "a"}}, "", "tester")
+	require.NoError(t, err)
+	for i, value := range []string{"", "b", "c"} {
+		if value != "" {
+			_, err = svc.UpdateRow(ctx, pinned.ID, row.Rows[0].RowID, map[string]string{"input": value}, "tester")
+			require.NoError(t, err)
+		}
+		_, err = svc.SaveVersion(ctx, pinned.ID, fmt.Sprintf("v%d", i+1), "", "tester")
+		require.NoError(t, err)
+	}
+	db := svc.store.(*configstore.RDBConfigStore).DB()
+	require.NoError(t, db.Create(&tables.TableEvalRun{
+		ID: "pinning-run", Name: "pins v1", Status: "completed", TargetType: "dataset",
+		DatasetID: pinned.ID, DatasetVersion: 1,
+	}).Error)
+	_, err = svc.Update(ctx, pinned.ID, DatasetInput{Name: "pinned", MaxVersions: new(2)})
+	require.NoError(t, err)
+	kept, err := svc.Versions(ctx, pinned.ID)
+	require.NoError(t, err)
+	numbers := make([]int, len(kept))
+	for i := range kept {
+		numbers[i] = kept[i].Number
+	}
+	assert.ElementsMatch(t, []int{1, 3}, numbers, "the pinned v1 stays and v2 goes in its place")
 }
 
 // The draft is named symbolically, so Diff resolves it from the same read it compares
@@ -903,6 +987,10 @@ func TestServiceFiles(t *testing.T) {
 	assert.Equal(t, "png bytes", string(data))
 	_, _, err = svc.File(ctx, view.ID, "missing")
 	require.ErrorIs(t, err, configstore.ErrNotFound)
+	// The dataset's read scope applies to its files: a caller who cannot see it gets none.
+	hidden := queryscope.WithQueryScope(ctx, func(db *gorm.DB) *gorm.DB { return db.Where("1 = 0") })
+	_, _, err = svc.File(hidden, view.ID, ref.ID)
+	require.ErrorIs(t, err, configstore.ErrNotFound)
 
 	// A row's file cell lists files; a list of URLs is taken too.
 	cell, err := json.Marshal([]FileRef{*ref})
@@ -948,8 +1036,36 @@ func TestServiceFiles(t *testing.T) {
 	require.ErrorIs(t, err, errFileRecord)
 	assert.Empty(t, strict.objects, "the object is removed on a context the cancel does not reach")
 
+	// A copy owns its files: its file cells point at its own records, so it keeps working after
+	// the source is deleted.
+	both, err := json.Marshal([]FileRef{*ref, *large})
+	require.NoError(t, err)
+	_, err = svc.AddRows(ctx, view.ID, []map[string]string{{"input": "two files", "image": string(both)}}, "", "tester")
+	require.NoError(t, err)
+	copied, err := svc.Duplicate(ctx, view.ID, "", "tester")
+	require.NoError(t, err)
+
 	// Deleting the dataset removes its files from both places.
 	require.NoError(t, svc.Delete(ctx, view.ID))
+	require.Len(t, objects.objects, 1, "only the copy's object is left")
+
+	copyPage, err := svc.Rows(ctx, copied.ID, RowQuery{})
+	require.NoError(t, err)
+	var copyRefs []FileRef
+	for _, row := range copyPage.Rows {
+		if cell := row.Cells[columnID(t, copied, "image")]; strings.Contains(cell, `"id"`) {
+			copyRefs, err = ParseFileCell(cell)
+			require.NoError(t, err)
+		}
+	}
+	require.Len(t, copyRefs, 2)
+	for i, want := range []int{len("png bytes"), MaxInlineFileBytes + 1} {
+		assert.Equal(t, fileURL(copied.ID, copyRefs[i].ID), copyRefs[i].URL)
+		_, data, err := svc.File(ctx, copied.ID, copyRefs[i].ID)
+		require.NoError(t, err, "the copy's file %d is readable after the source is gone", i)
+		assert.Len(t, data, want)
+	}
+	require.NoError(t, svc.Delete(ctx, copied.ID))
 	assert.Empty(t, objects.objects)
 }
 

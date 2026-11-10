@@ -77,3 +77,14 @@ func (t template) renderString(in Input, escape func(string) string) string {
 	t.render(buf, in, escape)
 	return buf.String()
 }
+
+// CSVCell neutralises a cell a spreadsheet would run as a formula: one that starts with
+// =, +, - or @, or with a tab or carriage return that some spreadsheets skip first. A
+// leading quote makes it text and keeps the value readable. Only text that comes from
+// rows, models and evaluators goes through it; numbers an export writes itself do not.
+func CSVCell(value string) string {
+	if value != "" && strings.ContainsRune("=+-@\t\r", rune(value[0])) {
+		return "'" + value
+	}
+	return value
+}

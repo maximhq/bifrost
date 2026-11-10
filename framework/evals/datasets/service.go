@@ -72,6 +72,7 @@ type Store interface {
 	CreateEvalDatasetFile(ctx context.Context, file *tables.TableEvalDatasetFile) error
 	GetEvalDatasetFile(ctx context.Context, datasetID, fileID string) (*tables.TableEvalDatasetFile, error)
 	ListEvalDatasetFileKeys(ctx context.Context, datasetID string) ([]string, error)
+	ListEvalDatasetFiles(ctx context.Context, datasetID string) ([]tables.TableEvalDatasetFile, error)
 	ListEvalDatasetFolders(ctx context.Context) ([]tables.TableEvalDatasetFolder, error)
 	CreateEvalDatasetFolder(ctx context.Context, folder *tables.TableEvalDatasetFolder) error
 	UpdateEvalDatasetFolder(ctx context.Context, folder *tables.TableEvalDatasetFolder) error
@@ -196,6 +197,12 @@ func toColumns(stored []tables.TableEvalDatasetColumn) []Column {
 		columns[i] = Column{ID: column.ID, Name: column.Name, Type: ColumnType(column.Type)}
 	}
 	return columns
+}
+
+// VersionColumns returns the columns a saved version had, in order. A test run reads
+// a pinned version through them.
+func VersionColumns(version *tables.TableEvalDatasetVersion) []Column {
+	return versionColumns(version)
 }
 
 func versionColumns(version *tables.TableEvalDatasetVersion) []Column {
@@ -464,6 +471,10 @@ func (s *Service) UploadFile(ctx context.Context, datasetID, name, contentType s
 
 // File returns an uploaded file's record and its bytes.
 func (s *Service) File(ctx context.Context, datasetID, fileID string) (*tables.TableEvalDatasetFile, []byte, error) {
+	// The file record has no read scope of its own; the dataset's applies.
+	if _, err := s.store.GetEvalDataset(ctx, datasetID); err != nil {
+		return nil, nil, err
+	}
 	file, err := s.store.GetEvalDatasetFile(ctx, datasetID, fileID)
 	if err != nil {
 		return nil, nil, err
@@ -513,16 +524,31 @@ func (s *Service) Duplicate(ctx context.Context, id, name, actor string) (view *
 		// On a context the request's cancellation does not reach, so a cancelled copy is removed too.
 		cleanupCtx, cancel := cleanupContext(ctx)
 		defer cancel()
-		if _, cleanupErr := s.store.DeleteEvalDataset(cleanupCtx, dataset.ID); cleanupErr != nil {
+		keys, cleanupErr := s.store.DeleteEvalDataset(cleanupCtx, dataset.ID)
+		if cleanupErr != nil {
 			s.warn("evals datasets: failed to remove the partial copy %s of dataset %s: %v", dataset.ID, id, cleanupErr)
+			return
+		}
+		if s.files != nil && len(keys) > 0 {
+			if cleanupErr := s.files.DeleteBatch(cleanupCtx, keys); cleanupErr != nil {
+				s.warn("evals datasets: failed to delete the files of the partial copy %s, objects left behind: %v: %v", dataset.ID, keys, cleanupErr)
+			}
 		}
 	}()
+	// A copy owns its files, so deleting the source leaves the copy whole: each source file
+	// gets a record of its own, and the copy's file cells are rewritten to name it.
+	fileRefs, err := s.copyFiles(ctx, id, dataset.ID, actor)
+	if err != nil {
+		return nil, err
+	}
 	// Cells are keyed by column ID, and the copy's columns have new IDs.
 	sourceIDs := make([]string, len(source.Columns))
 	copyIDs := make([]string, len(source.Columns))
+	fileColumn := make([]bool, len(source.Columns))
 	for i := range source.Columns {
 		sourceIDs[i] = source.Columns[i].ID
 		copyIDs[i] = stored[i].ID
+		fileColumn[i] = len(fileRefs) > 0 && ColumnType(source.Columns[i].Type) == ColumnFile
 	}
 	// Rows are copied a page at a time, each page in its own short transaction, and
 	// the last one saves version 1. A failure removes the half-made copy.
@@ -545,6 +571,11 @@ func (s *Service) Duplicate(ctx context.Context, id, name, actor string) (view *
 				}
 				for j, sourceID := range sourceIDs {
 					values[j] = rows[i].Cells[sourceID]
+					if fileColumn[j] && values[j] != "" {
+						if values[j], err = rewriteFileCell(values[j], fileRefs); err != nil {
+							return err
+						}
+					}
 				}
 				buf.Reset()
 				EncodeCells(buf, copyIDs, values)
@@ -606,6 +637,55 @@ func (s *Service) Duplicate(ctx context.Context, id, name, actor string) (view *
 		}
 	}
 	return s.Get(ctx, dataset.ID)
+}
+
+// copyFiles gives the dataset copyID a record of its own for each file of sourceID, with
+// its own object when the source file is in the object store, and returns the copy's
+// reference for each source file ID. Objects are stored before their records, as an upload
+// does; a record that fails removes its object, and the caller's cleanup removes the rest.
+func (s *Service) copyFiles(ctx context.Context, sourceID, copyID, actor string) (map[string]FileRef, error) {
+	records, err := s.store.ListEvalDatasetFiles(ctx, sourceID)
+	if err != nil || len(records) == 0 {
+		return nil, err
+	}
+	refs := make(map[string]FileRef, len(records))
+	for i := range records {
+		source := &records[i]
+		file := &tables.TableEvalDatasetFile{
+			ID: uuid.NewString(), DatasetID: copyID, Name: source.Name, ContentType: source.ContentType, Size: source.Size, CreatedBy: actor,
+		}
+		if source.ObjectKey == "" {
+			full, err := s.store.GetEvalDatasetFile(ctx, sourceID, source.ID)
+			if err != nil {
+				return nil, err
+			}
+			file.Data = full.Data
+		} else {
+			if s.files == nil {
+				return nil, errors.New("the dataset has files in the object store, and this gateway has none configured")
+			}
+			data, err := s.files.Get(ctx, source.ObjectKey)
+			if err != nil {
+				return nil, fmt.Errorf("failed to read file %s: %w", source.ID, err)
+			}
+			file.ObjectKey = "evals/datasets/" + copyID + "/files/" + file.ID
+			if err := s.files.Put(ctx, file.ObjectKey, data, map[string]string{"dataset_id": copyID}); err != nil {
+				return nil, fmt.Errorf("failed to store the file: %w", err)
+			}
+		}
+		if err := s.store.CreateEvalDatasetFile(ctx, file); err != nil {
+			if file.ObjectKey != "" {
+				cleanupCtx, cancel := cleanupContext(ctx)
+				if cleanupErr := s.files.DeleteBatch(cleanupCtx, []string{file.ObjectKey}); cleanupErr != nil {
+					s.warn("evals datasets: failed to remove object %s after its file record failed: %v", file.ObjectKey, cleanupErr)
+				}
+				cancel()
+			}
+			return nil, err
+		}
+		refs[source.ID] = FileRef{ID: file.ID, URL: fileURL(copyID, file.ID)}
+	}
+	return refs, nil
 }
 
 // ============================================================================
@@ -816,6 +896,8 @@ type RowQuery struct {
 	// combined with After.
 	Offset int
 	Limit  int
+	// SkipTotal leaves Total at 0 and reads no count, for a reader that only walks the rows.
+	SkipTotal bool
 }
 
 // RowsPage is a page of rows. NextAfter is the cursor for the next page, 0 at the
@@ -903,6 +985,9 @@ func (s *Service) Rows(ctx context.Context, id string, query RowQuery) (*RowsPag
 	page.Rows = rows
 	if page.Rows == nil {
 		page.Rows = []tables.TableEvalDatasetRow{}
+	}
+	if query.SkipTotal {
+		return page, nil
 	}
 	if page.Total, err = s.store.CountEvalDatasetRows(ctx, configstore.EvalDatasetRowListParams{
 		DatasetID: id, Version: query.Version, SplitID: query.SplitID, Search: query.Search, SearchColumns: searchColumns,
@@ -1566,6 +1651,9 @@ func (s *Service) AddFromLogs(ctx context.Context, id string, logIDs []string, s
 // errSessionTooLong reports a session with more than maxSessionLogs requests.
 var errSessionTooLong = fmt.Errorf("the session has more than %d requests", maxSessionLogs)
 
+// errSessionUnreadable reports a session one of whose requests failed to read.
+var errSessionUnreadable = errors.New("a request of the session could not be read")
+
 // sessionLogs reads the requests of one session, oldest first, with their content.
 // Only root requests are read, so a retry or a fallback is not counted as a turn. A
 // session with more than maxSessionLogs requests fails with errSessionTooLong rather
@@ -1598,8 +1686,12 @@ func (s *Service) sessionLogs(ctx context.Context, sessionID string) ([]*logstor
 	for _, logID := range ids {
 		// A listing carries no content; the full log does.
 		full, err := s.logs.FindByID(ctx, logID)
-		if err != nil || full == nil {
-			continue
+		if err != nil && !errors.Is(err, logstore.ErrNotFound) {
+			// A turn that fails to read is not a missing turn; the session would be saved short.
+			return nil, fmt.Errorf("%w: %w", errSessionUnreadable, err)
+		}
+		if full == nil {
+			continue // removed since the listing
 		}
 		logs = append(logs, full)
 	}
@@ -1628,6 +1720,11 @@ func (s *Service) AddFromSessions(ctx context.Context, id string, sessionIDs []s
 		logs, err := s.sessionLogs(ctx, sessionID)
 		if errors.Is(err, errSessionTooLong) {
 			result.Skipped = append(result.Skipped, Skipped{ID: sessionID, Reason: err.Error()})
+			continue
+		}
+		if errors.Is(err, errSessionUnreadable) {
+			s.warn("evals datasets: skipped session %s: %v", sessionID, err)
+			result.Skipped = append(result.Skipped, Skipped{ID: sessionID, Reason: errSessionUnreadable.Error()})
 			continue
 		}
 		if err != nil {

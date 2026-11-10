@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"gorm.io/gorm/clause"
+	"slices"
 	"strings"
 	"time"
 
@@ -320,6 +321,15 @@ func (s *RDBConfigStore) GetEvalDatasetFile(ctx context.Context, datasetID, file
 	return &file, nil
 }
 
+// ListEvalDatasetFiles returns a dataset's file records without their inline bytes,
+// oldest first. GetEvalDatasetFile reads one with its bytes.
+func (s *RDBConfigStore) ListEvalDatasetFiles(ctx context.Context, datasetID string) ([]tables.TableEvalDatasetFile, error) {
+	var files []tables.TableEvalDatasetFile
+	err := s.DB().WithContext(ctx).Omit("data").Where("dataset_id = ?", datasetID).
+		Order("created_at ASC, id ASC").Find(&files).Error
+	return files, err
+}
+
 // ListEvalDatasetFileKeys returns the object store keys of a dataset's files. A file
 // kept in the database has none.
 func (s *RDBConfigStore) ListEvalDatasetFileKeys(ctx context.Context, datasetID string) ([]string, error) {
@@ -523,6 +533,11 @@ func (s *RDBConfigStore) SetEvalDatasetFolder(ctx context.Context, datasetID str
 func (s *RDBConfigStore) DeleteEvalDataset(ctx context.Context, id string) ([]string, error) {
 	if _, err := s.GetEvalDataset(ctx, id); err != nil {
 		return nil, err
+	}
+	if runs, err := s.CountEvalRunsOnDataset(ctx, id, 0); err != nil {
+		return nil, err
+	} else if runs > 0 {
+		return nil, ErrEvalDatasetHasRuns
 	}
 	var keys []string
 	err := s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -1350,6 +1365,14 @@ func (w *evalDatasetTx) DeleteVersion(number int) error {
 	if number == w.dataset.HeadVersion {
 		return ErrEvalDatasetLatestVersion
 	}
+	// A version that a test run reads is that run's record of what it measured.
+	inUse, err := evalRunDatasetVersions(w.tx, w.dataset.ID)
+	if err != nil {
+		return err
+	}
+	if slices.Contains(inUse, number) {
+		return ErrEvalDatasetVersionInUse
+	}
 	result := w.tx.Where("dataset_id = ? AND number = ?", w.dataset.ID, number).Delete(&tables.TableEvalDatasetVersion{})
 	if result.Error != nil {
 		return result.Error
@@ -1421,8 +1444,35 @@ func (w *evalDatasetTx) PruneVersions() error {
 	if excess <= 0 {
 		return nil
 	}
-	// Numbers ascend, so the oldest excess versions are the ones up to the last of them.
-	if err := w.tx.Where("dataset_id = ? AND number <= ?", w.dataset.ID, numbers[excess-1]).
+	// Versions that test runs read are stepped over: they stay until the runs go.
+	inUse, err := evalRunDatasetVersions(w.tx, w.dataset.ID)
+	if err != nil {
+		return err
+	}
+	// Oldest first, stepping over pinned versions, until the count is down to the cap or
+	// only pinned versions are left. The latest version is never pruned.
+	prune := make([]int, 0, excess)
+	skipped := false
+	for _, number := range numbers[:len(numbers)-1] {
+		if len(prune) == excess {
+			break
+		}
+		if slices.Contains(inUse, number) {
+			skipped = true
+			continue
+		}
+		prune = append(prune, number)
+	}
+	if len(prune) == 0 {
+		return nil
+	}
+	// Numbers ascend, so with nothing stepped over the pruned versions are the ones up to
+	// the last of them, which binds two parameters instead of the whole list.
+	where, bound := "dataset_id = ? AND number IN ?", any(prune)
+	if !skipped {
+		where, bound = "dataset_id = ? AND number <= ?", prune[len(prune)-1]
+	}
+	if err := w.tx.Where(where, w.dataset.ID, bound).
 		Delete(&tables.TableEvalDatasetVersion{}).Error; err != nil {
 		return err
 	}
