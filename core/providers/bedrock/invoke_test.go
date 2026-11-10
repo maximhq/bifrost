@@ -1445,6 +1445,61 @@ func TestUsesAnthropicInvokePath_ToolSearch(t *testing.T) {
 	})
 }
 
+// Converse drops Claude's computer tools, so a Claude Responses request that
+// carries one must take InvokeModel. Nova has no computer tool and stays on Converse.
+func TestUsesAnthropicInvokePath_ComputerTools(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	for _, toolType := range []schemas.ResponsesToolType{schemas.ResponsesToolTypeComputer, schemas.ResponsesToolTypeComputerUsePreview} {
+		t.Run(string(toolType)+" on claude routes to invoke", func(t *testing.T) {
+			req := &schemas.BifrostResponsesRequest{Model: "us.anthropic.claude-opus-5-5", Params: &schemas.ResponsesParameters{
+				Tools: []schemas.ResponsesTool{{Type: toolType}},
+			}}
+			require.True(t, responsesUsesAnthropicInvokePath(ctx, req))
+		})
+		t.Run(string(toolType)+" on nova stays on converse", func(t *testing.T) {
+			req := &schemas.BifrostResponsesRequest{Model: "amazon.nova-pro-v1:0", Params: &schemas.ResponsesParameters{
+				Tools: []schemas.ResponsesTool{{Type: toolType}},
+			}}
+			require.False(t, responsesUsesAnthropicInvokePath(ctx, req))
+		})
+	}
+}
+
+// Bedrock rejects a toolset pair tagged on one half only. The InvokeModel body
+// must carry the toolset bare and toolset_name on both the tool_use and its tool_result.
+func TestInvokeAnthropicBody_ComputerToolsetReplayKeepsToolsetName(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	provider := &BedrockProvider{}
+	var input []schemas.ResponsesMessage
+	require.NoError(t, sonic.Unmarshal([]byte(`[
+		{"type":"message","role":"user","content":"Click the red square."},
+		{"type":"function_call","id":"fc_1","call_id":"toolu_bdrk_01","name":"screenshot","arguments":"{}","toolset_name":"computer","status":"completed"},
+		{"type":"function_call_output","call_id":"toolu_bdrk_01","output":"captured","toolset_name":"computer"}
+	]`), &input))
+	req := &schemas.BifrostResponsesRequest{
+		Provider: schemas.Bedrock,
+		Model:    "us.anthropic.claude-opus-5-5",
+		Input:    input,
+		Params:   &schemas.ResponsesParameters{Tools: []schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeComputer}}},
+	}
+	require.True(t, responsesUsesAnthropicInvokePath(ctx, req))
+
+	body, bifrostErr := anthropic.BuildAnthropicResponsesRequestBody(ctx, req, provider.invokeBuildConfig(req.Model, false, true, nil))
+	require.Nil(t, bifrostErr)
+	tools := gjson.GetBytes(body, "tools").Array()
+	require.Len(t, tools, 1, "body=%s", body)
+	assert.Equal(t, "computer_toolset_20260801", tools[0].Get("type").String(), "body=%s", body)
+	assert.False(t, tools[0].Get("name").Exists(), "a toolset entry rejects name: %s", body)
+	assert.False(t, gjson.GetBytes(body, "anthropic_beta").Exists(), "the toolset needs no beta on InvokeModel: %s", body)
+	call := gjson.GetBytes(body, "messages.1.content.0")
+	assert.Equal(t, "tool_use", call.Get("type").String(), "body=%s", body)
+	assert.Equal(t, "screenshot", call.Get("name").String())
+	assert.Equal(t, "computer", call.Get("toolset_name").String(), "body=%s", body)
+	result := gjson.GetBytes(body, "messages.2.content.0")
+	assert.Equal(t, "tool_result", result.Get("type").String(), "body=%s", body)
+	assert.Equal(t, "computer", result.Get("toolset_name").String(), "body=%s", body)
+}
+
 // A /v1/responses client replays Claude's tool search as the JSON tool_search_call
 // Bifrost returned. The InvokeModel body must carry it back as the server_tool_use +
 // tool_search_tool_result pair (references nested in content), not drop it.
