@@ -193,3 +193,203 @@ func TestTerminalTextStreamDeltaPrecedesStop(t *testing.T) {
 		t.Fatalf("emitted text progress leaked after block stop: %#v", progress)
 	}
 }
+
+// terminalToolItem builds a tool output-item start or stop event for reverse stream conversion.
+func terminalToolItem(itemID string, outputIndex int, itemType schemas.ResponsesMessageType, eventType schemas.ResponsesStreamResponseType) *schemas.BifrostResponsesStreamResponse {
+	return &schemas.BifrostResponsesStreamResponse{
+		Type:        eventType,
+		OutputIndex: schemas.Ptr(outputIndex),
+		Item: &schemas.ResponsesMessage{
+			ID:   schemas.Ptr(itemID),
+			Type: schemas.Ptr(itemType),
+			ResponsesToolMessage: &schemas.ResponsesToolMessage{
+				CallID:    schemas.Ptr(itemID),
+				Name:      schemas.Ptr("Read"),
+				Arguments: schemas.Ptr(""),
+			},
+		},
+	}
+}
+
+// terminalToolArgsEvent builds a tool-arguments delta or done event.
+func terminalToolArgsEvent(itemID string, outputIndex int, eventType schemas.ResponsesStreamResponseType, arguments string) *schemas.BifrostResponsesStreamResponse {
+	return &schemas.BifrostResponsesStreamResponse{
+		Type:        eventType,
+		ItemID:      schemas.Ptr(itemID),
+		OutputIndex: schemas.Ptr(outputIndex),
+		Arguments:   schemas.Ptr(arguments),
+	}
+}
+
+// terminalToolInputJSON reconstructs client-visible tool input from Anthropic input_json_delta events.
+func terminalToolInputJSON(events []*AnthropicStreamEvent) string {
+	var input string
+	for _, event := range events {
+		if event.Type == AnthropicStreamEventTypeContentBlockDelta &&
+			event.Delta != nil && event.Delta.Type == AnthropicStreamDeltaTypeInputJSON && event.Delta.PartialJSON != nil {
+			input += *event.Delta.PartialJSON
+		}
+	}
+	return input
+}
+
+// TestTerminalToolArgumentsStreamEmitsMissingSuffix verifies function_call and mcp_call terminal argument events.
+func TestTerminalToolArgumentsStreamEmitsMissingSuffix(t *testing.T) {
+	tests := []struct {
+		name         string
+		itemType     schemas.ResponsesMessageType
+		deltaType    schemas.ResponsesStreamResponseType
+		doneType     schemas.ResponsesStreamResponseType
+		deltas       []string
+		aggregate    string
+		want         string
+		wantTerminal string
+	}{
+		{
+			name:         "terminal only function_call",
+			itemType:     schemas.ResponsesMessageTypeFunctionCall,
+			deltaType:    schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta,
+			doneType:     schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDone,
+			aggregate:    `{"file_path":"/etc/hostname"}`,
+			want:         `{"file_path":"/etc/hostname"}`,
+			wantTerminal: `{"file_path":"/etc/hostname"}`,
+		},
+		{
+			name:         "partial deltas then done",
+			itemType:     schemas.ResponsesMessageTypeFunctionCall,
+			deltaType:    schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta,
+			doneType:     schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDone,
+			deltas:       []string{`{"file_path":`},
+			aggregate:    `{"file_path":"/etc/hostname"}`,
+			want:         `{"file_path":"/etc/hostname"}`,
+			wantTerminal: `"/etc/hostname"}`,
+		},
+		{
+			name:         "complete deltas then done",
+			itemType:     schemas.ResponsesMessageTypeFunctionCall,
+			deltaType:    schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta,
+			doneType:     schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDone,
+			deltas:       []string{`{"file_path":`, `"/etc/hostname"}`},
+			aggregate:    `{"file_path":"/etc/hostname"}`,
+			want:         `{"file_path":"/etc/hostname"}`,
+			wantTerminal: "",
+		},
+		{
+			name:         "divergent prefix rejected",
+			itemType:     schemas.ResponsesMessageTypeFunctionCall,
+			deltaType:    schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta,
+			doneType:     schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDone,
+			deltas:       []string{`{"file_path":"/etc/hosts"`},
+			aggregate:    `{"file_path":"/etc/hostname"}`,
+			want:         `{"file_path":"/etc/hosts"`,
+			wantTerminal: "",
+		},
+		{
+			name:         "terminal only mcp_call",
+			itemType:     schemas.ResponsesMessageTypeMCPCall,
+			deltaType:    schemas.ResponsesStreamResponseTypeMCPCallArgumentsDelta,
+			doneType:     schemas.ResponsesStreamResponseTypeMCPCallArgumentsDone,
+			aggregate:    `{"query":"status"}`,
+			want:         `{"query":"status"}`,
+			wantTerminal: `{"query":"status"}`,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(nil, time.Time{})
+			responses := []*schemas.BifrostResponsesStreamResponse{
+				terminalToolItem("call_1", 0, tc.itemType, schemas.ResponsesStreamResponseTypeOutputItemAdded),
+			}
+			for _, d := range tc.deltas {
+				responses = append(responses, terminalToolArgsEvent("call_1", 0, tc.deltaType, d))
+			}
+			beforeTerminal := convertTerminalTextEvents(ctx, responses...)
+			doneEvent := terminalToolArgsEvent("call_1", 0, tc.doneType, tc.aggregate)
+			terminalEvents := convertTerminalTextEvents(ctx, doneEvent)
+			allEvents := append(beforeTerminal, terminalEvents...)
+
+			if got := terminalToolInputJSON(allEvents); got != tc.want {
+				t.Fatalf("reconstructed input = %q, want %q", got, tc.want)
+			}
+			if got := terminalToolInputJSON(terminalEvents); got != tc.wantTerminal {
+				t.Fatalf("terminal input delta = %q, want %q", got, tc.wantTerminal)
+			}
+			if dup := convertTerminalTextEvents(ctx, doneEvent); terminalToolInputJSON(dup) != "" {
+				t.Fatalf("duplicate terminal event emitted %q", terminalToolInputJSON(dup))
+			}
+
+			stopEvents := convertTerminalTextEvents(ctx, terminalToolItem("call_1", 0, tc.itemType, schemas.ResponsesStreamResponseTypeOutputItemDone))
+			if len(stopEvents) != 1 || stopEvents[0].Type != AnthropicStreamEventTypeContentBlockStop {
+				t.Fatalf("stop events = %#v, want single content_block_stop", stopEvents)
+			}
+			if progress := getOrCreateAnthropicToResponsesStreamState(ctx).emittedTextByBlock; len(progress) != 0 {
+				t.Fatalf("emitted progress leaked after block stop: %#v", progress)
+			}
+		})
+	}
+
+	t.Run("parallel terminal calls and guards", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(nil, time.Time{})
+		paths := []string{"/etc/hostname", "/etc/os-release", "/etc/fstab"}
+		for i, p := range paths {
+			id := ""
+			added := terminalToolItem(id, i, schemas.ResponsesMessageTypeFunctionCall, schemas.ResponsesStreamResponseTypeOutputItemAdded)
+			done := terminalToolArgsEvent(id, i, schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDone, `{"file_path":"`+p+`"}`)
+			stop := terminalToolItem(id, i, schemas.ResponsesMessageTypeFunctionCall, schemas.ResponsesStreamResponseTypeOutputItemDone)
+			events := convertTerminalTextEvents(ctx, added, done, stop)
+			if len(events) != 3 || events[0].Type != AnthropicStreamEventTypeContentBlockStart ||
+				events[1].Type != AnthropicStreamEventTypeContentBlockDelta ||
+				events[2].Type != AnthropicStreamEventTypeContentBlockStop {
+				t.Fatalf("call %d events = %#v", i, events)
+			}
+			if got := terminalToolInputJSON(events); got != `{"file_path":"`+p+`"}` {
+				t.Fatalf("call %d input = %q", i, got)
+			}
+		}
+
+		// WebSearch skips terminal arguments.done so output_item.done sanitization remains authoritative.
+		wsAdded := terminalToolItem("ws_1", 3, schemas.ResponsesMessageTypeFunctionCall, schemas.ResponsesStreamResponseTypeOutputItemAdded)
+		wsAdded.Item.ResponsesToolMessage.Name = schemas.Ptr("WebSearch")
+		convertTerminalTextEvents(ctx, wsAdded)
+		if events := convertTerminalTextEvents(ctx, terminalToolArgsEvent("ws_1", 3, schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDone, `{"query":"test"}`)); len(events) != 0 {
+			t.Fatalf("WebSearch emitted terminal arguments before output_item.done: %#v", events)
+		}
+
+		// Passthrough never synthesizes terminal tool arguments.
+		ptCtx := schemas.NewBifrostContext(nil, time.Time{})
+		SetResponsesStreamPassthrough(ptCtx)
+		convertTerminalTextEvents(ptCtx, terminalToolItem("pt_1", 0, schemas.ResponsesMessageTypeFunctionCall, schemas.ResponsesStreamResponseTypeOutputItemAdded))
+		if events := convertTerminalTextEvents(ptCtx, terminalToolArgsEvent("pt_1", 0, schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDone, `{}`)); len(events) != 0 {
+			t.Fatalf("passthrough emitted terminal tool arguments: %#v", events)
+		}
+	})
+}
+
+// BenchmarkTerminalToolArgumentsStream measures per-call reverse stream conversion with and without deltas.
+func BenchmarkTerminalToolArgumentsStream(b *testing.B) {
+	added := terminalToolItem("call_1", 0, schemas.ResponsesMessageTypeFunctionCall, schemas.ResponsesStreamResponseTypeOutputItemAdded)
+	delta := terminalToolArgsEvent("call_1", 0, schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta, `{"file_path":"/etc/hostname"}`)
+	done := terminalToolArgsEvent("call_1", 0, schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDone, `{"file_path":"/etc/hostname"}`)
+	stop := terminalToolItem("call_1", 0, schemas.ResponsesMessageTypeFunctionCall, schemas.ResponsesStreamResponseTypeOutputItemDone)
+
+	b.Run("with_delta", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			ctx := schemas.NewBifrostContext(nil, time.Time{})
+			ToAnthropicResponsesStreamResponse(ctx, added)
+			ToAnthropicResponsesStreamResponse(ctx, delta)
+			ToAnthropicResponsesStreamResponse(ctx, done)
+			ToAnthropicResponsesStreamResponse(ctx, stop)
+		}
+	})
+	b.Run("terminal_only", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			ctx := schemas.NewBifrostContext(nil, time.Time{})
+			ToAnthropicResponsesStreamResponse(ctx, added)
+			ToAnthropicResponsesStreamResponse(ctx, done)
+			ToAnthropicResponsesStreamResponse(ctx, stop)
+		}
+	})
+}
