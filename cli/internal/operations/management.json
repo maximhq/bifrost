@@ -1,5 +1,5 @@
 {
-  "_comment": "Management operations registered in OSS/Enterprise handlers but absent from the public OpenAPI document. Keep IDs stable; move operations to public OpenAPI when documented. Audited 2026-10-25.",
+  "_comment": "Management operations registered in OSS/Enterprise handlers but absent from the public OpenAPI document. Keep IDs stable; move operations to public OpenAPI when documented. Audited 2026-11-10.",
   "paths": {
     "/api/adaptive-routing/conditions": {
       "get": {
@@ -110,6 +110,26 @@
           "Adaptive Routing"
         ],
         "x-source": "Enterprise:transports/bifrost-http/handlers/loadbalancerhistory.go"
+      }
+    },
+    "/api/agent/app-settings": {
+      "get": {
+        "operationId": "managementGetAgentAppSettings",
+        "summary": "GET /api/agent/app-settings (Enterprise management)",
+        "tags": [
+          "Agent"
+        ],
+        "x-source": "Enterprise:transports/bifrost-http/handlers/agent.go",
+        "x-cli-auth": "agent"
+      },
+      "put": {
+        "operationId": "managementPutAgentAppSettings",
+        "summary": "PUT /api/agent/app-settings (Enterprise management)",
+        "tags": [
+          "Agent"
+        ],
+        "x-source": "Enterprise:transports/bifrost-http/handlers/agent.go",
+        "x-cli-auth": "agent"
       }
     },
     "/api/agent/config": {
@@ -415,6 +435,64 @@
         "x-source": "Enterprise:transports/bifrost-http/handlers/cluster.go"
       }
     },
+    "/api/cluster/incidents": {
+      "get": {
+        "operationId": "managementGetClusterIncidents",
+        "summary": "GET /api/cluster/incidents (Enterprise management)",
+        "tags": [
+          "Cluster"
+        ],
+        "x-source": "Enterprise:transports/bifrost-http/handlers/clustermonitor.go"
+      }
+    },
+    "/api/cluster/incidents/{id}": {
+      "get": {
+        "operationId": "managementGetClusterIncidentsId",
+        "summary": "GET /api/cluster/incidents/{id} (Enterprise management)",
+        "tags": [
+          "Cluster"
+        ],
+        "x-source": "Enterprise:transports/bifrost-http/handlers/clustermonitor.go"
+      }
+    },
+    "/api/cluster/metrics/current": {
+      "get": {
+        "operationId": "managementGetClusterMetricsCurrent",
+        "summary": "GET /api/cluster/metrics/current (Enterprise management)",
+        "tags": [
+          "Cluster"
+        ],
+        "x-source": "Enterprise:transports/bifrost-http/handlers/clustermonitor.go"
+      }
+    },
+    "/api/cluster/metrics/series": {
+      "get": {
+        "operationId": "managementGetClusterMetricsSeries",
+        "summary": "GET /api/cluster/metrics/series (Enterprise management)",
+        "tags": [
+          "Cluster"
+        ],
+        "x-source": "Enterprise:transports/bifrost-http/handlers/clustermonitor.go"
+      }
+    },
+    "/api/cluster/monitor/config": {
+      "get": {
+        "operationId": "managementGetClusterMonitorConfig",
+        "summary": "GET /api/cluster/monitor/config (Enterprise management)",
+        "tags": [
+          "Cluster"
+        ],
+        "x-source": "Enterprise:transports/bifrost-http/handlers/clustermonitor.go"
+      },
+      "put": {
+        "operationId": "managementPutClusterMonitorConfig",
+        "summary": "PUT /api/cluster/monitor/config (Enterprise management)",
+        "tags": [
+          "Cluster"
+        ],
+        "x-source": "Enterprise:transports/bifrost-http/handlers/clustermonitor.go"
+      }
+    },
     "/api/cluster/nodes": {
       "get": {
         "operationId": "managementGetClusterNodes",
@@ -423,6 +501,36 @@
           "Cluster"
         ],
         "x-source": "Enterprise:transports/bifrost-http/handlers/cluster.go"
+      }
+    },
+    "/api/cluster/storage": {
+      "get": {
+        "operationId": "managementGetClusterStorage",
+        "summary": "GET /api/cluster/storage (Enterprise management)",
+        "tags": [
+          "Cluster"
+        ],
+        "x-source": "Enterprise:transports/bifrost-http/handlers/clusterstorage.go"
+      }
+    },
+    "/api/cluster/storage/series": {
+      "get": {
+        "operationId": "managementGetClusterStorageSeries",
+        "summary": "GET /api/cluster/storage/series (Enterprise management)",
+        "tags": [
+          "Cluster"
+        ],
+        "x-source": "Enterprise:transports/bifrost-http/handlers/clusterstorage.go"
+      }
+    },
+    "/api/cluster/storage/slow-queries": {
+      "get": {
+        "operationId": "managementGetClusterStorageSlowQueries",
+        "summary": "GET /api/cluster/storage/slow-queries (Enterprise management)",
+        "tags": [
+          "Cluster"
+        ],
+        "x-source": "Enterprise:transports/bifrost-http/handlers/clusterstorage.go"
       }
     },
     "/api/config/metadata": {
@@ -534,6 +642,46 @@
         "x-source": "Enterprise:transports/bifrost-http/handlers/devices.go"
       }
     },
+    "/api/edge/config/agent-sync": {
+      "put": {
+        "operationId": "managementPutEdgeConfigAgentSync",
+        "summary": "PUT /api/edge/config/agent-sync (Enterprise management)",
+        "tags": [
+          "Edge"
+        ],
+        "x-source": "Enterprise:transports/bifrost-http/handlers/edgeconfig.go"
+      }
+    },
+    "/api/edge/config/app-models": {
+      "put": {
+        "operationId": "managementPutEdgeConfigAppModels",
+        "summary": "PUT /api/edge/config/app-models (Enterprise management)",
+        "tags": [
+          "Edge"
+        ],
+        "x-source": "Enterprise:transports/bifrost-http/handlers/edgeconfig.go"
+      }
+    },
+    "/api/edge/config/authentication": {
+      "put": {
+        "operationId": "managementPutEdgeConfigAuthentication",
+        "summary": "PUT /api/edge/config/authentication (Enterprise management)",
+        "tags": [
+          "Edge"
+        ],
+        "x-source": "Enterprise:transports/bifrost-http/handlers/edgeconfig.go"
+      }
+    },
+    "/api/edge/config/certificates": {
+      "put": {
+        "operationId": "managementPutEdgeConfigCertificates",
+        "summary": "PUT /api/edge/config/certificates (Enterprise management)",
+        "tags": [
+          "Edge"
+        ],
+        "x-source": "Enterprise:transports/bifrost-http/handlers/edgeconfig.go"
+      }
+    },
     "/api/edge/config/domains": {
       "get": {
         "operationId": "managementGetEdgeConfigDomains",
@@ -560,6 +708,26 @@
           "Edge"
         ],
         "x-source": "Enterprise:transports/bifrost-http/handlers/devices.go"
+      }
+    },
+    "/api/edge/config/model-lists": {
+      "put": {
+        "operationId": "managementPutEdgeConfigModelLists",
+        "summary": "PUT /api/edge/config/model-lists (Enterprise management)",
+        "tags": [
+          "Edge"
+        ],
+        "x-source": "Enterprise:transports/bifrost-http/handlers/edgeconfig.go"
+      }
+    },
+    "/api/edge/config/routing": {
+      "put": {
+        "operationId": "managementPutEdgeConfigRouting",
+        "summary": "PUT /api/edge/config/routing (Enterprise management)",
+        "tags": [
+          "Edge"
+        ],
+        "x-source": "Enterprise:transports/bifrost-http/handlers/edgeconfig.go"
       }
     },
     "/api/edge/interception": {
@@ -620,6 +788,16 @@
           "Feature Flags"
         ],
         "x-source": "OSS:transports/bifrost-http/handlers/featureflags.go"
+      }
+    },
+    "/api/governance/audit-logs/sources": {
+      "get": {
+        "operationId": "managementGetGovernanceAuditLogsSources",
+        "summary": "GET /api/governance/audit-logs/sources (Enterprise management)",
+        "tags": [
+          "Governance"
+        ],
+        "x-source": "Enterprise:transports/bifrost-http/handlers/auditlogs.go"
       }
     },
     "/api/governance/budget-requests": {
@@ -956,6 +1134,16 @@
         "x-source": "Enterprise:transports/bifrost-http/handlers/users.go"
       }
     },
+    "/api/governance/users/view-as": {
+      "post": {
+        "operationId": "managementPostGovernanceUsersViewAs",
+        "summary": "POST /api/governance/users/view-as (Enterprise management)",
+        "tags": [
+          "Governance"
+        ],
+        "x-source": "Enterprise:transports/bifrost-http/handlers/users.go"
+      }
+    },
     "/api/governance/users/{user_id}/business-units": {
       "get": {
         "operationId": "managementGetGovernanceUsersUserIdBusinessUnits",
@@ -974,6 +1162,42 @@
           "Access Profiles"
         ],
         "x-source": "Enterprise:transports/bifrost-http/handlers/entityaccessprofiles.go"
+      }
+    },
+    "/api/governance/users/{user_id}/workload-identities": {
+      "get": {
+        "operationId": "managementGetGovernanceUsersUserIdWorkloadIdentities",
+        "summary": "GET /api/governance/users/{user_id}/workload-identities (Enterprise management)",
+        "tags": [
+          "Governance"
+        ],
+        "x-source": "Enterprise:transports/bifrost-http/handlers/workloadidentity.go"
+      },
+      "post": {
+        "operationId": "managementPostGovernanceUsersUserIdWorkloadIdentities",
+        "summary": "POST /api/governance/users/{user_id}/workload-identities (Enterprise management)",
+        "tags": [
+          "Governance"
+        ],
+        "x-source": "Enterprise:transports/bifrost-http/handlers/workloadidentity.go"
+      }
+    },
+    "/api/governance/users/{user_id}/workload-identities/{mapping_id}": {
+      "patch": {
+        "operationId": "managementPatchGovernanceUsersUserIdWorkloadIdentitiesMappingId",
+        "summary": "PATCH /api/governance/users/{user_id}/workload-identities/{mapping_id} (Enterprise management)",
+        "tags": [
+          "Governance"
+        ],
+        "x-source": "Enterprise:transports/bifrost-http/handlers/workloadidentity.go"
+      },
+      "delete": {
+        "operationId": "managementDeleteGovernanceUsersUserIdWorkloadIdentitiesMappingId",
+        "summary": "DELETE /api/governance/users/{user_id}/workload-identities/{mapping_id} (Enterprise management)",
+        "tags": [
+          "Governance"
+        ],
+        "x-source": "Enterprise:transports/bifrost-http/handlers/workloadidentity.go"
       }
     },
     "/api/governance/virtual-keys/{vk_id}/copy": {
@@ -1124,6 +1348,16 @@
         "x-source": "Enterprise:transports/bifrost-http/handlers/license.go"
       }
     },
+    "/api/license/details": {
+      "get": {
+        "operationId": "managementGetLicenseDetails",
+        "summary": "GET /api/license/details (Enterprise management)",
+        "tags": [
+          "License"
+        ],
+        "x-source": "Enterprise:transports/bifrost-http/handlers/license.go"
+      }
+    },
     "/api/license/status": {
       "get": {
         "operationId": "managementGetLicenseStatus",
@@ -1209,6 +1443,16 @@
           "Mcp Servers"
         ],
         "x-source": "Enterprise:transports/bifrost-http/handlers/devices.go"
+      }
+    },
+    "/api/mcp/client/{id}/access-profiles": {
+      "get": {
+        "operationId": "managementGetMcpClientIdAccessProfiles",
+        "summary": "GET /api/mcp/client/{id}/access-profiles (Enterprise management)",
+        "tags": [
+          "Mcp"
+        ],
+        "x-source": "Enterprise:transports/bifrost-http/handlers/accessprofiles.go"
       }
     },
     "/api/mcp/library": {
@@ -1397,6 +1641,83 @@
           "Providers"
         ],
         "x-source": "OSS:transports/bifrost-http/handlers/providers.go"
+      }
+    },
+    "/api/providers/{provider}/sign-in": {
+      "post": {
+        "operationId": "managementPostProvidersProviderSignIn",
+        "summary": "POST /api/providers/{provider}/sign-in (OSS management)",
+        "tags": [
+          "Providers"
+        ],
+        "x-source": "OSS:transports/bifrost-http/handlers/githubcopilotsignin.go"
+      }
+    },
+    "/api/providers/{provider}/sign-in/poll": {
+      "post": {
+        "operationId": "managementPostProvidersProviderSignInPoll",
+        "summary": "POST /api/providers/{provider}/sign-in/poll (OSS management)",
+        "tags": [
+          "Providers"
+        ],
+        "x-source": "OSS:transports/bifrost-http/handlers/githubcopilotsignin.go"
+      }
+    },
+    "/api/relay-logs/histogram/latency": {
+      "get": {
+        "operationId": "managementGetRelayLogsHistogramLatency",
+        "summary": "GET /api/relay-logs/histogram/latency (OSS management)",
+        "tags": [
+          "Relay Logs"
+        ],
+        "x-source": "OSS:transports/bifrost-http/handlers/relays.go"
+      }
+    },
+    "/api/scim/idjag/clients": {
+      "get": {
+        "operationId": "managementGetScimIdjagClients",
+        "summary": "GET /api/scim/idjag/clients (Enterprise management)",
+        "tags": [
+          "Scim"
+        ],
+        "x-source": "Enterprise:transports/bifrost-http/handlers/idjagclients.go"
+      },
+      "post": {
+        "operationId": "managementPostScimIdjagClients",
+        "summary": "POST /api/scim/idjag/clients (Enterprise management)",
+        "tags": [
+          "Scim"
+        ],
+        "x-source": "Enterprise:transports/bifrost-http/handlers/idjagclients.go"
+      }
+    },
+    "/api/scim/idjag/clients/{id}": {
+      "patch": {
+        "operationId": "managementPatchScimIdjagClientsId",
+        "summary": "PATCH /api/scim/idjag/clients/{id} (Enterprise management)",
+        "tags": [
+          "Scim"
+        ],
+        "x-source": "Enterprise:transports/bifrost-http/handlers/idjagclients.go"
+      },
+      "delete": {
+        "operationId": "managementDeleteScimIdjagClientsId",
+        "summary": "DELETE /api/scim/idjag/clients/{id} (Enterprise management)",
+        "tags": [
+          "Scim"
+        ],
+        "x-source": "Enterprise:transports/bifrost-http/handlers/idjagclients.go"
+      }
+    },
+    "/api/scim/idjag/clients/{id}/rotate-secret": {
+      "post": {
+        "operationId": "managementPostScimIdjagClientsIdRotateSecret",
+        "summary": "POST /api/scim/idjag/clients/{id}/rotate-secret (Enterprise management)",
+        "tags": [
+          "Scim"
+        ],
+        "x-source": "Enterprise:transports/bifrost-http/handlers/idjagclients.go",
+        "x-cli-destructive": true
       }
     },
     "/api/scim/oauth/config": {
@@ -1629,6 +1950,46 @@
           "Users"
         ],
         "x-source": "Enterprise:transports/bifrost-http/handlers/devices.go"
+      }
+    },
+    "/api/workload-identity/entra/candidates": {
+      "get": {
+        "operationId": "managementGetWorkloadIdentityEntraCandidates",
+        "summary": "GET /api/workload-identity/entra/candidates (Enterprise management)",
+        "tags": [
+          "Workload Identity"
+        ],
+        "x-source": "Enterprise:transports/bifrost-http/handlers/workloadidentity.go"
+      }
+    },
+    "/api/workload-identity/entra/principals/{object_id}": {
+      "get": {
+        "operationId": "managementGetWorkloadIdentityEntraPrincipalsObjectId",
+        "summary": "GET /api/workload-identity/entra/principals/{object_id} (Enterprise management)",
+        "tags": [
+          "Workload Identity"
+        ],
+        "x-source": "Enterprise:transports/bifrost-http/handlers/workloadidentity.go"
+      }
+    },
+    "/api/workload-identity/issuers/test": {
+      "post": {
+        "operationId": "managementPostWorkloadIdentityIssuersTest",
+        "summary": "POST /api/workload-identity/issuers/test (Enterprise management)",
+        "tags": [
+          "Workload Identity"
+        ],
+        "x-source": "Enterprise:transports/bifrost-http/handlers/workloadidentity.go"
+      }
+    },
+    "/api/workload-identity/status": {
+      "get": {
+        "operationId": "managementGetWorkloadIdentityStatus",
+        "summary": "GET /api/workload-identity/status (Enterprise management)",
+        "tags": [
+          "Workload Identity"
+        ],
+        "x-source": "Enterprise:transports/bifrost-http/handlers/workloadidentity.go"
       }
     }
   }
