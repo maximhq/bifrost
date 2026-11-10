@@ -1148,7 +1148,7 @@ func TestToOpenAIChatRequest_FireworksPreservesReasoningAndCacheIsolation(t *tes
 	wireBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		bifrostReq,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*OpenAIChatRequest, error) {
 			return ToOpenAIChatRequest(ctx, bifrostReq), nil
 		},
 	)
@@ -1233,7 +1233,7 @@ func TestToOpenAIChatRequest_StripsAssistantReasoningContentForCompatibleProvide
 			wireBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 				ctx,
 				bifrostReq,
-				func() (providerUtils.RequestBodyWithExtraParams, error) {
+				func() (*OpenAIChatRequest, error) {
 					return ToOpenAIChatRequest(ctx, bifrostReq), nil
 				},
 			)
@@ -1323,7 +1323,7 @@ func assertMovesAssistantReasoningToAlias(t *testing.T, provider schemas.ModelPr
 	wireBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		bifrostReq,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*OpenAIChatRequest, error) {
 			return ToOpenAIChatRequest(ctx, bifrostReq), nil
 		},
 	)

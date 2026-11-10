@@ -23,10 +23,27 @@ import (
 // connection and returns the raw SSE body the client would receive.
 func serveStreamingResponse(t *testing.T, chunks []*schemas.BifrostStreamChunk) string {
 	t.Helper()
+	// A zero Config loads no transport plugins, so no chunk interceptor runs.
+	return serveStreamingResponseWithConfig(t, &lib.Config{}, chunks)
+}
+
+// serveStreamingResponseWithConfig is serveStreamingResponse with the handler's Config
+// supplied, so a test can load transport plugins whose chunk hook runs on the stream.
+func serveStreamingResponseWithConfig(t *testing.T, config *lib.Config, chunks []*schemas.BifrostStreamChunk) string {
+	t.Helper()
+	return serveStreamingResponseWithSetup(t, config, nil, chunks)
+}
+
+// serveStreamingResponseWithSetup is serveStreamingResponseWithConfig with a hook that
+// runs on the request context before the handler, e.g. to install a trace completer.
+func serveStreamingResponseWithSetup(t *testing.T, config *lib.Config, setup func(*fasthttp.RequestCtx), chunks []*schemas.BifrostStreamChunk) string {
+	t.Helper()
 
 	handler := func(reqCtx *fasthttp.RequestCtx) {
-		// A zero Config loads no transport plugins, so no chunk interceptor runs.
-		h := &CompletionHandler{config: &lib.Config{}}
+		if setup != nil {
+			setup(reqCtx)
+		}
+		h := &CompletionHandler{config: config}
 
 		base, cancel := context.WithCancel(context.Background())
 		bifrostCtx := schemas.NewBifrostContext(base, schemas.NoDeadline)
@@ -150,5 +167,74 @@ func TestStreamingResponseSendsDoneOnCleanStream(t *testing.T) {
 
 	if !strings.Contains(body, "data: [DONE]") {
 		t.Errorf("expected [DONE] to terminate a clean stream, got:\n%s", body)
+	}
+}
+
+// panickingChunkPlugin is a transport plugin whose stream-chunk hook panics.
+type panickingChunkPlugin struct{ fakeResponseHeadersPlugin }
+
+func (p *panickingChunkPlugin) HTTPTransportStreamChunkHook(_ *schemas.BifrostContext, _ *schemas.HTTPRequest, chunk *schemas.BifrostStreamChunk) (*schemas.BifrostStreamChunk, error) {
+	var resp *schemas.BifrostChatResponse
+	_ = resp.ID // nil dereference, as a plugin bug would
+	return chunk, nil
+}
+
+// A panic in a transport plugin's stream-chunk hook runs on the SSE producer goroutine,
+// after the handler has returned and outside RecoveryMiddleware. It must end only this
+// stream; without the producer's own recover it ends the process (and this test binary).
+func TestStreamingResponsePluginChunkHookPanicIsRecovered(t *testing.T) {
+	plugin := &panickingChunkPlugin{fakeResponseHeadersPlugin{name: "panicking-chunk-hook"}}
+	config := responseHeadersTestConfig(t, plugin)
+
+	body := serveStreamingResponseWithConfig(t, config, []*schemas.BifrostStreamChunk{
+		contentChunk("first"),
+		contentChunk("second"),
+	})
+
+	if strings.Contains(body, "data: [DONE]") {
+		t.Errorf("a stream cut short by a panic must not end with [DONE], got:\n%s", body)
+	}
+	if !strings.Contains(body, "event: error\n") || !strings.Contains(body, lib.StreamProducerPanicMessage) {
+		t.Errorf("a stream cut short by a panic must end with an error frame, got:\n%s", body)
+	}
+}
+
+// In headers mode every frame on this stream drops extra_fields, and the error frame a
+// recovered panic writes must follow the same rule as the other error frames.
+func TestStreamingResponsePanicErrorFrameStripsExtraFieldsInHeadersMode(t *testing.T) {
+	plugin := &panickingChunkPlugin{fakeResponseHeadersPlugin{name: "panicking-chunk-hook"}}
+	config := responseHeadersTestConfig(t, plugin)
+
+	body := serveStreamingResponseWithSetup(t, config, func(reqCtx *fasthttp.RequestCtx) {
+		reqCtx.SetUserValue(lib.FastHTTPUserValueExtraFieldsInHeaders, true)
+	}, []*schemas.BifrostStreamChunk{contentChunk("first")})
+
+	if !strings.Contains(body, "event: error\n") || !strings.Contains(body, lib.StreamProducerPanicMessage) {
+		t.Fatalf("expected the panic error frame, got:\n%s", body)
+	}
+	if strings.Contains(body, "extra_fields") {
+		t.Errorf("headers mode must strip extra_fields from the panic error frame, got:\n%s", body)
+	}
+}
+
+// A panic in the producer's deferred teardown (the trace completer runs observability
+// plugins) happens after the producer's recover, so it is a new panic nothing else
+// catches. It must be contained: the stream still ends normally for the client.
+func TestStreamingResponseTeardownPanicIsRecovered(t *testing.T) {
+	traceRan := make(chan struct{})
+	body := serveStreamingResponseWithSetup(t, &lib.Config{}, func(reqCtx *fasthttp.RequestCtx) {
+		reqCtx.SetUserValue(schemas.BifrostContextKeyTraceCompleter, func([]schemas.PluginLogEntry) {
+			close(traceRan)
+			panic("trace completer")
+		})
+	}, []*schemas.BifrostStreamChunk{contentChunk("hello")})
+
+	if !strings.Contains(body, "data: [DONE]") {
+		t.Errorf("a clean stream still ends with [DONE], got:\n%s", body)
+	}
+	select {
+	case <-traceRan:
+	case <-time.After(5 * time.Second):
+		t.Fatal("trace completer never ran")
 	}
 }
