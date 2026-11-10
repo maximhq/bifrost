@@ -437,6 +437,7 @@ func TestSendHelpers_ExtraFieldsPlacement(t *testing.T) {
 	}
 }
 
+// TestSyntheticErrorsDropEncodingWithoutMutatingContext keeps synthetic JSON errors unlabeled.
 func TestSyntheticErrorsDropEncodingWithoutMutatingContext(t *testing.T) {
 	for _, streaming := range []bool{false, true} {
 		t.Run(fmt.Sprint(streaming), func(t *testing.T) {

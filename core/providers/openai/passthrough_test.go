@@ -118,6 +118,7 @@ func (passthroughTestLogEvent) Int64(string, int64) schemas.LogEventBuilder {
 // Send discards the built log event.
 func (passthroughTestLogEvent) Send() {}
 
+// passthroughEncodingHeader finds a response header without depending on its casing.
 func passthroughEncodingHeader(headers map[string]string, name string) string {
 	for key, value := range headers {
 		if strings.EqualFold(key, name) {
@@ -127,6 +128,7 @@ func passthroughEncodingHeader(headers map[string]string, name string) string {
 	return ""
 }
 
+// TestPassthroughStreamEncoding checks raw encoding metadata and buffered decoding controls.
 func TestPassthroughStreamEncoding(t *testing.T) {
 	plain := []byte(`{"model":"test-model","choices":[],"usage":{"prompt_tokens":2,"completion_tokens":1,"total_tokens":3}}`)
 	var compressed bytes.Buffer

@@ -631,6 +631,19 @@ func ConfigureDialer(client *fasthttp.Client, allowPrivateNetwork bool) *fasthtt
 		return client
 	}
 
+	return configureDialer(client, allowPrivateNetwork, func(ctx context.Context, network, host string) ([]net.IP, error) {
+		return net.DefaultResolver.LookupIP(ctx, network, host)
+	}, (*net.Dialer).Dial)
+}
+
+// configureDialer allows tests to control DNS resolution and TCP dialing without
+// changing global network state. The dial callback receives the configured dialer.
+func configureDialer(
+	client *fasthttp.Client,
+	allowPrivateNetwork bool,
+	lookupIP func(context.Context, string, string) ([]net.IP, error),
+	dial func(*net.Dialer, string, string) (net.Conn, error),
+) *fasthttp.Client {
 	// Configure stale-connection retry policy
 	client.RetryIfErr = network.StaleConnectionRetryIfErr
 
@@ -688,7 +701,7 @@ func ConfigureDialer(client *fasthttp.Client, allowPrivateNetwork bool) *fasthtt
 				resolveCtx, cancel = context.WithTimeout(resolveCtx, client.ReadTimeout)
 				defer cancel()
 			}
-			ips, resolveErr := net.DefaultResolver.LookupIP(resolveCtx, "ip", host)
+			ips, resolveErr := lookupIP(resolveCtx, "ip", host)
 			if resolveErr != nil {
 				return nil, resolveErr
 			}
@@ -709,7 +722,7 @@ func ConfigureDialer(client *fasthttp.Client, allowPrivateNetwork bool) *fasthtt
 				if !ip.IsLoopback() && !allowPrivateNetwork && network.IsPrivateIP(ip) {
 					return nil, fmt.Errorf("connection to private IP %s is not allowed", ip)
 				}
-				conn, err = dialer.Dial("tcp", net.JoinHostPort(ip.String(), port))
+				conn, err = dial(dialer, "tcp", net.JoinHostPort(ip.String(), port))
 				if err == nil {
 					break
 				}
@@ -4343,6 +4356,11 @@ func ProcessAndSendError(
 	var carrier BifrostErrorCarrier
 	if errors.As(err, &carrier) {
 		if typed := carrier.BifrostError(); typed != nil {
+			// A classified reader error (a Bedrock InvokeModel exception frame) bills
+			// the reported usage too; usage it already carries is kept.
+			if typed.ExtraFields.BilledUsage == nil {
+				attachBilledUsageFromContext(ctx, typed)
+			}
 			ProcessAndSendBifrostError(ctx, postHookRunner, typed, responseChan, logger, postHookSpanFinalizer)
 			return
 		}
@@ -4355,6 +4373,9 @@ func ProcessAndSendError(
 			Error:   err,
 		},
 	}
+	// A read error (an idle timeout, a dropped connection) ends the stream like a
+	// cancel does, so it bills the usage the provider already reported.
+	attachBilledUsageFromContext(ctx, bifrostError)
 	processedResponse, processedError := postHookRunner(ctx, nil, bifrostError)
 
 	if HandleStreamControlSkip(processedError) {

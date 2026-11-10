@@ -2996,6 +2996,7 @@ func TestPassthroughGzipWireBody(t *testing.T) {
 	}
 }
 
+// BenchmarkPassthroughWireEncoding measures plain and encoded streams through the HTTP router.
 func BenchmarkPassthroughWireEncoding(b *testing.B) {
 	for _, encoding := range []string{"", "identity", "gzip"} {
 		name := encoding
