@@ -344,6 +344,10 @@
 		"removeAria": "移除 {{label}}"
 	},
 	"validation": {
+		"modeIsRequired": "模式为必填项",
+		"valueMustBeAPositiveWholeNumber": "必须是正整数",
+		"mustBeAJsonObject": "必须是 JSON 对象",
+		"providerCannotBePatched": "provider 用于标识条目，不能修改",
 		"customProviderNameIsRequired": "自定义提供商名称为必填项",
 		"endpointIsRequired": "端点为必填项",
 		"clientIdClientSecretAndTenantIdAreAllRequired": "Entra ID 认证需要同时提供 Client ID、Client Secret 和 Tenant ID",

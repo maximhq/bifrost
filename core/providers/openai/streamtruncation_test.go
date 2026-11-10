@@ -2146,3 +2146,71 @@ func TestChatStreamRawResponseFollowsNormalizedTextChanges(t *testing.T) {
 		t.Errorf("frames the synchronizer did not need to touch must stay byte-identical, got:\n%s", raw)
 	}
 }
+
+// panicOnResponsePostHook panics on every chunk that carries a response, the way a
+// buggy converter or plugin hook on the provider goroutine does, and passes errors.
+func panicOnResponsePostHook(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	if resp != nil {
+		var chunk *schemas.BifrostChatResponse
+		_ = chunk.ID // nil dereference: a runtime.Error panic
+	}
+	return resp, err
+}
+
+// TestStreamPanicOnProviderGoroutineEndsWithErrorChunk pins that a panic on the
+// provider's streaming goroutine is recovered there: nothing above that goroutine can
+// catch it, so without its own recover it ends the process. The client must get one
+// terminal error chunk and then a closed stream, never a silently truncated one.
+func TestStreamPanicOnProviderGoroutineEndsWithErrorChunk(t *testing.T) {
+	stop := "stop"
+	cases := map[string]struct {
+		body string
+		open func(p *OpenAIProvider) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError)
+	}{
+		"chat": {
+			body: chatChunk("hello", nil) + chatChunk("", &stop) + "data: [DONE]\n\n",
+			open: func(p *OpenAIProvider) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+				return p.ChatCompletionStream(newStreamTestContext(), panicOnResponsePostHook, nil, testKey(), basicChatRequest())
+			},
+		},
+		"responses": {
+			body: "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"sequence_number\":1,\"item_id\":\"m1\",\"output_index\":0,\"content_index\":0,\"delta\":\"hello\"}\n\n" +
+				"event: response.completed\ndata: {\"type\":\"response.completed\",\"sequence_number\":2,\"response\":{\"id\":\"r1\",\"object\":\"response\",\"created_at\":1,\"status\":\"completed\",\"output\":[]}}\n\n",
+			open: func(p *OpenAIProvider) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+				return p.ResponsesStream(newStreamTestContext(), panicOnResponsePostHook, nil, testKey(), &schemas.BifrostResponsesRequest{
+					Provider: schemas.OpenAI,
+					Model:    "repro-model",
+					Input: []schemas.ResponsesMessage{{
+						Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+						Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")},
+					}},
+				})
+			},
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			server := completeSSEServer(t, tc.body)
+			defer server.Close()
+
+			stream, bifrostErr := tc.open(newStreamTestProvider(server.URL))
+			if bifrostErr != nil {
+				t.Fatalf("stream setup failed: %v", bifrostErr)
+			}
+			chunks := collectChunks(t, stream)
+			if len(chunks) != 1 {
+				t.Fatalf("got %d chunks, want exactly the terminal error chunk", len(chunks))
+			}
+			got := chunks[0].BifrostError
+			if got == nil || got.Error == nil {
+				t.Fatalf("terminal chunk carries no error: %+v", chunks[0])
+			}
+			if got.Error.Message != providerUtils.ErrStreamPanicMessage {
+				t.Errorf("error message = %q, want %q", got.Error.Message, providerUtils.ErrStreamPanicMessage)
+			}
+			if got.StatusCode == nil || *got.StatusCode != 500 {
+				t.Errorf("status = %v, want 500", got.StatusCode)
+			}
+		})
+	}
+}

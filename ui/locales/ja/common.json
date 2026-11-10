@@ -344,6 +344,10 @@
 		"removeAria": "{{label}}を削除"
 	},
 	"validation": {
+		"modeIsRequired": "モードは必須です",
+		"valueMustBeAPositiveWholeNumber": "正の整数である必要があります",
+		"mustBeAJsonObject": "JSON オブジェクトである必要があります",
+		"providerCannotBePatched": "provider はエントリを識別するため変更できません",
 		"customProviderNameIsRequired": "カスタムプロバイダー名は必須です",
 		"endpointIsRequired": "エンドポイントは必須です",
 		"clientIdClientSecretAndTenantIdAreAllRequired": "Entra ID 認証には、クライアント ID、クライアントシークレット、テナント ID がすべて必要です",

@@ -265,7 +265,6 @@ func TestChatCompletionStream_NetOpError_ChunkIsRetryable(t *testing.T) {
 		"net.OpError during EventStream decoding must use ErrProviderNetworkError message")
 }
 
-
 // newMidStreamResetServer returns a server that answers 200, writes a truncated
 // EventStream prelude (not a valid frame), then resets the TCP connection, which
 // produces a *net.OpError on the client's read side.
@@ -339,10 +338,10 @@ func TestStream_MidStreamDrop_IsUpstreamError(t *testing.T) {
 			require.NotNil(t, streamErr.StatusCode)
 			assert.Equal(t, http.StatusBadGateway, *streamErr.StatusCode)
 			assert.Equal(t, "api_error", anthropic.ToAnthropicChatCompletionError(streamErr).Error.Type)
-	})
+		})
 	}
 }
-       
+
 // TestRequest_ConnectionFailure_IsUpstreamError verifies that a connection the server
 // closes before responding reaches clients as a 502 upstream failure. Without a
 // status the error resolves to 400, which reads as a malformed request.
@@ -1271,4 +1270,129 @@ func TestResponsesStreamAttachesEachRawEventOnce(t *testing.T) {
 	synced, err := schemas.SyncRawResponseText(textCarrier.ExtraFields.RawResponse, textCarrier.ExtraFields.RawResponseFormat, textCarrier, &redacted)
 	require.NoError(t, err)
 	assert.JSONEq(t, `{"contentBlockIndex":0,"delta":{"text":"mail [EMAIL]"}}`, synced.(string))
+}
+
+// TestConverseStreamRecordsEveryUpstreamEventRaw pins that the raw response a converse stream
+// records carries every upstream event exactly once. Events that produce no Bifrost chunk of their
+// own (messageStop, metadata) used to be dropped from the raw record, and the chunks emitted at the
+// end of the stream carried a placeholder "{}" instead, so a logged stream lost its stop reason,
+// its additionalModelResponseFields and its usage, and a missing field could not be told apart from
+// one AWS never sent.
+func TestConverseStreamRecordsEveryUpstreamEventRaw(t *testing.T) {
+	cases := []struct {
+		name     string
+		payloads []string
+		ordered  bool // false where a held event may only find a payload-free chunk after a later event
+	}{
+		{"one text block", []string{
+			`{"p":"m0","role":"assistant"}`,
+			`{"contentBlockIndex":0,"delta":{"text":"one, two, "},"p":"m1"}`,
+			`{"contentBlockIndex":0,"p":"m2"}`,
+			`{"additionalModelResponseFields":{"stop_sequence":"three"},"p":"m3","stopReason":"stop_sequence"}`,
+			`{"metrics":{"latencyMs":760},"p":"m4","usage":{"inputTokens":32,"outputTokens":5,"totalTokens":37}}`,
+		}, true},
+		{"a held stop before more text", []string{
+			`{"p":"n0","role":"assistant"}`,
+			`{"contentBlockIndex":0,"delta":{"text":"first"},"p":"n1"}`,
+			`{"contentBlockIndex":0,"p":"n2"}`,
+			`{"contentBlockIndex":1,"delta":{"text":"second"},"p":"n3"}`,
+			`{"contentBlockIndex":1,"p":"n4"}`,
+			`{"p":"n5","stopReason":"end_turn"}`,
+			`{"p":"n6","usage":{"inputTokens":3,"outputTokens":2,"totalTokens":5}}`,
+		}, false},
+	}
+	for _, api := range []string{"chat", "responses"} {
+		for _, tc := range cases {
+			payloads := tc.payloads
+			t.Run(api+"/"+tc.name, func(t *testing.T) {
+				server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+					writer.Header().Set("Content-Type", "application/vnd.amazon.eventstream")
+					writer.WriteHeader(http.StatusOK)
+					encoder := eventstream.NewEncoder()
+					for _, payload := range payloads {
+						assert.NoError(t, encoder.Encode(writer, eventstream.Message{
+							Headers: eventstream.Headers{
+								{Name: ":message-type", Value: eventstream.StringValue("event")},
+								{Name: ":event-type", Value: eventstream.StringValue("testEvent")},
+							},
+							Payload: []byte(payload),
+						}))
+					}
+				}))
+				defer server.Close()
+				provider := newTestProviderWithServer(t, server)
+				provider.sendBackRawResponse = true
+				ctx := testBedrockCtx()
+				var stream chan *schemas.BifrostStreamChunk
+				var requestError *schemas.BifrostError
+				if api == "chat" {
+					request := testChatRequest()
+					request.Model = testConverseStreamModel
+					stream, requestError = provider.ChatCompletionStream(ctx, noopPostHookRunner, nil, testBedrockKey(), request)
+				} else {
+					request := testResponsesRequest()
+					request.Model = testConverseStreamModel
+					stream, requestError = provider.ResponsesStream(ctx, noopPostHookRunner, nil, testBedrockKey(), request)
+				}
+				require.Nil(t, requestError)
+				var raws []string
+				for chunk := range stream {
+					require.Nil(t, chunk.BifrostError, "stream error: %+v", chunk.BifrostError)
+					var raw interface{}
+					switch {
+					case chunk.BifrostChatResponse != nil:
+						raw = chunk.BifrostChatResponse.ExtraFields.RawResponse
+					case chunk.BifrostResponsesStreamResponse != nil:
+						raw = chunk.BifrostResponsesStreamResponse.ExtraFields.RawResponse
+					}
+					if s, ok := raw.(string); ok && s != "" {
+						raws = append(raws, s)
+						var format schemas.RawResponseFormat
+						if chunk.BifrostChatResponse != nil {
+							format = chunk.BifrostChatResponse.ExtraFields.RawResponseFormat
+						} else {
+							format = chunk.BifrostResponsesStreamResponse.ExtraFields.RawResponseFormat
+						}
+						// Raw text plugins edit a declared stream event in place, so a chunk that declares
+						// the format must carry exactly one event, the text it streams included.
+						if format == schemas.RawResponseFormatBedrockConverseStreamEvent {
+							assert.NotContains(t, s, "\n\n", "a chunk declaring one stream event carries several: %q", s)
+						}
+					}
+				}
+				recorded := strings.Join(raws, "\n")
+				assert.NotContains(t, raws, "{}", "a placeholder stands in for an upstream event: %q", raws)
+				last := -1
+				for _, payload := range payloads {
+					assert.Equal(t, 1, strings.Count(recorded, payload), "upstream event %s recorded %d times in %q", payload, strings.Count(recorded, payload), raws)
+					if idx := strings.Index(recorded, payload); idx >= 0 && tc.ordered {
+						assert.Greater(t, idx, last, "upstream event %s recorded out of order in %q", payload, raws)
+						last = idx
+					}
+				}
+			})
+		}
+	}
+}
+
+// BenchmarkHeldStreamRawStreamEnd measures what a converse stream with raw responses on now does
+// at its end: hold the three payload-free events (contentBlockStop, messageStop, metadata) and hand
+// them to the four closing chunks. With raw responses off none of this runs.
+func BenchmarkHeldStreamRawStreamEnd(b *testing.B) {
+	events := [][]byte{
+		[]byte(`{"contentBlockIndex":0,"p":"abcdefghij"}`),
+		[]byte(`{"additionalModelResponseFields":{"stop_sequence":"three"},"p":"abcdefghijklmnop","stopReason":"stop_sequence"}`),
+		[]byte(`{"metrics":{"latencyMs":760},"p":"abcdefghijklmnopqrstuvwxyzABCDEF","usage":{"inputTokens":32,"outputTokens":5,"totalTokens":37}}`),
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		var held heldStreamRaw
+		for _, e := range events {
+			held.hold(e)
+		}
+		for i := 0; i < 4; i++ {
+			var extra schemas.BifrostResponseExtraFields
+			held.attach(&extra, i == 3)
+		}
+	}
 }

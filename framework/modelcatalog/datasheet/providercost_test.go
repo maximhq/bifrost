@@ -351,3 +351,42 @@ func TestGetBasePricing_CaseInsensitiveOnEveryFallback(t *testing.T) {
 		})
 	}
 }
+
+// TestCalculateCostForUsage_EstimatedUsagePrecedence pins how a cancelled stream's
+// billed usage is priced: a usable provider-reported cost wins, and only without
+// one are the tokens (provider-reported or locally estimated) priced at catalog
+// rates, exactly as reported tokens would be.
+func TestCalculateCostForUsage_EstimatedUsagePrecedence(t *testing.T) {
+	s := providerCostTestStore()
+	estimated := func(cost *schemas.BifrostCost) *schemas.BifrostLLMUsage {
+		return &schemas.BifrostLLMUsage{
+			PromptTokens: 1000, CompletionTokens: 500, TotalTokens: 1500,
+			Estimation: &schemas.TokenUsageEstimation{Prompt: true, Completion: true, Tokenizer: "o200k_base"},
+			Cost:       cost,
+		}
+	}
+	price := func(u *schemas.BifrostLLMUsage) *schemas.BifrostCost {
+		return s.CalculateCostBreakdownForUsage(u, schemas.OpenAI, "gpt-4o", schemas.ChatCompletionStreamRequest, nil)
+	}
+
+	// No provider cost: estimated tokens are priced like reported ones.
+	bd := price(estimated(nil))
+	require.NotNil(t, bd)
+	assert.InDelta(t, 0.005, bd.InputCost, 1e-12)
+	assert.InDelta(t, 0.0075, bd.OutputCost, 1e-12)
+	assert.InDelta(t, 0.0125, bd.TotalCost, 1e-12)
+	reported := &schemas.BifrostLLMUsage{PromptTokens: 1000, CompletionTokens: 500, TotalTokens: 1500}
+	assert.Equal(t, s.CalculateCostForUsage(reported, schemas.OpenAI, "gpt-4o", schemas.ChatCompletionStreamRequest, nil), bd.TotalCost)
+
+	// A provider-reported cost is preferred over pricing the estimate.
+	bd = price(estimated(&schemas.BifrostCost{TotalCost: 1067}))
+	require.NotNil(t, bd)
+	assert.InDelta(t, 1067, bd.TotalCost, 1e-12)
+
+	// ignore_provider_cost falls back to the catalog price of the estimate.
+	s.SetIgnoreProviderCost(schemas.OpenAI, true)
+	t.Cleanup(func() { s.SetIgnoreProviderCost(schemas.OpenAI, false) })
+	bd = price(estimated(&schemas.BifrostCost{TotalCost: 1067}))
+	require.NotNil(t, bd)
+	assert.InDelta(t, 0.0125, bd.TotalCost, 1e-12)
+}

@@ -1668,6 +1668,9 @@ func (response *GenerateContentResponse) toBifrostResponsesStream(sequenceNumber
 
 		if candidate.Content != nil && len(candidate.Content.Parts) > 0 {
 			for _, part := range candidate.Content.Parts {
+				if part == nil {
+					continue
+				}
 				partResponses := processGeminiPart(part, state, sequenceNumber+len(responses))
 				responses = append(responses, partResponses...)
 			}
@@ -2919,6 +2922,9 @@ func convertGeminiSystemInstructionToResponsesMessage(systemInstruction *Content
 	var hasTextContent bool
 
 	for _, part := range systemInstruction.Parts {
+		if part == nil {
+			continue
+		}
 		if part.Text != "" {
 			contentBlocks = append(contentBlocks, schemas.ResponsesMessageContentBlock{
 				Type: schemas.ResponsesInputMessageContentBlockTypeText,
@@ -3035,6 +3041,9 @@ func convertGeminiContentsToResponsesMessages(contents []Content) []schemas.Resp
 
 		// Process each part - each part can become a separate message
 		for _, part := range content.Parts {
+			if part == nil {
+				continue
+			}
 			switch {
 			case part.FunctionCall != nil:
 				// Function call message
@@ -3088,15 +3097,8 @@ func convertGeminiContentsToResponsesMessages(contents []Content) []schemas.Resp
 					}
 				}
 
-				// Convert response to string — extract output field if present
-				responseStr := ""
-				if part.FunctionResponse.Response != nil {
-					if r := providerUtils.GetJSONField(part.FunctionResponse.Response, "output"); r.Exists() {
-						responseStr = r.String()
-					} else {
-						responseStr = string(part.FunctionResponse.Response)
-					}
-				}
+				// Convert response to string: unwrap a sole "output" key, keep sibling fields otherwise
+				responseStr := extractFunctionResponseOutput(part.FunctionResponse)
 
 				output := &schemas.ResponsesToolMessageOutputStruct{}
 				if len(part.FunctionResponse.Parts) > 0 {
@@ -3115,6 +3117,9 @@ func convertGeminiContentsToResponsesMessages(contents []Content) []schemas.Resp
 						})
 					}
 					for _, p := range part.FunctionResponse.Parts {
+						if p == nil {
+							continue
+						}
 						var block *schemas.ResponsesMessageContentBlock
 						switch {
 						case p.InlineData != nil:
@@ -3460,6 +3465,9 @@ func convertGeminiToolsToResponsesTools(tools []Tool) []schemas.ResponsesTool {
 		}
 		if len(tool.FunctionDeclarations) > 0 {
 			for _, fn := range tool.FunctionDeclarations {
+				if fn == nil {
+					continue
+				}
 				responsesTool := schemas.ResponsesTool{
 					Type:                  schemas.ResponsesToolTypeFunction,
 					Name:                  schemas.Ptr(fn.Name),
@@ -3941,6 +3949,9 @@ func convertGeminiCandidatesToResponsesOutput(candidates []*Candidate, messageID
 		var searchCallIndices []int
 
 		for _, part := range candidate.Content.Parts {
+			if part == nil {
+				continue
+			}
 			// Handle different types of parts
 			switch {
 			case part.Thought:

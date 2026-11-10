@@ -1,5 +1,11 @@
 import { FilterSidebarTrigger } from "@/components/filters/filterSidebarTrigger";
-import { CheckboxFilterItem, FilterSection, SearchableCheckboxList, useAutoFocusOnOpen } from "@/components/filters/primitives";
+import {
+	CheckboxFilterItem,
+	EntityFilter,
+	FilterSection,
+	SearchableCheckboxList,
+	useAutoFocusOnOpen,
+} from "@/components/filters/primitives";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scrollArea";
@@ -131,31 +137,76 @@ export function MCPFilterSidebar({ filters, onFiltersChange }: MCPFilterSidebarP
 					/>
 					<AppFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<VirtualKeysFilter filters={filters} onFiltersChange={onFiltersChange} />
-					{(
-						[
-							["user_ids", "filters.users"],
-							["team_ids", "filters.teams"],
-							["customer_ids", "filters.customers"],
-							["business_unit_ids", "filters.businessUnits"],
-							["project_ids", "filters.projects"],
-							["device_ids", "filters.devices"],
-						] as const
-					).map(([key, labelKey]) =>
-						filters[key]?.length ? (
-							<FilterSection key={key} title={t(labelKey)} defaultOpen>
-								<Button
-									variant="ghost"
-									size="sm"
-									className="w-full justify-between"
-									data-testid={`mcp-clear-${key}`}
-									onClick={() => onFiltersChange({ ...filters, [key]: [] })}
-								>
-									<span>{t("filters.selectedCount", { count: filters[key]!.length })}</span>
-									<RotateCcw className="size-3" />
-								</Button>
-							</FilterSection>
-						) : null,
-					)}
+					<EntityFilter
+						filters={filters}
+						onFiltersChange={onFiltersChange}
+						filterKey="user_ids"
+						dimension="users"
+						useFilterData={useGetMCPLogsFilterDataQuery}
+						title={t("filters.users")}
+						placeholder={tObs("filters.searchOrAddAUser")}
+						testIdPrefix="mcp-user-filter"
+						allowCustom
+					/>
+					<EntityFilter
+						filters={filters}
+						onFiltersChange={onFiltersChange}
+						filterKey="team_ids"
+						dimension="teams"
+						useFilterData={useGetMCPLogsFilterDataQuery}
+						title={t("filters.teams")}
+						placeholder={tObs("filters.searchOrAddATeam")}
+						testIdPrefix="mcp-teams-filter"
+						allowCustom
+					/>
+					<EntityFilter
+						filters={filters}
+						onFiltersChange={onFiltersChange}
+						filterKey="customer_ids"
+						dimension="customers"
+						useFilterData={useGetMCPLogsFilterDataQuery}
+						title={t("filters.customers")}
+						placeholder={tObs("filters.searchOrAddACustomer")}
+						testIdPrefix="mcp-customers-filter"
+						allowCustom
+					/>
+					<EntityFilter
+						filters={filters}
+						onFiltersChange={onFiltersChange}
+						filterKey="business_unit_ids"
+						dimension="business_units"
+						useFilterData={useGetMCPLogsFilterDataQuery}
+						title={t("filters.businessUnits")}
+						placeholder={tObs("filters.searchOrAddABusinessUnit")}
+						testIdPrefix="mcp-business-units-filter"
+						allowCustom
+					/>
+					<EntityFilter
+						filters={filters}
+						onFiltersChange={onFiltersChange}
+						filterKey="project_ids"
+						dimension="projects"
+						useFilterData={useGetMCPLogsFilterDataQuery}
+						title={t("filters.projects")}
+						placeholder={tObs("filters.searchOrAddAProject")}
+						testIdPrefix="mcp-projects-filter"
+						allowCustom
+					/>
+					{/* Devices have no filter options yet, so a device filter set from a log's link only shows how many are set. */}
+					{filters.device_ids?.length ? (
+						<FilterSection title={t("filters.devices")} defaultOpen>
+							<Button
+								variant="ghost"
+								size="sm"
+								className="w-full justify-between"
+								data-testid="mcp-clear-device_ids"
+								onClick={() => onFiltersChange({ ...filters, device_ids: [] })}
+							>
+								<span>{t("filters.selectedCount", { count: filters.device_ids.length })}</span>
+								<RotateCcw className="size-3" />
+							</Button>
+						</FilterSection>
+					) : null}
 				</div>
 			</ScrollArea>
 		</div>
