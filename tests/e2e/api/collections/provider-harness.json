@@ -316404,7 +316404,439 @@
       ]
     },
     {
-      "name": "332. MachGen Provider Coverage (list models, image, image edit, video)",
+      "name": "332. Image output_format maps to imageOutputOptions mimeType (image output format) (PR #8627)",
+      "description": "output_format was ignored for Gemini image models (gemini-*-image), which always returned PNG. On Vertex it now maps to generationConfig.imageConfig.imageOutputOptions.mimeType (png/jpeg; webp is dropped rather than rejected) and output_compression to compressionQuality for JPEG, on /v1/images/generations, /v1/images/edits and /genai generateContent. The Gemini API (AI Studio) does not accept imageOutputOptions, so the direct provider must omit it and still succeed. Edit cases send the existing PNG fixture as multipart input.",
+      "item": [
+        {
+          "name": "vertex/gemini-2.5-flash-image /v1/images/generations jpeg output_format returns JPEG bytes - image output format",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Vertex Gemini returns JPEG bytes', function () {",
+                  "  var text = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'failed: ' + text.slice(0, 500)).to.eql(200);",
+                  "  var data = pm.response.json().data;",
+                  "  pm.expect(data, 'missing image data: ' + text.slice(0, 500)).to.be.an('array').that.is.not.empty;",
+                  "  pm.expect(data[0].b64_json, 'missing base64 image: ' + text.slice(0, 500)).to.be.a('string').that.is.not.empty;",
+                  "  var bytes = Buffer.from(data[0].b64_json, 'base64');",
+                  "  pm.expect(bytes.length, 'empty or truncated JPEG').to.be.above(4);",
+                  "  pm.expect(bytes.slice(0, 3).toString('hex'), 'not a JPEG start marker').to.equal('ffd8ff');",
+                  "  pm.expect(bytes.slice(-2).toString('hex'), 'not a JPEG end marker').to.equal('ffd9');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/gemini-2.5-flash-image\",\n  \"prompt\": \"A red apple on a white background\",\n  \"output_format\": \"jpeg\",\n  \"response_format\": \"b64_json\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/images/generations",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "images",
+                "generations"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "vertex/gemini-2.5-flash-image /v1/images/edits jpeg output_format returns JPEG bytes - image output format",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Vertex Gemini returns JPEG bytes', function () {",
+                  "  var text = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'failed: ' + text.slice(0, 500)).to.eql(200);",
+                  "  var data = pm.response.json().data;",
+                  "  pm.expect(data, 'missing image data: ' + text.slice(0, 500)).to.be.an('array').that.is.not.empty;",
+                  "  pm.expect(data[0].b64_json, 'missing base64 image: ' + text.slice(0, 500)).to.be.a('string').that.is.not.empty;",
+                  "  var bytes = Buffer.from(data[0].b64_json, 'base64');",
+                  "  pm.expect(bytes.length, 'empty or truncated JPEG').to.be.above(4);",
+                  "  pm.expect(bytes.slice(0, 3).toString('hex'), 'not a JPEG start marker').to.equal('ffd8ff');",
+                  "  pm.expect(bytes.slice(-2).toString('hex'), 'not a JPEG end marker').to.equal('ffd9');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "vertex/gemini-2.5-flash-image",
+                  "type": "text"
+                },
+                {
+                  "key": "prompt",
+                  "value": "Add a small red circle to this image",
+                  "type": "text"
+                },
+                {
+                  "key": "output_format",
+                  "value": "jpeg",
+                  "type": "text"
+                },
+                {
+                  "key": "response_format",
+                  "value": "b64_json",
+                  "type": "text"
+                },
+                {
+                  "key": "image",
+                  "src": "tests/e2e/api/fixtures/sample.png",
+                  "type": "file"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/images/edits",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "images",
+                "edits"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "vertex/gemini-2.5-flash-image /v1/images/generations jpeg output_compression forwards compressionQuality - image output format",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function rawImageConfig(body, text) {",
+                  "  var raw = (body.extra_fields || {}).raw_request;",
+                  "  pm.expect(raw, 'raw provider request missing: ' + text.slice(0, 500)).to.exist;",
+                  "  var request = typeof raw === 'string' ? JSON.parse(raw) : raw;",
+                  "  return (request.generationConfig || {}).imageConfig || {};",
+                  "}",
+                  "pm.test('Vertex Gemini forwards mimeType and compressionQuality', function () {",
+                  "  var text = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'failed: ' + text.slice(0, 500)).to.eql(200);",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.data, 'missing image data: ' + text.slice(0, 500)).to.be.an('array').that.is.not.empty;",
+                  "  pm.expect(body.data[0].b64_json, 'missing base64 image: ' + text.slice(0, 500)).to.be.a('string').that.is.not.empty;",
+                  "  var imageConfig = rawImageConfig(body, text);",
+                  "  var options = imageConfig.imageOutputOptions || {};",
+                  "  pm.expect(options.mimeType, 'mimeType not forwarded: ' + JSON.stringify(imageConfig)).to.equal('image/jpeg');",
+                  "  pm.expect(options.compressionQuality, 'output_compression not forwarded: ' + JSON.stringify(imageConfig)).to.equal(60);",
+                  "  var bytes = Buffer.from(body.data[0].b64_json, 'base64');",
+                  "  pm.expect(bytes.slice(0, 3).toString('hex'), 'not a JPEG start marker').to.equal('ffd8ff');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/gemini-2.5-flash-image\",\n  \"prompt\": \"A red apple on a white background\",\n  \"output_format\": \"jpeg\",\n  \"output_compression\": 60,\n  \"response_format\": \"b64_json\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/images/generations",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "images",
+                "generations"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "vertex/gemini-2.5-flash-image /v1/images/generations webp output_format is not forwarded and still succeeds - image output format",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function rawImageConfig(body, text) {",
+                  "  var raw = (body.extra_fields || {}).raw_request;",
+                  "  pm.expect(raw, 'raw provider request missing: ' + text.slice(0, 500)).to.exist;",
+                  "  var request = typeof raw === 'string' ? JSON.parse(raw) : raw;",
+                  "  return (request.generationConfig || {}).imageConfig || {};",
+                  "}",
+                  "pm.test('Vertex Gemini drops the unsupported webp mimeType instead of failing', function () {",
+                  "  var text = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'failed: ' + text.slice(0, 500)).to.eql(200);",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.data, 'missing image data: ' + text.slice(0, 500)).to.be.an('array').that.is.not.empty;",
+                  "  pm.expect(body.data[0].b64_json, 'missing base64 image: ' + text.slice(0, 500)).to.be.a('string').that.is.not.empty;",
+                  "  var imageConfig = rawImageConfig(body, text);",
+                  "  pm.expect(imageConfig.imageOutputOptions, 'webp must not be sent to Gemini image models: ' + JSON.stringify(imageConfig)).to.be.undefined;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/gemini-2.5-flash-image\",\n  \"prompt\": \"A red apple on a white background\",\n  \"output_format\": \"webp\",\n  \"response_format\": \"b64_json\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/images/generations",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "images",
+                "generations"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "gemini/gemini-2.5-flash-image /v1/images/generations jpeg output_format omits imageOutputOptions and still succeeds - image output format",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function rawImageConfig(body, text) {",
+                  "  var raw = (body.extra_fields || {}).raw_request;",
+                  "  pm.expect(raw, 'raw provider request missing: ' + text.slice(0, 500)).to.exist;",
+                  "  var request = typeof raw === 'string' ? JSON.parse(raw) : raw;",
+                  "  return (request.generationConfig || {}).imageConfig || {};",
+                  "}",
+                  "pm.test('Gemini API request omits imageOutputOptions (Vertex-only field)', function () {",
+                  "  var text = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'failed: ' + text.slice(0, 500)).to.eql(200);",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.data, 'missing image data: ' + text.slice(0, 500)).to.be.an('array').that.is.not.empty;",
+                  "  pm.expect(body.data[0].b64_json, 'missing base64 image: ' + text.slice(0, 500)).to.be.a('string').that.is.not.empty;",
+                  "  var imageConfig = rawImageConfig(body, text);",
+                  "  pm.expect(imageConfig.imageOutputOptions, 'imageOutputOptions is Vertex-only and must not reach the Gemini API: ' + JSON.stringify(imageConfig)).to.be.undefined;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash-image\",\n  \"prompt\": \"A red apple on a white background\",\n  \"output_format\": \"jpeg\",\n  \"output_compression\": 60,\n  \"response_format\": \"b64_json\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/images/generations",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "images",
+                "generations"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "gemini/gemini-2.5-flash-image /v1/images/edits jpeg output_format omits imageOutputOptions and still succeeds - image output format",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function rawImageConfig(body, text) {",
+                  "  var raw = (body.extra_fields || {}).raw_request;",
+                  "  pm.expect(raw, 'raw provider request missing: ' + text.slice(0, 500)).to.exist;",
+                  "  var request = typeof raw === 'string' ? JSON.parse(raw) : raw;",
+                  "  return (request.generationConfig || {}).imageConfig || {};",
+                  "}",
+                  "pm.test('Gemini API request omits imageOutputOptions (Vertex-only field)', function () {",
+                  "  var text = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'failed: ' + text.slice(0, 500)).to.eql(200);",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.data, 'missing image data: ' + text.slice(0, 500)).to.be.an('array').that.is.not.empty;",
+                  "  pm.expect(body.data[0].b64_json, 'missing base64 image: ' + text.slice(0, 500)).to.be.a('string').that.is.not.empty;",
+                  "  var imageConfig = rawImageConfig(body, text);",
+                  "  pm.expect(imageConfig.imageOutputOptions, 'imageOutputOptions is Vertex-only and must not reach the Gemini API: ' + JSON.stringify(imageConfig)).to.be.undefined;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "gemini/gemini-2.5-flash-image",
+                  "type": "text"
+                },
+                {
+                  "key": "prompt",
+                  "value": "Add a small red circle to this image",
+                  "type": "text"
+                },
+                {
+                  "key": "output_format",
+                  "value": "jpeg",
+                  "type": "text"
+                },
+                {
+                  "key": "response_format",
+                  "value": "b64_json",
+                  "type": "text"
+                },
+                {
+                  "key": "image",
+                  "src": "tests/e2e/api/fixtures/sample.png",
+                  "type": "file"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/images/edits",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "images",
+                "edits"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "vertex/gemini-2.5-flash-image /genai generateContent imageOutputOptions jpeg returns JPEG bytes - image output format",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('GenAI imageOutputOptions reaches Vertex and returns JPEG bytes', function () {",
+                  "  var text = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'failed: ' + text.slice(0, 500)).to.eql(200);",
+                  "  var parts = (((pm.response.json().candidates || [])[0] || {}).content || {}).parts || [];",
+                  "  var image = parts.filter(function (p) { return p.inlineData && p.inlineData.data; })[0];",
+                  "  pm.expect(image, 'no inline image in response: ' + text.slice(0, 500)).to.exist;",
+                  "  var bytes = Buffer.from(image.inlineData.data, 'base64');",
+                  "  pm.expect(bytes.slice(0, 3).toString('hex'), 'not a JPEG start marker').to.equal('ffd8ff');",
+                  "  pm.expect(bytes.slice(-2).toString('hex'), 'not a JPEG end marker').to.equal('ffd9');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-goog-api-key",
+                "value": "{{genaiKey}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"A red apple on a white background\"\n        }\n      ]\n    }\n  ],\n  \"generationConfig\": {\n    \"responseModalities\": [\n      \"IMAGE\"\n    ],\n    \"imageConfig\": {\n      \"imageOutputOptions\": {\n        \"mimeType\": \"image/jpeg\"\n      }\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/vertex/gemini-2.5-flash-image:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "vertex/gemini-2.5-flash-image:generateContent"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "333. MachGen Provider Coverage (list models, image, image edit, video)",
       "description": "MachGen serves video and image models behind one task-based API: POST /api/v0/generate submits a task, GET /api/v0/tasks/{id} reports it, and GET /api/v0/assets/{id} serves the output behind the same API key. Bifrost maps /v1/videos onto that flow (T2V, I2V or R2V inferred from the inputs), and /v1/images/generations and /v1/images/edits onto T2I and I2I, waiting for the task and returning the image as b64_json. /v1/models comes from GET /api/v0/models, which is scoped to the key's account.\n\nThese rows pin the list-models mapping (task types as supported_methods), both image routes, the size -> height + aspect ratio mapping on video, retrieve by the suffixed id, and two caller errors that must stay 4xx: n > 1 and video delete.\n\nMachGen model ids often carry the original vendor (machgen/MiniMax-H3, machgen/FLUX.2-dev), so filter-collection.mjs routes these rows exclusively to the machgen partition.",
       "item": [
         {
