@@ -317009,7 +317009,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"baseten/zai-org/GLM-5.3\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the word ok.\"\n    }\n  ],\n  \"reasoning_effort\": \"max\"\n}"
+              "raw": "{\n  \"model\": \"baseten/zai-org/GLM-5.3\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the word ok.\"\n    }\n  ],\n  \"reasoning_effort\": \"max\",\n  \"max_completion_tokens\": 512\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/chat/completions",
@@ -317250,7 +317250,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"baseten/zai-org/GLM-5.3\",\n  \"input\": \"Reply with the word ok.\",\n  \"reasoning\": {\n    \"effort\": \"max\"\n  }\n}"
+              "raw": "{\n  \"model\": \"baseten/zai-org/GLM-5.3\",\n  \"input\": \"Reply with the word ok.\",\n  \"reasoning\": {\n    \"effort\": \"max\"\n  },\n  \"max_output_tokens\": 512\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/responses",

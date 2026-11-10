@@ -618,6 +618,7 @@ jobs:
             api.mistral.ai:443
             api.openai.com:443
             api.parasail.io:443
+            inference.baseten.co:443
             api.perplexity.ai:443
             api.replicate.com:443
             api.tokenfactory.nebius.com:443
