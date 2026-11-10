@@ -31,6 +31,7 @@ import (
 	mcputils "github.com/maximhq/bifrost/core/mcp/utils"
 	"github.com/maximhq/bifrost/core/network"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/core/streamusage"
 	"github.com/maximhq/bifrost/framework"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
@@ -224,20 +225,21 @@ type ConfigData struct {
 	// the BIFROST_SETUP_TOKEN env var) — so every node in a multi-node deployment reads
 	// the same value from its own identical config/env rather than relying on a
 	// per-process generated value.
-	SetupToken        *schemas.SecretVar                    `json:"setup_token,omitempty"`
-	Providers         map[string]configstore.ProviderConfig `json:"providers"`
-	FrameworkConfig   *framework.FrameworkConfig            `json:"framework,omitempty"`
-	MCP               *schemas.MCPConfig                    `json:"mcp,omitempty"`
-	Webhooks          []*WebhookEndpointConfig              `json:"webhooks,omitempty"`
-	Agents            []*AgentRegistrationFileConfig        `json:"agents,omitempty"`
-	Relays            []*schemas.RelayConfig                `json:"relays,omitempty"`
-	Governance        *configstore.GovernanceConfig         `json:"governance,omitempty"`
-	VectorStoreConfig *vectorstore.Config                   `json:"vector_store,omitempty"`
-	ConfigStoreConfig *configstore.Config                   `json:"config_store,omitempty"`
-	LogsStoreConfig   *logstore.Config                      `json:"logs_store,omitempty"`
-	Plugins           []*schemas.PluginConfig               `json:"plugins,omitempty"`
-	WebSocket         *schemas.WebSocketConfig              `json:"websocket,omitempty"`
-	FeatureFlags      *FeatureFlagsFileConfig               `json:"feature_flags,omitempty"`
+	SetupToken         *schemas.SecretVar                    `json:"setup_token,omitempty"`
+	Providers          map[string]configstore.ProviderConfig `json:"providers"`
+	FrameworkConfig    *framework.FrameworkConfig            `json:"framework,omitempty"`
+	MCP                *schemas.MCPConfig                    `json:"mcp,omitempty"`
+	Webhooks           []*WebhookEndpointConfig              `json:"webhooks,omitempty"`
+	Agents             []*AgentRegistrationFileConfig        `json:"agents,omitempty"`
+	Relays             []*schemas.RelayConfig                `json:"relays,omitempty"`
+	DatasheetOverrides []DatasheetOverrideFileConfig         `json:"datasheet_overrides,omitempty"`
+	Governance         *configstore.GovernanceConfig         `json:"governance,omitempty"`
+	VectorStoreConfig  *vectorstore.Config                   `json:"vector_store,omitempty"`
+	ConfigStoreConfig  *configstore.Config                   `json:"config_store,omitempty"`
+	LogsStoreConfig    *logstore.Config                      `json:"logs_store,omitempty"`
+	Plugins            []*schemas.PluginConfig               `json:"plugins,omitempty"`
+	WebSocket          *schemas.WebSocketConfig              `json:"websocket,omitempty"`
+	FeatureFlags       *FeatureFlagsFileConfig               `json:"feature_flags,omitempty"`
 	// ProxyConfig is the global outbound proxy (the dashboard's proxy settings page), not a
 	// provider's own proxy_config.
 	ProxyConfig *GlobalProxyFileConfig `json:"proxy_config,omitempty"`
@@ -490,6 +492,8 @@ func (cd *ConfigData) sectionPresent(name string) bool {
 		return cd.Agents != nil
 	case "relays":
 		return cd.Relays != nil
+	case "datasheet_overrides":
+		return cd.DatasheetOverrides != nil
 	case "governance":
 		return cd.Governance != nil
 	case "plugins":
@@ -561,31 +565,32 @@ func (cd *ConfigData) UnmarshalJSON(data []byte) error {
 
 	// First, unmarshal into a temporary struct to get all fields except the complex configs
 	type TempConfigData struct {
-		Version           int                                   `json:"version,omitempty"`
-		EnvLabel          string                                `json:"env_label,omitempty"`
-		DisableOnboarding *bool                                 `json:"disable_onboarding,omitempty"`
-		SourceOfTruth     string                                `json:"source_of_truth,omitempty"`
-		FrameworkConfig   json.RawMessage                       `json:"framework,omitempty"`
-		Server            *ServerConfig                         `json:"server,omitempty"`
-		Client            *configstore.ClientConfig             `json:"client"`
-		EncryptionKey     *schemas.SecretVar                    `json:"encryption_key"`
-		AuthConfig        *configstore.AuthConfig               `json:"auth_config,omitempty"`
-		SetupToken        *schemas.SecretVar                    `json:"setup_token,omitempty"`
-		Providers         map[string]configstore.ProviderConfig `json:"providers"`
-		MCP               *schemas.MCPConfig                    `json:"mcp,omitempty"`
-		Webhooks          []*WebhookEndpointConfig              `json:"webhooks,omitempty"`
-		Agents            []*AgentRegistrationFileConfig        `json:"agents,omitempty"`
-		Relays            []*schemas.RelayConfig                `json:"relays,omitempty"`
-		Governance        *configstore.GovernanceConfig         `json:"governance,omitempty"`
-		VectorStoreConfig json.RawMessage                       `json:"vector_store,omitempty"`
-		ConfigStoreConfig json.RawMessage                       `json:"config_store,omitempty"`
-		LogsStoreConfig   json.RawMessage                       `json:"logs_store,omitempty"`
-		Plugins           []*schemas.PluginConfig               `json:"plugins,omitempty"`
-		WebSocket         *schemas.WebSocketConfig              `json:"websocket,omitempty"`
-		FeatureFlags      *FeatureFlagsFileConfig               `json:"feature_flags,omitempty"`
-		ProxyConfig       *GlobalProxyFileConfig                `json:"proxy_config,omitempty"`
-		Warp              *WarpFileConfig                       `json:"warp,omitempty"`
-		SkillsRegistry    *SkillsRegistryConfig                 `json:"skills_registry,omitempty"`
+		Version            int                                   `json:"version,omitempty"`
+		EnvLabel           string                                `json:"env_label,omitempty"`
+		DisableOnboarding  *bool                                 `json:"disable_onboarding,omitempty"`
+		SourceOfTruth      string                                `json:"source_of_truth,omitempty"`
+		FrameworkConfig    json.RawMessage                       `json:"framework,omitempty"`
+		Server             *ServerConfig                         `json:"server,omitempty"`
+		Client             *configstore.ClientConfig             `json:"client"`
+		EncryptionKey      *schemas.SecretVar                    `json:"encryption_key"`
+		AuthConfig         *configstore.AuthConfig               `json:"auth_config,omitempty"`
+		SetupToken         *schemas.SecretVar                    `json:"setup_token,omitempty"`
+		Providers          map[string]configstore.ProviderConfig `json:"providers"`
+		MCP                *schemas.MCPConfig                    `json:"mcp,omitempty"`
+		Webhooks           []*WebhookEndpointConfig              `json:"webhooks,omitempty"`
+		Agents             []*AgentRegistrationFileConfig        `json:"agents,omitempty"`
+		Relays             []*schemas.RelayConfig                `json:"relays,omitempty"`
+		DatasheetOverrides []DatasheetOverrideFileConfig         `json:"datasheet_overrides,omitempty"`
+		Governance         *configstore.GovernanceConfig         `json:"governance,omitempty"`
+		VectorStoreConfig  json.RawMessage                       `json:"vector_store,omitempty"`
+		ConfigStoreConfig  json.RawMessage                       `json:"config_store,omitempty"`
+		LogsStoreConfig    json.RawMessage                       `json:"logs_store,omitempty"`
+		Plugins            []*schemas.PluginConfig               `json:"plugins,omitempty"`
+		WebSocket          *schemas.WebSocketConfig              `json:"websocket,omitempty"`
+		FeatureFlags       *FeatureFlagsFileConfig               `json:"feature_flags,omitempty"`
+		ProxyConfig        *GlobalProxyFileConfig                `json:"proxy_config,omitempty"`
+		Warp               *WarpFileConfig                       `json:"warp,omitempty"`
+		SkillsRegistry     *SkillsRegistryConfig                 `json:"skills_registry,omitempty"`
 	}
 
 	var temp TempConfigData
@@ -608,6 +613,7 @@ func (cd *ConfigData) UnmarshalJSON(data []byte) error {
 	cd.Webhooks = temp.Webhooks
 	cd.Agents = temp.Agents
 	cd.Relays = temp.Relays
+	cd.DatasheetOverrides = temp.DatasheetOverrides
 	cd.Governance = temp.Governance
 	cd.Plugins = temp.Plugins
 	cd.WebSocket = temp.WebSocket
@@ -1481,6 +1487,30 @@ func NormalizeHiddenRequestTypes(types []string) []string {
 	return out
 }
 
+// NormalizeUsageEstimationTokenizers trims, lowercases and de-duplicates the tokenizer
+// families a cancelled stream's usage is estimated with, preserving the caller's order.
+// A name that is neither an embedded family nor "all" is an error. A list with nothing
+// left returns nil, so "base encodings only" has one representation in the store and hash.
+func NormalizeUsageEstimationTokenizers(families []string) ([]string, error) {
+	var out []string
+	seen := make(map[string]struct{}, len(families))
+	for _, f := range families {
+		f = strings.ToLower(strings.TrimSpace(f))
+		if f == "" {
+			continue
+		}
+		if f != streamusage.FamilyAll && !slices.Contains(streamusage.Families, f) {
+			return nil, fmt.Errorf("usage_estimation_tokenizers: unknown tokenizer %q; supported: %s or %q", f, strings.Join(streamusage.Families, ", "), streamusage.FamilyAll)
+		}
+		if _, ok := seen[f]; ok {
+			continue
+		}
+		seen[f] = struct{}{}
+		out = append(out, f)
+	}
+	return out, nil
+}
+
 func applyClientConfigDefaults(cc *configstore.ClientConfig) {
 	if cc.InitialPoolSize == 0 {
 		cc.InitialPoolSize = DefaultClientConfig.InitialPoolSize
@@ -1517,6 +1547,12 @@ func applyClientConfigDefaults(cc *configstore.ClientConfig) {
 // fails loudly at startup instead of diverging in-memory state from what the
 // operator wrote — and stays wrong (re-warned, unpersisted) on every restart.
 func validateClientConfig(cc *configstore.ClientConfig) error {
+	// PUT /api/config rejects an unknown tokenizer family; config.json and stored rows
+	// reach the runtime here, so a typo fails boot instead of silently counting with
+	// the base encodings.
+	if _, err := NormalizeUsageEstimationTokenizers(cc.UsageEstimationTokenizers); err != nil {
+		return err
+	}
 	// The /api/config handler rejects an over-max auth_code_ttl, but config.json
 	// and any DB row written before the cap existed bypass that path. Fail fast
 	// here, the point where every config source converges, so a leaked one-time
@@ -2045,7 +2081,27 @@ func mergeProviderWithHash(
 		return
 	}
 	// Provider exists in DB - compare hashes
-	if existingCfg.ConfigHash != providerCfgInFile.ConfigHash {
+	hashMatches := existingCfg.ConfigHash == providerCfgInFile.ConfigHash
+	if !hashMatches {
+		if legacy, err := providerCfgInFile.ConfigHashMatchesLegacyOverrideOrder(string(provider), existingCfg.ConfigHash); err == nil && legacy {
+			// Same file provider, hashed by an older build with unsorted request_path_overrides:
+			// keep the stored keys and move the stored hash to the sorted form so this search runs once.
+			logger.Debug("provider %s carries a pre-sorted request_path_overrides hash, keeping stored version", provider)
+			existingCfg.ConfigHash = providerCfgInFile.ConfigHash
+			hashMatches = true
+		}
+	}
+	if !hashMatches && providerCfgInFile.ConfigHashLegacyOverrideOrderUnverifiable(existingCfg.ConfigHash) {
+		// Too many overrides to tell an older build's unsorted hash from a file edit. The provider's
+		// own settings come from the file, as they did on every boot before the hash was sorted, but
+		// keys are reconciled one by one so those added through the API or dashboard are not dropped.
+		// The stored hash then carries the sorted-overrides marker, so this runs on the upgrade boot
+		// only and later edits take the normal mismatch path below.
+		logger.Warn("provider %s has too many request_path_overrides to verify its stored config hash, syncing settings from config file and keeping API-added keys", provider)
+		noteConfigFileApplied("provider", string(provider))
+		providerCfgInFile.Keys = reconcileProviderKeys(provider, providerCfgInFile.Keys, existingCfg.Keys)
+		providersInConfigStore[provider] = providerCfgInFile
+	} else if !hashMatches {
 		// Hash mismatch - config.json was changed, sync from file
 		logger.Debug("config hash mismatch for provider %s, syncing from config file", provider)
 		noteConfigFileApplied("provider", string(provider))
@@ -7357,6 +7413,8 @@ func initFrameworkConfig(ctx context.Context, config *Config, configData *Config
 			logger.Warn("failed to set pricing overrides from config file: %v", err)
 		}
 	}
+
+	loadDatasheetOverridesFromFile(ctx, config, configData)
 }
 
 // initEncryption initializes encryption from config data or environment variables.

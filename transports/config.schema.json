@@ -334,6 +334,16 @@
           "default": [],
           "description": "Request types excluded from dashboard and log API reads. Logs are still stored; an empty array shows all request types. Editable from the UI under Logs Settings."
         },
+        "usage_estimation_tokenizers": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": ["anthropic", "deepseek", "llama2", "llama3", "all"]
+          },
+          "uniqueItems": true,
+          "default": [],
+          "description": "Embedded tokenizer vocabularies used to estimate the usage of a cancelled or timed-out stream whose provider never reported it. An empty array counts every model with o200k_base or cl100k_base. Each listed family preloads in the background at startup and keeps 4-18 MB in memory; \"all\" enables every family."
+        },
         "allowed_headers": {
           "type": "array",
           "items": {
@@ -727,6 +737,9 @@
           "$ref": "#/$defs/provider"
         },
         "byteplus": {
+          "$ref": "#/$defs/provider"
+        },
+        "baseten": {
           "$ref": "#/$defs/provider"
         },
         "cloudflare": {
@@ -2346,6 +2359,13 @@
       "description": "Relays reconciled into the config store at startup, before governance so virtual keys can grant them. Matching is by name with hash-based change detection; in config.json source-of-truth mode stored endpoints absent from this list are pruned.",
       "items": {
         "$ref": "#/$defs/relay"
+      }
+    },
+    "datasheet_overrides": {
+      "type": "array",
+      "description": "Edits to the synced model datasheet (pricing and model parameters) that survive every datasheet sync. Matched by (provider, model, mode) with hash-based change detection: a file entry is applied when it changes, so edits made in the UI stand until the file entry itself changes. In config.json source-of-truth mode stored overrides absent from this list are removed.",
+      "items": {
+        "$ref": "#/$defs/datasheet_override"
       }
     },
     "mcp": {
@@ -4543,7 +4563,8 @@
                         "huggingface",
                         "databricks",
                         "cloudflare",
-                        "byteplus"
+                        "byteplus",
+                        "baseten"
                       ]
                     },
                     "embedding_model": {
@@ -5479,6 +5500,54 @@
           "not": {"required": ["path"]}
         }
       ],
+      "additionalProperties": false
+    },
+    "datasheet_override": {
+      "type": "object",
+      "description": "One datasheet entry edit. Both patches are RFC 7386 JSON merge patches: a key sets the value, null clears it, and an omitted key keeps the upstream value.",
+      "properties": {
+        "provider": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S",
+          "description": "Provider of the datasheet entry, e.g. openai"
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S",
+          "description": "Model name as it appears in the datasheet"
+        },
+        "mode": {
+          "type": "string",
+          "description": "Datasheet mode (chat, responses, embedding, ...). Omit to apply the pricing patch to every mode of the model. Required when is_custom is true."
+        },
+        "is_custom": {
+          "type": "boolean",
+          "default": false,
+          "description": "Adds an entry the upstream datasheet does not list, e.g. a fine-tuned or self-hosted model"
+        },
+        "pricing_patch": {
+          "type": "object",
+          "description": "Merge patch over the pricing entry: context_length, max_input_tokens, max_output_tokens, is_deprecated, base_model, architecture and any cost field such as input_cost_per_token",
+          "additionalProperties": true
+        },
+        "params_patch": {
+          "type": "object",
+          "description": "Merge patch over the model-parameters entry: supports_* capability flags, reasoning_effort_levels, max_output_tokens, supported_endpoints and other model parameters. provider cannot be patched.",
+          "not": { "required": ["provider"] },
+          "additionalProperties": true
+        }
+      },
+      "required": ["provider", "model"],
+      "if": {
+        "properties": { "is_custom": { "const": true } },
+        "required": ["is_custom"]
+      },
+      "then": {
+        "required": ["mode"],
+        "properties": { "mode": { "pattern": "\\S" } }
+      },
       "additionalProperties": false
     },
     "relay_secret": {
@@ -7906,6 +7975,10 @@
                   "use_deployments_endpoint": {
                     "type": "boolean",
                     "description": "Replicate: use the deployments endpoint instead of the predictions endpoint for this alias."
+                  },
+                  "deployment_url": {
+                    "type": "string",
+                    "description": "Baseten: OpenAI-compatible base URL of a dedicated deployment, e.g. https://model-<id>.api.baseten.co/environments/production/sync/v1. Requests for this alias go there instead of Model APIs, and model_id is the served model name; Engine-Builder and BEI deployments ignore it, so any value works, such as not-required. Must be https (can use env. prefix)."
                   },
                   "use_anthropic_endpoints": {
                     "type": "boolean",

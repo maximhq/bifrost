@@ -18,6 +18,7 @@ var NoDeadline time.Time
 // assert the type before indexing: SetValue/ClearValue/GetAndSetValue accept any,
 // and indexing a map with a non-comparable key (slice, map, func) would panic.
 var reservedKeys = map[BifrostContextKey]struct{}{
+	BifrostContextKeyStreamUsageProvisional:      {},
 	BifrostContextKeyVirtualKey:              {},
 	BifrostContextKeyAPIKeyName:              {},
 	BifrostContextKeyAPIKeyID:                {},
@@ -59,6 +60,7 @@ var reservedKeys = map[BifrostContextKey]struct{}{
 	BifrostContextKeyRequestedModel:          {},
 	BifrostContextKeyProviderProxyConfig:     {},
 	BifrostContextKeyMCPInboundBearer:        {},
+	BifrostContextKeyOpencodeSession:         {},
 	BifrostContextKeyAuthCredential:          {},
 	BifrostContextKeyMCPAgentServedRoute:     {},
 	BifrostContextKeyMCPInstructionsText:     {},
@@ -618,6 +620,54 @@ func (bc *BifrostContext) setReservedValue(key, value any) {
 		bc.userValues = make(map[any]any, 16)
 	}
 	bc.userValues[key] = value
+}
+
+// getOrStoreReservedValue loads key if it is already set, otherwise calls
+// supplier and stores its result. Like setReservedValue it bypasses
+// blockRestrictedWrites, so it stays unexported and is reached only through
+// narrowly named helpers such as GetOrStoreOpencodeSession.
+//
+// The supplier runs outside the lock, because suppliers read the context and
+// valuesMu is not reentrant. Two first callers racing on an empty key may
+// therefore both run it, but only the first result is stored and every caller
+// returns that stored value.
+func (bc *BifrostContext) getOrStoreReservedValue(key BifrostContextKey, supplier func() any) any {
+	if bc.valueDelegate != nil {
+		return bc.valueDelegate.getOrStoreReservedValue(key, supplier)
+	}
+	bc.valuesMu.RLock()
+	if val, ok := bc.userValues[key]; ok {
+		bc.valuesMu.RUnlock()
+		return val
+	}
+	bc.valuesMu.RUnlock()
+
+	val := supplier()
+
+	bc.valuesMu.Lock()
+	defer bc.valuesMu.Unlock()
+	// Re-check: a concurrent caller may have stored a value while we computed.
+	if stored, ok := bc.userValues[key]; ok {
+		return stored
+	}
+	if bc.userValues == nil {
+		bc.userValues = make(map[any]any, 16)
+	}
+	bc.userValues[key] = val
+	return val
+}
+
+// GetOrStoreOpencodeSession returns the request's resolved x-opencode-session
+// value, calling supplier and caching its result under the reserved
+// BifrostContextKeyOpencodeSession on the first call. The write bypasses
+// blockRestrictedWrites so a value resolved during a streaming post-hook still
+// lands and retries see the same session. Bifrost-internal (called by the
+// OpenCode provider - DO NOT CALL THIS MANUALLY).
+func (bc *BifrostContext) GetOrStoreOpencodeSession(supplier func() string) string {
+	value, _ := bc.getOrStoreReservedValue(BifrostContextKeyOpencodeSession, func() any {
+		return supplier()
+	}).(string)
+	return value
 }
 
 // ReadyStreamCommitWatch records that a held stream attempt produced the chunk its first-chunk

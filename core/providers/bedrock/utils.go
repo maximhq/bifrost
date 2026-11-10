@@ -4182,3 +4182,43 @@ func downgradeExtendedCacheTTLInBedrockRequest(req *BedrockConverseRequest) {
 		}
 	}
 }
+
+// heldStreamRaw keeps the raw payloads of upstream stream events that produced no chunk of their
+// own (messageStop, metadata, a text block's contentBlockStop), so each rides on a later chunk that
+// has no payload of its own instead of being dropped from the raw record. It lives in the stream
+// goroutine, is used only when raw responses are sent back, and holds a few small events at most.
+//
+// A chunk that carries its own event never takes a held one: raw text plugins edit a single-event
+// payload in place, and a second event in it would leave the chunk's text unsynced. A held event
+// that meets no chunk without a payload before the stream ends goes out on the stream's last chunk.
+type heldStreamRaw struct {
+	payloads []string
+}
+
+// hold copies payload, since the decoder reuses its buffer for the next event.
+func (h *heldStreamRaw) hold(payload []byte) {
+	if h.payloads == nil {
+		h.payloads = make([]string, 0, 4) // a stream's end holds about three
+	}
+	h.payloads = append(h.payloads, string(payload))
+}
+
+// attach gives extra the oldest held payload; with last set it gives it every remaining one, a
+// blank line apart. Several events in one chunk are not a single stream event, so the chunk then
+// declares no raw format and raw text plugins leave it alone.
+func (h *heldStreamRaw) attach(extra *schemas.BifrostResponseExtraFields, last bool) {
+	if len(h.payloads) == 0 || extra.RawResponse != nil {
+		return
+	}
+	n := 1
+	if last {
+		n = len(h.payloads)
+	}
+	if n == 1 {
+		extra.RawResponse = h.payloads[0]
+		extra.RawResponseFormat = schemas.RawResponseFormatBedrockConverseStreamEvent
+	} else {
+		extra.RawResponse = strings.Join(h.payloads[:n], "\n\n")
+	}
+	h.payloads = h.payloads[n:]
+}

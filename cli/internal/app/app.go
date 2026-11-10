@@ -268,6 +268,13 @@ func (a *App) Run(ctx context.Context) error {
 
 			// Handle install request
 			if choice.InstallHarness {
+				if h.InstallPkg == "" {
+					msg = h.Label + " requires manual installation"
+					if h.InstallURL != "" {
+						msg += "; see " + h.InstallURL
+					}
+					continue
+				}
 				cmd, args := installer.InstallCommand(h)
 				shouldInstall, err := tui.RunConfirmInstall(a.bootHeader, h.Label, cmd+" "+strings.Join(args, " "))
 				if err != nil {
@@ -478,12 +485,21 @@ func (a *App) updateProfileBaseURL(ctx context.Context, profile *config.Profile,
 
 // loginEnterpriseSSO runs browser PKCE outside the full-screen chooser. The
 // chooser is reopened after completion with the updated profile-scoped state.
+// Pasting the callback is not offered here: a stdin reader left blocked after
+// sign-in would swallow the chooser's keystrokes, so remote users are pointed
+// at `bifrost auth login` instead.
 func (a *App) loginEnterpriseSSO(ctx context.Context, profileID, baseURL string) (string, error) {
+	callbackPort, err := browserauth.ParseCallbackPort(os.Getenv(browserauth.CallbackPortEnv))
+	if err != nil {
+		return "", fmt.Errorf("%s: %w", browserauth.CallbackPortEnv, err)
+	}
 	authenticator := a.enterpriseAuthenticator(profileID, baseURL)
+	authenticator.Client.CallbackPort = callbackPort
 	authenticator.Client.Authorization = func(target string) {
 		_, _ = fmt.Fprintln(a.errOut, "Opening your browser to sign in to Bifrost...")
 		_, _ = fmt.Fprintln(a.errOut, "If the browser does not open, use this URL:")
 		_, _ = fmt.Fprintln(a.errOut, target)
+		_, _ = fmt.Fprintln(a.errOut, "Over SSH or in a container? Run 'bifrost auth login' to paste the redirected address instead.")
 		_, _ = fmt.Fprintln(a.errOut, "Waiting for authentication...")
 	}
 	authenticator.Client.Warning = func(err error) {
