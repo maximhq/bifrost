@@ -120,8 +120,9 @@ EXPOSE $APP_PORT
 # curl-minimal is pre-installed in ubi9-minimal and is a drop-in for curl.
 # start-period is raised to 15s to allow the Go service time to run migrations
 # before the first liveness probe fires.
+# The entrypoint records the port it listens on (after PORT and --port) in /tmp/bifrost.port; probe that, falling back to PORT then APP_PORT.
 HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
-  CMD curl-minimal -f -s http://127.0.0.1:${APP_PORT}/health || exit 1
+  CMD curl-minimal -f -s "http://127.0.0.1:$(cat "${BIFROST_PORT_FILE:-/tmp/bifrost.port}" 2>/dev/null || echo "${PORT:-${APP_PORT}}")/health" || exit 1
 
 ENTRYPOINT ["/app/docker-entrypoint.sh"]
 CMD ["/app/main"]
