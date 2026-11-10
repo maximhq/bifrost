@@ -868,7 +868,7 @@ func HandleTypesafeDecisionRequest(
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*TypesafeDecisionRequest, error) {
 			return toRequest(request)
 		})
 	if bifrostErr != nil {

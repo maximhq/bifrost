@@ -371,6 +371,9 @@ func (response *GenerateContentResponse) ToBifrostImageGenerationResponse() (*sc
 
 			// Extract image data from all parts
 			for idx, part := range candidate.Content.Parts {
+				if part == nil {
+					continue
+				}
 				// Check that part is not nil before accessing its fields
 				if part != nil && part.InlineData != nil {
 					imageData = append(imageData, schemas.ImageData{

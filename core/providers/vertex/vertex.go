@@ -718,7 +718,7 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 		jsonBody, bifrostErr = providerUtils.CheckContextAndGetRequestBody(
 			ctx,
 			request,
-			func() (providerUtils.RequestBodyWithExtraParams, error) {
+			func() (*VertexRawRequestBody, error) {
 				// Format messages for Vertex API, preserving key order for prompt caching
 				var rawBody []byte
 				var extraParams map[string]interface{}
@@ -1127,7 +1127,7 @@ func (provider *VertexProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 		jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 			ctx,
 			request,
-			func() (providerUtils.RequestBodyWithExtraParams, error) {
+			func() (*gemini.GeminiGenerationRequest, error) {
 				resolvedRequest, err := gemini.ResolveChatAudioURLs(ctx, request)
 				if err != nil {
 					return nil, err
@@ -1426,7 +1426,7 @@ func (provider *VertexProvider) Responses(ctx *schemas.BifrostContext, key schem
 		jsonBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 			ctx,
 			request,
-			func() (providerUtils.RequestBodyWithExtraParams, error) {
+			func() (*gemini.GeminiGenerationRequest, error) {
 				resolvedRequest, err := gemini.ResolveResponsesAudioURLs(ctx, request)
 				if err != nil {
 					return nil, err
@@ -1685,7 +1685,7 @@ func (provider *VertexProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 		jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 			ctx,
 			request,
-			func() (providerUtils.RequestBodyWithExtraParams, error) {
+			func() (*gemini.GeminiGenerationRequest, error) {
 				resolvedRequest, err := gemini.ResolveResponsesAudioURLs(ctx, request)
 				if err != nil {
 					return nil, err
@@ -1810,19 +1810,23 @@ func (provider *VertexProvider) Embedding(ctx *schemas.BifrostContext, key schem
 	isGeminiEmbedding2Request := isVertexGeminiEmbeddingModel(request.Model)
 	isNativeMultimodalRequest := isVertexNativeMultimodalEmbeddingModel(request.Model)
 
-	jsonBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
-		ctx,
-		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
-			if isGeminiEmbedding2Request {
-				return ToVertexGeminiEmbeddingRequest(request)
-			}
-			if isNativeMultimodalRequest {
-				return ToVertexMultimodalEmbeddingRequest(request)
-			}
+	// Branch before the call so each converter keeps its concrete body type.
+	var jsonBody []byte
+	var bifrostErr *schemas.BifrostError
+	switch {
+	case isGeminiEmbedding2Request:
+		jsonBody, bifrostErr = providerUtils.CheckContextAndGetRequestBody(ctx, request, func() (*VertexGeminiEmbeddingRequest, error) {
+			return ToVertexGeminiEmbeddingRequest(request)
+		})
+	case isNativeMultimodalRequest:
+		jsonBody, bifrostErr = providerUtils.CheckContextAndGetRequestBody(ctx, request, func() (*VertexEmbeddingRequest, error) {
+			return ToVertexMultimodalEmbeddingRequest(request)
+		})
+	default:
+		jsonBody, bifrostErr = providerUtils.CheckContextAndGetRequestBody(ctx, request, func() (*VertexEmbeddingRequest, error) {
 			return ToVertexEmbeddingRequest(request)
-		},
-	)
+		})
+	}
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -2008,7 +2012,7 @@ func (provider *VertexProvider) Rerank(ctx *schemas.BifrostContext, key schemas.
 	jsonBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*VertexRankRequest, error) {
 			return ToVertexRankRequest(request, options)
 		},
 	)
@@ -2166,7 +2170,7 @@ func (provider *VertexProvider) ImageGeneration(ctx *schemas.BifrostContext, key
 	jsonBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*VertexRawRequestBody, error) {
 			var rawBody []byte
 			var extraParams map[string]interface{}
 			var err error
@@ -2386,7 +2390,7 @@ func (provider *VertexProvider) ImageEdit(ctx *schemas.BifrostContext, key schem
 	jsonBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*VertexRawRequestBody, error) {
 			var rawBody []byte
 			var extraParams map[string]interface{}
 			var err error
@@ -2602,7 +2606,7 @@ func (provider *VertexProvider) VideoGeneration(ctx *schemas.BifrostContext, key
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		bifrostReq,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*gemini.GeminiVideoGenerationRequest, error) {
 			return gemini.ToGeminiVideoGenerationRequest(bifrostReq)
 		},
 	)
@@ -2947,6 +2951,9 @@ func stripVertexGeminiUnsupportedFields(requestBody *gemini.GeminiGenerationRequ
 	requestBody.ServiceTier = ""
 	for _, content := range requestBody.Contents {
 		for _, part := range content.Parts {
+			if part == nil {
+				continue
+			}
 			// Remove id from function_call
 			if part.FunctionCall != nil {
 				part.FunctionCall.ID = ""
@@ -3129,7 +3136,7 @@ func (provider *VertexProvider) BatchCreate(ctx *schemas.BifrostContext, key sch
 	jsonData, bodyErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*VertexBatchCreateRequest, error) {
 			return ToVertexBatchCreateRequest(ctx, request, jobName, inputFileID, outputURI), nil
 		},
 	)
@@ -4474,7 +4481,7 @@ func (provider *VertexProvider) CountTokens(ctx *schemas.BifrostContext, key sch
 		jsonBody, bifrostErr = providerUtils.CheckContextAndGetRequestBody(
 			ctx,
 			request,
-			func() (providerUtils.RequestBodyWithExtraParams, error) {
+			func() (*gemini.GeminiGenerationRequest, error) {
 				resolvedRequest, err := gemini.ResolveResponsesAudioURLs(ctx, request)
 				if err != nil {
 					return nil, err

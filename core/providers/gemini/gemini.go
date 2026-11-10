@@ -374,7 +374,7 @@ func (provider *GeminiProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 	jsonData, err := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*GeminiGenerationRequest, error) {
 			resolvedRequest, err := ResolveChatAudioURLs(ctx, request)
 			if err != nil {
 				return nil, err
@@ -438,7 +438,7 @@ func (provider *GeminiProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 	jsonData, err := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*GeminiGenerationRequest, error) {
 			resolvedRequest, err := ResolveChatAudioURLs(ctx, request)
 			if err != nil {
 				return nil, err
@@ -584,6 +584,7 @@ func HandleGeminiChatCompletionStream(
 			}
 			providerUtils.CloseStream(ctx, responseChan)
 		}()
+		defer providerUtils.RecoverStreamPanic(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer)
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
 
 		if resp.BodyStream() == nil {
@@ -780,7 +781,7 @@ func (provider *GeminiProvider) Responses(ctx *schemas.BifrostContext, key schem
 		jsonData, err = providerUtils.CheckContextAndGetRequestBody(
 			ctx,
 			request,
-			func() (providerUtils.RequestBodyWithExtraParams, error) {
+			func() (*GeminiGenerationRequest, error) {
 				resolvedRequest, err := ResolveResponsesAudioURLs(ctx, request)
 				if err != nil {
 					return nil, err
@@ -983,7 +984,7 @@ func (provider *GeminiProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 	jsonData, err := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*GeminiGenerationRequest, error) {
 			resolvedRequest, err := ResolveResponsesAudioURLs(ctx, request)
 			if err != nil {
 				return nil, err
@@ -1127,6 +1128,7 @@ func HandleGeminiResponsesStream(
 			}
 			providerUtils.CloseStream(ctx, responseChan)
 		}()
+		defer providerUtils.RecoverStreamPanic(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer)
 
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
 
@@ -1384,7 +1386,7 @@ func (provider *GeminiProvider) Embedding(ctx *schemas.BifrostContext, key schem
 	jsonData, err := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*GeminiBatchEmbeddingRequest, error) {
 			return ToGeminiEmbeddingRequest(request)
 		})
 	if err != nil {
@@ -1512,7 +1514,7 @@ func (provider *GeminiProvider) Speech(ctx *schemas.BifrostContext, key schemas.
 	jsonData, err := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*GeminiGenerationRequest, error) {
 			return ToGeminiSpeechRequest(request)
 		})
 	if err != nil {
@@ -1587,7 +1589,7 @@ func (provider *GeminiProvider) SpeechStream(ctx *schemas.BifrostContext, postHo
 	jsonBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*GeminiGenerationRequest, error) {
 			return ToGeminiSpeechRequest(request)
 		})
 	if bifrostErr != nil {
@@ -1675,6 +1677,7 @@ func (provider *GeminiProvider) SpeechStream(ctx *schemas.BifrostContext, postHo
 			}
 			providerUtils.CloseStream(ctx, responseChan)
 		}()
+		defer providerUtils.RecoverStreamPanic(ctx, postHookRunner, responseChan, provider.logger, postHookSpanFinalizer)
 
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
 
@@ -1742,6 +1745,9 @@ func (provider *GeminiProvider) SpeechStream(ctx *schemas.BifrostContext, postHo
 				if candidate.Content != nil && len(candidate.Content.Parts) > 0 {
 					var buf []byte
 					for _, part := range candidate.Content.Parts {
+						if part == nil {
+							continue
+						}
 						if part.InlineData != nil && len(part.InlineData.Data) > 0 {
 							// Decode base64-encoded audio data
 							decodedData, err := decodeBase64StringToBytes(part.InlineData.Data)
@@ -1821,7 +1827,7 @@ func (provider *GeminiProvider) Transcription(ctx *schemas.BifrostContext, key s
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*GeminiGenerationRequest, error) {
 			return ToGeminiTranscriptionRequest(request), nil
 		})
 	if bifrostErr != nil {
@@ -1875,7 +1881,7 @@ func (provider *GeminiProvider) TranscriptionStream(ctx *schemas.BifrostContext,
 	jsonBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*GeminiGenerationRequest, error) {
 			return ToGeminiTranscriptionRequest(request), nil
 		})
 	if bifrostErr != nil {
@@ -1963,6 +1969,7 @@ func (provider *GeminiProvider) TranscriptionStream(ctx *schemas.BifrostContext,
 			}
 			providerUtils.CloseStream(ctx, responseChan)
 		}()
+		defer providerUtils.RecoverStreamPanic(ctx, postHookRunner, responseChan, provider.logger, postHookSpanFinalizer)
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
 		// Decompress gzip-encoded streams transparently (no-op for non-gzip)
 		reader, releaseGzip := providerUtils.DecompressStreamBody(resp)
@@ -2028,6 +2035,9 @@ func (provider *GeminiProvider) TranscriptionStream(ctx *schemas.BifrostContext,
 				if len(geminiResponse.Candidates[0].Content.Parts) > 0 {
 					var sb strings.Builder
 					for _, p := range geminiResponse.Candidates[0].Content.Parts {
+						if p == nil {
+							continue
+						}
 						if p.Text != "" {
 							sb.WriteString(p.Text)
 						}
@@ -2113,7 +2123,7 @@ func (provider *GeminiProvider) ImageGeneration(ctx *schemas.BifrostContext, key
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*GeminiGenerationRequest, error) {
 			return ToGeminiImageGenerationRequest(request), nil
 		})
 	if bifrostErr != nil {
@@ -2171,7 +2181,7 @@ func (provider *GeminiProvider) handleImagenImageGeneration(ctx *schemas.Bifrost
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*GeminiImagenRequest, error) {
 			return ToImagenImageGenerationRequest(request), nil
 		})
 	if bifrostErr != nil {
@@ -2263,7 +2273,7 @@ func (provider *GeminiProvider) ImageEdit(ctx *schemas.BifrostContext, key schem
 		jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 			ctx,
 			request,
-			func() (providerUtils.RequestBodyWithExtraParams, error) {
+			func() (*GeminiImagenRequest, error) {
 				return ToImagenImageEditRequest(request), nil
 			})
 		if bifrostErr != nil {
@@ -2337,7 +2347,7 @@ func (provider *GeminiProvider) ImageEdit(ctx *schemas.BifrostContext, key schem
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*GeminiGenerationRequest, error) {
 			return ToGeminiImageEditRequest(request), nil
 		})
 	if bifrostErr != nil {
@@ -2411,7 +2421,7 @@ func (provider *GeminiProvider) VideoGeneration(ctx *schemas.BifrostContext, key
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		bifrostReq,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*GeminiVideoGenerationRequest, error) {
 			return ToGeminiVideoGenerationRequest(bifrostReq)
 		},
 	)
@@ -4145,7 +4155,7 @@ func (provider *GeminiProvider) CountTokens(ctx *schemas.BifrostContext, key sch
 		jsonData, bifrostErr = providerUtils.CheckContextAndGetRequestBody(
 			ctx,
 			request,
-			func() (providerUtils.RequestBodyWithExtraParams, error) {
+			func() (*GeminiGenerationRequest, error) {
 				resolvedRequest, err := ResolveResponsesAudioURLs(ctx, request)
 				if err != nil {
 					return nil, err
