@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/maximhq/bifrost/cli/internal/config"
+	"github.com/maximhq/bifrost/cli/internal/harness"
 )
 
 // erroringWriter fails every write, simulating a broken output pipe.
@@ -713,5 +714,235 @@ func TestRollbackFailedConfigureRemovesReceiptWhenRollbackSucceeds(t *testing.T)
 	}
 	if _, statErr := os.Stat(receiptPath); !os.IsNotExist(statErr) {
 		t.Fatalf("expected receipt to be removed after successful rollback, stat err = %v", statErr)
+	}
+}
+
+func TestConfigureAllHarnessesRoundTrip(t *testing.T) {
+	t.Setenv("SHELL", "/bin/bash")
+	t.Setenv("PI_CODING_AGENT_DIR", "")
+	t.Setenv("BIFROST_AGENT_TOKEN", "sso-token-must-not-be-written")
+	t.Setenv("BIFROST_VIRTUAL_KEY", "sk-bf-configure-test")
+	for _, agent := range []string{"claude", "codex", "opencode", "gemini", "pi", "anti-gravity", "AGUI"} {
+		t.Run(agent, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			t.Setenv("CODEX_HOME", filepath.Join(home, "custom-codex"))
+			t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "xdg"))
+			runner, _, _ := newTestRunner(t, testRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+				t.Fatalf("configure made a network request: %s", req.URL)
+				return nil, nil
+			}))
+			if err := runner.Run(context.Background(), []string{"configure", agent, "--model", "openai/test-model"}); err != nil {
+				t.Fatal(err)
+			}
+			paths, err := nativeConfigPaths(agent)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if agent == "codex" && paths[0] != filepath.Join(home, "custom-codex", "config.toml") {
+				t.Fatalf("Codex ignored CODEX_HOME: %v", paths)
+			}
+			for _, path := range paths {
+				body, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if strings.Contains(string(body), "sso-token-must-not-be-written") {
+					t.Fatal("configure persisted an SSO token")
+				}
+				if len(body) == 0 {
+					t.Fatalf("empty config: %s", path)
+				}
+			}
+			if err := runner.Run(context.Background(), []string{"unconfigure", agent}); err != nil {
+				t.Fatal(err)
+			}
+			for _, path := range paths {
+				if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("config not restored: %s (%v)", path, err)
+				}
+			}
+		})
+	}
+}
+
+func TestUnconfigureAntigravityAfterShellOrZDOTDIRChange(t *testing.T) {
+	cases := map[string]func(t *testing.T){
+		"unsupported shell": func(t *testing.T) { t.Setenv("SHELL", "/usr/bin/fish") },
+		"zdotdir moved":     func(t *testing.T) { t.Setenv("ZDOTDIR", t.TempDir()) },
+		"zsh to bash":       func(t *testing.T) { t.Setenv("SHELL", "/bin/bash") },
+	}
+	for name, change := range cases {
+		t.Run(name, func(t *testing.T) {
+			home := t.TempDir()
+			zdotdir := filepath.Join(home, "zsh")
+			t.Setenv("HOME", home)
+			t.Setenv("SHELL", "/bin/zsh")
+			t.Setenv("ZDOTDIR", zdotdir)
+			t.Setenv("BIFROST_VIRTUAL_KEY", "sk-bf-shell-change")
+			if err := os.MkdirAll(zdotdir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			profile := filepath.Join(zdotdir, ".zshrc")
+			original := []byte("# user zshrc\n")
+			if err := os.WriteFile(profile, original, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			runner, _, _ := newTestRunner(t, testRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+				t.Fatalf("unexpected network request: %s", req.URL)
+				return nil, nil
+			}))
+			if err := runner.Run(context.Background(), []string{"configure", "antigravity", "--model", "gemini/test"}); err != nil {
+				t.Fatal(err)
+			}
+			change(t)
+			if err := runner.Run(context.Background(), []string{"unconfigure", "agy"}); err != nil {
+				t.Fatal(err)
+			}
+			if body, _ := os.ReadFile(profile); string(body) != string(original) {
+				t.Fatalf("zshrc not restored: %q", body)
+			}
+			if _, err := os.Stat(filepath.Join(home, ".gemini", "antigravity-cli", "settings.json")); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("settings not restored: %v", err)
+			}
+		})
+	}
+}
+
+func TestRecordedAntigravityPathsRejectUnexpectedFiles(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	settings := filepath.Join(home, ".gemini", "antigravity-cli", "settings.json")
+	for name, recorded := range map[string][]string{
+		"bashrc outside home": {settings, filepath.Join(home, "other", ".bashrc")},
+		"unrelated file":      {settings, filepath.Join(home, ".profile")},
+		"relative zshrc":      {settings, "zsh/.zshrc"},
+		"unclean zshrc":       {settings, home + "/zsh/../zsh/.zshrc"},
+		"other settings":      {filepath.Join(home, "settings.json"), filepath.Join(home, ".bashrc")},
+		"extra file":          {settings, filepath.Join(home, ".bashrc"), filepath.Join(home, ".zshrc")},
+	} {
+		receipt := &configReceipt{}
+		for _, path := range recorded {
+			receipt.Files = append(receipt.Files, configSnapshot{Path: path})
+		}
+		if _, ok := recordedAntigravityPaths(receipt); ok {
+			t.Errorf("%s: accepted %v", name, recorded)
+		}
+	}
+	receipt := &configReceipt{Files: []configSnapshot{{Path: settings}, {Path: filepath.Join(t.TempDir(), ".zshrc")}}}
+	if _, ok := recordedAntigravityPaths(receipt); !ok {
+		t.Error("rejected a .zshrc from a previous ZDOTDIR")
+	}
+}
+
+func TestConfigureGeminiRollsBackWhenEnvWriteFails(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("BIFROST_VIRTUAL_KEY", "sk-bf-rollback")
+	paths, err := nativeConfigPaths("gemini")
+	if err != nil {
+		t.Fatal(err)
+	}
+	originals := [][]byte{[]byte("{\"theme\": \"keep\"}\n"), []byte("KEEP='original'\n")}
+	for i, path := range paths {
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, originals[i], 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	original := lookupConfigHarness
+	t.Cleanup(func() { lookupConfigHarness = original })
+	lookupConfigHarness = func(id string) (harness.Harness, bool) {
+		h, ok := original(id)
+		write := h.WriteNativeConfig
+		h.WriteNativeConfig = func(baseURL, apiKey, model string) error {
+			// settings.json and .env are both written before the injected .env failure.
+			if err := write(baseURL, apiKey, model); err != nil {
+				return err
+			}
+			if body, _ := os.ReadFile(paths[0]); string(body) == string(originals[0]) {
+				t.Fatal("settings.json was not written before the injected failure")
+			}
+			return errors.New("injected .env write failure")
+		}
+		return h, ok
+	}
+	runner, _, _ := newTestRunner(t, testRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		t.Fatalf("unexpected network request: %s", req.URL)
+		return nil, nil
+	}))
+	err = runner.Run(context.Background(), []string{"configure", "gemini", "--model", "gemini/test"})
+	if err == nil || !strings.Contains(err.Error(), "injected .env write failure") {
+		t.Fatalf("expected injected failure, got %v", err)
+	}
+	for i, path := range paths {
+		if body, _ := os.ReadFile(path); string(body) != string(originals[i]) {
+			t.Fatalf("%s not restored: %q", path, body)
+		}
+	}
+	if receipts, _ := filepath.Glob(filepath.Join(filepath.Dir(runner.StatePath), "receipts", "*.json")); len(receipts) != 0 {
+		t.Fatalf("receipt left after rollback: %v", receipts)
+	}
+}
+
+func TestLegacyCodexReceiptRetainsRestoreManifest(t *testing.T) {
+	paths := []string{filepath.Join(t.TempDir(), "config.toml")}
+	legacy := []string{filepath.Join(filepath.Dir(paths[0]), "auth.json"), paths[0]}
+	receipt := &configReceipt{ContextID: "test", Agent: "codex", Files: []configSnapshot{{Path: legacy[0]}, {Path: legacy[1]}}}
+	if !receiptMatchesManifest(receipt, "test", "codex", receiptConfigPaths("codex", paths, receipt)) {
+		t.Fatal("legacy Codex restore manifest rejected")
+	}
+	receipt.Files[0].Path = "/unrelated/auth.json"
+	if len(receiptConfigPaths("codex", paths, receipt)) != 1 {
+		t.Fatal("accepted an unrelated legacy auth path")
+	}
+}
+
+func TestConfigureExistingJSONAgentsRestoresOriginalBytes(t *testing.T) {
+	for _, agent := range []string{"opencode", "gemini"} {
+		t.Run(agent, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+			t.Setenv("OPENCODE_CONFIG", "")
+			t.Setenv("BIFROST_VIRTUAL_KEY", "selected-virtual-key")
+			paths, err := nativeConfigPaths(agent)
+			if err != nil {
+				t.Fatal(err)
+			}
+			originals := [][]byte{[]byte("{\n // user comment\n \"theme\": \"custom\",\n}\n"), []byte("# user env\nKEEP='original'\nGEMINI_API_KEY='old-key'\n")}
+			for index, path := range paths {
+				if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, originals[index], 0o640); err != nil {
+					t.Fatal(err)
+				}
+			}
+			runner, _, _ := newTestRunner(t, nil)
+			if err := runner.Run(context.Background(), []string{"configure", agent, "--model", "provider/model"}); err != nil {
+				t.Fatal(err)
+			}
+			if err := runner.Run(context.Background(), []string{"unconfigure", agent}); err != nil {
+				t.Fatal(err)
+			}
+			for index, path := range paths {
+				restored, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !bytes.Equal(restored, originals[index]) {
+					t.Fatalf("original bytes not restored: %s", path)
+				}
+				info, err := os.Stat(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if info.Mode().Perm() != 0o640 {
+					t.Fatalf("original mode not restored: %s", path)
+				}
+			}
+		})
 	}
 }

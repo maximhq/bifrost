@@ -126,7 +126,7 @@ func PrepareCommand(ctx context.Context, spec LaunchSpec) (*PreparedCmd, error) 
 			return nil, fmt.Errorf("build endpoint for pre-launch: %w", err)
 		}
 		credential := strings.TrimSpace(spec.AgentToken)
-		if strings.TrimSpace(spec.TokenHelperCommand) != "" {
+		if strings.TrimSpace(spec.TokenHelperCommand) != "" || spec.Harness.AgentTokenEnv == "" {
 			credential = ""
 		}
 		if credential == "" {

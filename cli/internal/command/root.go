@@ -480,7 +480,8 @@ func apiCredentialRequirements(args []string) credentialRequirements {
 	if !ok {
 		return 0
 	}
-	mode := requestedAuthMode(client.ResolveAuthMode(client.AuthAuto, operation.Path), args[2:])
+	defaultAuth, _ := parseAuthMode(operation.Auth)
+	mode := requestedAuthMode(client.ResolveAuthMode(defaultAuth, operation.Path), args[2:])
 	return credentialsForAuthMode(client.ResolveAuthMode(mode, operation.Path))
 }
 
@@ -835,6 +836,7 @@ Commands:
   run                  Run a coding agent directly
   claude, codex        Direct coding-agent aliases
   gemini, opencode     Direct coding-agent aliases
+  pi, antigravity      Direct coding-agent aliases (also anti-gravity, agy, AGUI)
   configure            Persist reversible coding-agent configuration
   unconfigure          Restore coding-agent configuration from a receipt
   context              Manage gateway contexts
