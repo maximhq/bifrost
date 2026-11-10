@@ -41,6 +41,12 @@ type ComplexitySuggestionManager interface {
 	StartComplexitySuggestionRun(ctx context.Context, routerID string, window time.Duration) (string, error)
 	EstimateComplexitySuggestionRun(ctx context.Context, routerID string, window time.Duration) (suggestrun.Estimate, error)
 	TestComplexitySuggestionPhrases(ctx context.Context, routerID string, phrases []complexity.SuggestionPhrase, examples []suggestrun.TestExample) (suggestrun.PhraseTest, error)
+	// CancelComplexitySuggestionRun stops a queued or running run and returns
+	// its record as it now stands.
+	CancelComplexitySuggestionRun(ctx context.Context, routerID, runID string) (logstore.ComplexitySuggestionRun, error)
+	// ComplexitySuggestionImpact replays the window's captured requests
+	// against a draft phrase bank and prices what changes.
+	ComplexitySuggestionImpact(ctx context.Context, routerID string, window time.Duration, draft []complexity.SuggestionPhrase, draftMinSimilarity *float64) (ComplexitySuggestionImpactReport, error)
 }
 
 // defaultComplexitySuggestionRouter is the router suggestions belong to when
@@ -65,6 +71,10 @@ type complexitySuggestionView struct {
 	// Stale is true when the suggestion was computed against an earlier
 	// version of the router than the one it serves now.
 	Stale bool `json:"stale"`
+	// CurrentRouting is how many of the cluster's requests routed to each tier
+	// when its last run computed it ("none": no phrase matched them). Empty
+	// for a row written before it was recorded.
+	CurrentRouting map[string]int64 `json:"current_routing"`
 }
 
 func newComplexitySuggestionView(row logstore.ComplexitySuggestion, currentVersion string) complexitySuggestionView {
@@ -76,6 +86,10 @@ func newComplexitySuggestionView(row logstore.ComplexitySuggestion, currentVersi
 	}
 	if view.ExampleLogIDs == nil {
 		view.ExampleLogIDs = []string{}
+	}
+	view.CurrentRouting = row.CurrentRouting()
+	if view.CurrentRouting == nil {
+		view.CurrentRouting = map[string]int64{}
 	}
 	return view
 }
@@ -144,6 +158,8 @@ func (h *RoutingHandler) registerComplexitySuggestionRoutes(r *router.Router, mi
 	handle(fasthttp.MethodGet, "/api/routing/complexity-suggestions/runs", h.listComplexitySuggestionRuns)
 	handle(fasthttp.MethodGet, "/api/routing/complexity-suggestions/runs/estimate", h.estimateComplexitySuggestionRun)
 	handle(fasthttp.MethodPost, "/api/routing/complexity-suggestions/runs", h.startComplexitySuggestionRun)
+	handle(fasthttp.MethodPost, "/api/routing/complexity-suggestions/runs/{run_id}/cancel", h.cancelComplexitySuggestionRun)
+	handle(fasthttp.MethodPost, "/api/routing/complexity-suggestions/impact", h.complexitySuggestionImpact)
 	handle(fasthttp.MethodGet, "/api/routing/complexity-suggestions/{suggestion_id}", h.getComplexitySuggestion)
 	handle(fasthttp.MethodPut, "/api/routing/complexity-suggestions/{suggestion_id}/status", h.updateComplexitySuggestionStatus)
 }
@@ -516,7 +532,7 @@ func (h *RoutingHandler) startComplexitySuggestionRun(ctx *fasthttp.RequestCtx) 
 	case errors.Is(err, routing.ErrComplexitySuggestionsOff), errors.Is(err, routing.ErrComplexitySuggestionRunInFlight):
 		SendError(ctx, fasthttp.StatusConflict, err.Error())
 		return
-	case errors.Is(err, ErrRoutingPluginUnavailable), errors.Is(err, complexity.ErrNoServingGeneration):
+	case errors.Is(err, ErrRoutingPluginUnavailable), errors.Is(err, complexity.ErrNoServingGeneration), errors.Is(err, complexity.ErrNoCaptureStore):
 		SendError(ctx, fasthttp.StatusServiceUnavailable, err.Error())
 		return
 	case err != nil:
@@ -553,12 +569,113 @@ func (h *RoutingHandler) estimateComplexitySuggestionRun(ctx *fasthttp.RequestCt
 		SendError(ctx, fasthttp.StatusNotFound, err.Error())
 	case errors.Is(err, routing.ErrComplexitySuggestionsOff):
 		SendError(ctx, fasthttp.StatusConflict, err.Error())
-	case errors.Is(err, ErrRoutingPluginUnavailable), errors.Is(err, complexity.ErrNoServingGeneration):
+	case errors.Is(err, ErrRoutingPluginUnavailable), errors.Is(err, complexity.ErrNoServingGeneration), errors.Is(err, complexity.ErrNoCaptureStore):
 		SendError(ctx, fasthttp.StatusServiceUnavailable, err.Error())
 	case err != nil:
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to estimate suggestion run: %v", err))
 	default:
 		SendJSON(ctx, estimate)
+	}
+}
+
+// cancelComplexitySuggestionRun stops a queued or running run and returns its
+// record. A running run records itself as cancelled when it stops, so the
+// record returned may still read running.
+func (h *RoutingHandler) cancelComplexitySuggestionRun(ctx *fasthttp.RequestCtx) {
+	manager, _, ok := h.suggestionManager(ctx)
+	if !ok {
+		return
+	}
+	routerID, _, ok := h.suggestionRouterID(ctx, manager)
+	if !ok {
+		return
+	}
+	runID, _ := ctx.UserValue("run_id").(string)
+	if strings.TrimSpace(runID) == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "run id is required")
+		return
+	}
+	run, err := manager.CancelComplexitySuggestionRun(ctx, routerID, runID)
+	switch {
+	case errors.Is(err, routing.ErrUnknownComplexityRouter), errors.Is(err, routing.ErrUnknownComplexitySuggestionRun):
+		SendError(ctx, fasthttp.StatusNotFound, err.Error())
+		return
+	case errors.Is(err, routing.ErrComplexitySuggestionRunEnded), errors.Is(err, routing.ErrComplexitySuggestionsOff):
+		SendError(ctx, fasthttp.StatusConflict, err.Error())
+		return
+	case err != nil:
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to cancel suggestion run: %v", err))
+		return
+	}
+	lib.RecordAuditChange(ctx, "model_routing_suggestion_run.cancelled", "model_routing_suggestion_run", runID, runID, nil,
+		map[string]any{"run_id": runID, "router_id": routerID})
+	SendJSON(ctx, run)
+}
+
+// complexitySuggestionImpactRequest is a draft phrase bank to replay: every
+// phrase it would serve, by tier.
+type complexitySuggestionImpactRequest struct {
+	Phrases []complexitySuggestionTestPhrase `json:"phrases"`
+	// MinSimilarity is the floor the draft would save, when the draft changes
+	// it; omitted replays the draft at the serving floor.
+	MinSimilarity *float64 `json:"min_similarity,omitempty"`
+}
+
+// complexitySuggestionImpact replays the last ?window= of a router's captured
+// requests against a draft phrase bank and the live one, and prices what
+// would change tier. Nothing is saved.
+func (h *RoutingHandler) complexitySuggestionImpact(ctx *fasthttp.RequestCtx) {
+	manager, _, ok := h.suggestionManager(ctx)
+	if !ok {
+		return
+	}
+	routerID, _, ok := h.suggestionRouterID(ctx, manager)
+	if !ok {
+		return
+	}
+	window, err := parseSuggestionWindow(string(ctx.QueryArgs().Peek("window")))
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
+	var req complexitySuggestionImpactRequest
+	if err := sonic.Unmarshal(ctx.PostBody(), &req); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("invalid request body: %v", err))
+		return
+	}
+	if len(req.Phrases) == 0 || len(req.Phrases) > suggestrun.MaxImpactPhrases {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("a draft bank holds between 1 and %d phrases", suggestrun.MaxImpactPhrases))
+		return
+	}
+	if m := req.MinSimilarity; m != nil && (math.IsNaN(*m) || *m < 0 || *m >= 1) {
+		SendError(ctx, fasthttp.StatusBadRequest, "min_similarity must be at least 0 and less than 1")
+		return
+	}
+	draft := make([]complexity.SuggestionPhrase, len(req.Phrases))
+	for i, p := range req.Phrases {
+		draft[i] = complexity.SuggestionPhrase{Tier: strings.ToUpper(strings.TrimSpace(p.Tier)), Text: strings.TrimSpace(p.Text)}
+		// The bank's own limit, checked before anything is embedded.
+		if n := utf8.RuneCountInString(draft[i].Text); n > configstore.MaxComplexitySemanticPhraseCharacters {
+			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("phrase %d is %d characters; a phrase can be at most %d", i+1, n, configstore.MaxComplexitySemanticPhraseCharacters))
+			return
+		}
+	}
+	report, err := manager.ComplexitySuggestionImpact(ctx, routerID, window, draft, req.MinSimilarity)
+	switch {
+	case errors.Is(err, routing.ErrComplexitySuggestionWindow), errors.Is(err, suggestrun.ErrInvalidPhraseTest):
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+	case errors.Is(err, routing.ErrUnknownComplexityRouter):
+		SendError(ctx, fasthttp.StatusNotFound, err.Error())
+	case errors.Is(err, routing.ErrComplexitySuggestionsOff):
+		SendError(ctx, fasthttp.StatusConflict, err.Error())
+	case errors.Is(err, complexity.ErrNoServingGeneration), errors.Is(err, complexity.ErrNoCaptureStore):
+		SendError(ctx, fasthttp.StatusServiceUnavailable, err.Error())
+	case err != nil:
+		// The embedding provider failed the draft's new phrases, or the logs
+		// could not be read.
+		SendError(ctx, fasthttp.StatusBadGateway, err.Error())
+	default:
+		SendJSON(ctx, report)
 	}
 }
 
@@ -618,4 +735,182 @@ func queryInt(ctx *fasthttp.RequestCtx, name string, fallback, lo, hi int) (int,
 		return 0, false
 	}
 	return n, true
+}
+
+// maxComplexityImpactChanges bounds the changed requests a report lists; the
+// counts and the pricing cover every one of them.
+const maxComplexityImpactChanges = 25
+
+// ComplexityImpactModel is the model a tier is priced at: the router's
+// highest-weighted target for it.
+type ComplexityImpactModel struct {
+	Provider string `json:"provider"`
+	Model    string `json:"model"`
+}
+
+// ComplexityImpactChange is one changed request as a report lists it, with
+// its text when the caller may read it.
+type ComplexityImpactChange struct {
+	suggestrun.ImpactChange
+	Text string `json:"text,omitempty"`
+}
+
+// ComplexityImpactAttention is a flagged draft phrase with its example's text.
+type ComplexityImpactAttention struct {
+	suggestrun.ImpactAttention
+	Text string `json:"text,omitempty"`
+}
+
+// ComplexityImpactTier is one tier's row of a report: how many replayed
+// requests each bank sends to it, and the model it is priced at, when the
+// router names one.
+type ComplexityImpactTier struct {
+	Tier  string                 `json:"tier"`
+	Live  int                    `json:"live"`
+	Draft int                    `json:"draft"`
+	Model *ComplexityImpactModel `json:"model,omitempty"`
+}
+
+// ComplexitySuggestionImpactReport is what a draft phrase bank would do to a
+// router's recent traffic. Costs are in dollars over the window, both sides
+// at the router's current models: the changed requests at their live tier's
+// model (or, with no live target, the model that served them) and at their
+// new tier's model, scaled up from the replayed sample when the window held
+// more. A change whose new tier has no model to price it at, or whose log is
+// gone, is counted as unpriced rather than guessed.
+type ComplexitySuggestionImpactReport struct {
+	WindowSeconds int64                       `json:"window_seconds"`
+	Requests      int                         `json:"requests"`
+	Total         int                         `json:"total"`
+	Tiers         []ComplexityImpactTier      `json:"tiers"`
+	ChangedCount  int                         `json:"changed_count"`
+	Changed       []ComplexityImpactChange    `json:"changed"`
+	Attention     []ComplexityImpactAttention `json:"attention"`
+	LiveCost      float64                     `json:"live_cost"`
+	DraftCost     float64                     `json:"draft_cost"`
+	Savings       float64                     `json:"savings"`
+	Priced        int                         `json:"priced"`
+	Unpriced      int                         `json:"unpriced"`
+}
+
+// ComplexityImpactPrice prices token counts at a provider's model; ok is false
+// when the model has no known price.
+type ComplexityImpactPrice func(provider, model string, promptTokens, completionTokens int64) (cost float64, ok bool)
+
+// complexityImpactTiers is the order a report lists tiers in.
+var complexityImpactTiers = []string{complexity.TierSimple, complexity.TierMedium, complexity.TierComplex, logstore.ComplexitySuggestionUnmatchedTier}
+
+// PriceComplexitySuggestionImpact turns a replay into a report: each tier's
+// counts and model, the first changed requests and the flagged phrases with
+// their text, and the changed requests priced as served and at their new
+// tier's model. It is pure: usage, models, prices and texts are handed in.
+func PriceComplexitySuggestionImpact(impact suggestrun.Impact, window time.Duration, usage []logstore.ComplexityReplayUsage,
+	models map[string]ComplexityImpactModel, price ComplexityImpactPrice, texts map[string]string) ComplexitySuggestionImpactReport {
+	report := ComplexitySuggestionImpactReport{
+		WindowSeconds: int64(window / time.Second), Requests: impact.Requests, Total: impact.Total, ChangedCount: len(impact.Changed),
+		Changed: []ComplexityImpactChange{}, Attention: []ComplexityImpactAttention{},
+	}
+	for _, tier := range complexityImpactTiers {
+		row := ComplexityImpactTier{Tier: tier, Live: impact.Live[tier], Draft: impact.Draft[tier]}
+		if m, ok := models[tier]; ok && tier != logstore.ComplexitySuggestionUnmatchedTier {
+			row.Model = &m
+		}
+		report.Tiers = append(report.Tiers, row)
+	}
+	for i, c := range impact.Changed {
+		if i == maxComplexityImpactChanges {
+			break
+		}
+		report.Changed = append(report.Changed, ComplexityImpactChange{ImpactChange: c, Text: texts[c.LogID]})
+	}
+	for _, a := range impact.Attention {
+		report.Attention = append(report.Attention, ComplexityImpactAttention{ImpactAttention: a, Text: texts[a.LogID]})
+	}
+
+	byID := make(map[string]logstore.ComplexityReplayUsage, len(usage))
+	for _, u := range usage {
+		byID[u.ID] = u
+	}
+	var live, draft float64
+	for _, c := range impact.Changed {
+		u, found := byID[c.LogID]
+		target, hasTarget := models[c.To]
+		if !found || !hasTarget || c.To == logstore.ComplexitySuggestionUnmatchedTier {
+			report.Unpriced++
+			continue
+		}
+		// The live side is priced at the live tier's current model, as the
+		// draft side is: the targets may have changed since the request was
+		// served, and only the draft's tier change should move the cost. A
+		// request no live target covers keeps the model that served it.
+		liveProvider, liveModel := u.Provider, u.Model
+		if current, ok := models[c.From]; ok && c.From != logstore.ComplexitySuggestionUnmatchedTier {
+			liveProvider, liveModel = current.Provider, current.Model
+		}
+		before, okBefore := price(liveProvider, liveModel, u.PromptTokens, u.CompletionTokens)
+		after, okAfter := price(target.Provider, target.Model, u.PromptTokens, u.CompletionTokens)
+		if !okBefore || !okAfter {
+			report.Unpriced++
+			continue
+		}
+		report.Priced++
+		live += before
+		draft += after
+	}
+	// A sampled replay stands for the whole window.
+	scale := 1.0
+	if impact.Requests > 0 && impact.Total > impact.Requests {
+		scale = float64(impact.Total) / float64(impact.Requests)
+	}
+	report.LiveCost, report.DraftCost = live*scale, draft*scale
+	report.Savings = report.LiveCost - report.DraftCost
+	return report
+}
+
+// complexityImpactLinearTokens bounds the requests a memoized price works out
+// from per-token rates. List prices are linear below the long-context tiers
+// (the lowest starts at 128k prompt tokens); past this bound a request is
+// priced exactly.
+const complexityImpactLinearTokens = 100_000
+
+// complexityImpactProbeTokens is the token count rates are measured at, well
+// below every long-context tier.
+const complexityImpactProbeTokens = 1000
+
+// MemoizeComplexityImpactPrice wraps a price lookup for one report. A replay
+// prices every changed request twice, almost always at the same two or three
+// models, so each provider/model is probed once (whether it has a price, its
+// flat charge per request, and its rate per prompt and per completion token)
+// and requests below the long-context tiers are priced from those. The flat
+// charge is probed on its own, with no tokens, and taken out of the token
+// rates, so it is added once per request and not scaled with its tokens.
+// Larger requests take the exact lookup. Not safe for concurrent use: a report
+// prices on one goroutine.
+func MemoizeComplexityImpactPrice(exact ComplexityImpactPrice) ComplexityImpactPrice {
+	type rates struct {
+		base, prompt, completion float64
+		ok                       bool
+	}
+	cache := map[string]rates{}
+	return func(provider, model string, promptTokens, completionTokens int64) (float64, bool) {
+		if promptTokens+completionTokens > complexityImpactLinearTokens {
+			return exact(provider, model, promptTokens, completionTokens)
+		}
+		key := provider + "/" + model
+		r, seen := cache[key]
+		if !seen {
+			base, ok := exact(provider, model, 0, 0)
+			if ok {
+				promptCost, _ := exact(provider, model, complexityImpactProbeTokens, 0)
+				completionCost, _ := exact(provider, model, 0, complexityImpactProbeTokens)
+				r = rates{base: base, prompt: (promptCost - base) / complexityImpactProbeTokens,
+					completion: (completionCost - base) / complexityImpactProbeTokens, ok: true}
+			}
+			cache[key] = r
+		}
+		if !r.ok {
+			return 0, false
+		}
+		return r.base + float64(promptTokens)*r.prompt + float64(completionTokens)*r.completion, true
+	}
 }

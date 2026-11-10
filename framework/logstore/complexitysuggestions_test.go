@@ -513,3 +513,87 @@ func TestDeleteComplexityRouterSuggestions(t *testing.T) {
 		assert.Equal(t, "run-kept", runs[0].ID)
 	})
 }
+
+// A replay reads each changed request's usage by log ID: model, tokens and the
+// tier it was routed to. A log that is gone is left out.
+func TestListComplexityReplayUsage(t *testing.T) {
+	store, err := newSqliteLogStore(context.Background(), &SQLiteConfig{Path: filepath.Join(t.TempDir(), "usage.db")}, testLogger{})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close(context.Background()) })
+	ctx := context.Background()
+	now := time.Now().UTC()
+	medium := "MEDIUM"
+	require.NoError(t, store.Create(ctx, &Log{
+		ID: "a", Timestamp: now, CreatedAt: now, Object: "chat_completion", Provider: "openai", Model: "gpt-4o", Status: "success",
+		PromptTokens: 1200, CompletionTokens: 80, ComplexityTier: &medium,
+	}))
+	require.NoError(t, store.Create(ctx, &Log{ID: "b", Timestamp: now, CreatedAt: now, Object: "chat_completion", Provider: "anthropic", Model: "claude", Status: "success"}))
+
+	got, err := store.ListComplexityReplayUsage(ctx, []string{"a", "b", "gone"})
+	require.NoError(t, err)
+	require.Len(t, got, 2)
+	byID := map[string]ComplexityReplayUsage{}
+	for _, u := range got {
+		byID[u.ID] = u
+	}
+	assert.Equal(t, "openai", byID["a"].Provider)
+	assert.Equal(t, "gpt-4o", byID["a"].Model)
+	assert.EqualValues(t, 1200, byID["a"].PromptTokens)
+	assert.EqualValues(t, 80, byID["a"].CompletionTokens)
+	require.NotNil(t, byID["a"].ComplexityTier)
+	assert.Equal(t, "MEDIUM", *byID["a"].ComplexityTier)
+	assert.Nil(t, byID["b"].ComplexityTier)
+
+	none, err := store.ListComplexityReplayUsage(ctx, nil)
+	require.NoError(t, err)
+	assert.Empty(t, none)
+}
+
+// A run's status moves only from the statuses named: a cancel of a run that
+// has already ended is refused and leaves its outcome as it was, and a run
+// that is gone is refused too.
+func TestComplexitySuggestionRunConditionalStatus(t *testing.T) {
+	forEachComplexitySuggestionStore(t, func(t *testing.T, store LogStore) {
+		ctx := context.Background()
+		started := time.Date(2026, 11, 4, 3, 0, 0, 0, time.UTC)
+		live := []string{ComplexitySuggestionRunQueued, ComplexitySuggestionRunRunning}
+		running := &ComplexitySuggestionRun{ID: "run-running", RouterID: "r", TriggeredBy: ComplexitySuggestionTriggerManual,
+			Status: ComplexitySuggestionRunRunning, Stage: ComplexitySuggestionRunStageClustering, StartedAt: started, WindowStart: started.Add(-time.Hour), RequestsRead: 40}
+		done := time.Date(2026, 11, 4, 3, 5, 0, 0, time.UTC)
+		succeeded := &ComplexitySuggestionRun{ID: "run-done", RouterID: "r", TriggeredBy: ComplexitySuggestionTriggerManual,
+			Status: ComplexitySuggestionRunSucceeded, StartedAt: started, WindowStart: started.Add(-time.Hour), FinishedAt: &done, Created: 3, Cost: 0.25}
+		require.NoError(t, store.UpsertComplexitySuggestionRun(ctx, running))
+		require.NoError(t, store.UpsertComplexitySuggestionRun(ctx, succeeded))
+
+		finished := time.Date(2026, 11, 4, 3, 6, 0, 0, time.UTC)
+		moved, err := store.UpdateComplexitySuggestionRunStatus(ctx, "run-running", live, ComplexitySuggestionRunCancelled, &finished)
+		require.NoError(t, err)
+		assert.True(t, moved)
+		moved, err = store.UpdateComplexitySuggestionRunStatus(ctx, "run-done", live, ComplexitySuggestionRunCancelled, &finished)
+		require.NoError(t, err)
+		assert.False(t, moved, "an ended run is not cancelled")
+		moved, err = store.UpdateComplexitySuggestionRunStatus(ctx, "run-gone", live, ComplexitySuggestionRunCancelled, &finished)
+		require.NoError(t, err)
+		assert.False(t, moved)
+
+		runs, err := store.ListComplexitySuggestionRuns(ctx, ComplexitySuggestionRunFilter{RouterID: "r"}, 10)
+		require.NoError(t, err)
+		byID := map[string]ComplexitySuggestionRun{}
+		for _, r := range runs {
+			byID[r.ID] = r
+		}
+		require.Len(t, byID, 2)
+		cancelled := byID["run-running"]
+		assert.Equal(t, ComplexitySuggestionRunCancelled, cancelled.Status)
+		assert.Empty(t, cancelled.Stage, "an ended run reports no stage")
+		require.NotNil(t, cancelled.FinishedAt)
+		assert.True(t, cancelled.FinishedAt.Equal(finished))
+		assert.EqualValues(t, 40, cancelled.RequestsRead, "what the run recorded is kept")
+		kept := byID["run-done"]
+		assert.Equal(t, ComplexitySuggestionRunSucceeded, kept.Status)
+		assert.EqualValues(t, 3, kept.Created)
+		assert.InDelta(t, 0.25, kept.Cost, 1e-9)
+		require.NotNil(t, kept.FinishedAt)
+		assert.True(t, kept.FinishedAt.Equal(done))
+	})
+}

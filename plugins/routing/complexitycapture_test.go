@@ -48,7 +48,8 @@ func captureTestConfig(suggestions *configstore.ComplexitySuggestionsConfig) *co
 // newCapturePlugin builds a plugin with a ready semantic classifier and
 // capture wired, without the upkeep timer (tests drive it). Capture only
 // writes to Bifrost's configured vector store, never the classifier's
-// embedded one, so the plugin gets an in-memory Chromem store as that.
+// embedded one, and never to Chromem, so the plugin gets an in-memory store
+// standing in for a shared one.
 func newCapturePlugin(t *testing.T, suggestions *configstore.ComplexitySuggestionsConfig) *RoutingPlugin {
 	t.Helper()
 	return newCapturePluginWithStore(t, suggestions, true)
@@ -58,6 +59,9 @@ func newCapturePlugin(t *testing.T, suggestions *configstore.ComplexitySuggestio
 // underneath, but not of Chromem's type, which capture refuses.
 type sharedTestStore struct{ vectorstore.VectorStore }
 
+// newCapturePluginWithStore builds the capture plugin over an in-memory
+// Chromem store, presented as a shared store when shared is set and as
+// Chromem itself otherwise.
 func newCapturePluginWithStore(t *testing.T, suggestions *configstore.ComplexitySuggestionsConfig, shared bool) *RoutingPlugin {
 	t.Helper()
 	logger := bifrost.NewDefaultLogger(schemas.LogLevelError)

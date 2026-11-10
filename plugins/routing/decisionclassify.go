@@ -238,7 +238,12 @@ func decisionConversationInput(window []complexity.ConversationMessage) schemas.
 // accepts only string descriptions, so for a Nimble model each tier is
 // rendered as one readable text description instead.
 func decisionChoices(config *complexity.DecisionConfig, model string) []schemas.DecisionChoice {
-	resolved := config.ResolvedCriteria()
+	return decisionTierChoices(config.ResolvedCriteria(), model)
+}
+
+// decisionTierChoices builds one choice per tier, in tier order, from resolved
+// criteria.
+func decisionTierChoices(resolved map[string]configstore.ComplexityDecisionTierDefaults, model string) []schemas.DecisionChoice {
 	asText := isNimbleModel(model)
 	choices := make([]schemas.DecisionChoice, 0, len(resolved))
 	for _, tier := range []string{complexity.TierSimple, complexity.TierMedium, complexity.TierComplex} {
