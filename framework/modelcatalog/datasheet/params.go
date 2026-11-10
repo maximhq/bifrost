@@ -12,7 +12,6 @@ import (
 	"slices"
 	"strings"
 
-	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
@@ -177,7 +176,7 @@ func (s *Store) loadModelParametersFromURL(ctx context.Context) (map[string]json
 			return nil, fmt.Errorf("failed to read model parameters file: %w", err)
 		}
 	} else {
-		if err := bifrost.ValidateExternalURL(rawURL, true); err != nil {
+		if err := ValidateRemoteFeedURL(parsed); err != nil {
 			return nil, fmt.Errorf("model parameters URL validation failed: %w", err)
 		}
 		client := NewHTTPClient(DefaultModelParametersTimeout)

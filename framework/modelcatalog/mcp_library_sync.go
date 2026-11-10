@@ -12,7 +12,6 @@ import (
 	"strings"
 	"time"
 
-	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
@@ -295,7 +294,7 @@ func fetchMCPLibrary(ctx context.Context, rawURL string) ([]MCPLibraryEntry, err
 			return nil, fmt.Errorf("MCP library file exceeds %d bytes", maxMCPLibraryBodyBytes)
 		}
 	} else {
-		if err := bifrost.ValidateExternalURL(rawURL, true); err != nil {
+		if err := datasheet.ValidateRemoteFeedURL(parsed); err != nil {
 			return nil, fmt.Errorf("MCP library URL validation failed: %w", err)
 		}
 		client := datasheet.NewHTTPClient(DefaultMCPLibraryTimeout)

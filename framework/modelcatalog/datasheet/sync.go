@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/bytedance/sonic"
-	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/network"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 )
@@ -251,6 +250,24 @@ func (s *Store) applyPricingData(pricingData map[string]Entry) {
 	s.mu.Unlock()
 }
 
+// ValidateRemoteFeedURL checks the scheme and host of a catalog feed URL
+// (pricing, model parameters, MCP library) before it is fetched over HTTP.
+//
+// It deliberately does not resolve the hostname. Destination policy is
+// enforced by NewHTTPClient at dial time, on every redirect hop, and before a
+// request is handed to a proxy. Resolving here instead would break proxy-only
+// egress deployments (HTTP_PROXY / global proxy), where the local resolver
+// cannot answer public names and the proxy resolves them on its side.
+func ValidateRemoteFeedURL(parsed *url.URL) error {
+	if parsed.Scheme != "https" && parsed.Scheme != "http" {
+		return fmt.Errorf("only https and http schemes are allowed, got: %s", parsed.Scheme)
+	}
+	if parsed.Hostname() == "" {
+		return fmt.Errorf("URL must have a hostname")
+	}
+	return nil
+}
+
 // FilePathFromURL resolves a parsed file:// URL to a filesystem path,
 // supporting both absolute and relative references. Go's url.Parse scatters a
 // relative path across different fields depending on its form, so we reassemble
@@ -296,11 +313,11 @@ func (s *Store) loadPricingFromURL(ctx context.Context) (map[string]Entry, error
 			return nil, fmt.Errorf("failed to read pricing file: %w", err)
 		}
 	} else {
-		if err := bifrost.ValidateExternalURL(rawURL, true); err != nil {
+		if err := ValidateRemoteFeedURL(parsed); err != nil {
 			return nil, fmt.Errorf("pricing URL validation failed: %w", err)
 		}
-		// ValidateExternalURL screens the configured host once; the guarded
-		// client holds every connection and redirect hop to the same policy.
+		// The guarded client enforces the destination policy on every
+		// connection, redirect hop, and proxied request.
 		client := NewHTTPClient(DefaultPricingTimeout)
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.URL(), nil)
 		if err != nil {

@@ -77,7 +77,7 @@ func TestSyncErrorKeepsURLCause(t *testing.T) {
 }
 
 // TestLoadFromURLRefusesRedirectToLinkLocal: the entry URL passes
-// ValidateExternalURL (it is a reachable loopback server), but its 302 points
+// the scheme/host check (it is a reachable loopback server), but its 302 points
 // at the cloud metadata address. The redirect hop must be refused and the
 // error must say so; the datasheet must never be read from there.
 func TestLoadFromURLRefusesRedirectToLinkLocal(t *testing.T) {

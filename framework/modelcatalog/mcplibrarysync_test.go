@@ -276,7 +276,7 @@ func TestFetchMCPLibraryUsesGlobalProxy(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	// A public IP literal: ValidateExternalURL resolves the host before any request.
+	// A public IP literal, so the route is deterministic without DNS.
 	_, _ = fetchMCPLibrary(ctx, "https://203.0.113.10/mcp-library.json")
 	proxytest.AssertRoute(t, set, proxytest.Route{Proxy: "config"}, "203.0.113.10:443", nil)
 }
