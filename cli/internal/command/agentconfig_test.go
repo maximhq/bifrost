@@ -529,6 +529,19 @@ func TestRunRequestUsageWriteFailureReturnsError(t *testing.T) {
 	}
 }
 
+// TestRunRequestUsageListsProjectFlags keeps the help in step with the
+// project selectors the command accepts.
+func TestRunRequestUsageListsProjectFlags(t *testing.T) {
+	var out bytes.Buffer
+	runner := &Runner{Out: &out}
+	if err := runner.runRequest(context.Background(), nil, []string{"--help"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "[--project-id ID|--project-name NAME]") {
+		t.Fatalf("usage does not list the project flags: %q", out.String())
+	}
+}
+
 // TestRunResourcesUsageWriteFailureReturnsError verifies a broken output
 // pipe while printing "bifrost resources" usage is reported.
 func TestRunResourcesUsageWriteFailureReturnsError(t *testing.T) {

@@ -36,7 +36,7 @@ func (v *repeatedValue) Set(value string) error {
 // runRequest calls an arbitrary gateway-relative HTTP endpoint.
 func (r *Runner) runRequest(ctx context.Context, env *environment, args []string) error {
 	if len(args) > 0 && (args[0] == "--help" || args[0] == "-h") {
-		_, err := fmt.Fprint(r.Out, "Usage: bifrost request <METHOD> <PATH> [--query key=value] [--header 'Name: value'] [--body VALUE|--file PATH] [--auth auto|none|management|inference|agent] [--stream]\n")
+		_, err := fmt.Fprint(r.Out, "Usage: bifrost request <METHOD> <PATH> [--query key=value] [--header 'Name: value'] [--body VALUE|--file PATH] [--auth auto|none|management|inference|agent] [--project-id ID|--project-name NAME] [--stream]\n")
 		return err
 	}
 	if len(args) < 2 {
