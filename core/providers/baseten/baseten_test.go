@@ -375,6 +375,151 @@ func TestBasetenUnsupportedFileAndPassthrough(t *testing.T) {
 	}
 }
 
+// TestBasetenImageGenerationPredict pins that a deployment_url copied from the
+// dashboard as /predict is called as given with OpenAI's image body and Bearer auth,
+// and that both reply shapes come back as images: a FLUX.1 Truss's {"data": base64}
+// and the OpenAI {"data": [{"b64_json"}]} of recipes that map /predict to
+// /v1/images/generations.
+func TestBasetenImageGenerationPredict(t *testing.T) {
+	t.Parallel()
+	req := &schemas.BifrostImageGenerationRequest{
+		Provider: schemas.Baseten,
+		Model:    "flux-dev",
+		Input:    &schemas.ImageGenerationInput{Prompt: "a lighthouse at dusk"},
+		Params:   &schemas.ImageGenerationParameters{Size: schemas.Ptr("1024x1024"), Seed: schemas.Ptr(7), NumInferenceSteps: schemas.Ptr(20)},
+	}
+	for name, tc := range map[string]struct {
+		reply string
+		want  []string
+	}{
+		"truss base64":  {reply: `{"data":"aW1n"}`, want: []string{"aW1n"}},
+		"openai images": {reply: `{"created":5,"data":[{"b64_json":"YQ=="},{"b64_json":"Yg=="}]}`, want: []string{"YQ==", "Yg=="}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			server, seen := newStub(t, func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = fmt.Fprint(w, tc.reply)
+			})
+			provider := newProvider(t, server.URL+"/v1")
+			resp, err := provider.ImageGeneration(contextWithDeployment(server.URL+"/environments/production/predict/"), testKey, req)
+			if err != nil {
+				t.Fatalf("ImageGeneration: %v", llmtests.GetErrorMessage(err))
+			}
+			got := seen()
+			if len(got) != 1 || got[0].Path != "/environments/production/predict" {
+				t.Fatalf("expected one call to the /predict URL as given, got %+v", got)
+			}
+			body := got[0].Body
+			if got[0].Auth != "Bearer bt-test-key" || body["prompt"] != "a lighthouse at dusk" || body["size"] != "1024x1024" || body["seed"] != float64(7) || body["num_inference_steps"] != float64(20) {
+				t.Fatalf("unexpected upstream request: %+v", got[0])
+			}
+			if len(resp.Data) != len(tc.want) {
+				t.Fatalf("expected %d images, got %+v", len(tc.want), resp.Data)
+			}
+			for i, b64 := range tc.want {
+				if resp.Data[i].B64JSON != b64 || resp.Data[i].Index != i {
+					t.Fatalf("image %d: expected %q at index %d, got %+v", i, b64, i, resp.Data[i])
+				}
+			}
+		})
+	}
+}
+
+// TestBasetenImageGenerationPredictRejects pins that a /predict reply without an
+// image fails rather than returning an empty list, and that other operations refuse
+// a /predict URL before any call.
+func TestBasetenImageGenerationPredictRejects(t *testing.T) {
+	t.Parallel()
+	server, seen := newStub(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"output":"not an image"}`)
+	})
+	provider := newProvider(t, server.URL+"/v1")
+	predictURL := server.URL + "/environments/production/predict"
+	req := &schemas.BifrostImageGenerationRequest{
+		Provider: schemas.Baseten,
+		Model:    "flux-dev",
+		Input:    &schemas.ImageGenerationInput{Prompt: "a lighthouse"},
+	}
+
+	if _, err := provider.ImageGeneration(contextWithDeployment(predictURL), testKey, req); err == nil || !strings.Contains(llmtests.GetErrorMessage(err), "no image") {
+		t.Fatalf("expected a missing-image error, got %+v", err)
+	}
+	if _, err := provider.ChatCompletion(contextWithDeployment(predictURL), testKey, chatRequest("flux-dev")); err == nil || !strings.Contains(llmtests.GetErrorMessage(err), "/predict") {
+		t.Fatalf("expected chat against a /predict URL to fail naming it, got %+v", err)
+	}
+	if n := len(seen()); n != 1 {
+		t.Fatalf("expected only the image call upstream, got %d", n)
+	}
+}
+
+// TestBasetenImageGenerationDefaultsToBase64 pins that a request without
+// response_format asks the deployment for b64_json on both URL forms, since Baseten's
+// image servers reject OpenAI's url default, and that the caller's request is not
+// modified.
+func TestBasetenImageGenerationDefaultsToBase64(t *testing.T) {
+	t.Parallel()
+	server, seen := newStub(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"created":1,"data":[{"b64_json":"aW1n"}]}`)
+	})
+	provider := newProvider(t, server.URL+"/v1")
+	req := &schemas.BifrostImageGenerationRequest{
+		Provider: schemas.Baseten,
+		Model:    "flux-2",
+		Input:    &schemas.ImageGenerationInput{Prompt: "dog playing"},
+		Params:   &schemas.ImageGenerationParameters{Size: schemas.Ptr("512x512")},
+	}
+	for _, u := range []string{server.URL + "/environments/production/sync/v1", server.URL + "/environments/production/predict"} {
+		if _, err := provider.ImageGeneration(contextWithDeployment(u), testKey, req); err != nil {
+			t.Fatalf("ImageGeneration(%s): %v", u, llmtests.GetErrorMessage(err))
+		}
+	}
+	got := seen()
+	if len(got) != 2 {
+		t.Fatalf("expected two upstream calls, got %+v", got)
+	}
+	for _, call := range got {
+		if call.Body["response_format"] != "b64_json" || call.Body["size"] != "512x512" {
+			t.Fatalf("expected response_format b64_json and the caller's size on %s, got %+v", call.Path, call.Body)
+		}
+	}
+	if req.Params.ResponseFormat != nil {
+		t.Fatalf("expected the caller's request to stay unmodified, got response_format %q", *req.Params.ResponseFormat)
+	}
+}
+
+// TestBasetenImageGenerationErrorDetail pins that a deployment error carried in
+// error.detail or a top-level detail reaches the client as the message.
+func TestBasetenImageGenerationErrorDetail(t *testing.T) {
+	t.Parallel()
+	for name, reply := range map[string]string{
+		"error.detail": `{"error":{"detail":"response_format=url is not supported"}}`,
+		"detail":       `{"detail":"response_format=url is not supported"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			server, _ := newStub(t, func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = fmt.Fprint(w, reply)
+			})
+			provider := newProvider(t, server.URL+"/v1")
+			req := &schemas.BifrostImageGenerationRequest{
+				Provider: schemas.Baseten,
+				Model:    "flux-2",
+				Input:    &schemas.ImageGenerationInput{Prompt: "dog playing"},
+				Params:   &schemas.ImageGenerationParameters{ResponseFormat: schemas.Ptr("url")},
+			}
+			_, err := provider.ImageGeneration(contextWithDeployment(server.URL+"/environments/production/sync/v1"), testKey, req)
+			if err == nil || err.StatusCode == nil || *err.StatusCode != http.StatusBadRequest || err.Error.Message != "response_format=url is not supported" {
+				t.Fatalf("expected a 400 carrying the deployment's detail, got %+v", err)
+			}
+		})
+	}
+}
+
 // basetenDecisionQuestions asks one question of each System One type.
 func basetenDecisionQuestions() []schemas.DecisionQuestion {
 	return []schemas.DecisionQuestion{
