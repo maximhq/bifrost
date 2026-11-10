@@ -591,6 +591,23 @@ func stripResponsesCacheBreakpointTTL(messages []schemas.ResponsesMessage) {
 // retags it by role.
 const bareTextContentBlockType schemas.ResponsesMessageContentBlockType = "text"
 
+// hasNonReasoningContent reports whether content holds anything other than reasoning
+// blocks: a plain string, or at least one block of another type.
+func hasNonReasoningContent(content *schemas.ResponsesMessageContent) bool {
+	if content == nil {
+		return false
+	}
+	if content.ContentStr != nil {
+		return true
+	}
+	for i := range content.ContentBlocks {
+		if content.ContentBlocks[i].Type != schemas.ResponsesOutputMessageContentTypeReasoning {
+			return true
+		}
+	}
+	return false
+}
+
 // isNativeWebSearchCall reports whether message is a web_search_call that OpenAI itself
 // produced: its id has OpenAI's "ws_" prefix and its status is one OpenAI defines.
 // "ws_<n>" is excluded because Gemini synthesizes it for ID-less search calls
@@ -788,9 +805,18 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 			message.ID = nil
 		}
 
+		// An item with a role and no type is a message when it has content of its own:
+		// OpenAI's easy input form makes "type" optional there. It stays a message even when
+		// it also carries an encrypted_content, which decodes into the embedded
+		// ResponsesReasoning. A typeless item that has a reasoning summary, or whose content
+		// is only reasoning blocks, is a reasoning shape handled further down, not a message.
+		isMessageItem := (message.Type != nil && *message.Type == schemas.ResponsesMessageTypeMessage) ||
+			(message.Type == nil && message.Role != nil && hasNonReasoningContent(message.Content) &&
+				(message.ResponsesReasoning == nil || len(message.ResponsesReasoning.Summary) == 0))
+
 		// OpenAI accepts role only on message input items.
 		if (message.Type != nil && *message.Type != schemas.ResponsesMessageTypeMessage) ||
-			(message.Type == nil && message.ResponsesReasoning != nil) {
+			(message.Type == nil && message.ResponsesReasoning != nil && !isMessageItem) {
 			message.Role = nil
 		}
 
@@ -918,8 +944,7 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 		// Drop the token for every model: OpenAI never mints encrypted_content on a message item
 		// and rejects any it receives, and the fail-soft retry would then also strip the genuine
 		// reasoning items' tokens. Separate reasoning items are handled below, unchanged.
-		if message.ResponsesReasoning != nil && len(message.ResponsesReasoning.Summary) == 0 &&
-			message.Type != nil && *message.Type == schemas.ResponsesMessageTypeMessage {
+		if message.ResponsesReasoning != nil && len(message.ResponsesReasoning.Summary) == 0 && isMessageItem {
 			message.ResponsesReasoning = nil
 			messages = append(messages, message)
 		} else if message.ResponsesReasoning != nil {
