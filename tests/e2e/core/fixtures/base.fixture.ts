@@ -24,6 +24,7 @@ import { MCPSettingsPage } from "../../features/mcp-settings/pages/mcp-settings.
 import { MCPToolGroupsPage } from "../../features/mcp-tool-groups/pages/mcp-tool-groups.page";
 import { ModelLimitsPage } from "../../features/model-limits/pages/model-limits.page";
 import { DatasetsPage } from "../../features/datasets/pages/datasets.page";
+import { TestRunsPage } from "../../features/test-runs/pages/test-runs.page";
 import { EvaluatorsPage } from "../../features/evaluators/pages/evaluators.page";
 import { DatasheetPage } from "../../features/datasheet/pages/datasheet.page";
 
@@ -54,6 +55,7 @@ type BifrostFixtures = {
 	modelLimitsPage: ModelLimitsPage;
 	evaluatorsPage: EvaluatorsPage;
 	datasetsPage: DatasetsPage;
+	testRunsPage: TestRunsPage;
 	datasheetPage: DatasheetPage;
 	mcpSettingsPage: MCPSettingsPage;
 	mcpToolGroupsPage: MCPToolGroupsPage;
@@ -246,6 +248,9 @@ export const test = base.extend<BifrostFixtures>({
 		await use(new EvaluatorsPage(page));
 	},
 
+	testRunsPage: async ({ page }, use) => {
+		await use(new TestRunsPage(page));
+	},
 	datasetsPage: async ({ page }, use) => {
 		await use(new DatasetsPage(page));
 	},

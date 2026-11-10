@@ -652,6 +652,17 @@ func (s *Service) definitionFor(ctx context.Context, in ExecuteInput) (Definitio
 	}, nil
 }
 
+// Definition returns everything the engine needs to run a saved evaluator: the given
+// version, or its current one when version is 0. A test run copies it at start.
+func (s *Service) Definition(ctx context.Context, evaluatorID string, version int) (Definition, error) {
+	return s.definitionFor(ctx, ExecuteInput{EvaluatorID: evaluatorID, Version: version})
+}
+
+// Describe reports the variables a definition reads.
+func (s *Service) Describe(def Definition) Validation {
+	return s.describe(def)
+}
+
 // waitFor bounds the requested wait.
 func waitFor(waitMs *int) time.Duration {
 	if waitMs == nil {

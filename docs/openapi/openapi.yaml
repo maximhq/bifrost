@@ -1324,6 +1324,28 @@ paths:
     $ref: "./paths/management/evals.yaml#/keys"
 
   # Datasets
+  /api/evals/runs:
+    $ref: "./paths/management/evalsruns.yaml#/runs"
+  /api/evals/runs/validate:
+    $ref: "./paths/management/evalsruns.yaml#/runs-validate"
+  /api/evals/runs/compare:
+    $ref: "./paths/management/evalsruns.yaml#/runs-compare"
+  /api/evals/runs/{id}:
+    $ref: "./paths/management/evalsruns.yaml#/run"
+  /api/evals/runs/{id}/stop:
+    $ref: "./paths/management/evalsruns.yaml#/run-stop"
+  /api/evals/runs/{id}/rerun:
+    $ref: "./paths/management/evalsruns.yaml#/run-rerun"
+  /api/evals/runs/{id}/evaluators:
+    $ref: "./paths/management/evalsruns.yaml#/run-evaluators"
+  /api/evals/runs/{id}/entries:
+    $ref: "./paths/management/evalsruns.yaml#/run-entries"
+  /api/evals/runs/{id}/entries/{entryId}:
+    $ref: "./paths/management/evalsruns.yaml#/run-entry"
+  /api/evals/runs/{id}/entries/{entryId}/results/{evaluatorId}:
+    $ref: "./paths/management/evalsruns.yaml#/run-entry-result"
+  /api/evals/runs/{id}/export:
+    $ref: "./paths/management/evalsruns.yaml#/run-export"
   /api/evals/datasets:
     $ref: "./paths/management/evalsdatasets.yaml#/datasets"
   /api/evals/datasets/{id}:

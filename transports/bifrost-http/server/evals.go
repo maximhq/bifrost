@@ -9,6 +9,7 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/evals"
 	"github.com/maximhq/bifrost/framework/evals/datasets"
+	"github.com/maximhq/bifrost/framework/evals/runs"
 	"github.com/maximhq/bifrost/framework/grant"
 	"github.com/maximhq/bifrost/framework/queue"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/handlers"
@@ -31,11 +32,12 @@ type evalsRuntime struct {
 	queue  queue.Queue
 }
 
-// setupEvals builds the evaluator engine, its queue and runner, and returns the handler
-// for the evals API. It returns nil when there is no config store to keep evaluators in.
-func (s *BifrostHTTPServer) setupEvals(ctx context.Context) *handlers.EvalsHandler {
+// setupEvals builds the evaluator engine, its queue and runner, and returns the handlers
+// for the evaluators API and the test runs API. Both are nil when there is no config
+// store to keep evaluators in.
+func (s *BifrostHTTPServer) setupEvals(ctx context.Context) (*handlers.EvalsHandler, *handlers.EvalsRunsHandler) {
 	if s.Config == nil || s.Config.ConfigStore == nil || s.Client == nil {
-		return nil
+		return nil, nil
 	}
 	// RegisterAPIRoutes has one caller today; if that changes, a second call must not
 	// leave the first one's consumers running.
@@ -59,19 +61,40 @@ func (s *BifrostHTTPServer) setupEvals(ctx context.Context) *handlers.EvalsHandl
 	evals.RegisterAPIEvaluator(engine, evals.APIOptions{})
 	evals.RegisterStatisticalEvaluators(engine, embedder)
 
+	// A test run's work goes through the same runner as every other evaluation, so the
+	// runner's job store has to know the jobs of runs. The run service is built first,
+	// without a runner: it reads evaluator definitions through a service that needs none.
+	var logs datasets.LogReader
+	if s.Config.LogsStore != nil {
+		logs = s.Config.LogsStore
+	}
+	runService := runs.NewService(runs.Options{
+		Store:      s.Config.ConfigStore,
+		Datasets:   datasets.NewService(s.Config.ConfigStore, logs),
+		Evaluators: evals.NewService(s.Config.ConfigStore, engine, nil),
+		Engine:     engine,
+		Model:      evals.NewBifrostModelCaller(s.Client.ChatCompletionRequest, s.Client.ResponsesRequest, judgeOptions),
+	})
+	runsHandler := handlers.NewEvalsRunsHandler(runService)
+
 	q, forgets := s.newEvalsQueue(ctx)
 	if q == nil {
-		// Evaluators can still be created and edited; running one reports the reason.
-		return handlers.NewEvalsHandler(evals.NewService(s.Config.ConfigStore, engine, nil))
+		// Evaluators and runs can still be read; starting one reports the reason.
+		return handlers.NewEvalsHandler(evals.NewService(s.Config.ConfigStore, engine, nil)), runsHandler
 	}
-	runner := evals.NewRunner(q, engine, s.evalKeySource(), evals.NewExecutionJobStore(s.Config.ConfigStore), evals.RunnerOptions{Volatile: forgets})
+	jobs := runs.NewJobStore(evals.NewExecutionJobStore(s.Config.ConfigStore), runService)
+	runner := evals.NewRunner(q, engine, s.evalKeySource(), jobs, evals.RunnerOptions{Volatile: forgets})
+	// The run service has its runner before the runner starts: on a queue that forgets,
+	// starting it puts unfinished work back, and that work queues more through the service.
+	runService.SetRunner(runner)
 	if err := runner.Start(ctx); err != nil {
-		logger.Error("failed to start the evals runner, evaluators cannot be executed: %v", err)
+		logger.Error("failed to start the evals runner, evaluators and test runs cannot be executed: %v", err)
+		runService.SetRunner(nil)
 		_ = q.Close(ctx)
-		return handlers.NewEvalsHandler(evals.NewService(s.Config.ConfigStore, engine, nil))
+		return handlers.NewEvalsHandler(evals.NewService(s.Config.ConfigStore, engine, nil)), runsHandler
 	}
 	s.evals = &evalsRuntime{runner: runner, queue: q}
-	return handlers.NewEvalsHandler(evals.NewService(s.Config.ConfigStore, engine, runner))
+	return handlers.NewEvalsHandler(evals.NewService(s.Config.ConfigStore, engine, runner)), runsHandler
 }
 
 // newEvalsQueue returns the queue evaluations run on: backed by the log store when one

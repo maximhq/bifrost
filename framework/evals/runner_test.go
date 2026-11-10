@@ -786,3 +786,40 @@ func TestRunner_PurgesResultsPastRetention(t *testing.T) {
 	require.Len(t, store.purgedAt, 1, "the purge is rate limited, not run on every sweep")
 	assert.WithinDuration(t, time.Now().Add(-48*time.Hour), store.purgedAt[0], time.Minute)
 }
+
+// A job can bring its own work and its own model, which is how a test run sends a
+// target's model call through the same per-key queues as the evaluators.
+func TestRunner_RunsAJobThatBringsItsOwnWork(t *testing.T) {
+	h := newRunnerHarness(t, []EvalKey{{ID: "k1", Provider: "openai", Concurrency: 2, Supports: anyModel}}, 0)
+
+	var ranOn atomic.Value
+	job := &Job{
+		ID:    "target-1",
+		Model: &ModelRef{Provider: "openai", Model: "gpt-4o"},
+		Exec: func(ctx context.Context) Result {
+			ranOn.Store(KeyIDFromContext(ctx))
+			return Result{Score: NAScore(), Reasoning: "done by the job itself"}
+		},
+	}
+	h.submit(t, job)
+	h.await(t, job.ID)
+
+	assert.Equal(t, "k1", ranOn.Load(), "the work runs pinned to the eval key it was queued on")
+	result, ok := h.store.result(job.ID)
+	require.True(t, ok)
+	assert.Equal(t, "done by the job itself", result.Reasoning)
+
+	// Without an eval key for its provider the job is refused, like an AI evaluator.
+	other := &Job{ID: "target-2", Model: &ModelRef{Provider: "anthropic", Model: "claude"}, Exec: func(context.Context) Result { return Result{} }}
+	h.store.add(other)
+	require.ErrorIs(t, h.runner.Submit(context.Background(), other), ErrNoEvalKey)
+
+	// With no model it runs on the local topic, with no key.
+	local := &Job{ID: "target-3", Exec: func(ctx context.Context) Result {
+		return Result{Score: NAScore(), Reasoning: "key=" + KeyIDFromContext(ctx)}
+	}}
+	h.submit(t, local)
+	h.await(t, local.ID)
+	result, _ = h.store.result(local.ID)
+	assert.Equal(t, "key=", result.Reasoning)
+}

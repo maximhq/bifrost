@@ -601,6 +601,8 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_evals_dataset_folders"}, run: migrationAddEvalsDatasetFolders},
 	{IDs: []string{"add_evals_dataset_folder_parent"}, run: migrationAddEvalsDatasetFolderParent},
 	{IDs: []string{"add_evals_dataset_files"}, run: migrationAddEvalsDatasetFiles},
+	{IDs: []string{"add_evals_run_tables"}, run: migrationAddEvalsRunTables},
+	{IDs: []string{"add_evals_run_result_score_number"}, run: migrationAddEvalsRunResultScoreNumber},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -1357,6 +1359,50 @@ func migrationAddEvalsDatasetFiles(ctx context.Context, db *gorm.DB, logger sche
 		},
 		Rollback: func(*gorm.DB) error {
 			return fmt.Errorf("%s is non-rollbackable: dropping the files table would permanently delete uploaded dataset files", migrationName)
+		},
+	})
+}
+
+// migrationAddEvalsRunTables creates the test run tables: runs, their entries, and one
+// result per entry and evaluator. All are additive: older binaries ignore them.
+func migrationAddEvalsRunTables(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_evals_run_tables"
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			mgr := tx.WithContext(ctx).Migrator()
+			for _, table := range []any{&tables.TableEvalRun{}, &tables.TableEvalRunEntry{}, &tables.TableEvalRunResult{}} {
+				if mgr.HasTable(table) {
+					continue
+				}
+				if err := mgr.CreateTable(table); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(*gorm.DB) error {
+			return fmt.Errorf("%s is non-rollbackable: dropping the run tables would permanently delete test run results", migrationName)
+		},
+	})
+}
+
+// migrationAddEvalsRunResultScoreNumber adds score_number to run results, the score as
+// a number, which lets two runs be compared row by row in one query. A results table
+// created by the step above already has the column; this covers one created before
+// it existed. Results stored before it have no number and are left out of comparisons.
+func migrationAddEvalsRunResultScoreNumber(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_evals_run_result_score_number"
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			if err := addColumnIfNotExists(tx.WithContext(ctx), logger, &tables.TableEvalRunResult{}, "score_number"); err != nil {
+				return fmt.Errorf("failed to add score_number column: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return tx.WithContext(ctx).Migrator().DropColumn(&tables.TableEvalRunResult{}, "score_number")
 		},
 	})
 }

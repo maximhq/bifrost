@@ -170,6 +170,12 @@ func toColumns(stored []tables.TableEvalDatasetColumn) []Column {
 	return columns
 }
 
+// VersionColumns returns the columns a saved version had, in order. A test run reads
+// a pinned version through them.
+func VersionColumns(version *tables.TableEvalDatasetVersion) []Column {
+	return versionColumns(version)
+}
+
 func versionColumns(version *tables.TableEvalDatasetVersion) []Column {
 	columns := make([]Column, len(version.Columns))
 	for i, column := range version.Columns {

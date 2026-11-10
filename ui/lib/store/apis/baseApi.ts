@@ -205,6 +205,8 @@ export const baseApi = createApi({
 		"EvalKeys",
 		"EvalDatasets",
 		"EvalDatasetFolders",
+		"EvalRuns",
+		"EvalRunEntries",
 		"EvalDatasetRows",
 		"EvalDatasetVersions",
 		"Versions",
