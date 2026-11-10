@@ -532,7 +532,7 @@ const isLiteralHTTPSOrLoopbackURL = (v: { value?: string; ref?: string; type?: s
 };
 
 // isLiteralHTTPSURL mirrors BasetenAliasCfg.Validate: a literal deployment URL must be an
-// absolute https URL with a host. References and masked values pass; the server resolves them.
+// absolute https URL with a host and no userinfo, query or fragment. References and masked values pass; the server resolves them.
 // The literal must spell out "https://" and a host: the browser parser reads "https:///host"
 // or "https:host" as having that host, while Go's url.Parse finds none and rejects it.
 export const isLiteralHTTPSURL = (v: { value?: string; ref?: string; type?: string } | undefined): boolean => {
@@ -540,7 +540,7 @@ export const isLiteralHTTPSURL = (v: { value?: string; ref?: string; type?: stri
 	if (isSecretVarRef(v) || isSecretVarMasked(v)) return true;
 	if (!/^https:\/\/[^/\\]/i.test((v?.value ?? "").trim())) return false;
 	const u = parseLiteralURL(v);
-	return !!u && u.protocol === "https:" && u.hostname !== "";
+	return !!u && u.protocol === "https:" && u.hostname !== "" && u.username === "" && u.password === "" && u.search === "" && u.hash === "";
 };
 
 // OAuth key config schema. Honoured by openai-based providers: the key value may be empty
