@@ -271,6 +271,10 @@ func (provider *MachGenProvider) handleImageTask(ctx *schemas.BifrostContext, ke
 
 	task, rawResponse, image, bifrostErr := provider.awaitImage(ctx, key, taskResp.TaskID, sendBackRawResponse)
 	if bifrostErr != nil {
+		// The task is already submitted. Any retry or key rotation would re-run this call and
+		// submit (and bill) a second task, so halt the retry loop; the status and message
+		// MachGen sent still reach the caller.
+		bifrostErr.IsBifrostError = true
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, sendBackRawRequest, sendBackRawResponse, latency)
 	}
 

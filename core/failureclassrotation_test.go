@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/maximhq/bifrost/core/providers/machgen"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
@@ -1130,5 +1131,51 @@ func TestCancelledStreamWithoutAccumulatorIsNotEstimated(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("cancellation never reached accounting")
+	}
+}
+
+// An async provider that already submitted a task must not have it submitted again. A 401
+// while polling a submitted MachGen image task would otherwise rotate to the next key and
+// re-run the whole call: a second, billed task, with the first one's result lost.
+func TestExecuteRequestWithRetries_SubmittedMachGenTaskIsNotResubmittedOnRotation(t *testing.T) {
+	var submits atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && r.URL.Path == "/api/v0/generate" {
+			submits.Add(1)
+			_, _ = w.Write([]byte(`{"task_id":"t-abc"}`))
+			return
+		}
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"detail":"Invalid API key"}`))
+	}))
+	defer server.Close()
+	provider, err := machgen.NewMachGenProvider(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL, DefaultRequestTimeoutInSeconds: 5, AllowPrivateNetwork: true},
+	}, NewDefaultLogger(schemas.LogLevelError))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := rotationTestContext()
+	handler := func(k schemas.Key) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
+		k.Value = *schemas.NewSecretVar("MGA_test")
+		k.Models = []string{"*"}
+		return provider.ImageGeneration(ctx, k, &schemas.BifrostImageGenerationRequest{
+			Model: "FLUX.2-dev",
+			Input: &schemas.ImageGenerationInput{Prompt: "p"},
+		})
+	}
+
+	_, bErr := executeRequestWithRetries(ctx, createTestConfig(2, 0, 0), handler,
+		poolKeyProvider([]schemas.Key{rotationKeyA, rotationKeyB}),
+		schemas.ImageGenerationRequest, schemas.MachGen, "FLUX.2-dev", nil, NewDefaultLogger(schemas.LogLevelError))
+	if bErr == nil {
+		t.Fatal("expected the poll's 401 to reach the caller")
+	}
+	if got := submits.Load(); got != 1 {
+		t.Fatalf("task submitted %d times, want 1", got)
+	}
+	if bErr.StatusCode == nil || *bErr.StatusCode != http.StatusUnauthorized {
+		t.Errorf("status=%v, want MachGen's 401 kept for the caller", bErr.StatusCode)
 	}
 }
