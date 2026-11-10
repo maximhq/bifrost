@@ -4262,6 +4262,39 @@ jobs:
         run: |
           ./.github/workflows/scripts/push-mintlify-changelog.sh "${{ needs.detect-changes.outputs.transport-version }}"
 
+      # render.yaml (the "Deploy to Render" Blueprint) pins the image tag.
+      # Move it to the version whose image this run publishes. Gated on the
+      # Docker release so the Blueprint never points at a tag that was not
+      # built; prereleases are skipped inside the script.
+
+  # Pins render.yaml and the other one-click templates to the version whose
+  # image this run published. A job of its own, needing only docker-manifest:
+  # a changelog failure cannot skip it, and it can be re-run alone from the
+  # Actions UI (a re-run keeps the original detect-changes outputs, so the
+  # "tag already exists" detection does not block the retry).
+  pin-deploy-templates:
+    needs: [check-skip, detect-changes, docker-manifest]
+    if: "always() && needs.check-skip.outputs.should-skip != 'true' && needs.detect-changes.outputs.docker-needs-release == 'true' && needs.docker-manifest.result == 'success'"
+    runs-on: builder-8-32
+    timeout-minutes: 10
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
+        with:
+          egress-policy: block
+          allowed-endpoints: >
+            github.com:443
+
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GH_TOKEN }}
+
+      - name: Pin one-click deploy templates to this release
+        run: |
+          ./.github/workflows/scripts/bump-deploy-image-tags.sh "${{ needs.detect-changes.outputs.transport-version }}"
+
   # Notification
   notify:
     needs:
