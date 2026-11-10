@@ -73,6 +73,31 @@ func TestPiConfigPreservesOtherProvidersAndOverridesSavedCredential(t *testing.T
 	}
 }
 
+// TestPiReconfigureKeepsSavedProjectSelector keeps a saved project header when
+// configure runs again without project flags, as Claude, Codex and OpenCode
+// do, while still dropping stale non-project headers.
+func TestPiReconfigureKeepsSavedProjectSelector(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("PI_CODING_AGENT_DIR", filepath.Join(t.TempDir(), "agent"))
+	paths, err := NativeConfigPaths("pi")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(paths[0]), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(paths[0], []byte(`{"providers":{"bifrost":{"headers":{"Authorization":"stale","X-BF-Project-Name":"alpha"}}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := piWriteNativeConfig("https://gateway/openai", "key", "provider/model"); err != nil {
+		t.Fatal(err)
+	}
+	headers, _ := readAgentObject(t, paths[0])["providers"].(map[string]any)["bifrost"].(map[string]any)["headers"].(map[string]any)
+	if len(headers) != 1 || headers["X-BF-Project-Name"] != "alpha" {
+		t.Fatalf("headers = %v, want only the saved project selector", headers)
+	}
+}
+
 func TestAntigravityAliasesAndScopedShellCredentials(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
