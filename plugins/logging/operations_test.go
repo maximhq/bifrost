@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -13,6 +15,10 @@ import (
 	"time"
 	"unicode/utf8"
 
+	mcpgo "github.com/mark3labs/mcp-go/mcp"
+	bifrost "github.com/maximhq/bifrost/core"
+	coremcp "github.com/maximhq/bifrost/core/mcp"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	cstables "github.com/maximhq/bifrost/framework/configstore/tables"
@@ -1375,6 +1381,57 @@ func TestApplyErrorBillingFromBilledUsage_ComputesCostWhenTokensAlreadyParsed(t 
 	}
 }
 
+// TestApplyErrorBillingFromBilledUsage_PricesEstimatedUsage covers a cancelled
+// stream whose usage was estimated: the estimate replaces the accumulator's
+// partial usage and its cost, and is priced at the same catalog rates with the
+// input/output split carried on the stored usage.
+func TestApplyErrorBillingFromBilledUsage_PricesEstimatedUsage(t *testing.T) {
+	store := newTestStore(t)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, newTestPricingManager(t), nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	// The accumulator saw no usage chunk, so it priced zero completion tokens.
+	staleCost := 1e-6
+	entry := &logstore.Log{
+		Provider:         string(schemas.OpenAI),
+		Model:            "gpt-4o",
+		PromptTokens:     0,
+		Cost:             &staleCost,
+		TokenUsageParsed: &schemas.BifrostLLMUsage{Cost: &schemas.BifrostCost{TotalCost: staleCost}},
+	}
+	const promptTokens, completionTokens = 120, 40
+	billed := &schemas.BifrostLLMUsage{
+		PromptTokens: promptTokens, CompletionTokens: completionTokens, TotalTokens: promptTokens + completionTokens,
+		Estimation: &schemas.TokenUsageEstimation{Prompt: true, Completion: true, Tokenizer: "o200k_base"},
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	plugin.applyErrorBillingFromBilledUsage(ctx, entry, billed, schemas.ChatCompletionStreamRequest)
+
+	// gpt-4o testdata rates: input 2.5e-6/token, output 1e-5/token.
+	wantIn, wantOut := float64(promptTokens)*2.5e-6, float64(completionTokens)*1e-5
+	if entry.Cost == nil {
+		t.Fatal("no cost computed for the estimated usage")
+	}
+	if math.Abs(*entry.Cost-(wantIn+wantOut)) > 1e-9 {
+		t.Fatalf("cost = %v, want %v from the estimated tokens", *entry.Cost, wantIn+wantOut)
+	}
+	if entry.PromptTokens != promptTokens || entry.CompletionTokens != completionTokens || entry.TotalTokens != promptTokens+completionTokens {
+		t.Fatalf("tokens = %d/%d/%d, want the estimate", entry.PromptTokens, entry.CompletionTokens, entry.TotalTokens)
+	}
+	if entry.TokenUsageParsed.Estimation == nil || entry.TokenUsageParsed.Cost == nil {
+		t.Fatalf("stored usage = %+v, want the estimation provenance and a cost breakdown", entry.TokenUsageParsed)
+	}
+	if err := entry.SerializeFields(); err != nil {
+		t.Fatalf("SerializeFields: %v", err)
+	}
+	if math.Abs(entry.InputCost-wantIn) > 1e-9 || math.Abs(entry.OutputCost-wantOut) > 1e-9 {
+		t.Fatalf("split = %v/%v, want %v/%v", entry.InputCost, entry.OutputCost, wantIn, wantOut)
+	}
+}
+
 // TestApplyInternalCallCosts_DenormalizesGuardrailToAdditional guards Discrepancy
 // B for internal-only sidecar costs: a guardrail judge call with no provider
 // response must land on the additional side of the split, not just the total,
@@ -1947,6 +2004,435 @@ func TestPostMCPHookDropsArgumentsWhenContentIsDisabledLate(t *testing.T) {
 	if logEntry.ArgumentsParsed != nil {
 		t.Fatalf("expected the arguments captured before the key was stamped to be dropped, got %#v", logEntry.ArgumentsParsed)
 	}
+}
+
+// logMCPToolCall runs deploy-ask_environment through plugin's MCP hooks on ctx as logID, with upstream as
+// the tool's result.
+func logMCPToolCall(t *testing.T, plugin *LoggerPlugin, logID string, ctx *schemas.BifrostContext, upstream *mcpgo.CallToolResult, text string) {
+	t.Helper()
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-"+logID)
+	ctx.SetValue(schemas.BifrostContextKeyMCPLogID, logID)
+	toolName := "deploy-ask_environment"
+	if _, _, err := plugin.PreMCPHook(ctx, &schemas.BifrostMCPRequest{
+		RequestType: schemas.MCPRequestTypeChatToolCall,
+		ChatAssistantMessageToolCall: &schemas.ChatAssistantMessageToolCall{
+			Function: schemas.ChatAssistantMessageToolCallFunction{Name: &toolName, Arguments: `{}`},
+		},
+	}); err != nil {
+		t.Fatalf("PreMCPHook() error = %v", err)
+	}
+	message := &schemas.ChatMessage{Role: schemas.ChatMessageRoleTool, Content: &schemas.ChatMessageContent{ContentStr: &text}, ChatToolMessage: &schemas.ChatToolMessage{}}
+	message.ChatToolMessage.SetMCPResult(upstream, message.Content)
+	if _, _, err := plugin.PostMCPHook(ctx, &schemas.BifrostMCPResponse{
+		ChatMessage: message,
+		ExtraFields: schemas.BifrostMCPResponseExtraFields{MCPRequestType: schemas.MCPRequestTypeChatToolCall, ClientName: "deploy", ToolName: "ask_environment"},
+	}, nil); err != nil {
+		t.Fatalf("PostMCPHook() error = %v", err)
+	}
+}
+
+func findMCPToolLog(t *testing.T, store logstore.LogStore, id string) *logstore.MCPToolLog {
+	t.Helper()
+	entry, err := store.FindMCPToolLog(context.Background(), id)
+	if err != nil {
+		t.Fatalf("FindMCPToolLog(%s) error = %v", id, err)
+	}
+	return entry
+}
+
+// TestMCPRoundTripsAreLoggedAndLinked: a relayed input_required round is logged as input_required with
+// what it asked, every round of one call shares its round_trip_id, the retry that answers records the
+// answers, and a call outside a round trip has no round_trip_id.
+func TestMCPRoundTripsAreLoggedAndLinked(t *testing.T) {
+	store := newTestStore(t)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	call := func(logID string, ctx *schemas.BifrostContext, upstream *mcpgo.CallToolResult, text string) {
+		t.Helper()
+		logMCPToolCall(t, plugin, logID, ctx, upstream, text)
+	}
+
+	asked := &mcpgo.CallToolResult{Result: mcpgo.Result{ResultType: mcpgo.ResultTypeInputRequired}, MultiRoundTripResult: mcpgo.MultiRoundTripResult{
+		RequestState: "state-1",
+		InputRequests: mcpgo.InputRequests{"environment": {Method: mcpgo.MethodElicitationCreate, Elicitation: &mcpgo.ElicitationParams{
+			Message: "Which environment?", RequestedSchema: map[string]any{"type": "object"},
+		}}},
+	}}
+	first := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	call("mcp-round-1", first, asked, "MCP tool 'deploy-ask_environment' executed successfully")
+
+	// The retry carries the round-trip id the gateway unwrapped from its requestState, and asks again.
+	carried := coremcp.RoundTripID("req-mcp-round-1")
+	resumed := func(answer string) *schemas.BifrostContext {
+		ctx := context.WithValue(context.Background(), schemas.BifrostContextKeyMCPInputResumption, &mcpgo.MultiRoundTripParams{
+			RequestState:   "state-1",
+			InputResponses: mcpgo.InputResponses{"environment": mcpgo.NewElicitationInputResponse(mcpgo.ElicitationResult{ElicitationResponse: mcpgo.ElicitationResponse{Action: mcpgo.ElicitationResponseActionAccept, Content: map[string]any{"environment": answer}}})},
+		})
+		return schemas.NewBifrostContext(context.WithValue(ctx, schemas.BifrostContextKeyMCPRoundTripID, carried), schemas.NoDeadline)
+	}
+	call("mcp-round-2", resumed("staging"), asked, "MCP tool 'deploy-ask_environment' executed successfully")
+	call("mcp-round-3", resumed("staging"), mcpgo.NewToolResultText("deployed to staging"), "deployed to staging")
+
+	// A separate call whose server issues the same requestState is its own round trip.
+	call("mcp-other-call", schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), asked, "MCP tool 'deploy-ask_environment' executed successfully")
+
+	retryLater := &mcpgo.CallToolResult{Result: mcpgo.Result{ResultType: mcpgo.ResultTypeInputRequired}, MultiRoundTripResult: mcpgo.MultiRoundTripResult{RequestState: "state-busy"}}
+	call("mcp-retry-later", schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), retryLater, "MCP tool 'deploy-ask_environment' executed successfully")
+
+	call("mcp-plain", schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), mcpgo.NewToolResultText("done"), "done")
+
+	if err := plugin.Cleanup(); err != nil {
+		t.Fatalf("Cleanup() error = %v", err)
+	}
+	find := func(id string) *logstore.MCPToolLog {
+		t.Helper()
+		return findMCPToolLog(t, store, id)
+	}
+	round1, round2, round3, other := find("mcp-round-1"), find("mcp-round-2"), find("mcp-round-3"), find("mcp-other-call")
+
+	if round1.Status != "input_required" || round2.Status != "input_required" || round3.Status != "success" {
+		t.Fatalf("statuses = %q, %q, %q, want input_required, input_required, success", round1.Status, round2.Status, round3.Status)
+	}
+	askedJSON, _ := json.Marshal(round1.ResultParsed)
+	if !strings.Contains(string(askedJSON), "Which environment?") || strings.Contains(string(askedJSON), "executed successfully") {
+		t.Fatalf("round 1 result should be what was asked, got %s", askedJSON)
+	}
+	for _, round := range []*logstore.MCPToolLog{round1, round2, round3} {
+		if round.RoundTripID == nil || *round.RoundTripID != carried {
+			t.Fatalf("every round of the call should share round_trip_id %s, %s has %v", carried, round.ID, round.RoundTripID)
+		}
+	}
+	if other.RoundTripID == nil || *other.RoundTripID == carried {
+		t.Fatalf("a separate call reusing the server's requestState needs its own round_trip_id, got %v", other.RoundTripID)
+	}
+	if _, ok := round2.MetadataParsed["next_round_trip_id"]; ok {
+		t.Fatalf("a round that asks again keeps its id, got %v", round2.MetadataParsed)
+	}
+	if later := find("mcp-retry-later"); later.Status != "input_required" || later.ResultParsed != nil || later.Result != "" || later.MetadataParsed["retry_later"] != true {
+		t.Fatalf("a retry-later round asks nothing, want input_required, no result and retry_later, got %q %v %q %v", later.Status, later.ResultParsed, later.Result, later.MetadataParsed)
+	}
+	if round1.MetadataParsed["retry_later"] != nil {
+		t.Fatalf("a round that asked for input is not retry_later, got %v", round1.MetadataParsed)
+	}
+	answersJSON, _ := json.Marshal(round3.MetadataParsed["input_responses"])
+	if !strings.Contains(string(answersJSON), `"staging"`) || !strings.Contains(string(answersJSON), `"accept"`) {
+		t.Fatalf("the answering retry should record the answers, got %s", answersJSON)
+	}
+	if plain := find("mcp-plain"); plain.RoundTripID != nil {
+		t.Fatalf("a call outside a round trip has no round_trip_id, got %v", *plain.RoundTripID)
+	}
+}
+
+// TestMCPAppsUseIsLogged: a call through MCP Apps carries the Apps markers, its ui:// URI without the user info,
+// query and fragment credentials ride in, and a plain call carries none.
+func TestMCPAppsUseIsLogged(t *testing.T) {
+	store := newTestStore(t)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	apps := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	apps.SetValue(schemas.BifrostContextKeyIsMCPGateway, true)
+	apps.SetValue(schemas.BifrostContextKeyMCPCallerCapabilities, &mcpgo.ClientCapabilities{Extensions: map[string]any{schemas.MCPAppsExtension: map[string]any{}}})
+	apps.SetValue(schemas.BifrostContextKeyMCPRequestedToolName, "refresh")
+	apps.SetValue(schemas.BifrostContextKeyMCPToolAppOnly, true)
+	apps.SetValue(schemas.BifrostContextKeyMCPToolUIResourceURI, "ui://user:secret@dash/view?token=abc#frag")
+	logMCPToolCall(t, plugin, "mcp-apps", apps, mcpgo.NewToolResultText("refreshed"), "refreshed")
+	logMCPToolCall(t, plugin, "mcp-plain", schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), mcpgo.NewToolResultText("done"), "done")
+	if err := plugin.Cleanup(); err != nil {
+		t.Fatalf("Cleanup() error = %v", err)
+	}
+
+	appCall := findMCPToolLog(t, store, "mcp-apps")
+	for key, want := range map[string]any{"mcp_apps": true, "app_only": true, "requested_name": "refresh", "ui_resource_uri": "ui://dash/view"} {
+		if got := appCall.MetadataParsed[key]; got != want {
+			t.Fatalf("metadata[%s] = %#v, want %#v", key, got, want)
+		}
+	}
+	if plain := findMCPToolLog(t, store, "mcp-plain"); len(plain.MetadataParsed) != 0 {
+		t.Fatalf("a plain call carries no Apps markers, got %v", plain.MetadataParsed)
+	}
+}
+
+// TestPostMCPHookSkipsSignInPrompts: a tool call that stops because the caller
+// still has to sign in is a prompt, not a failed call, so it leaves no MCP log
+// row, and the sign-in link it carries stays out of the store. Arguments
+// PreMCPHook held aside for a governance decision still pending are dropped
+// with the pending entry.
+func TestPostMCPHookSkipsSignInPrompts(t *testing.T) {
+	for _, tc := range []struct {
+		name            string
+		decisionPending bool
+	}{
+		{name: "governance decision made"},
+		{name: "governance decision pending", decisionPending: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newTestStore(t)
+			plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
+			if err != nil {
+				t.Fatalf("Init() error = %v", err)
+			}
+
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-mcp-sign-in")
+			ctx.SetValue(schemas.BifrostContextKeyMCPLogID, "mcp-sign-in")
+			if tc.decisionPending {
+				// A project the request names that governance has not admitted yet.
+				ctx.SetValue(schemas.BifrostContextKeyRequestHeaders, map[string]string{schemas.HeaderGovernanceProjectID: "project-1"})
+			}
+
+			toolName := "github-create_issue"
+			_, _, err = plugin.PreMCPHook(ctx, &schemas.BifrostMCPRequest{
+				RequestType: schemas.MCPRequestTypeChatToolCall,
+				ChatAssistantMessageToolCall: &schemas.ChatAssistantMessageToolCall{
+					Function: schemas.ChatAssistantMessageToolCallFunction{
+						Name:      &toolName,
+						Arguments: `{"title":"crash on start"}`,
+					},
+				},
+			})
+			if err != nil {
+				t.Fatalf("PreMCPHook() error = %v", err)
+			}
+			if _, held := plugin.provisionalMCPArguments.Load("mcp-sign-in"); held != tc.decisionPending {
+				t.Fatalf("arguments held before PostMCPHook = %v, want %v", held, tc.decisionPending)
+			}
+
+			authURL := "https://bifrost.example.com/workspace/mcp-auth/flow-1#t=temp-token"
+			authErr := &schemas.MCPAuthRequiredError{
+				Kind:          schemas.MCPAuthRequiredKindOAuth,
+				MCPClientName: "github",
+				AuthorizeURL:  authURL,
+				Message:       "Authentication required for github. Visit " + authURL + " to connect your account.",
+			}
+			_, _, err = plugin.PostMCPHook(ctx, nil, &schemas.BifrostError{
+				Error: &schemas.ErrorField{Message: authErr.Message, Error: authErr},
+				ExtraFields: schemas.BifrostErrorExtraFields{
+					MCPRequestType:  schemas.MCPRequestTypeChatToolCall,
+					MCPAuthRequired: authErr,
+				},
+			})
+			if err != nil {
+				t.Fatalf("PostMCPHook() error = %v", err)
+			}
+			if err := plugin.Cleanup(); err != nil {
+				t.Fatalf("Cleanup() error = %v", err)
+			}
+
+			if logEntry, err := store.FindMCPToolLog(context.Background(), "mcp-sign-in"); !errors.Is(err, logstore.ErrNotFound) {
+				t.Fatalf("a sign-in prompt must not be logged as a tool call, got entry %#v (err %v)", logEntry, err)
+			}
+			if _, ok := plugin.pendingMCPLogsToInject.Load("mcp-sign-in"); ok {
+				t.Fatal("the pending entry must be dropped, not left for the stale sweeper to write")
+			}
+			if _, ok := plugin.provisionalMCPArguments.Load("mcp-sign-in"); ok {
+				t.Fatal("the held arguments must be dropped with the pending entry")
+			}
+		})
+	}
+}
+
+const connectSignInLink = "https://idp.example/authorize?state=flow-1"
+
+// signInCredStore asks every caller of a per-user client to sign in.
+type signInCredStore struct{}
+
+func (signInCredStore) ConnectionHeaders(_ *schemas.BifrostContext, config *schemas.MCPClientConfig) (http.Header, error) {
+	return nil, &schemas.MCPAuthRequiredError{
+		Kind:          schemas.MCPAuthRequiredKindOAuth,
+		MCPClientID:   config.ID,
+		MCPClientName: config.Name,
+		AuthorizeURL:  connectSignInLink,
+		Message:       "Authentication required for " + config.Name + ". Visit " + connectSignInLink + " to connect your account.",
+	}
+}
+
+func (signInCredStore) RequestHeaders(*schemas.BifrostContext, *schemas.MCPClientConfig) (http.Header, error) {
+	return http.Header{}, nil
+}
+
+func (signInCredStore) RequiresPerCallConnection(*schemas.MCPClientConfig) bool { return true }
+
+func (signInCredStore) ForceRefresh(*schemas.BifrostContext, *schemas.MCPClientConfig) error {
+	return nil
+}
+
+func (signInCredStore) AdminConnectionHeaders(context.Context, *schemas.MCPClientConfig) (http.Header, error) {
+	return http.Header{}, nil
+}
+
+// noCallerDiscoveries keeps no caller's discovery, so every caller is offered the connect tool.
+type noCallerDiscoveries struct{}
+
+func (noCallerDiscoveries) GetDiscovery(context.Context, *schemas.MCPClientConfig) *schemas.MCPDiscovery {
+	return nil
+}
+
+func (noCallerDiscoveries) SetDiscovery(context.Context, *schemas.MCPClientConfig, *schemas.MCPDiscovery) error {
+	return nil
+}
+
+func (noCallerDiscoveries) DeleteDiscovery(context.Context, *schemas.MCPClientConfig) error {
+	return nil
+}
+
+// loggingPipeline runs the logging plugin's MCP hooks as core's plugin pipeline does. With user set,
+// a policy plugin registered after logging (governance) names that caller once logging's pre-hook
+// has run.
+type loggingPipeline struct {
+	plugin *LoggerPlugin
+	user   string
+}
+
+func (p loggingPipeline) RunMCPPreHooks(ctx *schemas.BifrostContext, req *schemas.BifrostMCPRequest) (*schemas.BifrostMCPRequest, *schemas.MCPPluginShortCircuit, int) {
+	req, shortCircuit, _ := p.plugin.PreMCPHook(ctx, req)
+	if p.user != "" {
+		ctx.SetValue(schemas.BifrostContextKeyUserID, p.user)
+	}
+	return req, shortCircuit, 1
+}
+
+func (p loggingPipeline) RunMCPPostHooks(ctx *schemas.BifrostContext, resp *schemas.BifrostMCPResponse, bifrostErr *schemas.BifrostError, _ int) (*schemas.BifrostMCPResponse, *schemas.BifrostError) {
+	resp, bifrostErr, _ = p.plugin.PostMCPHook(ctx, resp, bifrostErr)
+	return resp, bifrostErr
+}
+
+func (loggingPipeline) RunMCPPreConnectionHooks(_ *schemas.BifrostContext, req *schemas.BifrostMCPConnectRequest) (*schemas.BifrostMCPConnectRequest, *schemas.MCPConnectionShortCircuit, int) {
+	return req, nil, 0
+}
+
+func (loggingPipeline) RunMCPPostConnectionHooks(_ *schemas.BifrostContext, resp *schemas.BifrostMCPConnectResponse, bifrostErr *schemas.BifrostError, _ int) (*schemas.BifrostMCPConnectResponse, *schemas.BifrostError) {
+	return resp, bifrostErr
+}
+
+// TestMCPConnectCallsAreNotLogged: a client's connect tool only signs the caller in and discovers
+// their tools, and its result can carry the sign-in link, so a connect call core runs is never
+// logged, whether it answers or fails. Only core can mark one: a call to an upstream tool named
+// "connect" is logged as usual.
+func TestMCPConnectCallsAreNotLogged(t *testing.T) {
+	store := newTestStore(t)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
+	require.NoError(t, err)
+	manager := coremcp.NewMCPManager(context.Background(), schemas.MCPConfig{
+		PerUserDiscoveryStore:  noCallerDiscoveries{},
+		PluginPipelineProvider: func() interface{} { return loggingPipeline{plugin: plugin} },
+		ReleasePluginPipeline:  func(interface{}) {},
+	}, signInCredStore{}, testLogger{}, nil)
+	t.Cleanup(func() { _ = manager.Cleanup() })
+	require.NoError(t, manager.AddClient(context.Background(), &schemas.MCPClientConfig{
+		ID: "notes-id", Name: "notes", AuthType: schemas.MCPAuthTypePerUserOauth, ConnectionType: schemas.MCPConnectionTypeHTTP,
+		ConnectionString: schemas.NewSecretVar("https://notes.example/mcp"), ToolsToExecute: []string{"*"}, PerUserDiscovery: schemas.Ptr(true),
+	}))
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyUserID, "alice")
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-connect")
+	ctx.SetValue(schemas.BifrostContextKeyMCPLogID, "mcp-connect")
+	name := "notes-connect"
+	result, bErr := manager.ExecuteChatTool(ctx, &schemas.ChatAssistantMessageToolCall{
+		ID:       schemas.Ptr("call-1"),
+		Function: schemas.ChatAssistantMessageToolCallFunction{Name: &name, Arguments: "{}"},
+	})
+	require.Nil(t, bErr)
+	require.NotNil(t, result.Content.ContentStr)
+	require.Contains(t, *result.Content.ContentStr, connectSignInLink, "the connect call answered with the sign-in link")
+
+	// A connect call that fails, here for a request with no user or virtual key to connect.
+	anonymous := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	anonymous.SetValue(schemas.BifrostContextKeyRequestID, "req-connect-failed")
+	anonymous.SetValue(schemas.BifrostContextKeyMCPLogID, "mcp-connect-failed")
+	_, bErr = manager.ExecuteChatTool(anonymous, &schemas.ChatAssistantMessageToolCall{
+		ID:       schemas.Ptr("call-2"),
+		Function: schemas.ChatAssistantMessageToolCallFunction{Name: &name, Arguments: "{}"},
+	})
+	require.NotNil(t, bErr, "a connect call needs a caller to connect")
+
+	// An upstream tool that happens to be named connect, as its MCP hooks see it without core's mark.
+	upstreamCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	upstreamCtx.SetValue(schemas.BifrostContextKeyRequestID, "req-upstream")
+	upstreamCtx.SetValue(schemas.BifrostContextKeyMCPLogID, "mcp-upstream")
+	upstreamName := "wiki-connect"
+	_, _, err = plugin.PreMCPHook(upstreamCtx, &schemas.BifrostMCPRequest{
+		RequestType:                  schemas.MCPRequestTypeChatToolCall,
+		ClientName:                   "wiki",
+		ChatAssistantMessageToolCall: &schemas.ChatAssistantMessageToolCall{Function: schemas.ChatAssistantMessageToolCallFunction{Name: &upstreamName, Arguments: "{}"}},
+	})
+	require.NoError(t, err)
+	_, _, err = plugin.PostMCPHook(upstreamCtx, &schemas.BifrostMCPResponse{
+		ExtraFields: schemas.BifrostMCPResponseExtraFields{MCPRequestType: schemas.MCPRequestTypeChatToolCall, ClientName: "wiki", ToolName: "connect"},
+	}, nil)
+	require.NoError(t, err)
+	require.NoError(t, plugin.Cleanup())
+
+	for _, id := range []string{"mcp-connect", "mcp-connect-failed"} {
+		_, err = store.FindMCPToolLog(context.Background(), id)
+		require.ErrorIs(t, err, logstore.ErrNotFound, "a connect call must not be logged: %s", id)
+		_, pending := plugin.pendingMCPLogsToInject.Load(id)
+		require.False(t, pending, "nor left for the stale sweeper to write: %s", id)
+	}
+	_, err = store.FindMCPToolLog(context.Background(), "mcp-upstream")
+	require.NoError(t, err, "an upstream tool named connect is logged like any other")
+}
+
+// bearerCredStore connects every caller with a bearer token.
+type bearerCredStore struct{ signInCredStore }
+
+func (bearerCredStore) ConnectionHeaders(*schemas.BifrostContext, *schemas.MCPClientConfig) (http.Header, error) {
+	return http.Header{"Authorization": []string{"Bearer token"}}, nil
+}
+
+// aliceDiscoversConnect gives alice a discovery holding an upstream tool named connect.
+type aliceDiscoversConnect struct{ noCallerDiscoveries }
+
+func (aliceDiscoversConnect) GetDiscovery(ctx context.Context, client *schemas.MCPClientConfig) *schemas.MCPDiscovery {
+	if user, _ := ctx.Value(schemas.BifrostContextKeyUserID).(string); user != "alice" {
+		return nil
+	}
+	name := client.Name + "-connect"
+	return &schemas.MCPDiscovery{
+		Tools: map[string]schemas.ChatTool{name: {Type: schemas.ChatToolTypeFunction, Function: &schemas.ChatToolFunction{Name: name}}},
+	}
+}
+
+// TestMCPUpstreamConnectNamedByALaterPluginIsLogged: a request whose caller is named only by a
+// policy plugin that runs after logging (governance resolving a virtual key) cannot tell in
+// logging's pre-hook whether a call named <client>-connect is Bifrost's connect tool or an upstream
+// tool of that name. The pre-hook records it either way; once the caller's discovery shows an
+// upstream tool, its row carries the tool and server like any other.
+func TestMCPUpstreamConnectNamedByALaterPluginIsLogged(t *testing.T) {
+	store := newTestStore(t)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
+	require.NoError(t, err)
+	manager := coremcp.NewMCPManager(context.Background(), schemas.MCPConfig{
+		PerUserDiscoveryStore:  aliceDiscoversConnect{},
+		PluginPipelineProvider: func() interface{} { return loggingPipeline{plugin: plugin, user: "alice"} },
+		ReleasePluginPipeline:  func(interface{}) {},
+	}, bearerCredStore{}, testLogger{}, nil)
+	t.Cleanup(func() { _ = manager.Cleanup() })
+	require.NoError(t, manager.AddClient(context.Background(), &schemas.MCPClientConfig{
+		ID: "notes-id", Name: "notes", AuthType: schemas.MCPAuthTypePerUserOauth, ConnectionType: schemas.MCPConnectionTypeHTTP,
+		ConnectionString: schemas.NewSecretVar("http://127.0.0.1:1/mcp"), ToolsToExecute: []string{"*"}, PerUserDiscovery: schemas.Ptr(true),
+	}))
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-upstream-late")
+	ctx.SetValue(schemas.BifrostContextKeyMCPLogID, "mcp-upstream-late")
+	name := "notes-connect"
+	_, bErr := manager.ExecuteChatTool(ctx, &schemas.ChatAssistantMessageToolCall{
+		ID:       schemas.Ptr("call-1"),
+		Function: schemas.ChatAssistantMessageToolCallFunction{Name: &name, Arguments: `{"q":"x"}`},
+	})
+	require.NotNil(t, bErr, "the upstream is unreachable")
+	require.Nil(t, bErr.ExtraFields.MCPAuthRequired, "it ran as the upstream tool, not Bifrost's connect")
+	require.NoError(t, plugin.Cleanup())
+
+	entry, err := store.FindMCPToolLog(context.Background(), "mcp-upstream-late")
+	require.NoError(t, err, "an upstream tool named connect is logged")
+	require.Equal(t, "connect", entry.ToolName)
+	require.Equal(t, "notes", entry.ServerLabel)
 }
 
 // TestPostLLMHookDropsCapturedInputWhenContentIsDisabledLate pins the passthrough ordering hole:
@@ -5692,6 +6178,7 @@ func (s *endpointJobStore) UpsertProviderJob(_ context.Context, job *cstables.Ta
 
 func TestRelayLogRow(t *testing.T) {
 	plugin := policyTestPlugin(nil, nil, true)
+	plugin.captureClientIP = true
 	plugin.writeQueue = make(chan *writeQueueEntry, 4)
 	ctx := policyCtx(false, nil)
 	ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-pte")
@@ -5699,6 +6186,9 @@ func TestRelayLogRow(t *testing.T) {
 	ctx.SetValue(schemas.BifrostContextKeyGovernanceVirtualKeyName, "prod")
 	ctx.SetValue(schemas.BifrostContextKeyGovernanceBudgetIDs, []string{"budget-1"})
 	ctx.SetValue(schemas.BifrostContextKeyUserAgent, "claude-code/1.0.0")
+	ctx.SetValue(schemas.BifrostContextKeyClientIP, "10.0.0.5")
+	ctx.SetValue(schemas.BifrostContextKeyUserID, "user-5")
+	ctx.SetValue(schemas.BifrostContextKeyUserEmail, "grace@example.com")
 
 	_, _, err := plugin.PreRelayHook(ctx, &schemas.BifrostRelayRequest{
 		RelayName: "tavily", Method: "POST", Path: "/search", RawQuery: "q=1", RoutePath: "/search", Billable: true,
@@ -5727,6 +6217,8 @@ func TestRelayLogRow(t *testing.T) {
 	require.Equal(t, 20.0, *entry.OverheadLatency)
 	require.NotNil(t, entry.UserAgent, "the calling client is recorded as on LLM and MCP rows")
 	require.Equal(t, "claude-code/1.0.0", *entry.UserAgent)
+	require.Equal(t, "10.0.0.5", *entry.ClientIP)
+	require.Equal(t, "grace@example.com", *entry.UserEmail)
 	require.Equal(t, `{"query":"x"}`, *entry.RequestBody)
 	require.Nil(t, entry.RequestHeadersParsed, "headers are kept only when the logging headers or the route's matchers name them")
 
@@ -5808,7 +6300,6 @@ func TestRelayLogMetadataAndMatchedHeaders(t *testing.T) {
 	require.Equal(t, wantMetadata, entry.MetadataParsed, "the configured pattern, the dimension, and the key's metadata merged after governance (its team wins over the caller's label)")
 	require.Equal(t, wantMatched, entry.RequestHeadersParsed, "only the headers the route matched on, with the value that selected the route, the credential redacted")
 	require.NotEqual(t, "tvly-secret", entry.RequestHeadersParsed["x-api-key"])
-	require.Nil(t, entry.ResponseHeadersParsed, "reply headers are never kept, as on LLM rows")
 
 	plugin = policyTestPlugin(nil, nil, true)
 	plugin.loggingHeaders = &[]string{"x-tenant-*"}
@@ -5872,7 +6363,7 @@ func TestInject_BackfillsRelayRow(t *testing.T) {
 		ID: "relay-row", Timestamp: time.Now().UTC(), RelayName: "tavily", RequestID: "req-relay-backfill", Status: logstore.RelayLogStatusSuccess,
 		UpstreamLatency: &provisionalUp, OverheadLatency: &provisionalOv,
 	}
-	plugin.storeOrEnqueueRelayEntry(ctx, entry)
+	plugin.storeOrEnqueueRelayEntry(ctx, relayInjectEntry{entry: entry})
 	if _, parked := plugin.pendingRelayLogsToInject.Load(traceID); !parked {
 		t.Fatal("expected entry to be parked for Inject")
 	}
@@ -5900,9 +6391,80 @@ func TestInject_BackfillsRelayRow(t *testing.T) {
 
 	// No trace on the context: the row is written as it is.
 	direct := &LoggerPlugin{logger: testLogger{}, writeQueue: make(chan *writeQueueEntry, 1)}
-	direct.storeOrEnqueueRelayEntry(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), &logstore.RelayLog{ID: "no-trace", UpstreamLatency: &provisionalUp})
+	direct.storeOrEnqueueRelayEntry(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), relayInjectEntry{entry: &logstore.RelayLog{ID: "no-trace", UpstreamLatency: &provisionalUp}})
 	queued = <-direct.writeQueue
 	require.Equal(t, float64(6), *queued.endpointLog.UpstreamLatency)
+}
+
+// A relay row takes its plugin logs from the completed trace, as an LLM row does, so lines that
+// later post-hooks and the transport plugins log reach the row; the post-hook copy stands only for
+// a row written without a trace.
+func TestInject_RelayRowTakesTracePluginLogs(t *testing.T) {
+	plugin := &LoggerPlugin{logger: testLogger{}, writeQueue: make(chan *writeQueueEntry, 1)}
+	traceID := "trace-relay-plugin-logs"
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyTraceID, traceID)
+	entry := &logstore.RelayLog{ID: "relay-logs-row", Timestamp: time.Now().UTC(), RequestID: "req-plugin-logs", PluginLogs: `{"governance":[{"message":"early"}]}`}
+	plugin.storeOrEnqueueRelayEntry(ctx, relayInjectEntry{entry: entry})
+	trace := &schemas.Trace{TraceID: traceID, RootSpan: &schemas.Span{}, PluginLogs: []schemas.PluginLogEntry{
+		{PluginName: "governance", Level: schemas.LogLevelInfo, Message: "early"},
+		{PluginName: "telemetry", Level: schemas.LogLevelInfo, Message: "a later post-hook"},
+	}}
+	require.NoError(t, plugin.Inject(context.Background(), trace))
+	queued := <-plugin.writeQueue
+	require.Contains(t, queued.endpointLog.PluginLogs, "a later post-hook")
+	require.Contains(t, queued.endpointLog.PluginLogs, "early")
+}
+
+// Relay rows keep plugin logs and matched header values whole, as LLM rows do: no relay-only cap.
+func TestRelayLogKeepsPluginLogsAndHeaderValuesWhole(t *testing.T) {
+	plugin := policyTestPlugin(nil, nil, false)
+	plugin.writeQueue = make(chan *writeQueueEntry, 1)
+	ctx := policyCtx(false, nil)
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-uncapped")
+	name := "guardrails"
+	scoped := ctx.WithPluginScope(&name)
+	line := strings.Repeat("x", 1024)
+	for range 40 {
+		scoped.Log(schemas.LogLevelInfo, line)
+	}
+	scoped.ReleasePluginScope()
+	long := strings.Repeat("v", 5000)
+	_, _, err := plugin.PreRelayHook(ctx, &schemas.BifrostRelayRequest{
+		RelayName: "r", Method: "POST", Path: "/x", RouteHeaders: map[string]string{"X-Tier": long}, Body: []byte(`{}`),
+	})
+	require.NoError(t, err)
+	_, _, err = plugin.PostRelayHook(ctx, &schemas.BifrostRelayResponse{StatusCode: 200}, nil)
+	require.NoError(t, err)
+	entry := (<-plugin.writeQueue).endpointLog
+	require.Equal(t, 40, strings.Count(entry.PluginLogs, line), "every plugin log line is kept, past the old 16 KB cap")
+	require.Equal(t, long, entry.RequestHeadersParsed["x-tier"], "a matched header value is kept whole, past the old 2 KB cap")
+}
+
+// With content logging off and retained in object storage, a relay row keeps its query string and
+// its raw error for the object alone, as an LLM row offloads its payload and error_details: the
+// database row is stripped of both.
+func TestRelayLogHiddenContentRetainsQueryAndRawError(t *testing.T) {
+	plugin := policyTestPlugin(boolPtr(true), boolPtr(true), true)
+	plugin.writeQueue = make(chan *writeQueueEntry, 1)
+	ctx := policyCtx(false, nil)
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-hidden-retained")
+	ctx.SetValue(schemas.BifrostContextKeyShouldStoreRawInLogs, true)
+	_, _, err := plugin.PreRelayHook(ctx, &schemas.BifrostRelayRequest{RelayName: "r", Method: "POST", Path: "/search", RawQuery: "q=private", Body: []byte(`{"q":"private"}`)})
+	require.NoError(t, err)
+	status := 502
+	bErr := &schemas.BifrostError{StatusCode: &status, Error: &schemas.ErrorField{Message: "upstream failed"}, ExtraFields: schemas.BifrostErrorExtraFields{RawRequest: "raw-req", RawResponse: "raw-resp"}}
+	_, _, err = plugin.PostRelayHook(ctx, nil, bErr)
+	require.NoError(t, err)
+	entry := (<-plugin.writeQueue).endpointLog
+	require.True(t, entry.ContentHidden)
+	require.Equal(t, "/search", entry.Path, "the database row has no query string")
+	require.NotNil(t, entry.RetainedPath)
+	require.Equal(t, "/search?q=private", *entry.RetainedPath, "the object keeps it")
+	require.Nil(t, entry.ErrorDetailsParsed.ExtraFields.RawRequest, "the database row has no raw request")
+	require.NotNil(t, entry.RetainedErrorDetails)
+	require.Equal(t, "raw-req", entry.RetainedErrorDetails.ExtraFields.RawRequest, "the object keeps the raw error")
+	require.True(t, logstore.RelayLogHasPayload(entry), "retained content alone is offloaded")
 }
 
 // Content logging on a relay row follows the same decision chain as an LLM row: the plugin's
@@ -5914,12 +6476,18 @@ func TestRelayLogContentPolicy(t *testing.T) {
 		plugin.writeQueue = make(chan *writeQueueEntry, 1)
 		ctx := policyCtx(false, nil)
 		ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-policy")
+		if decision != nil {
+			// A presented key governance has not resolved yet: the body is captured provisionally,
+			// as PreLLMHook captures input while governanceDecisionPending.
+			ctx.SetValue(schemas.BifrostContextKeyVirtualKey, "vk-1")
+		}
 		_, _, err := plugin.PreRelayHook(ctx, &schemas.BifrostRelayRequest{
 			RelayName: "tavily", Method: "POST", Path: "/search", RawQuery: "q=private", Headers: map[string]string{"content-type": "application/json"}, Body: []byte(`{"query":"x"}`),
 		})
 		require.NoError(t, err)
 		if decision != nil {
 			// Governance's PreRelayHook runs after ours and stamps the key's decision.
+			ctx.SetValue(schemas.BifrostContextKeyGovernanceVirtualKeyID, "vk-1")
 			ctx.SetValue(schemas.BifrostContextKeyGovernanceDisableContentLogging, *decision)
 		}
 		_, _, err = plugin.PostRelayHook(ctx, &schemas.BifrostRelayResponse{StatusCode: 200, Headers: map[string]string{"content-type": "application/json"}, Body: []byte(`{"ok":true}`)}, nil)
@@ -5970,14 +6538,16 @@ func TestTextBodyKeepsTextCutMidRune(t *testing.T) {
 	got := textBody(cut)
 	require.NotNil(t, got, "a text capture cut mid-character is kept")
 	require.Equal(t, "data: héllo wörld ", *got)
-	require.Nil(t, textBody([]byte{0xff, 0xfb, 0x90, 0x00, 0xc3}), "a binary body is not kept")
+	binary := textBody([]byte{0xff, 0xfb, 0x90, 0x00, 0xc3})
+	require.NotNil(t, binary)
+	require.Equal(t, "<binary content omitted: 5 bytes>", *binary, "a binary body is a placeholder, as on LLM rows")
 	whole := textBody([]byte(`{"ok":true}`))
 	require.NotNil(t, whole)
 	require.Equal(t, `{"ok":true}`, *whole)
 }
 
 // TestRelayLogKeepsWholeBody pins that a relay row keeps each text body in full, as LLM, MCP and
-// A2A rows do, and drops only a binary body.
+// A2A rows do, and records a binary body as the LLM placeholder.
 func TestRelayLogKeepsWholeBody(t *testing.T) {
 	plugin := policyTestPlugin(nil, nil, false)
 	plugin.writeQueue = make(chan *writeQueueEntry, 1)
@@ -5993,33 +6563,43 @@ func TestRelayLogKeepsWholeBody(t *testing.T) {
 	entry := (<-plugin.writeQueue).endpointLog
 	require.NotNil(t, entry.RequestBody)
 	require.Equal(t, len(request), len(*entry.RequestBody), "a text body over 64 KB is kept whole")
-	require.Nil(t, entry.ResponseBody, "a binary body is not kept")
+	require.NotNil(t, entry.ResponseBody)
+	require.Equal(t, "<binary content omitted: 5 bytes>", *entry.ResponseBody, "a binary body is a placeholder, as on LLM rows")
 }
 
-// A streamed relay reply has no body to log until core/relay buffers it as it forwards bytes, so
-// PreRelayHook stamps the resolved content policy onto the context as a plain bool
-// (BifrostContextKeyRelayContentLoggingEnabledByDefault) for core/relay to read before it opens
-// the stream, the same shape bifrost.go uses for BifrostContextKeyShouldStoreRawInLogs on the LLM path.
+// A streamed relay reply has no body to log until core/relay keeps it as it forwards bytes, so
+// PreRelayHook stamps one capture decision on the context (BifrostContextKeyRelayContentCapture),
+// resolved from the same content policy and the same provisional rule PreLLMHook gates input
+// capture with; core/relay keeps no precedence of its own.
 func TestRelayLogStampsContentCaptureSignal(t *testing.T) {
-	t.Run("on by default", func(t *testing.T) {
-		plugin := policyTestPlugin(nil, nil, false)
+	capture := func(t *testing.T, plugin *LoggerPlugin, ctx *schemas.BifrostContext) bool {
+		t.Helper()
 		plugin.writeQueue = make(chan *writeQueueEntry, 1)
-		ctx := policyCtx(false, nil)
-		ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-capture-on")
-		_, _, err := plugin.PreRelayHook(ctx, &schemas.BifrostRelayRequest{RelayName: "tavily", Method: "POST", Path: "/search"})
+		ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-capture")
+		_, _, err := plugin.PreRelayHook(ctx, &schemas.BifrostRelayRequest{RelayName: "tavily", Method: "POST", Path: "/search", Body: []byte(`{"q":"x"}`)})
 		require.NoError(t, err)
-		capture, _ := ctx.Value(schemas.BifrostContextKeyRelayContentLoggingEnabledByDefault).(bool)
-		require.True(t, capture)
+		capture, _ := ctx.Value(schemas.BifrostContextKeyRelayContentCapture).(bool)
+		pending, ok := plugin.pendingEndpointLogs.Load("req-capture")
+		require.True(t, ok)
+		require.Equal(t, capture, pending.(*pendingRelayLog).entry.RequestBody != nil, "the request body is captured under the same decision")
+		return capture
+	}
+	t.Run("on by default", func(t *testing.T) {
+		require.True(t, capture(t, policyTestPlugin(nil, nil, false), policyCtx(false, nil)))
 	})
 	t.Run("off when the plugin disables content logging", func(t *testing.T) {
-		plugin := policyTestPlugin(boolPtr(true), nil, false)
-		plugin.writeQueue = make(chan *writeQueueEntry, 1)
+		require.False(t, capture(t, policyTestPlugin(boolPtr(true), nil, false), policyCtx(false, nil)))
+	})
+	t.Run("provisional while governance has not resolved the presented key", func(t *testing.T) {
 		ctx := policyCtx(false, nil)
-		ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-capture-off")
-		_, _, err := plugin.PreRelayHook(ctx, &schemas.BifrostRelayRequest{RelayName: "tavily", Method: "POST", Path: "/search"})
-		require.NoError(t, err)
-		capture, _ := ctx.Value(schemas.BifrostContextKeyRelayContentLoggingEnabledByDefault).(bool)
-		require.False(t, capture)
+		ctx.SetValue(schemas.BifrostContextKeyVirtualKey, "vk-presented")
+		require.True(t, capture(t, policyTestPlugin(boolPtr(true), nil, false), ctx), "a key may re-enable content after this hook; the post-hook applies the final policy")
+	})
+	t.Run("off once governance has decided against it", func(t *testing.T) {
+		ctx := policyCtx(false, map[schemas.BifrostContextKey]bool{schemas.BifrostContextKeyGovernanceDisableContentLogging: true})
+		ctx.SetValue(schemas.BifrostContextKeyVirtualKey, "vk-presented")
+		ctx.SetValue(schemas.BifrostContextKeyGovernanceVirtualKeyID, "vk-presented")
+		require.False(t, capture(t, policyTestPlugin(nil, nil, false), ctx))
 	})
 	for _, tc := range []struct {
 		name                 string
@@ -6032,14 +6612,7 @@ func TestRelayLogStampsContentCaptureSignal(t *testing.T) {
 		{"no retention keeps nothing", nil, true, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			plugin := policyTestPlugin(boolPtr(true), tc.retain, tc.objectStorageEnabled)
-			plugin.writeQueue = make(chan *writeQueueEntry, 1)
-			ctx := policyCtx(false, nil)
-			ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-capture-retained")
-			_, _, err := plugin.PreRelayHook(ctx, &schemas.BifrostRelayRequest{RelayName: "tavily", Method: "POST", Path: "/search"})
-			require.NoError(t, err)
-			retained, _ := ctx.Value(schemas.BifrostContextKeyRelayContentRetainedWhenDisabled).(bool)
-			require.Equal(t, tc.want, retained)
+			require.Equal(t, tc.want, capture(t, policyTestPlugin(boolPtr(true), tc.retain, tc.objectStorageEnabled), policyCtx(false, nil)))
 		})
 	}
 }
@@ -6047,33 +6620,39 @@ func TestRelayLogStampsContentCaptureSignal(t *testing.T) {
 // BenchmarkRelayLogHooks measures the logging cost of one relay call on the request path: the
 // pre-hook capture and the post-hook that completes and queues the row.
 func BenchmarkRelayLogHooks(b *testing.B) {
-	plugin := policyTestPlugin(nil, nil, true)
-	plugin.writeQueue = make(chan *writeQueueEntry, 1024)
-	done := make(chan struct{})
-	go func() {
-		for range plugin.writeQueue {
+	run := func(b *testing.B, disableContent *bool, reply []byte) {
+		plugin := policyTestPlugin(disableContent, nil, true)
+		plugin.writeQueue = make(chan *writeQueueEntry, 1024)
+		done := make(chan struct{})
+		go func() {
+			for range plugin.writeQueue {
+			}
+			close(done)
+		}()
+		req := &schemas.BifrostRelayRequest{RelayName: "tavily", Method: "POST", Path: "/search", RoutePath: "/search", Billable: true,
+			Headers: map[string]string{"content-type": "application/json"}, Body: []byte(`{"query":"x"}`)}
+		resp := &schemas.BifrostRelayResponse{RelayName: "tavily", StatusCode: 200, Latency: 120, UpstreamLatency: 100, BytesOut: int64(len(reply)), Body: reply,
+			Usage: &schemas.RelayUsage{Cost: 0.033, CostPerRequest: 0.001, CostPerUnit: 0.008, Units: schemas.Ptr(4.0), BilledUnits: schemas.Ptr(4.0)}}
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			ctx := policyCtx(false, nil)
+			ctx.SetValue(schemas.BifrostContextKeyRequestID, "bench")
+			if _, _, err := plugin.PreRelayHook(ctx, req); err != nil {
+				b.Fatal(err)
+			}
+			if _, _, err := plugin.PostRelayHook(ctx, resp, nil); err != nil {
+				b.Fatal(err)
+			}
 		}
-		close(done)
-	}()
-	req := &schemas.BifrostRelayRequest{RelayName: "tavily", Method: "POST", Path: "/search", RoutePath: "/search", Billable: true,
-		Headers: map[string]string{"content-type": "application/json"}, Body: []byte(`{"query":"x"}`)}
-	resp := &schemas.BifrostRelayResponse{RelayName: "tavily", StatusCode: 200, Latency: 120, UpstreamLatency: 100, BytesOut: 42, Body: []byte(`{"usage":{"credits":4}}`),
-		Usage: &schemas.RelayUsage{Cost: 0.033, CostPerRequest: 0.001, CostPerUnit: 0.008, Units: schemas.Ptr(4.0), BilledUnits: schemas.Ptr(4.0)}}
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		ctx := policyCtx(false, nil)
-		ctx.SetValue(schemas.BifrostContextKeyRequestID, "bench")
-		if _, _, err := plugin.PreRelayHook(ctx, req); err != nil {
-			b.Fatal(err)
-		}
-		if _, _, err := plugin.PostRelayHook(ctx, resp, nil); err != nil {
-			b.Fatal(err)
-		}
+		b.StopTimer()
+		close(plugin.writeQueue)
+		<-done
 	}
-	b.StopTimer()
-	close(plugin.writeQueue)
-	<-done
+	reply := []byte(`{"usage":{"credits":4},"data":"` + strings.Repeat("a", 64*1024) + `"}`)
+	b.Run("ContentOn", func(b *testing.B) { run(b, nil, reply) })
+	// With content logging off, the reply is never copied for the row.
+	b.Run("ContentOff", func(b *testing.B) { run(b, boolPtr(true), reply) })
 }
 
 func TestRelayLogQueryRedaction(t *testing.T) {
@@ -6117,4 +6696,529 @@ func TestRelayJobRowDedupesIdempotentStarts(t *testing.T) {
 	store.fail = errors.New("database is down")
 	plugin.recordEndpointJob(&logstore.RelayLog{ID: "req-5", RequestID: "req-5", RelayName: "textract"}, &schemas.RelayJobHandle{ID: "j-2", Params: `{"job":{}}`})
 	require.Len(t, store.jobs, 2, "a lookup error records nothing rather than risk a duplicate row")
+}
+
+func clientIPTestContext(requestID string) *schemas.BifrostContext {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, requestID)
+	ctx.SetValue(schemas.BifrostContextKeyClientIP, "2001:db8::1")
+	ctx.SetValue(schemas.BifrostContextKeyUserID, "user-1")
+	ctx.SetValue(schemas.BifrostContextKeyUserEmail, "ada@example.com")
+	return ctx
+}
+
+func clientIPTestError() *schemas.BifrostError {
+	statusCode := 500
+	return &schemas.BifrostError{
+		IsBifrostError: true,
+		StatusCode:     &statusCode,
+		Error:          &schemas.ErrorField{Message: "provider failed"},
+		ExtraFields:    schemas.BifrostErrorExtraFields{RequestType: schemas.ChatCompletionRequest, Provider: schemas.OpenAI, OriginalModelRequested: "gpt-4o"},
+	}
+}
+
+func requireClientIP(t *testing.T, clientIP *string) {
+	t.Helper()
+	require.NotNil(t, clientIP)
+	require.Equal(t, "2001:db8::1", *clientIP)
+}
+
+// TestLLMLogsPersistClientIP drives PreLLMHook/PostLLMHook and the no-pending error path; both rows carry the caller IP.
+func TestLLMLogsPersistClientIP(t *testing.T) {
+	store := newTestStore(t)
+	plugin, err := Init(context.Background(), &Config{CaptureClientIP: true}, testLogger{}, store, nil, nil, nil)
+	require.NoError(t, err)
+
+	ctx := clientIPTestContext("req-client-ip")
+	_, _, err = plugin.PreLLMHook(ctx, &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: "gpt-4o", Params: &schemas.ChatParameters{}},
+	})
+	require.NoError(t, err)
+	_, _, err = plugin.PostLLMHook(ctx, nil, clientIPTestError())
+	require.NoError(t, err)
+
+	_, _, err = plugin.PostLLMHook(clientIPTestContext("req-client-ip-no-pending"), nil, clientIPTestError())
+	require.NoError(t, err)
+	require.NoError(t, plugin.Cleanup())
+
+	for _, id := range []string{"req-client-ip", "req-client-ip-no-pending"} {
+		entry, err := store.FindByID(context.Background(), id)
+		require.NoError(t, err, id)
+		requireClientIP(t, entry.ClientIP)
+	}
+	entry, err := store.FindByID(context.Background(), "req-client-ip")
+	require.NoError(t, err)
+	require.NotNil(t, entry.UserEmail, "the completed LLM row records the user email")
+	require.Equal(t, "ada@example.com", *entry.UserEmail)
+}
+
+// TestMCPLogsPersistClientIP drives PreMCPHook/PostMCPHook; the row carries the caller IP.
+func TestMCPLogsPersistClientIP(t *testing.T) {
+	store := newTestStore(t)
+	plugin, err := Init(context.Background(), &Config{CaptureClientIP: true}, testLogger{}, store, nil, nil, nil)
+	require.NoError(t, err)
+
+	ctx := clientIPTestContext("req-mcp-client-ip")
+	ctx.SetValue(schemas.BifrostContextKeyMCPLogID, "mcp-client-ip")
+	toolName := "docs-search"
+	_, _, err = plugin.PreMCPHook(ctx, &schemas.BifrostMCPRequest{
+		RequestType:                  schemas.MCPRequestTypeChatToolCall,
+		ChatAssistantMessageToolCall: &schemas.ChatAssistantMessageToolCall{Function: schemas.ChatAssistantMessageToolCallFunction{Name: &toolName, Arguments: `{}`}},
+	})
+	require.NoError(t, err)
+	result := `{"ok":true}`
+	_, _, err = plugin.PostMCPHook(ctx, &schemas.BifrostMCPResponse{
+		ChatMessage: &schemas.ChatMessage{Role: schemas.ChatMessageRoleTool, Content: &schemas.ChatMessageContent{ContentStr: &result}},
+		ExtraFields: schemas.BifrostMCPResponseExtraFields{MCPRequestType: schemas.MCPRequestTypeChatToolCall, ClientName: "docs", ToolName: "search"},
+	}, nil)
+	require.NoError(t, err)
+	require.NoError(t, plugin.Cleanup())
+
+	entry, err := store.FindMCPToolLog(context.Background(), "mcp-client-ip")
+	require.NoError(t, err)
+	requireClientIP(t, entry.ClientIP)
+	require.NotNil(t, entry.UserEmail)
+	require.Equal(t, "ada@example.com", *entry.UserEmail)
+}
+
+// TestClientIPFromContextClampsToColumns keeps an oversized forwarded header, which is caller-supplied, from failing the insert.
+func TestClientIPFromContextClampsToColumns(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	plugin := &LoggerPlugin{captureClientIP: true}
+	require.Empty(t, plugin.clientIPFromContext(ctx))
+	require.Nil(t, optionalString(plugin.clientIPFromContext(ctx)), "an absent IP stays NULL")
+	ctx.SetValue(schemas.BifrostContextKeyClientIP, strings.Repeat("9", maxPersistedClientIPLen+10))
+	require.Len(t, plugin.clientIPFromContext(ctx), maxPersistedClientIPLen)
+}
+
+// TestClientIPCaptureOffByDefault leaves client_ip NULL on LLM, MCP and relay rows unless logs_store.capture_client_ip is set; user email is still recorded.
+func TestClientIPCaptureOffByDefault(t *testing.T) {
+	store := newTestStore(t)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
+	require.NoError(t, err)
+
+	ctx := clientIPTestContext("req-client-ip-off")
+	_, _, err = plugin.PreLLMHook(ctx, &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: "gpt-4o", Params: &schemas.ChatParameters{}},
+	})
+	require.NoError(t, err)
+	_, _, err = plugin.PostLLMHook(ctx, nil, clientIPTestError())
+	require.NoError(t, err)
+	_, _, err = plugin.PostLLMHook(clientIPTestContext("req-client-ip-off-no-pending"), nil, clientIPTestError())
+	require.NoError(t, err)
+
+	mcpCtx := clientIPTestContext("req-mcp-client-ip-off")
+	mcpCtx.SetValue(schemas.BifrostContextKeyMCPLogID, "mcp-client-ip-off")
+	toolName := "docs-search"
+	_, _, err = plugin.PreMCPHook(mcpCtx, &schemas.BifrostMCPRequest{
+		RequestType:                  schemas.MCPRequestTypeChatToolCall,
+		ChatAssistantMessageToolCall: &schemas.ChatAssistantMessageToolCall{Function: schemas.ChatAssistantMessageToolCallFunction{Name: &toolName, Arguments: `{}`}},
+	})
+	require.NoError(t, err)
+	result := `{"ok":true}`
+	_, _, err = plugin.PostMCPHook(mcpCtx, &schemas.BifrostMCPResponse{
+		ChatMessage: &schemas.ChatMessage{Role: schemas.ChatMessageRoleTool, Content: &schemas.ChatMessageContent{ContentStr: &result}},
+		ExtraFields: schemas.BifrostMCPResponseExtraFields{MCPRequestType: schemas.MCPRequestTypeChatToolCall, ClientName: "docs", ToolName: "search"},
+	}, nil)
+	require.NoError(t, err)
+	require.NoError(t, plugin.Cleanup())
+
+	for _, id := range []string{"req-client-ip-off", "req-client-ip-off-no-pending"} {
+		entry, err := store.FindByID(context.Background(), id)
+		require.NoError(t, err, id)
+		require.Nil(t, entry.ClientIP, id)
+	}
+	entry, err := store.FindByID(context.Background(), "req-client-ip-off")
+	require.NoError(t, err)
+	require.NotNil(t, entry.UserEmail, "user email does not depend on capture_client_ip")
+	mcpEntry, err := store.FindMCPToolLog(context.Background(), "mcp-client-ip-off")
+	require.NoError(t, err)
+	require.Nil(t, mcpEntry.ClientIP)
+	require.NotNil(t, mcpEntry.UserEmail)
+
+	relayPlugin := policyTestPlugin(nil, nil, true)
+	relayPlugin.writeQueue = make(chan *writeQueueEntry, 4)
+	relayCtx := policyCtx(false, nil)
+	relayCtx.SetValue(schemas.BifrostContextKeyRequestID, "req-relay-client-ip-off")
+	relayCtx.SetValue(schemas.BifrostContextKeyClientIP, "10.0.0.5")
+	_, _, err = relayPlugin.PreRelayHook(relayCtx, &schemas.BifrostRelayRequest{RelayName: "tavily", Method: "POST", Path: "/search", RoutePath: "/search"})
+	require.NoError(t, err)
+	_, _, err = relayPlugin.PostRelayHook(relayCtx, &schemas.BifrostRelayResponse{RelayName: "tavily", StatusCode: 200}, nil)
+	require.NoError(t, err)
+	relayEntry := (<-relayPlugin.writeQueue).endpointLog
+	require.NotNil(t, relayEntry)
+	require.Nil(t, relayEntry.ClientIP)
+}
+
+// TestRelayLogMarksLargePayloadResponse pins that a relay reply forwarded past the large-payload
+// response threshold is marked on its row, as is_large_payload_response marks an LLM row, so the
+// body it keeps reads as the preview it is.
+func TestRelayLogMarksLargePayloadResponse(t *testing.T) {
+	plugin := policyTestPlugin(nil, nil, true)
+	plugin.writeQueue = make(chan *writeQueueEntry, 1)
+	ctx := policyCtx(false, nil)
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-large")
+	_, _, err := plugin.PreRelayHook(ctx, &schemas.BifrostRelayRequest{RelayName: "files", Method: "GET", Path: "/f"})
+	require.NoError(t, err)
+	_, _, err = plugin.PostRelayHook(ctx, &schemas.BifrostRelayResponse{RelayName: "files", StatusCode: 200, Streamed: true, LargeResponse: true, Body: []byte("preview")}, nil)
+	require.NoError(t, err)
+	entry := (<-plugin.writeQueue).endpointLog
+	require.True(t, entry.IsLargePayloadResponse)
+	require.Equal(t, "preview", *entry.ResponseBody)
+}
+
+// TestRelayLogStatusFollowsLLMRule pins that a relay row's status comes from the same rule as an
+// LLM row's: a hung-up, 499 or client-deadline call is cancelled, any other failure is an error.
+func TestRelayLogStatusFollowsLLMRule(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  *schemas.BifrostError
+		want string
+	}{
+		{"request cancelled", &schemas.BifrostError{Error: &schemas.ErrorField{Type: schemas.Ptr(schemas.RequestCancelled), Message: schemas.ErrRequestCancelled}}, logstore.RelayLogStatusCancelled},
+		{"http 499", &schemas.BifrostError{StatusCode: schemas.Ptr(499), Error: &schemas.ErrorField{Message: "client closed request"}}, logstore.RelayLogStatusCancelled},
+		{"client deadline", &schemas.BifrostError{Error: &schemas.ErrorField{Type: schemas.Ptr(schemas.RequestTimedOut), Message: "request cancelled by context: context deadline exceeded"}}, logstore.RelayLogStatusCancelled},
+		{"upstream timeout", &schemas.BifrostError{Error: &schemas.ErrorField{Type: schemas.Ptr(schemas.RequestTimedOut), Message: schemas.ErrProviderRequestTimedOut}}, logstore.RelayLogStatusError},
+		{"transport failure", &schemas.BifrostError{Error: &schemas.ErrorField{Message: "connection refused"}}, logstore.RelayLogStatusError},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			plugin := policyTestPlugin(nil, nil, false)
+			plugin.writeQueue = make(chan *writeQueueEntry, 1)
+			ctx := policyCtx(false, nil)
+			ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-status")
+			_, _, err := plugin.PreRelayHook(ctx, &schemas.BifrostRelayRequest{RelayName: "tavily", Method: "POST", Path: "/search"})
+			require.NoError(t, err)
+			_, _, err = plugin.PostRelayHook(ctx, nil, tc.err)
+			require.NoError(t, err)
+			require.Equal(t, tc.want, (<-plugin.writeQueue).endpointLog.Status)
+		})
+	}
+}
+
+// TestRelayLogStampsAppAndSession pins the two context values PreLLMHook stamps or records that the
+// relay hooks did not: the canonical app key for the plugins that run after this one, and the
+// session identity resolved at ingress, and the caller's correlation (baggage parent and
+// x-bf-agent-correlation-id) as an LLM row records it.
+func TestRelayLogStampsAppAndSession(t *testing.T) {
+	plugin := policyTestPlugin(nil, nil, false)
+	plugin.writeQueue = make(chan *writeQueueEntry, 1)
+	ctx := policyCtx(false, nil)
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-app")
+	ctx.SetValue(schemas.BifrostContextKeyUserAgent, "claude-code/1.0.0")
+	ctx.SetValue(schemas.BifrostContextKeySessionID, "sess-42")
+	ctx.SetValue(schemas.BifrostContextKeyParentRequestID, "parent-7")
+	ctx.SetValue(schemas.BifrostContextKeyRequestHeaders, map[string]string{"x-bf-agent-correlation-id": "agent-run-9"})
+	_, _, err := plugin.PreRelayHook(ctx, &schemas.BifrostRelayRequest{RelayName: "tavily", Method: "POST", Path: "/search"})
+	require.NoError(t, err)
+	appKey, _ := ctx.Value(schemas.BifrostContextKeyApp).(string)
+	require.NotEmpty(t, appKey, "the app key is stamped for downstream plugins, as PreLLMHook stamps it")
+	_, _, err = plugin.PostRelayHook(ctx, &schemas.BifrostRelayResponse{StatusCode: 200}, nil)
+	require.NoError(t, err)
+	entry := (<-plugin.writeQueue).endpointLog
+	require.NotNil(t, entry.SessionID)
+	require.Equal(t, "sess-42", *entry.SessionID)
+	require.NotNil(t, entry.ParentRequestID, "the baggage-named parent is kept, as on LLM rows")
+	require.Equal(t, "parent-7", *entry.ParentRequestID)
+	require.NotNil(t, entry.AgentCorrelationID, "x-bf-agent-correlation-id is kept, as on LLM rows")
+	require.Equal(t, "agent-run-9", *entry.AgentCorrelationID)
+}
+
+// TestRelayLogPreHookGatesBodyOnPolicy pins that the request body is captured only under a policy
+// that stores content, or provisionally while governance has yet to decide, as PreLLMHook does.
+// A relay row takes its team, customer, business unit, user and project attribution from the
+// request's grant identity, as an LLM row does (applyGrantAttribution): every team and customer the
+// call is attributed to lands in the set columns, not only the first in the scalar ones.
+func TestRelayLogAppliesGrantAttribution(t *testing.T) {
+	plugin := policyTestPlugin(nil, nil, true)
+	plugin.writeQueue = make(chan *writeQueueEntry, 1)
+	g := grant.New()
+	g.SetIdentity(grant.NewIdentity(schemas.Credential{}, &schemas.UserRef{ID: "user", Name: "User"},
+		&schemas.EntityRef{ID: "vk", Name: "Key"},
+		[]schemas.EntityRef{{ID: "team", Name: "Team"}, {ID: "parent-team", Name: "Parent team"}},
+		[]schemas.EntityRef{{ID: "direct", Name: "Direct"}, {ID: "inherited", Name: "Inherited"}},
+		[]schemas.EntityRef{{ID: "business", Name: "Business"}}, &schemas.EntityRef{ID: "project", Name: "Project"}))
+	ctx := policyCtx(false, nil)
+	ctx.SetGrant(g)
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-grant")
+
+	_, _, err := plugin.PreRelayHook(ctx, &schemas.BifrostRelayRequest{RelayName: "tavily", Method: "POST", Path: "/search", Billable: true, Body: []byte(`{}`)})
+	require.NoError(t, err)
+	_, _, err = plugin.PostRelayHook(ctx, &schemas.BifrostRelayResponse{RelayName: "tavily", StatusCode: 200}, nil)
+	require.NoError(t, err)
+
+	entry := (<-plugin.writeQueue).endpointLog
+	require.NotNil(t, entry)
+	require.Equal(t, schemas.Ptr("vk"), entry.VirtualKeyID)
+	require.Equal(t, schemas.Ptr("team"), entry.TeamID)
+	require.Equal(t, schemas.Ptr("direct"), entry.CustomerID)
+	require.Equal(t, schemas.Ptr("user"), entry.UserID)
+	require.Equal(t, schemas.Ptr("project"), entry.ProjectID)
+	require.Equal(t, []string{"team", "parent-team"}, entry.TeamIDsParsed)
+	require.Equal(t, []string{"Team", "Parent team"}, entry.TeamNamesParsed)
+	require.Equal(t, []string{"direct", "inherited"}, entry.CustomerIDsParsed)
+	require.Equal(t, []string{"Direct", "Inherited"}, entry.CustomerNamesParsed)
+	require.Equal(t, []string{"business"}, entry.BusinessUnitIDsParsed)
+	require.Equal(t, []string{"Business"}, entry.BusinessUnitNamesParsed)
+}
+
+func TestRelayLogPreHookGatesBodyOnPolicy(t *testing.T) {
+	plugin := policyTestPlugin(boolPtr(true), nil, false)
+	plugin.writeQueue = make(chan *writeQueueEntry, 1)
+	ctx := policyCtx(false, nil)
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-gate")
+	_, _, err := plugin.PreRelayHook(ctx, &schemas.BifrostRelayRequest{RelayName: "tavily", Method: "POST", Path: "/search", Body: []byte(`{"query":"x"}`)})
+	require.NoError(t, err)
+	pending, ok := plugin.pendingEndpointLogs.Load("req-gate")
+	require.True(t, ok)
+	require.Nil(t, pending.(*pendingRelayLog).entry.RequestBody, "content off with no key presented: nothing is held")
+}
+
+// TestRelayReconcileCarriesRetainedContent pins that the update reconciling an evicted row carries
+// hidden content with no body column under the reserved keys the hybrid store moves into the
+// object, so a call that outlived the sweep keeps its query and raw error as a direct insert does.
+func TestRelayReconcileCarriesRetainedContent(t *testing.T) {
+	entry := &logstore.RelayLog{
+		ID: "row", Path: "/search", ContentHidden: true,
+		RetainedPath:         schemas.Ptr("/search?q=private"),
+		RetainedErrorDetails: &schemas.BifrostError{Error: &schemas.ErrorField{Message: "boom"}},
+	}
+	updates := relayLogUpdateColumns(entry, false)
+	require.Equal(t, entry.RetainedPath, updates[logstore.RelayRetainedPathUpdate])
+	require.Equal(t, entry.RetainedErrorDetails, updates[logstore.RelayRetainedErrorDetailsUpdate])
+
+	visible := relayLogUpdateColumns(&logstore.RelayLog{ID: "row", Path: "/search?q=1"}, false)
+	require.NotContains(t, visible, logstore.RelayRetainedPathUpdate, "a visible row carries nothing extra")
+}
+
+// streamAccount serves one provider whose upstream is a test server.
+type streamAccount struct {
+	provider schemas.ModelProvider
+	config   schemas.ProviderConfig
+}
+
+func (a *streamAccount) GetConfiguredProviders() ([]schemas.ModelProvider, error) {
+	return []schemas.ModelProvider{a.provider}, nil
+}
+
+func (a *streamAccount) GetKeysForProvider(context.Context, schemas.ModelProvider) ([]schemas.Key, error) {
+	return []schemas.Key{{ID: "k1", Value: *schemas.NewSecretVar("mock"), Models: schemas.WhiteList{"*"}, Weight: 100}}, nil
+}
+
+func (a *streamAccount) GetConfigForProvider(provider schemas.ModelProvider) (*schemas.ProviderConfig, error) {
+	if provider != a.provider {
+		return nil, fmt.Errorf("provider %s not configured", provider)
+	}
+	config := a.config
+	return &config, nil
+}
+
+// failedUsageRecorder keeps the billed usage of every stream failure its post-hook sees.
+type failedUsageRecorder struct {
+	usage chan *schemas.BifrostLLMUsage
+}
+
+func (r *failedUsageRecorder) GetName() string { return "failed-usage-recorder" }
+
+func (r *failedUsageRecorder) Cleanup() error { return nil }
+
+func (r *failedUsageRecorder) PreRequestHook(*schemas.BifrostContext, *schemas.BifrostRequest) error {
+	return nil
+}
+
+func (r *failedUsageRecorder) PreLLMHook(_ *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	return req, nil, nil
+}
+
+func (r *failedUsageRecorder) PostLLMHook(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	if err != nil && err.Error != nil {
+		select {
+		case r.usage <- err.ExtraFields.BilledUsage.DeepCopy():
+		default:
+		}
+	}
+	return resp, err, nil
+}
+
+// stallingUpstream writes events, flushes, and holds the stream open until the client leaves.
+func stallingUpstream(t *testing.T, events ...string) string {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// net/http notices a client hang-up only once the request body is consumed.
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		for _, e := range events {
+			fmt.Fprint(w, e+"\n\n")
+		}
+		w.(http.Flusher).Flush()
+		select {
+		case <-r.Context().Done():
+		case <-time.After(5 * time.Second):
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv.URL
+}
+
+const openAIStallingChunk = `data: {"id":"c1","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{"role":"assistant","content":"o"}}]}`
+
+// newEstimatingClient runs Bifrost with the real tracer and its stream accumulator,
+// fed by the logging plugin as in production, plus a recorder of failed-stream usage.
+func newEstimatingClient(t *testing.T, provider schemas.ModelProvider, baseURL string, custom bool, idleTimeout int) (*bifrost.Bifrost, *failedUsageRecorder) {
+	t.Helper()
+	logger := testLogger{}
+	tracer := tracing.NewTracer(tracing.NewTraceStore(time.Minute, logger), nil, logger)
+	t.Cleanup(tracer.Stop)
+	plugin, err := Init(context.Background(), &Config{}, logger, newTestStore(t), nil, nil, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = plugin.Cleanup() })
+	account := &streamAccount{provider: provider, config: schemas.ProviderConfig{
+		NetworkConfig:            schemas.NetworkConfig{BaseURL: baseURL, DefaultRequestTimeoutInSeconds: 30, StreamIdleTimeoutInSeconds: idleTimeout},
+		ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{Concurrency: 1, BufferSize: 16},
+	}}
+	if custom {
+		account.config.CustomProviderConfig = &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI}
+	}
+	recorder := &failedUsageRecorder{usage: make(chan *schemas.BifrostLLMUsage, 4)}
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+		Account: account, Logger: logger, Tracer: tracer, LLMPlugins: []schemas.LLMPlugin{plugin, recorder},
+	})
+	require.NoError(t, err)
+	t.Cleanup(client.Shutdown)
+	return client, recorder
+}
+
+func hiRequest(provider schemas.ModelProvider, model string) *schemas.BifrostChatRequest {
+	return &schemas.BifrostChatRequest{Provider: provider, Model: model, Params: &schemas.ChatParameters{},
+		Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}}}}
+}
+
+func awaitFailedUsage(t *testing.T, recorder *failedUsageRecorder, wait time.Duration) *schemas.BifrostLLMUsage {
+	t.Helper()
+	select {
+	case usage := <-recorder.usage:
+		return usage
+	case <-time.After(wait):
+		t.Fatal("the stream failure never reached the post-hooks")
+		return nil
+	}
+}
+
+// A cancelled stream is billed from what the real accumulator received before the
+// cancel: the worker estimates it ahead of every post-hook.
+func TestCancelledStreamEstimatedFromRealAccumulator(t *testing.T) {
+	const provider schemas.ModelProvider = "cancel-estimate"
+	client, recorder := newEstimatingClient(t, provider, stallingUpstream(t, openAIStallingChunk), true, 0)
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	stream, streamErr := client.ChatCompletionStreamRequest(ctx, hiRequest(provider, "m"))
+	require.Nil(t, streamErr)
+	for chunk := range stream {
+		if chunk.BifrostError == nil {
+			cancel()
+		}
+	}
+	usage := awaitFailedUsage(t, recorder, 3*time.Second)
+	require.NotNil(t, usage, "cancelled stream carries no billed usage")
+	require.Equal(t, 8, usage.PromptTokens, "cl100k_base fallback prompt count")
+	require.Equal(t, 1, usage.CompletionTokens)
+	require.Equal(t, 9, usage.TotalTokens)
+	require.NotNil(t, usage.Estimation)
+}
+
+// Claude's message_start output count is provisional, so a stream cancelled after
+// more output is re-counted from the accumulated text, on chat and responses.
+func TestAnthropicCancelledStreamEstimatedFromRealAccumulator(t *testing.T) {
+	output := strings.Repeat("hello world ", 1000)
+	for _, responses := range []bool{false, true} {
+		t.Run(map[bool]string{false: "chat", true: "responses"}[responses], func(t *testing.T) {
+			url := stallingUpstream(t,
+				"event: message_start\n"+`data: {"type":"message_start","message":{"id":"msg_cancel","type":"message","role":"assistant","model":"claude-3-haiku","content":[],"usage":{"input_tokens":26,"output_tokens":4}}}`,
+				"event: content_block_start\n"+`data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`,
+				"event: content_block_delta\n"+`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"`+output+`"}}`)
+			client, recorder := newEstimatingClient(t, schemas.Anthropic, url, false, 0)
+			ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+			defer cancel()
+			request := hiRequest(schemas.Anthropic, "claude-3-haiku")
+			var stream chan *schemas.BifrostStreamChunk
+			var streamErr *schemas.BifrostError
+			if responses {
+				stream, streamErr = client.ResponsesStreamRequest(ctx, request.ToResponsesRequest())
+			} else {
+				stream, streamErr = client.ChatCompletionStreamRequest(ctx, request)
+			}
+			require.Nil(t, streamErr)
+			seen := 0
+			for chunk := range stream {
+				if chunk.BifrostChatResponse != nil {
+					for _, c := range chunk.BifrostChatResponse.Choices {
+						if c.ChatStreamResponseChoice != nil && c.Delta != nil && c.Delta.Content != nil {
+							seen += len(*c.Delta.Content)
+						}
+					}
+				}
+				if c := chunk.BifrostResponsesStreamResponse; c != nil && c.Type == schemas.ResponsesStreamResponseTypeOutputTextDelta && c.Delta != nil {
+					seen += len(*c.Delta)
+				}
+				if seen >= len(output) {
+					cancel()
+				}
+			}
+			usage := awaitFailedUsage(t, recorder, 3*time.Second)
+			require.NotNil(t, usage)
+			require.Equal(t, 26, usage.PromptTokens, "the provider's prompt count is kept")
+			require.Greater(t, usage.CompletionTokens, 4, "the provisional output count was not replaced: %+v", usage)
+			require.NotNil(t, usage.Estimation)
+			require.True(t, usage.Estimation.Completion)
+			require.Equal(t, usage.PromptTokens+usage.CompletionTokens, usage.TotalTokens)
+		})
+	}
+}
+
+// The Anthropic handlers' provisional-usage mark belongs to the attempt that set it;
+// one left on the context must not mark real provider usage as provisional.
+func TestCancelledStreamIgnoresStaleProvisionalUsage(t *testing.T) {
+	const provider schemas.ModelProvider = "stale-counter"
+	url := stallingUpstream(t, `data: {"id":"c1","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{"role":"assistant","content":"o"}}],"usage":{"prompt_tokens":5,"completion_tokens":7,"total_tokens":12}}`)
+	client, recorder := newEstimatingClient(t, provider, url, true, 0)
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	ctx.SetValue(schemas.BifrostContextKeyStreamUsageProvisional, true) // left by an earlier Anthropic-handler attempt
+	stream, streamErr := client.ChatCompletionStreamRequest(ctx, hiRequest(provider, "m"))
+	require.Nil(t, streamErr)
+	for chunk := range stream {
+		if chunk.BifrostError == nil {
+			cancel()
+		}
+	}
+	usage := awaitFailedUsage(t, recorder, 3*time.Second)
+	require.NotNil(t, usage)
+	require.Nil(t, usage.Estimation, "provider usage replaced by a stale provisional mark: %+v", usage)
+	require.Equal(t, 5, usage.PromptTokens)
+	require.Equal(t, 7, usage.CompletionTokens)
+}
+
+// A stream that produces output and then goes silent fails on the per-chunk idle
+// timeout with an untyped error; its received output is still estimated.
+func TestIdleTimedOutStreamEstimatedFromRealAccumulator(t *testing.T) {
+	const provider schemas.ModelProvider = "idle-estimate"
+	client, recorder := newEstimatingClient(t, provider, stallingUpstream(t, openAIStallingChunk), true, 1)
+	stream, streamErr := client.ChatCompletionStreamRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), hiRequest(provider, "m"))
+	require.Nil(t, streamErr)
+	var failure *schemas.BifrostError
+	for chunk := range stream {
+		if chunk.BifrostError != nil {
+			failure = chunk.BifrostError
+		}
+	}
+	require.NotNil(t, failure)
+	require.NotNil(t, failure.Error)
+	require.ErrorIs(t, failure.Error.Error, providerUtils.ErrStreamIdleTimeout)
+	usage := awaitFailedUsage(t, recorder, 5*time.Second)
+	require.NotNil(t, usage)
+	require.Equal(t, 8, usage.PromptTokens)
+	require.Equal(t, 1, usage.CompletionTokens)
+	require.NotNil(t, usage.Estimation)
 }

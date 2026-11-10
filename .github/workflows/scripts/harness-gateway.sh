@@ -74,8 +74,10 @@ harness_start_gateway() {
   local base_url="http://localhost:$port"
   local cmd=("$HARNESS_BINARY" --app-dir "$app_dir" --port "$port" --log-level info)
   if [ -n "${HARNESS_GATEWAY_ENV:-}" ]; then
-    # shellcheck disable=SC2206 # KEY=VALUE words, split on purpose
-    cmd=(env $HARNESS_GATEWAY_ENV "${cmd[@]}")
+    # KEY=VALUE words split on whitespace, never glob-expanded (NO_PROXY=*.example.com).
+    local env_words=()
+    read -r -a env_words <<<"$HARNESS_GATEWAY_ENV"
+    cmd=(env "${env_words[@]}" "${cmd[@]}")
   fi
 
   echo "🚀 Starting bifrost-http on port $port..."
@@ -141,6 +143,9 @@ harness_stop_gateway() {
     wait "$pid" 2>/dev/null || true
   fi
   if [ -n "${HARNESS_SG_PID:-}" ]; then
+    # On a PID-file timeout the gateway PID is unknown and sg may still be running
+    # (e.g. waiting on a group password): stop it, or the wait below never returns.
+    kill "$HARNESS_SG_PID" 2>/dev/null || true
     wait "$HARNESS_SG_PID" 2>/dev/null || true
   fi
   HARNESS_BIFROST_PID=""

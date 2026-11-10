@@ -153,6 +153,7 @@ type Key struct {
 	SGLKeyConfig           *SGLKeyConfig           `json:"sgl_key_config,omitempty"`            // SGLang-specific key configuration
 	DatabricksKeyConfig    *DatabricksKeyConfig    `json:"databricks_key_config,omitempty"`     // Databricks-specific key configuration
 	CloudflareKeyConfig    *CloudflareKeyConfig    `json:"cloudflare_key_config,omitempty"`     // Cloudflare Workers AI-specific key configuration
+	AnthropicKeyConfig     *AnthropicKeyConfig     `json:"anthropic_key_config,omitempty"`      // Anthropic-specific key configuration
 	OAuthKeyConfig         *OAuthKeyConfig         `json:"oauth_key_config,omitempty"`          // OAuth-minted bearer for OpenAI-compatible providers; used when Value is empty
 	Enabled                *bool                   `json:"enabled,omitempty"`                   // Whether the key is active (default:true)
 	UseForBatchAPI         *bool                   `json:"use_for_batch_api,omitempty"`         // Whether this key can be used for batch API operations (default:false for new keys, migrated keys default to true)
@@ -271,6 +272,27 @@ func (e *VertexEndpoint) Validate() error {
 	}
 }
 
+// Validate requires an absolute https URL with a host when a literal deployment_url
+// is set. Env and vault references and redacted placeholders are skipped: their value
+// is not known here.
+func (c *BasetenAliasCfg) Validate() error {
+	if c == nil || c.DeploymentURL == nil || c.DeploymentURL.IsFromSecret() || c.DeploymentURL.IsRedacted() {
+		return nil
+	}
+	raw := strings.TrimSpace(c.DeploymentURL.GetValue())
+	if raw == "" {
+		return nil
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme != "https" || u.Host == "" {
+		return fmt.Errorf("baseten deployment_url must be an absolute https URL")
+	}
+	if u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+		return fmt.Errorf("baseten deployment_url must not carry userinfo, a query, or a fragment")
+	}
+	return nil
+}
+
 // BedrockAliasCfg holds Bedrock-specific overrides that apply to a single alias.
 type BedrockAliasCfg struct {
 	InferenceProfileARN *SecretVar `json:"inference_profile_arn,omitempty"`
@@ -279,6 +301,13 @@ type BedrockAliasCfg struct {
 // ReplicateAliasCfg holds Replicate-specific overrides that apply to a single alias.
 type ReplicateAliasCfg struct {
 	UseDeploymentsEndpoint *bool `json:"use_deployments_endpoint,omitempty"`
+}
+
+// BasetenAliasCfg routes a Baseten alias to a dedicated deployment instead of the
+// shared Model APIs host. The JSON name differs from AzureAliasCfg's "endpoint" so
+// the two embedded sub-configs never share a key at the same depth.
+type BasetenAliasCfg struct {
+	DeploymentURL *SecretVar `json:"deployment_url,omitempty"` // OpenAI-compatible base, e.g. https://model-<id>.api.baseten.co/environments/production/sync/v1
 }
 
 // AliasConfig is the rich value type held by KeyAliases. It carries everything
@@ -306,6 +335,7 @@ type AliasConfig struct {
 	*VertexAliasCfg
 	*BedrockAliasCfg
 	*ReplicateAliasCfg
+	*BasetenAliasCfg
 }
 
 // Redacted copies the alias and its secret-bearing sub-configs, masking resolved
@@ -334,6 +364,11 @@ func (ac AliasConfig) Redacted() AliasConfig {
 		bedrock.InferenceProfileARN = bedrock.InferenceProfileARN.RedactedIfSecret()
 		ac.BedrockAliasCfg = &bedrock
 	}
+	if ac.BasetenAliasCfg != nil {
+		baseten := *ac.BasetenAliasCfg
+		baseten.DeploymentURL = baseten.DeploymentURL.RedactedIfSecret()
+		ac.BasetenAliasCfg = &baseten
+	}
 	return ac
 }
 
@@ -352,7 +387,8 @@ func (ac AliasConfig) isLegacyShape() bool {
 		ac.AzureAliasCfg == nil &&
 		ac.VertexAliasCfg == nil &&
 		ac.BedrockAliasCfg == nil &&
-		ac.ReplicateAliasCfg == nil
+		ac.ReplicateAliasCfg == nil &&
+		ac.BasetenAliasCfg == nil
 }
 
 // MarshalJSON emits the legacy string wire shape when only ModelID is set, so
@@ -433,6 +469,14 @@ func (ka KeyAliases) Validate(providerKey ModelProvider) error {
 		}
 		if ac.ReplicateAliasCfg != nil && providerKey != Replicate {
 			return fmt.Errorf("alias %q: replicate sub-config is only valid on Replicate keys (got provider %q)", from, providerKey)
+		}
+		if ac.BasetenAliasCfg != nil && providerKey != Baseten {
+			return fmt.Errorf("alias %q: baseten sub-config is only valid on Baseten keys (got provider %q)", from, providerKey)
+		}
+		if ac.BasetenAliasCfg != nil {
+			if err := ac.BasetenAliasCfg.Validate(); err != nil {
+				return fmt.Errorf("alias %q: %w", from, err)
+			}
 		}
 		normalized := strings.ToLower(from)
 		if _, ok := seen[normalized]; ok {
@@ -881,6 +925,117 @@ func (c *VertexAWSWorkloadIdentityConfig) Redacted() *VertexAWSWorkloadIdentityC
 
 // NOTE: To use Vertex IAM role authentication, set AuthCredentials to empty string and leave
 // AWSWorkloadIdentity nil.
+
+// AnthropicKeyConfig represents the Anthropic-specific key configuration.
+type AnthropicKeyConfig struct {
+	WorkloadIdentity *AnthropicWorkloadIdentityConfig `json:"workload_identity,omitempty"` // Workload Identity Federation; used when Value is empty
+}
+
+// AnthropicWorkloadIdentityConfig configures Anthropic Workload Identity Federation. Bifrost
+// exchanges an OIDC identity token issued to the workload (a Kubernetes projected service
+// account token, a CI OIDC token, ...) at the Anthropic token endpoint for a short-lived
+// access token that acts as ServiceAccountID, and sends that token as an OAuth bearer.
+//
+// IdentitySource says where the identity token comes from.
+type AnthropicWorkloadIdentityConfig struct {
+	FederationRuleID SecretVar       `json:"federation_rule_id"`     // fdrl_... rule the exchange is evaluated against
+	OrganizationID   SecretVar       `json:"organization_id"`        // Anthropic organization UUID
+	ServiceAccountID SecretVar       `json:"service_account_id"`     // svac_... service account the minted token acts as
+	WorkspaceID      *SecretVar      `json:"workspace_id,omitempty"` // wrkspc_...; required when the rule spans several workspaces
+	IdentitySource   *IdentitySource `json:"identity_source"`        // where the identity token comes from
+}
+
+// IdentitySourceType names where a federated key gets its identity token.
+type IdentitySourceType string
+
+const (
+	IdentitySourceFile   IdentitySourceType = "file"   // read from Path on every exchange, so a token the platform rotates on disk is picked up
+	IdentitySourceInline IdentitySourceType = "inline" // Token, fixed for the life of the config
+)
+
+// IdentitySource is where a federated key gets the identity token it exchanges for a provider
+// credential. It is shared by every provider that federates, so a new source type works for all
+// of them.
+type IdentitySource struct {
+	Type  IdentitySourceType `json:"type"`
+	Path  *SecretVar         `json:"path,omitempty"`  // file: path of the identity token
+	Token *SecretVar         `json:"token,omitempty"` // inline: the identity token itself, usually an env. reference
+}
+
+// Redacted returns a copy safe to send to clients: the path stays readable unless it comes from a
+// secret reference, while the token is always masked.
+func (s *IdentitySource) Redacted() *IdentitySource {
+	if s == nil {
+		return nil
+	}
+	return &IdentitySource{Type: s.Type, Path: s.Path.RedactedIfSecret(), Token: s.Token.Redacted()}
+}
+
+// Validate checks that the source names a known type and sets exactly that type's field. field is
+// the config path reported in errors.
+func (s *IdentitySource) Validate(field string) error {
+	has := func(v *SecretVar) bool {
+		return v != nil && (v.IsFromSecret() || strings.TrimSpace(v.GetValue()) != "")
+	}
+	if s == nil {
+		return fmt.Errorf("%s is required", field)
+	}
+	switch s.Type {
+	case IdentitySourceFile:
+		if !has(s.Path) || s.Token != nil {
+			return fmt.Errorf("%s of type file needs path and no token", field)
+		}
+	case IdentitySourceInline:
+		if !has(s.Token) || s.Path != nil {
+			return fmt.Errorf("%s of type inline needs token and no path", field)
+		}
+	default:
+		return fmt.Errorf("%s.type must be file or inline", field)
+	}
+	return nil
+}
+
+// HasWorkloadIdentity reports whether the key federates its credential instead of carrying one.
+func (c *AnthropicKeyConfig) HasWorkloadIdentity() bool {
+	return c != nil && c.WorkloadIdentity != nil
+}
+
+// Redacted returns a copy safe to send to clients: the identifiers and the identity source's path
+// stay readable unless they come from a secret reference, while an inline token is always masked.
+func (c *AnthropicKeyConfig) Redacted() *AnthropicKeyConfig {
+	if c == nil {
+		return nil
+	}
+	out := &AnthropicKeyConfig{}
+	if wif := c.WorkloadIdentity; wif != nil {
+		out.WorkloadIdentity = &AnthropicWorkloadIdentityConfig{
+			FederationRuleID: *wif.FederationRuleID.RedactedIfSecret(),
+			OrganizationID:   *wif.OrganizationID.RedactedIfSecret(),
+			ServiceAccountID: *wif.ServiceAccountID.RedactedIfSecret(),
+			WorkspaceID:      wif.WorkspaceID.RedactedIfSecret(),
+			IdentitySource:   wif.IdentitySource.Redacted(),
+		}
+	}
+	return out
+}
+
+// Validate checks the config at setup time, so a half-configured key is refused where the
+// operator can act on it rather than failing at the first inference call.
+func (c *AnthropicWorkloadIdentityConfig) Validate() error {
+	has := func(v *SecretVar) bool {
+		return v != nil && (v.IsFromSecret() || strings.TrimSpace(v.GetValue()) != "")
+	}
+	if !has(&c.FederationRuleID) {
+		return fmt.Errorf("anthropic_key_config.workload_identity.federation_rule_id is required")
+	}
+	if !has(&c.OrganizationID) {
+		return fmt.Errorf("anthropic_key_config.workload_identity.organization_id is required")
+	}
+	if !has(&c.ServiceAccountID) {
+		return fmt.Errorf("anthropic_key_config.workload_identity.service_account_id is required")
+	}
+	return c.IdentitySource.Validate("anthropic_key_config.workload_identity.identity_source")
+}
 
 // S3BucketConfig represents a single S3 bucket configuration for batch operations.
 type S3BucketConfig struct {

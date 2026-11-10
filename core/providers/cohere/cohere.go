@@ -422,7 +422,7 @@ func (provider *CohereProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 	jsonBody, err := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*CohereChatRequest, error) {
 			return ToCohereChatCompletionRequest(request)
 		})
 	if err != nil {
@@ -492,7 +492,7 @@ func (provider *CohereProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 	jsonBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*CohereChatRequest, error) {
 			reqBody, err := ToCohereChatCompletionRequest(request)
 			if err != nil {
 				return nil, err
@@ -592,6 +592,7 @@ func (provider *CohereProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 			}
 			providerUtils.CloseStream(ctx, responseChan)
 		}()
+		defer providerUtils.RecoverStreamPanic(ctx, postHookRunner, responseChan, provider.logger, postHookSpanFinalizer)
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
 		// Decompress gzip-encoded streams transparently (no-op for non-gzip)
 		reader, releaseGzip := providerUtils.DecompressStreamBody(resp)
@@ -683,6 +684,7 @@ func (provider *CohereProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 
 				if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
 					response.ExtraFields.RawResponse = eventData
+					response.ExtraFields.RawResponseFormat = schemas.RawResponseFormatCohereChatStreamEvent
 				}
 
 				if isLastChunk {
@@ -719,7 +721,7 @@ func (provider *CohereProvider) Responses(ctx *schemas.BifrostContext, key schem
 	jsonBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*CohereChatRequest, error) {
 			return ToCohereResponsesRequest(request)
 		})
 	if bifrostErr != nil {
@@ -791,7 +793,7 @@ func (provider *CohereProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 	jsonBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*CohereChatRequest, error) {
 			reqBody, err := ToCohereResponsesRequest(request)
 			if err != nil {
 				return nil, err
@@ -891,6 +893,7 @@ func (provider *CohereProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 			}
 			providerUtils.CloseStream(ctx, responseChan)
 		}()
+		defer providerUtils.RecoverStreamPanic(ctx, postHookRunner, responseChan, provider.logger, postHookSpanFinalizer)
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
 		// Decompress gzip-encoded streams transparently (no-op for non-gzip)
 		reader, releaseGzip := providerUtils.DecompressStreamBody(resp)
@@ -962,6 +965,8 @@ func (provider *CohereProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 				// post-loop truncation check from reporting the same stream twice.
 				return
 			}
+			// Attach the upstream event to exactly one response: the one streaming its text or arguments.
+			rawIdx := providerUtils.ResponsesStreamRawIndex(responses, len(responses)-1)
 			// Handle each response in the slice
 			for i, response := range responses {
 				if response != nil {
@@ -972,8 +977,9 @@ func (provider *CohereProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 					lastChunkTime = time.Now()
 					chunkIndex++
 
-					if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
+					if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) && i == rawIdx {
 						response.ExtraFields.RawResponse = eventData
+						response.ExtraFields.RawResponseFormat = schemas.RawResponseFormatCohereChatStreamEvent
 					}
 
 					if isLastChunk && i == len(responses)-1 {
@@ -1014,7 +1020,7 @@ func (provider *CohereProvider) Embedding(ctx *schemas.BifrostContext, key schem
 	jsonBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*CohereEmbeddingRequest, error) {
 			return ToCohereEmbeddingRequest(request)
 		})
 	if bifrostErr != nil {
@@ -1083,7 +1089,7 @@ func (provider *CohereProvider) Rerank(ctx *schemas.BifrostContext, key schemas.
 	jsonBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*CohereRerankRequest, error) {
 			return ToCohereRerankRequest(request), nil
 		})
 	if bifrostErr != nil {
@@ -1293,7 +1299,7 @@ func (provider *CohereProvider) CountTokens(ctx *schemas.BifrostContext, key sch
 	jsonBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*CohereCountTokensRequest, error) {
 			return ToCohereCountTokensRequest(request)
 		})
 	if bifrostErr != nil {

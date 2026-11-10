@@ -44,6 +44,7 @@ type MCPManager struct {
 	toolsManager           *ToolsManager                      // Handler for MCP tools
 	server                 *server.MCPServer                  // Local MCP server instance for hosting tools (STDIO-based)
 	clientMap              map[string]*schemas.MCPClientState // Map of MCP client names to their configurations
+	discoveryStore         schemas.MCPDiscoveryStore          // Discoveries (tools, instructions, resources, prompts); the single owner of that data, which client state never carries
 	mu                     sync.RWMutex                       // Read-write mutex for thread-safe operations
 	serverRunning          bool                               // Track whether local MCP server is running
 	checkerManager         *ConnectionCheckerManager          // Manager for per-client periodic connection checkers (liveness + discovery refresh, drives Healthy/Unstable/NeedsReauth)
@@ -88,7 +89,8 @@ type MCPManager struct {
 
 	// discoveryChangeCallback, if set, runs when a fresh discovery of a client differs from the installed one:
 	// connect/reconnect, SetClientDiscovery and the connection checker. Not on a restore from config
-	// (nothing changed). It is how the transport persists; fired outside m.mu since it may do I/O.
+	// (nothing changed). It lets the transport react (it re-syncs its hosted /mcp); persisting the
+	// discovery is the discovery store's job. Fired outside m.mu since it may do I/O.
 	discoveryChangeCallback func(clientID, name string, discovery *schemas.MCPDiscovery)
 }
 
@@ -111,12 +113,11 @@ func (m *MCPManager) SetDiscoveryChangeCallback(cb func(clientID, name string, d
 	m.discoveryChangeCallback = cb
 }
 
-// discoveryChanged updates LastDiscoveryHash from clientState and, on a change, returns a closure that
-// runs the callback with the discovery installed when it fires; nil when nothing changed or no
-// callback is set. Call with m.mu held and run the closure after releasing it.
+// discoveryChanged updates LastDiscoveryHash from clientID's installed discovery and, on a change,
+// returns a closure that runs the callback with the discovery installed when it fires; nil when
+// nothing changed or no callback is set. Call with m.mu held and run the closure after releasing it.
 func (m *MCPManager) discoveryChanged(clientState *schemas.MCPClientState, clientID string) func() {
-	discovery := installedDiscovery(clientState)
-	hash := computeDiscoveryHash(discovery)
+	hash := computeDiscoveryHash(m.installedDiscovery(clientState.ExecutionConfig))
 	if clientState.LastDiscoveryHash == hash {
 		return nil
 	}
@@ -129,23 +130,35 @@ func (m *MCPManager) discoveryChanged(clientState *schemas.MCPClientState, clien
 	// deliver the discovery installed now, not the one it was created with.
 	return func() {
 		m.mu.RLock()
-		current, name := installedDiscovery(clientState), clientState.Name
+		current, name := m.installedDiscovery(clientState.ExecutionConfig), clientState.Name
 		m.mu.RUnlock()
 		cb(clientID, name, current)
 	}
 }
 
-// installedDiscovery is clientState's current discovery. Callers hold m.mu.
-func installedDiscovery(clientState *schemas.MCPClientState) *schemas.MCPDiscovery {
-	return &schemas.MCPDiscovery{
-		Tools:           clientState.ToolMap,
-		ToolNameMapping: clientState.ToolNameMapping,
-		Instructions:    clientState.ServerInstructions,
-
-		Resources:         clientState.Resources,
-		ResourceTemplates: clientState.ResourceTemplates,
-		Prompts:           clientState.Prompts,
+// installedDiscovery is config's discovery in the store as the manager itself sees it (no caller,
+// so a client with per_user_discovery on has none), or an empty one when it has none. Safe under
+// m.mu: the store answers the manager's own ctx without I/O.
+func (m *MCPManager) installedDiscovery(config *schemas.MCPClientConfig) *schemas.MCPDiscovery {
+	if config == nil {
+		return &schemas.MCPDiscovery{}
 	}
+	if discovery := m.discoveryStore.GetDiscovery(m.ctx, config); discovery != nil {
+		return discovery
+	}
+	return &schemas.MCPDiscovery{}
+}
+
+// installedDiscoveryByID is installedDiscovery for the client with this ID. Takes m.mu, so the
+// caller must not hold it.
+func (m *MCPManager) installedDiscoveryByID(clientID string) *schemas.MCPDiscovery {
+	m.mu.RLock()
+	var config *schemas.MCPClientConfig
+	if state, ok := m.clientMap[clientID]; ok {
+		config = state.ExecutionConfig
+	}
+	m.mu.RUnlock()
+	return m.installedDiscovery(config)
 }
 
 // MCPToolFunction is a generic function type for handling tool calls with typed arguments.
@@ -191,10 +204,12 @@ func NewMCPManager(ctx context.Context, config schemas.MCPConfig, credStore sche
 		}
 	}
 	// Creating new instance
+	discoveryStore := NewDiscoveryStore(config.SharedDiscoveryStore, config.PerUserDiscoveryStore)
 	manager := &MCPManager{
 		ctx:                    ctx,
 		logger:                 logger,
 		clientMap:              make(map[string]*schemas.MCPClientState),
+		discoveryStore:         discoveryStore,
 		checkerManager:         NewConnectionCheckerManager(config.ToolSyncInterval),
 		credStore:              credStore,
 		inProcessServerFactory: config.InProcessServerFactory,
@@ -260,43 +275,60 @@ func (m *MCPManager) getInProcessServerFactory() schemas.InProcessServerFactory 
 // run it only after all plugins are registered, ensuring every PreMCPConnectionHook
 // participates in the connection. Safe to call once after construction; clients are
 // dialed in parallel and a failed client is retained in the Unstable state with a
-// connection checker that recovers it automatically.
-func (m *MCPManager) ConnectConfiguredClients(ctx context.Context) {
+// connection checker that recovers it automatically. It returns once every client
+// has been attempted; onClientDone, when not nil, is called as each attempt
+// finishes, never two calls at once.
+func (m *MCPManager) ConnectConfiguredClients(ctx context.Context, onClientDone func(clientID string)) {
 	m.connectOnce.Do(func() {
-		m.connectConfiguredClients(ctx)
+		m.connectConfiguredClients(ctx, onClientDone)
 	})
 }
 
 // connectConfiguredClients performs the actual dial. It is invoked exactly once via
 // m.connectOnce, guarding against accidental repeat invocations (e.g. a double-Bootstrap
 // or a future code path) that would otherwise re-dial every boot config.
-func (m *MCPManager) connectConfiguredClients(ctx context.Context) {
+func (m *MCPManager) connectConfiguredClients(ctx context.Context, onClientDone func(clientID string)) {
 	if len(m.bootClientConfigs) == 0 {
 		return
 	}
 	if ctx == nil {
 		ctx = m.ctx
 	}
+	// Serializes onClientDone, so a caller resyncing on each call never has an
+	// older snapshot land after a newer one.
+	var doneMu sync.Mutex
 	// Add clients in parallel
 	wg := sync.WaitGroup{}
 	wg.Add(len(m.bootClientConfigs))
 	for _, clientConfig := range m.bootClientConfigs {
 		go func(clientConfig *schemas.MCPClientConfig) {
 			defer wg.Done()
-			if err := m.AddClient(ctx, clientConfig); err != nil {
+			if onClientDone != nil {
+				defer func() {
+					doneMu.Lock()
+					defer doneMu.Unlock()
+					onClientDone(clientConfig.ID)
+				}()
+			}
+			// A failed dial is kept unstable and recovered by addClient itself, which
+			// checks the client was not removed meanwhile: the caller may serve the
+			// API while this runs.
+			dialed, err := m.addClient(ctx, clientConfig, true)
+			if err != nil {
 				m.logger.Warn("%s Failed to register MCP client %s: %v", MCPLogPrefix, clientConfig.Name, err)
-				// Retain the entry in Unstable state and start a connection checker to
-				// recover it automatically. On startup, a connection failure is likely
-				// transient (e.g. autoscaling cold start) — the client was previously
-				// configured and should be recovered without user intervention.
+			}
+			if err != nil && !dialed {
+				// Refused before any dial, so nothing was kept. Retain the entry in
+				// Unstable state and start a connection checker to recover it
+				// automatically. On startup, a connection failure is likely transient
+				// (e.g. autoscaling cold start); the client was previously configured
+				// and should be recovered without user intervention.
 				m.mu.Lock()
 				if _, exists := m.clientMap[clientConfig.ID]; !exists {
 					m.clientMap[clientConfig.ID] = &schemas.MCPClientState{
 						Name:            clientConfig.Name,
 						ExecutionConfig: clientConfig,
 						State:           schemas.MCPConnectionStateUnstable,
-						ToolMap:         make(map[string]schemas.ChatTool),
-						ToolNameMapping: make(map[string]string),
 						ConnectionInfo: &schemas.MCPClientConnectionInfo{
 							Type: clientConfig.ConnectionType,
 						},

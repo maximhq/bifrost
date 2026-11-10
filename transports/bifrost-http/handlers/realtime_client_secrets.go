@@ -103,6 +103,9 @@ func (h *RealtimeClientSecretsHandler) handleRequest(ctx *fasthttp.RequestCtx) {
 	if userName, ok := ctx.UserValue(schemas.BifrostContextKeyUserName).(string); ok && userName != "" {
 		bifrostCtx.SetValue(schemas.BifrostContextKeyUserName, userName)
 	}
+	if userEmail, ok := ctx.UserValue(schemas.BifrostContextKeyUserEmail).(string); ok && userEmail != "" {
+		bifrostCtx.SetValue(schemas.BifrostContextKeyUserEmail, userEmail)
+	}
 	if bifrostErr := h.evaluateMintingGovernance(bifrostCtx, providerKey, model); bifrostErr != nil {
 		SendBifrostError(ctx, bifrostErr)
 		return

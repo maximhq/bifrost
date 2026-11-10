@@ -611,7 +611,7 @@ func TestLogStoreParity(t *testing.T) {
 		"missing_cost":          {MissingCostOnly: true},
 		"cache_direct":          {CacheHitTypes: []string{"direct"}},
 		"cache_semantic":        {CacheHitTypes: []string{"semantic"}},
-		"metadata":              {MetadataFilters: map[string]string{"env": "prod"}},
+		"metadata":              {MetadataFilters: map[string][]string{"env": {"prod"}}},
 		"content_search":        {ContentSearch: "charlie"},
 		"parent_request":        {ParentRequestID: "sess1"},
 		"request_id":            {RequestID: "p4"},

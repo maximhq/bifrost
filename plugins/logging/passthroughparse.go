@@ -18,8 +18,9 @@ func isPassthroughLog(entry *logstore.Log) bool {
 // the request path, so it reads no body: rows that are not passthrough return after a string
 // compare. A passthrough row is tagged is_passthrough and, when its route has a typed equivalent,
 // stored under that type (chat_completion, responses_stream, embedding, ...) so it is counted and
-// filtered like a typed request; an unknown route stays passthrough. Typing needs only the route,
-// so it applies whatever the content policy. Only when the final policy stores content is the row
+// filtered like a typed request; an unknown route stays passthrough. A streamed row also records its
+// events' declared format, so redaction can match text split across them. Typing needs only the
+// route, so it applies whatever the content policy. Only when the final policy stores content is the row
 // also flagged for the batch writer to parse its bodies.
 //
 // The wire format comes from the base provider the core worker stamped for this attempt, so a
@@ -38,6 +39,9 @@ func tagPassthroughEntry(ctx *schemas.BifrostContext, entry *logstore.Log, initi
 		stream := entry.Object == string(schemas.PassthroughStreamRequest)
 		if inferred := passthroughparse.InferRequestType(format, entry.Model, initial.PassthroughMethod, initial.PassthroughPath, stream); inferred != "" {
 			entry.Object = string(inferred)
+		}
+		if stream {
+			entry.PassthroughStreamFormat = passthroughparse.Classify(format, entry.Model, initial.PassthroughMethod, initial.PassthroughPath).StreamFormat()
 		}
 	}
 	if contentLoggingEnabled {

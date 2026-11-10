@@ -65,6 +65,7 @@ jobs:
       CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
       MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
       BYTEPLUS_API_KEY: ${{ secrets.BYTEPLUS_API_KEY }}
+      BASETEN_API_KEY: ${{ secrets.BASETEN_API_KEY }}
       DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
       SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
       TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
@@ -105,6 +106,7 @@ jobs:
             api.cerebras.ai:443
             api.minimax.io:443
             ark.ap-southeast.bytepluses.com:443
+            inference.baseten.co:443
             api.cloudflare.com:443
             api.cohere.ai:443
             api.deepseek.com:443
@@ -194,7 +196,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: "25"
+          node-version-file: ".nvmrc"
 
       # Required by the test-integration step below: test-integrations.sh installs the
       # Python suite with `uv sync --frozen`, and its pip fallback cannot build

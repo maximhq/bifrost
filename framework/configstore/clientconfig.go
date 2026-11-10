@@ -134,6 +134,7 @@ type ClientConfig struct {
 	SkipAccessProfileUserVirtualKeyCreation bool                                  `json:"skip_access_profile_user_virtual_key_creation"` // Enterprise: a user's first access profile does not create a virtual key for them
 	SkipAccessProfileUserVirtualKeyDeletion bool                                  `json:"skip_access_profile_user_virtual_key_deletion"` // Enterprise: losing the last access profile does not delete the user's virtual keys
 	HiddenRequestTypes                      []string                              `json:"hidden_request_types,omitempty"`                // Request types excluded from dashboard and log API reads; logs are still written
+	UsageEstimationTokenizers               []string                              `json:"usage_estimation_tokenizers,omitempty"`         // Embedded tokenizer families ("anthropic", "deepseek", "llama2", "llama3", "all") used to estimate a cancelled stream's usage; empty uses only o200k_base/cl100k_base
 	RoutingChainMaxDepth                    int                                   `json:"routing_chain_max_depth"`                       // Maximum depth for routing rule chain evaluation (default: 10)
 	MCPExternalClientURL                    *schemas.SecretVar                    `json:"mcp_external_client_url,omitempty"`             // Public base URL used as redirect_uri when Bifrost acts as an OAuth client to upstream MCP servers. Supports env var syntax ("env.MY_VAR")
 	SkillsExternalClientURL                 *schemas.SecretVar                    `json:"skills_external_client_url,omitempty"`          // Public base URL for Skills Repository marketplaces; empty disables marketplace serving
@@ -475,6 +476,20 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 			return "", err
 		}
 		hash.Write([]byte("hiddenRequestTypes:"))
+		hash.Write(data)
+	}
+
+	// Hash UsageEstimationTokenizers (sorted for deterministic hashing). Only
+	// hashed when set so existing config hashes do not churn on upgrade.
+	if len(c.UsageEstimationTokenizers) > 0 {
+		sortedTokenizers := make([]string, len(c.UsageEstimationTokenizers))
+		copy(sortedTokenizers, c.UsageEstimationTokenizers)
+		sort.Strings(sortedTokenizers)
+		data, err := sonic.Marshal(sortedTokenizers)
+		if err != nil {
+			return "", err
+		}
+		hash.Write([]byte("usageEstimationTokenizers:"))
 		hash.Write(data)
 	}
 
@@ -921,6 +936,11 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 			redactedConfig.Keys[i].CloudflareKeyConfig = cloudflareConfig
 		}
 
+		if key.AnthropicKeyConfig != nil {
+			// Identifiers readable unless secret-backed; the identity token always masked.
+			redactedConfig.Keys[i].AnthropicKeyConfig = key.AnthropicKeyConfig.Redacted()
+		}
+
 		// Redact Databricks key config if present
 		if key.DatabricksKeyConfig != nil {
 			databricksConfig := &schemas.DatabricksKeyConfig{
@@ -950,6 +970,106 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 // This is used to detect changes between config.json and database config.
 // Keys are excluded as they are hashed separately.
 func (p *ProviderConfig) GenerateConfigHash(providerName string) (string, error) {
+	var customProviderConfig []byte
+	if p.CustomProviderConfig != nil {
+		// RequestPathOverrides is a map, so the encoding must sort keys or the same provider
+		// hashes differently between restarts and is reconciled as edited.
+		data, err := providerUtils.MarshalSorted(p.CustomProviderConfig)
+		if err != nil {
+			return "", err
+		}
+		customProviderConfig = data
+	}
+	hash, err := p.generateConfigHash(providerName, customProviderConfig)
+	if err != nil {
+		return "", err
+	}
+	if p.CustomProviderConfig != nil && len(p.CustomProviderConfig.RequestPathOverrides) >= 2 {
+		// Only multi-override encodings changed when overrides were sorted; the marker lets
+		// reconciliation tell a sorted-era hash from one written by an older build.
+		hash += SortedOverridesConfigHashMarker
+	}
+	return hash, nil
+}
+
+// SortedOverridesConfigHashMarker suffixes the config_hash of a custom provider with two or
+// more request_path_overrides once they are hashed in sorted order. A stored hash without it
+// on such a provider was written by an older build, whose override order is unknown.
+const SortedOverridesConfigHashMarker = ":sorted-overrides"
+
+// LegacyOverrideOrderConfigHash returns the config_hash a provider had on builds that hashed
+// request_path_overrides with the unsorted encoder, with its overrides encoded in the given
+// order. Reconciliation uses it to recognise a hash stored by such a build; tests use it to
+// craft one.
+func (p *ProviderConfig) LegacyOverrideOrderConfigHash(providerName string, order []schemas.RequestType) (string, error) {
+	var customProviderConfig []byte
+	if p.CustomProviderConfig != nil {
+		data, err := legacyCustomProviderConfigBytes(p.CustomProviderConfig, order)
+		if err != nil {
+			return "", err
+		}
+		customProviderConfig = data
+	}
+	return p.generateConfigHash(providerName, customProviderConfig)
+}
+
+// ConfigHashMatchesLegacyOverrideOrder reports whether storedHash is this provider's hash
+// under the unsorted request_path_overrides encoding of older builds, in any override order.
+// GenerateConfigHash sorts them, so the first restart on a sorted build sees a mismatch for
+// every custom provider with two or more overrides even when config.json is untouched;
+// reconciliation calls this before treating that mismatch as a file edit, so keys added
+// through the API or dashboard survive the upgrade. It runs only after a direct compare
+// failed, never on the request path.
+func (p *ProviderConfig) ConfigHashMatchesLegacyOverrideOrder(providerName, storedHash string) (bool, error) {
+	if p.CustomProviderConfig == nil || strings.HasSuffix(storedHash, SortedOverridesConfigHashMarker) {
+		return false, nil
+	}
+	return hashMatchesAnyLegacyOrder(p.CustomProviderConfig.RequestPathOverrides, storedHash, func(order []schemas.RequestType) (string, error) {
+		return p.LegacyOverrideOrderConfigHash(providerName, order)
+	})
+}
+
+// ConfigHashLegacyOverrideOrderUnverifiable reports whether storedHash was written by an older
+// build with unsorted request_path_overrides (it lacks SortedOverridesConfigHashMarker), yet
+// ConfigHashMatchesLegacyOverrideOrder cannot say whether config.json changed because the
+// provider has more overrides than maxLegacyMapPermutations. For such a provider a hash
+// mismatch does not prove that config.json was edited, so reconciliation must not treat it as
+// proof either. Once the sorted hash is stored it carries the marker, so this holds on the
+// upgrade boot only and later edits are detected normally.
+func (p *ProviderConfig) ConfigHashLegacyOverrideOrderUnverifiable(storedHash string) bool {
+	return storedHash != "" && !strings.HasSuffix(storedHash, SortedOverridesConfigHashMarker) &&
+		p.CustomProviderConfig != nil &&
+		len(p.CustomProviderConfig.RequestPathOverrides) > maxLegacyMapPermutations
+}
+
+// legacyCustomProviderConfigBytes rebuilds the bytes the unsorted encoder fed the hasher for
+// cfg with its request_path_overrides in the given order. The struct's other fields hold no
+// map, so its sorted encoding differs from the legacy one only inside that field.
+func legacyCustomProviderConfigBytes(cfg *schemas.CustomProviderConfig, order []schemas.RequestType) ([]byte, error) {
+	data, err := providerUtils.MarshalSorted(cfg)
+	if err != nil || len(cfg.RequestPathOverrides) == 0 {
+		return data, err
+	}
+	sorted, err := providerUtils.MarshalSorted(cfg.RequestPathOverrides)
+	if err != nil {
+		return nil, err
+	}
+	legacy, err := legacyMapBytes(cfg.RequestPathOverrides, order)
+	if err != nil {
+		return nil, err
+	}
+	const field = `"request_path_overrides":`
+	sortedField := append([]byte(field), sorted...)
+	if !bytes.Contains(data, sortedField) {
+		return nil, fmt.Errorf("request_path_overrides not found in the encoded custom provider config")
+	}
+	return bytes.Replace(data, sortedField, append([]byte(field), legacy...), 1), nil
+}
+
+// generateConfigHash composes the provider hash; customProviderConfig is the already-encoded
+// custom provider config (sorted for current hashes, in a given override order for legacy
+// ones) or nil when the provider has none.
+func (p *ProviderConfig) generateConfigHash(providerName string, customProviderConfig []byte) (string, error) {
 	hash := sha256.New()
 
 	// Hash provider name
@@ -982,13 +1102,9 @@ func (p *ProviderConfig) GenerateConfigHash(providerName string) (string, error)
 		hash.Write(data)
 	}
 
-	// Hash CustomProviderConfig
-	if p.CustomProviderConfig != nil {
-		data, err := sonic.Marshal(p.CustomProviderConfig)
-		if err != nil {
-			return "", err
-		}
-		hash.Write(data)
+	// Hash CustomProviderConfig (already encoded by the caller)
+	if customProviderConfig != nil {
+		hash.Write(customProviderConfig)
 	}
 
 	// Hash OpenAIConfig
@@ -1082,11 +1198,12 @@ func LegacyAliasOrderKeyHash(key schemas.Key, order []string) (string, error) {
 	return generateKeyHash(key, aliases)
 }
 
-// maxLegacyAliasPermutations bounds the upgrade search in KeyHashMatchesLegacyAliasOrder:
-// seven aliases is 5040 hashes, a few milliseconds once per mismatching key at startup. A key
-// with more aliases falls back to treating the mismatch as a file edit, which is what every
-// build before the sorted hash did at random.
-const maxLegacyAliasPermutations = 7
+// maxLegacyMapPermutations bounds the upgrade searches in KeyHashMatchesLegacyAliasOrder and
+// ProviderConfig.ConfigHashMatchesLegacyOverrideOrder: seven entries is 5040 hashes, a few
+// milliseconds once per mismatching row at startup. A row with more entries falls back to
+// treating the mismatch as a file edit, which is what every build before the sorted hash did
+// at random.
+const maxLegacyMapPermutations = 7
 
 // KeyHashMatchesLegacyAliasOrder reports whether storedHash is this key's hash under the
 // unsorted alias encoding of older builds, in any alias order. GenerateKeyHash sorts alias
@@ -1095,19 +1212,29 @@ const maxLegacyAliasPermutations = 7
 // that mismatch as a file edit, so API and dashboard edits survive the upgrade. It runs only
 // after a direct compare failed, never on the request path.
 func KeyHashMatchesLegacyAliasOrder(key schemas.Key, storedHash string) (bool, error) {
-	n := len(key.Aliases)
-	if storedHash == "" || n < 2 || n > maxLegacyAliasPermutations {
+	return hashMatchesAnyLegacyOrder(map[string]schemas.AliasConfig(key.Aliases), storedHash, func(order []string) (string, error) {
+		return LegacyAliasOrderKeyHash(key, order)
+	})
+}
+
+// hashMatchesAnyLegacyOrder reports whether legacyHash, called with every ordering of m's
+// keys, produces storedHash. It is the search behind the upgrade paths from unsorted map
+// encodings; a map with fewer than two entries has a single encoding, so a mismatch there is
+// a real change.
+func hashMatchesAnyLegacyOrder[K ~string, V any](m map[K]V, storedHash string, legacyHash func(order []K) (string, error)) (bool, error) {
+	n := len(m)
+	if storedHash == "" || n < 2 || n > maxLegacyMapPermutations {
 		return false, nil
 	}
-	names := make([]string, 0, n)
-	for name := range key.Aliases {
+	names := make([]K, 0, n)
+	for name := range m {
 		names = append(names, name)
 	}
-	sort.Strings(names)
+	sort.Slice(names, func(i, j int) bool { return names[i] < names[j] })
 	// Heap's algorithm visits every ordering once, swapping one pair per step.
 	counters := make([]int, n)
 	for i := 0; ; {
-		candidate, err := LegacyAliasOrderKeyHash(key, names)
+		candidate, err := legacyHash(names)
 		if err != nil {
 			return false, err
 		}
@@ -1130,18 +1257,24 @@ func KeyHashMatchesLegacyAliasOrder(key schemas.Key, storedHash string) (bool, e
 }
 
 // legacyAliasBytes rebuilds the bytes the unsorted encoder fed the hasher for aliases in the
-// given order: sonic's default map encoding, which is each quoted name, a colon and the
-// alias's own MarshalJSON output, comma-joined in map iteration order inside braces.
+// given order.
 func legacyAliasBytes(aliases schemas.KeyAliases, order []string) ([]byte, error) {
-	if len(order) != len(aliases) {
-		return nil, fmt.Errorf("alias order names %d aliases, key has %d", len(order), len(aliases))
+	return legacyMapBytes(map[string]schemas.AliasConfig(aliases), order)
+}
+
+// legacyMapBytes rebuilds sonic's default (unsorted) encoding of m with its entries in the
+// given order: each quoted key, a colon and the value's own encoding, comma-joined inside
+// braces.
+func legacyMapBytes[K ~string, V any](m map[K]V, order []K) ([]byte, error) {
+	if len(order) != len(m) {
+		return nil, fmt.Errorf("order names %d entries, map has %d", len(order), len(m))
 	}
 	var b bytes.Buffer
 	b.WriteByte('{')
 	for i, name := range order {
-		alias, ok := aliases[name]
+		value, ok := m[name]
 		if !ok {
-			return nil, fmt.Errorf("alias %q is not on the key", name)
+			return nil, fmt.Errorf("%q is not in the map", name)
 		}
 		if i > 0 {
 			b.WriteByte(',')
@@ -1152,7 +1285,7 @@ func legacyAliasBytes(aliases schemas.KeyAliases, order []string) ([]byte, error
 		}
 		b.Write(k)
 		b.WriteByte(':')
-		v, err := sonic.Marshal(alias)
+		v, err := sonic.Marshal(value)
 		if err != nil {
 			return nil, err
 		}
@@ -1185,6 +1318,35 @@ func oauthKeyConfigHashView(cfg *schemas.OAuthKeyConfig) *schemas.OAuthKeyConfig
 	view.ClientSecret = source(cfg.ClientSecret)
 	view.PrivateKey = source(cfg.PrivateKey)
 	return &view
+}
+
+// anthropicKeyConfigHashView is oauthKeyConfigHashView for anthropic_key_config: every field
+// hashes by its source, so a rotated env identity token does not read as a config.json edit.
+func anthropicKeyConfigHashView(cfg *schemas.AnthropicKeyConfig) *schemas.AnthropicKeyConfig {
+	view := &schemas.AnthropicKeyConfig{}
+	wif := cfg.WorkloadIdentity
+	if wif == nil {
+		return view
+	}
+	source := func(v *schemas.SecretVar) *schemas.SecretVar {
+		if v == nil {
+			return nil
+		}
+		if v.IsFromSecret() {
+			return &schemas.SecretVar{Val: "ref:" + v.GetRawRef()}
+		}
+		return &schemas.SecretVar{Val: "val:" + v.Val}
+	}
+	view.WorkloadIdentity = &schemas.AnthropicWorkloadIdentityConfig{
+		FederationRuleID: *source(&wif.FederationRuleID),
+		OrganizationID:   *source(&wif.OrganizationID),
+		ServiceAccountID: *source(&wif.ServiceAccountID),
+		WorkspaceID:      source(wif.WorkspaceID),
+	}
+	if src := wif.IdentitySource; src != nil {
+		view.WorkloadIdentity.IdentitySource = &schemas.IdentitySource{Type: src.Type, Path: source(src.Path), Token: source(src.Token)}
+	}
+	return view
 }
 
 func generateKeyHash(key schemas.Key, aliases []byte) (string, error) {
@@ -1305,6 +1467,14 @@ func generateKeyHash(key schemas.Key, aliases []byte) (string, error) {
 	// Hash CloudflareKeyConfig
 	if key.CloudflareKeyConfig != nil {
 		data, err := sonic.Marshal(key.CloudflareKeyConfig)
+		if err != nil {
+			return "", err
+		}
+		hash.Write(data)
+	}
+	// Hash AnthropicKeyConfig by source, as OAuthKeyConfig below.
+	if key.AnthropicKeyConfig != nil {
+		data, err := providerUtils.MarshalSorted(anthropicKeyConfigHashView(key.AnthropicKeyConfig))
 		if err != nil {
 			return "", err
 		}
@@ -2277,6 +2447,14 @@ func GenerateMCPClientHash(m tables.TableMCPClient) (string, error) {
 		if oc.MaxResponseBytes != 0 {
 			writeField("max_response_bytes", fmt.Sprintf("%d", oc.MaxResponseBytes))
 		}
+	}
+
+	// Hash PerUserDiscovery so flipping it in config.json drifts the hash. Only
+	// true contributes: false is the default every row and every file entry
+	// written before the field existed already has, and a stored hash from
+	// that time must keep matching a file that still omits the field.
+	if m.PerUserDiscovery != nil && *m.PerUserDiscovery {
+		hash.Write([]byte("per_user_discovery:true"))
 	}
 
 	// will enable it in the future with a migration

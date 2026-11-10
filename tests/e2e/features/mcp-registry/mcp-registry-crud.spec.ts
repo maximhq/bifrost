@@ -85,6 +85,132 @@ test.describe("MCP Registry", () => {
       expect(connectionType).toBe("HTTP");
     });
 
+    test("should open a client's view sheet from its name with the keyboard", async ({
+      mcpRegistryPage,
+    }) => {
+      const clientData = createHTTPClientData();
+      expect(await mcpRegistryPage.createClient(clientData)).toBe(true);
+      createdClients.push(clientData.name);
+
+      // The row and its name open the view, so the actions menu no longer repeats it.
+      expect(await mcpRegistryPage.getClientActionLabels(clientData.name)).not.toContain("View details");
+      await mcpRegistryPage.viewClientDetailsFromKeyboard(clientData.name);
+      const title = mcpRegistryPage.viewSheet.getByTestId("mcpclient-view-title");
+      await expect(title).toContainText(clientData.name);
+      // Focus moves into the sheet, to its title, so a screen reader announces it and Tab goes on from there.
+      await expect(title).toBeFocused();
+      await mcpRegistryPage.page.keyboard.press("Tab");
+      await expect(title).not.toBeFocused();
+      await expect(mcpRegistryPage.viewSheet.locator(":focus")).toHaveCount(1);
+      // Closing it hands focus back to the name that opened it.
+      await mcpRegistryPage.page.keyboard.press("Escape");
+      await expect(mcpRegistryPage.viewSheet).toBeHidden();
+      await expect(mcpRegistryPage.getClientRow(clientData.name).getByRole("button", { name: clientData.name, exact: true })).toBeFocused();
+    });
+
+    test("should hold the Access figure until the Virtual MCPs load, and say when they fail", async ({
+      mcpRegistryPage,
+    }) => {
+      const clientData = createHTTPClientData();
+      expect(await mcpRegistryPage.createClient(clientData)).toBe(true);
+      createdClients.push(clientData.name);
+
+      // A Virtual MCP can grant access, so until they are known the figure draws no conclusion.
+      const virtualMcpsRoute = "**/api/mcp/virtual-mcps**";
+      let release = () => {};
+      const held = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      await mcpRegistryPage.page.route(virtualMcpsRoute, async (route) => {
+        await held;
+        await route.fulfill({ status: 500, contentType: "application/json", body: '{"error":{"message":"virtual MCPs unavailable"}}' });
+      });
+      await mcpRegistryPage.viewClientDetails(clientData.name);
+      const stat = mcpRegistryPage.viewSheet.getByTestId("mcpclient-view-stat-access");
+      await expect(stat).toContainText("Loading virtual MCPs…");
+      release();
+      await expect(stat).toContainText("Couldn't load virtual MCPs.");
+      await mcpRegistryPage.page.unroute(virtualMcpsRoute);
+    });
+
+    test("should ask the server which Virtual MCPs bundle a client and say when it lists only some", async ({ mcpRegistryPage }) => {
+      const clientData = createHTTPClientData();
+      expect(await mcpRegistryPage.createClient(clientData)).toBe(true);
+      createdClients.push(clientData.name);
+
+      // Past the 100-row page cap only the first page is listed, while the count stays exact.
+      const virtualMcpsRoute = "**/api/mcp/virtual-mcps**";
+      const lookups: URL[] = [];
+      await mcpRegistryPage.page.route(virtualMcpsRoute, async (route) => {
+        const url = new URL(route.request().url());
+        lookups.push(url);
+        const clientId = url.searchParams.get("mcp_client_id") ?? "";
+        await route.fulfill({
+          json: {
+            virtual_mcps: [
+              { id: 1, name: "Bundles it", endpoint_slug: "bundles-it", enabled: true, tools: [{ mcp_client_id: clientId, tool_names: ["*"] }], virtual_key_ids: [] },
+            ],
+            count: 1,
+            total_count: 120,
+            limit: 100,
+            offset: 0,
+          },
+        });
+      });
+      await mcpRegistryPage.viewClientDetails(clientData.name);
+      await expect(mcpRegistryPage.viewSheet.getByTestId("mcpclient-view-stat-access")).toContainText("120");
+      expect(lookups.some((url) => url.searchParams.get("mcp_client_id"))).toBe(true);
+
+      await mcpRegistryPage.viewSheet.getByTestId("mcpclient-view-tab-access").click();
+      await expect(mcpRegistryPage.viewSheet.getByTestId("mcp-client-virtual-mcps-truncated")).toContainText("120");
+      await mcpRegistryPage.page.unroute(virtualMcpsRoute);
+    });
+
+    test("should filter Virtual MCPs by exact client id on the real store", async ({ mcpRegistryPage, request }) => {
+      const clientData = createHTTPClientData();
+      expect(await mcpRegistryPage.createClient(clientData)).toBe(true);
+      createdClients.push(clientData.name);
+      const clients = await request.get(`/api/mcp/clients?search=${encodeURIComponent(clientData.name)}`);
+      expect(clients.status(), await clients.text()).toBe(200);
+      const clientId: string = (await clients.json()).clients[0].config.client_id;
+
+      const created = await request.post("/api/mcp/virtual-mcps", {
+        data: { name: `e2e_vmcp_filter_${Date.now()}`, tools: [{ mcp_client_id: clientId, tool_names: ["*"] }] },
+      });
+      expect(created.status(), await created.text()).toBe(201);
+      const vmcpId: number = (await created.json()).virtual_mcp.id;
+      try {
+        const totalFor = async (id: string) => {
+          const res = await request.get(`/api/mcp/virtual-mcps?mcp_client_id=${encodeURIComponent(id)}`);
+          expect(res.status(), await res.text()).toBe(200);
+          return (await res.json()).total_count;
+        };
+        expect(await totalFor(clientId)).toBe(1);
+        expect(await totalFor(clientId.toUpperCase())).toBe(0);
+        expect(await totalFor(clientId.slice(0, -1))).toBe(0);
+      } finally {
+        await request.delete(`/api/mcp/virtual-mcps/${vmcpId}`);
+      }
+    });
+
+    test("should keep each stat's full text on hover when a narrow cell truncates it", async ({ mcpRegistryPage }) => {
+      const clientData = createHTTPClientData();
+      expect(await mcpRegistryPage.createClient(clientData)).toBe(true);
+      createdClients.push(clientData.name);
+
+      await mcpRegistryPage.viewClientDetails(clientData.name);
+      // The Access figure settles once the Virtual MCPs are known; read it after that.
+      await expect(mcpRegistryPage.viewSheet.getByTestId("mcpclient-view-stat-access")).not.toContainText("Loading virtual MCPs…");
+      // The stat lines truncate to one line, so a long figure (several counts joined) is clipped in a
+      // narrow cell; the title carries the whole text.
+      for (const key of ["tools", "access"]) {
+        for (const line of ["value", "sub"]) {
+          const el = mcpRegistryPage.viewSheet.getByTestId(`mcpclient-view-stat-${key}-${line}`);
+          await expect(el).toHaveAttribute("title", (await el.textContent()) ?? "");
+        }
+      }
+    });
+
     test("should create SSE client", async ({ mcpRegistryPage }) => {
       test.skip(
         !hasSSEHeaders,
@@ -218,8 +344,15 @@ test.describe("MCP Registry", () => {
           "a new client has no cap of its own",
         ).toBe("");
 
+        // The view states the global value it falls back to; the edit form offers the same.
         await mcpRegistryPage.viewClientDetails(clientData.name);
-        await expect(mcpRegistryPage.detailSheet.getByTestId("mcp-client-max-protocol-version-select")).toContainText(
+        await expect(mcpRegistryPage.viewSheet.getByTestId("mcpclient-view-row-max_protocol_version")).toHaveText(
+          "2025-11-25 · global default",
+        );
+        await mcpRegistryPage.closeDetailSheet();
+
+        await mcpRegistryPage.openClientEditor(clientData.name);
+        await expect(mcpRegistryPage.editSheet.getByTestId("mcp-client-max-protocol-version-select")).toContainText(
           "Use global setting (2025-11-25)",
         );
         await mcpRegistryPage.closeDetailSheet();
@@ -266,12 +399,13 @@ test.describe("MCP Registry", () => {
 
       // http-no-ping-server's chart tool is titled "Chart" and declares an output schema.
       await mcpRegistryPage.viewClientDetails(clientData.name);
-      const sheet = mcpRegistryPage.detailSheet;
-      await sheet.getByTestId("mcpclient-tab-tools").click();
+      const sheet = mcpRegistryPage.viewSheet;
+      await sheet.getByTestId("mcpclient-view-tab-tools").click();
       await expect(sheet.getByTestId("mcp-tool-title-chart")).toHaveText("Chart");
+      await expect(sheet.getByTestId("mcpclient-view-tool-chart")).toContainText("Read-only");
       await expect(sheet.getByTestId("mcp-tool-output-schema-chart")).toHaveCount(0);
       await sheet.getByTestId("mcp-tool-expand-chart").click();
-      await expect(sheet.getByTestId("mcp-tool-output-schema-chart")).toContainText("points");
+      await expect(sheet.getByTestId("mcp-tool-output-schema-chart")).toContainText("points: integer");
       await mcpRegistryPage.closeDetailSheet();
     });
 
@@ -335,14 +469,15 @@ test.describe("MCP Registry", () => {
 
     test("should list the server's prompts and resources, all served by default", async ({ mcpRegistryPage, request }) => {
       const name = await createServedClient(mcpRegistryPage, "served_default");
-      await mcpRegistryPage.openPromptsAndResources(name);
+      await mcpRegistryPage.openExposeList(name, "prompts");
 
-      const sheet = mcpRegistryPage.detailSheet;
+      const sheet = mcpRegistryPage.editSheet;
       await expect(sheet.getByTestId(`mcp-expose-prompts-row-${PROMPT}`)).toContainText(PROMPT);
-      await expect(sheet.getByTestId(`mcp-expose-resources-row-${RESOURCE}`)).toContainText(RESOURCE);
       await expect(mcpRegistryPage.exposeStatus("prompts")).toHaveText("All served");
-      await expect(mcpRegistryPage.exposeStatus("resources")).toHaveText("All served");
       await expect(mcpRegistryPage.exposeToggle("prompts", PROMPT)).toHaveAttribute("aria-checked", "true");
+      await mcpRegistryPage.showEditorTab("resources");
+      await expect(sheet.getByTestId(`mcp-expose-resources-row-${RESOURCE}`)).toContainText(RESOURCE);
+      await expect(mcpRegistryPage.exposeStatus("resources")).toHaveText("All served");
       await expect(mcpRegistryPage.exposeToggle("resources", RESOURCE)).toHaveAttribute("aria-checked", "true");
       await mcpRegistryPage.closeDetailSheet();
 
@@ -353,7 +488,7 @@ test.describe("MCP Registry", () => {
 
     test("should save a prompt turned off and leave the untouched list unset", async ({ mcpRegistryPage, request }) => {
       const name = await createServedClient(mcpRegistryPage, "served_prompt_off");
-      await mcpRegistryPage.openPromptsAndResources(name);
+      await mcpRegistryPage.openExposeList(name, "prompts");
       await mcpRegistryPage.exposeToggle("prompts", PROMPT).click();
       await expect(mcpRegistryPage.exposeStatus("prompts")).toHaveText("None served");
       await mcpRegistryPage.saveDetailSheet();
@@ -365,13 +500,14 @@ test.describe("MCP Registry", () => {
 
     test("should show the saved lists when the sheet is reopened", async ({ mcpRegistryPage }) => {
       const name = await createServedClient(mcpRegistryPage, "served_reopen");
-      await mcpRegistryPage.openPromptsAndResources(name);
+      await mcpRegistryPage.openExposeList(name, "resources");
       await mcpRegistryPage.exposeToggle("resources", RESOURCE).click();
       await mcpRegistryPage.saveDetailSheet();
 
-      await mcpRegistryPage.openPromptsAndResources(name);
+      await mcpRegistryPage.openExposeList(name, "resources");
       await expect(mcpRegistryPage.exposeToggle("resources", RESOURCE)).toHaveAttribute("aria-checked", "false");
       await expect(mcpRegistryPage.exposeStatus("resources")).toHaveText("None served");
+      await mcpRegistryPage.showEditorTab("prompts");
       await expect(mcpRegistryPage.exposeToggle("prompts", PROMPT)).toHaveAttribute("aria-checked", "true");
       await mcpRegistryPage.closeDetailSheet();
     });
@@ -382,7 +518,7 @@ test.describe("MCP Registry", () => {
       // The page cached the client list before this API write; reload to read it back.
       await mcpRegistryPage.goto();
 
-      await mcpRegistryPage.openPromptsAndResources(name);
+      await mcpRegistryPage.openExposeList(name, "prompts");
       await expect(mcpRegistryPage.exposeToggle("prompts", PROMPT)).toHaveAttribute("aria-checked", "false");
       await mcpRegistryPage.exposeToggle("prompts", PROMPT).click();
       await expect(mcpRegistryPage.exposeStatus("prompts")).toHaveText("All served");
@@ -393,7 +529,7 @@ test.describe("MCP Registry", () => {
 
     test("should clear and restore a whole list with its serve-all box", async ({ mcpRegistryPage, request }) => {
       const name = await createServedClient(mcpRegistryPage, "served_all_box");
-      await mcpRegistryPage.openPromptsAndResources(name);
+      await mcpRegistryPage.openExposeList(name, "resources");
 
       await mcpRegistryPage.exposeAll("resources").click();
       await expect(mcpRegistryPage.exposeAll("resources")).toHaveAttribute("aria-checked", "false");
@@ -401,7 +537,7 @@ test.describe("MCP Registry", () => {
       await mcpRegistryPage.saveDetailSheet();
       expect((await mcpRegistryPage.storedClientConfig(request, name)).resources_to_expose).toEqual([]);
 
-      await mcpRegistryPage.openPromptsAndResources(name);
+      await mcpRegistryPage.openExposeList(name, "resources");
       await mcpRegistryPage.exposeAll("resources").click();
       await expect(mcpRegistryPage.exposeAll("resources")).toHaveAttribute("aria-checked", "true");
       await mcpRegistryPage.saveDetailSheet();
@@ -427,10 +563,11 @@ test.describe("MCP Registry", () => {
       // The page cached the client list before this API write; reload to read it back.
       await mcpRegistryPage.goto();
 
-      await mcpRegistryPage.openPromptsAndResources(name);
+      await mcpRegistryPage.openExposeList(name, "prompts");
       // A prompt served by a pattern rule reads as served and cannot be switched off on its own.
       await expect(mcpRegistryPage.exposeToggle("prompts", PROMPT)).toHaveAttribute("aria-checked", "true");
       await expect(mcpRegistryPage.exposeToggle("prompts", PROMPT)).toBeDisabled();
+      await mcpRegistryPage.showEditorTab("resources");
       await expect(mcpRegistryPage.exposeToggle("resources", RESOURCE)).toHaveAttribute("aria-checked", "false");
       await mcpRegistryPage.exposeToggle("resources", RESOURCE).click();
       await mcpRegistryPage.saveDetailSheet();
@@ -442,12 +579,12 @@ test.describe("MCP Registry", () => {
 
     test("should discard a toggle when the sheet is closed without saving", async ({ mcpRegistryPage, request }) => {
       const name = await createServedClient(mcpRegistryPage, "served_discard");
-      await mcpRegistryPage.openPromptsAndResources(name);
+      await mcpRegistryPage.openExposeList(name, "prompts");
       await mcpRegistryPage.exposeToggle("prompts", PROMPT).click();
       await mcpRegistryPage.closeDetailSheet();
 
       expect((await mcpRegistryPage.storedClientConfig(request, name)).prompts_to_expose ?? null).toBeNull();
-      await mcpRegistryPage.openPromptsAndResources(name);
+      await mcpRegistryPage.openExposeList(name, "prompts");
       await expect(mcpRegistryPage.exposeToggle("prompts", PROMPT)).toHaveAttribute("aria-checked", "true");
       await mcpRegistryPage.closeDetailSheet();
     });
@@ -462,8 +599,10 @@ test.describe("MCP Registry", () => {
       expect(read.error, JSON.stringify(read)).toBeUndefined();
       expect(read.result?.contents[0].text).toBe("# Handbook");
 
-      await mcpRegistryPage.openPromptsAndResources(name);
+      // Both lists are saved together: the prompt toggle survives the switch to the Resources tab.
+      await mcpRegistryPage.openExposeList(name, "prompts");
       await mcpRegistryPage.exposeToggle("prompts", PROMPT).click();
+      await mcpRegistryPage.showEditorTab("resources");
       await mcpRegistryPage.exposeToggle("resources", RESOURCE).click();
       await mcpRegistryPage.saveDetailSheet();
 
@@ -506,10 +645,35 @@ test.describe("MCP Registry", () => {
       expect(await mcpRegistryPage.createClient(clientData)).toBe(true);
       createdClients.push(clientData.name);
 
-      await mcpRegistryPage.openPromptsAndResources(clientData.name);
-      await expect(mcpRegistryPage.detailSheet.getByTestId("mcp-expose-prompts-empty")).toBeVisible();
-      await expect(mcpRegistryPage.detailSheet.getByTestId("mcp-expose-resources-empty")).toBeVisible();
+      await mcpRegistryPage.openExposeList(clientData.name, "prompts");
+      await expect(mcpRegistryPage.editSheet.getByTestId("mcp-expose-prompts-empty")).toBeVisible();
       await expect(mcpRegistryPage.exposeAll("prompts")).toHaveCount(0);
+      await mcpRegistryPage.showEditorTab("resources");
+      await expect(mcpRegistryPage.editSheet.getByTestId("mcp-expose-resources-empty")).toBeVisible();
+      await mcpRegistryPage.closeDetailSheet();
+    });
+
+    test("should show what is served read-only on the view sheet and follow a change made elsewhere", async ({
+      mcpRegistryPage,
+      request,
+    }) => {
+      const name = await createServedClient(mcpRegistryPage, "served_view");
+      await mcpRegistryPage.viewClientDetails(name);
+      const sheet = mcpRegistryPage.viewSheet;
+
+      await sheet.getByTestId("mcpclient-view-tab-prompts").click();
+      await expect(sheet.getByTestId(`mcp-expose-prompts-label-${PROMPT}`)).toHaveText("Served");
+      await expect(mcpRegistryPage.exposeToggle("prompts", PROMPT)).toHaveCount(0);
+      await expect(mcpRegistryPage.exposeAll("prompts")).toHaveCount(0);
+
+      await sheet.getByTestId("mcpclient-view-tab-resources").click();
+      await expect(sheet.getByTestId(`mcp-expose-resources-row-${RESOURCE}`)).toContainText("text/markdown");
+      await expect(sheet.getByTestId(`mcp-expose-resources-label-${RESOURCE}`)).toHaveText("Served");
+
+      // The open view shows the server as the polled list has it, not as it was when opened.
+      await mcpRegistryPage.setExposeLists(request, name, { resources_to_expose: [] });
+      await expect(sheet.getByTestId(`mcp-expose-resources-label-${RESOURCE}`)).toHaveText("Not served", { timeout: 15_000 });
+      await expect(mcpRegistryPage.exposeStatus("resources")).toHaveText("None served");
       await mcpRegistryPage.closeDetailSheet();
     });
   });
@@ -546,14 +710,55 @@ test.describe("MCP Registry", () => {
       expect(created).toBe(true); // Client creation must succeed for this test
       createdClients.push(clientData.name);
 
-      // View details
+      // A row click opens the read-only view on its Overview tab.
       await mcpRegistryPage.viewClientDetails(clientData.name);
+      const sheet = mcpRegistryPage.viewSheet;
+      await expect(sheet.getByTestId("mcpclient-view-title")).toContainText(clientData.name);
+      await expect(sheet.getByTestId("mcpclient-view-tab-overview")).toHaveAttribute("data-state", "active");
+      await expect(sheet.getByTestId("mcpclient-view-row-ping")).toBeVisible();
+      await expect(sheet.getByRole("button", { name: /Save/i })).toHaveCount(0);
+      await expect(sheet.getByRole("textbox")).toHaveCount(0);
 
-      // Detail sheet should be visible
-      await expect(mcpRegistryPage.detailSheet).toBeVisible();
+      // Its actions menu has the server's actions, but editing starts from the table row.
+      await sheet.getByTestId("mcpclient-view-actions-btn").click();
+      const items = mcpRegistryPage.page.getByRole("menuitem");
+      await expect(items.first()).toBeVisible();
+      expect((await items.allTextContents()).map((label) => label.trim())).not.toContain("Edit");
+      await mcpRegistryPage.page.keyboard.press("Escape");
+      await expect(items).toHaveCount(0);
 
-      // Close the sheet
       await mcpRegistryPage.closeDetailSheet();
+    });
+
+    test("should open the edit sheet from the row menu and return to the table on Cancel", async ({ mcpRegistryPage }) => {
+      const clientData = createHTTPClientData({ name: `edit_sheet_test_${Date.now()}` });
+      expect(await mcpRegistryPage.createClient(clientData)).toBe(true);
+      createdClients.push(clientData.name);
+
+      await mcpRegistryPage.openClientEditor(clientData.name);
+      await expect(mcpRegistryPage.editSheet.getByTestId("mcpclient-edit-title")).toContainText(`Edit ${clientData.name}`);
+      await expect(mcpRegistryPage.viewSheet).toHaveCount(0);
+
+      await mcpRegistryPage.editSheet.getByTestId("mcpclient-cancel-btn").click();
+      await expect(mcpRegistryPage.editSheet).toHaveCount(0);
+      await expect(mcpRegistryPage.viewSheet).toHaveCount(0);
+      await expect(mcpRegistryPage.getClientRow(clientData.name)).toBeVisible();
+    });
+
+    test("should not open the view from the row's own controls", async ({ mcpRegistryPage }) => {
+      const clientData = createHTTPClientData({ name: `row_controls_test_${Date.now()}` });
+      expect(await mcpRegistryPage.createClient(clientData)).toBe(true);
+      createdClients.push(clientData.name);
+
+      const row = mcpRegistryPage.getClientRow(clientData.name);
+      await row.getByTestId(/^mcp-client-endpoint-copy-/).click();
+      // The copy toast can cover the row menu's trigger.
+      await mcpRegistryPage.dismissToasts();
+      // Opening the row menu would fail under an open sheet's overlay, so this also waits out the copy click.
+      const actions = await mcpRegistryPage.getClientActionLabels(clientData.name);
+      expect(actions).toContain("Edit");
+      await expect(mcpRegistryPage.viewSheet).toHaveCount(0);
+      await expect(mcpRegistryPage.editSheet).toHaveCount(0);
     });
 
     test("should close client details sheet", async ({ mcpRegistryPage }) => {
@@ -603,6 +808,198 @@ test.describe("MCP Registry", () => {
         "needs_reauth",
         "disabled",
       ]).toContain(status.toLowerCase());
+    });
+  });
+
+  test.describe("View Sheet Details", () => {
+    // One listed server, mocked: plain HTTP, failing its connection checks, with a tool and a prompt
+    // whose descriptions run longer than two lines.
+    const longText =
+      "Analyzes a production error and returns a detailed root cause analysis, with the stack frames involved, the recent changes that touched them and a suggested fix for each, so the next step is clear without opening the issue tracker.";
+    const failingServer = () => ({
+      config: {
+        client_id: "vd-1",
+        name: "view_details_server",
+        connection_type: "http",
+        connection_string: { value: "http://127.0.0.1:9/mcp", type: "plain_text" },
+        auth_type: "none",
+        tools_to_execute: ["*"],
+      },
+      tools: [
+        {
+          name: "analyze",
+          description: longText,
+          // Tall enough that its JSON outgrows the editor's 300px.
+          parameters: {
+            type: "object",
+            properties: Object.fromEntries([
+              ["issue", { type: "string", description: "The issue to analyze" }],
+              ...Array.from({ length: 30 }, (_, i) => [`field_${i}`, { type: "string" }]),
+            ]),
+          },
+        },
+        {
+          name: "report",
+          description: "Summarizes a period.",
+          parameters: { type: "object", properties: { period: { type: "string" } } },
+          output_schema: { type: "object", properties: { summary: { type: "string" } } },
+        },
+      ],
+      prompts: [{ name: "summarize", description: longText }],
+      state: "unstable",
+      last_failure: {
+        stage: "connect",
+        message: "transport error: failed to send request: dial tcp 127.0.0.1:9: connect: connection refused",
+        at: new Date().toISOString(),
+        since: new Date().toISOString(),
+      },
+      vk_configs: [],
+    });
+
+    test("keeps the failure short, TLS where it applies, and long descriptions readable", async ({ mcpRegistryPage }) => {
+      await mcpRegistryPage.page.route("**/api/mcp/clients?**", (route) =>
+        route.fulfill({ json: { clients: [failingServer()], count: 1, total_count: 1, limit: 25, offset: 0 } }),
+      );
+      await mcpRegistryPage.goto();
+      await mcpRegistryPage.viewClientDetails("view_details_server");
+      const view = mcpRegistryPage.viewSheet;
+
+      // The title says what is wrong; the raw error is one click away, and nothing else is added.
+      const alert = view.getByTestId("mcpclient-view-alert");
+      await expect(alert).toContainText("Last connection check failed");
+      await expect(alert).toContainText("Last failed");
+      await expect(alert).not.toContainText("connection refused");
+      await expect(alert).not.toContainText("Tool calls are still attempted normally");
+      const toggle = view.getByTestId("mcpclient-view-alert-detail-toggle");
+      await expect(toggle).toHaveText("Show details");
+      await toggle.click();
+      await expect(view.getByTestId("mcpclient-view-alert-detail")).toContainText("connection refused");
+      await expect(toggle).toHaveText("Hide details");
+
+      // A plain HTTP URL involves no TLS.
+      await expect(view.getByTestId("mcpclient-view-row-tls_verification")).toHaveText("Not used");
+      await expect(view.getByTestId("mcpclient-view-row-tls_ca")).toHaveCount(0);
+
+      // A long tool description can be read in full, and its parameters switch between the table and the JSON.
+      await view.getByTestId("mcpclient-view-tab-tools").click();
+      const toolRow = view.getByTestId("mcpclient-view-tool-analyze");
+      await toolRow.getByRole("button", { name: "View more" }).click();
+      await expect(toolRow.getByRole("button", { name: "View less" })).toBeVisible();
+      await view.getByTestId("mcp-tool-expand-analyze").click();
+      const schemaButton = view.getByTestId("mcp-tool-json-analyze");
+      const paramRow = view.getByText("issue", { exact: true });
+      await expect(schemaButton).toHaveText("View as JSON");
+      await expect(paramRow).toBeVisible();
+      await schemaButton.click();
+      // The label names what the button does, so it carries no pressed state.
+      await expect(schemaButton).not.toHaveAttribute("aria-pressed");
+      await expect(schemaButton).toHaveText("View as table");
+      await expect(paramRow).toHaveCount(0);
+      const editor = view.locator(".monaco-editor").first();
+      await expect(editor.locator(".view-lines")).toContainText('"issue"');
+      await expect(editor.locator(".view-lines")).toContainText("The issue to analyze");
+      // A schema taller than the editor shows its scrollbar.
+      await editor.hover();
+      await mcpRegistryPage.page.mouse.wheel(0, 120);
+      await expect(editor.locator(".editor-scrollable > .scrollbar.vertical")).toHaveClass(/(^|\s)visible(\s|$)/);
+      await schemaButton.click();
+      await expect(paramRow).toBeVisible();
+
+      // A tool with an output schema shows it in its JSON too.
+      await view.getByTestId("mcp-tool-expand-report").click();
+      await view.getByTestId("mcp-tool-json-report").click();
+      const reportJson = view.locator(".monaco-editor").first().locator(".view-lines");
+      await expect(reportJson).toContainText('"output"');
+      await expect(reportJson).toContainText('"summary"');
+
+      // So can a prompt's.
+      await view.getByTestId("mcpclient-view-tab-prompts").click();
+      const promptRow = view.getByTestId("mcp-expose-prompts-row-summarize");
+      await promptRow.getByRole("button", { name: "View more" }).click();
+      await expect(promptRow.getByRole("button", { name: "View less" })).toBeVisible();
+    });
+
+    test("does not show the previous server's Virtual MCP count while the next one loads", async ({ mcpRegistryPage }) => {
+      const second = failingServer();
+      second.config = { ...second.config, client_id: "vd-2", name: "view_details_server_2" };
+      await mcpRegistryPage.page.route("**/api/mcp/clients?**", (route) =>
+        route.fulfill({ json: { clients: [failingServer(), second], count: 2, total_count: 2, limit: 25, offset: 0 } }),
+      );
+      let release = () => {};
+      const held = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      await mcpRegistryPage.page.route("**/api/mcp/virtual-mcps**", async (route) => {
+        const clientId = new URL(route.request().url()).searchParams.get("mcp_client_id");
+        if (clientId === "vd-2") await held;
+        await route.fulfill({
+          json: { virtual_mcps: [], count: 0, total_count: clientId === "vd-2" ? 7 : 120, limit: 100, offset: 0 },
+        });
+      });
+      await mcpRegistryPage.goto();
+      await mcpRegistryPage.viewClientDetails("view_details_server");
+      const view = mcpRegistryPage.viewSheet;
+      const stat = view.getByTestId("mcpclient-view-stat-access");
+      await expect(stat).toContainText("120");
+
+      await view.getByRole("button", { name: "Next server" }).click();
+      await expect(view.getByTestId("mcpclient-view-title")).toContainText("view_details_server_2");
+      await expect(stat).toContainText("Loading virtual MCPs…");
+      await expect(stat).not.toContainText("120");
+      release();
+      await expect(stat).toContainText("7");
+    });
+
+    test("starts each server's failure details collapsed", async ({ mcpRegistryPage }) => {
+      const second = failingServer();
+      second.config = { ...second.config, client_id: "vd-2", name: "view_details_server_2" };
+      second.last_failure = { ...second.last_failure, message: "the second server's own failure" };
+      await mcpRegistryPage.page.route("**/api/mcp/clients?**", (route) =>
+        route.fulfill({ json: { clients: [failingServer(), second], count: 2, total_count: 2, limit: 25, offset: 0 } }),
+      );
+      await mcpRegistryPage.goto();
+      await mcpRegistryPage.viewClientDetails("view_details_server");
+      const view = mcpRegistryPage.viewSheet;
+      await view.getByTestId("mcpclient-view-alert-detail-toggle").click();
+      await expect(view.getByTestId("mcpclient-view-alert-detail")).toContainText("connection refused");
+
+      await view.getByRole("button", { name: "Next server" }).click();
+      await expect(view.getByTestId("mcpclient-view-title")).toContainText("view_details_server_2");
+      await expect(view.getByTestId("mcpclient-view-alert-detail")).toHaveCount(0);
+      await expect(view.getByTestId("mcpclient-view-alert-detail-toggle")).toHaveText("Show details");
+    });
+  });
+
+  test.describe("View Sheet Paging", () => {
+    // pagedClient is a minimal listed server; the list below holds 26 of them, so 25 on page one.
+    const pagedClient = (i: number) => ({
+      config: {
+        client_id: `pg-${i}`,
+        name: `pg_server_${String(i).padStart(2, "0")}`,
+        connection_type: "http",
+        connection_string: { value: "http://127.0.0.1:9/mcp", type: "plain_text" },
+        auth_type: "none",
+        tools_to_execute: [],
+      },
+      tools: [],
+      state: "healthy",
+      vk_configs: [],
+    });
+
+    test("Next on the last server of a page opens the first server of the next page", async ({ mcpRegistryPage }) => {
+      const clients = Array.from({ length: 26 }, (_, i) => pagedClient(i));
+      await mcpRegistryPage.page.route("**/api/mcp/clients?**", async (route) => {
+        const offset = Number(new URL(route.request().url()).searchParams.get("offset") ?? "0");
+        // The next page arrives late, so the table still holds this page while it loads.
+        if (offset >= 25) await new Promise((resolve) => setTimeout(resolve, 1500));
+        const page = clients.slice(offset, offset + 25);
+        await route.fulfill({ json: { clients: page, count: page.length, total_count: clients.length, limit: 25, offset } });
+      });
+      await mcpRegistryPage.goto();
+
+      await mcpRegistryPage.viewClientDetails("pg_server_24");
+      await mcpRegistryPage.viewSheet.getByRole("button", { name: "Next server" }).click();
+      await expect(mcpRegistryPage.viewSheet.getByTestId("mcpclient-view-title")).toContainText("pg_server_25", { timeout: 10000 });
     });
   });
 

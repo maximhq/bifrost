@@ -99,7 +99,7 @@ Each alias maps the name your application sends to either a plain target string 
 | `model_name` | string | Canonical model name used by pricing and logs. Set this when `model_id` is opaque (e.g. an Azure deployment ID) so cost attribution still hits the catalog. |
 | `model_family` | enum | Forces the family used for provider routing decisions (request shape, response parsing, etc.). One of: `anthropic`, `openai`, `mistral`, `cohere`, `gemini`, `gemma`, `llama`, `imagen`, `veo`, `nova`, `titan`. When unset, the family is auto-detected by substring matching against `model_name`, `model_id`, and the alias name. |
 | `description` | string | Free-form note. Surfaced in the UI; not used for routing. |
-| `region` | string / EnvVar | Per-alias region override (Bedrock + Vertex). Falls back to the key-level region when unset. |
+| `region` | string / EnvVar | Per-alias region override (Bedrock, SageMaker, Vertex). Falls back to the key-level region when unset. |
 
 **Provider-specific overrides** (only set on aliases whose owning key matches the provider; validation rejects mismatches):
 

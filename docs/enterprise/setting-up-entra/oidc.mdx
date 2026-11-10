@@ -7,7 +7,7 @@ description: "Configure Microsoft Entra ID (Azure AD) as your identity provider 
 
 - A Microsoft Azure account with admin access to create app registrations in Entra ID
 - Bifrost Enterprise deployed and accessible
-- Your Bifrost callback URL: `https://<your-bifrost-domain>/login`
+- Your Bifrost callback URL: `https://<your-bifrost-domain>/login` (under a `server.base_path` prefix: `https://<your-bifrost-domain>/<prefix>/login`; the SSO wizard shows the exact value)
 
 ---
 
@@ -31,7 +31,7 @@ Configure the new registration:
 | --- | --- |
 | **Name** | `Bifrost SSO` |
 | **Supported account types** | Accounts in this organizational directory only (Single tenant) |
-| **Redirect URI** | Web: `https://<your-bifrost-domain>/login` |
+| **Redirect URI** | Web: `https://<your-bifrost-domain>/login` (or `https://<your-bifrost-domain>/<prefix>/login` under a `server.base_path`) |
 
 <Frame caption="New application registration form - enter the app name, account type, and redirect URI.">
   <img src="/media/user-provisioning/entra/entra-oidc-register-app.png" alt="Register an Application dialog in Microsoft Entra showing name, account type, and redirect URI fields" />
@@ -51,8 +51,8 @@ After registering, go to **Authentication** and add a second redirect URI for th
 
 | URI | Purpose |
 | --- | --- |
-| `https://<your-bifrost-domain>/login` | OIDC sign-in callback |
-| `https://<your-bifrost-domain>/workspace/scim/oauth-discover-callback` | Attribute discovery callback |
+| `https://<your-bifrost-domain>/login` | OIDC sign-in callback; under a `server.base_path`: `https://<your-bifrost-domain>/<prefix>/login` |
+| `https://<your-bifrost-domain>/workspace/scim/oauth-discover-callback` | Attribute discovery callback; under a `server.base_path`: `https://<your-bifrost-domain>/<prefix>/workspace/scim/oauth-discover-callback` |
 
 <Frame caption="Authentication blade - confirm both redirect URIs are listed.">
   <img src="/media/user-provisioning/entra/entra-oidc-redirect-uri.png" alt="Authentication blade showing the two Bifrost redirect URIs configured" />

@@ -1841,6 +1841,17 @@ func encodeRedactedContentForConverse(id *string, token string) string {
 	return wrapRedactedContentForConverse(id, token)
 }
 
+// isConverseBlob reports whether token can be sent upstream as Converse redactedContent.
+// The field is a blob, so a token that is not canonical base64 cannot even deserialize:
+// Bedrock answers 400 SerializationException with an empty message, which names no
+// reasoning token and so never triggers the strip-and-retry fail-soft. Such a token was
+// minted by another host (Mantle hands back the bare rsn_ token Bedrock base64-wraps)
+// and could not verify here anyway, so the replay drops it instead.
+func isConverseBlob(token string) bool {
+	decoded, err := base64.StdEncoding.DecodeString(token)
+	return err == nil && token != "" && base64.StdEncoding.EncodeToString(decoded) == token
+}
+
 // wrapRedactedContentForConverse wraps token unconditionally, embedding id.
 func wrapRedactedContentForConverse(id *string, token string) string {
 	return base64.StdEncoding.EncodeToString([]byte(foreignRedactedContentPrefix + providerUtils.EmbedReasoningItemID(id, token)))
@@ -2147,7 +2158,7 @@ func convertMessage(ctx context.Context, model string, msg schemas.ChatMessage, 
 				// signature, without one, empty or not -- with an opaque 500. The
 				// encrypted blob is the only replayable detail, and dropping the
 				// rest beats sending a shape that cannot be accepted.
-				if detail.Type == schemas.BifrostReasoningDetailsTypeEncrypted && detail.Data != nil {
+				if detail.Type == schemas.BifrostReasoningDetailsTypeEncrypted && detail.Data != nil && isConverseBlob(*detail.Data) {
 					contentBlocks = append(contentBlocks, BedrockContentBlock{
 						ReasoningContent: &BedrockReasoningContent{RedactedContent: detail.Data},
 					})
@@ -2884,6 +2895,25 @@ func converseRequiresSignedReasoning(model string) bool {
 	return schemas.ResolveModelCaps(schemas.Bedrock, model).BedrockRequiresSignedReasoning(schemas.IsAnthropicModel(model))
 }
 
+// converseAcceptsStopSequences reports whether Converse accepts inferenceConfig.stopSequences for model
+// most newer families 400 on it, so unknown models default to omitting it.
+func converseAcceptsStopSequences(model string) bool {
+	m := strings.ToLower(model)
+	switch {
+	case schemas.IsAnthropicModel(m), schemas.IsNovaModel(m), schemas.IsTitanModel(m),
+		schemas.IsLlamaModel(m), schemas.IsCohereModel(m):
+		return true
+	case strings.Contains(m, "deepseek.r1"), strings.Contains(m, "writer.palmyra-x"):
+		return true
+	}
+	for _, legacy := range []string{"mistral-7b", "mixtral-8x7b", "mistral-large-2402", "mistral-large-2407", "mistral-small-2402", "pixtral-large-2502"} {
+		if strings.Contains(m, legacy) {
+			return true
+		}
+	}
+	return false
+}
+
 // setConverseReasoningEffort writes the OpenAI-shaped reasoning field, mapping
 // the requested effort onto a rung the model publishes.
 func setConverseReasoningEffort(fields *schemas.OrderedMap, caps schemas.ModelCaps, levels *schemas.EffortControl, effort string) {
@@ -2932,8 +2962,7 @@ func convertInferenceConfig(params *schemas.ChatParameters, caps schemas.ModelCa
 		config.TopP = params.TopP
 	}
 
-	// GLM models on Bedrock reject the stopSequences field.
-	if params.Stop != nil && !caps.FieldUnsupported(schemas.FieldStop, schemas.IsGLMModel(caps.Model())) {
+	if params.Stop != nil && !caps.FieldUnsupported(schemas.FieldStop, !converseAcceptsStopSequences(caps.Model())) {
 		config.StopSequences = params.Stop
 	}
 
@@ -4103,6 +4132,27 @@ func stripCachePointsFromBedrockRequest(req *BedrockConverseRequest) {
 	}
 }
 
+// stripNonTextCachePoints keeps a message cachePoint only directly after a text block, for
+// Nova, which 400s on one after a toolResult or image ("extraneous key [cachePoint] is not
+// permitted"). A cachePoint nested in a toolResult goes too.
+func stripNonTextCachePoints(req *BedrockConverseRequest) {
+	for i := range req.Messages {
+		content := req.Messages[i].Content
+		n := 0
+		for j := range content {
+			if content[j].CachePoint != nil && (n == 0 || content[n-1].Text == nil) {
+				continue
+			}
+			if tr := content[j].ToolResult; tr != nil {
+				tr.Content = slices.DeleteFunc(tr.Content, func(b BedrockContentBlock) bool { return b.CachePoint != nil })
+			}
+			content[n] = content[j]
+			n++
+		}
+		req.Messages[i].Content = content[:n]
+	}
+}
+
 // downgradeExtendedCacheTTLInBedrockRequest drops the 1h (extended) cache TTL to
 // the default for models that support cache points but not extended TTL (e.g. Nova),
 // which otherwise 400 with "Extended TTL prompt caching is only supported for
@@ -4131,4 +4181,44 @@ func downgradeExtendedCacheTTLInBedrockRequest(req *BedrockConverseRequest) {
 			downgrade(req.ToolConfig.Tools[i].CachePoint)
 		}
 	}
+}
+
+// heldStreamRaw keeps the raw payloads of upstream stream events that produced no chunk of their
+// own (messageStop, metadata, a text block's contentBlockStop), so each rides on a later chunk that
+// has no payload of its own instead of being dropped from the raw record. It lives in the stream
+// goroutine, is used only when raw responses are sent back, and holds a few small events at most.
+//
+// A chunk that carries its own event never takes a held one: raw text plugins edit a single-event
+// payload in place, and a second event in it would leave the chunk's text unsynced. A held event
+// that meets no chunk without a payload before the stream ends goes out on the stream's last chunk.
+type heldStreamRaw struct {
+	payloads []string
+}
+
+// hold copies payload, since the decoder reuses its buffer for the next event.
+func (h *heldStreamRaw) hold(payload []byte) {
+	if h.payloads == nil {
+		h.payloads = make([]string, 0, 4) // a stream's end holds about three
+	}
+	h.payloads = append(h.payloads, string(payload))
+}
+
+// attach gives extra the oldest held payload; with last set it gives it every remaining one, a
+// blank line apart. Several events in one chunk are not a single stream event, so the chunk then
+// declares no raw format and raw text plugins leave it alone.
+func (h *heldStreamRaw) attach(extra *schemas.BifrostResponseExtraFields, last bool) {
+	if len(h.payloads) == 0 || extra.RawResponse != nil {
+		return
+	}
+	n := 1
+	if last {
+		n = len(h.payloads)
+	}
+	if n == 1 {
+		extra.RawResponse = h.payloads[0]
+		extra.RawResponseFormat = schemas.RawResponseFormatBedrockConverseStreamEvent
+	} else {
+		extra.RawResponse = strings.Join(h.payloads[:n], "\n\n")
+	}
+	h.payloads = h.payloads[n:]
 }
