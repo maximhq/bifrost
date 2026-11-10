@@ -2517,6 +2517,10 @@ type BifrostErrorExtraFields struct {
 	// client prefix), so a hook can tell which call failed. In-process only.
 	MCPClientName string `json:"-"`
 	MCPToolName   string `json:"-"`
+	// ProviderErrorExcerpt holds up to the first 200 bytes of the provider's decoded error
+	// body, set whether or not raw responses are captured, so a plugin can say why a call
+	// failed without capturing raw responses or re-encoding RawResponse. In-process only.
+	ProviderErrorExcerpt string `json:"-"`
 	// A2ARequestType and A2AAgentName are stamped by the Agent Gateway plugin gate
 	// on every wrapped error so PostA2AHook can discriminate the operation and its
 	// authorization resource from the failure path too, exactly as MCPRequestType does.

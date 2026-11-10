@@ -3346,6 +3346,100 @@ func TestRealiasNamespacedFunctionCalls_RequiresExactNamespaceOwner(t *testing.T
 	}
 }
 
+// TestHandleProviderAPIErrorExcerpt covers the bounded excerpt a plugin reads to say why a call
+// failed: it comes from the decoded body whatever the body's shape, and is absent when the body
+// could not be decoded, since the bytes on hand are then still compressed.
+func TestHandleProviderAPIErrorExcerpt(t *testing.T) {
+	long := `{"error":{"message":"` + strings.Repeat("x", 1000) + `"}}`
+	var gzipped bytes.Buffer
+	gz := gzip.NewWriter(&gzipped)
+	if _, err := gz.Write([]byte(long)); err != nil {
+		t.Fatal(err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name     string
+		body     []byte
+		encoding string
+		expected string
+	}{
+		{name: "short JSON is kept whole", body: []byte(`{"error":{"message":"bad"}}`), expected: `{"error":{"message":"bad"}}`},
+		{name: "long JSON is cut to the bound", body: []byte(long), expected: long[:providerErrorExcerptMaxBytes]},
+		{name: "plain text", body: []byte("upstream unavailable"), expected: "upstream unavailable"},
+		{name: "html", body: []byte("<html><body>Bad Gateway</body></html>"), expected: "<html><body>Bad Gateway</body></html>"},
+		{name: "gzip is excerpted after decoding", body: gzipped.Bytes(), encoding: "gzip", expected: long[:providerErrorExcerptMaxBytes]},
+		{name: "a body that cannot be decoded has none", body: []byte{0xFF, 0xFE}, encoding: "gzip", expected: ""},
+		{name: "empty body has none", body: nil, expected: ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resp := &fasthttp.Response{}
+			resp.SetStatusCode(400)
+			if tt.encoding != "" {
+				resp.Header.Set("Content-Encoding", tt.encoding)
+			}
+			resp.SetBodyRaw(tt.body)
+
+			var errorResp map[string]interface{}
+			bifrostErr := HandleProviderAPIError(resp, &errorResp)
+
+			if got := bifrostErr.ExtraFields.ProviderErrorExcerpt; got != tt.expected {
+				t.Errorf("excerpt = %q, want %q", got, tt.expected)
+			}
+		})
+	}
+}
+
+// TestProviderErrorExcerptCutsOnARuneBoundary keeps the excerpt of a UTF-8 body valid UTF-8
+// when the bound lands inside a multi-byte character.
+func TestProviderErrorExcerptCutsOnARuneBoundary(t *testing.T) {
+	prefix := strings.Repeat("x", providerErrorExcerptMaxBytes-1)
+
+	if got := ProviderErrorExcerpt([]byte(prefix + "é")); got != prefix {
+		t.Errorf("excerpt = %q, want %q", got, prefix)
+	}
+}
+
+// TestProviderErrorExcerptNeverReachesAClient holds the excerpt to in-process readers: dropping
+// RawResponse from a client's error must drop the provider's body entirely.
+func TestProviderErrorExcerptNeverReachesAClient(t *testing.T) {
+	resp := &fasthttp.Response{}
+	resp.SetStatusCode(400)
+	resp.SetBodyString(`{"detail":"provider-body-marker"}`)
+
+	var errorResp map[string]interface{}
+	bifrostErr := HandleProviderAPIError(resp, &errorResp)
+	bifrostErr.ExtraFields.RawResponse = nil
+
+	encoded, err := sonic.Marshal(bifrostErr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "provider-body-marker") {
+		t.Errorf("encoded error carries the provider body: %s", encoded)
+	}
+}
+
+func BenchmarkHandleProviderAPIError(b *testing.B) {
+	for _, size := range []int{256, 64 << 10} {
+		body := []byte(`{"error":{"message":"` + strings.Repeat("x", size) + `"}}`)
+		b.Run(fmt.Sprintf("body=%d", size), func(b *testing.B) {
+			resp := &fasthttp.Response{}
+			resp.SetStatusCode(400)
+			resp.SetBodyRaw(body)
+			b.ReportAllocs()
+			for b.Loop() {
+				var errorResp map[string]interface{}
+				HandleProviderAPIError(resp, &errorResp)
+			}
+		})
+	}
+}
+
 // TestHandleProviderAPIErrorRootMessage covers AWS's flat error shape, which every Bedrock
 // surface answers with. The shared Anthropic and OpenAI handlers serve those surfaces and
 // their own parsers only read a nested error object, so without this seeding the failure

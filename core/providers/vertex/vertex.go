@@ -2254,8 +2254,9 @@ func (provider *VertexProvider) Rerank(ctx *schemas.BifrostContext, key schemas.
 			if shouldOverride {
 				overridden := providerUtils.NewProviderAPIError(errorMessage, nil, resp.StatusCode(), nil, nil)
 				if parsedError != nil {
-					// Keep the retry hint parseVertexError read from the response.
+					// Keep the retry hint and body excerpt parseVertexError read from the response.
 					overridden.ExtraFields.RetryAfter = parsedError.ExtraFields.RetryAfter
+					overridden.ExtraFields.ProviderErrorExcerpt = parsedError.ExtraFields.ProviderErrorExcerpt
 				}
 				parsedError = overridden
 			}

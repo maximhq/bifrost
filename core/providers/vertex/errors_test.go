@@ -1,6 +1,7 @@
 package vertex
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -55,6 +56,31 @@ func TestParseVertexError_RetryInfo(t *testing.T) {
 	plain.SetStatusCode(fasthttp.StatusTooManyRequests)
 	plain.SetBodyString(`{"error":{"code":429,"message":"Quota exceeded","status":"RESOURCE_EXHAUSTED"}}`)
 	assert.Equal(t, int64(0), parseVertexError(&plain).ExtraFields.RetryAfter)
+}
+
+// TestParseVertexError_Excerpt verifies every body shape leaves a bounded excerpt on the error,
+// including the ones that take parseVertexError's own branches instead of the shared handler.
+func TestParseVertexError_Excerpt(t *testing.T) {
+	long := `{"error":{"code":400,"message":"` + strings.Repeat("x", 1000) + `"}}`
+	tests := []struct {
+		name     string
+		body     string
+		expected string
+	}{
+		{"short error", `{"error":{"code":400,"message":"bad request"}}`, `{"error":{"code":400,"message":"bad request"}}`},
+		{"long error", long, long[:200]},
+		{"plain text", "upstream unavailable", "upstream unavailable"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var resp fasthttp.Response
+			resp.SetStatusCode(fasthttp.StatusBadRequest)
+			resp.SetBodyString(tt.body)
+
+			assert.Equal(t, tt.expected, parseVertexError(&resp).ExtraFields.ProviderErrorExcerpt)
+		})
+	}
 }
 
 // The cached-content and batch job parsers carry the retry hint too.

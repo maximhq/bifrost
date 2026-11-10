@@ -22,14 +22,21 @@ func parseVertexError(resp *fasthttp.Response) *schemas.BifrostError {
 // parseVertexErrorBody builds the error from the response body, with the retry hint when the
 // body carries a google.rpc.RetryInfo detail.
 func parseVertexErrorBody(resp *fasthttp.Response) *schemas.BifrostError {
-	var openAIErr schemas.BifrostError
-	var vertexErr []VertexError
-
 	decodedBody, err := providerUtils.CheckAndDecodeBody(resp)
 	if err != nil {
 		bifrostErr := providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err)
 		return bifrostErr
 	}
+
+	bifrostErr := vertexErrorFromDecodedBody(resp, decodedBody)
+	bifrostErr.ExtraFields.ProviderErrorExcerpt = providerUtils.ProviderErrorExcerpt(decodedBody)
+	return bifrostErr
+}
+
+// vertexErrorFromDecodedBody builds the error from a body that decoded cleanly.
+func vertexErrorFromDecodedBody(resp *fasthttp.Response, decodedBody []byte) *schemas.BifrostError {
+	var openAIErr schemas.BifrostError
+	var vertexErr []VertexError
 
 	// Check for empty response
 	trimmed := strings.TrimSpace(string(decodedBody))
