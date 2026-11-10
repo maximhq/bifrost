@@ -2240,13 +2240,12 @@
 		"saving": "正在保存..."
 	},
 	"mcpLimits": {
-		"titleDescription": "为 MCP 工具执行配置预算，可全局或按虚拟密钥设置。MCP 行仅由工具执行计费；共享行也由模型请求计费。",
-		"emptyTitle": "MCP 预算",
-		"emptyDescription": "全局或按虚拟密钥限制 MCP 工具执行的支出，可单独设置，也可与模型请求共享。",
-		"createDescription": "为部署或虚拟密钥设置 MCP 预算和共享预算。",
-		"editDescription": "更新此作用域的 MCP 预算和共享预算。",
+		"titleDescription": "为 MCP 工具执行配置预算和请求限额，可全局或按虚拟密钥设置。MCP 行仅由工具执行计费；共享行也由模型请求计费。",
+		"emptyTitle": "MCP 预算和限额",
+		"emptyDescription": "全局或按虚拟密钥限制 MCP 工具执行的支出和请求速率，可单独设置，也可与模型请求共享。",
+		"createDescription": "为部署或虚拟密钥设置 MCP 和共享的预算及请求限额。",
+		"editDescription": "更新此作用域的 MCP 和共享的预算及请求限额。",
 		"deleteTitle": "移除 MCP 限额",
-		"deleteDescription": "要移除“{{name}}”的 MCP 预算和共享预算吗？在模型页面设置的模型预算和速率限制会保留。",
-		"atLeastOneBudget": "至少需要一项预算"
+		"deleteDescription": "要移除“{{name}}”的 MCP 和共享的预算及请求限额吗？在模型页面设置的模型行和 Token 限额会保留。"
 	}
 }

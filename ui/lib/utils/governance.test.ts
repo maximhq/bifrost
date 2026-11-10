@@ -16,13 +16,13 @@ import {
 	actionDisabledReason,
 	budgetScopeChargedBy,
 	budgetSignature,
-	budgetsLeftAfterRemoving,
 	getBudgetOverrideValidUntil,
 	getEffectiveBudgetLimit,
 	hasActiveBudgetOverride,
 	isHolderLevelModelConfig,
 	modelConfigAppliesToMCP,
 	isRequestLimitExhausted,
+	limitsLeftAfterRemoving,
 	parseResetPeriod,
 	requestLimitLinesOf,
 	requestLimitsOf,
@@ -407,19 +407,27 @@ describe("holder-level limits", () => {
 	});
 
 	it("leaves the other page's lines when one page removes its limits", () => {
-		const mixed = row([budget("shared", "shared"), budget("model", "model"), budget("mcp", "mcp")]);
-		expect(budgetsLeftAfterRemoving(mixed, "mcp")?.map((b) => b.id)).toEqual(["model"]);
-		expect(budgetsLeftAfterRemoving(mixed, "model")?.map((b) => b.id)).toEqual(["mcp"]);
+		const rule = (id: string, scope?: LimitScope) => ({ id, scope, request_max_limit: 1 }) as RateLimit;
+		const mixed = row([budget("shared", "shared"), budget("model", "model"), budget("mcp", "mcp")], {
+			request_limits: [rule("shared-rule"), rule("model-rule", "model"), rule("mcp-rule", "mcp")],
+		});
+		const fromMCP = limitsLeftAfterRemoving(mixed, "mcp");
+		expect(fromMCP?.budgets.map((b) => b.id)).toEqual(["model"]);
+		expect(fromMCP?.requestLimits.map((r) => r.id)).toEqual(["model-rule"]);
+		const fromModels = limitsLeftAfterRemoving(mixed, "model");
+		expect(fromModels?.budgets.map((b) => b.id)).toEqual(["mcp"]);
+		expect(fromModels?.requestLimits.map((r) => r.id)).toEqual(["mcp-rule"]);
+		expect(limitsLeftAfterRemoving(row([], { request_limits: [rule("mcp-rule", "mcp")] }), "model")?.budgets).toEqual([]);
 	});
 
 	it("deletes the row when nothing of the other page is left", () => {
-		expect(budgetsLeftAfterRemoving(row([budget("shared"), budget("mcp", "mcp")]), "mcp")).toBeNull();
-		expect(budgetsLeftAfterRemoving(row([budget("shared"), budget("model", "model")]), "model")).toBeNull();
-		expect(budgetsLeftAfterRemoving(row([budget("gpt", "shared")], { model_name: "gpt-4o" }), "model")).toBeNull();
+		expect(limitsLeftAfterRemoving(row([budget("shared"), budget("mcp", "mcp")]), "mcp")).toBeNull();
+		expect(limitsLeftAfterRemoving(row([budget("shared"), budget("model", "model")]), "model")).toBeNull();
+		expect(limitsLeftAfterRemoving(row([budget("gpt", "shared")], { model_name: "gpt-4o" }), "model")).toBeNull();
 	});
 
-	it("keeps the row for the rate limit the Models page edits", () => {
-		const withRateLimit = row([budget("mcp", "mcp")], { rate_limit: { id: "rl" } as ModelConfig["rate_limit"] });
-		expect(budgetsLeftAfterRemoving(withRateLimit, "mcp")).toEqual([]);
+	it("keeps the row for the token limit the Models page edits", () => {
+		const withTokenLimit = row([budget("mcp", "mcp")], { rate_limit: { id: "rl", token_max_limit: 10 } as ModelConfig["rate_limit"] });
+		expect(limitsLeftAfterRemoving(withTokenLimit, "mcp")).toEqual({ budgets: [], requestLimits: [] });
 	});
 });

@@ -5,13 +5,16 @@ import { Button } from "@/components/ui/button";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Label } from "@/components/ui/label";
 import { ALL_MODELS_OPTION, ModelSelector } from "@/components/ui/modelSelector";
-import MultiBudgetLines from "@/components/ui/multibudgets";
+import BudgetScopeBadge from "@/components/ui/budgetScopeBadge";
+import MultiBudgetLines, { RequestLimitLines } from "@/components/ui/multibudgets";
 import NumberAndSelect from "@/components/ui/numberAndSelect";
 import { ProviderSelector } from "@/components/ui/providerSelector";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { DottedSeparator } from "@/components/ui/separator";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import { TokenLimitLabel } from "@/components/ui/tokenLimitLabel";
 import { useBudgetUsageResetPrompt } from "@/hooks/useBudgetUsageResetPrompt";
+import { hasDuplicateBudgetPeriods } from "@/lib/budgetOutline";
 import { BUDGET_SCOPE_VALUES, resetDurationLabels, resetDurationOptions } from "@/lib/constants/governance";
 import { ProviderLabels, ProviderName } from "@/lib/constants/logs";
 import { getModelLimitScope, getModelLimitScopes } from "@/lib/registries/modelLimitScopes";
@@ -28,7 +31,15 @@ import {
 	useUpdateModelConfigMutation,
 } from "@/lib/store";
 import { Budget, LimitScope, ModelConfig } from "@/lib/types/governance";
-import { budgetScopeChargedBy, formatCurrency, isHolderLevelModelConfig, LimitTraffic } from "@/lib/utils/governance";
+import {
+	budgetScopeChargedBy,
+	formatCurrency,
+	isHolderLevelModelConfig,
+	LimitTraffic,
+	requestLimitLinesOf,
+	requestLimitsOf,
+	toRequestLimitRequests,
+} from "@/lib/utils/governance";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import "@enterprise/lib/registrations/modelLimitScopes";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -39,6 +50,7 @@ import { toast } from "sonner";
 import { z } from "zod";
 import { useTranslation } from "react-i18next";
 import i18n, { getLocale } from "@/lib/i18n";
+import { msg } from "@/lib/i18n/validationMessage";
 
 interface ModelLimitSheetProps {
 	modelConfig?: ModelConfig | null;
@@ -67,8 +79,21 @@ const formSchema = z
 			.optional(),
 		tokenMaxLimit: z.number().int().nonnegative().optional(),
 		tokenResetDuration: z.string().optional(),
-		requestMaxLimit: z.number().int().nonnegative().optional(),
-		requestResetDuration: z.string().optional(),
+		// One per reset period and scope; saving is blocked while two collide (the lines editor says why)
+		requestLimits: z
+			.array(
+				z.object({
+					id: z.string().optional(),
+					max_limit: z
+						.number()
+						.int(msg("validation.valueMustBeAPositiveWholeNumber"))
+						.positive(msg("validation.valueMustBeAPositiveWholeNumber"))
+						.optional(),
+					reset_duration: z.string(),
+					scope: z.enum(BUDGET_SCOPE_VALUES).optional(),
+				}),
+			)
+			.optional(),
 	})
 	.refine((data) => data.scope !== "virtual_key" || !!data.scopeId, {
 		message: i18n.t("modelLimits.vkRequiredForScope", { ns: "models" }),
@@ -95,11 +120,24 @@ const MCP_LIMIT_SCOPES = ["global", "virtual_key"];
 // The lines of a row a page shows (shown) or hides (!shown): a narrower row's lines are Shared or Model
 // and all shown; on a holder-level row a page shows the lines its traffic is charged by and hides the
 // others, which a save sends back unchanged.
-const rowLines = (config: ModelConfig | null | undefined, traffic: LimitTraffic, shown: boolean): Budget[] => {
-	const budgets = config?.budgets ?? [];
-	if (!config || !isHolderLevelModelConfig(config)) return shown ? budgets : [];
-	return budgets.filter((b) => budgetScopeChargedBy(b.scope, traffic) === shown);
+const linesOn = <T extends { scope?: LimitScope }>(
+	config: ModelConfig | null | undefined,
+	lines: T[],
+	traffic: LimitTraffic,
+	shown: boolean,
+): T[] => {
+	if (!config || !isHolderLevelModelConfig(config)) return shown ? lines : [];
+	return lines.filter((line) => budgetScopeChargedBy(line.scope, traffic) === shown);
 };
+const rowLines = (config: ModelConfig | null | undefined, traffic: LimitTraffic, shown: boolean): Budget[] =>
+	linesOn(config, config?.budgets ?? [], traffic, shown);
+const rowRequestLines = (config: ModelConfig | null | undefined, traffic: LimitTraffic, shown: boolean) =>
+	linesOn(config, requestLimitLinesOf(config), traffic, shown);
+
+// The request lines as saved, each with its scope. Duplicates are judged on these, as the editor does.
+function effectiveRequestLimits(data: FormData) {
+	return toRequestLimitRequests(data.requestLimits ?? []);
+}
 
 const toFormBudget = (b: Budget) => ({
 	id: b.id,
@@ -111,6 +149,10 @@ const toFormBudget = (b: Budget) => ({
 
 export default function ModelLimitSheet({ modelConfig, onSave, onCancel, traffic = "model" }: ModelLimitSheetProps) {
 	const isMCPPage = traffic === "mcp";
+	// As in the limits table: only a holder-level row marks a rule, and only a Shared one; an unmarked
+	// rule is this page's own traffic.
+	const marksSharedRule = (scope?: LimitScope) =>
+		!!modelConfig && isHolderLevelModelConfig(modelConfig) && (scope || "shared") === "shared";
 	const { t } = useTranslation("models");
 	const { t: tc } = useTranslation("common");
 	const allProvidersOption = useMemo(() => ({ value: ALL_PROVIDERS_VALUE, label: t("modelLimits.allProviders") }), [t]);
@@ -181,18 +223,16 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel, traffic
 			budgets: rowLines(modelConfig, traffic, true).map(toFormBudget),
 			tokenMaxLimit: modelConfig?.rate_limit?.token_max_limit ?? undefined,
 			tokenResetDuration: modelConfig?.rate_limit?.token_reset_duration || "1h",
-			requestMaxLimit: modelConfig?.rate_limit?.request_max_limit ?? undefined,
-			requestResetDuration: modelConfig?.rate_limit?.request_reset_duration || "1h",
+			requestLimits: rowRequestLines(modelConfig, traffic, true),
 		},
 	});
 
 	const watchedBudgets = form.watch("budgets");
-	// The MCP page edits budgets only; the row's rate limit is the Models page's.
+	// The token limit is the Models page's; the MCP page edits budgets and request limits only.
 	const hasAnyLimit =
 		(watchedBudgets?.some((b) => b.max_limit !== undefined && b.max_limit !== null) ?? false) ||
-		(!isMCPPage &&
-			((form.watch("tokenMaxLimit") !== undefined && form.watch("tokenMaxLimit") !== null) ||
-				(form.watch("requestMaxLimit") !== undefined && form.watch("requestMaxLimit") !== null)));
+		(form.watch("requestLimits")?.some((l) => l.max_limit !== undefined && l.max_limit !== null) ?? false) ||
+		(!isMCPPage && form.watch("tokenMaxLimit") !== undefined && form.watch("tokenMaxLimit") !== null);
 
 	useEffect(() => {
 		if (hasAnyLimit) form.clearErrors("root");
@@ -212,8 +252,7 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel, traffic
 				budgets: rowLines(modelConfig, traffic, true).map(toFormBudget),
 				tokenMaxLimit: modelConfig.rate_limit?.token_max_limit ?? undefined,
 				tokenResetDuration: modelConfig.rate_limit?.token_reset_duration || "1h",
-				requestMaxLimit: modelConfig.rate_limit?.request_max_limit ?? undefined,
-				requestResetDuration: modelConfig.rate_limit?.request_reset_duration || "1h",
+				requestLimits: rowRequestLines(modelConfig, traffic, true),
 			});
 		}
 	}, [modelConfig, form, traffic]);
@@ -256,8 +295,14 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel, traffic
 		if (isEditing) return;
 		const typed = (form.getValues("budgets") ?? []).filter((b) => !b.id);
 		const existing = rowLines(targetRow, traffic, true).map(toFormBudget);
-		if (existing.length === 0 && typed.length === (form.getValues("budgets") ?? []).length) return;
-		form.setValue("budgets", [...existing, ...typed], { shouldDirty: true });
+		if (existing.length > 0 || typed.length !== (form.getValues("budgets") ?? []).length) {
+			form.setValue("budgets", [...existing, ...typed], { shouldDirty: true });
+		}
+		const typedRequestLines = (form.getValues("requestLimits") ?? []).filter((l) => !l.id);
+		const existingRequestLines = rowRequestLines(targetRow, traffic, true);
+		if (existingRequestLines.length > 0 || typedRequestLines.length !== (form.getValues("requestLimits") ?? []).length) {
+			form.setValue("requestLimits", [...existingRequestLines, ...typedRequestLines], { shouldDirty: true });
+		}
 	}, [targetRow, isEditing, traffic, form]);
 
 	// A budget config change on an existing limit is when clearing accumulated
@@ -303,9 +348,13 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel, traffic
 	const saveModelLimit = async (data: FormData, resetBudgetUsage: boolean) => {
 		// Removing every line of an MCP limit removes the limit (see below), so only adding one needs a line.
 		// Lines the other page owns stay on the row, so a row that keeps one is not left empty.
-		const keepsOtherPagesLines = rowLines(baseConfig, traffic, false).length > 0;
+		const keepsOtherPagesLines = rowLines(baseConfig, traffic, false).length > 0 || rowRequestLines(baseConfig, traffic, false).length > 0;
 		if (saveHasNoLimit(hasAnyLimit, keepsOtherPagesLines, isMCPPage && isEditing)) {
-			form.setError("root", { message: isMCPPage ? t("mcpLimits.atLeastOneBudget") : t("modelLimits.atLeastOneRequired") });
+			form.setError("root", { message: t("modelLimits.atLeastOneRequired") });
+			return;
+		}
+		// Two lines on one reset period and scope are flagged by the lines editor; never send them.
+		if (hasDuplicateBudgetPeriods(effectiveRequestLimits(data))) {
 			return;
 		}
 
@@ -328,15 +377,30 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel, traffic
 					})),
 				...rowLines(baseConfig, traffic, false).map(toFormBudget),
 			];
+			// The full desired set of request limits, built the same way: [] removes every one.
+			const requestLimitsPayload = [
+				...effectiveRequestLimits(data),
+				...toRequestLimitRequests(rowRequestLines(baseConfig, traffic, false)),
+			];
+			const tokenRateLimit =
+				data.tokenMaxLimit !== undefined && data.tokenMaxLimit !== null
+					? { token_max_limit: data.tokenMaxLimit, token_reset_duration: data.tokenResetDuration || "1h" }
+					: undefined;
 
-			if (isMCPPage && baseConfig && budgetsPayload.length === 0 && !baseConfig.rate_limit) {
+			if (
+				isMCPPage &&
+				baseConfig &&
+				budgetsPayload.length === 0 &&
+				requestLimitsPayload.length === 0 &&
+				baseConfig.rate_limit?.token_max_limit == null
+			) {
 				// Nothing of the Models page's is left on the row either, so the row itself goes.
 				await deleteModelConfig(baseConfig.id).unwrap();
 				toast.success(t("modelLimits.deletedSuccess"));
 			} else if (isMCPPage && baseConfig) {
 				await updateModelConfig({
 					id: baseConfig.id,
-					data: { budgets: budgetsPayload, reset_budget_usage: resetBudgetUsage || undefined },
+					data: { budgets: budgetsPayload, request_limits: requestLimitsPayload, reset_budget_usage: resetBudgetUsage || undefined },
 				}).unwrap();
 				toast.success(isEditing ? t("modelLimits.updatedSuccess") : t("modelLimits.createdSuccess"));
 			} else if (isMCPPage) {
@@ -345,36 +409,14 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel, traffic
 					scope: data.scope || "global",
 					scope_id: getModelLimitScope(data.scope || "global")?.PickerComponent ? data.scopeId : undefined,
 					budgets: budgetsPayload,
+					request_limits: requestLimitsPayload,
 				}).unwrap();
 				toast.success(t("modelLimits.createdSuccess"));
 			} else if (baseConfig) {
-				// Adding onto the target's existing row keeps the parts of its rate limit not entered here.
-				const kept = isEditing ? undefined : baseConfig.rate_limit;
-				const tokenMaxLimit = data.tokenMaxLimit ?? kept?.token_max_limit ?? undefined;
-				const tokenResetDuration = data.tokenMaxLimit != null ? data.tokenResetDuration : kept?.token_reset_duration;
-				const requestMaxLimit = data.requestMaxLimit ?? kept?.request_max_limit ?? undefined;
-				const requestResetDuration = data.requestMaxLimit != null ? data.requestResetDuration : kept?.request_reset_duration;
-				const hadRateLimit = !!baseConfig.rate_limit;
-				const hasRateLimit = tokenMaxLimit != null || requestMaxLimit != null;
-
-				let rateLimitPayload:
-					| {
-							token_max_limit?: number | null;
-							token_reset_duration?: string | null;
-							request_max_limit?: number | null;
-							request_reset_duration?: string | null;
-					  }
-					| undefined;
-				if (hasRateLimit) {
-					rateLimitPayload = {
-						token_max_limit: tokenMaxLimit ?? null,
-						token_reset_duration: tokenMaxLimit != null ? tokenResetDuration || "1h" : null,
-						request_max_limit: requestMaxLimit ?? null,
-						request_reset_duration: requestMaxLimit != null ? requestResetDuration || "1h" : null,
-					};
-				} else if (hadRateLimit) {
-					rateLimitPayload = {};
-				}
+				// The rate limit carries the token limit only; {} removes it. A legacy row's request fields are
+				// replaced by request_limits on the backend. Adding onto the target's existing row keeps its
+				// token limit unless one is entered here.
+				const rateLimitPayload = tokenRateLimit ?? (isEditing && baseConfig.rate_limit ? {} : undefined);
 
 				await updateModelConfig({
 					id: baseConfig.id,
@@ -383,6 +425,7 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel, traffic
 						provider: provider,
 						budgets: budgetsPayload,
 						rate_limit: rateLimitPayload,
+						request_limits: requestLimitsPayload,
 						// Only sent when the operator explicitly chose to clear spend.
 						reset_budget_usage: resetBudgetUsage || undefined,
 					},
@@ -399,18 +442,8 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel, traffic
 					// doesn't need a branch here.
 					scope_id: getModelLimitScope(data.scope || "global")?.PickerComponent ? data.scopeId : undefined,
 					budgets: budgetsPayload.length > 0 ? budgetsPayload : undefined,
-					rate_limit:
-						(data.tokenMaxLimit !== undefined && data.tokenMaxLimit !== null) ||
-						(data.requestMaxLimit !== undefined && data.requestMaxLimit !== null)
-							? {
-									token_max_limit: data.tokenMaxLimit,
-									token_reset_duration:
-										data.tokenMaxLimit !== undefined && data.tokenMaxLimit !== null ? data.tokenResetDuration || "1h" : undefined,
-									request_max_limit: data.requestMaxLimit,
-									request_reset_duration:
-										data.requestMaxLimit !== undefined && data.requestMaxLimit !== null ? data.requestResetDuration || "1h" : undefined,
-								}
-							: undefined,
+					rate_limit: tokenRateLimit,
+					request_limits: requestLimitsPayload.length > 0 ? requestLimitsPayload : undefined,
 				}).unwrap();
 				toast.success(t("modelLimits.createdSuccess"));
 			}
@@ -501,7 +534,7 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel, traffic
 
 						<div className="space-y-3">
 							<Label className="text-sm font-medium">{t("modelLimits.rateLimitsSection")}</Label>
-							{modelConfig.rate_limit?.token_max_limit != null || modelConfig.rate_limit?.request_max_limit != null ? (
+							{modelConfig.rate_limit?.token_max_limit != null || requestLimitsOf(modelConfig).length > 0 ? (
 								<div className="bg-muted/50 grid grid-cols-1 gap-4 rounded-lg p-4 md:grid-cols-2">
 									{modelConfig.rate_limit?.token_max_limit != null ? (
 										<div className="space-y-1">
@@ -515,18 +548,19 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel, traffic
 											</p>
 										</div>
 									) : null}
-									{modelConfig.rate_limit?.request_max_limit != null ? (
-										<div className="space-y-1">
-											<p className="text-muted-foreground text-xs">{t("modelLimits.requests")}</p>
+									{requestLimitsOf(modelConfig).map((rule) => (
+										<div key={rule.id} className="space-y-1">
+											<p className="text-muted-foreground flex items-center gap-1.5 text-xs">
+												{t("modelLimits.requests")}
+												{marksSharedRule(rule.scope) ? <BudgetScopeBadge scope="shared" /> : null}
+											</p>
 											<p className="text-sm font-medium">
-												{modelConfig.rate_limit.request_current_usage.toLocaleString(getLocale())} /{" "}
-												{modelConfig.rate_limit.request_max_limit.toLocaleString(getLocale())} (
-												{resetDurationLabels[modelConfig.rate_limit.request_reset_duration || "1h"] ||
-													modelConfig.rate_limit.request_reset_duration}
-												)
+												{rule.request_current_usage.toLocaleString(getLocale())} /{" "}
+												{(rule.request_max_limit ?? 0).toLocaleString(getLocale())} (
+												{resetDurationLabels[rule.request_reset_duration || "1h"] || rule.request_reset_duration})
 											</p>
 										</div>
-									) : null}
+									))}
 								</div>
 							) : (
 								<p className="text-muted-foreground text-sm">{t("modelLimits.noRateLimitsConfigured")}</p>
@@ -734,103 +768,96 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel, traffic
 									scopeOptions={SCOPE_OPTIONS[traffic]}
 									defaultScope={isMCPPage ? "mcp" : undefined}
 								/>
-								{isMCPPage && form.formState.errors.root && (
-									<p className="text-destructive text-sm">{form.formState.errors.root.message}</p>
-								)}
 							</div>
 
-							{/* Rate Limiting Configuration: the Models page's, so the MCP page leaves it alone */}
-							{!isMCPPage && (
-								<>
-									<DottedSeparator />
+							<DottedSeparator />
 
-									<div className="space-y-4">
-										<Label className="text-sm font-medium">{t("modelLimits.rateLimitsSection")}</Label>
-
-										<FormField
-											control={form.control}
-											name="tokenMaxLimit"
-											render={({ field }) => (
-												<FormItem>
-													<NumberAndSelect
-														id="modelTokenMaxLimit"
-														labelClassName="font-normal"
-														label={t("modelLimits.maximumTokens")}
-														value={field.value}
-														selectValue={form.watch("tokenResetDuration") || "1h"}
-														onChangeNumber={(value) => field.onChange(value)}
-														onChangeSelect={(value) => form.setValue("tokenResetDuration", value, { shouldDirty: true })}
-														options={resetDurationOptions}
-													/>
-													<FormMessage />
-												</FormItem>
-											)}
-										/>
-
-										<FormField
-											control={form.control}
-											name="requestMaxLimit"
-											render={({ field }) => (
-												<FormItem>
-													<NumberAndSelect
-														id="modelRequestMaxLimit"
-														labelClassName="font-normal"
-														label={t("modelLimits.maximumRequests")}
-														value={field.value}
-														selectValue={form.watch("requestResetDuration") || "1h"}
-														onChangeNumber={(value) => field.onChange(value)}
-														onChangeSelect={(value) => form.setValue("requestResetDuration", value, { shouldDirty: true })}
-														options={resetDurationOptions}
-													/>
-													<FormMessage />
-												</FormItem>
-											)}
-										/>
-										{form.formState.errors.root && <p className="text-destructive text-sm">{form.formState.errors.root.message}</p>}
-									</div>
-								</>
-							)}
+							{/* Rate Limiting Configuration: request limits, one line per reset period and scope, then the
+							    token limit. MCP tool executions are counted as requests and carry no tokens, so the MCP
+							    page has no token limit to set. */}
+							<div className="space-y-5">
+								<Label className="text-sm font-medium">{t("modelLimits.rateLimitsSection")}</Label>
+								<RequestLimitLines
+									data-testid="model-limit-request-limit-lines"
+									lines={form.watch("requestLimits") ?? []}
+									onChange={(lines) => form.setValue("requestLimits", lines, { shouldDirty: true })}
+									showScope
+									scopeOptions={SCOPE_OPTIONS[traffic]}
+									defaultScope={isMCPPage ? "mcp" : undefined}
+								/>
+								{!isMCPPage && (
+									<FormField
+										control={form.control}
+										name="tokenMaxLimit"
+										render={({ field }) => (
+											<FormItem>
+												<NumberAndSelect
+													id="modelTokenMaxLimit"
+													labelClassName="font-normal"
+													label={<TokenLimitLabel label={t("modelLimits.maximumTokens")} data-testid="model-limit-token-limit-info" />}
+													value={field.value}
+													selectValue={form.watch("tokenResetDuration") || "1h"}
+													onChangeNumber={(value) => field.onChange(value)}
+													onChangeSelect={(value) => form.setValue("tokenResetDuration", value, { shouldDirty: true })}
+													options={resetDurationOptions}
+												/>
+												<FormMessage />
+											</FormItem>
+										)}
+									/>
+								)}
+							</div>
+							{form.formState.errors.root && <p className="text-destructive text-sm">{form.formState.errors.root.message}</p>}
 
 							{/* Current Usage Display (for editing) */}
-							{isEditing && (rowLines(modelConfig, traffic, true).length > 0 || (!isMCPPage && modelConfig?.rate_limit)) && (
-								<>
-									<DottedSeparator />
-									<div className="space-y-3">
-										<Label className="text-sm font-medium">{t("modelLimits.currentUsage")}</Label>
-										<div className="bg-muted/50 grid grid-cols-1 gap-4 rounded-lg p-4 md:grid-cols-2">
-											{rowLines(modelConfig, traffic, true).map((b) => (
-												<div key={b.id} className="space-y-1">
-													<p className="text-muted-foreground flex items-center gap-1.5 text-xs">
-														{t("modelLimits.budgetWithDuration", { duration: b.reset_duration })}
-														<BudgetScopeBadge scope={b.scope} />
-													</p>
-													<p className="text-sm font-medium">
-														${b.current_usage.toFixed(2)} / ${b.max_limit.toFixed(2)}
-													</p>
-												</div>
-											))}
-											{!isMCPPage && modelConfig?.rate_limit?.token_max_limit && (
-												<div className="space-y-1">
-													<p className="text-muted-foreground text-xs">{t("modelLimits.tokens")}</p>
-													<p className="text-sm font-medium">
-														{modelConfig.rate_limit.token_current_usage.toLocaleString(getLocale())} /{" "}
-														{modelConfig.rate_limit.token_max_limit.toLocaleString(getLocale())}
-													</p>
-												</div>
-											)}
-											{!isMCPPage && modelConfig?.rate_limit?.request_max_limit && (
-												<div className="space-y-1">
-													<p className="text-muted-foreground text-xs">{t("modelLimits.requests")}</p>
-													<p className="text-sm font-medium">
-														{modelConfig.rate_limit.request_current_usage.toLocaleString(getLocale())} /{" "}
-														{modelConfig.rate_limit.request_max_limit.toLocaleString(getLocale())}
-													</p>
-												</div>
-											)}
+							{isEditing &&
+								(rowLines(modelConfig, traffic, true).length > 0 ||
+									rowRequestLines(modelConfig, traffic, true).length > 0 ||
+									(!isMCPPage && modelConfig?.rate_limit?.token_max_limit)) && (
+									<>
+										<DottedSeparator />
+										<div className="space-y-3">
+											<Label className="text-sm font-medium">{t("modelLimits.currentUsage")}</Label>
+											<div className="bg-muted/50 grid grid-cols-1 gap-4 rounded-lg p-4 md:grid-cols-2">
+												{rowLines(modelConfig, traffic, true).map((b) => (
+													<div key={b.id} className="space-y-1">
+														<p className="text-muted-foreground flex items-center gap-1.5 text-xs">
+															{t("modelLimits.budgetWithDuration", { duration: b.reset_duration })}
+															<BudgetScopeBadge scope={b.scope} />
+														</p>
+														<p className="text-sm font-medium">
+															${b.current_usage.toFixed(2)} / ${b.max_limit.toFixed(2)}
+														</p>
+													</div>
+												))}
+												{!isMCPPage && modelConfig?.rate_limit?.token_max_limit && (
+													<div className="space-y-1">
+														<p className="text-muted-foreground text-xs">{t("modelLimits.tokens")}</p>
+														<p className="text-sm font-medium">
+															{modelConfig.rate_limit.token_current_usage.toLocaleString(getLocale())} /{" "}
+															{modelConfig.rate_limit.token_max_limit.toLocaleString(getLocale())}
+														</p>
+													</div>
+												)}
+												{linesOn(modelConfig, requestLimitsOf(modelConfig), traffic, true).map((rule) => (
+													<div key={rule.id} className="space-y-1" data-testid="model-limit-request-limit-usage">
+														<p className="text-muted-foreground flex items-center gap-1.5 text-xs">
+															{t("modelLimits.requests")}
+															{rule.request_reset_duration
+																? ` · ${resetDurationLabels[rule.request_reset_duration] || rule.request_reset_duration}`
+																: null}
+															{marksSharedRule(rule.scope) ? <BudgetScopeBadge scope="shared" /> : null}
+														</p>
+														<p className="text-sm font-medium">
+															{rule.request_current_usage.toLocaleString(getLocale())} /{" "}
+															{(rule.request_max_limit ?? 0).toLocaleString(getLocale())}
+														</p>
+													</div>
+												))}
+											</div>
 										</div>
-									</div>
-								</>
-							)}
+									</>
+								)}
 						</div>
 
 						{lookupTarget && targetLookupFailed && (

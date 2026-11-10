@@ -30,10 +30,12 @@ import { ModelConfig } from "@/lib/types/governance";
 import { cn } from "@/lib/utils";
 import {
 	budgetScopeChargedBy,
-	budgetsLeftAfterRemoving,
 	formatCurrency,
 	isHolderLevelModelConfig,
+	isRequestLimitExhausted,
 	LimitTraffic,
+	limitsLeftAfterRemoving,
+	requestLimitsOf,
 } from "@/lib/utils/governance";
 import { getScopeLabel } from "@/lib/utils/labels";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
@@ -239,24 +241,30 @@ export default function ModelLimitsTable({
 	const isDeleting = isDeletingConfig || isUpdatingConfig;
 
 	// Deleting from one page removes that page's limits. A holder-level row keeps the lines the other
-	// page edits (see budgetsLeftAfterRemoving) and is deleted only once nothing is left on it.
+	// page edits (see limitsLeftAfterRemoving) and is deleted only once nothing is left on it.
 	const handleDelete = async (config: ModelConfig) => {
 		try {
-			const left = budgetsLeftAfterRemoving(config, traffic);
+			const left = limitsLeftAfterRemoving(config, traffic);
 			if (left === null) {
 				await deleteModelConfig(config.id).unwrap();
 			} else {
 				await updateModelConfig({
 					id: config.id,
 					data: {
-						budgets: left.map((b) => ({
+						budgets: left.budgets.map((b) => ({
 							id: b.id,
 							max_limit: b.max_limit,
 							reset_duration: b.reset_duration,
 							reset_config: b.reset_config,
 							scope: b.scope,
 						})),
-						// The rate limit is the Models page's: removed with its lines, kept by the MCP page.
+						request_limits: left.requestLimits.map((rule) => ({
+							id: rule.id,
+							max_limit: rule.request_max_limit ?? 0,
+							reset_duration: rule.request_reset_duration || "1h",
+							scope: rule.scope,
+						})),
+						// The token limit is the Models page's: removed with its lines, kept by the MCP page.
 						rate_limit: !isMCPPage && config.rate_limit ? {} : undefined,
 					},
 				}).unwrap();
@@ -424,14 +432,14 @@ export default function ModelLimitsTable({
 								<TableHead className="font-medium">{t("modelLimits.scope")}</TableHead>
 								<TableHead className="font-medium">{t("modelLimits.scopeTarget")}</TableHead>
 								<TableHead className="font-medium">{t("modelLimits.budget")}</TableHead>
-								{!isMCPPage && <TableHead className="font-medium">{t("modelLimits.rateLimit")}</TableHead>}
+								<TableHead className="font-medium">{t("modelLimits.rateLimit")}</TableHead>
 								<TableHead className={`bg-muted sticky right-0 z-30 w-[50px] text-right ${PIN_SHADOW_RIGHT}`}></TableHead>
 							</TableRow>
 						</TableHeader>
 						<TableBody>
 							{modelConfigs.length === 0 ? (
 								<TableRow>
-									<TableCell colSpan={isMCPPage ? 4 : 7} className="h-24 text-center">
+									<TableCell colSpan={isMCPPage ? 5 : 7} className="h-24 text-center">
 										<span className="text-muted-foreground text-sm">
 											{isLoading ? t("modelLimits.loading") : t("modelLimits.noMatching")}
 										</span>
@@ -445,24 +453,20 @@ export default function ModelLimitsTable({
 										(b) => !isHolderLevelModelConfig(config) || budgetScopeChargedBy(b.scope, traffic),
 									);
 									const isBudgetExhausted = budgets.some((b) => b.max_limit > 0 && b.current_usage >= b.max_limit);
+									// Request limits split between the pages the same way; the token limit is the Models page's.
+									const requestLimits = requestLimitsOf(config).filter(
+										(rule) => !isHolderLevelModelConfig(config) || budgetScopeChargedBy(rule.scope, traffic),
+									);
+									const tokenLimit = isMCPPage ? undefined : config.rate_limit?.token_max_limit;
 									const isRateLimitExhausted =
-										!isMCPPage &&
-										((config.rate_limit?.token_max_limit &&
-											config.rate_limit.token_max_limit > 0 &&
-											config.rate_limit.token_current_usage >= config.rate_limit.token_max_limit) ||
-											(config.rate_limit?.request_max_limit &&
-												config.rate_limit.request_max_limit > 0 &&
-												config.rate_limit.request_current_usage >= config.rate_limit.request_max_limit));
+										(!!tokenLimit && tokenLimit > 0 && (config.rate_limit?.token_current_usage ?? 0) >= tokenLimit) ||
+										requestLimits.some(isRequestLimitExhausted);
 									const isExhausted = isBudgetExhausted || isRateLimitExhausted;
 
 									// Compute safe percentages to avoid division by zero
 									const tokenPercentage =
 										config.rate_limit?.token_max_limit && config.rate_limit.token_max_limit > 0
 											? Math.min((config.rate_limit.token_current_usage / config.rate_limit.token_max_limit) * 100, 100)
-											: 0;
-									const requestPercentage =
-										config.rate_limit?.request_max_limit && config.rate_limit.request_max_limit > 0
-											? Math.min((config.rate_limit.request_current_usage / config.rate_limit.request_max_limit) * 100, 100)
 											: 0;
 
 									return (
@@ -579,78 +583,81 @@ export default function ModelLimitsTable({
 													<span className="text-muted-foreground text-sm">-</span>
 												)}
 											</TableCell>
-											{!isMCPPage && (
-												<TableCell className="min-w-[180px]">
-													{config.rate_limit ? (
-														<div className="space-y-2.5">
-															{config.rate_limit.token_max_limit && (
-																<TooltipProvider>
-																	<Tooltip>
-																		<TooltipTrigger asChild>
-																			<div className="space-y-1.5">
-																				<div className="flex items-center justify-between gap-4 text-xs">
-																					<span className="font-medium">
-																						{t("modelLimits.tokensCount", {
-																							value: config.rate_limit.token_max_limit.toLocaleString(getLocale()),
-																						})}
-																					</span>
-																					<span className="text-muted-foreground">
-																						{formatResetDuration(config.rate_limit.token_reset_duration || "1h")}
-																					</span>
-																				</div>
-																				<Progress
-																					aria-label={t("modelLimits.tokenUsageAria")}
-																					value={tokenPercentage}
-																					className={cn(
-																						"bg-muted/70 dark:bg-muted/30 h-1",
-																						config.rate_limit.token_current_usage >= config.rate_limit.token_max_limit
-																							? "[&>div]:bg-red-500/70"
-																							: tokenPercentage > 80
-																								? "[&>div]:bg-amber-500/70"
-																								: "[&>div]:bg-emerald-500/70",
-																					)}
-																				/>
+											<TableCell className="min-w-[180px]">
+												{tokenLimit || requestLimits.length > 0 ? (
+													<div className="space-y-2.5">
+														{!isMCPPage && config.rate_limit?.token_max_limit && (
+															<TooltipProvider>
+																<Tooltip>
+																	<TooltipTrigger asChild>
+																		<div className="space-y-1.5">
+																			<div className="flex items-center justify-between gap-4 text-xs">
+																				<span className="font-medium">
+																					{t("modelLimits.tokensCount", {
+																						value: config.rate_limit.token_max_limit.toLocaleString(getLocale()),
+																					})}
+																				</span>
+																				<span className="text-muted-foreground">
+																					{formatResetDuration(config.rate_limit.token_reset_duration || "1h")}
+																				</span>
 																			</div>
-																		</TooltipTrigger>
-																		<TooltipContent>
-																			<p className="font-medium">
-																				{t("modelLimits.usageTokens", {
-																					used: config.rate_limit.token_current_usage.toLocaleString(getLocale()),
-																					max: config.rate_limit.token_max_limit.toLocaleString(getLocale()),
-																				})}
-																			</p>
-																			<p className="text-primary-foreground/80 text-xs">
-																				{t("modelLimits.resets", {
-																					period: formatResetDuration(config.rate_limit.token_reset_duration || "1h"),
-																				})}
-																			</p>
-																		</TooltipContent>
-																	</Tooltip>
-																</TooltipProvider>
-															)}
-															{config.rate_limit.request_max_limit && (
-																<TooltipProvider>
+																			<Progress
+																				aria-label={t("modelLimits.tokenUsageAria")}
+																				value={tokenPercentage}
+																				className={cn(
+																					"bg-muted/70 dark:bg-muted/30 h-1",
+																					config.rate_limit.token_current_usage >= config.rate_limit.token_max_limit
+																						? "[&>div]:bg-red-500/70"
+																						: tokenPercentage > 80
+																							? "[&>div]:bg-amber-500/70"
+																							: "[&>div]:bg-emerald-500/70",
+																				)}
+																			/>
+																		</div>
+																	</TooltipTrigger>
+																	<TooltipContent>
+																		<p className="font-medium">
+																			{t("modelLimits.usageTokens", {
+																				used: config.rate_limit.token_current_usage.toLocaleString(getLocale()),
+																				max: config.rate_limit.token_max_limit.toLocaleString(getLocale()),
+																			})}
+																		</p>
+																		<p className="text-primary-foreground/80 text-xs">
+																			{t("modelLimits.resets", {
+																				period: formatResetDuration(config.rate_limit.token_reset_duration || "1h"),
+																			})}
+																		</p>
+																	</TooltipContent>
+																</Tooltip>
+															</TooltipProvider>
+														)}
+														{requestLimits.map((rule) => {
+															const max = rule.request_max_limit ?? 0;
+															const percentage = max > 0 ? Math.min((rule.request_current_usage / max) * 100, 100) : 0;
+															return (
+																<TooltipProvider key={rule.id}>
 																	<Tooltip>
 																		<TooltipTrigger asChild>
 																			<div className="space-y-1.5">
 																				<div className="flex items-center justify-between gap-4 text-xs">
-																					<span className="font-medium">
-																						{t("modelLimits.reqCount", {
-																							value: config.rate_limit.request_max_limit.toLocaleString(getLocale()),
-																						})}
+																					<span className="flex items-center gap-1.5 font-medium">
+																						{t("modelLimits.reqCount", { value: max.toLocaleString(getLocale()) })}
+																						{isHolderLevelModelConfig(config) && (rule.scope || "shared") === "shared" && (
+																							<BudgetScopeBadge scope="shared" />
+																						)}
 																					</span>
 																					<span className="text-muted-foreground">
-																						{formatResetDuration(config.rate_limit.request_reset_duration || "1h")}
+																						{formatResetDuration(rule.request_reset_duration || "1h")}
 																					</span>
 																				</div>
 																				<Progress
 																					aria-label={t("modelLimits.requestUsageAria")}
-																					value={requestPercentage}
+																					value={percentage}
 																					className={cn(
 																						"bg-muted/70 dark:bg-muted/30 h-1",
-																						config.rate_limit.request_current_usage >= config.rate_limit.request_max_limit
+																						isRequestLimitExhausted(rule)
 																							? "[&>div]:bg-red-500/70"
-																							: requestPercentage > 80
+																							: percentage > 80
 																								? "[&>div]:bg-amber-500/70"
 																								: "[&>div]:bg-emerald-500/70",
 																					)}
@@ -660,25 +667,25 @@ export default function ModelLimitsTable({
 																		<TooltipContent>
 																			<p className="font-medium">
 																				{t("modelLimits.usageRequests", {
-																					used: config.rate_limit.request_current_usage.toLocaleString(getLocale()),
-																					max: config.rate_limit.request_max_limit.toLocaleString(getLocale()),
+																					used: rule.request_current_usage.toLocaleString(getLocale()),
+																					max: max.toLocaleString(getLocale()),
 																				})}
 																			</p>
 																			<p className="text-primary-foreground/80 text-xs">
 																				{t("modelLimits.resets", {
-																					period: formatResetDuration(config.rate_limit.request_reset_duration || "1h"),
+																					period: formatResetDuration(rule.request_reset_duration || "1h"),
 																				})}
 																			</p>
 																		</TooltipContent>
 																	</Tooltip>
 																</TooltipProvider>
-															)}
-														</div>
-													) : (
-														<span className="text-muted-foreground text-sm">-</span>
-													)}
-												</TableCell>
-											)}
+															);
+														})}
+													</div>
+												) : (
+													<span className="text-muted-foreground text-sm">-</span>
+												)}
+											</TableCell>
 											<TableCell
 												className={cn(
 													"group-hover:bg-muted dark:bg-card dark:group-hover:bg-muted sticky right-0 z-20 bg-white text-right",

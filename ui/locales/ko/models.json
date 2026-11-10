@@ -2240,13 +2240,12 @@
 		"saving": "저장 중..."
 	},
 	"mcpLimits": {
-		"titleDescription": "MCP 도구 실행에 대한 예산을 전역 또는 가상 키별로 구성해요. MCP 항목은 도구 실행에만 사용되고, 공유 항목은 모델 요청에도 사용돼요.",
-		"emptyTitle": "MCP 예산",
-		"emptyDescription": "MCP 도구 실행의 지출을 전역 또는 가상 키별로, 단독으로 또는 모델 요청과 공유해서 제한해요.",
-		"createDescription": "배포 또는 가상 키의 MCP 예산과 공유 예산을 설정해요.",
-		"editDescription": "이 범위의 MCP 예산과 공유 예산을 업데이트해요.",
+		"titleDescription": "MCP 도구 실행에 대한 예산과 요청 한도를 전역 또는 가상 키별로 구성해요. MCP 항목은 도구 실행에만 사용되고, 공유 항목은 모델 요청에도 사용돼요.",
+		"emptyTitle": "MCP 예산 및 한도",
+		"emptyDescription": "MCP 도구 실행의 지출과 요청 속도를 전역 또는 가상 키별로, 단독으로 또는 모델 요청과 공유해서 제한해요.",
+		"createDescription": "배포 또는 가상 키의 MCP 및 공유 예산과 요청 한도를 설정해요.",
+		"editDescription": "이 범위의 MCP 및 공유 예산과 요청 한도를 업데이트해요.",
 		"deleteTitle": "MCP 한도 제거",
-		"deleteDescription": "\"{{name}}\"의 MCP 예산과 공유 예산을 제거할까요? 모델 페이지에서 설정한 모델 예산과 속도 제한은 유지돼요.",
-		"atLeastOneBudget": "예산이 하나 이상 필요해요"
+		"deleteDescription": "\"{{name}}\"의 MCP 및 공유 예산과 요청 한도를 제거할까요? 모델 페이지에서 설정한 모델 항목과 토큰 한도는 유지돼요."
 	}
 }

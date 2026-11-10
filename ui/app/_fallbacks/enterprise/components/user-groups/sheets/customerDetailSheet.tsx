@@ -2,7 +2,9 @@ import { CopyableId } from "@/components/copyableId";
 import { Label } from "@/components/ui/label";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { fiscalQuarterNote, resetDurationLabels } from "@/lib/constants/governance";
-import { Customer } from "@/lib/types/governance";
+import BudgetScopeBadge from "@/components/ui/budgetScopeBadge";
+import { LimitScope, Customer } from "@/lib/types/governance";
+import { requestLimitsOf } from "@/lib/utils/governance";
 import { cn } from "@/lib/utils";
 import { formatCompactNumber } from "@/lib/utils/numbers";
 import { useTranslation } from "react-i18next";
@@ -72,14 +74,29 @@ function BudgetLineBar({
 	);
 }
 
-function RateLimitBar({ label, current, max, resetDuration }: { label: string; current: number; max: number; resetDuration?: string }) {
+function RateLimitBar({
+	label,
+	current,
+	max,
+	resetDuration,
+	scope,
+}: {
+	label: string;
+	current: number;
+	max: number;
+	resetDuration?: string;
+	scope?: LimitScope;
+}) {
 	const pct = max > 0 ? Math.min((current / max) * 100, 100) : 0;
 	const isOver80 = pct >= 80;
 	const isOver100 = pct >= 100;
 	return (
 		<div className="space-y-1.5">
 			<div className="flex items-center justify-between text-xs">
-				<span>{label}</span>
+				<span className="flex items-center gap-1.5">
+					{label}
+					{scope ? <BudgetScopeBadge scope={scope} /> : null}
+				</span>
 				<span className="text-muted-foreground">{formatResetDuration(resetDuration)}</span>
 			</div>
 			<div className="bg-muted h-1.5 w-full overflow-hidden rounded-full">
@@ -108,7 +125,8 @@ export function CustomerDetailSheet({ customer, open, onOpenChange }: Props) {
 	const { t: tModels } = useTranslation("models");
 	const budgets = customer?.budgets ?? [];
 	const rateLimit = customer?.rate_limit;
-	const hasRateLimit = rateLimit?.token_max_limit != null || rateLimit?.request_max_limit != null;
+	const requestLimits = requestLimitsOf(customer);
+	const hasRateLimit = rateLimit?.token_max_limit != null || requestLimits.length > 0;
 
 	return (
 		<Sheet open={open} onOpenChange={onOpenChange}>
@@ -156,9 +174,9 @@ export function CustomerDetailSheet({ customer, open, onOpenChange }: Props) {
 
 						{/* ── Rate Limits ──────────────────────────────────── */}
 						<DetailCard title={tModels("virtualKeys.rateLimits")}>
-							{rateLimit && hasRateLimit ? (
+							{hasRateLimit ? (
 								<div className="space-y-3">
-									{rateLimit.token_max_limit != null && (
+									{rateLimit?.token_max_limit != null && (
 										<RateLimitBar
 											label={t("sheet.tokens")}
 											current={rateLimit.token_current_usage ?? 0}
@@ -166,14 +184,16 @@ export function CustomerDetailSheet({ customer, open, onOpenChange }: Props) {
 											resetDuration={rateLimit.token_reset_duration}
 										/>
 									)}
-									{rateLimit.request_max_limit != null && (
+									{requestLimits.map((rule) => (
 										<RateLimitBar
+											key={rule.id}
 											label={t("sheet.requests")}
-											current={rateLimit.request_current_usage ?? 0}
-											max={rateLimit.request_max_limit}
-											resetDuration={rateLimit.request_reset_duration}
+											current={rule.request_current_usage ?? 0}
+											max={rule.request_max_limit ?? 0}
+											resetDuration={rule.request_reset_duration}
+											scope={rule === rateLimit ? undefined : (rule.scope ?? "shared")}
 										/>
-									)}
+									))}
 								</div>
 							) : (
 								<p className="text-muted-foreground py-1 text-center text-sm">{tModels("virtualKeys.noRateLimits")}</p>

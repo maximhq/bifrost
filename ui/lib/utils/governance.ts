@@ -361,12 +361,17 @@ export function modelConfigAppliesToMCP(mc: ModelConfig): boolean {
 /**
  * What removing one page's limits from a model config leaves on it, or null when the row is to be
  * deleted whole. On a holder-level row the lines the other page edits stay: from the MCP page the
- * Model lines and the rate limit, from the Models page the MCP lines. Shared lines are on both
+ * Model lines and the token limit, from the Models page the MCP lines. Shared lines are on both
  * pages, so either removes them. Any other row belongs to the Models page alone.
  */
-export function budgetsLeftAfterRemoving(mc: ModelConfig, traffic: LimitTraffic): Budget[] | null {
+export function limitsLeftAfterRemoving(
+	mc: ModelConfig,
+	traffic: LimitTraffic,
+): { budgets: Budget[]; requestLimits: RequestLimit[] } | null {
 	if (!isHolderLevelModelConfig(mc)) return null;
-	const left = (mc.budgets ?? []).filter((b) => !budgetScopeChargedBy(b.scope, traffic));
-	const keepsRateLimit = traffic === "mcp" && !!mc.rate_limit;
-	return left.length > 0 || keepsRateLimit ? left : null;
+	const kept = (line: { scope?: LimitScope }) => !budgetScopeChargedBy(line.scope, traffic);
+	const budgets = (mc.budgets ?? []).filter(kept);
+	const requestLimits = (mc.request_limits ?? []).filter(kept);
+	const keepsTokenLimit = traffic === "mcp" && mc.rate_limit?.token_max_limit != null;
+	return budgets.length > 0 || requestLimits.length > 0 || keepsTokenLimit ? { budgets, requestLimits } : null;
 }

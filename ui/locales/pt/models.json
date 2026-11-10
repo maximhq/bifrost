@@ -2242,13 +2242,12 @@
 		"saving": "Salvando..."
 	},
 	"mcpLimits": {
-		"titleDescription": "Configure orçamentos para execuções de ferramentas MCP, globalmente ou por chave virtual. As linhas MCP são debitadas apenas por execuções de ferramentas; as linhas partilhadas também por pedidos a modelos.",
-		"emptyTitle": "Orçamentos de MCP",
-		"emptyDescription": "Limite os gastos das execuções de ferramentas MCP globalmente ou por chave virtual, isoladamente ou partilhados com pedidos a modelos.",
-		"createDescription": "Configure orçamentos MCP e partilhados para a implementação ou uma chave virtual.",
-		"editDescription": "Atualize os orçamentos MCP e partilhados deste âmbito.",
+		"titleDescription": "Configure orçamentos e limites de pedidos para execuções de ferramentas MCP, globalmente ou por chave virtual. As linhas MCP são debitadas apenas por execuções de ferramentas; as linhas partilhadas também por pedidos a modelos.",
+		"emptyTitle": "Orçamentos e limites de MCP",
+		"emptyDescription": "Limite os gastos e a taxa de pedidos das execuções de ferramentas MCP globalmente ou por chave virtual, isoladamente ou partilhados com pedidos a modelos.",
+		"createDescription": "Configure orçamentos e limites de pedidos MCP e partilhados para a implementação ou uma chave virtual.",
+		"editDescription": "Atualize os orçamentos e limites de pedidos MCP e partilhados deste âmbito.",
 		"deleteTitle": "Remover limites de MCP",
-		"deleteDescription": "Remover os orçamentos MCP e partilhados de \"{{name}}\"? Os orçamentos de modelos e o limite de taxa definidos na página Modelos mantêm-se.",
-		"atLeastOneBudget": "É necessário pelo menos um orçamento"
+		"deleteDescription": "Remover os orçamentos e limites de pedidos MCP e partilhados de \"{{name}}\"? As linhas de modelos e o limite de tokens definidos na página Modelos mantêm-se."
 	}
 }
