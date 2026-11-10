@@ -4,11 +4,36 @@ description: "Deploy the Bifrost container as a Railway service"
 icon: "train"
 ---
 
+import { RailwayMark } from "/snippets/deploy-marks.jsx";
+
 Railway can run the public Bifrost image as a long-running service. The deployment below uses PostgreSQL so configuration and logs survive service replacement.
 
 <Note>
 **Support level: Preview.** This guide is not continuously exercised against a live Railway project.
 </Note>
+
+## One-click deploy
+
+<a className="deploy-btn" href="https://railway.com/new/template/RAILWAY_TEMPLATE_CODE?utm_medium=integration&utm_source=button&utm_campaign=bifrost" target="_blank" rel="noopener noreferrer"><RailwayMark />Deploy on Railway</a>
+
+The template creates two services in a new project:
+
+| Service | What it is |
+|---|---|
+| `Postgres` | Railway PostgreSQL with its default volume; holds the configuration store and the log store |
+| `bifrost` | `maximhq/bifrost:latest`, one replica, health check on `/health`, a public domain |
+
+The `bifrost` service receives `config.json` through `BIFROST_CONFIG_JSON` (every value in it is an `env.` reference), the Postgres connection through Railway reference variables (`${{Postgres.PGHOST}}` and friends), and two generated secrets: `BIFROST_ENCRYPTION_KEY` and `BIFROST_SETUP_TOKEN`. Inference routes require a virtual key.
+
+After the deploy reports healthy:
+
+1. Open the public domain and [create the first admin account](/quickstart/gateway/setting-up-auth) with the value of `BIFROST_SETUP_TOKEN` from the service variables.
+2. Add a provider key and [create a virtual key](/features/governance/virtual-keys).
+3. Pin the image to a released tag in the service settings; the template tracks `latest` so a fresh deploy always gets the current release.
+
+**Enterprise:** deploy the same template, then change the `bifrost` service image to the registry path issued for your organization and add the registry credentials in the service settings. Variables and the Postgres service stay unchanged.
+
+The manual steps below produce the same deployment from the CLI.
 
 ## Compatibility summary
 
@@ -41,7 +66,7 @@ railway add \
   --variables 'PORT=8080'
 ```
 
-Create the file that Bifrost will load:
+Create the file that Bifrost will load. Every value is an `env.` reference, so the file carries no secrets:
 
 ```bash
 cat > config.json <<'JSON'
@@ -55,18 +80,20 @@ cat > config.json <<'JSON'
   "config_store": {
     "enabled": true,
     "type": "postgres",
-    "config": {"host": "env.PG_HOST", "port": "5432", "user": "env.PG_USER", "password": "env.PG_PASSWORD", "db_name": "env.PG_DATABASE", "ssl_mode": "require"}
+    "config": {"host": "env.PG_HOST", "port": "env.PG_PORT", "user": "env.PG_USER", "password": "env.PG_PASSWORD", "db_name": "env.PG_DATABASE", "ssl_mode": "env.PG_SSL_MODE"}
   },
   "logs_store": {
     "enabled": true,
     "type": "postgres",
-    "config": {"host": "env.PG_HOST", "port": "5432", "user": "env.PG_USER", "password": "env.PG_PASSWORD", "db_name": "env.PG_DATABASE", "ssl_mode": "require"}
+    "config": {"host": "env.PG_HOST", "port": "env.PG_PORT", "user": "env.PG_USER", "password": "env.PG_PASSWORD", "db_name": "env.PG_DATABASE", "ssl_mode": "env.PG_SSL_MODE"}
   }
 }
 JSON
 ```
 
 ### Step 3: Supply configuration and secrets
+
+The image entrypoint writes `BIFROST_CONFIG_B64` (or `BIFROST_CONFIG_JSON`) to `/app/data/config.json` on first boot, so no custom start command is needed.
 
 ```bash
 export BIFROST_CONFIG_B64="$(base64 < config.json | tr -d '\n')"
@@ -76,18 +103,18 @@ read -r -s -p 'Bifrost setup token: ' BIFROST_SETUP_TOKEN; echo
 
 printf '%s' "$BIFROST_CONFIG_B64" | railway variable set BIFROST_CONFIG_B64 --stdin
 railway variable set 'PG_HOST=<POSTGRES_HOST>'
+railway variable set 'PG_PORT=<POSTGRES_PORT>'
 railway variable set 'PG_USER=<POSTGRES_USER>'
 printf '%s' "$PG_PASSWORD" | railway variable set PG_PASSWORD --stdin
 railway variable set 'PG_DATABASE=<POSTGRES_DATABASE>'
+railway variable set 'PG_SSL_MODE=require'
 printf '%s' "$BIFROST_ENCRYPTION_KEY" | railway variable set BIFROST_ENCRYPTION_KEY --stdin
 printf '%s' "$BIFROST_SETUP_TOKEN" | railway variable set BIFROST_SETUP_TOKEN --stdin
 ```
 
-In the service settings, set the start command to:
+When the Postgres service lives in the same Railway project, use reference variables instead of literal values: `${{Postgres.PGHOST}}`, `${{Postgres.PGPORT}}`, `${{Postgres.PGUSER}}`, `${{Postgres.PGPASSWORD}}`, and `${{Postgres.PGDATABASE}}`.
 
-```text
-/bin/sh -c 'printf "%s" "$BIFROST_CONFIG_B64" | base64 -d > /app/data/config.json && exec /app/docker-entrypoint.sh'
-```
+`require` keeps the connection encrypted. Railway's PostgreSQL service serves TLS, including over the private network, so keep `require` for it as well; change the value only for a database you have verified does not offer TLS.
 
 Set the health-check path to `/health` and deploy one replica. The configuration requires authentication on inference routes. If external access is needed, generate a public domain, use the configured setup token to [create the first admin account](/quickstart/gateway/setting-up-auth), and [create a virtual key](/features/governance/virtual-keys) before sending inference traffic or sharing the hostname with clients.
 
@@ -97,10 +124,6 @@ Set the health-check path to `/health` and deploy one replica. The configuration
 railway logs
 curl --fail --show-error https://<RAILWAY_HOSTNAME>/health
 ```
-
-### One-click status
-
-Railway supports **Deploy on Railway** buttons only after a project is created and published as a Railway template. Bifrost does not currently have a verified Maxim-owned template ID, so this page does not fabricate a deploy link. Image-backed Railway templates also require an explicit process for testing and publishing each new Bifrost image version.
 
 ## SQLite storage alternative (OSS only)
 
