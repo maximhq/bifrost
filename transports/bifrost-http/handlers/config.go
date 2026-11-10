@@ -685,11 +685,30 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		}
 	}
 
+	// Omitted keeps the stored tokenizer families. Validated here, before any live
+	// mutation below, so a rejected name never leaves the runtime changed.
+	_, tokenizersSent := clientConfigFields["usage_estimation_tokenizers"]
+	var tokenizers []string
+	if tokenizersSent {
+		var err error
+		if tokenizers, err = lib.NormalizeUsageEstimationTokenizers(payload.ClientConfig.UsageEstimationTokenizers); err != nil {
+			SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+			return
+		}
+	}
+
 	var restartReasons []string
 
 	if payload.ClientConfig.DropExcessRequests != currentConfig.DropExcessRequests {
 		h.configManager.UpdateDropExcessRequests(ctx, payload.ClientConfig.DropExcessRequests)
 		updatedConfig.DropExcessRequests = payload.ClientConfig.DropExcessRequests
+	}
+
+	// No restart needed, and nothing is applied here: the reload after a successful
+	// save hands the stored list to the client, so a rejected or failed request
+	// leaves the runtime on the families it had.
+	if tokenizersSent && !slices.Equal(tokenizers, currentConfig.UsageEstimationTokenizers) {
+		updatedConfig.UsageEstimationTokenizers = tokenizers
 	}
 
 	if payload.ClientConfig.MCPCodeModeBindingLevel != "" {

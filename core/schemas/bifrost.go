@@ -46,6 +46,8 @@ type BifrostConfig struct {
 	ModelCatalog             ModelInfoProvider
 	MCPSharedDiscoveryStore  MCPDiscoveryStore
 	MCPPerUserDiscoveryStore MCPDiscoveryStore
+
+	UsageEstimationTokenizers []string // Tokenizer families for cancelled-stream usage estimation; process-wide, see streamusage.Configure
 }
 
 // ModelProvider represents the different AI model providers supported by Bifrost.

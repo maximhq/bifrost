@@ -314619,6 +314619,569 @@
           ]
         }
       ]
+    },
+    {
+      "name": "326. Usage estimation tokenizer setting (usage-estimation-tokenizers) (PR #9657) [SERIAL]",
+      "description": "client_config.usage_estimation_tokenizers lists the embedded tokenizer families (anthropic, deepseek, llama2, llama3, or all) a cancelled stream's usage is estimated with. These cases pin the PUT /api/config contract: an unknown family is refused with 400, names are stored trimmed, lowercased and de-duplicated, a save that a later check rejects (here an invalid mcp_code_mode_binding_level) stores nothing, a save that omits the field keeps the stored list, and an empty list clears it. The handler used to apply the new list to the running client before the later checks and the database write, so a request that returned 400 still switched families; it now applies nothing itself and the reload after a successful save hands the stored list to the client. The harness can only observe the stored list: which tokenizer the running client uses is covered by Go tests (TestUpdateConfig_UsageEstimationTokenizers, TestReloadClientConfigFromConfigStore_AppliesUsageEstimationTokenizers, TestUsageEstimationTokenizersFollowConfig). The folder reads the stored list first and restores it last; an interrupted run can leave anthropic and llama3 enabled. No provider calls; the openai keyword is a harness filter label. Run with FEATURE=usage-estimation-tokenizers.",
+      "item": [
+        {
+          "name": "[EXPECT-200] openai usage-estimation-tokenizers read current config - #9657",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"reads the stored client config\", function () {",
+                  "  pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.equal(200);",
+                  "  var cc = pm.response.json().client_config;",
+                  "  pm.expect(cc, pm.response.text()).to.be.an('object');",
+                  "  // A fresh install reports 0, which PUT /api/config refuses.",
+                  "  if (!(cc.log_retention_days >= 1)) { cc.log_retention_days = 30; }",
+                  "  pm.collectionVariables.set('usageEstimationTokenizersOriginal', JSON.stringify(cc.usage_estimation_tokenizers || []));",
+                  "  pm.collectionVariables.set('usageEstimationTokenizersClientConfig', JSON.stringify(cc));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/config?from_db=true",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ],
+              "query": [
+                {
+                  "key": "from_db",
+                  "value": "true"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] openai usage-estimation-tokenizers PUT /api/config rejects an unknown tokenizer family - #9657",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var cc = JSON.parse(pm.collectionVariables.get('usageEstimationTokenizersClientConfig'));",
+                  "cc.usage_estimation_tokenizers = ['anthropic', 'gpt2'];",
+                  "pm.variables.set('usageEstimationTokenizersBody', JSON.stringify({ client_config: cc }));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"an unknown tokenizer family is refused\", function () {",
+                  "  pm.expect(pm.response.code, 'expected 400, got: ' + pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text()).to.include('usage_estimation_tokenizers');",
+                  "  pm.expect(pm.response.text()).to.include('gpt2');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/config",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{{usageEstimationTokenizersBody}}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai usage-estimation-tokenizers PUT /api/config sets anthropic and llama3 - #9657",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var cc = JSON.parse(pm.collectionVariables.get('usageEstimationTokenizersClientConfig'));",
+                  "// Mixed case, padding and a duplicate: the stored list is normalized.",
+                  "cc.usage_estimation_tokenizers = [' Anthropic ', 'llama3', 'anthropic'];",
+                  "pm.variables.set('usageEstimationTokenizersBody', JSON.stringify({ client_config: cc }));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"the tokenizer families are accepted\", function () {",
+                  "  pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.equal(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/config",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{{usageEstimationTokenizersBody}}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai usage-estimation-tokenizers the normalized list persists - #9657",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"the list is stored trimmed, lowercased and de-duplicated\", function () {",
+                  "  pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.equal(200);",
+                  "  var v = pm.response.json().client_config.usage_estimation_tokenizers || [];",
+                  "  pm.expect(v, 'stored usage_estimation_tokenizers: ' + pm.response.text()).to.eql(['anthropic', 'llama3']);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/config?from_db=true",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ],
+              "query": [
+                {
+                  "key": "from_db",
+                  "value": "true"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] openai usage-estimation-tokenizers PUT /api/config with a valid list and an invalid mcp_code_mode_binding_level - #9657",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var cc = JSON.parse(pm.collectionVariables.get('usageEstimationTokenizersClientConfig'));",
+                  "cc.usage_estimation_tokenizers = ['deepseek'];",
+                  "cc.mcp_code_mode_binding_level = 'bogus';",
+                  "pm.variables.set('usageEstimationTokenizersBody', JSON.stringify({ client_config: cc }));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"a later validation failure refuses the whole save\", function () {",
+                  "  pm.expect(pm.response.code, 'expected 400, got: ' + pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text()).to.include('mcp_code_mode_binding_level');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/config",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{{usageEstimationTokenizersBody}}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai usage-estimation-tokenizers a rejected save leaves the stored list - #9657",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"the list from the rejected request was not stored\", function () {",
+                  "  pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.equal(200);",
+                  "  var v = pm.response.json().client_config.usage_estimation_tokenizers || [];",
+                  "  pm.expect(v, 'stored usage_estimation_tokenizers: ' + pm.response.text()).to.eql(['anthropic', 'llama3']);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/config?from_db=true",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ],
+              "query": [
+                {
+                  "key": "from_db",
+                  "value": "true"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai usage-estimation-tokenizers PUT /api/config without the field - #9657",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var cc = JSON.parse(pm.collectionVariables.get('usageEstimationTokenizersClientConfig'));",
+                  "delete cc.usage_estimation_tokenizers;",
+                  "pm.variables.set('usageEstimationTokenizersBody', JSON.stringify({ client_config: cc }));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"a save that omits the field is accepted\", function () {",
+                  "  pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.equal(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/config",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{{usageEstimationTokenizersBody}}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai usage-estimation-tokenizers omitting the field keeps the list - #9657",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"a caller unaware of the field never clears the list\", function () {",
+                  "  pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.equal(200);",
+                  "  var v = pm.response.json().client_config.usage_estimation_tokenizers || [];",
+                  "  pm.expect(v, 'stored usage_estimation_tokenizers: ' + pm.response.text()).to.eql(['anthropic', 'llama3']);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/config?from_db=true",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ],
+              "query": [
+                {
+                  "key": "from_db",
+                  "value": "true"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai usage-estimation-tokenizers PUT /api/config clears the list - #9657",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var cc = JSON.parse(pm.collectionVariables.get('usageEstimationTokenizersClientConfig'));",
+                  "cc.usage_estimation_tokenizers = [];",
+                  "pm.variables.set('usageEstimationTokenizersBody', JSON.stringify({ client_config: cc }));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"an empty list is accepted\", function () {",
+                  "  pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.equal(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/config",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{{usageEstimationTokenizersBody}}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai usage-estimation-tokenizers an empty list returns to the base encodings - #9657",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"no family is stored\", function () {",
+                  "  pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.equal(200);",
+                  "  var v = pm.response.json().client_config.usage_estimation_tokenizers || [];",
+                  "  pm.expect(v, 'stored usage_estimation_tokenizers: ' + pm.response.text()).to.eql([]);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/config?from_db=true",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ],
+              "query": [
+                {
+                  "key": "from_db",
+                  "value": "true"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai usage-estimation-tokenizers restore the original list - #9657",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var cc = JSON.parse(pm.collectionVariables.get('usageEstimationTokenizersClientConfig'));",
+                  "cc.usage_estimation_tokenizers = JSON.parse(pm.collectionVariables.get('usageEstimationTokenizersOriginal'));",
+                  "pm.variables.set('usageEstimationTokenizersBody', JSON.stringify({ client_config: cc }));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"the original setting is restored\", function () {",
+                  "  pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.equal(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/config",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{{usageEstimationTokenizersBody}}"
+            }
+          }
+        }
+      ]
     }
   ]
 }

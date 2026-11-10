@@ -25,6 +25,7 @@ import (
 	mistralprovider "github.com/maximhq/bifrost/core/providers/mistral"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/core/streamusage"
 	"github.com/tidwall/gjson"
 	"golang.org/x/text/cases"
 	"golang.org/x/text/language"
@@ -9350,4 +9351,77 @@ func TestVideo_ListResumesFromNativeCursor(t *testing.T) {
 	if decodeErr != nil || decoded.KeyIndex != 2 {
 		t.Fatalf("cursor = %+v (%v), want the third key", decoded, decodeErr)
 	}
+}
+
+// snapshotTracer hands a fixed accumulated response to cancelled-stream estimation.
+type snapshotTracer struct {
+	schemas.NoOpTracer
+	snapshot *schemas.BifrostResponse
+}
+
+func (s *snapshotTracer) GetAccumulatedResponse(string) *schemas.BifrostResponse { return s.snapshot }
+
+// usageEstimationTokenizerFor reports the tokenizer a cancelled stream of model is
+// estimated with under the families currently configured.
+func usageEstimationTokenizerFor(t *testing.T, model string) string {
+	t.Helper()
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyTracer, schemas.Tracer(&snapshotTracer{snapshot: &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{
+		Choices: []schemas.BifrostResponseChoice{{ChatNonStreamResponseChoice: &schemas.ChatNonStreamResponseChoice{Message: &schemas.ChatMessage{
+			Role: schemas.ChatMessageRoleAssistant, Content: &schemas.ChatMessageContent{ContentStr: new("hello world")},
+		}}}},
+	}}}))
+	ctx.SetValue(schemas.BifrostContextKeyTraceID, "trace-usage-estimation")
+	failure := &schemas.BifrostError{Error: &schemas.ErrorField{Type: new(schemas.RequestCancelled)}}
+	streamusage.Estimate(ctx, &schemas.BifrostRequest{RequestType: schemas.ChatCompletionStreamRequest, ChatRequest: &schemas.BifrostChatRequest{
+		Model: model, Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: new("hi")}}},
+	}}, model, failure)
+	if failure.ExtraFields.BilledUsage == nil || failure.ExtraFields.BilledUsage.Estimation == nil {
+		t.Fatalf("no estimate for %s: %+v", model, failure.ExtraFields.BilledUsage)
+	}
+	return failure.ExtraFields.BilledUsage.Estimation.Tokenizer
+}
+
+// UsageEstimationTokenizers reaches cancelled-stream estimation from every path that
+// carries it: Init, ReloadConfig (the path a saved config takes) and the runtime update.
+func TestUsageEstimationTokenizersFollowConfig(t *testing.T) {
+	t.Cleanup(func() { streamusage.Configure(nil) })
+	const model = "claude-opus-4-5"
+	account := NewMockAccount()
+	account.AddProvider(schemas.OpenAI, 1, 1)
+	client, err := Init(context.Background(), schemas.BifrostConfig{
+		Account: account, Logger: NewNoOpLogger(), UsageEstimationTokenizers: []string{"anthropic"},
+	})
+	if err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+	t.Cleanup(client.Shutdown)
+	expect := func(step, want string) {
+		t.Helper()
+		if got := usageEstimationTokenizerFor(t, model); got != want {
+			t.Fatalf("%s: %s estimated with %q, want %q", step, model, got, want)
+		}
+	}
+
+	expect("Init with anthropic", "anthropic")
+
+	if err := client.ReloadConfig(schemas.BifrostConfig{Account: account}); err != nil {
+		t.Fatalf("ReloadConfig: %v", err)
+	}
+	expect("ReloadConfig with no families", "cl100k_base")
+
+	if err := client.ReloadConfig(schemas.BifrostConfig{Account: account, UsageEstimationTokenizers: []string{"llama3", "Anthropic"}}); err != nil {
+		t.Fatalf("ReloadConfig: %v", err)
+	}
+	expect("ReloadConfig with anthropic", "anthropic")
+
+	client.UpdateUsageEstimationTokenizers([]string{"deepseek"})
+	expect("update to another family", "cl100k_base")
+
+	client.UpdateUsageEstimationTokenizers([]string{"all"})
+	expect("update to all", "anthropic")
+
+	// An unknown name is ignored with a warning; it must not enable anything.
+	client.UpdateUsageEstimationTokenizers([]string{"gpt2"})
+	expect("update to an unknown family", "cl100k_base")
 }
