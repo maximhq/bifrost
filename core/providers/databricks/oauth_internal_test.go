@@ -38,7 +38,20 @@ func (testLogger) LogHTTPRequest(schemas.LogLevel, string) schemas.LogEventBuild
 //
 // This lives in the package's own test binary so it can point the token exchange at a stub
 // without exposing a test hook on the public API.
+//
+// The scoped case pins the fix for a service principal secret created with scopes: Databricks
+// refuses a token request naming any scope the secret lacks, so a key that sets scopes must
+// send exactly those and never the all-apis default.
 func TestOAuthM2M(t *testing.T) {
+	t.Run("default scope", func(t *testing.T) {
+		runOAuthM2M(t, nil, oauthScope)
+	})
+	t.Run("configured scopes replace all-apis", func(t *testing.T) {
+		runOAuthM2M(t, []string{"model-serving-inference", "model-serving"}, "model-serving-inference model-serving")
+	})
+}
+
+func runOAuthM2M(t *testing.T, scopes []string, wantScope string) {
 	var mu sync.Mutex
 	var tokenMints int
 	var gotGrantType, gotScope, gotBasicUser, gotBasicPass, gotAuth string
@@ -93,6 +106,7 @@ func TestOAuthM2M(t *testing.T) {
 			WorkspaceURL: *schemas.NewSecretVar(u.Host),
 			ClientID:     schemas.NewSecretVar("sp-client-id"),
 			ClientSecret: schemas.NewSecretVar("sp-client-secret"),
+			Scopes:       scopes,
 		},
 	}
 	request := &schemas.BifrostChatRequest{
@@ -116,8 +130,8 @@ func TestOAuthM2M(t *testing.T) {
 	if gotGrantType != "client_credentials" {
 		t.Errorf("grant_type: got %q, want %q", gotGrantType, "client_credentials")
 	}
-	if gotScope != oauthScope {
-		t.Errorf("scope: got %q, want %q", gotScope, oauthScope)
+	if gotScope != wantScope {
+		t.Errorf("scope: got %q, want %q", gotScope, wantScope)
 	}
 	if gotBasicUser != "sp-client-id" || gotBasicPass != "sp-client-secret" {
 		t.Errorf("basic auth: got %q/%q, want the service principal credentials", gotBasicUser, gotBasicPass)

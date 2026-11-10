@@ -735,6 +735,7 @@ export const databricksKeyConfigSchema = z
 		client_id: secretVarSchema.optional(),
 		client_secret: secretVarSchema.optional(),
 		forward_gateway_tags: z.boolean().optional(),
+		scopes: z.array(z.string()).optional(),
 		// UI-only discriminator, mirroring the azure/vertex/bedrock key forms.
 		_auth_type: z.enum(["pat", "oauth_m2m"]).optional(),
 	})

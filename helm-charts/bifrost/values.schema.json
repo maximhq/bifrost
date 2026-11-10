@@ -8467,6 +8467,11 @@
               "type": "boolean",
               "description": "Forward Bifrost governance labels (virtual key, team, customer names) to Databricks as the Databricks-Ai-Gateway-Request-Tags header for usage attribution.",
               "default": false
+            },
+            "scopes": {
+              "type": "array",
+              "items": { "type": "string", "minLength": 1, "pattern": "^\\S+$" },
+              "description": "OAuth M2M scopes requested when minting a token (default: [\"all-apis\"]). Set this when the service principal's OAuth secret was created with scopes, since Databricks rejects a token request naming a scope the secret lacks."
             }
           },
           "required": ["workspace_url"],

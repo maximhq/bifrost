@@ -11,6 +11,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"unicode"
 
 	"github.com/bytedance/sonic"
 )
@@ -1334,21 +1335,25 @@ type DatabricksKeyConfig struct {
 	ClientID           *SecretVar          `json:"client_id,omitempty"`            // OAuth M2M service principal client ID
 	ClientSecret       *SecretVar          `json:"client_secret,omitempty"`        // OAuth M2M service principal client secret
 	ForwardGatewayTags bool                `json:"forward_gateway_tags,omitempty"` // Whether to forward Bifrost governance labels as Databricks-Ai-Gateway-Request-Tags
+	Scopes             []string            `json:"scopes,omitempty"`               // OAuth M2M scopes to request (default: all-apis)
 }
 
 const (
 	// DatabricksOAuthTokenPath is the workspace-level OAuth token endpoint for M2M service principals.
 	DatabricksOAuthTokenPath = "/oidc/v1/token"
-	// DatabricksOAuthScope is the scope Databricks requires for M2M client-credentials grants.
+	// DatabricksOAuthScope is the scope requested for M2M client-credentials grants when the key
+	// names none. It matches a service principal secret created without scopes.
 	DatabricksOAuthScope = "all-apis"
 )
 
-// databricksOAuthScopes is the shared, read-only scope list every derived config points at,
-// so the per-request derivation does not allocate a slice.
+// databricksOAuthScopes is the shared, read-only default scope list a derived config points at
+// when the key names no scopes, so the per-request derivation does not allocate a slice.
 var databricksOAuthScopes = []string{DatabricksOAuthScope}
 
 // OAuthConfig maps the service-principal pair onto the common OAuth key config, filling in the
-// token endpoint and scope that Databricks fixes for every workspace. The wire shape of
+// workspace token endpoint and the key's scopes (all-apis when it names none). A secret
+// created with scopes can only mint tokens within them, and Databricks refuses a token request
+// that names any scope the secret lacks, so a scoped secret needs its scopes set. The wire shape of
 // databricks_key_config is unchanged; this is how the provider hands its credentials to the
 // shared token cache, so Databricks and custom OpenAI-compatible providers mint through one
 // code path. host is the bare workspace host. It returns false when either half of the pair
@@ -1366,9 +1371,31 @@ func (c *DatabricksKeyConfig) OAuthConfig(host string) (OAuthKeyConfig, bool) {
 		TokenURL:     *NewSecretVar("https://" + host + DatabricksOAuthTokenPath),
 		ClientID:     c.ClientID,
 		ClientSecret: c.ClientSecret,
-		Scopes:       databricksOAuthScopes,
+		Scopes:       c.oauthScopes(),
 		AuthStyle:    OAuthAuthStyleHeader,
 	}, true
+}
+
+// oauthScopes returns the configured scopes, or the shared all-apis default when none are set.
+func (c *DatabricksKeyConfig) oauthScopes() []string {
+	if len(c.Scopes) > 0 {
+		return c.Scopes
+	}
+	return databricksOAuthScopes
+}
+
+// ValidateScopes rejects a blank or whitespace-bearing scope. Scopes are sent space-joined, so
+// an entry such as "model-serving ai-functions" would silently request two scopes.
+func (c *DatabricksKeyConfig) ValidateScopes() error {
+	if c == nil {
+		return nil
+	}
+	for i, scope := range c.Scopes {
+		if scope == "" || strings.IndexFunc(scope, unicode.IsSpace) >= 0 {
+			return fmt.Errorf("databricks_key_config.scopes[%d] must be a single scope with no whitespace, got %q", i, scope)
+		}
+	}
+	return nil
 }
 
 // OAuthGrantType selects how an OAuthKeyConfig obtains an access token.

@@ -1048,6 +1048,9 @@ func validateProviderKeyURL(provider schemas.ModelProvider, key schemas.Key) err
 		if hasClientID != hasClientSecret {
 			return fmt.Errorf("databricks_key_config.client_id and databricks_key_config.client_secret must be set together")
 		}
+		if err := key.DatabricksKeyConfig.ValidateScopes(); err != nil {
+			return err
+		}
 	}
 	// oauth_key_config is accepted on any provider's key and must be whole when present: a
 	// half-filled block behind a value persists silently and only surfaces once the value

@@ -731,6 +731,7 @@
 			"projectIdOptional": "プロジェクト ID（オプション）",
 			"mantleProjectHelp": "スコープの推論およびモデルのリストを特定のBedrockプロジェクト（OpenAI-Project / anthropic-workspace-idヘッダーとして送信）に設定します。アカウントのデフォルトプロジェクトを使用する場合は空のままにしてください。",
 			"oauthM2mHelp": "Databricks は生産のために OAuth のマシンツーマシンを推奨します。トークンはワークスペース OIDC エンドポイントから発行され、自動的に更新されます。",
+			"databricksScopesHelp": "空欄の場合は all-apis を要求します。サービスプリンシパルの OAuth シークレットがスコープ付きで作成された場合は、ここにそのスコープを入力してください。シークレットにないスコープを含むトークン要求は Databricks に拒否されます。Model Serving の推論には model-serving-inference、decisions には ai-functions が必要です。",
 			"vllmUrlPlaceholder": "http://vllm-server:8000",
 			"vllmModelPlaceholder": "meta-llama/Llama-3-70b-hf",
 			"databricksWorkspacePlaceholder": "https://dbc-1234abcd-5678.cloud.databricks.com",
