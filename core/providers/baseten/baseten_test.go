@@ -304,6 +304,46 @@ func TestBasetenEmbeddingRequiresDeployment(t *testing.T) {
 	}
 }
 
+// TestBasetenImageGenerationRequiresDeployment pins that image generation only goes to
+// an alias deployment's OpenAI-compatible /images/generations route, with the alias
+// model_id on the wire, and never reaches Model APIs.
+func TestBasetenImageGenerationRequiresDeployment(t *testing.T) {
+	t.Parallel()
+	server, seen := newStub(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"created":1,"data":[{"b64_json":"aW1n"}]}`)
+	})
+	provider := newProvider(t, server.URL+"/v1")
+	req := &schemas.BifrostImageGenerationRequest{
+		Provider: schemas.Baseten,
+		Model:    "not-required",
+		Input:    &schemas.ImageGenerationInput{Prompt: "a lighthouse at dusk"},
+		Params:   &schemas.ImageGenerationParameters{Size: schemas.Ptr("1024x1024"), ResponseFormat: schemas.Ptr("b64_json")},
+	}
+
+	if _, err := provider.ImageGeneration(contextWithDeployment(""), testKey, req); err == nil {
+		t.Fatal("expected image generation without a deployment_url to fail")
+	}
+	if n := len(seen()); n != 0 {
+		t.Fatalf("expected no upstream call without a deployment, got %d", n)
+	}
+
+	resp, err := provider.ImageGeneration(contextWithDeployment(server.URL+"/environments/production/sync/v1"), testKey, req)
+	if err != nil {
+		t.Fatalf("ImageGeneration: %v", llmtests.GetErrorMessage(err))
+	}
+	got := seen()
+	if len(got) != 1 || got[0].Path != "/environments/production/sync/v1/images/generations" {
+		t.Fatalf("expected one call to the deployment images route, got %+v", got)
+	}
+	if got[0].Auth != "Bearer bt-test-key" || got[0].Body["model"] != "not-required" || got[0].Body["prompt"] != "a lighthouse at dusk" || got[0].Body["size"] != "1024x1024" {
+		t.Fatalf("unexpected upstream request: %+v", got[0])
+	}
+	if len(resp.Data) != 1 || resp.Data[0].B64JSON != "aW1n" {
+		t.Fatalf("expected one base64 image, got %+v", resp.Data)
+	}
+}
+
 // TestBasetenUnsupportedFileAndPassthrough pins what the doc comments on these methods claim:
 // each returns an unsupported-operation error without calling upstream.
 func TestBasetenUnsupportedFileAndPassthrough(t *testing.T) {

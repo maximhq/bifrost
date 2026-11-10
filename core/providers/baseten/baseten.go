@@ -4,7 +4,7 @@
 // (https://inference.baseten.co/v1) with chat completions, responses and model
 // listing. A dedicated deployment has its own base URL
 // (https://model-<id>.api.baseten.co/environments/<env>/sync/v1) and adds
-// embeddings and transcription. A request goes to a dedicated deployment when its
+// embeddings, transcription and image generation. A request goes to a dedicated deployment when its
 // resolved alias carries a BasetenAliasCfg.DeploymentURL.
 package baseten
 
@@ -98,7 +98,7 @@ func (provider *BasetenProvider) baseURL(ctx *schemas.BifrostContext) (string, b
 }
 
 // dedicatedURLOrError resolves the base URL for operations that only dedicated
-// deployments serve (embeddings, transcription).
+// deployments serve (embeddings, transcription, image generation).
 func (provider *BasetenProvider) dedicatedURLOrError(ctx *schemas.BifrostContext, requestType schemas.RequestType) (string, *schemas.BifrostError) {
 	u, dedicated, bifrostErr := provider.baseURL(ctx)
 	if bifrostErr != nil {
@@ -331,9 +331,27 @@ func (provider *BasetenProvider) SpeechStream(ctx *schemas.BifrostContext, postH
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.SpeechStreamRequest, provider.GetProviderKey())
 }
 
-// ImageGeneration is not supported by the Baseten provider.
+// ImageGeneration calls /images/generations on a dedicated deployment. Baseten's
+// image recipes (FLUX, Krea, Qwen-Image on the SGLang diffusion stack) serve the
+// OpenAI images shape; Model APIs has no image route.
 func (provider *BasetenProvider) ImageGeneration(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostImageGenerationRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.ImageGenerationRequest, provider.GetProviderKey())
+	baseURL, bifrostErr := provider.dedicatedURLOrError(ctx, schemas.ImageGenerationRequest)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+	return openai.HandleOpenAIImageGenerationRequest(
+		ctx,
+		provider.client,
+		baseURL+providerUtils.GetPathFromContext(ctx, "/images/generations"),
+		request,
+		key,
+		provider.networkConfig.ExtraHeaders,
+		nil,
+		provider.GetProviderKey(),
+		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
+		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+		provider.logger,
+	)
 }
 
 // ImageGenerationStream is not supported by the Baseten provider.
