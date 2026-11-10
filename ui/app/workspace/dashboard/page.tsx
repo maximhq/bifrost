@@ -96,6 +96,9 @@ export default function DashboardPage() {
 			project_ids: parseAsSafeArrayOf.withDefault([]),
 			aliases: parseAsSafeArrayOf.withDefault([]),
 			apps: parseAsSafeArrayOf.withDefault([]),
+			complexity_tiers: parseAsSafeArrayOf.withDefault([]),
+			complexity_mechanisms: parseAsSafeArrayOf.withDefault([]),
+			topic_ids: parseAsSafeArrayOf.withDefault([]),
 		},
 		{
 			history: "push",
@@ -153,6 +156,9 @@ export default function DashboardPage() {
 			...(urlState.project_ids.length > 0 && { project_ids: urlState.project_ids }),
 			...(urlState.aliases.length > 0 && { aliases: urlState.aliases }),
 			...(urlState.apps.length > 0 && { apps: urlState.apps }),
+			...(urlState.complexity_tiers.length > 0 && { complexity_tiers: urlState.complexity_tiers }),
+			...(urlState.complexity_mechanisms.length > 0 && { complexity_mechanisms: urlState.complexity_mechanisms }),
+			...(urlState.topic_ids.length > 0 && { topic_ids: urlState.topic_ids }),
 		}),
 		[
 			urlState.period,
@@ -182,6 +188,9 @@ export default function DashboardPage() {
 			urlState.project_ids,
 			urlState.aliases,
 			urlState.apps,
+			urlState.complexity_tiers,
+			urlState.complexity_mechanisms,
+			urlState.topic_ids,
 		],
 	);
 
@@ -398,6 +407,9 @@ export default function DashboardPage() {
 				project_ids: newFilters.project_ids || [],
 				aliases: newFilters.aliases || [],
 				apps: newFilters.apps || [],
+				complexity_tiers: newFilters.complexity_tiers || [],
+				complexity_mechanisms: newFilters.complexity_mechanisms || [],
+				topic_ids: newFilters.topic_ids || [],
 			});
 		},
 		[setUrlState, urlState.start_time, urlState.end_time],
