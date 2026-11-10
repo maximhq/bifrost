@@ -1,6 +1,6 @@
 ---
 title: "Baseten"
-description: "Baseten guide for Model APIs chat, streaming, tool calling, reasoning and the Responses API, plus dedicated deployments for chat, embeddings and transcription"
+description: "Baseten guide for Model APIs chat, streaming, tool calling, reasoning and the Responses API, plus dedicated deployments for chat, embeddings, transcription and image generation"
 icon: "b"
 ---
 
@@ -19,16 +19,17 @@ Both take your Baseten API key as a bearer token.
 |-----------|------------|----------------------|----------|
 | Chat Completions | ✅ | ✅ | `/chat/completions` |
 | Chat Completions (stream) | ✅ | ✅ | `/chat/completions` |
-| Responses API | ✅ | ✅ (through chat) | `/responses` on Model APIs |
-| Responses API (stream) | ✅ | ✅ (through chat) | `/responses` on Model APIs |
+| Responses API | ✅ | ✅ (through chat) | `/responses` (Model APIs), `/chat/completions` (deployments) |
+| Responses API (stream) | ✅ | ✅ (through chat) | `/responses` (Model APIs), `/chat/completions` (deployments) |
 | Embeddings | ❌ | ✅ | `/embeddings` |
 | Transcriptions (STT) | ❌ | ✅ | `/audio/transcriptions` |
+| Image Generation | ❌ | ✅ | `/images/generations` |
 | List Models | ✅ | - | `/models` |
 | Text Completions | ❌ | ❌ | - |
-| Speech (TTS), Images, Video | ❌ | ❌ | - |
+| Speech (TTS), Image Edit, Image Variation, Image streaming, Video | ❌ | ❌ | - |
 | Files, Batch, Count Tokens, Rerank | ❌ | ❌ | - |
 
-Model APIs has no embeddings or audio routes, so those operations need a dedicated deployment. A request without one fails with an error that names the missing `deployment_url`. Baseten's TTS, image, rerank and classification deployments use their own `/predict` request shapes, which Bifrost doesn't translate.
+Model APIs has no embeddings, audio or image routes, so those operations need a dedicated deployment. A request without one fails with an error that names the missing `deployment_url`. Baseten's TTS, rerank and classification deployments, and image models packaged as a custom Truss, use their own `/predict` request shapes, which Bifrost doesn't translate. Baseten has no video generation models.
 
 ## Setup and configuration
 
@@ -244,13 +245,56 @@ Dedicated speech-recognition deployments (for example Qwen3 ASR) serve OpenAI's 
 
 ---
 
-# 5. List Models
+# 5. Image Generation
+
+Baseten's image recipes, such as FLUX.2, Krea 2 Turbo and Qwen-Image, run on the SGLang diffusion stack and serve OpenAI's `/images/generations`, so `/v1/images/generations` works against an alias with `deployment_url`.
+
+```json
+{
+  "providers": {
+    "baseten": {
+      "keys": [
+        {
+          "name": "baseten-key-1",
+          "value": "env.BASETEN_API_KEY",
+          "models": ["*"],
+          "weight": 1.0,
+          "aliases": {
+            "my-flux": {
+              "model_id": "black-forest-labs/FLUX.2-dev",
+              "model_name": "black-forest-labs/FLUX.2-dev",
+              "deployment_url": "https://model-def456.api.baseten.co/environments/production/sync/v1"
+            }
+          }
+        }
+      ]
+    }
+  }
+}
+```
+
+```bash
+curl -X POST http://localhost:8080/v1/images/generations \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "baseten/my-flux",
+    "prompt": "A lighthouse at dusk",
+    "size": "1024x1024",
+    "response_format": "b64_json"
+  }'
+```
+
+Images come back as base64 in `data[].b64_json`. Streaming, edits and variations aren't supported, because the deployments don't serve those routes. A request for a model without a `deployment_url`, including any Model APIs model, fails before reaching Baseten.
+
+---
+
+# 6. List Models
 
 Bifrost lists models from Model APIs' `/models` for each key, plus the aliases configured on the key. Dedicated deployments appear through their aliases.
 
 ---
 
-# 6. Errors and retries
+# 7. Errors and retries
 
 Baseten returns 529 when a model is overloaded. Bifrost treats it as transient, so it is retried with the provider's backoff settings when `network_config.max_retries` is above 0. `max_retries` defaults to 0, so set it before relying on retries; see [Retries and fallbacks](/features/retries-and-fallbacks). Other errors keep their status code and message.
 
