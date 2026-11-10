@@ -106,6 +106,10 @@ func (request *GeminiGenerationRequest) ToBifrostImageGenerationRequest(ctx *sch
 		if aspectRatio := strings.TrimSpace(ic.AspectRatio); aspectRatio != "" {
 			bifrostReq.Params.AspectRatio = &aspectRatio
 		}
+		if outputFormat, outputCompression := fromGeminiImageOutputOptions(ic.ImageOutputOptions); outputFormat != nil || outputCompression != nil {
+			bifrostReq.Params.OutputFormat = outputFormat
+			bifrostReq.Params.OutputCompression = outputCompression
+		}
 	}
 
 	return bifrostReq
@@ -313,6 +317,10 @@ func (request *GeminiGenerationRequest) ToBifrostImageEditRequest(ctx *schemas.B
 		if aspectRatio := strings.TrimSpace(ic.AspectRatio); aspectRatio != "" {
 			bifrostReq.Params.AspectRatio = &aspectRatio
 		}
+		if outputFormat, outputCompression := fromGeminiImageOutputOptions(ic.ImageOutputOptions); outputFormat != nil || outputCompression != nil {
+			bifrostReq.Params.OutputFormat = outputFormat
+			bifrostReq.Params.OutputCompression = outputCompression
+		}
 	}
 
 	return bifrostReq
@@ -371,6 +379,9 @@ func (response *GenerateContentResponse) ToBifrostImageGenerationResponse() (*sc
 
 			// Extract image data from all parts
 			for idx, part := range candidate.Content.Parts {
+				if part == nil {
+					continue
+				}
 				// Check that part is not nil before accessing its fields
 				if part != nil && part.InlineData != nil {
 					imageData = append(imageData, schemas.ImageData{
@@ -447,7 +458,8 @@ func ToGeminiImageGenerationRequest(bifrostReq *schemas.BifrostImageGenerationRe
 		if bifrostReq.Params.AspectRatio != nil && *bifrostReq.Params.AspectRatio != "" {
 			imageConfig.AspectRatio = *bifrostReq.Params.AspectRatio
 		}
-		if imageConfig.AspectRatio != "" || imageConfig.ImageSize != "" {
+		imageConfig.ImageOutputOptions = toGeminiImageOutputOptions(bifrostReq.Params.OutputFormat, bifrostReq.Params.OutputCompression)
+		if imageConfig.AspectRatio != "" || imageConfig.ImageSize != "" || imageConfig.ImageOutputOptions != nil {
 			geminiReq.GenerationConfig.ImageConfig = imageConfig
 		}
 
@@ -662,6 +674,69 @@ func convertMimeTypeToExtension(mimeType string) string {
 	}
 }
 
+// toGeminiImageOutputOptions maps Bifrost output_format/output_compression onto Gemini image-model
+// imageConfig.imageOutputOptions. Gemini image models accept only image/png and image/jpeg, so
+// any other format (webp included) is dropped and the model's PNG default applies, rather than
+// sending a mimeType Google rejects. compressionQuality only applies to JPEG and is sent with it.
+// The field is Vertex-only: the Gemini API provider removes it with stripGeminiAPIImageOutputOptions.
+func toGeminiImageOutputOptions(outputFormat *string, outputCompression *int) *GeminiImageOutputOptions {
+	if outputFormat == nil {
+		return nil
+	}
+	var mimeType string
+	switch strings.ToLower(strings.TrimSpace(*outputFormat)) {
+	case "png":
+		mimeType = "image/png"
+	case "jpg", "jpeg":
+		mimeType = "image/jpeg"
+	default:
+		return nil
+	}
+	opts := &GeminiImageOutputOptions{MimeType: mimeType}
+	if mimeType == "image/jpeg" && outputCompression != nil {
+		quality := *outputCompression
+		opts.CompressionQuality = &quality
+	}
+	return opts
+}
+
+// stripGeminiAPIImageOutputOptions removes imageConfig.imageOutputOptions before a request goes to
+// the Gemini API (generativelanguage.googleapis.com), which only Vertex accepts; Google's own SDK
+// refuses output_mime_type and output_compression_quality for the Gemini API. An imageConfig left
+// empty is dropped as well.
+func stripGeminiAPIImageOutputOptions(req *GeminiGenerationRequest) {
+	if req == nil || req.GenerationConfig.ImageConfig == nil || req.GenerationConfig.ImageConfig.ImageOutputOptions == nil {
+		return
+	}
+	ic := req.GenerationConfig.ImageConfig
+	if ic.AspectRatio == "" && ic.ImageSize == "" {
+		req.GenerationConfig.ImageConfig = nil
+		return
+	}
+	// Copy rather than mutate: the converter output is not shared today, but this keeps the strip safe if it ever is.
+	stripped := *ic
+	stripped.ImageOutputOptions = nil
+	req.GenerationConfig.ImageConfig = &stripped
+}
+
+// fromGeminiImageOutputOptions maps a GenAI request's imageConfig.imageOutputOptions back onto
+// Bifrost output_format/output_compression, so the setting survives cross-provider routing.
+func fromGeminiImageOutputOptions(opts *GeminiImageOutputOptions) (*string, *int) {
+	if opts == nil {
+		return nil, nil
+	}
+	var outputFormat *string
+	if format := convertMimeTypeToExtension(opts.MimeType); format != "" {
+		outputFormat = &format
+	}
+	var outputCompression *int
+	if opts.CompressionQuality != nil {
+		quality := *opts.CompressionQuality
+		outputCompression = &quality
+	}
+	return outputFormat, outputCompression
+}
+
 // convertOutputFormatToMimeType converts Bifrost output_format to Imagen mimeType
 // Maps "png" -> "image/png", "jpg"/"jpeg" -> "image/jpeg", "webp" -> "image/webp"
 // Returns empty string for unsupported formats
@@ -796,7 +871,8 @@ func ToGeminiImageEditRequest(bifrostReq *schemas.BifrostImageEditRequest) *Gemi
 		if bifrostReq.Params.AspectRatio != nil && *bifrostReq.Params.AspectRatio != "" {
 			imageConfig.AspectRatio = *bifrostReq.Params.AspectRatio
 		}
-		if imageConfig.AspectRatio != "" || imageConfig.ImageSize != "" {
+		imageConfig.ImageOutputOptions = toGeminiImageOutputOptions(bifrostReq.Params.OutputFormat, bifrostReq.Params.OutputCompression)
+		if imageConfig.AspectRatio != "" || imageConfig.ImageSize != "" || imageConfig.ImageOutputOptions != nil {
 			geminiReq.GenerationConfig.ImageConfig = imageConfig
 		}
 

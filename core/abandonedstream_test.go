@@ -629,3 +629,56 @@ func TestDroppedRequestRunsPostHooks(t *testing.T) {
 		}
 	}
 }
+
+// instantStreamProvider answers ChatCompletionStream with an already-closed
+// stream, so a benchmark measures the worker's per-attempt setup and nothing else.
+type instantStreamProvider struct{ schemas.Provider }
+
+func (p *instantStreamProvider) ChatCompletionStream(ctx *schemas.BifrostContext, _ schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), _ schemas.Key, _ *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	stream := make(chan *schemas.BifrostStreamChunk)
+	close(stream)
+	// A completed provider stream releases the attempt's plugin pipeline through this.
+	postHookSpanFinalizer(ctx)
+	return stream, nil
+}
+
+// BenchmarkRequestWorkerStreamAttempt drives one stream attempt through the real
+// requestWorker: dequeue, key selection, post-hook runner setup and stream handoff.
+func BenchmarkRequestWorkerStreamAttempt(b *testing.B) {
+	account := NewMockAccount()
+	account.AddProvider(schemas.OpenAI, 1, 1)
+	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{{ID: "k", Value: *schemas.NewSecretVar("sk-test"), Models: schemas.WhiteList{"*"}, Weight: 100}})
+	client, err := Init(context.Background(), schemas.BifrostConfig{Account: account, Logger: NewNoOpLogger()})
+	if err != nil {
+		b.Fatalf("Init failed: %v", err)
+	}
+	b.Cleanup(client.Shutdown)
+	cfg, _ := account.GetConfigForProvider(schemas.OpenAI)
+	cfg.NetworkConfig.MaxRetries = 0
+	upstream := &instantStreamProvider{Provider: openai.NewOpenAIProvider(cfg, NewNoOpLogger())}
+	pq := &ProviderQueue{queue: make(chan *ChannelMessage, 1), done: make(chan struct{})}
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go client.requestWorker(upstream, cfg, pq, &wg)
+	request := &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: "gpt-4o-mini",
+		Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: new("hi")}}}}
+	tracer := client.getTracer()
+	b.ReportAllocs()
+	for b.Loop() {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyTracer, tracer)
+		msg := client.getChannelMessage(schemas.BifrostRequest{RequestType: schemas.ChatCompletionStreamRequest, ChatRequest: request})
+		msg.Context = ctx
+		pq.queue <- msg
+		select {
+		case stream := <-msg.ResponseStream:
+			for range stream {
+			}
+		case e := <-msg.Err:
+			b.Fatalf("stream attempt failed: %+v", e.Error)
+		}
+		client.releaseChannelMessage(msg)
+	}
+	pq.signalClosing()
+	wg.Wait()
+}

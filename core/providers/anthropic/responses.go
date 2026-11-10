@@ -5198,7 +5198,7 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 			}
 			if speed, ok := schemas.SafeExtractStringPointer(bifrostReq.Params.ExtraParams["speed"]); ok {
 				delete(anthropicReq.ExtraParams, "speed")
-				if caps.SupportsFastMode(DefaultSupportsFastMode(capModel)) {
+				if caps.SupportsFastMode(DefaultSupportsFastMode(schemas.ResolveBaseProvider(ctx, bifrostReq.Provider), capModel)) {
 					anthropicReq.Speed = speed
 				}
 			}

@@ -2663,6 +2663,67 @@ func TestToChatMessages_DropsConfigurationUpdateItem(t *testing.T) {
 	}
 }
 
+// TestToChatMessages_DropsMCPCallItems pins #9721 on the Responses->Chat fallback: the
+// mcp_call items an Anthropic mcp_tool_use / mcp_tool_result block becomes have no chat
+// equivalent and no role, so they must be dropped rather than emitted as roleless messages.
+func TestToChatMessages_DropsMCPCallItems(t *testing.T) {
+	var input []ResponsesMessage
+	if err := Unmarshal([]byte(`[
+		{"role":"user","content":"look"},
+		{"type":"mcp_call","id":"call_1","name":"analyze_image","arguments":"{}","server_label":"4_5v_mcp"},
+		{"type":"mcp_call","status":"completed","call_id":"call_1","output":"a red pixel"},
+		{"role":"user","content":"reply OK"}
+	]`), &input); err != nil {
+		t.Fatalf("unmarshal input: %v", err)
+	}
+
+	got := ToChatMessages(input)
+	if len(got) != 2 {
+		t.Fatalf("expected only the two user messages, got %d messages: %+v", len(got), got)
+	}
+	for i, msg := range got {
+		if msg.Role != ChatMessageRoleUser {
+			t.Fatalf("chat[%d] role = %q, want %q", i, msg.Role, ChatMessageRoleUser)
+		}
+	}
+}
+
+// TestToChatMessages_DropsRolelessItemsWithoutChatEquivalent pins the rest of the #9721
+// class: every typed Responses item that Chat Completions cannot express (MCP siblings,
+// server-tool calls, item references) is dropped instead of becoming a roleless message,
+// while the roleless items the converter does render (function_call / _output) survive.
+func TestToChatMessages_DropsRolelessItemsWithoutChatEquivalent(t *testing.T) {
+	var input []ResponsesMessage
+	if err := Unmarshal([]byte(`[
+		{"role":"user","content":"look"},
+		{"type":"mcp_list_tools","id":"lt_1","server_label":"docs"},
+		{"type":"mcp_approval_request","id":"ar_1","name":"search","arguments":"{}","server_label":"docs"},
+		{"type":"mcp_approval_response","approval_request_id":"ar_1","approve":true},
+		{"type":"web_search_call","id":"ws_1","status":"completed"},
+		{"type":"code_interpreter_call","id":"ci_1","status":"completed"},
+		{"type":"item_reference","id":"msg_prev"},
+		{"type":"function_call","call_id":"fc_1","name":"lookup","arguments":"{}"},
+		{"type":"function_call_output","call_id":"fc_1","output":"ok"},
+		{"role":"user","content":"reply OK"}
+	]`), &input); err != nil {
+		t.Fatalf("unmarshal input: %v", err)
+	}
+
+	got := ToChatMessages(input)
+	wantRoles := []ChatMessageRole{ChatMessageRoleUser, ChatMessageRoleAssistant, ChatMessageRoleTool, ChatMessageRoleUser}
+	if len(got) != len(wantRoles) {
+		t.Fatalf("expected %d messages, got %d: %+v", len(wantRoles), len(got), got)
+	}
+	for i, msg := range got {
+		if msg.Role != wantRoles[i] {
+			t.Fatalf("chat[%d] role = %q, want %q", i, msg.Role, wantRoles[i])
+		}
+	}
+	if got[1].ChatAssistantMessage == nil || len(got[1].ChatAssistantMessage.ToolCalls) != 1 {
+		t.Fatalf("chat[1] should carry the function_call as one tool call: %+v", got[1])
+	}
+}
+
 func TestUsageConvertersKeepIterations(t *testing.T) {
 	pass := ResponsesResponseUsage{Type: Ptr("advisor_message"), Model: Ptr("claude-opus-4-8"), InputTokens: 2000, OutputTokens: 900}
 	responses := &ResponsesResponseUsage{InputTokens: 10, OutputTokens: 1, TotalTokens: 11, Iterations: []ResponsesResponseUsage{pass}}
@@ -2717,5 +2778,28 @@ func TestChatToResponsesKeepsPromptCacheBreakpoint(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// BenchmarkToChatMessages measures the Responses->Chat fallback on a typical multi-turn
+// history (text, a function call round trip, and server-tool items that are dropped).
+func BenchmarkToChatMessages(b *testing.B) {
+	var input []ResponsesMessage
+	if err := Unmarshal([]byte(`[
+		{"role":"system","content":"be brief"},
+		{"role":"user","content":"look"},
+		{"type":"function_call","call_id":"fc_1","name":"lookup","arguments":"{}"},
+		{"type":"function_call_output","call_id":"fc_1","output":"ok"},
+		{"role":"assistant","content":[{"type":"output_text","text":"done"}]},
+		{"type":"mcp_call","id":"mcp_1","name":"search","arguments":"{}","server_label":"docs"},
+		{"type":"web_search_call","id":"ws_1","status":"completed"},
+		{"role":"user","content":"reply OK"}
+	]`), &input); err != nil {
+		b.Fatalf("unmarshal input: %v", err)
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = ToChatMessages(input)
 	}
 }
