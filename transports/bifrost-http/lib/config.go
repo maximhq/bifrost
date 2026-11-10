@@ -168,8 +168,9 @@ type pluginOrderInfo struct {
 }
 
 type ServerConfig struct {
-	ReadBufferSize int    `json:"read_buffer_size,omitempty"`
-	BasePath       string `json:"base_path,omitempty"` // URL path prefix behind a reverse proxy, e.g. "/bifrost"; see ResolveBasePath
+	ReadBufferSize       int    `json:"read_buffer_size,omitempty"`
+	BasePath             string `json:"base_path,omitempty"`              // URL path prefix behind a reverse proxy, e.g. "/bifrost"; see ResolveBasePath
+	TrustedForwardedHost string `json:"trusted_forwarded_host,omitempty"` // Exact public authority allowed in X-Forwarded-Host; deploy-time only
 
 	// BodyBufferPoolLimitBytes caps the request-body buffer a pooled keep-alive
 	// connection keeps between requests; larger buffers are released after each
@@ -1187,6 +1188,11 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 			applyV1Compat(&configData)
 		}
 	}
+	if configData.Server != nil {
+		if err := validateTrustedForwardedHost(configData.Server.TrustedForwardedHost); err != nil {
+			return nil, err
+		}
+	}
 
 	// 1. Encryption (before stores so BeforeSave hooks work correctly)
 	if err := initEncryption(&configData); err != nil {
@@ -1304,6 +1310,9 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 		config.ServerConfig = &ServerConfig{
 			ReadBufferSize: 1024 * 64,
 		}
+	}
+	if err := configureTrustedForwardedHost(config.ServerConfig.TrustedForwardedHost); err != nil {
+		return nil, err
 	}
 	return config, nil
 }

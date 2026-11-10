@@ -864,6 +864,7 @@ func TestConvertToBifrostContext_DirectKey_EnvPrefixNotResolved(t *testing.T) {
 	}
 }
 
+// TestBuildBaseURL checks override priority and exact trusted-host selection.
 func TestBuildBaseURL(t *testing.T) {
 	const host = "bifrost.example.com"
 	tests := []struct {
@@ -872,9 +873,26 @@ func TestBuildBaseURL(t *testing.T) {
 		host     string
 		xfProto  string
 		xbfProto string
+		xfHost   string
+		trusted  string
 		want     string
 	}{
 		{name: "defaults to http", host: host, want: "http://" + host},
+		{name: "forwarded host without configured URL ignored", host: host, xfHost: "public.example.com:8443", xfProto: "https", want: "https://" + host},
+		{name: "forwarded host matching configured domain", external: "https://public.example.com/edge", host: host, xfHost: "public.example.com", want: "https://public.example.com/edge"},
+		{name: "forwarded host mismatching configured domain ignored", external: "https://configured.example.com", host: host, xfHost: "attacker.example.com", want: "https://configured.example.com"},
+		{name: "forwarded host matching domain cannot override port", external: "https://public.example.com:8443", host: host, xfHost: "public.example.com:9999", want: "https://public.example.com:8443"},
+		{name: "forwarded host cannot replace missing host without configured URL", xfHost: "public.example.com", want: ""},
+		{name: "trusted forwarded host wins", host: host, trusted: "public.example.com", xfHost: "public.example.com", xfProto: "https", want: "https://public.example.com"},
+		{name: "trusted forwarded host includes port", host: host, trusted: "public.example.com:8443", xfHost: "PUBLIC.EXAMPLE.COM:8443", want: "http://public.example.com:8443"},
+		{name: "trusted forwarded host first hop", host: host, trusted: "public.example.com", xfHost: " public.example.com , internal.example.com", want: "http://public.example.com"},
+		{name: "trusted host in later hop ignored", host: host, trusted: "public.example.com", xfHost: "attacker.example.com, public.example.com", want: "http://" + host},
+		{name: "trusted host suffix rejected", host: host, trusted: "public.example.com", xfHost: "public.example.com.attacker.example", want: "http://" + host},
+		{name: "trusted host port mismatch ignored", host: host, trusted: "public.example.com:8443", xfHost: "public.example.com:9999", want: "http://" + host},
+		{name: "trusted host missing header uses Host", host: host, trusted: "public.example.com", want: "http://" + host},
+		{name: "trusted host replaces missing Host", trusted: "public.example.com", xfHost: "public.example.com", want: "http://public.example.com"},
+		{name: "explicit URL beats trusted forwarded host", external: "https://configured.example.com/edge", host: host, trusted: "public.example.com", xfHost: "public.example.com", want: "https://configured.example.com/edge"},
+		{name: "trusted IPv6 authority", host: host, trusted: "[2001:db8::1]:8443", xfHost: "[2001:db8::1]:8443", want: "http://[2001:db8::1]:8443"},
 		{name: "x-forwarded-proto https", host: host, xfProto: "https", want: "https://" + host},
 		{name: "x-forwarded-proto comma list", host: host, xfProto: "https, http", want: "https://" + host},
 		{name: "x-forwarded-proto uppercase", host: host, xfProto: "HTTPS", want: "https://" + host},
@@ -897,8 +915,13 @@ func TestBuildBaseURL(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			if err := configureTrustedForwardedHost(tt.trusted); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = configureTrustedForwardedHost("") })
 			ctx := &fasthttp.RequestCtx{}
 			ctx.Request.SetHost(tt.host)
+			ctx.Request.Header.Set("X-Forwarded-Host", tt.xfHost)
 			if tt.xfProto != "" {
 				ctx.Request.Header.Set("X-Forwarded-Proto", tt.xfProto)
 			}
@@ -907,6 +930,35 @@ func TestBuildBaseURL(t *testing.T) {
 			}
 			if got := BuildBaseURL(ctx, tt.external); got != tt.want {
 				t.Fatalf("BuildBaseURL() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestConfigureTrustedForwardedHost rejects unusable authorities before publishing them.
+func TestConfigureTrustedForwardedHost(t *testing.T) {
+	t.Cleanup(func() { _ = configureTrustedForwardedHost("") })
+	for _, value := range []string{"https://example.com", "example.com/path", "example.com?query", "example.com#fragment", "user@example.com", "*.example.com", "example.com,other.example.com", " example.com", "example.com:invalid", "example.com:65536", "example.com:84433", "[2001:db8::1]:65536"} {
+		t.Run(value, func(t *testing.T) {
+			if err := configureTrustedForwardedHost(value); err == nil {
+				t.Fatalf("accepted invalid authority %q", value)
+			}
+		})
+	}
+	for _, value := range []string{"", "example.com", "example.com:1", "example.com:65535", "[2001:db8::1]", "[2001:db8::1]:65535"} {
+		t.Run("valid/"+value, func(t *testing.T) {
+			if err := configureTrustedForwardedHost(value); err != nil {
+				t.Fatal(err)
+			}
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.SetHost("internal.example.com")
+			ctx.Request.Header.Set("X-Forwarded-Host", value)
+			want := "http://" + value
+			if value == "" {
+				want = "http://internal.example.com"
+			}
+			if got := BuildBaseURL(ctx, ""); got != want {
+				t.Fatalf("BuildBaseURL() = %q, want %q", got, want)
 			}
 		})
 	}
@@ -938,6 +990,15 @@ func TestBuildBaseURL_BasePath(t *testing.T) {
 	SetBasePath("")
 	if got := BuildBaseURL(ctx, ""); got != "https://abc.com" {
 		t.Fatalf("BuildBaseURL() without base path = %q, want https://abc.com", got)
+	}
+	if err := configureTrustedForwardedHost("public.example.com"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = configureTrustedForwardedHost("") })
+	SetBasePath("/bifrost")
+	ctx.Request.Header.Set("X-Forwarded-Host", "public.example.com")
+	if got := BuildBaseURL(ctx, ""); got != "https://public.example.com/bifrost" {
+		t.Fatalf("trusted forwarded URL = %q", got)
 	}
 }
 
@@ -3181,10 +3242,22 @@ func BenchmarkBuildBaseURL(b *testing.B) {
 	ctx := &fasthttp.RequestCtx{}
 	ctx.Request.SetHost("abc.com")
 	ctx.Request.Header.Set("X-Forwarded-Proto", "https")
+	_ = configureTrustedForwardedHost("")
+	defer configureTrustedForwardedHost("")
 	for name, basePath := range map[string]string{"root": "", "prefixed": "/bifrost"} {
 		b.Run(name, func(b *testing.B) {
 			SetBasePath(basePath)
 			defer SetBasePath("")
+			b.ReportAllocs()
+			for b.Loop() {
+				_ = BuildBaseURL(ctx, "")
+			}
+		})
+	}
+	for _, forwarded := range []string{"public.example.com", "attacker.example.com", " public.example.com , internal.example.com"} {
+		b.Run("forwarded/"+forwarded, func(b *testing.B) {
+			_ = configureTrustedForwardedHost("public.example.com")
+			ctx.Request.Header.Set("X-Forwarded-Host", forwarded)
 			b.ReportAllocs()
 			for b.Loop() {
 				_ = BuildBaseURL(ctx, "")

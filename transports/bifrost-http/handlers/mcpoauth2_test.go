@@ -3,6 +3,7 @@ package handlers
 import (
 	"encoding/json"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -39,6 +40,7 @@ func TestClientMetadataDocument(t *testing.T) {
 			}
 			h := &OAuthHandler{store: &lib.Config{ClientConfig: clientConfig}}
 			ctx := &fasthttp.RequestCtx{}
+			ctx.Response.Header.Set("Vary", "Origin")
 			ctx.Request.Header.SetHost(tc.host)
 			if tc.proto != "" {
 				ctx.Request.Header.Set("X-Forwarded-Proto", tc.proto)
@@ -49,6 +51,14 @@ func TestClientMetadataDocument(t *testing.T) {
 
 			require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode())
 			assert.Equal(t, "application/json", string(ctx.Response.Header.ContentType()))
+			var vary []string
+			for _, value := range ctx.Response.Header.PeekAll("Vary") {
+				for _, name := range strings.Split(string(value), ",") {
+					vary = append(vary, strings.TrimSpace(name))
+				}
+			}
+			assert.Contains(t, vary, "Origin")
+			assert.Contains(t, vary, "X-Forwarded-Host")
 			var doc map[string]any
 			require.NoError(t, json.Unmarshal(ctx.Response.Body(), &doc))
 			assert.Equal(t, tc.wantBase+oauthClientMetadataPath, doc["client_id"], "client_id must equal the URL the document is served at")
