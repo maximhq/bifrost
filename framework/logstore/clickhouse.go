@@ -236,9 +236,15 @@ func newClickHouseLogStore(ctx context.Context, config *ClickHouseConfig, retent
 	}
 	logger.Info("logstore: clickhouse schema migrations complete")
 
-	constructed = true
-	return &ClickHouseLogStore{
+	store := &ClickHouseLogStore{
 		RDBLogStore: &RDBLogStore{db: db, logger: logger},
 		cluster:     config.Cluster,
-	}, nil
+	}
+	if ignored, err := chMutableSkipIndexes(ctx, db); err != nil {
+		logger.Warn("logstore: clickhouse id lookups will not use skip indexes: %v", err)
+	} else {
+		store.idLookupIgnoredIndexes, store.idLookupSkipIndexes = ignored, true
+	}
+	constructed = true
+	return store, nil
 }

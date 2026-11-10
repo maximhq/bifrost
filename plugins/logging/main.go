@@ -352,6 +352,60 @@ func applyMCPCorrelationFieldsToEntry(ctx *schemas.BifrostContext, entry *logsto
 	}
 }
 
+// applyMCPRoundTrip records an MCP multi round-trip on entry: an input_required round's status and what it
+// asked, the answers a retry carried (content-gated, like arguments), and round_trip_id, which every round
+// of one gateway tool call shares (see mcp.CallRoundTripID).
+func applyMCPRoundTrip(ctx *schemas.BifrostContext, entry *logstore.MCPToolLog, resp *schemas.BifrostMCPResponse, contentVisible bool) {
+	if carried, _ := ctx.Value(schemas.BifrostContextKeyMCPRoundTripID).(string); carried != "" {
+		entry.RoundTripID = &carried
+	}
+	if answers := mcp.InputResumptionForLog(ctx); answers != nil && contentVisible {
+		setMCPLogMetadata(entry, "input_responses", answers)
+	}
+	if resp == nil {
+		return
+	}
+	asked, ok := mcp.InputRequiredForLog(resp.ChatMessage)
+	if !ok {
+		return
+	}
+	entry.Status = logStatusInputRequired
+	entry.ResultParsed = nil
+	if asked == nil {
+		setMCPLogMetadata(entry, "retry_later", true)
+	} else if contentVisible {
+		entry.ResultParsed = asked
+	}
+	if entry.RoundTripID == nil {
+		id := mcp.CallRoundTripID(ctx)
+		entry.RoundTripID = &id
+	}
+}
+
+// applyMCPAppsMetadata marks an MCP call that involved MCP Apps: the caller hosts apps, the tool opens a
+// ui:// resource or is app-only, or the caller used the server's own tool name (as an app's code does).
+func applyMCPAppsMetadata(ctx *schemas.BifrostContext, entry *logstore.MCPToolLog) {
+	if mcp.CallerDeclaresApps(ctx) {
+		setMCPLogMetadata(entry, "mcp_apps", true)
+	}
+	if uri, _ := ctx.Value(schemas.BifrostContextKeyMCPToolUIResourceURI).(string); uri != "" {
+		setMCPLogMetadata(entry, "ui_resource_uri", resourceURIForLog(uri))
+	}
+	if appOnly, _ := ctx.Value(schemas.BifrostContextKeyMCPToolAppOnly).(bool); appOnly {
+		setMCPLogMetadata(entry, "app_only", true)
+	}
+	if name, _ := ctx.Value(schemas.BifrostContextKeyMCPRequestedToolName).(string); name != "" {
+		setMCPLogMetadata(entry, "requested_name", name)
+	}
+}
+
+func setMCPLogMetadata(entry *logstore.MCPToolLog, key string, value any) {
+	if entry.MetadataParsed == nil {
+		entry.MetadataParsed = map[string]interface{}{}
+	}
+	entry.MetadataParsed[key] = value
+}
+
 // scheduleDeferredUsageUpdate schedules a deferred usage update for the request.
 // applyErrorBillingFromBilledUsage backfills a failed/cancelled request's log
 // entry from the usage the provider already processed before the failure
@@ -363,14 +417,14 @@ func (p *LoggerPlugin) applyErrorBillingFromBilledUsage(ctx *schemas.BifrostCont
 	if billed == nil {
 		return
 	}
-	if entry.TokenUsageParsed == nil {
+	if entry.TokenUsageParsed == nil || billed.Estimation != nil {
 		entry.TokenUsageParsed = billed.DeepCopy()
 		p.dropIgnoredProviderCost(entry)
 		entry.PromptTokens = billed.PromptTokens
 		entry.CompletionTokens = billed.CompletionTokens
 		entry.TotalTokens = billed.TotalTokens
 	}
-	if entry.Cost == nil && p.pricingManager != nil {
+	if (entry.Cost == nil || billed.Estimation != nil) && p.pricingManager != nil {
 		pricingScopes := modelcatalog.PricingLookupScopesFromContext(ctx, string(entry.Provider))
 		if bd := p.pricingManager.CalculateCostBreakdownForUsage(billed, schemas.ModelProvider(entry.Provider), entry.Model, requestType, pricingScopes); bd != nil && bd.TotalCost > 0 {
 			total := bd.TotalCost
@@ -1224,6 +1278,7 @@ type InitialLogData struct {
 	PassthroughPath        string
 	UserAgent              string // Raw HTTP User-Agent of the calling client; mapped to a client app in the UI
 	App                    string // Backend-detected client app derived from UserAgent
+	ClientIP               string // Caller IP: leftmost X-Forwarded-For, else X-Real-IP, else the TCP peer
 }
 
 // LogCallback is a function that gets called when a new log entry is created
@@ -1242,7 +1297,8 @@ type Config struct {
 	RetainContentInObjectStorage *bool                  `json:"retain_content_in_object_storage"` // Pointer to live config value; when true, content-disabled requests are offloaded to object storage as hidden instead of dropped
 	LoggingHeaders               *[]string              `json:"logging_headers"`                  // Pointer to live config slice; changes are reflected immediately without restart
 	Writer                       *logstore.WriterConfig `json:"writer,omitempty"`
-	ObjectStorageEnabled         bool                   `json:"-"` // Set by the server from the logstore config; required for retain_content_in_object_storage to take effect
+	ObjectStorageEnabled         bool                   `json:"-"`                 // Set by the server from the logstore config; required for retain_content_in_object_storage to take effect
+	CaptureClientIP              bool                   `json:"capture_client_ip"` // Set from logs_store.capture_client_ip; off leaves client_ip NULL
 }
 
 func validateWriterConfig(config logstore.WriterConfig) error {
@@ -1294,6 +1350,7 @@ type LoggerPlugin struct {
 	disableContentLogging        *bool
 	retainContentInObjectStorage *bool     // Pointer to live config value; when true, content-disabled requests are stored hidden instead of dropped
 	objectStorageEnabled         bool      // Log store offloads payloads to object storage; required for retain_content_in_object_storage
+	captureClientIP              bool      // logs_store.capture_client_ip; off leaves client_ip NULL
 	retainWarnOnce               sync.Once // Warns once when retention is configured without object storage
 	loggingHeaders               *[]string // Pointer to live config slice for headers to capture in metadata
 	pricingManager               *modelcatalog.ModelCatalog
@@ -1325,10 +1382,10 @@ type LoggerPlugin struct {
 	pendingMCPLogsToInject       sync.Map                       // Maps mcpLogID -> *logstore.MCPToolLog (PreMCPHook input data awaiting PostMCPHook)
 	provisionalMCPArguments      sync.Map                       // Maps mcpLogID -> tool arguments captured before governance stamped the presented key or named project; attached in PostMCPHook only if content ends up visible
 	pendingAgentLogs             sync.Map                       // Maps request/operation key -> *logstore.AgentLog awaiting PostA2AHook
-	pendingEndpointLogs          sync.Map                       // Maps request id -> *logstore.RelayLog awaiting PostRelayHook
+	pendingEndpointLogs          sync.Map                       // Maps request id -> *pendingRelayLog awaiting PostRelayHook
+	evictedRelayPartials         sync.Map                       // Maps request id -> evictedRelayPartial: relay partial rows persisted at eviction, awaiting reconcile in PostRelayHook
 	pendingAgentLogsToInject     sync.Map                       // Maps traceID -> *pendingAgentInjectEntries (A2A request rows awaiting Inject latency backfill)
 	pendingRelayLogsToInject     sync.Map                       // Maps traceID -> *pendingRelayInjectEntries (Relay rows awaiting Inject latency backfill)
-	relayRetainWarnOnce          sync.Once                      // retain_content_in_object_storage is not honoured on relay rows; said once
 	writerConfig                 logstore.WriterConfig          // Resolved async writer queue and batch settings
 	writeQueue                   chan *writeQueueEntry          // Buffered channel for batch write queue
 	closed                       atomic.Bool                    // Set during cleanup to prevent sends on closed writeQueue
@@ -1341,6 +1398,7 @@ type LoggerPlugin struct {
 	batchCancel                  context.CancelFunc             // Cancels batchCtx
 	batchSweeperCancel           context.CancelFunc             // Cancels the batch accounting sweeper, when enabled
 	videoSweeperCancel           context.CancelFunc             // Cancels the video accounting sweeper, when enabled
+	interactionSweeperCancel     context.CancelFunc             // Cancels the interaction accounting sweeper, when enabled
 	batchWriterDone              chan struct{}                  // Closed by batchWriter on exit; receiving from it transfers writeQueue ownership to Cleanup
 	recoveredBatch               []*writeQueueEntry             // batchWriter parks its in-memory batch here before exiting; safe to read after batchWriterDone closes (happens-before)
 	userAgentMappings            atomic.Value                   // []compiledUserAgentMapping, read from request hot paths
@@ -1386,6 +1444,7 @@ func Init(ctx context.Context, config *Config, logger schemas.Logger, logsStore 
 		disableContentLogging:        config.DisableContentLogging,
 		retainContentInObjectStorage: config.RetainContentInObjectStorage,
 		objectStorageEnabled:         config.ObjectStorageEnabled,
+		captureClientIP:              config.CaptureClientIP,
 		loggingHeaders:               config.LoggingHeaders,
 		done:                         make(chan struct{}),
 		logger:                       logger,
@@ -1520,7 +1579,7 @@ func (p *LoggerPlugin) cleanupOldProcessingLogs() {
 	p.cleanupStalePendingLogs()
 }
 
-// flushStaleProcessingLogs deletes LLM, MCP and A2A rows still marked
+// flushStaleProcessingLogs deletes LLM, MCP, A2A and relay rows still marked
 // processing after 30 minutes.
 func (p *LoggerPlugin) flushStaleProcessingLogs() {
 	// Calculate timestamp for 30 minutes ago in UTC to match log entry timestamps
@@ -1539,6 +1598,11 @@ func (p *LoggerPlugin) flushStaleProcessingLogs() {
 	// Delete A2A processing logs older than 30 minutes.
 	if err := p.store.FlushAgentLogs(p.ctx, thirtyMinutesAgo); err != nil {
 		p.logger.Warn("failed to cleanup old processing A2A logs: %v", err)
+	}
+
+	// Delete relay processing logs older than 30 minutes.
+	if err := p.store.FlushRelayLogs(p.ctx, thirtyMinutesAgo); err != nil {
+		p.logger.Warn("failed to cleanup old processing relay logs: %v", err)
 	}
 }
 
@@ -1753,6 +1817,48 @@ func (p *LoggerPlugin) StartVideoAccountingSweeper(retriever jobaccounting.Video
 	return cancel
 }
 
+// StartInteractionAccountingSweeper runs the interaction sweeper, which settles stored runs no
+// client read to the end. It is its own sweeper for the same reason video is: it polls through its
+// own client, and a Deep Research run is checked every minute or so for up to an hour.
+func (p *LoggerPlugin) StartInteractionAccountingSweeper(poller jobaccounting.InteractionPoller, interval time.Duration, kvStore schemas.KVStore) context.CancelFunc {
+	if poller == nil || p.store == nil || p.batchStore == nil || p.pricingManager == nil {
+		if p.logger != nil {
+			p.logger.Warn("interaction accounting sweeper not started: missing poller, store, job store, or pricing manager")
+		}
+		return func() {}
+	}
+	ctx, cancel := context.WithCancel(p.ctx)
+	p.mu.Lock()
+	// Same shutdown race as the batch sweeper: Cleanup sets closed and cancels under
+	// this lock before reaching wg.Wait().
+	if p.closed.Load() {
+		p.mu.Unlock()
+		cancel()
+		if p.logger != nil {
+			p.logger.Warn("interaction accounting sweeper not started: logging plugin is shutting down")
+		}
+		return func() {}
+	}
+	if p.interactionSweeperCancel != nil {
+		p.interactionSweeperCancel()
+	}
+	p.interactionSweeperCancel = cancel
+	usageReporter := p.batchUsageReporter
+	p.mu.Unlock()
+	sweeper := jobaccounting.NewInteractionSweeper(p.batchStore, p.store, p.pricingManager, poller, p, usageReporter, jobaccounting.SweeperConfig{
+		Interval:  interval,
+		ClaimedBy: p.batchRunnerID("interaction-sweeper"),
+		KVStore:   kvStore,
+		Logger:    p.logger,
+	})
+	p.wg.Add(1)
+	go func() {
+		defer p.wg.Done()
+		sweeper.Run(ctx)
+	}()
+	return cancel
+}
+
 // GetName returns the name of the plugin
 func (p *LoggerPlugin) GetName() string {
 	return PluginName
@@ -1807,6 +1913,23 @@ func userAgentFromContext(ctx *schemas.BifrostContext) string {
 	}
 	ua, _ := ctx.Value(schemas.BifrostContextKeyUserAgent).(string)
 	return ua
+}
+
+// clientIPFromContext returns the caller IP the transport set, clamped to the client_ip column, or "" when capture is off.
+func (p *LoggerPlugin) clientIPFromContext(ctx *schemas.BifrostContext) string {
+	if !p.captureClientIP {
+		return ""
+	}
+	clientIP, _ := ctx.Value(schemas.BifrostContextKeyClientIP).(string)
+	return clampString(clientIP, maxPersistedClientIPLen)
+}
+
+// optionalString returns nil for "" so absent values stay NULL.
+func optionalString(v string) *string {
+	if v == "" {
+		return nil
+	}
+	return &v
 }
 
 // captureLoggingHeaders extracts configured logging headers and x-bf-lh-* prefixed headers
@@ -1940,6 +2063,7 @@ func (p *LoggerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 	// Capture the raw User-Agent of the calling client (stored verbatim; the UI
 	// maps it to a client app such as Claude Code, Codex, or Cursor).
 	initialData.UserAgent = userAgentFromContext(ctx)
+	initialData.ClientIP = p.clientIPFromContext(ctx)
 	initialData.AgentCorrelationID = requestHeaderFromContext(ctx, "x-bf-agent-correlation-id")
 	initialData.App = p.detectAppFromUserAgent(initialData.UserAgent)
 	if appKey := schemas.AppKeyFromName(initialData.App); appKey != "" {
@@ -2178,6 +2302,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 					entry.App = &app
 				}
 			}
+			entry.ClientIP = optionalString(p.clientIPFromContext(ctx))
 			entry.MetadataParsed = mergeVirtualKeyMetadata(mergeLoadBalancerMetadata(mergeRealtimeMetadata(p.captureLoggingHeaders(ctx), ctx), ctx), ctx)
 			if isAsync, ok := ctx.Value(schemas.BifrostIsAsyncRequest).(bool); ok && isAsync {
 				if entry.MetadataParsed == nil {
@@ -2351,6 +2476,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 		}
 	}
 	applyOutputFieldsToEntry(entry, selectedKeyID, selectedKeyName, virtualKeyID, virtualKeyName, routingRuleID, routingRuleName, selectedPromptID, selectedPromptName, selectedPromptVersion, teamID, teamName, customerID, customerName, userID, userName, businessUnitID, businessUnitName, projectID, projectName, numberOfRetries, latency, upstreamLatency, overheadLatency, attemptTrail)
+	applyUserEmail(ctx, entry)
 	if complexityTier != "" {
 		entry.ComplexityTier = &complexityTier
 	}
@@ -2495,6 +2621,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 				if entry.RawResponse == "" {
 					if streamResponse != nil && streamResponse.Data != nil && streamResponse.Data.RawResponse != nil {
 						entry.RawResponse = *streamResponse.Data.RawResponse
+						entry.RawResponseFormat = streamResponse.Data.RawResponseFormat
 					} else if bifrostErr.ExtraFields.RawResponse != nil {
 						if rawRespBytes, err := sonic.Marshal(bifrostErr.ExtraFields.RawResponse); err == nil {
 							entry.RawResponse = string(rawRespBytes)
@@ -2545,6 +2672,9 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 				if cost := p.pricingManager.CalculateCost(result, pricingScopes); cost > 0 {
 					entry.Cost = &cost
 				}
+			}
+			if bifrostErr == nil && result.PassthroughResponse.ProviderJob != nil {
+				p.handleInteractionJob(ctx, entry, result)
 			}
 		}
 		applyLargePayloadPreviewsToEntry(ctx, entry, contentLoggingEnabled)
@@ -2637,6 +2767,9 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 			result.VideoGenerationResponse != nil {
 			p.accountVideoResults(entry, result, pricingScopes)
 		}
+	}
+	if bifrostErr == nil && result != nil && result.PassthroughResponse != nil && result.PassthroughResponse.ProviderJob != nil {
+		p.handleInteractionJob(ctx, entry, result)
 	}
 
 	// Pre-apply denormalized fields for WebSocket callback enrichment
@@ -2736,6 +2869,10 @@ func (p *LoggerPlugin) Cleanup() error {
 		if p.videoSweeperCancel != nil {
 			p.videoSweeperCancel()
 			p.videoSweeperCancel = nil
+		}
+		if p.interactionSweeperCancel != nil {
+			p.interactionSweeperCancel()
+			p.interactionSweeperCancel = nil
 		}
 		p.mu.Unlock()
 		// After closed is set, so no new row can be held behind this pass, and
@@ -3482,6 +3619,19 @@ func (p *LoggerPlugin) SetMCPToolLogCallback(callback MCPToolLogCallback) {
 	p.mcpToolLogCallback = callback
 }
 
+// isMCPConnectCall reports whether core marked this call as a client's connect tool (see
+// bifrost.MCPToolCallKindOf). toolName may come with or without the client prefix: responses name
+// the tool the upstream way, requests and errors with the prefix.
+func isMCPConnectCall(ctx *schemas.BifrostContext, clientName, toolName string) bool {
+	if clientName == "" || toolName == "" {
+		return false
+	}
+	if !strings.HasPrefix(toolName, clientName+"-") {
+		toolName = clientName + "-" + toolName
+	}
+	return bifrost.MCPToolCallKindOf(ctx, clientName, toolName) == schemas.MCPToolCallKindConnect
+}
+
 // PreMCPHook is called before an MCP tool execution - creates initial log entry
 // Parameters:
 //   - ctx: The Bifrost context
@@ -3502,6 +3652,9 @@ func (p *LoggerPlugin) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 	if !req.RequestType.IsExecuteTool() && !isRead {
 		return req, nil, nil
 	}
+	// A call named like a client's connect tool is recorded here like any other: whether it is
+	// Bifrost's connect tool or an upstream tool of that name can depend on a caller that a policy
+	// plugin registered after logging names later. PostMCPHook drops a confirmed connect call.
 
 	requestID, ok := ctx.Value(schemas.BifrostContextKeyRequestID).(string)
 	if !ok || requestID == "" {
@@ -3596,6 +3749,7 @@ func (p *LoggerPlugin) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 			entry.App = &app
 		}
 	}
+	entry.ClientIP = optionalString(p.clientIPFromContext(ctx))
 
 	// Set arguments if content logging is enabled. Governance's PreMCPHook runs after ours, so a
 	// request that presents a virtual key or names a project governance has not stamped yet has no
@@ -3654,6 +3808,20 @@ func (p *LoggerPlugin) PostMCPHook(ctx *schemas.BifrostContext, resp *schemas.Bi
 	if !mcpReqType.IsExecuteTool() && !mcpReqType.IsPromptOrResourceRead() {
 		return resp, bifrostErr, nil
 	}
+	// A client's connect tool only signs the caller in and discovers their tools, and its result
+	// can carry the sign-in link, so its calls are not logged, whether they answered or failed. The
+	// caller is known by now, so the mark is settled. Only core can mark one, so an upstream tool
+	// named "connect" is still logged.
+	var connectCall bool
+	if mcpReqType.IsExecuteTool() {
+		var clientName, toolName string
+		if resp != nil {
+			clientName, toolName = resp.ExtraFields.ClientName, resp.ExtraFields.ToolName
+		} else {
+			clientName, toolName = bifrostErr.ExtraFields.MCPClientName, bifrostErr.ExtraFields.MCPToolName
+		}
+		connectCall = isMCPConnectCall(ctx, clientName, toolName)
+	}
 	// Skip logging for codemode tools (executeToolCode, listToolFiles, readToolFile)
 	if resp != nil && bifrost.IsCodemodeTool(resp.ExtraFields.ToolName) {
 		return resp, bifrostErr, nil
@@ -3669,6 +3837,16 @@ func (p *LoggerPlugin) PostMCPHook(ctx *schemas.BifrostContext, resp *schemas.Bi
 	mcpLogID, ok := ctx.Value(schemas.BifrostContextKeyMCPLogID).(string)
 	if !ok || mcpLogID == "" {
 		mcpLogID = requestID
+	}
+
+	// A sign-in prompt is not a failed call: the caller still has to connect
+	// their account, and the sign-in link it carries must stay out of the store.
+	// Drop what PreMCPHook held so the stale sweeper does not write it either.
+	// The same goes for a connect call.
+	if connectCall || (bifrostErr != nil && bifrostErr.ExtraFields.MCPAuthRequired != nil) {
+		p.pendingMCPLogsToInject.Delete(mcpLogID)
+		p.provisionalMCPArguments.Delete(mcpLogID)
+		return resp, bifrostErr, nil
 	}
 
 	pendingVal, hasPending := p.pendingMCPLogsToInject.LoadAndDelete(mcpLogID)
@@ -3762,6 +3940,8 @@ func (p *LoggerPlugin) PostMCPHook(ctx *schemas.BifrostContext, resp *schemas.Bi
 			},
 		}
 	}
+	applyMCPRoundTrip(ctx, entry, resp, contentVisible)
+	applyMCPAppsMetadata(ctx, entry)
 
 	p.mu.Lock()
 	callback := p.mcpToolLogCallback

@@ -298,6 +298,14 @@ func (t *Tracer) SetTraceAttribute(traceID string, key string, value any) {
 	t.store.SetTraceAttribute(traceID, key, value)
 }
 
+// MergeTraceDimensions adds dims to the trace's dimensions, overwriting a name already there.
+func (t *Tracer) MergeTraceDimensions(traceID string, dims map[string]string) {
+	if len(dims) == 0 {
+		return
+	}
+	t.store.GetTrace(traceID).MergeDimensions(dims)
+}
+
 // SetTraceRedactionReplacements stores phase-scoped connector-facing replacements on a trace.
 func (t *Tracer) SetTraceRedactionReplacements(traceID string, phase schemas.RedactionPhase, replacements map[string]string) {
 	if t == nil || t.store == nil || strings.TrimSpace(traceID) == "" || len(replacements) == 0 {
@@ -1242,6 +1250,7 @@ func (t *Tracer) ProcessStreamingChunk(ctx *schemas.BifrostContext, traceID stri
 		accResult.PassthroughOutput = processedResp.Data.PassthroughOutput
 		accResult.FinishReason = processedResp.Data.FinishReason
 		accResult.RawResponse = processedResp.Data.RawResponse
+		accResult.RawResponseFormat = processedResp.Data.RawResponseFormat
 
 		// Fall back to the provider-reported cost when the catalog could not price
 		// the stream, unless the provider is configured with ignore_provider_cost.

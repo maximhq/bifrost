@@ -178,8 +178,26 @@ type LogManager interface {
 	// GetAvailableMCPVirtualKeys returns all unique virtual key ID-Name pairs from MCP tool logs
 	GetAvailableMCPVirtualKeys(ctx context.Context, limit int, query string) ([]KeyPair, error)
 
+	// GetAvailableMCPUsers returns the users ID-Name pairs from MCP tool logs
+	GetAvailableMCPUsers(ctx context.Context, limit int, query string) ([]KeyPair, error)
+
+	// GetAvailableMCPTeams returns the teams ID-Name pairs from MCP tool logs
+	GetAvailableMCPTeams(ctx context.Context, limit int, query string) ([]KeyPair, error)
+
+	// GetAvailableMCPCustomers returns the customers ID-Name pairs from MCP tool logs
+	GetAvailableMCPCustomers(ctx context.Context, limit int, query string) ([]KeyPair, error)
+
+	// GetAvailableMCPBusinessUnits returns the business units ID-Name pairs from MCP tool logs
+	GetAvailableMCPBusinessUnits(ctx context.Context, limit int, query string) ([]KeyPair, error)
+
+	// GetAvailableMCPProjects returns the projects ID-Name pairs from MCP tool logs
+	GetAvailableMCPProjects(ctx context.Context, limit int, query string) ([]KeyPair, error)
+
 	// GetMCPHistogram returns time-bucketed MCP tool call volume
 	GetMCPHistogram(ctx context.Context, filters logstore.MCPToolLogSearchFilters, bucketSizeSeconds int64) (*logstore.MCPHistogramResult, error)
+
+	// GetMCPLatencyHistogram returns time-bucketed latency percentiles of finished MCP tool calls
+	GetMCPLatencyHistogram(ctx context.Context, filters logstore.MCPToolLogSearchFilters, bucketSizeSeconds int64) (*logstore.LatencyHistogramResult, error)
 
 	// GetMCPCostHistogram returns time-bucketed MCP cost data
 	GetMCPCostHistogram(ctx context.Context, filters logstore.MCPToolLogSearchFilters, bucketSizeSeconds int64) (*logstore.MCPCostHistogramResult, error)
@@ -555,12 +573,55 @@ func (p *PluginLogManager) GetAvailableMCPVirtualKeys(ctx context.Context, limit
 	return p.plugin.GetAvailableMCPVirtualKeys(ctx, limit, query)
 }
 
+func (p *PluginLogManager) GetAvailableMCPUsers(ctx context.Context, limit int, query string) ([]KeyPair, error) {
+	if p == nil || p.plugin == nil {
+		return []KeyPair{}, nil
+	}
+	return p.plugin.GetAvailableMCPUsers(ctx, limit, query)
+}
+
+func (p *PluginLogManager) GetAvailableMCPTeams(ctx context.Context, limit int, query string) ([]KeyPair, error) {
+	if p == nil || p.plugin == nil {
+		return []KeyPair{}, nil
+	}
+	return p.plugin.GetAvailableMCPTeams(ctx, limit, query)
+}
+
+func (p *PluginLogManager) GetAvailableMCPCustomers(ctx context.Context, limit int, query string) ([]KeyPair, error) {
+	if p == nil || p.plugin == nil {
+		return []KeyPair{}, nil
+	}
+	return p.plugin.GetAvailableMCPCustomers(ctx, limit, query)
+}
+
+func (p *PluginLogManager) GetAvailableMCPBusinessUnits(ctx context.Context, limit int, query string) ([]KeyPair, error) {
+	if p == nil || p.plugin == nil {
+		return []KeyPair{}, nil
+	}
+	return p.plugin.GetAvailableMCPBusinessUnits(ctx, limit, query)
+}
+
+func (p *PluginLogManager) GetAvailableMCPProjects(ctx context.Context, limit int, query string) ([]KeyPair, error) {
+	if p == nil || p.plugin == nil {
+		return []KeyPair{}, nil
+	}
+	return p.plugin.GetAvailableMCPProjects(ctx, limit, query)
+}
+
 // GetMCPHistogram returns time-bucketed MCP tool call volume
 func (p *PluginLogManager) GetMCPHistogram(ctx context.Context, filters logstore.MCPToolLogSearchFilters, bucketSizeSeconds int64) (*logstore.MCPHistogramResult, error) {
 	if p.plugin == nil || p.plugin.store == nil {
 		return &logstore.MCPHistogramResult{}, nil
 	}
 	return p.plugin.store.GetMCPHistogram(ctx, filters, bucketSizeSeconds)
+}
+
+// GetMCPLatencyHistogram returns time-bucketed latency percentiles of finished MCP tool calls
+func (p *PluginLogManager) GetMCPLatencyHistogram(ctx context.Context, filters logstore.MCPToolLogSearchFilters, bucketSizeSeconds int64) (*logstore.LatencyHistogramResult, error) {
+	if p.plugin == nil || p.plugin.store == nil {
+		return &logstore.LatencyHistogramResult{}, nil
+	}
+	return p.plugin.store.GetMCPLatencyHistogram(ctx, filters, bucketSizeSeconds)
 }
 
 // GetMCPCostHistogram returns time-bucketed MCP cost data
@@ -1034,6 +1095,7 @@ func convertToProcessedStreamResponse(result *schemas.StreamAccumulatorResult, r
 		PassthroughOutput:     result.PassthroughOutput,
 		FinishReason:          result.FinishReason,
 		RawResponse:           result.RawResponse,
+		RawResponseFormat:     result.RawResponseFormat,
 	}
 
 	// Handle tool calls if present

@@ -1,6 +1,7 @@
 import { rssFeedIconSource } from "@/components/rssFeedIcon.utils";
 import { RenderProviderIcon } from "@/lib/constants/icons";
 import { cn } from "@/lib/utils";
+import { withBasePath } from "@/lib/utils/basePath";
 import { Rss } from "lucide-react";
 import { useTheme } from "next-themes";
 import { useState } from "react";
@@ -28,7 +29,7 @@ export default function RSSFeedIcon({ icon, iconUrl, feedUrl, name, size = 16, c
 	if (source.kind === "bifrost") {
 		return (
 			<span className={box} style={{ width: size, height: size }}>
-				<img alt={name} src={`/bifrost-icon${resolvedTheme === "dark" ? "-dark" : ""}.webp`} className={imgClass} />
+				<img alt={name} src={withBasePath(`/bifrost-icon${resolvedTheme === "dark" ? "-dark" : ""}.webp`)} className={imgClass} />
 			</span>
 		);
 	}

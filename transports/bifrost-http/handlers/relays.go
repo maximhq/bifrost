@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -30,6 +31,17 @@ type RelaysHandler struct {
 	// vkReloader refreshes the governance in-memory copy of every virtual key a relay delete
 	// took a grant from, as the Agent Gateway handler does for agent grants. Optional.
 	vkReloader VirtualKeyReloader
+	// redactedKeys resolves the virtual keys the filter data names, so a deleted key is dropped or
+	// labelled as the LLM logs filter data does; nil leaves the stored names as they are.
+	redactedKeys RedactedKeysManager
+}
+
+// SetRedactedKeysManager gives the Relay Logs filter data the same virtual-key resolution the LLM
+// logs filter data has (deleted keys hidden or labelled per hide_deleted_virtual_keys_in_filters).
+func (h *RelaysHandler) SetRedactedKeysManager(manager RedactedKeysManager) {
+	if h != nil {
+		h.redactedKeys = manager
+	}
 }
 
 // RelayManager owns relay mutations and the local runtime updates they require. Deployments may
@@ -87,7 +99,8 @@ func (h *RelaysHandler) ReloadFromStore(ctx context.Context) error {
 	return h.manager.Reload(ctx)
 }
 
-// RegisterRoutes mounts the management and logs routes behind the dashboard middleware.
+// RegisterRoutes mounts the management routes behind the dashboard middleware. The Relay Logs
+// routes are mounted separately (RegisterLogRoutes), only when request logging is on.
 func (h *RelaysHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.BifrostHTTPMiddleware) {
 	r.GET("/api/relays", lib.ChainMiddlewares(h.list, middlewares...))
 	r.POST("/api/relays", lib.ChainMiddlewares(h.create, middlewares...))
@@ -96,12 +109,18 @@ func (h *RelaysHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.
 	r.GET("/api/relays/{name}", lib.ChainMiddlewares(h.get, middlewares...))
 	r.PUT("/api/relays/{name}", lib.ChainMiddlewares(h.update, middlewares...))
 	r.DELETE("/api/relays/{name}", lib.ChainMiddlewares(h.delete, middlewares...))
+}
 
+// RegisterLogRoutes mounts the Relay Logs API. The server calls it exactly when it mounts
+// /api/logs (the logging plugin is loaded), so with logging off both answer 404 rather than one
+// of them serving rows from a store nothing writes to any more.
+func (h *RelaysHandler) RegisterLogRoutes(r *router.Router, middlewares ...schemas.BifrostHTTPMiddleware) {
 	r.GET("/api/relay-logs", lib.ChainMiddlewares(h.searchLogs, middlewares...))
 	r.DELETE("/api/relay-logs", lib.ChainMiddlewares(h.deleteLogs, middlewares...))
 	r.GET("/api/relay-logs/stats", lib.ChainMiddlewares(h.logStats, middlewares...))
 	r.GET("/api/relay-logs/filterdata", lib.ChainMiddlewares(h.logFilterData, middlewares...))
 	r.GET("/api/relay-logs/histogram", lib.ChainMiddlewares(h.logHistogram, middlewares...))
+	r.GET("/api/relay-logs/histogram/latency", lib.ChainMiddlewares(h.logLatencyHistogram, middlewares...))
 	r.GET("/api/relay-logs/top-endpoints", lib.ChainMiddlewares(h.topEndpoints, middlewares...))
 	r.GET("/api/relay-logs/{id}", lib.ChainMiddlewares(h.getLog, middlewares...))
 }
@@ -183,6 +202,9 @@ func (h *RelaysHandler) create(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	cfg.Name = strings.TrimSpace(cfg.Name)
+	if requireGenuineAuthForRelayChange(ctx, nil, &cfg) {
+		return
+	}
 	stored, err := h.relayManager.CreateRelay(workCtx, &cfg)
 	if err != nil {
 		h.storeError(ctx, err)
@@ -204,6 +226,12 @@ func (h *RelaysHandler) update(ctx *fasthttp.RequestCtx) {
 	var cfg schemas.RelayConfig
 	if err := json.Unmarshal(ctx.PostBody(), &cfg); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, "invalid relay: "+err.Error())
+		return
+	}
+	// Compared after the merge the manager applies, so a redacted secret sent back unchanged
+	// stands for the stored value it keeps and is not mistaken for a new one.
+	cfg.MergeRedacted(previous)
+	if requireGenuineAuthForRelayChange(ctx, previous, &cfg) {
 		return
 	}
 	updated, err := h.relayManager.UpdateRelay(workCtx, name, &cfg)
@@ -266,6 +294,110 @@ func (h *RelaysHandler) storeError(ctx *fasthttp.RequestCtx, err error) {
 		logger.Error("relay store error: %v", err)
 		SendError(ctx, fasthttp.StatusInternalServerError, "failed to save relay")
 	}
+}
+
+// relayDialChanges returns the sorted JSON paths of the settings next adds or changes relative to
+// old (nil on create) that decide where the relay's credential goes or which gateway secret it
+// sends: the base URL, the TLS trust and proxy the upstream is reached through, and every env. or
+// vault. reference among its secrets. A reference resolves from the gateway's own environment or
+// vault and is sent upstream on every call, so naming a new one discloses it as surely as a new
+// base URL does. Narrowing changes (clearing a value, turning insecure_skip_verify off) pass. Equality
+// is SecretVar.Equals, so swapping one reference for another counts even when the values match.
+func relayDialChanges(old, next *schemas.RelayConfig) []string {
+	if old == nil {
+		old = &schemas.RelayConfig{}
+	}
+	var changed []string
+	if next.BaseURL != "" && next.BaseURL != old.BaseURL {
+		changed = append(changed, "base_url")
+	}
+	var oldNetwork, nextNetwork schemas.RelayNetworkConfig
+	if old.Network != nil {
+		oldNetwork = *old.Network
+	}
+	if next.Network != nil {
+		nextNetwork = *next.Network
+	}
+	if nextNetwork.InsecureSkipVerify && !oldNetwork.InsecureSkipVerify {
+		changed = append(changed, "network.insecure_skip_verify")
+	}
+	if nextNetwork.CACertPEM != "" && nextNetwork.CACertPEM != oldNetwork.CACertPEM {
+		changed = append(changed, "network.ca_cert_pem")
+	}
+	var oldProxy, nextProxy schemas.ProxyConfig
+	if old.ProxyConfig != nil {
+		oldProxy = *old.ProxyConfig
+	}
+	if next.ProxyConfig != nil {
+		nextProxy = *next.ProxyConfig
+	}
+	widened := func(oldV, nextV *schemas.SecretVar) bool {
+		return nextV.IsSet() && !nextV.Equals(oldV)
+	}
+	if widened(oldProxy.URL, nextProxy.URL) {
+		changed = append(changed, "proxy_config.url")
+	}
+	if widened(oldProxy.CACertPEM, nextProxy.CACertPEM) {
+		changed = append(changed, "proxy_config.ca_cert_pem")
+	}
+	reference := func(path string, oldV, nextV *schemas.SecretVar) {
+		if nextV.IsFromSecret() && !nextV.Equals(oldV) {
+			changed = append(changed, path)
+		}
+	}
+	reference("proxy_config.username", oldProxy.Username, nextProxy.Username)
+	reference("proxy_config.password", oldProxy.Password, nextProxy.Password)
+	var oldCred, nextCred schemas.RelayCredential
+	if old.Credential != nil {
+		oldCred = *old.Credential
+	}
+	if next.Credential != nil {
+		nextCred = *next.Credential
+	}
+	reference("credential.value", oldCred.Value, nextCred.Value)
+	var oldAWS, nextAWS schemas.RelayAWSCredential
+	if oldCred.AWS != nil {
+		oldAWS = *oldCred.AWS
+	}
+	if nextCred.AWS != nil {
+		nextAWS = *nextCred.AWS
+	}
+	reference("credential.aws.access_key", oldAWS.AccessKey, nextAWS.AccessKey)
+	reference("credential.aws.secret_key", oldAWS.SecretKey, nextAWS.SecretKey)
+	reference("credential.aws.session_token", oldAWS.SessionToken, nextAWS.SessionToken)
+	reference("credential.aws.region", oldAWS.Region, nextAWS.Region)
+	reference("credential.aws.role_arn", oldAWS.RoleARN, nextAWS.RoleARN)
+	reference("credential.aws.external_id", oldAWS.ExternalID, nextAWS.ExternalID)
+	reference("credential.aws.session_name", oldAWS.SessionName, nextAWS.SessionName)
+	for name, value := range next.ExtraHeaders {
+		var oldValue *schemas.SecretVar
+		if stored, ok := old.ExtraHeaders[name]; ok {
+			oldValue = &stored
+		}
+		reference("extra_headers."+name, oldValue, &value)
+	}
+	slices.Sort(changed)
+	return changed
+}
+
+// requireGenuineAuthForRelayChange rejects a relay create/update under the fail-open bypass
+// (dashboard auth disabled or unconfigured) that would let the caller choose where the relay's
+// credential is sent or which gateway secret it sends (see relayDialChanges): repointing base_url
+// while sending back the redacted credential would hand the stored secret to the new host. It is
+// the relay counterpart of the provider, provider-key, plugin and webhook gates. old is the stored
+// relay on update, merged with the incoming config's redacted secrets, and nil on create; an update
+// that keeps every such setting passes, so bypassed callers can still edit routes and pricing. On
+// rejection this sends the response and returns true; callers should return immediately.
+func requireGenuineAuthForRelayChange(ctx *fasthttp.RequestCtx, old, next *schemas.RelayConfig) bool {
+	if !isAuthBypassed(ctx) {
+		return false
+	}
+	changed := relayDialChanges(old, next)
+	if len(changed) == 0 {
+		return false
+	}
+	SendError(ctx, fasthttp.StatusForbidden, fmt.Sprintf("Changing where a relay sends its credential or which secrets it references (%s) requires an authenticated admin session; dashboard auth is currently disabled or unconfigured. Enable dashboard authentication first.", strings.Join(changed, ", ")))
+	return true
 }
 
 // usagePreviewRequest checks a mapping against a sample call. Config is an unsaved endpoint; Name
@@ -351,39 +483,60 @@ func (h *RelaysHandler) logsStore(ctx *fasthttp.RequestCtx) logstore.LogStore {
 
 const relayLogsMaxLimit = 1000
 
+// relayAppsParam reads the apps filter as the LLM logs read theirs (parseStringArrayParam): a
+// JSON array, so an app name holding a comma stays one value, or a comma-separated list. Each
+// repeated apps param is read the same way.
+func relayAppsParam(args *fasthttp.Args) []string {
+	var out []string
+	seen := map[string]struct{}{}
+	for _, raw := range args.PeekMulti("apps") {
+		for _, app := range parseStringArrayParam(string(raw)) {
+			if _, ok := seen[app]; !ok {
+				seen[app] = struct{}{}
+				out = append(out, app)
+			}
+		}
+	}
+	return out
+}
+
+// parseRelayLogFilters reads the Relay Logs query. Only an unknown period is an error.
 func parseRelayLogFilters(ctx *fasthttp.RequestCtx) (logstore.RelayLogFilters, error) {
 	args := ctx.QueryArgs()
 	value := func(name string) string { return strings.TrimSpace(string(args.Peek(name))) }
 	values := func(name string) []string { return parseAgentHistoryMultiValue(args, name) }
 	f := logstore.RelayLogFilters{
-		EndpointNames: values("relay_names"), Methods: values("methods"), Statuses: values("statuses"), Kinds: values("kinds"),
+		EndpointNames: values("relay_names"), Methods: values("methods"), Statuses: values("status"), Kinds: values("kinds"),
 		VirtualKeyIDs: values("virtual_key_ids"), UserIDs: values("user_ids"), TeamIDs: values("team_ids"),
 		CustomerIDs: values("customer_ids"), BusinessUnitIDs: values("business_unit_ids"), ProjectIDs: values("project_ids"),
-		Apps: values("apps"), RequestID: value("request_id"), JobID: value("job_id"), Search: value("search"),
+		Apps: relayAppsParam(args), RequestID: value("request_id"), JobID: value("job_id"), SessionID: value("session_id"), ParentRequestID: value("parent_request_id"), AgentCorrelationID: value("agent_correlation_id"), Search: value("search"), ContentSearch: value("content_search"),
 	}
-	if raw := value("billable"); raw != "" {
-		b, err := strconv.ParseBool(raw)
-		if err != nil {
-			return f, fmt.Errorf("invalid billable: must be true or false")
-		}
+	// A value that does not parse is ignored, as /api/logs ignores one, rather than refusing the
+	// whole query. period is the exception (below).
+	if b, err := strconv.ParseBool(value("billable")); err == nil {
 		f.Billable = &b
 	}
 	for name, target := range map[string]**time.Time{"start_time": &f.StartTime, "end_time": &f.EndTime} {
 		if raw := value(name); raw != "" {
-			parsed, err := time.Parse(time.RFC3339Nano, raw)
-			if err != nil {
-				return f, fmt.Errorf("invalid %s: must be RFC3339", name)
+			if parsed, err := time.Parse(time.RFC3339Nano, raw); err == nil {
+				*target = &parsed
 			}
-			*target = &parsed
 		}
 	}
-	for name, target := range map[string]**float64{"min_cost": &f.MinCost, "max_cost": &f.MaxCost} {
+	// period wins over an explicit window, as on /api/logs. An unknown one is refused: ignoring it
+	// would read the call as one with no window at all.
+	if period := value("period"); period != "" {
+		start, end := ResolvePeriod(period, value("timezone"))
+		if start == nil {
+			return f, fmt.Errorf("invalid period: must be one of 1h, 6h, 24h, 7d, 30d, today, this_week, this_month")
+		}
+		f.StartTime, f.EndTime = start, end
+	}
+	for name, target := range map[string]**float64{"min_cost": &f.MinCost, "max_cost": &f.MaxCost, "min_latency": &f.MinLatency, "max_latency": &f.MaxLatency} {
 		if raw := value(name); raw != "" {
-			parsed, err := strconv.ParseFloat(raw, 64)
-			if err != nil {
-				return f, fmt.Errorf("invalid %s", name)
+			if parsed, err := strconv.ParseFloat(raw, 64); err == nil {
+				*target = &parsed
 			}
-			*target = &parsed
 		}
 	}
 	return f, nil
@@ -400,17 +553,16 @@ func (h *RelaysHandler) searchLogs(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	pagination := logstore.PaginationOptions{Limit: 50, SortBy: string(ctx.QueryArgs().Peek("sort_by")), Order: string(ctx.QueryArgs().Peek("order"))}
-	if raw := string(ctx.QueryArgs().Peek("limit")); raw != "" {
-		limit, err := strconv.Atoi(raw)
-		if err != nil || limit <= 0 || limit > relayLogsMaxLimit {
+	// As on /api/logs: a number out of range is refused, anything that is not a number is ignored.
+	if limit, err := strconv.Atoi(string(ctx.QueryArgs().Peek("limit"))); err == nil {
+		if limit <= 0 || limit > relayLogsMaxLimit {
 			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("invalid limit: must be between 1 and %d", relayLogsMaxLimit))
 			return
 		}
 		pagination.Limit = limit
 	}
-	if raw := string(ctx.QueryArgs().Peek("offset")); raw != "" {
-		offset, err := strconv.Atoi(raw)
-		if err != nil || offset < 0 {
+	if offset, err := strconv.Atoi(string(ctx.QueryArgs().Peek("offset"))); err == nil {
+		if offset < 0 {
 			SendError(ctx, fasthttp.StatusBadRequest, "invalid offset: must be a non-negative number")
 			return
 		}
@@ -464,7 +616,10 @@ func (h *RelaysHandler) deleteLogs(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, "failed to delete relay logs")
 		return
 	}
-	SendJSON(ctx, map[string]any{"deleted": len(req.IDs)})
+	// Audited and answered as the LLM, MCP and Agent log deletes are. The reply names no count:
+	// ids the caller may not see, or that are already gone, are skipped, so len(ids) would overstate it.
+	lib.RecordAuditChange(ctx, "relay_logs.deleted", "relay_logs", "relay_logs", "Relay logs", auditDeletedIDs(req.IDs), nil)
+	SendJSON(ctx, map[string]any{"message": "Relay logs deleted successfully"})
 }
 
 func (h *RelaysHandler) logStats(ctx *fasthttp.RequestCtx) {
@@ -489,7 +644,8 @@ func (h *RelaysHandler) logStats(ctx *fasthttp.RequestCtx) {
 	// /api/logs/stats does, so the metric strip can show the change against it. A window with
 	// no start and end has nothing to compare against, and a failed comparison degrades to none.
 	if compare := string(ctx.QueryArgs().Peek("compare_to_previous")); compare != "" {
-		if enabled, parseErr := strconv.ParseBool(compare); parseErr == nil && enabled && filters.StartTime != nil && filters.EndTime != nil && filters.EndTime.After(*filters.StartTime) {
+		// An exact request-id lookup has no window to compare, as hasComparableWindow rules for /api/logs.
+		if enabled, parseErr := strconv.ParseBool(compare); parseErr == nil && enabled && filters.RequestID == "" && filters.StartTime != nil && filters.EndTime != nil && filters.EndTime.After(*filters.StartTime) {
 			previous, prevErr := store.GetRelayLogStats(logCtx, previousRelayPeriodFilters(filters))
 			switch {
 			case prevErr != nil:
@@ -531,14 +687,10 @@ func (h *RelaysHandler) logHistogram(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
 	}
-	bucket := int64(3600)
-	if raw := string(ctx.QueryArgs().Peek("bucket_size_seconds")); raw != "" {
-		parsed, err := strconv.ParseInt(raw, 10, 64)
-		if err != nil || parsed <= 0 {
-			SendError(ctx, fasthttp.StatusBadRequest, "invalid bucket_size_seconds")
-			return
-		}
-		bucket = parsed
+	bucket, err := relayHistogramBucket(ctx, filters)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
 	}
 	logCtx := agentGatewayLogContext(ctx)
 	defer logCtx.Cancel()
@@ -548,6 +700,47 @@ func (h *RelaysHandler) logHistogram(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	SendJSON(ctx, result)
+}
+
+// logLatencyHistogram serves GET /api/relay-logs/histogram/latency: per-bucket avg, p90, p95 and
+// p99 latency and overhead, the shape /api/logs/histogram/latency returns.
+func (h *RelaysHandler) logLatencyHistogram(ctx *fasthttp.RequestCtx) {
+	store := h.logsStore(ctx)
+	if store == nil {
+		return
+	}
+	filters, err := parseRelayLogFilters(ctx)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
+	bucket, err := relayHistogramBucket(ctx, filters)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
+	logCtx := agentGatewayLogContext(ctx)
+	defer logCtx.Cancel()
+	result, err := store.GetRelayLatencyHistogram(logCtx, filters, bucket)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, "failed to get relay log latency histogram")
+		return
+	}
+	SendJSON(ctx, result)
+}
+
+// relayHistogramBucket is the bucket a histogram is drawn in: it follows the window, as on
+// /api/logs/histogram, and an explicit size (bucket_size, or bucket_size_seconds as the relay
+// histogram first named it) is validated the same way.
+func relayHistogramBucket(ctx *fasthttp.RequestCtx, filters logstore.RelayLogFilters) (int64, error) {
+	raw := string(ctx.QueryArgs().Peek("bucket_size"))
+	if raw == "" {
+		raw = string(ctx.QueryArgs().Peek("bucket_size_seconds"))
+	}
+	if raw == "" {
+		return calculateBucketSize(filters.StartTime, filters.EndTime), nil
+	}
+	return parseBucketSizeOverride(raw, filters.StartTime, filters.EndTime)
 }
 
 func (h *RelaysHandler) topEndpoints(ctx *fasthttp.RequestCtx) {
@@ -595,5 +788,38 @@ func (h *RelaysHandler) logFilterData(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, "failed to load relay log filters")
 		return
 	}
+	result.VirtualKeys = h.resolveRelayVirtualKeyOptions(ctx, result.VirtualKeys)
 	SendJSON(ctx, result)
+}
+
+// resolveRelayVirtualKeyOptions treats the virtual keys the rows name as the LLM logs filter data
+// does: a key that no longer exists is dropped under hide_deleted_virtual_keys_in_filters, and
+// labelled "(deleted)" otherwise. Keys are resolved only when the rows named some, since an empty
+// id list would read every key in the deployment.
+func (h *RelaysHandler) resolveRelayVirtualKeyOptions(ctx *fasthttp.RequestCtx, options []logstore.RelayFilterOption) []logstore.RelayFilterOption {
+	if h.redactedKeys == nil || len(options) == 0 {
+		return options
+	}
+	ids := make([]string, len(options))
+	for i, option := range options {
+		ids[i] = option.ID
+	}
+	existing := make(map[string]struct{}, len(ids))
+	for _, key := range h.redactedKeys.GetAllRedactedVirtualKeys(ctx, ids) {
+		existing[key.ID] = struct{}{}
+	}
+	hideDeleted := h.config != nil && h.config.ClientConfig != nil && h.config.ClientConfig.HideDeletedVirtualKeysInFilters
+	resolved := make([]logstore.RelayFilterOption, 0, len(options))
+	for _, option := range options {
+		if _, ok := existing[option.ID]; ok {
+			resolved = append(resolved, option)
+			continue
+		}
+		if hideDeleted {
+			continue
+		}
+		option.Name += " (deleted)"
+		resolved = append(resolved, option)
+	}
+	return resolved
 }

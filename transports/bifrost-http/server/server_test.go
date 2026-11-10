@@ -22,9 +22,11 @@ import (
 	"github.com/maximhq/bifrost/core/network"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/core/streamusage"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/logstore"
+	"github.com/maximhq/bifrost/framework/mcpdiscovery"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/framework/vectorstore"
 	"github.com/prometheus/client_golang/prometheus"
@@ -167,6 +169,46 @@ func TestReloadVirtualKeyAvoidsGovernanceSnapshot(t *testing.T) {
 	reloaded, ok := baseStore.GetVirtualKeyByID(ctx, "vk-id")
 	if !ok || reloaded.Value.GetValue() != "sk-bf-new" {
 		t.Fatalf("store does not answer with the reloaded key: %+v", reloaded)
+	}
+}
+
+// perCallerNamesConfigStore counts the reads of the names in per-user discoveries.
+type perCallerNamesConfigStore struct {
+	configstore.ConfigStore
+	reads atomic.Int32
+}
+
+// GetMCPPerUserDiscoveryNames counts the read and answers that no caller holds a discovery.
+func (s *perCallerNamesConfigStore) GetMCPPerUserDiscoveryNames(context.Context, []string) (map[string]configstore.MCPPerUserDiscoveryNames, error) {
+	s.reads.Add(1)
+	return nil, nil
+}
+
+// Every per-user discovery eviction (this process's own write, a delete from the sessions page,
+// another process's write) brings /mcp's per-caller entries up to date, off the caller's path.
+func TestEvictMCPPerUserDiscoveryCache_ResyncsTheMCPGateway(t *testing.T) {
+	handlers.SetLogger(noopTestLogger{})
+	ctx := context.Background()
+	store := &perCallerNamesConfigStore{}
+	config := &lib.Config{
+		ConfigStore:  store,
+		ClientConfig: &configstore.ClientConfig{},
+		MCPConfig: &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{
+			{ID: "notes-id", Name: "notes", PerUserDiscovery: schemas.Ptr(true)},
+		}},
+	}
+	config.MCPPerUserDiscoveryStore = mcpdiscovery.NewPerUserStore(store, noopTestLogger{})
+	mcpHandler, err := handlers.NewMCPServerHandler(ctx, config, reloadVirtualKeyToolManager{}, nil, nil, nil)
+	require.NoError(t, err)
+	server := &BifrostHTTPServer{Config: config, MCPServerHandler: mcpHandler}
+
+	for name, evict := range map[string]func(){
+		"one binding": func() { server.EvictMCPPerUserDiscoveryCache(ctx, schemas.MCPAuthModeUser, "alice", "notes-id") },
+		"one client":  func() { server.EvictMCPPerUserDiscoveryCacheByMCPClient(ctx, "notes-id") },
+	} {
+		before := store.reads.Load()
+		evict()
+		assert.Eventually(t, func() bool { return store.reads.Load() > before }, 5*time.Second, 10*time.Millisecond, name)
 	}
 }
 
@@ -2266,4 +2308,102 @@ func TestGovernanceInMemoryStoreProvidersSurviveEdits(t *testing.T) {
 	config.Mu.Unlock()
 	_, leaked := providers[schemas.Gemini]
 	assert.False(t, leaked, "the returned map is a snapshot, not the live map")
+}
+
+// TestApplyBasePath pins the resolve-and-store step that Bootstrap runs, and
+// that builds with their own bootstrap (enterprise) call: the flag value wins
+// over server.base_path, the normalized result lands on the server, on its
+// ServerConfig (created when absent) and in lib.BasePath, and an invalid value
+// is an error.
+func TestApplyBasePath(t *testing.T) {
+	t.Cleanup(func() { lib.SetBasePath("") })
+
+	s := &BifrostHTTPServer{BasePath: "/from-flag/", Config: &lib.Config{ServerConfig: &lib.ServerConfig{BasePath: "/from-config"}}}
+	require.NoError(t, s.ApplyBasePath())
+	assert.Equal(t, "/from-flag", s.BasePath)
+	assert.Equal(t, "/from-flag", s.Config.ServerConfig.BasePath)
+	assert.Equal(t, "/from-flag", lib.BasePath())
+
+	s = &BifrostHTTPServer{Config: &lib.Config{ServerConfig: &lib.ServerConfig{BasePath: "/from-config/"}}}
+	require.NoError(t, s.ApplyBasePath())
+	assert.Equal(t, "/from-config", s.BasePath)
+	assert.Equal(t, "/from-config", lib.BasePath())
+
+	s = &BifrostHTTPServer{BasePath: "/bifrost", Config: &lib.Config{}}
+	require.NoError(t, s.ApplyBasePath())
+	require.NotNil(t, s.Config.ServerConfig)
+	assert.Equal(t, "/bifrost", s.Config.ServerConfig.BasePath)
+
+	s = &BifrostHTTPServer{BasePath: "no-slash", Config: &lib.Config{}}
+	assert.Error(t, s.ApplyBasePath())
+}
+
+// clientConfigOnlyStore serves a fixed client config to ReloadClientConfigFromConfigStore.
+type clientConfigOnlyStore struct {
+	configstore.ConfigStore
+	clientConfig configstore.ClientConfig
+}
+
+func (s *clientConfigOnlyStore) GetClientConfig(context.Context) (*configstore.ClientConfig, error) {
+	cc := s.clientConfig
+	return &cc, nil
+}
+
+// reloadSnapshotTracer hands a fixed accumulated response to cancelled-stream estimation.
+type reloadSnapshotTracer struct {
+	schemas.NoOpTracer
+	snapshot *schemas.BifrostResponse
+}
+
+func (s *reloadSnapshotTracer) GetAccumulatedResponse(string) *schemas.BifrostResponse {
+	return s.snapshot
+}
+
+// PUT /api/config no longer applies usage_estimation_tokenizers itself: the reload that
+// follows a successful save is the only path that hands the stored list to the client.
+// This pins that the reload does, for enabling a family and for clearing the list.
+func TestReloadClientConfigFromConfigStore_AppliesUsageEstimationTokenizers(t *testing.T) {
+	prevLogger := logger
+	logger = noopTestLogger{}
+	t.Cleanup(func() { logger = prevLogger })
+	t.Cleanup(func() { streamusage.Configure(nil) })
+
+	store := &clientConfigOnlyStore{}
+	cfg := &lib.Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}}
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+		Account: lib.NewBaseAccount(cfg),
+		Logger:  bifrost.NewDefaultLogger(schemas.LogLevelError),
+	})
+	require.NoError(t, err)
+	t.Cleanup(client.Shutdown)
+	server := &BifrostHTTPServer{Config: cfg, Client: client}
+
+	const model = "claude-opus-4-5"
+	tokenizer := func() string {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyTracer, schemas.Tracer(&reloadSnapshotTracer{snapshot: &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{
+			Choices: []schemas.BifrostResponseChoice{{ChatNonStreamResponseChoice: &schemas.ChatNonStreamResponseChoice{Message: &schemas.ChatMessage{
+				Role: schemas.ChatMessageRoleAssistant, Content: &schemas.ChatMessageContent{ContentStr: new("hello world")},
+			}}}},
+		}}}))
+		ctx.SetValue(schemas.BifrostContextKeyTraceID, "trace-reload-tokenizers")
+		failure := &schemas.BifrostError{Error: &schemas.ErrorField{Type: new(schemas.RequestCancelled)}}
+		streamusage.Estimate(ctx, &schemas.BifrostRequest{RequestType: schemas.ChatCompletionStreamRequest, ChatRequest: &schemas.BifrostChatRequest{
+			Model: model, Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: new("hi")}}},
+		}}, model, failure)
+		require.NotNil(t, failure.ExtraFields.BilledUsage)
+		require.NotNil(t, failure.ExtraFields.BilledUsage.Estimation)
+		return failure.ExtraFields.BilledUsage.Estimation.Tokenizer
+	}
+	require.Equal(t, "cl100k_base", tokenizer(), "no family is enabled before the first reload")
+
+	store.clientConfig.UsageEstimationTokenizers = []string{"anthropic", "llama3"}
+	require.NoError(t, server.ReloadClientConfigFromConfigStore(context.Background()))
+	assert.Equal(t, []string{"anthropic", "llama3"}, cfg.ClientConfig.UsageEstimationTokenizers, "the live config holds the stored list")
+	assert.Equal(t, "anthropic", tokenizer(), "the client estimates with the stored families")
+
+	store.clientConfig.UsageEstimationTokenizers = nil
+	require.NoError(t, server.ReloadClientConfigFromConfigStore(context.Background()))
+	assert.Empty(t, cfg.ClientConfig.UsageEstimationTokenizers)
+	assert.Equal(t, "cl100k_base", tokenizer(), "clearing the stored list returns the client to the base encodings")
 }

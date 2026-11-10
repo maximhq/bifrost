@@ -61,8 +61,8 @@ func applySecurityHeaders(ctx *fasthttp.RequestCtx) {
 	ctx.Response.Header.Set("Referrer-Policy", "strict-origin-when-cross-origin")
 	ctx.Response.Header.Set("Content-Security-Policy", "frame-ancestors 'none'")
 	ctx.Response.Header.Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
-	// Only set HSTS when serving over HTTPS (detected via reverse proxy header or direct TLS)
-	if string(ctx.Request.Header.Peek("X-Forwarded-Proto")) == "https" || ctx.IsTLS() {
+	// Only set HSTS when serving over HTTPS (direct TLS or a proxy's forwarded-proto header)
+	if lib.RequestIsHTTPS(ctx) {
 		ctx.Response.Header.Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
 	}
 	// Keep CDNs from caching API responses; handlers may override.
@@ -178,9 +178,122 @@ func panicSummary(r any) string {
 	return fmt.Sprintf("%T", r)
 }
 
-// ServerRootHandler wraps the router with the server-level middlewares.
+// ServerRootHandler wraps the router with the server-level middlewares. The
+// base-path middleware is added outermost only when server.base_path is
+// configured, so the default chain is unchanged.
 func ServerRootHandler(cors *CorsMiddleware, config *lib.Config, router fasthttp.RequestHandler) fasthttp.RequestHandler {
-	return SecurityHeadersMiddleware()(cors.Middleware()(RecoveryMiddleware(cors)(RequestDecompressionMiddleware(config)(router))))
+	return BasePathRootHandler(config, SecurityHeadersMiddleware()(cors.Middleware()(RecoveryMiddleware(cors)(RequestDecompressionMiddleware(config)(router)))))
+}
+
+// BasePathRootHandler wraps a server's root handler with the base-path strip
+// when server.base_path is configured, and returns next unchanged otherwise.
+// ServerRootHandler applies it; a build that assembles its own root chain
+// instead of calling ServerRootHandler wraps that chain with it, once and
+// outermost. Wrapping a chain that already went through ServerRootHandler
+// would strip the prefix twice.
+func BasePathRootHandler(config *lib.Config, next fasthttp.RequestHandler) fasthttp.RequestHandler {
+	if config == nil || config.ServerConfig == nil || config.ServerConfig.BasePath == "" {
+		return next
+	}
+	return basePathMiddleware(config.ServerConfig.BasePath)(next)
+}
+
+// basePathMiddleware strips basePath (normalized, e.g. "/bifrost") from the
+// request URI so every route, auth whitelist entry and path check downstream
+// sees the root-relative path. Requests that do not carry the prefix pass
+// through untouched, so proxies that already strip it, and unprefixed probes
+// such as /health, keep working. The match is on whole segments: "/bifrostx"
+// is not stripped. It is unexported so ServerRootHandler stays the only place
+// it is wired; a second wiring would strip the prefix twice.
+//
+// A same-origin Location on the response to a prefixed request gets the prefix
+// back (see prefixLocation): the router builds its trailing-slash and
+// fixed-path redirects from the stripped path, which would otherwise send the
+// browser out from under the proxy prefix.
+func basePathMiddleware(basePath string) schemas.BifrostHTTPMiddleware {
+	prefix := []byte(basePath)
+	return func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
+		return func(ctx *fasthttp.RequestCtx) {
+			if !stripBasePath(ctx, prefix) {
+				next(ctx)
+				return
+			}
+			next(ctx)
+			prefixLocation(ctx, prefix)
+		}
+	}
+}
+
+// stripBasePath rewrites the raw request URI without the prefix and reports
+// whether it did. The URI is re-set, not just the path, so Path() and
+// PathOriginal() agree afterwards.
+func stripBasePath(ctx *fasthttp.RequestCtx, prefix []byte) bool {
+	uri := ctx.Request.URI()
+	rawPath := uri.PathOriginal()
+	if !bytes.HasPrefix(rawPath, prefix) {
+		return false
+	}
+	rest := rawPath[len(prefix):]
+	if len(rest) > 0 && rest[0] != '/' {
+		return false
+	}
+	var stack [512]byte
+	buf := stack[:0]
+	if len(rest) == 0 {
+		buf = append(buf, '/')
+	} else {
+		buf = append(buf, rest...)
+	}
+	if query := uri.QueryString(); len(query) > 0 {
+		buf = append(buf, '?')
+		buf = append(buf, query...)
+	}
+	ctx.Request.SetRequestURIBytes(buf)
+	return true
+}
+
+// prefixLocation puts prefix in front of the path of the response's Location
+// header when it points at this origin (a root-relative path, or an absolute
+// URL whose host is the request's Host) and is not already under prefix.
+// Protocol-relative and other-origin URLs are left alone, as is a Location the
+// handler marked with markLocationExternal.
+func prefixLocation(ctx *fasthttp.RequestCtx, prefix []byte) {
+	loc := ctx.Response.Header.Peek(fasthttp.HeaderLocation)
+	if len(loc) == 0 {
+		return
+	}
+	if external, _ := ctx.UserValue(locationExternalKey).(bool); external {
+		return
+	}
+	var pathStart int
+	if loc[0] == '/' {
+		if len(loc) > 1 && (loc[1] == '/' || loc[1] == '\\') {
+			return
+		}
+	} else {
+		sep := bytes.Index(loc, []byte("://"))
+		if sep <= 0 {
+			return
+		}
+		authorityStart := sep + len("://")
+		authority := loc[authorityStart:]
+		if end := bytes.IndexAny(authority, "/?#"); end >= 0 {
+			authority = authority[:end]
+		}
+		if !bytes.EqualFold(authority, ctx.Host()) {
+			return
+		}
+		pathStart = authorityStart + len(authority)
+	}
+	path := loc[pathStart:]
+	if bytes.HasPrefix(path, prefix) && (len(path) == len(prefix) || bytes.IndexByte([]byte("/?#"), path[len(prefix)]) >= 0) {
+		return
+	}
+	out := make([]byte, 0, len(loc)+len(prefix))
+	out = append(out, loc[:pathStart]...)
+	out = append(out, prefix...)
+	out = append(out, path...)
+	ctx.Response.Header.SetBytesV(fasthttp.HeaderLocation, out)
 }
 
 // InferenceOuterMiddlewares returns the middlewares that wrap every inference route
@@ -188,27 +301,6 @@ func ServerRootHandler(cors *CorsMiddleware, config *lib.Config, router fasthttp
 // turned into a 500 before the tracing defer records the root span status.
 func InferenceOuterMiddlewares(tm *TracingMiddleware, cors *CorsMiddleware) []schemas.BifrostHTTPMiddleware {
 	return []schemas.BifrostHTTPMiddleware{tm.Middleware(), RecoveryMiddleware(cors)}
-}
-
-// clientForwardedIP returns the client-supplied originating IP from reverse-proxy
-// headers, or "" if none are present. X-Forwarded-For may be a comma-separated list
-// (client, proxy1, proxy2); the leftmost entry is the original client.
-//
-// These headers are caller-controlled and unauthenticated unless Bifrost sits behind
-// a trusted proxy that overwrites them. The value is logged as http.forwarded_for —
-// separate from the authoritative http.remote_addr (the real TCP peer) — so a forged
-// header cannot mask the true peer in the access log.
-func clientForwardedIP(ctx *fasthttp.RequestCtx) string {
-	if xff := strings.TrimSpace(string(ctx.Request.Header.Peek("X-Forwarded-For"))); xff != "" {
-		if first, _, found := strings.Cut(xff, ","); found {
-			return strings.TrimSpace(first)
-		}
-		return xff
-	}
-	if xrip := strings.TrimSpace(string(ctx.Request.Header.Peek("X-Real-IP"))); xrip != "" {
-		return xrip
-	}
-	return ""
 }
 
 // corsMiddlewareConfig is an immutable snapshot of the CORS-relevant client config.
@@ -276,17 +368,23 @@ func (c *CorsMiddleware) UpdateConfig(config *lib.Config) {
 	c.config.Store(newCorsMiddlewareConfig(config))
 }
 
-// logRequestTarget is the request target for the access log with an api-key query value redacted: the
-// Azure Voice Live JavaScript SDK always sends its key, a virtual key here, in the query string. The
-// parsed names are checked, so a percent-encoded api-key name is redacted too.
+// logRequestTarget is the request target for the access log with api-key and key query values redacted: the
+// Azure Voice Live JavaScript SDK always sends its key, a virtual key here, as api-key, and a Gemini Live
+// client may send its own as key. The parsed names are checked, so a percent-encoded name is redacted too.
 func logRequestTarget(ctx *fasthttp.RequestCtx) string {
 	uri := ctx.RequestURI()
-	if bytes.IndexByte(uri, '?') < 0 || !ctx.QueryArgs().Has("api-key") {
+	if bytes.IndexByte(uri, '?') < 0 || (!ctx.QueryArgs().Has("api-key") && !ctx.QueryArgs().Has("key")) {
 		return string(uri)
 	}
+	// Args.Set would replace only the first of a repeated name, so every pair is rebuilt.
 	var args fasthttp.Args
-	ctx.QueryArgs().CopyTo(&args)
-	args.Set("api-key", schemas.RedactedAttrValue)
+	for name, value := range ctx.QueryArgs().All() {
+		if string(name) == "api-key" || string(name) == "key" {
+			args.AddBytesK(name, schemas.RedactedAttrValue)
+			continue
+		}
+		args.AddBytesKV(name, value)
+	}
 	return string(ctx.Request.URI().PathOriginal()) + "?" + args.String()
 }
 
@@ -321,7 +419,7 @@ func (c *CorsMiddleware) Middleware() schemas.BifrostHTTPMiddleware {
 						Int64("http.request_duration_ms", time.Since(startTime).Milliseconds()).
 						Str("http.remote_addr", ctx.RemoteAddr().String()).
 						Str("http.user_agent", string(ctx.Request.Header.UserAgent()))
-					if forwarded := clientForwardedIP(ctx); forwarded != "" {
+					if forwarded := lib.ClientForwardedIP(ctx); forwarded != "" {
 						logBuilder = logBuilder.Str("http.forwarded_for", forwarded)
 					}
 					if traceID, ok := ctx.UserValue(schemas.BifrostContextKeyTraceID).(string); ok && traceID != "" {
@@ -1316,6 +1414,9 @@ func buildRealtimeTransportPathSet() map[string]struct{} {
 		paths[path] = struct{}{}
 	}
 	for _, path := range integrations.OpenAIRealtimeWebRTCCallsPaths("/openai") {
+		paths[path] = struct{}{}
+	}
+	for _, path := range integrations.GenAIRealtimePaths("/genai") {
 		paths[path] = struct{}{}
 	}
 	return paths
@@ -2346,7 +2447,7 @@ func (m *TracingMiddleware) Middleware() schemas.BifrostHTTPMiddleware {
 				// The query string is dropped, not redacted: it can carry session
 				// credentials and nothing downstream needs it.
 				scheme := "http"
-				if ctx.IsTLS() || string(ctx.Request.Header.Peek("X-Forwarded-Proto")) == "https" {
+				if lib.RequestIsHTTPS(ctx) {
 					scheme = "https"
 				}
 				method, originalMethod := normalizeHTTPMethod(rawMethod)
@@ -2518,4 +2619,16 @@ func appendMCPParamHeaders(allowed string, requested []byte) string {
 		}
 	}
 	return out.String()
+}
+
+// locationExternalKey is the request user value a handler sets when its Location
+// header is a third party's URL that may share this host, such as an OAuth client's
+// redirect_uri, so prefixLocation leaves it alone.
+const locationExternalKey = "bf-location-external"
+
+// markLocationExternal records that the response's Location leaves Bifrost: the
+// base-path middleware will not pull it under server.base_path even when it is
+// root-relative or on this host.
+func markLocationExternal(ctx *fasthttp.RequestCtx) {
+	ctx.SetUserValue(locationExternalKey, true)
 }

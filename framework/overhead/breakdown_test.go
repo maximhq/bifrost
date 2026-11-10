@@ -1,6 +1,7 @@
 package overhead
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -375,6 +376,54 @@ func TestComputeOverheadBreakdown_StreamingPostHookChildOutsideWindow(t *testing
 	}
 }
 
+// A background span (a guardrail checking the response after delivery) starts inside
+// the plugin's post-hook and runs past the request. The client never waited for it, so
+// it adds nothing to any bucket and takes nothing from the post-hook that started it.
+func TestComputeOverheadBreakdown_BackgroundSpanExcluded(t *testing.T) {
+	base := time.Now()
+	root := span(base, "root", "", "/v1/chat/completions", schemas.SpanKindHTTPRequest, 0, 100)
+	monitor := span(base, "monitor", "post", "plugin.guard.output", schemas.SpanKindPlugin, 92, 1400)
+	monitor.Attributes = map[string]any{schemas.AttrBifrostBackground: true}
+	trace := &schemas.Trace{
+		RootSpan: root,
+		Spans: []*schemas.Span{
+			root,
+			span(base, "llm", "root", "chat gpt-4o-mini", schemas.SpanKindLLMCall, 10, 90),
+			span(base, "post", "root", "plugin.guard.posthook", schemas.SpanKindPlugin, 90, 95), // 5ms
+			monitor,
+		},
+	}
+	got := bucketMap(t, trace, 20, true)
+	if got["plugin.guard"] != 5000 {
+		t.Errorf("plugin.guard = %v us, want 5000 (the post-hook alone)", got["plugin.guard"])
+	}
+}
+
+// A background provider call (one a guardrail makes after the response is delivered)
+// is not the request's provider glue: provider-internal covers the request's own call.
+func TestComputeOverheadBreakdown_BackgroundLLMCallExcluded(t *testing.T) {
+	base := time.Now()
+	root := span(base, "root", "", "/v1/chat/completions", schemas.SpanKindHTTPRequest, 0, 100)
+	judge := span(base, "judge", "root", "chat guard-judge", schemas.SpanKindLLMCall, 95, 1095)
+	judge.Attributes = map[string]any{schemas.AttrBifrostBackground: true}
+	trace := &schemas.Trace{
+		RootSpan: root,
+		Spans: []*schemas.Span{
+			root,
+			span(base, "llm", "root", "chat gpt-4o-mini", schemas.SpanKindLLMCall, 10, 90), // 80ms, 75ms of it upstream
+			judge,
+		},
+	}
+	buckets, _, _ := Compute(trace, 25, true, 75, true)
+	got := map[string]float64{}
+	for _, b := range buckets {
+		got[b.Name] = b.DurationUs
+	}
+	if got["provider-internal"] != 5000 {
+		t.Errorf("provider-internal = %v us, want 5000 (the request's own call only)", got["provider-internal"])
+	}
+}
+
 // ComputeForMetrics rolls each raw bucket into its UI category: plugin.<name> ->
 // "plugins", middleware.<name> -> "middleware", key.selection -> "routing", and the
 // scheduling residual -> "miscellaneous". Raw span names must never leak into the metric.
@@ -469,6 +518,69 @@ func TestMetricComponent_A2APhaseBuckets(t *testing.T) {
 		got := MetricComponent(logstore.OverheadBucket{Name: name, Kind: string(schemas.SpanKindInternal)})
 		if got != category {
 			t.Errorf("MetricComponent(%q) = %q, want %q", name, got, category)
+		}
+	}
+}
+
+// BenchmarkCompute breaks down a 30-span trace, as each traced request's log row does.
+func BenchmarkCompute(b *testing.B) {
+	base := time.Now()
+	root := span(base, "root", "", "/v1/chat/completions", schemas.SpanKindHTTPRequest, 0, 300)
+	spans := []*schemas.Span{root, span(base, "llm", "root", "chat gpt-4o-mini", schemas.SpanKindLLMCall, 50, 250)}
+	for i := 0; i < 28; i++ {
+		spans = append(spans, span(base, fmt.Sprintf("p%d", i), "root", fmt.Sprintf("plugin.p%d.prehook", i%12), schemas.SpanKindPlugin, i, i+1))
+	}
+	trace := &schemas.Trace{RootSpan: root, Spans: spans}
+	b.ReportAllocs()
+	for b.Loop() {
+		Compute(trace, 100, true, 200, true)
+	}
+}
+
+// A relay span plays the llm.call role: its own time beyond the upstream is the relay's glue
+// (request building, reply copy, usage reading, pricing), reported as provider-internal rather
+// than left in the scheduling residual.
+func TestComputeOverheadBreakdown_RelaySpanIsTheCall(t *testing.T) {
+	base := time.Now()
+	root := span(base, "root", "", "/relay/docs/search", schemas.SpanKindHTTPRequest, 0, 100)
+	trace := &schemas.Trace{
+		RootSpan: root,
+		Spans: []*schemas.Span{
+			root,
+			span(base, "relay", "root", "relay docs", schemas.SpanKindRelay, 10, 90), // 80ms, 70ms of it upstream
+		},
+	}
+	buckets, _, isStreaming := Compute(trace, 30, true, 70, true)
+	if isStreaming {
+		t.Fatal("a relay span not marked streamed is a unary call")
+	}
+	got := map[string]float64{}
+	for _, b := range buckets {
+		got[b.Name] = b.DurationUs
+	}
+	if got["provider-internal"] != 10000 {
+		t.Errorf("provider-internal = %v us, want 10000 (relay span 80ms minus 70ms upstream)", got["provider-internal"])
+	}
+	if got["scheduling"] != 20000 {
+		t.Errorf("scheduling = %v us, want only the 20ms no span covers", got["scheduling"])
+	}
+}
+
+// A relay span marked streamed makes the trace a stream even with no stream-overhead figure on
+// the root span (a fast, empty or non-SSE stream), so its stream is not read as scheduling.
+func TestComputeOverheadBreakdown_StreamedRelayIsAStream(t *testing.T) {
+	base := time.Now()
+	root := span(base, "root", "", "/relay/tts/speak", schemas.SpanKindHTTPRequest, 0, 1000)
+	relaySpan := span(base, "relay", "root", "relay tts", schemas.SpanKindRelay, 10, 990)
+	relaySpan.Attributes = map[string]any{schemas.AttrBifrostRelayStreamed: true}
+	trace := &schemas.Trace{RootSpan: root, Spans: []*schemas.Span{root, relaySpan}}
+	buckets, _, isStreaming := Compute(trace, 400, true, 600, true)
+	if !isStreaming {
+		t.Fatal("a streamed relay span makes the trace a stream")
+	}
+	for _, b := range buckets {
+		if b.Name == "scheduling" || b.Name == "provider-internal" {
+			t.Errorf("a stream emits no %s bucket, got %v us", b.Name, b.DurationUs)
 		}
 	}
 }

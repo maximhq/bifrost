@@ -2,6 +2,7 @@ package tracing
 
 import (
 	"context"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -10,9 +11,11 @@ import (
 	"github.com/bytedance/sonic"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/core/streamusage"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/grant"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
+	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet"
 	"github.com/stretchr/testify/require"
 )
 
@@ -555,6 +558,23 @@ func TestTracer_SetAttribute(t *testing.T) {
 
 // A span opened once its work has finished is backdated to when the work began, so it
 // exports with the work's real duration; its end time is left as EndSpan sets it.
+func TestTracer_MergeTraceDimensions(t *testing.T) {
+	store := NewTraceStore(5*time.Minute, nil)
+	defer store.Stop()
+	tracer := NewTracer(store, nil, nil)
+	defer tracer.Stop()
+
+	traceID := tracer.CreateTrace("")
+	tracer.SetTraceAttribute(traceID, schemas.TraceAttrDimensions, map[string]string{"team": "header"})
+	tracer.MergeTraceDimensions(traceID, map[string]string{"team": "vk", "cost_center": "cc-42"})
+	tracer.MergeTraceDimensions("missing-trace", map[string]string{"team": "vk"})
+
+	got := schemas.TraceDimensions(store.GetTrace(traceID).Attributes)
+	if got["team"] != "vk" || got["cost_center"] != "cc-42" || len(got) != 2 {
+		t.Errorf("dimensions = %v, want team=vk cost_center=cc-42", got)
+	}
+}
+
 func TestTracer_SetSpanStartTime(t *testing.T) {
 	store := NewTraceStore(5*time.Minute, nil)
 	defer store.Stop()
@@ -1584,4 +1604,71 @@ func TestTracer_StampsTimeToFirstTokenFromRequestReceipt(t *testing.T) {
 	if after, _ := root.GetAttribute(schemas.AttrBifrostTimeToFirstTokenMs); after != before {
 		t.Errorf("%s moved from %v to %v on a later chunk", schemas.AttrBifrostTimeToFirstTokenMs, before, after)
 	}
+}
+
+// A cancelled stream's usage is estimated from the same accumulator the logging
+// plugin feeds, read mid-stream before the accumulator is finalized.
+func TestTracer_CancelledStreamEstimatedFromAccumulator(t *testing.T) {
+	store := NewTraceStore(5*time.Minute, nil)
+	defer store.Stop()
+	tracer := NewTracer(store, nil, bifrost.NewNoOpLogger())
+	defer tracer.Stop()
+
+	const traceID = "trace-cancelled-estimate"
+	tracer.CreateStreamAccumulator(traceID, time.Now())
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyTracer, tracer)
+	ctx.SetValue(schemas.BifrostContextKeyTraceID, traceID)
+	for i, text := range []string{"hello ", "world"} {
+		chunk := &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{
+			Choices: []schemas.BifrostResponseChoice{{ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{Delta: &schemas.ChatStreamResponseChoiceDelta{Content: schemas.Ptr(text)}}}},
+		}}
+		chunk.PopulateExtraFields(schemas.ChatCompletionStreamRequest, schemas.OpenAI, "gpt-4o", "gpt-4o")
+		chunk.ChatResponse.ExtraFields.ChunkIndex = i
+		tracer.ProcessStreamingChunk(ctx, traceID, false, chunk, nil)
+	}
+
+	request := &schemas.BifrostRequest{RequestType: schemas.ChatCompletionStreamRequest, ChatRequest: &schemas.BifrostChatRequest{
+		Model: "gpt-4o", Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}}},
+	}}
+	cancelled := &schemas.BifrostError{Error: &schemas.ErrorField{Type: schemas.Ptr(schemas.RequestCancelled)}}
+	streamusage.Estimate(ctx, request, "gpt-4o", cancelled)
+
+	usage := cancelled.ExtraFields.BilledUsage
+	require.NotNil(t, usage, "no usage estimated from the accumulated output")
+	require.Equal(t, 2, usage.CompletionTokens)
+	require.Equal(t, 8, usage.PromptTokens)
+	require.NotNil(t, usage.Estimation)
+	require.Equal(t, "o200k_base", usage.Estimation.Tokenizer)
+}
+
+// The span of a cancelled stream carries the cost of its estimated usage, priced
+// by the framework at the same catalog rates as reported usage.
+func TestPopulateLLMResponseAttributes_PricesEstimatedCancelledUsage(t *testing.T) {
+	abs, err := filepath.Abs("../modelcatalog/datasheet/testdata/pricing.json")
+	require.NoError(t, err)
+	ds := datasheet.New(nil, bifrost.NewNoOpLogger(), datasheet.Config{URL: "file://" + abs})
+	require.NoError(t, ds.LoadFromURLIntoMemory(context.Background()))
+	tracer := NewTracer(NewTraceStore(time.Hour, nil), modelcatalog.NewTestCatalogWithDatasheet(ds), bifrost.NewNoOpLogger())
+	defer tracer.Stop()
+
+	_, ctx := newHandleTestCtx(tracer)
+	_, handle := tracer.StartSpanID(ctx, "llm", schemas.SpanKindLLMCall)
+	span := tracer.SpanFromHandle(handle)
+	require.NotNil(t, span)
+	span.LLM = &schemas.LLMSpanData{RequestType: schemas.ChatCompletionStreamRequest}
+
+	cancelled := &schemas.BifrostError{Error: &schemas.ErrorField{Type: schemas.Ptr(schemas.RequestCancelled)}}
+	cancelled.PopulateExtraFields(schemas.ChatCompletionStreamRequest, schemas.OpenAI, "gpt-4o", "gpt-4o")
+	cancelled.ExtraFields.BilledUsage = &schemas.BifrostLLMUsage{
+		PromptTokens: 120, CompletionTokens: 40, TotalTokens: 160,
+		Estimation: &schemas.TokenUsageEstimation{Prompt: true, Completion: true, Tokenizer: "o200k_base"},
+	}
+
+	tracer.PopulateLLMResponseAttributes(schemas.NewBifrostContext(ctx, time.Now()), handle, nil, cancelled)
+
+	got, ok := span.GetAttribute(schemas.AttrUsageCost)
+	require.True(t, ok, "no cost recorded for the estimated usage")
+	// gpt-4o testdata: 2.5e-6 input, 1e-5 output.
+	require.InDelta(t, float64(120)*2.5e-6+float64(40)*1e-5, got, 1e-12)
 }

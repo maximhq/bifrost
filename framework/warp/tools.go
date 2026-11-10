@@ -685,7 +685,7 @@ func exactStringField(raw map[string]any, key string) (string, error) {
 
 // metadataFiltersField reads metadata_filters: a non-empty object of string
 // values, every pair of which must match.
-func metadataFiltersField(raw map[string]any) (map[string]string, error) {
+func metadataFiltersField(raw map[string]any) (map[string][]string, error) {
 	value, present := raw["metadata_filters"]
 	if !present {
 		return nil, nil
@@ -694,13 +694,13 @@ func metadataFiltersField(raw map[string]any) (map[string]string, error) {
 	if !ok || len(pairs) == 0 {
 		return nil, fmt.Errorf(`metadata_filters must be a non-empty object of key to value, like {"env": "prod"}; omit the field to leave it unfiltered`)
 	}
-	out := make(map[string]string, len(pairs))
+	out := make(map[string][]string, len(pairs))
 	for key, item := range pairs {
 		text, ok := item.(string)
 		if !ok || strings.TrimSpace(key) == "" {
 			return nil, fmt.Errorf("metadata_filters values must be strings, got %v for %q", item, key)
 		}
-		out[key] = text
+		out[key] = []string{text}
 	}
 	return out, nil
 }

@@ -61,9 +61,9 @@ func setGeminiRequestBody(req *fasthttp.Request, bodyReader io.Reader, bodySize 
 	req.SetBody(jsonData)
 }
 
-func normalizeRawGenerateContentBody(ctx *schemas.BifrostContext, body []byte) []byte {
+func normalizeRawGenerateContentBody(ctx *schemas.BifrostContext, body []byte, providerName schemas.ModelProvider, model string) []byte {
 	if rawBody, ok := ctx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); ok && rawBody {
-		body = NormalizeRawGenerateContentRequestForCompatibility(body)
+		body = NormalizeRawGenerateContentRequestForCompatibility(ctx, body, providerName, model)
 	}
 	if updated, err := providerUtils.DeleteJSONField(body, "fallbacks"); err == nil {
 		body = updated
@@ -144,7 +144,7 @@ func (provider *GeminiProvider) completeRequest(ctx *schemas.BifrostContext, mod
 	// Normal mode: use converted JSON body.
 	usedLargePayloadBody := providerUtils.ApplyLargePayloadRequestBody(ctx, req)
 	if !usedLargePayloadBody {
-		jsonBody = normalizeRawGenerateContentBody(ctx, jsonBody)
+		jsonBody = normalizeRawGenerateContentBody(ctx, jsonBody, provider.GetProviderKey(), model)
 		req.SetBody(jsonBody)
 	}
 
@@ -519,7 +519,7 @@ func HandleGeminiChatCompletionStream(
 
 	// Large payload mode: stream original request bytes directly from ingress.
 	if !providerUtils.ApplyLargePayloadRequestBody(ctx, req) {
-		jsonBody = normalizeRawGenerateContentBody(ctx, jsonBody)
+		jsonBody = normalizeRawGenerateContentBody(ctx, jsonBody, providerName, model)
 		req.SetBody(jsonBody)
 	}
 
@@ -713,8 +713,12 @@ func HandleGeminiChatCompletionStream(
 
 				// A split event yields several deltas; attach the upstream event once,
 				// on the last of them, so a base64 media payload is not copied per delta.
+				// Only an unsplit event's payload backs exactly its delta's text.
 				if sendBackRawResponse && i == len(responses)-1 {
 					response.ExtraFields.RawResponse = string(eventData)
+					if len(responses) == 1 {
+						response.ExtraFields.RawResponseFormat = schemas.RawResponseFormatGeminiStreamChunk
+					}
 				}
 
 				lastChunkTime = time.Now()
@@ -859,7 +863,7 @@ func (provider *GeminiProvider) responsesWithLargeResponseDetection(
 
 	// Large payload mode streams request bytes directly to upstream; normal mode sends marshaled bytes.
 	if bodyReader == nil {
-		jsonData = normalizeRawGenerateContentBody(ctx, jsonData)
+		jsonData = normalizeRawGenerateContentBody(ctx, jsonData, provider.GetProviderKey(), request.Model)
 	}
 	setGeminiRequestBody(req, bodyReader, bodySize, jsonData)
 
@@ -1051,7 +1055,7 @@ func HandleGeminiResponsesStream(
 
 	// Large payload mode: stream original request body to upstream.
 	if !providerUtils.ApplyLargePayloadRequestBody(ctx, req) {
-		jsonBody = normalizeRawGenerateContentBody(ctx, jsonBody)
+		jsonBody = normalizeRawGenerateContentBody(ctx, jsonBody, providerName, model)
 		req.SetBody(jsonBody)
 	}
 
@@ -1226,6 +1230,7 @@ func HandleGeminiResponsesStream(
 				return
 			}
 
+			rawIdx, rawFormat := geminiResponsesRawAttachment(responses)
 			for i, response := range responses {
 				if response != nil {
 					response.ExtraFields = schemas.BifrostResponseExtraFields{
@@ -1241,9 +1246,10 @@ func HandleGeminiResponsesStream(
 						}
 					}
 
-					// Only add raw response to the LAST response in the array
-					if sendBackRawResponse && i == len(responses)-1 {
+					// Attach the upstream event to exactly one response
+					if sendBackRawResponse && i == rawIdx {
 						response.ExtraFields.RawResponse = string(eventData)
+						response.ExtraFields.RawResponseFormat = rawFormat
 					}
 
 					chunkIndex++
@@ -1317,6 +1323,36 @@ func HandleGeminiResponsesStream(
 	}()
 
 	return responseChan, nil
+}
+
+// geminiResponsesRawAttachment picks the response that carries one Gemini stream chunk's raw payload: its only
+// output_text.delta, so the raw text travels with the normalized text it backs, or else the last response, which
+// for a chunk holding one function call is its output_item.done (or the completed response) with the whole
+// arguments. The payload's format is declared only when that response carries all of the chunk's text and
+// arguments; a chunk spreading them over several responses keeps it undeclared, since one payload cannot mirror
+// each of them.
+func geminiResponsesRawAttachment(responses []*schemas.BifrostResponsesStreamResponse) (int, schemas.RawResponseFormat) {
+	textIdx, textDeltas, functionCalls := -1, 0, 0
+	for i, response := range responses {
+		if response == nil {
+			continue
+		}
+		switch response.Type {
+		case schemas.ResponsesStreamResponseTypeOutputTextDelta:
+			textIdx = i
+			textDeltas++
+		case schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDone:
+			functionCalls++
+		}
+	}
+	switch {
+	case textDeltas == 1 && functionCalls == 0:
+		return textIdx, schemas.RawResponseFormatGeminiStreamChunk
+	case textDeltas == 0 && functionCalls <= 1:
+		return len(responses) - 1, schemas.RawResponseFormatGeminiStreamChunk
+	default:
+		return len(responses) - 1, ""
+	}
 }
 
 // Embedding performs an embedding request to the Gemini API.
@@ -1542,6 +1578,47 @@ func (provider *GeminiProvider) SpeechStream(ctx *schemas.BifrostContext, postHo
 		return nil, bifrostErr
 	}
 
+	headers := map[string]string{
+		"Accept":        "text/event-stream",
+		"Cache-Control": "no-cache",
+	}
+	if apiKey := key.Value.GetValue(); apiKey != "" {
+		headers["x-goog-api-key"] = apiKey
+	}
+
+	return HandleGeminiSpeechStream(
+		ctx,
+		provider.streamingClient,
+		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/models/"+request.Model+":streamGenerateContent?alt=sse"),
+		jsonBody,
+		headers,
+		provider.networkConfig.ExtraHeaders,
+		provider.networkConfig.StreamIdleTimeoutInSeconds,
+		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
+		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+		request,
+		postHookRunner,
+		provider.logger,
+		postHookSpanFinalizer,
+	)
+}
+
+// HandleGeminiSpeechStream streams speech synthesis from a Gemini-compatible streamGenerateContent endpoint.
+func HandleGeminiSpeechStream(
+	ctx *schemas.BifrostContext,
+	client *fasthttp.Client,
+	url string,
+	jsonBody []byte,
+	headers map[string]string,
+	extraHeaders map[string]schemas.SecretVar,
+	streamIdleTimeoutInSeconds int,
+	sendBackRawRequest bool,
+	sendBackRawResponse bool,
+	request *schemas.BifrostSpeechRequest,
+	postHookRunner schemas.PostHookRunner,
+	logger schemas.Logger,
+	postHookSpanFinalizer func(context.Context),
+) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	// Create HTTP request for streaming
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
@@ -1549,16 +1626,20 @@ func (provider *GeminiProvider) SpeechStream(ctx *schemas.BifrostContext, postHo
 	defer fasthttp.ReleaseRequest(req)
 
 	req.Header.SetMethod(http.MethodPost)
-	req.SetRequestURI(provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, "/models/"+request.Model+":streamGenerateContent?alt=sse"))
+	req.SetRequestURI(url)
 	req.Header.SetContentType("application/json")
 
 	// Set any extra headers from network config
-	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+	providerUtils.SetExtraHeaders(ctx, req, extraHeaders, nil)
 
 	// Set headers for streaming
-	setGeminiAuthHeader(req, key.Value.GetValue())
-	req.Header.Set("Accept", "text/event-stream")
-	req.Header.Set("Cache-Control", "no-cache")
+	for key, value := range headers {
+		req.Header.Set(key, value)
+	}
+	// Key off the assembled header: an API key can also arrive via extra headers.
+	if len(req.Header.Peek("x-goog-api-key")) > 0 {
+		req.Header.Del("Authorization")
+	}
 
 	// Large payload mode: stream original request body to upstream.
 	if !providerUtils.ApplyLargePayloadRequestBody(ctx, req) {
@@ -1567,7 +1648,7 @@ func (provider *GeminiProvider) SpeechStream(ctx *schemas.BifrostContext, postHo
 
 	startTime := time.Now()
 	// Make the request
-	err := providerUtils.DoStreamingRequest(ctx, provider.streamingClient, req, resp)
+	err := providerUtils.DoStreamingRequest(ctx, client, req, resp)
 	latency := time.Since(startTime)
 	if err != nil {
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
@@ -1579,16 +1660,16 @@ func (provider *GeminiProvider) SpeechStream(ctx *schemas.BifrostContext, postHo
 					Message: schemas.ErrRequestCancelled,
 					Error:   err,
 				},
-			}, jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
+			}, jsonBody, nil, sendBackRawRequest, sendBackRawResponse, latency)
 		}
 		if errors.Is(err, fasthttp.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
-			return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err), jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
+			return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err), jsonBody, nil, sendBackRawRequest, sendBackRawResponse, latency)
 		}
 		// Request failed before the first response byte (server closed an idle/pooled connection,
 		// broken pipe, connection refused, DNS failure, etc.). Surface as a retriable upstream
 		// connection error (502) so executeRequestWithRetries honors max_retries, matching the
 		// non-streaming path - see https://github.com/maximhq/bifrost/issues/4496.
-		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostUpstreamConnectionError(schemas.ErrProviderDoRequest, err), jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostUpstreamConnectionError(schemas.ErrProviderDoRequest, err), jsonBody, nil, sendBackRawRequest, sendBackRawResponse, latency)
 	}
 
 	// Extract provider response headers before status check so error responses also forward them
@@ -1597,10 +1678,10 @@ func (provider *GeminiProvider) SpeechStream(ctx *schemas.BifrostContext, postHo
 	// Check for HTTP errors
 	if resp.StatusCode() != fasthttp.StatusOK {
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
-		return nil, providerUtils.EnrichError(ctx, parseGeminiError(resp), jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
+		return nil, providerUtils.EnrichError(ctx, parseGeminiError(resp), jsonBody, nil, sendBackRawRequest, sendBackRawResponse, latency)
 	}
 
-	providerUtils.SetStreamIdleTimeoutIfEmpty(ctx, provider.networkConfig.StreamIdleTimeoutInSeconds)
+	providerUtils.SetStreamIdleTimeoutIfEmpty(ctx, streamIdleTimeoutInSeconds)
 
 	// Large payload streaming passthrough — pipe raw upstream SSE to client
 	if providerUtils.SetupStreamingPassthrough(ctx, resp) {
@@ -1617,9 +1698,9 @@ func (provider *GeminiProvider) SpeechStream(ctx *schemas.BifrostContext, postHo
 		defer providerUtils.EnsureStreamFinalizerCalled(ctx, postHookSpanFinalizer)
 		defer func() {
 			if ctx.Err() == context.Canceled {
-				providerUtils.HandleStreamCancellation(ctx, postHookRunner, responseChan, provider.logger, postHookSpanFinalizer, jsonBody)
+				providerUtils.HandleStreamCancellation(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, jsonBody)
 			} else if ctx.Err() == context.DeadlineExceeded {
-				providerUtils.HandleStreamTimeout(ctx, postHookRunner, responseChan, provider.logger, postHookSpanFinalizer, jsonBody)
+				providerUtils.HandleStreamTimeout(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, jsonBody)
 			}
 			providerUtils.CloseStream(ctx, responseChan)
 		}()
@@ -1636,7 +1717,7 @@ func (provider *GeminiProvider) SpeechStream(ctx *schemas.BifrostContext, postHo
 
 		// Setup cancellation handler to close the raw network stream on ctx cancellation,
 		// which immediately unblocks any in-progress read (including reads blocked inside a gzip decompression layer).
-		stopCancellation := providerUtils.SetupStreamCancellation(ctx, resp.BodyStream(), provider.logger)
+		stopCancellation := providerUtils.SetupStreamCancellation(ctx, resp.BodyStream(), logger)
 		defer stopCancellation()
 
 		sseReader := providerUtils.GetSSEDataReader(ctx, reader)
@@ -1658,8 +1739,8 @@ func (provider *GeminiProvider) SpeechStream(ctx *schemas.BifrostContext, postHo
 				}
 				if readErr != io.EOF {
 					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-					provider.logger.Warn("Error reading stream: %v", readErr)
-					providerUtils.ProcessAndSendError(ctx, postHookRunner, readErr, responseChan, provider.logger, postHookSpanFinalizer)
+					logger.Warn("Error reading stream: %v", readErr)
+					providerUtils.ProcessAndSendError(ctx, postHookRunner, readErr, responseChan, logger, postHookSpanFinalizer)
 					return
 				}
 				break
@@ -1676,10 +1757,10 @@ func (provider *GeminiProvider) SpeechStream(ctx *schemas.BifrostContext, postHo
 					// Handle API error
 					bifrostErr := toGeminiStreamBifrostError(err)
 					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, provider.logger, postHookSpanFinalizer)
+					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, logger, postHookSpanFinalizer)
 					return
 				}
-				provider.logger.Warn("Failed to process chunk: %v", err)
+				logger.Warn("Failed to process chunk: %v", err)
 				continue
 			}
 
@@ -1694,7 +1775,7 @@ func (provider *GeminiProvider) SpeechStream(ctx *schemas.BifrostContext, postHo
 							// Decode base64-encoded audio data
 							decodedData, err := decodeBase64StringToBytes(part.InlineData.Data)
 							if err != nil {
-								provider.logger.Warn("Failed to decode base64 audio data: %v", err)
+								logger.Warn("Failed to decode base64 audio data: %v", err)
 								continue
 							}
 							buf = append(buf, decodedData...)
@@ -1730,7 +1811,7 @@ func (provider *GeminiProvider) SpeechStream(ctx *schemas.BifrostContext, postHo
 				}
 				lastChunkTime = time.Now()
 
-				if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
+				if sendBackRawResponse {
 					response.ExtraFields.RawResponse = jsonData
 				}
 
@@ -1748,7 +1829,7 @@ func (provider *GeminiProvider) SpeechStream(ctx *schemas.BifrostContext, postHo
 		}
 		response.BackfillParams(request)
 		// Set raw request if enabled
-		if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
+		if sendBackRawRequest {
 			providerUtils.ParseAndSetRawRequest(&response.ExtraFields, jsonBody)
 		}
 		ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
@@ -2367,7 +2448,7 @@ func (provider *GeminiProvider) VideoGeneration(ctx *schemas.BifrostContext, key
 		return nil, bifrostErr
 	}
 
-	jsonData = normalizeRawGenerateContentBody(ctx, jsonData)
+	jsonData = normalizeRawGenerateContentBody(ctx, jsonData, provider.GetProviderKey(), model)
 
 	// Create HTTP request
 	req := fasthttp.AcquireRequest()
@@ -2633,9 +2714,14 @@ func (provider *GeminiProvider) BatchCreate(ctx *schemas.BifrostContext, key sch
 		return nil, err
 	}
 
+	var model string
+	if request.Model != nil {
+		_, model = schemas.ParseModelString(*request.Model, schemas.Gemini)
+	}
+
 	var jsonData []byte
 	if rawBody, ok := providerUtils.CheckAndGetRawRequestBody(ctx, request); ok && len(rawBody) > 0 {
-		jsonData = NormalizeRawGenerateContentRequestForCompatibility(rawBody)
+		jsonData = NormalizeRawGenerateContentRequestForCompatibility(ctx, rawBody, provider.GetProviderKey(), model)
 	}
 
 	// Validate that either InputFileID or Requests is provided, but not both
@@ -2717,10 +2803,6 @@ func (provider *GeminiProvider) BatchCreate(ctx *schemas.BifrostContext, key sch
 	defer fasthttp.ReleaseResponse(resp)
 
 	// Build URL - use batchGenerateContent endpoint
-	var model string
-	if request.Model != nil {
-		_, model = schemas.ParseModelString(*request.Model, schemas.Gemini)
-	}
 	// We default gemini 2.5 flash
 	if model == "" {
 		model = "gemini-2.5-flash"
@@ -4096,7 +4178,7 @@ func (provider *GeminiProvider) CountTokens(ctx *schemas.BifrostContext, key sch
 			return nil, bifrostErr
 		}
 
-		jsonData = normalizeRawGenerateContentBody(ctx, jsonData)
+		jsonData = normalizeRawGenerateContentBody(ctx, jsonData, provider.GetProviderKey(), model)
 		jsonData = wrapGeminiCountTokensBody(jsonData, model)
 	}
 
@@ -4275,8 +4357,14 @@ func (provider *GeminiProvider) Passthrough(
 	}
 
 	var passthroughUsage *schemas.BifrostPassthroughUsage
+	var servedModel string
+	var providerJob *schemas.BifrostPassthroughJob
 	if resp.StatusCode() >= 200 && resp.StatusCode() < 300 {
-		passthroughUsage = ExtractGeminiPassthroughUsage(req.Path, req.Body, body)
+		if IsInteractionsPassthroughPath(req.Path) {
+			passthroughUsage, servedModel, providerJob = InteractionsPassthroughResult(req, body)
+		} else {
+			passthroughUsage = ExtractGeminiPassthroughUsage(req.Path, req.Body, body)
+		}
 	}
 
 	bifrostResponse := &schemas.BifrostPassthroughResponse{
@@ -4289,6 +4377,8 @@ func (provider *GeminiProvider) Passthrough(
 			PassthroughPath:         req.Path,
 		},
 		PassthroughUsage: passthroughUsage,
+		ServedModel:      servedModel,
+		ProviderJob:      providerJob,
 	}
 
 	return bifrostResponse, nil
@@ -4367,21 +4457,25 @@ func (provider *GeminiProvider) PassthroughStream(
 	}
 
 	providerUtils.SetStreamIdleTimeoutIfEmpty(ctx, provider.networkConfig.StreamIdleTimeoutInSeconds)
-	return providerUtils.StreamPassthrough(
-		ctx, postHookRunner, postHookSpanFinalizer, resp, bodyStream,
-		providerUtils.PassthroughStreamParams{
-			StatusCode:          resp.StatusCode(),
-			Headers:             headers,
-			Path:                req.Path,
-			RawRequest:          req.Body,
-			CancellationBody:    providerUtils.PassthroughJSONBody(fasthttpReq, req.Body),
-			StartTime:           startTime,
-			UseTerminalDetector: true,
-			Logger:              provider.logger,
-			HasUsage:            HasGeminiPassthroughUsage,
-			Observe: func(event []byte) *schemas.BifrostPassthroughUsage {
-				return ExtractGeminiPassthroughUsage(req.Path, req.Body, event)
-			},
+	params := providerUtils.PassthroughStreamParams{
+		StatusCode:          resp.StatusCode(),
+		Headers:             headers,
+		Path:                req.Path,
+		RawRequest:          req.Body,
+		CancellationBody:    providerUtils.PassthroughJSONBody(fasthttpReq, req.Body),
+		StartTime:           startTime,
+		UseTerminalDetector: true,
+		Logger:              provider.logger,
+		HasUsage:            HasGeminiPassthroughUsage,
+		Observe: func(event []byte) *schemas.BifrostPassthroughUsage {
+			return ExtractGeminiPassthroughUsage(req.Path, req.Body, event)
 		},
-	), nil
+	}
+	if IsInteractionsPassthroughPath(req.Path) {
+		observer := NewInteractionsStreamObserver(req)
+		params.HasUsage = HasInteractionsStreamInfo
+		params.Observe = observer.Observe
+		params.Finalize = observer.Finalize
+	}
+	return providerUtils.StreamPassthrough(ctx, postHookRunner, postHookSpanFinalizer, resp, bodyStream, params), nil
 }

@@ -41,6 +41,11 @@ type GenAIRouter struct {
 	*GenericRouter
 }
 
+// GenAIRealtimePaths returns the WebSocket GET path a Google GenAI client opens for the Live API.
+func GenAIRealtimePaths(pathPrefix string) []string {
+	return []string{pathPrefix + "/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent"}
+}
+
 // CreateGenAIRouteConfigs creates a route configurations for GenAI endpoints.
 func CreateGenAIRouteConfigs(pathPrefix string) []RouteConfig {
 	var routes []RouteConfig
@@ -1664,7 +1669,8 @@ func collectGenAIGenerationTextPaths(paths *[]string, request gjson.Result, path
 	return collectErr
 }
 
-// collectGenAIContentTextPaths selects text parts and supported function-response JSON values from one Gemini content object.
+// collectGenAIContentTextPaths selects text parts, function-call argument string values, and supported function-response
+// JSON values from one Gemini content object.
 func collectGenAIContentTextPaths(paths *[]string, content gjson.Result, path string, includeFunctionResponses bool, replacements map[string]string) error {
 	if !content.Exists() || content.Type == gjson.Null {
 		return nil
@@ -1689,6 +1695,13 @@ func collectGenAIContentTextPaths(paths *[]string, content gjson.Result, path st
 		}
 		if !includeFunctionResponses {
 			return true
+		}
+		if collectErr = collectRawRequestArgumentStringPaths(
+			paths,
+			part.Get("functionCall.args"),
+			rawRequestObjectPath(rawRequestObjectPath(partPath, "functionCall"), "args"),
+		); collectErr != nil {
+			return false
 		}
 		functionResponse := part.Get("functionResponse")
 		if !functionResponse.Exists() || functionResponse.Type == gjson.Null {

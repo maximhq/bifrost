@@ -1393,6 +1393,115 @@ func TestToOpenAIResponsesRequest_ClearsAnthropicToolSearchName(t *testing.T) {
 	}
 }
 
+// An Anthropic tool_result carrying an image becomes a function_call_output whose
+// output holds an input_image. It must leave with detail "auto" like a top-level
+// image does, or vLLM-backed Responses upstreams reject the request.
+func TestToOpenAIResponsesRequest_AnthropicIngressToolResultImageDetail(t *testing.T) {
+	var anthropicReq anthropic.AnthropicMessageRequest
+	if err := sonic.Unmarshal([]byte(`{
+		"model": "openai/gpt-4o",
+		"max_tokens": 64,
+		"tools": [{"name": "read_file", "input_schema": {"type": "object", "properties": {"path": {"type": "string"}}}}],
+		"messages": [
+			{"role": "user", "content": "Read /tmp/img.png and describe it."},
+			{"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_1", "name": "read_file", "input": {"path": "/tmp/img.png"}}]},
+			{"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_1", "content": [
+				{"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "iVBORw0KGgo="}}
+			]}]}
+		]
+	}`), &anthropicReq); err != nil {
+		t.Fatalf("decode anthropic request: %v", err)
+	}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bifrostReq := anthropicReq.ToBifrostResponsesRequest(ctx)
+	bifrostReq.Provider, bifrostReq.Model = schemas.OpenAI, "gpt-4o"
+
+	data, err := sonic.Marshal(ToOpenAIResponsesRequest(ctx, bifrostReq))
+	if err != nil {
+		t.Fatalf("marshal converted request: %v", err)
+	}
+	output := gjson.GetBytes(data, `input.#(type=="function_call_output").output`)
+	if !output.IsArray() || len(output.Array()) != 1 {
+		t.Fatalf("want a one-block function_call_output.output, got %s", data)
+	}
+	image := output.Array()[0]
+	if image.Get("type").String() != "input_image" || image.Get("detail").String() != "auto" {
+		t.Fatalf("tool_result image must leave as input_image with detail auto, got %s", image.Raw)
+	}
+}
+
+// The #8849 request through Anthropic ingress to an OpenAI-shaped fallback (OpenRouter): the
+// user turn stays one message, the empty text document is dropped (OpenRouter rejects the empty
+// data URL with "Invalid base64 data URL: missing mime type or base64 content", and an empty
+// document carries nothing to lose), and the untitled document gets a filename here, at the
+// egress that needs it.
+func TestToOpenAIResponsesRequest_AnthropicIngressEmptyTextDocument(t *testing.T) {
+	var anthropicReq anthropic.AnthropicMessageRequest
+	if err := sonic.Unmarshal([]byte(`{"model":"claude-haiku-4-5","max_tokens":16,"messages":[{"role":"user","content":[
+		{"type":"document","source":{"type":"text","media_type":"text/plain","data":"Some text."},"citations":{"enabled":true}},
+		{"type":"document","source":{"type":"text","media_type":"text/plain","data":""},"citations":{"enabled":true}},
+		{"type":"text","text":"Say ok."}]}]}`), &anthropicReq); err != nil {
+		t.Fatalf("decode anthropic request: %v", err)
+	}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bifrostReq := anthropicReq.ToBifrostResponsesRequest(ctx)
+	bifrostReq.Provider, bifrostReq.Model = schemas.OpenRouter, "anthropic/claude-haiku-4.5"
+
+	data, err := sonic.Marshal(ToOpenAIResponsesRequest(ctx, bifrostReq))
+	if err != nil {
+		t.Fatalf("marshal converted request: %v", err)
+	}
+	input := gjson.GetBytes(data, "input").Array()
+	if len(input) != 1 {
+		t.Fatalf("want the user turn as one input item, got %d: %s", len(input), data)
+	}
+	content := input[0].Get("content").Array()
+	if len(content) != 2 {
+		t.Fatalf("want the document and the text, the empty document dropped; got %d: %s", len(content), input[0].Raw)
+	}
+	if content[0].Get("type").String() != "input_file" || content[0].Get("file_data").String() != "data:text/plain;base64,U29tZSB0ZXh0Lg==" ||
+		content[0].Get("filename").String() != "document.txt" {
+		t.Fatalf("want input_file named document.txt, got %s", content[0].Raw)
+	}
+	if content[1].Get("type").String() != "input_text" || content[1].Get("text").String() != "Say ok." {
+		t.Fatalf("want the text block, got %s", content[1].Raw)
+	}
+}
+
+// An untitled tool_result PDF (Claude Code's Read tool) still reaches OpenAI with a filename now
+// that Anthropic ingress no longer invents one.
+func TestToOpenAIResponsesRequest_AnthropicIngressUntitledDocumentGetsFilename(t *testing.T) {
+	var anthropicReq anthropic.AnthropicMessageRequest
+	if err := sonic.Unmarshal([]byte(`{"model":"gpt-4o","max_tokens":16,
+		"tools":[{"name":"read","input_schema":{"type":"object"}}],
+		"messages":[
+		{"role":"user","content":"Read it."},
+		{"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"read","input":{}}]},
+		{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":[
+			{"type":"document","source":{"type":"base64","media_type":"application/pdf","data":"JVBERi0xLjQK"}}]}]},
+		{"role":"user","content":[{"type":"document","source":{"type":"base64","media_type":"application/pdf","data":"JVBERi0xLjQK"}}]}]}`), &anthropicReq); err != nil {
+		t.Fatalf("decode anthropic request: %v", err)
+	}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bifrostReq := anthropicReq.ToBifrostResponsesRequest(ctx)
+	bifrostReq.Provider, bifrostReq.Model = schemas.OpenAI, "gpt-4o"
+
+	data, err := sonic.Marshal(ToOpenAIResponsesRequest(ctx, bifrostReq))
+	if err != nil {
+		t.Fatalf("marshal converted request: %v", err)
+	}
+	for _, path := range []string{
+		`input.#(type=="function_call_output").output.0`,
+		`input.#(role=="user")#.content.0|@reverse|0`,
+	} {
+		file := gjson.GetBytes(data, path)
+		if file.Get("type").String() != "input_file" || file.Get("filename").String() != "document.pdf" ||
+			file.Get("file_data").String() != "data:application/pdf;base64,JVBERi0xLjQK" {
+			t.Fatalf("%s: want input_file document.pdf, got %s in %s", path, file.Raw, data)
+		}
+	}
+}
+
 // The #8361 request through Anthropic ingress: a client tool_search function, a
 // deferred tool, and a search turn whose tool_result is a tool_reference. On
 // gpt-6-sol it previously went out with defer_loading and no tool_search (a 400).
@@ -2333,6 +2442,93 @@ func TestToOpenAIResponsesRequest_GPT56CacheBreakpoint(t *testing.T) {
 			unmarked := firstBlock(t, m, 1, raw)
 			if _, present := unmarked["prompt_cache_breakpoint"]; present {
 				t.Errorf("unmarked block must not receive a breakpoint; raw=%s", raw)
+			}
+		})
+	}
+}
+
+// TestToOpenAIResponsesRequest_CacheBreakpointTTLPreserved pins that a client's
+// prompt_cache_breakpoint.ttl ("12h", gpt-5.6+) reaches the wire; the field used to
+// be dropped at ingress, so every breakpoint fell back to the 30m default.
+func TestToOpenAIResponsesRequest_CacheBreakpointTTL(t *testing.T) {
+	inputJSON := `[{"role":"developer","content":[{"type":"input_text","text":"STABLE","prompt_cache_breakpoint":{"mode":"explicit","ttl":"12h"}}]},` +
+		`{"type":"function_call","call_id":"call_1","name":"echo","arguments":"{}"},` +
+		`{"type":"function_call_output","call_id":"call_1","output":[{"type":"input_text","text":"hello","prompt_cache_breakpoint":{"mode":"explicit","ttl":"30m"}}]},` +
+		`{"role":"user","content":[{"type":"input_text","text":"go"}]}]`
+	// Bedrock Mantle rejects ttl on every model (live 400 "Unknown parameter"), so
+	// it is dropped there and on Bedrock, which routes OpenAI models to Mantle.
+	for _, tc := range []struct {
+		name     string
+		provider schemas.ModelProvider
+		model    string
+		keepTTL  bool
+	}{
+		{"openai", schemas.OpenAI, "gpt-5.6-sol", true},
+		{"azure", schemas.Azure, "gpt-6.1-luna", true},
+		{"bedrock mantle", schemas.BedrockMantle, "openai.gpt-5.6-terra", false},
+		{"bedrock", schemas.Bedrock, "openai.gpt-5.6-terra", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var input []schemas.ResponsesMessage
+			if err := sonic.Unmarshal([]byte(inputJSON), &input); err != nil {
+				t.Fatal(err)
+			}
+			req := &schemas.BifrostResponsesRequest{Provider: tc.provider, Model: tc.model, Input: input, Params: &schemas.ResponsesParameters{}}
+			_, raw := marshalResponses(t, req)
+			want12h, want30m := "12h", "30m"
+			if !tc.keepTTL {
+				want12h, want30m = "", ""
+			}
+			if got := gjson.Get(raw, "input.0.content.0.prompt_cache_breakpoint.mode").String(); got != "explicit" {
+				t.Errorf("developer block breakpoint dropped; raw=%s", raw)
+			}
+			if got := gjson.Get(raw, "input.0.content.0.prompt_cache_breakpoint.ttl").String(); got != want12h {
+				t.Errorf("developer block breakpoint ttl = %q, want %q; raw=%s", got, want12h, raw)
+			}
+			if got := gjson.Get(raw, "input.2.output.0.prompt_cache_breakpoint.ttl").String(); got != want30m {
+				t.Errorf("function_call_output block breakpoint ttl = %q, want %q; raw=%s", got, want30m, raw)
+			}
+			if input[0].Content.ContentBlocks[0].PromptCacheBreakpoint.TTL == nil {
+				t.Error("caller input must not be mutated")
+			}
+		})
+	}
+}
+
+// Bedrock Mantle accepts only "30m" for prompt_cache_options.ttl (live 400 "Invalid
+// value: '12h'"), so a request-level 12h is dropped there and on Bedrock; 30m passes.
+func TestToOpenAIResponsesRequest_RequestLevelCacheTTL(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		provider schemas.ModelProvider
+		model    string
+		ttl      string
+		wantTTL  string
+	}{
+		{"openai 12h", schemas.OpenAI, "gpt-5.6-sol", "12h", "12h"},
+		{"azure 12h", schemas.Azure, "gpt-6.1-luna", "12h", "12h"},
+		{"bedrock mantle 12h", schemas.BedrockMantle, "openai.gpt-5.6-terra", "12h", ""},
+		{"bedrock mantle 30m", schemas.BedrockMantle, "openai.gpt-5.6-terra", "30m", "30m"},
+		{"bedrock 12h", schemas.Bedrock, "openai.gpt-5.6-terra", "12h", ""},
+		{"bedrock 30m", schemas.Bedrock, "openai.gpt-5.6-terra", "30m", "30m"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			opts := &schemas.PromptCacheOptions{Mode: schemas.Ptr("explicit"), TTL: schemas.Ptr(tc.ttl)}
+			req := &schemas.BifrostResponsesRequest{
+				Provider: tc.provider,
+				Model:    tc.model,
+				Input:    []schemas.ResponsesMessage{{Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")}}},
+				Params:   &schemas.ResponsesParameters{PromptCacheOptions: opts},
+			}
+			_, raw := marshalResponses(t, req)
+			if got := gjson.Get(raw, "prompt_cache_options.ttl").String(); got != tc.wantTTL {
+				t.Errorf("prompt_cache_options.ttl = %q, want %q; raw=%s", got, tc.wantTTL, raw)
+			}
+			if got := gjson.Get(raw, "prompt_cache_options.mode").String(); got != "explicit" {
+				t.Errorf("prompt_cache_options.mode dropped; raw=%s", raw)
+			}
+			if opts.TTL == nil || *opts.TTL != tc.ttl {
+				t.Error("caller PromptCacheOptions must not be mutated")
 			}
 		})
 	}

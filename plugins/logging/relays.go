@@ -1,12 +1,13 @@
 package logging
 
 import (
+	"context"
 	"errors"
 	"net/url"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
-	"unicode/utf8"
 
 	"github.com/bytedance/sonic"
 	"github.com/google/uuid"
@@ -20,12 +21,43 @@ import (
 
 var _ schemas.RelayPlugin = (*LoggerPlugin)(nil)
 
-// maxEndpointLogBodyLen bounds each body a Relay Logs row keeps. Endpoint payloads can be
-// documents or audio; the row keeps enough to debug a mapping, not the payload itself.
-const maxEndpointLogBodyLen = 64 * 1024
+// pendingRelayLog is the request side of a relay call awaiting its post-hook, the relay analogue
+// of PendingLogData. The row is embedded by value so the whole pending state is one allocation.
+// lastActivity is refreshed by core/relay on every forwarded stream chunk (through
+// BifrostContextKeyRelayActivity), so the stale sweep keeps a live stream's entry the way
+// PostLLMHook's per-chunk LastActivity keeps an LLM stream's. provisionalInput and policy record
+// what the body was captured under, so an eviction drops what the final policy may not allow.
+type pendingRelayLog struct {
+	entry            logstore.RelayLog
+	lastActivity     atomic.Int64
+	evictionAttempts int
+	provisionalInput bool
+	policy           contentPolicy
+}
 
-// PreRelayHook records the request side of a relay call. The row is
-// completed and written by the post-hook, which runs once the reply (or the stream) has ended.
+// evictedRelayPartial marks a request whose pending row was persisted as processing at eviction.
+// It carries the row id (relay rows have a generated id, not the request id) and the path the
+// partial stored, so a late post-hook can reconcile onto that row and re-apply the content policy
+// to the path's query.
+type evictedRelayPartial struct {
+	rowID     string
+	path      string
+	relayName string
+	routePath string
+	streamed  bool
+	at        time.Time
+}
+
+// relayInjectEntry is a completed relay row parked until its trace ends: written as an insert, or,
+// when it reconciles a row persisted at eviction, as an update of the output columns.
+type relayInjectEntry struct {
+	entry           *logstore.RelayLog
+	reconcile       bool
+	dropRequestBody bool
+}
+
+// PreRelayHook records the request side of a relay call. The row is completed and written by the
+// post-hook, which runs once the reply (or the stream) has ended.
 func (p *LoggerPlugin) PreRelayHook(ctx *schemas.BifrostContext, req *schemas.BifrostRelayRequest) (*schemas.BifrostRelayRequest, *schemas.RelayPluginShortCircuit, error) {
 	if ctx == nil || req == nil {
 		return req, nil, nil
@@ -34,9 +66,11 @@ func (p *LoggerPlugin) PreRelayHook(ctx *schemas.BifrostContext, req *schemas.Bi
 	if requestID == "" {
 		return req, nil, nil
 	}
+	pending := &pendingRelayLog{}
+	entry := &pending.entry
 	// The row id is generated, as for Agent logs: the request id can come from the caller's
 	// x-request-id, so two calls may share it. It is kept for correlation only.
-	entry := &logstore.RelayLog{
+	*entry = logstore.RelayLog{
 		ID:        uuid.New().String(),
 		RequestID: clampString(requestID, 255),
 		Timestamp: time.Now().UTC(),
@@ -48,68 +82,110 @@ func (p *LoggerPlugin) PreRelayHook(ctx *schemas.BifrostContext, req *schemas.Bi
 		Billable:  req.Billable,
 		Streamed:  req.Streams,
 		Model:     clampString(req.Model, 255),
-		Status:    "processing",
+		Status:    logStatusProcessing,
 	}
 	if req.RawQuery != "" {
 		entry.Path += "?" + redactQuery(req.RawQuery)
 	}
-	// The raw User-Agent is stored verbatim and mapped to a client app, as on LLM and MCP rows.
+	// Recorded now as well as in the post-hook, as PreLLMHook captures them, so a row persisted at
+	// eviction (a call still running when the sweep runs) carries its correlation.
+	applyRelayCorrelation(ctx, entry, requestID)
+	// The raw User-Agent is stored verbatim and mapped to a client app, as on LLM and MCP rows,
+	// and the app key is stamped for the plugins that run after this one, as PreLLMHook stamps it.
 	if ua := userAgentFromContext(ctx); ua != "" {
 		// Clamped to the column, as every other log kind does, so an oversized header never costs
 		// the row (and its cost and attribution) at insert time.
 		entry.UserAgent = new(clampString(ua, maxPersistedUserAgentLen))
 		if app := p.detectAppFromUserAgent(ua); app != "" {
 			entry.App = &app
+			if appKey := schemas.AppKeyFromName(app); appKey != "" {
+				ctx.SetValue(schemas.BifrostContextKeyApp, appKey)
+			}
 		}
 	}
+	entry.ClientIP = optionalString(p.clientIPFromContext(ctx))
 	// The same metadata LLM and MCP rows carry: the configured logging headers, every x-bf-lh-*
 	// label, the x-bf-dim-* dimensions, and the virtual key's metadata on top.
 	entry.MetadataParsed = mergeVirtualKeyMetadata(p.captureLoggingHeaders(ctx), ctx)
 	entry.RequestHeadersParsed = relayMatchedHeaders(req)
-	if len(req.Body) > 0 {
-		entry.RequestBody = boundedBody(req.Body)
+	// The body is captured under the policy as the context stands now, or provisionally while
+	// governance has yet to resolve the presented key or the named project (its pre-hook runs
+	// after this one), exactly as PreLLMHook gates input capture. PostRelayHook applies the final
+	// policy and drops what it does not allow, and an eviction drops provisional input.
+	pending.provisionalInput = governanceDecisionPending(ctx)
+	pending.policy = p.resolveContentPolicy(ctx)
+	capture := pending.policy.storeContent || pending.provisionalInput
+	if capture && len(req.Body) > 0 {
+		entry.RequestBody = textBody(req.Body)
 	}
-	// A streamed reply has no body until core/relay buffers it as it forwards bytes; that buffering
-	// only pays its cost when the content policy would keep the body anyway. This hook runs before
-	// governance's (builtin placement order 3 vs 4), so governance's per-key override
-	// (BifrostContextKeyGovernanceDisableContentLogging) is not on ctx yet here — only this plugin's
-	// own static setting is stamped. core/relay resolves the final decision from this plus
-	// governance's and the per-request override once every pre-hook, governance included, has run
-	// (see Stream's capture setup), so a virtual key that disagrees with the plugin's default is
-	// never missed the way an early, fully-resolved stamp would miss it.
-	// Deliberately not resolveContentPolicy(ctx): calling it here would read governance's and the
-	// per-request override's absence as "not disabled" rather than "not decided yet", which is the
-	// exact premature-resolution bug this comment is explaining. Only the plugin's own static
-	// layer is knowable this early.
-	enabledByDefault := p.disableContentLogging == nil || !*p.disableContentLogging
-	ctx.SetValue(schemas.BifrostContextKeyRelayContentLoggingEnabledByDefault, enabledByDefault)
-	p.pendingEndpointLogs.Store(requestID, entry)
+	// A streamed reply has no body until core/relay keeps it as it forwards bytes; the same
+	// decision tells it whether to, so a stream nobody logs the body of never buffers one.
+	ctx.SetValue(schemas.BifrostContextKeyRelayContentCapture, capture)
+	pending.lastActivity.Store(entry.Timestamp.UnixNano())
+	ctx.SetValue(schemas.BifrostContextKeyRelayActivity, &pending.lastActivity)
+	p.pendingEndpointLogs.Store(requestID, pending)
 	return req, nil, nil
 }
 
-// PostRelayHook completes and writes the Relay Logs row, with the governance
-// attribution and the cost breakdown, and records the job row a job route started so the sweeper
-// settles it against the same budgets.
+// PostRelayHook completes and writes the Relay Logs row, with the governance attribution and the
+// cost breakdown, and records the job row a job route started so the sweeper settles it against
+// the same budgets. A call whose pending entry was evicted into a partial processing row (see
+// persistEvictedRelayPartial) reconciles its outcome onto that row with an update, as PostLLMHook
+// reconciles onto an evicted LLM partial.
 func (p *LoggerPlugin) PostRelayHook(ctx *schemas.BifrostContext, resp *schemas.BifrostRelayResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostRelayResponse, *schemas.BifrostError, error) {
 	if ctx == nil {
 		return resp, bifrostErr, nil
 	}
 	requestID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyRequestID)
-	pending, _ := p.pendingEndpointLogs.LoadAndDelete(requestID)
-	entry, _ := pending.(*logstore.RelayLog)
-	if entry == nil {
+	// The claim is serialized with the stale sweep, as for LLM rows: either this hook takes the
+	// pending entry, or the sweep has persisted it and left its marker, never neither.
+	lock := p.pendingClaimLock(requestID)
+	lock.Lock()
+	pendingVal, hasPending := p.pendingEndpointLogs.LoadAndDelete(requestID)
+	var marker evictedRelayPartial
+	var evicted bool
+	if !hasPending {
+		if val, ok := p.evictedRelayPartials.LoadAndDelete(requestID); ok {
+			marker, evicted = val.(evictedRelayPartial)
+		}
+	}
+	lock.Unlock()
+	pending, _ := pendingVal.(*pendingRelayLog)
+	if !hasPending && !evicted && requestID != "" {
+		// A row persisted by a previous process has no in-memory marker: a bounded probe on the
+		// plugin's own context, since the request's may already be cancelled.
+		marker, evicted = p.probeEvictedRelayPartial(requestID)
+	}
+	policy := p.resolveContentPolicy(ctx)
+	var entry *logstore.RelayLog
+	switch {
+	case pending != nil:
+		entry = &pending.entry
+	case evicted:
+		// The update names the output columns only, so the partial row keeps its request side; the
+		// marker carries what the update also writes, so a reply-less finish does not blank it.
+		entry = &logstore.RelayLog{ID: marker.rowID, RequestID: clampString(requestID, 255), Timestamp: time.Now().UTC(), Kind: logstore.RelayLogKindCall, Path: marker.path, RelayName: marker.relayName, RoutePath: marker.routePath, Streamed: marker.streamed}
+	default:
 		entry = &logstore.RelayLog{ID: uuid.New().String(), RequestID: clampString(requestID, 255), Timestamp: time.Now().UTC(), Kind: logstore.RelayLogKindCall}
 	}
 	entry.ApplyGovernanceContext(ctx)
+	applyRelayGrantAttribution(ctx, entry)
 	// Merged again here, as PostLLMHook does: the key's metadata is stamped by governance, which may
 	// run after this plugin's pre-hook, and the key's values win over caller-sent labels.
 	entry.MetadataParsed = mergeVirtualKeyMetadata(entry.MetadataParsed, ctx)
+	// The pre-hook already recorded the correlation on a pending row; only a row built here (an
+	// evicted call's update, or a call the pre-hook never saw) reads it again.
+	if pending == nil {
+		applyRelayCorrelation(ctx, entry, requestID)
+	}
 	if resp != nil {
 		if entry.RelayName == "" {
 			entry.RelayName = clampString(resp.RelayName, 64)
 		}
 		entry.StatusCode = resp.StatusCode
 		entry.Streamed = resp.Streamed
+		// The body is a preview: the reply passed the large-payload response threshold.
+		entry.IsLargePayloadResponse = resp.LargeResponse
 		entry.BytesOut = resp.BytesOut
 		latency := float64(resp.Latency)
 		entry.Latency = &latency
@@ -121,8 +197,10 @@ func (p *LoggerPlugin) PostRelayHook(ctx *schemas.BifrostContext, resp *schemas.
 			entry.UpstreamLatency = &upstream
 			entry.OverheadLatency = &overhead
 		}
-		if len(resp.Body) > 0 {
-			entry.ResponseBody = boundedBody(resp.Body)
+		// Copied only when the row keeps content: a call with content logging off must not pay for
+		// a copy of its reply that is dropped a few lines below.
+		if len(resp.Body) > 0 && policy.storeContent {
+			entry.ResponseBody = textBody(resp.Body)
 		}
 		applyEndpointUsage(entry, resp.Usage)
 	}
@@ -140,57 +218,247 @@ func (p *LoggerPlugin) PostRelayHook(ctx *schemas.BifrostContext, resp *schemas.
 			entry.Latency = &latency
 		}
 	}
-	policy := p.resolveContentPolicy(ctx)
+	// The same status rule as LLM rows: a cancelled, hung-up or client-deadline call is cancelled,
+	// any other failure or an upstream 4xx/5xx is an error.
 	switch {
-	case bifrostErr != nil && bifrostErr.Error != nil && bifrostErr.Error.Type != nil && *bifrostErr.Error.Type == schemas.RequestCancelled:
-		entry.Status = logstore.RelayLogStatusCancelled
-	case bifrostErr != nil || (resp != nil && resp.StatusCode >= 400):
-		entry.Status = logstore.RelayLogStatusError
+	case bifrostErr != nil:
+		entry.Status = logStatusForError(bifrostErr)
+	case resp != nil && resp.StatusCode >= 400:
+		entry.Status = logStatusError
 	default:
-		entry.Status = logstore.RelayLogStatusSuccess
+		entry.Status = logStatusSuccess
 	}
 	if bifrostErr != nil {
 		shouldStoreRaw, _ := ctx.Value(schemas.BifrostContextKeyShouldStoreRawInLogs).(bool)
 		entry.ErrorDetailsParsed = sanitizeErrorForLogging(bifrostErr, policy.visible(), shouldStoreRaw)
+		// Content retained as hidden keeps the error in full, raw request and response included,
+		// for the object alone, as an LLM row's offloaded error_details does; the database row
+		// keeps it without them.
+		if policy.storeContent && policy.hidden {
+			entry.RetainedErrorDetails = sanitizeErrorForLogging(bifrostErr, true, shouldStoreRaw)
+		}
 		if entry.StatusCode == 0 && bifrostErr.StatusCode != nil {
 			entry.StatusCode = *bifrostErr.StatusCode
 		}
 	}
-	// As on LLM rows: the flag says the row carries no content, whatever the reason. Relay rows
-	// have no object-storage offload yet, so content that would be retained as hidden is dropped
-	// instead of kept in columns the logs API would return. Query values are caller content too.
+	// As on LLM rows: the flag says the row carries no content, whatever the reason. Content
+	// retained as hidden keeps its bodies for the hybrid store to offload, as on A2A rows; the
+	// database row then holds none and reads never hydrate them. Query values are caller content too.
 	entry.ContentHidden = !policy.visible()
-	if policy.hidden {
-		p.relayRetainWarnOnce.Do(func() {
-			p.logger.Warn("retain_content_in_object_storage does not apply to Relay Logs yet; content-disabled relay calls are dropped entirely")
-		})
-	}
 	// Metadata and the matched headers stay when content logging is off, as on LLM and MCP rows:
 	// the operator chose them; only the bodies and the query string are content.
-	if !policy.storeContent || policy.hidden {
+	if !policy.storeContent {
 		entry.RequestBody, entry.ResponseBody = nil, nil
-		if i := strings.IndexByte(entry.Path, '?'); i >= 0 {
-			entry.Path = entry.Path[:i]
-		}
 	}
-	entry.PluginLogs = serializePluginLogsBounded(ctx.GetPluginLogs(), maxA2APluginLogsLen)
+	if !policy.visible() {
+		// The query string is content: hidden, it is kept in the object only, as the bodies are.
+		if policy.storeContent && strings.Contains(entry.Path, "?") {
+			entry.RetainedPath = schemas.Ptr(entry.Path)
+		}
+		entry.Path = stripQuery(entry.Path)
+	}
 	if resp != nil && resp.Usage != nil && resp.Usage.Job != nil {
 		p.recordEndpointJob(entry, resp.Usage.Job)
 	}
-	p.storeOrEnqueueRelayEntry(ctx, entry)
+	p.storeOrEnqueueRelayEntry(ctx, relayInjectEntry{entry: entry, reconcile: evicted, dropRequestBody: !policy.storeContent})
 	return resp, bifrostErr, nil
+}
+
+// applyRelayCorrelation records the caller's correlation on a relay row, as an LLM row records it:
+// the session identity resolved at ingress, a parent named through baggage (never the call itself)
+// and the agent correlation header.
+func applyRelayCorrelation(ctx *schemas.BifrostContext, entry *logstore.RelayLog, requestID string) {
+	if sessionID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeySessionID); sessionID != "" {
+		entry.SessionID = schemas.Ptr(clampString(sessionID, 255))
+	}
+	if parentRequestID, ok := ctx.Value(schemas.BifrostContextKeyParentRequestID).(string); ok && parentRequestID != "" && parentRequestID != requestID {
+		entry.ParentRequestID = schemas.Ptr(clampString(parentRequestID, 255))
+	}
+	if agentCorrelationID := requestHeaderFromContext(ctx, "x-bf-agent-correlation-id"); agentCorrelationID != "" {
+		entry.AgentCorrelationID = schemas.Ptr(clampString(agentCorrelationID, maxPersistedAgentCorrelationIDLen))
+	}
+}
+
+// probeEvictedRelayPartial looks for a processing row persisted for the request by a previous
+// process, bounded by evictedPartialProbeTimeout as PostLLMHook's probe is.
+func (p *LoggerPlugin) probeEvictedRelayPartial(requestID string) (evictedRelayPartial, bool) {
+	if p.store == nil {
+		return evictedRelayPartial{}, false
+	}
+	probeCtx, cancel := context.WithTimeout(p.ctx, evictedPartialProbeTimeout)
+	defer cancel()
+	result, err := p.store.SearchRelayLogs(probeCtx, logstore.RelayLogFilters{
+		RequestID: requestID, Statuses: []string{logstore.RelayLogStatusProcessing}, Kinds: []string{logstore.RelayLogKindCall},
+	}, logstore.PaginationOptions{Limit: 1, SkipCount: true})
+	if err != nil || result == nil || len(result.Logs) == 0 {
+		return evictedRelayPartial{}, false
+	}
+	row := result.Logs[0]
+	return evictedRelayPartial{rowID: row.ID, path: row.Path, relayName: row.RelayName, routePath: row.RoutePath, streamed: row.Streamed, at: time.Now()}, true
+}
+
+// stripQuery drops the query string from a stored path.
+func stripQuery(path string) string {
+	if i := strings.IndexByte(path, '?'); i >= 0 {
+		return path[:i]
+	}
+	return path
+}
+
+// relayLogUpdateColumns is the reconciling update for a row persisted as processing at eviction:
+// every column PostRelayHook sets after the pending entry is taken, keyed by its database name,
+// so the row ends up as a row written in one shot would. Metadata is left as the partial stored
+// it, as the LLM reconcile leaves it. The bodies are named explicitly so a body the partial
+// stored and the final policy forbids is cleared.
+func relayLogUpdateColumns(entry *logstore.RelayLog, dropRequestBody bool) map[string]any {
+	if err := entry.SerializeFields(); err != nil {
+		return nil
+	}
+	updates := map[string]any{
+		"status":                    entry.Status,
+		"status_code":               entry.StatusCode,
+		"streamed":                  entry.Streamed,
+		"is_large_payload_response": entry.IsLargePayloadResponse,
+		"bytes_out":                 entry.BytesOut,
+		"latency":                   entry.Latency,
+		"upstream_latency":          entry.UpstreamLatency,
+		"overhead_latency":          entry.OverheadLatency,
+		"overhead_breakdown":        entry.OverheadBreakdown,
+		"cost":                      entry.Cost,
+		"cost_per_request":          entry.CostPerRequest,
+		"cost_per_unit":             entry.CostPerUnit,
+		"extracted_cost":            entry.ExtractedCost,
+		"units":                     entry.Units,
+		"billed_units":              entry.BilledUnits,
+		"input_tokens":              entry.InputTokens,
+		"output_tokens":             entry.OutputTokens,
+		"total_tokens":              entry.TotalTokens,
+		"job_id":                    entry.JobID,
+		"job_status":                entry.JobStatus,
+		"user_id":                   entry.UserID,
+		"user_name":                 entry.UserName,
+		"virtual_key_id":            entry.VirtualKeyID,
+		"virtual_key_name":          entry.VirtualKeyName,
+		"team_id":                   entry.TeamID,
+		"team_name":                 entry.TeamName,
+		"customer_id":               entry.CustomerID,
+		"customer_name":             entry.CustomerName,
+		"business_unit_id":          entry.BusinessUnitID,
+		"business_unit_name":        entry.BusinessUnitName,
+		"project_id":                entry.ProjectID,
+		"project_name":              entry.ProjectName,
+		"session_id":                entry.SessionID,
+		"parent_request_id":         entry.ParentRequestID,
+		"agent_correlation_id":      entry.AgentCorrelationID,
+		"team_ids":                  entry.TeamIDs,
+		"team_names":                entry.TeamNames,
+		"customer_ids":              entry.CustomerIDs,
+		"customer_names":            entry.CustomerNames,
+		"business_unit_ids":         entry.BusinessUnitIDs,
+		"business_unit_names":       entry.BusinessUnitNames,
+		"budget_ids":                entry.BudgetIDs,
+		"rate_limit_ids":            entry.RateLimitIDs,
+		"response_body":             entry.ResponseBody,
+		"error_details":             entry.ErrorDetails,
+		"plugin_logs":               entry.PluginLogs,
+		"content_hidden":            entry.ContentHidden,
+	}
+	if dropRequestBody {
+		updates["request_body"] = nil
+	}
+	if entry.ContentHidden && entry.Path != "" {
+		// The partial stored the full path; the final policy hides the query with the bodies.
+		updates["path"] = stripQuery(entry.Path)
+	}
+	// Hidden content with no body column rides along for the hybrid store's object; every store
+	// strips these keys before writing the row.
+	if entry.RetainedPath != nil {
+		updates[logstore.RelayRetainedPathUpdate] = entry.RetainedPath
+	}
+	if entry.RetainedErrorDetails != nil {
+		updates[logstore.RelayRetainedErrorDetailsUpdate] = entry.RetainedErrorDetails
+	}
+	return updates
+}
+
+// writeRelayEntry hands a completed row to the writer: an insert, or the reconciling update of a
+// row persisted at eviction.
+func (p *LoggerPlugin) writeRelayEntry(item relayInjectEntry) {
+	if !item.reconcile {
+		p.enqueueEndpointLogEntry(item.entry)
+		return
+	}
+	updates := relayLogUpdateColumns(item.entry, item.dropRequestBody)
+	if updates == nil {
+		p.logger.Warn("failed to serialize relay log %s for reconcile", item.entry.ID)
+		p.countDrop()
+		return
+	}
+	p.enqueueEndpointLogUpdate(&relayLogUpdate{id: item.entry.ID, updates: updates})
+}
+
+// persistEvictedRelayPartial is the relay half of persistEvictedPartial: a pending relay entry idle
+// past pendingLogTTL is written as a processing row, so a call that finishes late reconciles onto
+// it instead of losing its request side, and a marker tells PostRelayHook where to. The claim lock
+// keeps the sweep and a terminal post-hook from both taking the entry.
+func (p *LoggerPlugin) persistEvictedRelayPartial(key any, pending *pendingRelayLog) {
+	id, ok := key.(string)
+	if !ok {
+		p.pendingEndpointLogs.Delete(key)
+		return
+	}
+	lock := p.pendingClaimLock(id)
+	lock.Lock()
+	defer lock.Unlock()
+	if _, claimed := p.pendingEndpointLogs.LoadAndDelete(key); !claimed {
+		return
+	}
+	// A copy, as persistEvictedPartial builds its own row: the pending entry stays as the hook
+	// captured it, so a sweep that could not queue the partial hands PostRelayHook an intact one.
+	copied := pending.entry
+	partial := &copied
+	partial.Status = logStatusProcessing
+	// CreatedAt restarts the processing-row flush window; Timestamp keeps the call's start.
+	partial.CreatedAt = time.Now().UTC()
+	policy := pending.policy
+	if pending.provisionalInput || !policy.storeContent {
+		partial.RequestBody = nil
+	}
+	if pending.provisionalInput || !policy.visible() {
+		// Content retained as hidden keeps the query in the row's object, as PostRelayHook does.
+		if !pending.provisionalInput && policy.storeContent && strings.Contains(partial.Path, "?") {
+			partial.RetainedPath = schemas.Ptr(partial.Path)
+		}
+		partial.Path = stripQuery(partial.Path)
+	}
+	partial.ContentHidden = !policy.visible()
+	if !p.tryEnqueueEndpointLogEntry(partial) {
+		// Nothing persisted: keep the entry so its request side survives. The next sweep retries,
+		// or a completion takes the entry and writes the full row.
+		pending.evictionAttempts++
+		if pending.evictionAttempts < maxEvictionAttempts {
+			p.pendingEndpointLogs.Store(key, pending)
+			return
+		}
+		p.countDrop()
+		p.logger.Warn("log write queue full, dropping evicted relay request %s after %d attempts to persist its partial row", id, pending.evictionAttempts)
+		return
+	}
+	// Queued before the marker is visible, so a finish that sees the marker enqueues its update
+	// behind the insert; processBatch also applies inserts before updates within a batch.
+	p.evictedRelayPartials.Store(id, evictedRelayPartial{rowID: partial.ID, path: partial.Path, relayName: partial.RelayName, routePath: partial.RoutePath, streamed: partial.Streamed, at: time.Now()})
 }
 
 // storeOrEnqueueRelayEntry parks the row for Inject() to backfill upstream, overhead and the
 // breakdown from the completed trace, as storeOrEnqueueAgentEntry does for A2A rows. A row with
 // no trace, or whose trace has already ended, is written as it is.
-func (p *LoggerPlugin) storeOrEnqueueRelayEntry(ctx *schemas.BifrostContext, entry *logstore.RelayLog) {
+func (p *LoggerPlugin) storeOrEnqueueRelayEntry(ctx *schemas.BifrostContext, item relayInjectEntry) {
 	traceID, _ := ctx.Value(schemas.BifrostContextKeyTraceID).(string)
 	if traceID == "" || p.traceAlreadyEnded(ctx, traceID) {
-		p.enqueueEndpointLogEntry(entry)
+		p.writeRelayEntryUntraced(ctx, item)
 		return
 	}
-	existing, loaded := p.pendingRelayLogsToInject.LoadOrStore(traceID, &pendingRelayInjectEntries{entries: []*logstore.RelayLog{entry}, createdAt: time.Now()})
+	existing, loaded := p.pendingRelayLogsToInject.LoadOrStore(traceID, &pendingRelayInjectEntries{entries: []relayInjectEntry{item}, createdAt: time.Now()})
 	if !loaded {
 		// The trace may have ended between the check above and this store; reclaim the slot.
 		if p.traceAlreadyEnded(ctx, traceID) {
@@ -201,7 +469,7 @@ func (p *LoggerPlugin) storeOrEnqueueRelayEntry(ctx *schemas.BifrostContext, ent
 				late := orphaned.entries
 				orphaned.mu.Unlock()
 				for _, e := range late {
-					p.enqueueEndpointLogEntry(e)
+					p.writeRelayEntryUntraced(ctx, e)
 				}
 			}
 		}
@@ -211,11 +479,20 @@ func (p *LoggerPlugin) storeOrEnqueueRelayEntry(ctx *schemas.BifrostContext, ent
 	pending.mu.Lock()
 	if pending.drained {
 		pending.mu.Unlock()
-		p.enqueueEndpointLogEntry(entry)
+		p.writeRelayEntryUntraced(ctx, item)
 		return
 	}
-	pending.entries = append(pending.entries, entry)
+	pending.entries = append(pending.entries, item)
 	pending.mu.Unlock()
+}
+
+// writeRelayEntryUntraced writes a row no trace will backfill, with the plugin logs on its context.
+// A parked row takes the trace's instead (injectRelayEntries), which also hold the lines later
+// post-hooks and the transport plugins add, so the logs are serialized once either way. Uncapped,
+// as on LLM rows.
+func (p *LoggerPlugin) writeRelayEntryUntraced(ctx *schemas.BifrostContext, item relayInjectEntry) {
+	item.entry.PluginLogs = serializePluginLogs(ctx.GetPluginLogs())
+	p.writeRelayEntry(item)
 }
 
 // injectRelayEntries drains the Relay rows parked for a completed trace and backfills upstream,
@@ -244,7 +521,14 @@ func (p *LoggerPlugin) injectRelayEntries(trace *schemas.Trace, joinKey string) 
 		overheadMs, ovOK = overhead.TraceAttrFloatMs(trace.RootSpan.Attributes, schemas.AttrBifrostOverheadDurationMs)
 	}
 	overheadBreakdown, measuredOverheadMs, isStreaming := overhead.Compute(trace, overheadMs, ovOK, upstreamMs, upOK)
-	for _, entry := range entries {
+	// The trace's plugin logs, as an LLM row takes them: they include what the post-hooks after
+	// this plugin's and the transport plugins logged, which the post-hook copy cannot see.
+	pluginLogsJSON := serializePluginLogs(trace.PluginLogs)
+	for _, item := range entries {
+		entry := item.entry
+		if pluginLogsJSON != "" {
+			entry.PluginLogs = pluginLogsJSON
+		}
 		if upOK || ovOK {
 			entry.UpstreamLatency = nil
 			entry.OverheadLatency = nil
@@ -275,7 +559,7 @@ func (p *LoggerPlugin) injectRelayEntries(trace *schemas.Trace, joinKey string) 
 		if len(overheadBreakdown) > 0 {
 			entry.OverheadBreakdownParsed = overheadBreakdown
 		}
-		p.enqueueEndpointLogEntry(entry)
+		p.writeRelayEntry(item)
 	}
 }
 
@@ -395,23 +679,11 @@ func redactQuery(raw string) string {
 	return strings.Join(parts, "&")
 }
 
-// boundedBody keeps up to maxEndpointLogBodyLen bytes of a body as text; a binary body is not kept.
-func boundedBody(body []byte) *string {
-	if len(body) > maxEndpointLogBodyLen {
-		body = body[:maxEndpointLogBodyLen]
-	}
-	if !utf8.Valid(body) {
-		// A cut can split a rune at the end; anything else invalid is a binary payload.
-		trimmed := body
-		for i := 0; i < utf8.UTFMax && len(trimmed) > 0 && !utf8.Valid(trimmed); i++ {
-			trimmed = trimmed[:len(trimmed)-1]
-		}
-		if !utf8.Valid(trimmed) {
-			return nil
-		}
-		body = trimmed
-	}
-	s := string(body)
+// textBody keeps a body as text, the way LLM rows keep passthrough bodies (omitBinaryBody): a
+// binary body becomes a "<binary content omitted: N bytes>" placeholder, and a capture that ends
+// inside a multi-byte character (a caller that disconnected mid-stream) drops that character.
+func textBody(body []byte) *string {
+	s := omitBinaryBody(string(body))
 	return &s
 }
 
@@ -430,20 +702,6 @@ func relayMatchedHeaders(req *schemas.BifrostRelayRequest) map[string]string {
 	for name, value := range req.RouteHeaders {
 		kept[strings.ToLower(name)] = value
 	}
-	return boundedHeaders(schemas.RedactSensitiveHeaders(kept))
-}
-
-// relayHeaderValueLimit bounds one stored header value; the header count is bounded by the
-// transport's read buffer, so the row stays a few KB at most.
-const relayHeaderValueLimit = 2048
-
-// boundedHeaders clamps each header value in place, as bodies are bounded, so a row never grows
-// with an oversized header.
-func boundedHeaders(headers map[string]string) map[string]string {
-	for k, v := range headers {
-		if len(v) > relayHeaderValueLimit {
-			headers[k] = clampString(v, relayHeaderValueLimit)
-		}
-	}
-	return headers
+	// Values are stored whole, as LLM rows store their logging headers.
+	return schemas.RedactSensitiveHeaders(kept)
 }

@@ -1,1 +1,5 @@
-- chore: upgraded Go to 1.27.3, core to v1.13.1 and framework to v1.10.1
+- feat: per-caller connect tool for MCP clients with per-user discovery
+- feat: treat the Gemini Interactions agent as the model and count a run as one request
+- fix: evaluate code mode meta tools like any tool call
+- fix: relays match passthrough for headers and streams
+- chore: upgraded core to v1.15.0 and framework to v1.12.0

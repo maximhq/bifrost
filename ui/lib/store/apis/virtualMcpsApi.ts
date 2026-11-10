@@ -18,6 +18,7 @@ export const virtualMcpsApi = baseApi.injectEndpoints({
 					...(params?.search && { search: params.search }),
 					...(params?.limit !== undefined && { limit: params.limit }),
 					...(params?.offset !== undefined && { offset: params.offset }),
+					...(params?.mcp_client_id && { mcp_client_id: params.mcp_client_id }),
 				},
 			}),
 			providesTags: ["VirtualMCPs"],

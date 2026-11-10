@@ -408,15 +408,12 @@ func responsesIsOpenAIFamilyBreakpointTarget(caps schemas.ModelCaps, provider sc
 //     isFunctionCallOutputBlocksFlattenable then declines to collapse it back
 //     into a string.
 //
-// A marker's TTL is not carried across, and there is nowhere to carry it to. The
-// only request-level field on this path is prompt_cache_options.ttl, whose "only
-// supported value, 30m, is also the default"
-// (https://developers.openai.com/api/docs/guides/prompt-caching) - so writing it
-// changes nothing, while the values cache_control actually carries (absent for 5m,
-// or "1h": https://platform.claude.com/docs/en/build-with-claude/prompt-caching) are
-// rejected there outright. OpenRouter, the one target where a "1h" marker would mean
-// something, exposes no equivalent field at all, so its Claude requests fall back to
-// the default breakpoint lifetime. Another limit forced by the wire format.
+// A cache_control marker's TTL is not carried across. prompt_cache_breakpoint.ttl
+// accepts only "30m" or "12h", and neither matches cache_control's 5m / "1h"
+// (https://platform.claude.com/docs/en/build-with-claude/prompt-caching): turning "1h"
+// into "12h" would double the write price behind the caller's back. A client wanting
+// 12h sends prompt_cache_breakpoint.ttl itself; it passes through on OpenAI, Azure
+// and OpenRouter, and is dropped for Bedrock Mantle, which rejects it.
 //
 // messages is this function's own slice, but each element's Content pointer and
 // the block array beneath it still alias bifrostReq.Input, which plugins and the
@@ -548,6 +545,46 @@ func applyResponsesCacheBreakpoints(messages []schemas.ResponsesMessage, openAIF
 	}
 }
 
+// stripResponsesCacheBreakpointTTL drops breakpoint ttl in place on messages, copying
+// any content or tool output it touches, since those still alias bifrostReq.Input.
+func stripResponsesCacheBreakpointTTL(messages []schemas.ResponsesMessage) {
+	hasTTL := func(b schemas.ResponsesMessageContentBlock) bool {
+		return b.PromptCacheBreakpoint != nil && b.PromptCacheBreakpoint.TTL != nil
+	}
+	strip := func(blocks []schemas.ResponsesMessageContentBlock) []schemas.ResponsesMessageContentBlock {
+		if !slices.ContainsFunc(blocks, hasTTL) {
+			return nil
+		}
+		out := append([]schemas.ResponsesMessageContentBlock(nil), blocks...)
+		for j := range out {
+			if hasTTL(out[j]) {
+				bp := *out[j].PromptCacheBreakpoint
+				bp.TTL = nil
+				out[j].PromptCacheBreakpoint = &bp
+			}
+		}
+		return out
+	}
+	for i := range messages {
+		if c := messages[i].Content; c != nil {
+			if blocks := strip(c.ContentBlocks); blocks != nil {
+				contentCopy := *c
+				contentCopy.ContentBlocks = blocks
+				messages[i].Content = &contentCopy
+			}
+		}
+		if tm := messages[i].ResponsesToolMessage; tm != nil && tm.Output != nil {
+			if blocks := strip(tm.Output.ResponsesFunctionToolCallOutputBlocks); blocks != nil {
+				outputCopy := *tm.Output
+				outputCopy.ResponsesFunctionToolCallOutputBlocks = blocks
+				toolMsgCopy := *tm
+				toolMsgCopy.Output = &outputCopy
+				messages[i].ResponsesToolMessage = &toolMsgCopy
+			}
+		}
+	}
+}
+
 // ToOpenAIResponsesRequest converts a Bifrost responses request to OpenAI format
 // bareTextContentBlockType is the Anthropic/Gemini spelling of a text content block.
 // OpenAI's Responses input only knows input_text / output_text, so the converter
@@ -582,7 +619,8 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 
 	// Canonical model for capability gating only; wire model is untouched.
 	capModel := schemas.ResolveCanonicalModel(ctx, bifrostReq.Model)
-	caps := schemas.ResolveModelCaps(schemas.ResolveBaseProvider(ctx, bifrostReq.Provider), capModel)
+	baseProvider := schemas.ResolveBaseProvider(ctx, bifrostReq.Provider)
+	caps := schemas.ResolveModelCaps(baseProvider, capModel)
 
 	var messages []schemas.ResponsesMessage
 	// OpenAI models (except for gpt-oss) do not support reasoning content blocks, so we need to convert them to summaries, if there are any
@@ -598,6 +636,8 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 	customToolsAsFunctions := customToolsUnsupported(ctx, bifrostReq.Provider, bifrostReq.Model)
 	developerAsSystem := !caps.SupportsDeveloperRole(true)
 	keepAdditionalTools := supportsAdditionalToolsItem(bifrostReq.Provider) && !customToolsAsFunctions
+	keepsReasoningItemIDs := baseProvider == schemas.BedrockMantle || baseProvider == schemas.Bedrock
+	joinsReasoningBlocks := baseProvider == schemas.VLLM
 	keepConfigurationUpdate := supportsConfigurationUpdateItem(ctx, bifrostReq.Provider)
 	replayAssistantTextAsInput := isMantleGPTOSSResponses(ctx, bifrostReq.Provider, capModel)
 	replayComputerActions := bifrostReq.Params != nil && slices.ContainsFunc(bifrostReq.Params.Tools, func(t schemas.ResponsesTool) bool {
@@ -787,19 +827,25 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 		// reasoning_N) and function_call_output items (func_resp_<id>). OpenAI rejects these.
 		// Drop them; the call_id and output pairing are unaffected. message is a value copy.
 		// But preserve native OpenAI reasoning IDs (rs_ prefix) which are needed for replay.
+		// Mantle (bedrock_mantle, and bedrock's Mantle route) requires an id on a replayed
+		// reasoning item and accepts any value, including the msg_ ids it mints itself;
+		// bedrock-runtime's OpenAI surface accepts any id too.
 		if message.Type != nil && (*message.Type == schemas.ResponsesMessageTypeReasoning ||
 			*message.Type == schemas.ResponsesMessageTypeFunctionCallOutput ||
 			*message.Type == schemas.ResponsesMessageTypeWebSearchCall) &&
 			message.ID != nil && *message.ID != "" &&
-			!(*message.Type == schemas.ResponsesMessageTypeReasoning && strings.HasPrefix(*message.ID, "rs_")) &&
+			!(*message.Type == schemas.ResponsesMessageTypeReasoning &&
+				(strings.HasPrefix(*message.ID, "rs_") || keepsReasoningItemIDs)) &&
 			!isNativeWebSearchCall(message) {
 			message.ID = nil
 		}
 
-		// Gemini sets Name on function_call_output items (the tool name), but OpenAI's
-		// function_call_output does not accept this field. Strip it. message is a value copy.
+		// Preserve the name on unsolicited outputs: OpenAI requires it when there is
+		// no call_id. Keep stripping Gemini's redundant name on paired outputs for
+		// compatibility with backends that reject it. message is a value copy.
 		if message.Type != nil && *message.Type == schemas.ResponsesMessageTypeFunctionCallOutput &&
-			message.ResponsesToolMessage != nil && message.ResponsesToolMessage.Name != nil {
+			message.ResponsesToolMessage != nil && message.ResponsesToolMessage.Name != nil &&
+			message.ResponsesToolMessage.CallID != nil && *message.ResponsesToolMessage.CallID != "" {
 			// Clone to avoid mutating the caller's input
 			toolMsgCopy := *message.ResponsesToolMessage
 			toolMsgCopy.Name = nil
@@ -867,8 +913,17 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 			}
 		}
 
-		if message.ResponsesReasoning != nil {
-			usesContentBlocks := caps.SupportsReasoningContentBlocks(defaultSupportsReasoningContentBlocks(capModel))
+		// Codex replays assistant message items with summary:null and encrypted_content, which
+		// decode into the embedded ResponsesReasoning. The content is the turn itself: keep it.
+		// Drop the token for every model: OpenAI never mints encrypted_content on a message item
+		// and rejects any it receives, and the fail-soft retry would then also strip the genuine
+		// reasoning items' tokens. Separate reasoning items are handled below, unchanged.
+		if message.ResponsesReasoning != nil && len(message.ResponsesReasoning.Summary) == 0 &&
+			message.Type != nil && *message.Type == schemas.ResponsesMessageTypeMessage {
+			message.ResponsesReasoning = nil
+			messages = append(messages, message)
+		} else if message.ResponsesReasoning != nil {
+			usesContentBlocks := caps.SupportsReasoningContentBlocks(defaultSupportsReasoningContentBlocks(baseProvider, capModel))
 			isReasoning := caps.SupportsReasoning(IsOpenAIReasoningModel(capModel))
 
 			// Models that read reasoning from summary[] have nothing to gain from a
@@ -901,9 +956,13 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 						Text: schemas.Ptr(summary.Text),
 					})
 				}
+				if joinsReasoningBlocks {
+					contentBlocks = joinReasoningBlocks(contentBlocks)
+				}
 				newMessage.Content = &schemas.ResponsesMessageContent{
 					ContentBlocks: contentBlocks,
 				}
+				newMessage.ResponsesReasoning = &schemas.ResponsesReasoning{Summary: []schemas.ResponsesReasoningSummary{}}
 				messages = append(messages, newMessage)
 			} else {
 				// Clone the embedded pointer to avoid mutating the original input
@@ -946,6 +1005,8 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 						}
 					case len(message.Content.ContentBlocks) == 0:
 						message.Content = nil
+					case joinsReasoningBlocks && len(message.Content.ContentBlocks) > 1:
+						message.Content = &schemas.ResponsesMessageContent{ContentBlocks: joinReasoningBlocks(message.Content.ContentBlocks)}
 					}
 				}
 				messages = append(messages, message)
@@ -981,6 +1042,10 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 		}
 		applyResponsesCacheBreakpoints(messages, openAIFamily, promptCacheBreakpointCeiling(ctx, openAIFamily, callerCacheOptions, extraParams))
 	}
+	// Bedrock Mantle rejects prompt_cache_breakpoint.ttl on every model (no 12h there).
+	if cachePromptProvider == schemas.BedrockMantle || cachePromptProvider == schemas.Bedrock {
+		stripResponsesCacheBreakpointTTL(messages)
+	}
 
 	// Updating params
 	params := bifrostReq.Params
@@ -1000,6 +1065,13 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 
 	if params != nil {
 		req.ResponsesParameters = *params
+		// Bedrock Mantle accepts only "30m" for prompt_cache_options.ttl
+		if opts := req.PromptCacheOptions; opts != nil && opts.TTL != nil && *opts.TTL != "30m" &&
+			(cachePromptProvider == schemas.BedrockMantle || cachePromptProvider == schemas.Bedrock) {
+			optsCopy := *opts
+			optsCopy.TTL = nil
+			req.PromptCacheOptions = &optsCopy
+		}
 		req.ServiceTier = serviceTierForModel(caps, req.ServiceTier)
 		if req.ResponsesParameters.MaxOutputTokens != nil && *req.ResponsesParameters.MaxOutputTokens < MinMaxCompletionTokens {
 			req.ResponsesParameters.MaxOutputTokens = schemas.Ptr(MinMaxCompletionTokens)
@@ -1255,32 +1327,42 @@ func samplingParamUnsupported(caps schemas.ModelCaps, field, model, effort strin
 
 // filterUnsupportedTools removes tool types that OpenAI doesn't support
 // defaultImageDetail fills "auto" into any input_image content block missing the
-// detail field. Clones content on write — the Content pointer and the image block
-// pointers inside it are shared with the caller's input.
+// detail field, in the message's own content and in a tool output's blocks (an
+// image returned by a tool). Clones on write — the Content and Output pointers and
+// the image block pointers inside them are shared with the caller's input.
 func defaultImageDetail(message schemas.ResponsesMessage) schemas.ResponsesMessage {
-	if message.Content == nil || len(message.Content.ContentBlocks) == 0 {
-		return message
+	if message.Content != nil {
+		if blocks, changed := withDefaultImageDetail(message.Content.ContentBlocks); changed {
+			contentCopy := *message.Content
+			contentCopy.ContentBlocks = blocks
+			message.Content = &contentCopy
+		}
 	}
+	if message.ResponsesToolMessage != nil && message.ResponsesToolMessage.Output != nil {
+		if blocks, changed := withDefaultImageDetail(message.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks); changed {
+			outputCopy := *message.ResponsesToolMessage.Output
+			outputCopy.ResponsesFunctionToolCallOutputBlocks = blocks
+			toolMsgCopy := *message.ResponsesToolMessage
+			toolMsgCopy.Output = &outputCopy
+			message.ResponsesToolMessage = &toolMsgCopy
+		}
+	}
+	return message
+}
 
+// withDefaultImageDetail returns a copy of blocks with detail "auto" on every
+// input_image that lacks one, or blocks itself and false when none does.
+func withDefaultImageDetail(blocks []schemas.ResponsesMessageContentBlock) ([]schemas.ResponsesMessageContentBlock, bool) {
 	needsDetail := func(block schemas.ResponsesMessageContentBlock) bool {
 		return block.Type == schemas.ResponsesInputMessageContentBlockTypeImage &&
 			block.ResponsesInputMessageContentBlockImage != nil &&
 			block.ResponsesInputMessageContentBlockImage.Detail == nil
 	}
-
-	fixNeeded := false
-	for _, block := range message.Content.ContentBlocks {
-		if needsDetail(block) {
-			fixNeeded = true
-			break
-		}
-	}
-	if !fixNeeded {
-		return message
+	if !slices.ContainsFunc(blocks, needsDetail) {
+		return blocks, false
 	}
 
-	newBlocks := make([]schemas.ResponsesMessageContentBlock, len(message.Content.ContentBlocks))
-	copy(newBlocks, message.Content.ContentBlocks)
+	newBlocks := slices.Clone(blocks)
 	for i, block := range newBlocks {
 		if needsDetail(block) {
 			imageCopy := *block.ResponsesInputMessageContentBlockImage
@@ -1288,11 +1370,7 @@ func defaultImageDetail(message schemas.ResponsesMessage) schemas.ResponsesMessa
 			newBlocks[i].ResponsesInputMessageContentBlockImage = &imageCopy
 		}
 	}
-
-	contentCopy := *message.Content
-	contentCopy.ContentBlocks = newBlocks
-	message.Content = &contentCopy
-	return message
+	return newBlocks, true
 }
 
 // isMantleGPTOSSResponses reports whether the request is gpt-oss served by Bedrock Mantle's

@@ -799,6 +799,7 @@ func TestIsRealtimeTransportEndpoint(t *testing.T) {
 		"/openai/realtime/calls",
 		"/openai/v1/realtime/calls",
 		"/openai/openai/realtime/calls",
+		"/genai/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent",
 	}
 
 	for _, path := range paths {
@@ -5431,10 +5432,49 @@ func TestLogRequestTargetRedactsAPIKeyQuery(t *testing.T) {
 	}
 }
 
+// TestLogRequestTargetRedactsLiveKeyQuery pins that the key a Gemini Live client sends as ?key= never reaches
+// the access log, that every repeat of a secret name is redacted, and that a name that only resembles one is left alone.
+func TestLogRequestTargetRedactsLiveKeyQuery(t *testing.T) {
+	for uri, want := range map[string]string{
+		"/genai/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=sk-bf-secret": "/genai/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=REDACTED",
+		"/genai/ws/live?ke%79=sk-bf-secret&alt=json":                                                           "/genai/ws/live?key=REDACTED&alt=json",
+		"/genai/ws/live?key=AIza-secret&api-key=sk-bf-secret":                                                  "/genai/ws/live?key=REDACTED&api-key=REDACTED",
+		"/genai/ws/live?key=a&key=b":                                                                           "/genai/ws/live?key=REDACTED&key=REDACTED",
+		"/voice-live/realtime?api-key=a&model=m&api-key=b":                                                     "/voice-live/realtime?api-key=REDACTED&model=m&api-key=REDACTED",
+		"/api/logs?keys=a&key_name=b":                                                                          "/api/logs?keys=a&key_name=b",
+	} {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.SetRequestURI(uri)
+		if got := logRequestTarget(ctx); got != want {
+			t.Errorf("logRequestTarget(%q) = %q, want %q", uri, got, want)
+		}
+	}
+}
+
 // BenchmarkLogRequestTarget measures the access log target on a request without a query string, the common case.
 func BenchmarkLogRequestTarget(b *testing.B) {
 	ctx := &fasthttp.RequestCtx{}
 	ctx.Request.SetRequestURI("/v1/chat/completions")
+	b.ReportAllocs()
+	for b.Loop() {
+		_ = logRequestTarget(ctx)
+	}
+}
+
+// BenchmarkLogRequestTargetQuery measures the access log target on a request whose query string holds no secret.
+func BenchmarkLogRequestTargetQuery(b *testing.B) {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.SetRequestURI("/api/logs?limit=50&offset=100&providers=openai")
+	b.ReportAllocs()
+	for b.Loop() {
+		_ = logRequestTarget(ctx)
+	}
+}
+
+// BenchmarkLogRequestTargetRedacted measures the access log target on a request that carries a secret.
+func BenchmarkLogRequestTargetRedacted(b *testing.B) {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.SetRequestURI("/genai/ws/live?alt=json&key=sk-bf-secret")
 	b.ReportAllocs()
 	for b.Loop() {
 		_ = logRequestTarget(ctx)
@@ -5507,4 +5547,260 @@ func BenchmarkCorsMiddleware(b *testing.B) {
 			}
 		})
 	}
+}
+
+// basePathTestConfig returns a minimal Config with server.base_path set.
+func basePathTestConfig(basePath string) *lib.Config {
+	return &lib.Config{ClientConfig: &configstore.ClientConfig{}, ServerConfig: &lib.ServerConfig{BasePath: basePath}}
+}
+
+// TestBasePathMiddleware_StripsPrefix pins the URI rewrite: the prefix is removed
+// on whole-segment matches only, the query survives, and Path() and
+// PathOriginal() both see the stripped path.
+func TestBasePathMiddleware_StripsPrefix(t *testing.T) {
+	cases := []struct {
+		uri, wantPath, wantQuery string
+	}{
+		{"/bifrost", "/", ""},
+		{"/bifrost/", "/", ""},
+		{"/bifrost/workspace/logs", "/workspace/logs", ""},
+		{"/bifrost/api/logs?limit=10&offset=0", "/api/logs", "limit=10&offset=0"},
+		{"/bifrost/v1/chat/completions", "/v1/chat/completions", ""},
+		{"/bifrost/assets/index-abc.js", "/assets/index-abc.js", ""},
+		// Unprefixed requests (a stripping proxy, a /health probe) pass through.
+		{"/health", "/health", ""},
+		{"/api/logs?limit=1", "/api/logs", "limit=1"},
+		{"/", "/", ""},
+		// Lookalike prefixes are not segment matches.
+		{"/bifrostx/api/logs", "/bifrostx/api/logs", ""},
+		{"/bifrost-ui", "/bifrost-ui", ""},
+	}
+	for _, tc := range cases {
+		var gotPath, gotOriginal, gotQuery string
+		handler := basePathMiddleware("/bifrost")(func(ctx *fasthttp.RequestCtx) {
+			gotPath = string(ctx.Path())
+			gotOriginal = string(ctx.Request.URI().PathOriginal())
+			gotQuery = string(ctx.QueryArgs().QueryString())
+		})
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.SetRequestURI(tc.uri)
+		ctx.Request.Header.SetHost("abc.com")
+		handler(ctx)
+		assert.Equal(t, tc.wantPath, gotPath, tc.uri)
+		assert.Equal(t, tc.wantPath, gotOriginal, tc.uri)
+		assert.Equal(t, tc.wantQuery, gotQuery, tc.uri)
+		assert.Equal(t, "abc.com", string(ctx.Host()), tc.uri)
+	}
+}
+
+// TestBasePathMiddleware_NestedPrefix covers a multi-segment prefix.
+func TestBasePathMiddleware_NestedPrefix(t *testing.T) {
+	var gotPath string
+	handler := basePathMiddleware("/tools/llm-gw")(func(ctx *fasthttp.RequestCtx) { gotPath = string(ctx.Path()) })
+	for uri, want := range map[string]string{
+		"/tools/llm-gw/api/version": "/api/version",
+		"/tools/llm-gw":             "/",
+		"/tools/api/version":        "/tools/api/version",
+	} {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.SetRequestURI(uri)
+		handler(ctx)
+		assert.Equal(t, want, gotPath, uri)
+	}
+}
+
+// TestServerRootHandler_BasePathRouting runs prefixed and unprefixed requests
+// through the production root chain and a real router, and checks the stripped
+// path is the one the auth whitelist matches against.
+func TestServerRootHandler_BasePathRouting(t *testing.T) {
+	SetLogger(&mockLogger{})
+	r := router.New()
+	var hitPath string
+	record := func(ctx *fasthttp.RequestCtx) { hitPath = string(ctx.Request.URI().PathOriginal()) }
+	r.GET("/health", record)
+	r.GET("/api/session/is-auth-enabled", record)
+	r.GET("/{filepath:*}", func(ctx *fasthttp.RequestCtx) { hitPath = "ui:" + string(ctx.Path()) })
+
+	handler := ServerRootHandler(newRecoveryTestCors(), basePathTestConfig("/bifrost"), r.Handler)
+	for uri, want := range map[string]string{
+		"/bifrost/api/session/is-auth-enabled": "/api/session/is-auth-enabled",
+		"/api/session/is-auth-enabled":         "/api/session/is-auth-enabled",
+		"/bifrost/health":                      "/health",
+		"/health":                              "/health",
+		"/bifrost/workspace/logs":              "ui:/workspace/logs",
+		"/bifrost/login":                       "ui:/login",
+		// The root chain strips the prefix exactly once.
+		"/bifrost/bifrost/workspace": "ui:/bifrost/workspace",
+	} {
+		hitPath = ""
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.SetRequestURI(uri)
+		ctx.Request.Header.SetMethod("GET")
+		handler(ctx)
+		assert.Equal(t, want, hitPath, uri)
+	}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.SetRequestURI("/bifrost/login")
+	basePathMiddleware("/bifrost")(func(ctx *fasthttp.RequestCtx) {
+		assert.True(t, isAPIRouteWhitelistedAmong(string(ctx.Request.URI().PathOriginal()), nil), "stripped /login must match the system whitelist")
+	})(ctx)
+
+	// API responses under the prefix still get the /api/ no-store header.
+	ctx = &fasthttp.RequestCtx{}
+	ctx.Request.SetRequestURI("/bifrost/api/session/is-auth-enabled")
+	ctx.Request.Header.SetMethod("GET")
+	handler(ctx)
+	assert.Equal(t, "no-store", string(ctx.Response.Header.Peek("Cache-Control")))
+}
+
+// TestBasePathMiddleware_RedirectsKeepPrefix pins that a same-origin redirect
+// answering a prefixed request stays under the prefix. The router builds its
+// trailing-slash and fixed-path redirects from the stripped path, so without
+// this the browser would leave the proxy prefix. Redirects that already carry
+// the prefix, point at another origin, or answer an unprefixed request are
+// left alone.
+func TestBasePathMiddleware_RedirectsKeepPrefix(t *testing.T) {
+	SetLogger(&mockLogger{})
+	r := router.New()
+	r.GET("/api/providers", func(*fasthttp.RequestCtx) {})
+	r.POST("/api/providers", func(*fasthttp.RequestCtx) {})
+	r.GET("/handler/{target}", func(ctx *fasthttp.RequestCtx) {
+		switch ctx.UserValue("target") {
+		case "prefixed":
+			ctx.Redirect("/bifrost/workspace", fasthttp.StatusFound)
+		case "external":
+			ctx.Redirect("https://idp.example.org/authorize?x=1", fasthttp.StatusFound)
+		case "relative":
+			ctx.Response.Header.Set("Location", "/workspace/logs?x=1")
+			ctx.SetStatusCode(fasthttp.StatusFound)
+		case "protocol-relative":
+			ctx.Response.Header.Set("Location", "//evil.example.org/x")
+			ctx.SetStatusCode(fasthttp.StatusFound)
+		case "backslash":
+			ctx.Response.Header.Set("Location", "/\\evil.example.org/x")
+			ctx.SetStatusCode(fasthttp.StatusFound)
+		case "lookalike":
+			ctx.Redirect("/bifrostx/y", fasthttp.StatusFound)
+		case "foreign-same-host":
+			// A third-party OAuth client's redirect_uri that happens to share this host.
+			ctx.Response.Header.Set("Location", "http://gw.example.com/app/cb?code=1")
+			ctx.SetStatusCode(fasthttp.StatusFound)
+			markLocationExternal(ctx)
+		case "foreign-same-host-unmarked":
+			ctx.Response.Header.Set("Location", "http://gw.example.com/app/cb?code=1")
+			ctx.SetStatusCode(fasthttp.StatusFound)
+		}
+	})
+	handler := ServerRootHandler(newRecoveryTestCors(), basePathTestConfig("/bifrost"), r.Handler)
+
+	cases := []struct {
+		method, uri string
+		wantStatus  int
+		wantLoc     string
+	}{
+		// Router-generated trailing-slash redirects.
+		{"GET", "/bifrost/api/providers/", fasthttp.StatusMovedPermanently, "http://gw.example.com/bifrost/api/providers"},
+		{"POST", "/bifrost/api/providers/?a=b", fasthttp.StatusPermanentRedirect, "http://gw.example.com/bifrost/api/providers?a=b"},
+		// Router-generated fixed-path (case) redirect.
+		{"GET", "/bifrost/API/Providers", fasthttp.StatusMovedPermanently, "http://gw.example.com/bifrost/api/providers"},
+		// Unprefixed requests keep the unprefixed redirect.
+		{"GET", "/api/providers/", fasthttp.StatusMovedPermanently, "http://gw.example.com/api/providers"},
+		// Handler redirects.
+		{"GET", "/bifrost/handler/prefixed", fasthttp.StatusFound, "http://gw.example.com/bifrost/workspace"},
+		{"GET", "/bifrost/handler/external", fasthttp.StatusFound, "https://idp.example.org/authorize?x=1"},
+		{"GET", "/bifrost/handler/relative", fasthttp.StatusFound, "/bifrost/workspace/logs?x=1"},
+		{"GET", "/bifrost/handler/protocol-relative", fasthttp.StatusFound, "//evil.example.org/x"},
+		{"GET", "/bifrost/handler/backslash", fasthttp.StatusFound, "/\\evil.example.org/x"},
+		{"GET", "/bifrost/handler/lookalike", fasthttp.StatusFound, "http://gw.example.com/bifrost/bifrostx/y"},
+		// A redirect the handler marked as leaving Bifrost is not pulled under the prefix.
+		{"GET", "/bifrost/handler/foreign-same-host", fasthttp.StatusFound, "http://gw.example.com/app/cb?code=1"},
+		// Unmarked same-host Locations are still assumed to be ours.
+		{"GET", "/bifrost/handler/foreign-same-host-unmarked", fasthttp.StatusFound, "http://gw.example.com/bifrost/app/cb?code=1"},
+	}
+	for _, tc := range cases {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.SetRequestURI(tc.uri)
+		ctx.Request.Header.SetMethod(tc.method)
+		ctx.Request.Header.SetHost("gw.example.com")
+		handler(ctx)
+		assert.Equal(t, tc.wantStatus, ctx.Response.StatusCode(), tc.method+" "+tc.uri)
+		assert.Equal(t, tc.wantLoc, string(ctx.Response.Header.Peek("Location")), tc.method+" "+tc.uri)
+	}
+}
+
+// TestServerRootHandler_NoBasePathNotWired pins that without a base path the
+// prefix is never stripped, i.e. the middleware is not part of the chain.
+func TestServerRootHandler_NoBasePathNotWired(t *testing.T) {
+	SetLogger(&mockLogger{})
+	for _, config := range []*lib.Config{
+		basePathTestConfig(""),
+		{ClientConfig: &configstore.ClientConfig{}},
+	} {
+		var gotPath string
+		handler := ServerRootHandler(newRecoveryTestCors(), config, func(ctx *fasthttp.RequestCtx) { gotPath = string(ctx.Path()) })
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.SetRequestURI("/bifrost/api/logs")
+		handler(ctx)
+		assert.Equal(t, "/bifrost/api/logs", gotPath)
+	}
+}
+
+// TestBasePathRootHandler pins the exported root wrapper that builds with their
+// own root chain (enterprise) use in place of ServerRootHandler: it strips the
+// configured prefix once, and without a base path it returns next unchanged.
+func TestBasePathRootHandler(t *testing.T) {
+	var gotPath string
+	next := func(ctx *fasthttp.RequestCtx) { gotPath = string(ctx.Request.URI().PathOriginal()) }
+
+	handler := BasePathRootHandler(basePathTestConfig("/bifrost"), next)
+	for uri, want := range map[string]string{
+		"/bifrost/api/logs":         "/api/logs",
+		"/api/logs":                 "/api/logs",
+		"/bifrost":                  "/",
+		"/bifrostx/api/logs":        "/bifrostx/api/logs",
+		"/bifrost/bifrost/api/logs": "/bifrost/api/logs",
+	} {
+		gotPath = ""
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.SetRequestURI(uri)
+		handler(ctx)
+		assert.Equal(t, want, gotPath, uri)
+	}
+
+	for _, config := range []*lib.Config{nil, {}, basePathTestConfig("")} {
+		handler := BasePathRootHandler(config, next)
+		assert.Equal(t, reflect.ValueOf(next).Pointer(), reflect.ValueOf(handler).Pointer(), "no base path: next is returned as is")
+	}
+}
+
+// BenchmarkBasePathMiddleware measures the per-request cost of the prefix strip
+// when a base path is configured (it is not in the chain otherwise).
+func BenchmarkBasePathMiddleware(b *testing.B) {
+	noop := func(*fasthttp.RequestCtx) {}
+	handler := basePathMiddleware("/bifrost")(noop)
+	for name, uri := range map[string]string{
+		"prefixed":   "/bifrost/v1/chat/completions?stream=true",
+		"unprefixed": "/v1/chat/completions?stream=true",
+	} {
+		b.Run(name, func(b *testing.B) {
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.Header.SetHost("abc.com")
+			b.ReportAllocs()
+			for b.Loop() {
+				ctx.Request.SetRequestURI(uri)
+				handler(ctx)
+			}
+		})
+	}
+	b.Run("baseline", func(b *testing.B) {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.Header.SetHost("abc.com")
+		b.ReportAllocs()
+		for b.Loop() {
+			ctx.Request.SetRequestURI("/v1/chat/completions?stream=true")
+			_ = ctx.Request.URI()
+			noop(ctx)
+		}
+	})
 }
