@@ -2220,15 +2220,18 @@ type ResponsesOutputMessageContentRefusal struct {
 }
 
 type ResponsesToolMessage struct {
-	CallID    *string                           `json:"call_id,omitempty"`   // Common call ID for tool calls and outputs
-	Name      *string                           `json:"name,omitempty"`      // Common name field for tool calls
-	Namespace *string                           `json:"namespace,omitempty"` // Namespace for function_call items (set by OpenAI when namespace tools are used)
-	Arguments *string                           `json:"arguments,omitempty"`
-	Execution *string                           `json:"execution,omitempty"` // "client" on deferred calls (e.g. tool_search_call); Codex needs it to dispatch the call
-	Async     *bool                             `json:"async,omitempty"`     // true on function/custom calls to async tools; must survive replay or OpenAI 400s
-	Output    *ResponsesToolMessageOutputStruct `json:"output,omitempty"`
-	Action    *ResponsesToolMessageActionStruct `json:"action,omitempty"`
-	Error     *ResponsesToolMessageError        `json:"error,omitempty"`
+	CallID    *string `json:"call_id,omitempty"`   // Common call ID for tool calls and outputs
+	Name      *string `json:"name,omitempty"`      // Common name field for tool calls
+	Namespace *string `json:"namespace,omitempty"` // Namespace for function_call items (set by OpenAI when namespace tools are used)
+	Arguments *string `json:"arguments,omitempty"`
+	// EncryptedFunctionArgs holds the encrypted argument chunks OpenAI can mint on a
+	// function_call item. Codex replays them; the call is unusable without them.
+	EncryptedFunctionArgs []string                          `json:"encrypted_function_args,omitempty"`
+	Execution             *string                           `json:"execution,omitempty"` // "client" on deferred calls (e.g. tool_search_call); Codex needs it to dispatch the call
+	Async                 *bool                             `json:"async,omitempty"`     // true on function/custom calls to async tools; must survive replay or OpenAI 400s
+	Output                *ResponsesToolMessageOutputStruct `json:"output,omitempty"`
+	Action                *ResponsesToolMessageActionStruct `json:"action,omitempty"`
+	Error                 *ResponsesToolMessageError        `json:"error,omitempty"`
 	// Caller is the neutral form of Anthropic's "caller" union on server-tool blocks
 	Caller *ResponsesToolCaller `json:"tool_caller,omitempty"`
 	// ToolsetName is the client toolset a member call belongs to ("computer" for
@@ -2584,7 +2587,8 @@ func (action *ResponsesToolMessageActionStruct) UnmarshalJSON(data []byte) error
 		action.ResponsesMCPApprovalRequestAction = &mcpApprovalRequestAction
 		return nil
 
-	case "search", "open_page", "find":
+	// OpenAI and Codex name the find action "find_in_page"; "find" is the older spelling.
+	case "search", "open_page", "find", "find_in_page":
 		var webSearchToolCallAction ResponsesWebSearchToolCallAction
 		if err := Unmarshal(data, &webSearchToolCallAction); err != nil {
 			return fmt.Errorf("failed to unmarshal web search tool call action: %w", err)
@@ -2851,7 +2855,7 @@ type ResponsesComputerToolCallAcknowledgedSafetyCheck struct {
 
 // ResponsesWebSearchToolCallAction represents the different types of web search actions
 type ResponsesWebSearchToolCallAction struct {
-	Type    string                                         `json:"type"`          // "search" | "open_page" | "find"
+	Type    string                                         `json:"type"`          // "search" | "open_page" | "find_in_page" (older: "find")
 	URL     *string                                        `json:"url,omitempty"` // Common URL field (OpenPage, Find)
 	Query   *string                                        `json:"query,omitempty"`
 	Queries []string                                       `json:"queries,omitempty"`
