@@ -59,7 +59,7 @@ For `scim_config` with `provider = "okta"`, include `config.issuerUrl`, `config.
 
 The root module references every cloud's resources (the unused clouds have `count = 0`), and Terraform configures every provider it references during `plan`. A plan through the root module therefore needs working credentials for AWS, Google, and Azure at the same time, even when only one cloud receives resources.
 
-To deploy to one cloud with only that cloud's credentials, call its platform module directly: `modules/bifrost/aws`, `modules/bifrost/gcp`, `modules/bifrost/azure`, or `modules/bifrost/kubernetes`. They take the resolved `config_json` string instead of the per-section variables. [`examples/aws-ecs-postgres`](examples/aws-ecs-postgres/) and [`examples/gcp-cloud-run-postgres`](examples/gcp-cloud-run-postgres/) show the pattern, including the config merge.
+To deploy to one cloud with only that cloud's credentials, call its platform module directly: `modules/bifrost/aws`, `modules/bifrost/gcp`, `modules/bifrost/azure`, or `modules/bifrost/kubernetes`. They take the resolved `config_json` string instead of the per-section variables. [`examples/aws-ecs-postgres`](examples/aws-ecs-postgres/), [`examples/gcp-cloud-run-postgres`](examples/gcp-cloud-run-postgres/) and [`examples/azure-aci-postgres`](examples/azure-aci-postgres/) show the pattern, including the config merge.
 
 See the [module README](modules/bifrost/README.md#provider-configuration) for provider configuration examples per cloud.
 
@@ -96,6 +96,7 @@ terraform/
     gcp-gke/                    # Deploy on GKE
     gcp-cloud-run-postgres/     # Cloud Run + Cloud SQL (the one-click GCP stack)
     azure-aks/                  # Deploy on AKS
+    azure-aci-postgres/         # Container Instances + Flexible Server (the one-click Azure stack)
     kubernetes/                 # Deploy on any K8s cluster
 ```
 
@@ -130,8 +131,8 @@ terraform apply
 | `ingress_class_name` | `"nginx"` | Ingress controller class (generic K8s only) |
 | `ingress_annotations` | `{}` | Ingress annotations (generic K8s only) |
 | `ingress_path` | `"/"` | Ingress path prefix routed to Bifrost (EKS, GKE, AKS, generic K8s); match `server.base_path` to serve under a prefix |
-| `create_database` | `false` | Provision RDS (ECS) or Cloud SQL (Cloud Run) PostgreSQL 16 and point both stores at it |
-| `generate_secrets` | `false` | Generate and inject `BIFROST_ENCRYPTION_KEY` and `BIFROST_SETUP_TOKEN` (ECS, Cloud Run) |
+| `create_database` | `false` | Provision RDS (ECS), Cloud SQL (Cloud Run) or Flexible Server (ACI) PostgreSQL 16 and point both stores at it |
+| `generate_secrets` | `false` | Generate and inject `BIFROST_ENCRYPTION_KEY` and `BIFROST_SETUP_TOKEN` (ECS, Cloud Run, ACI) |
 | `image_repository` | `"maximhq/bifrost"` | Image repository; set to your private registry path for Bifrost Enterprise |
 
 ## Outputs
@@ -141,4 +142,4 @@ terraform apply
 | `service_url` | URL to access Bifrost |
 | `health_check_url` | Health endpoint URL |
 | `setup_token` | Generated first-admin token (sensitive, with `generate_secrets`) |
-| `database_endpoint` | RDS `host:port` or Cloud SQL connection name (with `create_database`) |
+| `database_endpoint` | RDS `host:port`, Cloud SQL connection name or Flexible Server FQDN (with `create_database`) |

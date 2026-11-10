@@ -71,3 +71,32 @@ variable "identity_id" {
   description = "User assigned identity ID for the container group."
   type        = string
 }
+
+# --- Extra runtime environment ---
+variable "extra_environment" {
+  description = "Additional plain environment variables for the Bifrost container."
+  type        = map(string)
+  default     = {}
+}
+
+variable "extra_secure_environment" {
+  description = "Additional secure environment variables for the Bifrost container (encrypted at rest, not shown in the portal)."
+  type        = map(string)
+  default     = {}
+}
+
+variable "image_registry_credentials" {
+  description = "Registry credentials for a private image; each entry becomes an image_registry_credential block."
+  type = list(object({
+    server   = string
+    username = string
+    password = string
+  }))
+  default   = []
+  sensitive = true
+
+  validation {
+    condition     = alltrue([for c in var.image_registry_credentials : c.server != null && c.server != "" && c.username != null && c.username != "" && c.password != null && c.password != ""])
+    error_message = "Each image_registry_credentials entry needs a non-empty server, username and password; a partial credential would only fail when the container group pulls the image."
+  }
+}

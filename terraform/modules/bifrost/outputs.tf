@@ -29,14 +29,16 @@ output "setup_token" {
   value = try(coalesce(
     try(module.aws[0].setup_token, null),
     try(module.gcp[0].setup_token, null),
+    try(module.azure[0].setup_token, null),
   ), null)
   sensitive = true
 }
 
 output "database_endpoint" {
-  description = "Connection endpoint of the managed PostgreSQL database (only when create_database is true). AWS: host:port. GCP: the Cloud SQL connection name."
+  description = "Connection endpoint of the managed PostgreSQL database (only when create_database is true). AWS: host:port. GCP: the Cloud SQL connection name. Azure: the Flexible Server FQDN."
   value = try(coalesce(
     try(module.aws[0].database_endpoint, null),
     try(module.gcp[0].database_endpoint, null),
+    try(module.azure[0].database_endpoint, null),
   ), null)
 }

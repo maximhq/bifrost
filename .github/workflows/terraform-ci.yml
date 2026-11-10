@@ -84,4 +84,6 @@ jobs:
           terraform test \
             -filter=tests/network_inputs.tftest.hcl \
             -filter=tests/aws_database.tftest.hcl \
-            -filter=tests/aws_load_balancer.tftest.hcl
+            -filter=tests/aws_load_balancer.tftest.hcl \
+            -filter=tests/azure_database.tftest.hcl \
+            -filter=tests/azure_aci_container.tftest.hcl

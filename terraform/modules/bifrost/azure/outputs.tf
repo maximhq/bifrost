@@ -13,3 +13,14 @@ output "health_check_url" {
     try(module.aci[0].health_check_url, null),
   ), null)
 }
+
+output "setup_token" {
+  description = "Generated bootstrap token for the first admin account (ACI with generate_secrets)."
+  value       = local.generate_secrets ? random_password.setup_token[0].result : null
+  sensitive   = true
+}
+
+output "database_endpoint" {
+  description = "Flexible Server FQDN (ACI with create_database)."
+  value       = local.manage_database ? azurerm_postgresql_flexible_server.bifrost[0].fqdn : null
+}

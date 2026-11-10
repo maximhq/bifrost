@@ -122,4 +122,8 @@ module "bifrost" {
   database_deletion_protection = var.database_deletion_protection
   database_skip_final_snapshot = var.database_skip_final_snapshot
   generate_secrets             = var.generate_secrets
+
+  # Azure-only settings
+  key_vault_network_default_action = var.key_vault_network_default_action
+  image_registry_credentials       = var.image_registry_credentials
 }
