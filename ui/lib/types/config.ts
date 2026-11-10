@@ -965,6 +965,9 @@ export interface CoreConfig {
 	skip_access_profile_user_virtual_key_deletion?: boolean;
 	// Request types excluded from Logs and Dashboard reads. Logs are still stored.
 	hidden_request_types: string[];
+	// Embedded tokenizer families ("anthropic", "deepseek", "llama2", "llama3", "all") used to
+	// estimate a cancelled stream's usage. Empty counts every model with o200k_base / cl100k_base.
+	usage_estimation_tokenizers?: string[];
 	routing_chain_max_depth: number;
 	header_filter_config?: GlobalHeaderFilterConfig;
 	mcp_external_client_url?: SecretVar;

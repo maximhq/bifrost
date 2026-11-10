@@ -7,8 +7,8 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/mark3labs/mcp-go v1.5.0
 	github.com/mattn/go-sqlite3 v1.14.32
-	github.com/maximhq/bifrost/core v1.15.0
-	github.com/maximhq/bifrost/framework v1.12.0
+	github.com/maximhq/bifrost/core v1.15.1
+	github.com/maximhq/bifrost/framework v1.12.1
 	github.com/stretchr/testify v1.12.1
 	github.com/valyala/fasthttp v1.74.0
 )

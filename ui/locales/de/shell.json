@@ -353,6 +353,12 @@
 		"descriptionStuckEnterprise": "Der Rollout läuft noch. Lade die Seite in einer Minute neu, um erneut zu prüfen. Wenn das nicht hilft, wende dich an den Administrator deiner Bifrost-Bereitstellung.",
 		"waitingEnterprise": "Warte auf den Abschluss des Rollouts…"
 	},
+	"assetLoadFailed": {
+		"bannerTitle": "Ein Teil des Dashboards konnte nicht geladen werden",
+		"bannerDescription": "Prüfe dein Netzwerk, deinen Proxy oder deine Browser-Erweiterungen und lade dann neu.",
+		"screenTitle": "Diese Seite konnte nicht geladen werden",
+		"screenDescription": "Dein Browser konnte einige Dashboard-Dateien nicht herunterladen. Möglicherweise blockiert ein Proxy, eine Firewall oder eine Browser-Erweiterung sie. Prüfe dein Netzwerk und lade neu."
+	},
 	"onboarding": {
 		"expandSetupChecklist": "Einrichtungs-Checkliste aufklappen",
 		"setupChecklist": "Einrichtungs-Checkliste",
