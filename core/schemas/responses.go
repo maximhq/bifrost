@@ -1866,14 +1866,31 @@ func (m ResponsesMessage) MarshalJSON() ([]byte, error) {
 		return MarshalSorted(aux)
 	}
 
-	// summary is a reasoning-item field; OpenAI rejects it on a message item.
-	if m.ResponsesReasoning != nil && len(m.ResponsesReasoning.Summary) == 0 && m.Type != nil && *m.Type == ResponsesMessageTypeMessage {
-		return MarshalSorted(&struct {
-			Summary json.RawMessage `json:"summary,omitempty"`
-			*Alias
-		}{
-			Alias: (*Alias)(&m),
-		})
+	// summary is a reasoning-item field, and its tag is omitzero: a nil slice is left out
+	// and an empty one is written as []. A non-reasoning item that carries a top-level
+	// encrypted_content (a codex message, tool call or compaction item) decodes with a nil
+	// summary, so it marshals without the field and without any extra work here. OpenAI
+	// rejects the field on those items with "Unknown parameter: 'input[N].summary'".
+	// Only the two rare mismatches below need a copy of the embedded struct.
+	// A compaction item never carries a summary, whatever the client sent: OpenAI rejects
+	// the field there even when it has entries.
+	if r := m.ResponsesReasoning; r != nil && r.Summary != nil && m.Type != nil && *m.Type == ResponsesMessageTypeCompaction {
+		reasoningCopy := *r
+		reasoningCopy.Summary = nil
+		m.ResponsesReasoning = &reasoningCopy
+	}
+	if r := m.ResponsesReasoning; r != nil && len(r.Summary) == 0 {
+		isReasoning := m.Type != nil && *m.Type == ResponsesMessageTypeReasoning
+		if isReasoning != (r.Summary != nil) {
+			reasoningCopy := *r
+			if isReasoning {
+				// OpenAI requires "summary" on a reasoning item, even when empty.
+				reasoningCopy.Summary = []ResponsesReasoningSummary{}
+			} else {
+				reasoningCopy.Summary = nil
+			}
+			m.ResponsesReasoning = &reasoningCopy
+		}
 	}
 
 	aux := &struct {
@@ -2946,7 +2963,9 @@ func (rf *ResponsesFunctionToolCallOutput) UnmarshalJSON(data []byte) error {
 
 // ResponsesReasoning represents a reasoning output
 type ResponsesReasoning struct {
-	Summary          []ResponsesReasoningSummary `json:"summary"`
+	// Summary is omitzero: nil is omitted, an empty slice is written as []. Only reasoning
+	// items may carry the field, and ResponsesMessage.MarshalJSON keeps it present on them.
+	Summary          []ResponsesReasoningSummary `json:"summary,omitzero"`
 	EncryptedContent *string                     `json:"encrypted_content,omitempty"`
 }
 
