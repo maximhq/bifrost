@@ -16,6 +16,7 @@ grep -q "$WORK/bin/main" "$WORK/entrypoint.sh" || { echo "FAIL: could not point 
 cat > "$WORK/bin/main" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$@" > "$MAIN_ARGS"
+env | awk '/^PG_/' | sort > "$MAIN_ARGS.env"
 STUB
 chmod +x "$WORK/bin/main"
 
@@ -131,6 +132,81 @@ if run none; then
   [[ -f "$MAIN_ARGS" ]] || fail "no-env case: main was not started"
 else
   cat "$WORK/log-none" >&2; fail "no-env case: entrypoint exited non-zero"
+fi
+
+# pg <name>: value of PG_<name> the stub binary saw in the last run.
+pg() { awk -F= -v k="PG_$1" '$1==k {sub(/^[^=]*=/,""); print; exit}' "$MAIN_ARGS.env"; }
+
+# 8. DATABASE_URL with every part present: percent-decoded credentials, explicit port and sslmode.
+if run url_full DATABASE_URL='postgres://app%2Duser:p%40ss%3Aword@db.example.internal:6543/bifrost?sslmode=require&application_name=x'; then
+  [[ "$(pg HOST)" == "db.example.internal" ]] || fail "url_full: PG_HOST=$(pg HOST)"
+  [[ "$(pg PORT)" == "6543" ]] || fail "url_full: PG_PORT=$(pg PORT)"
+  [[ "$(pg USER)" == "app-user" ]] || fail "url_full: PG_USER=$(pg USER)"
+  [[ "$(pg PASSWORD)" == "p@ss:word" ]] || fail "url_full: PG_PASSWORD=$(pg PASSWORD)"
+  [[ "$(pg DATABASE)" == "bifrost" ]] || fail "url_full: PG_DATABASE=$(pg DATABASE)"
+  [[ "$(pg SSL_MODE)" == "require" ]] || fail "url_full: PG_SSL_MODE=$(pg SSL_MODE)"
+else
+  cat "$WORK/log-url_full" >&2; fail "url_full: entrypoint exited non-zero"
+fi
+
+# 9. postgresql:// scheme, no password, no port, no query: defaults apply.
+if run url_minimal DATABASE_URL='postgresql://bifrost@db.internal/app'; then
+  [[ "$(pg HOST)" == "db.internal" ]] || fail "url_minimal: PG_HOST=$(pg HOST)"
+  [[ "$(pg PORT)" == "5432" ]] || fail "url_minimal: PG_PORT=$(pg PORT)"
+  [[ "$(pg USER)" == "bifrost" ]] || fail "url_minimal: PG_USER=$(pg USER)"
+  [[ "$(pg PASSWORD)" == "" ]] || fail "url_minimal: PG_PASSWORD should be empty, got $(pg PASSWORD)"
+  [[ "$(pg DATABASE)" == "app" ]] || fail "url_minimal: PG_DATABASE=$(pg DATABASE)"
+  [[ "$(pg SSL_MODE)" == "prefer" ]] || fail "url_minimal: PG_SSL_MODE=$(pg SSL_MODE)"
+else
+  cat "$WORK/log-url_minimal" >&2; fail "url_minimal: entrypoint exited non-zero"
+fi
+
+# 10. Explicit PG_* values win over the URL.
+if run url_override DATABASE_URL='postgres://u:p@db.internal:5432/app?sslmode=disable' PG_HOST=pgbouncer.internal PG_SSL_MODE=require; then
+  [[ "$(pg HOST)" == "pgbouncer.internal" ]] || fail "url_override: PG_HOST=$(pg HOST)"
+  [[ "$(pg SSL_MODE)" == "require" ]] || fail "url_override: PG_SSL_MODE=$(pg SSL_MODE)"
+  [[ "$(pg USER)" == "u" ]] || fail "url_override: PG_USER=$(pg USER)"
+else
+  cat "$WORK/log-url_override" >&2; fail "url_override: entrypoint exited non-zero"
+fi
+
+# 11. Bracketed IPv6 hosts, with and without a port.
+if run url_ipv6 DATABASE_URL='postgres://u:p@[2001:db8::1]:5433/app'; then
+  [[ "$(pg HOST)" == "2001:db8::1" ]] || fail "url_ipv6: PG_HOST=$(pg HOST)"
+  [[ "$(pg PORT)" == "5433" ]] || fail "url_ipv6: PG_PORT=$(pg PORT)"
+else
+  cat "$WORK/log-url_ipv6" >&2; fail "url_ipv6: entrypoint exited non-zero"
+fi
+if run url_ipv6_noport DATABASE_URL='postgres://u:p@[2001:db8::1]/app'; then
+  [[ "$(pg HOST)" == "2001:db8::1" ]] || fail "url_ipv6_noport: PG_HOST=$(pg HOST)"
+  [[ "$(pg PORT)" == "5432" ]] || fail "url_ipv6_noport: PG_PORT=$(pg PORT)"
+else
+  cat "$WORK/log-url_ipv6_noport" >&2; fail "url_ipv6_noport: entrypoint exited non-zero"
+fi
+
+# 12. An @ or # after the authority belongs to the path, never to userinfo.
+if run url_at_in_path DATABASE_URL='postgres://db.internal/db@x#frag'; then
+  [[ "$(pg HOST)" == "db.internal" ]] || fail "url_at_in_path: PG_HOST=$(pg HOST)"
+  [[ "$(pg USER)" == "" ]] || fail "url_at_in_path: PG_USER should be empty, got $(pg USER)"
+  [[ "$(pg DATABASE)" == "db@x" ]] || fail "url_at_in_path: PG_DATABASE=$(pg DATABASE)"
+else
+  cat "$WORK/log-url_at_in_path" >&2; fail "url_at_in_path: entrypoint exited non-zero"
+fi
+
+# 13b. A present-but-empty port or sslmode falls back to the defaults.
+if run url_empty_port DATABASE_URL='postgres://u:p@db.internal:/app?sslmode='; then
+  [[ "$(pg HOST)" == "db.internal" ]] || fail "url_empty_port: PG_HOST=$(pg HOST)"
+  [[ "$(pg PORT)" == "5432" ]] || fail "url_empty_port: an empty port must fall back to 5432, got '$(pg PORT)'"
+  [[ "$(pg SSL_MODE)" == "prefer" ]] || fail "url_empty_port: an empty sslmode must fall back to prefer, got '$(pg SSL_MODE)'"
+else
+  cat "$WORK/log-url_empty_port" >&2; fail "url_empty_port: entrypoint exited non-zero"
+fi
+
+# 13. Other schemes are left alone.
+if run url_other DATABASE_URL='mysql://u:p@db.internal/app'; then
+  [[ "$(pg HOST)" == "" ]] || fail "url_other: PG_HOST should be unset, got $(pg HOST)"
+else
+  cat "$WORK/log-url_other" >&2; fail "url_other: entrypoint exited non-zero"
 fi
 
 if [[ $FAILED -ne 0 ]]; then
