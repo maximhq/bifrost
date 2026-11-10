@@ -731,5 +731,37 @@ test("Azure live session rows run only in the azure partition", () => {
   assert.deepEqual(runFilter(["--provider", "azure"], { source }), ["azure-live-native", "azure-live-openai-route", "azure-sdk-live", "azure-sdk-bare-ua-live", "azure-chat-openai-route"]);
 });
 
+// A Baseten model sent through the Anthropic Messages ingress names "anthropic" only in its route,
+// and a Hugging Face row routed to Baseten-hosted models ("huggingface/baseten/...") names
+// "baseten" only in its model id. Each upstream call goes to the model's own provider, so the
+// anthropic partition must not claim the first and the baseten partition must not claim the second.
+test("Baseten partition excludes Hugging Face rows and the anthropic partition excludes Baseten rows", () => {
+  const post = (name, url, model) => ({
+    name,
+    request: { method: "POST", url, body: { mode: "raw", raw: JSON.stringify({ model, max_tokens: 16, messages: [] }) } },
+  });
+  const source = join(WORK, "source-baseten.json");
+  writeFileSync(
+    source,
+    JSON.stringify({
+      info: { name: "providers" },
+      item: [
+        {
+          name: "routes folder",
+          item: [
+            post("baseten-anthropic-route", "http://localhost:8080/anthropic/v1/messages", "baseten/zai-org/GLM-5.3"),
+            post("anthropic-native", "http://localhost:8080/anthropic/v1/messages", "claude-opus-4-7"),
+            post("baseten-chat", "http://localhost:8080/v1/chat/completions", "baseten/zai-org/GLM-5.3"),
+            post("huggingface-baseten-chat", "http://localhost:8080/v1/chat/completions", "huggingface/baseten/zai-org/GLM-5.3"),
+          ],
+        },
+      ],
+    }),
+  );
+  assert.deepEqual(runFilter(["--provider", "anthropic"], { source }), ["anthropic-native"]);
+  assert.deepEqual(runFilter(["--provider", "baseten"], { source }), ["baseten-anthropic-route", "baseten-chat"]);
+  assert.deepEqual(runFilter(["--provider", "huggingface"], { source }), ["huggingface-baseten-chat"]);
+});
+
 rmSync(WORK, { recursive: true, force: true });
 console.log(`\n${passed} passed`);
