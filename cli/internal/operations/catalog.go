@@ -1,12 +1,13 @@
 // Package operations contains the generated public OpenAPI operation catalog.
 package operations
 
-//go:generate go run ./gen -spec ../../../docs/openapi/openapi.json -out catalog.gen.go
+//go:generate go run ./gen -spec ../../../docs/openapi/openapi.json -management management.json -out catalog.gen.go
 
 import "strings"
 
 // Operation identifies one public operation from the bundled Bifrost OpenAPI document.
 type Operation struct {
+	Auth        string   `json:"auth,omitempty"`
 	ID          string   `json:"id"`
 	Method      string   `json:"method"`
 	Path        string   `json:"path"`

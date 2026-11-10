@@ -150,6 +150,56 @@ func TestGeminiResponsesStreamTerminalFromFinishReason(t *testing.T) {
 	}
 }
 
+// nilPartBeforeTextFixture is a STOP turn whose candidate parts open with a nil
+// entry (a JSON null decodes to a nil *Part) followed by valid text.
+func nilPartBeforeTextFixture() *GenerateContentResponse {
+	resp := geminiTruncationFixture(FinishReasonStop)
+	resp.Candidates[0].Content.Parts = []*Part{nil, {Text: "Rome was"}}
+	return resp
+}
+
+// TestGeminiResponsesNilPartBeforeText pins that the unary Responses converter skips a
+// nil candidate part and still emits the valid text after it.
+func TestGeminiResponsesNilPartBeforeText(t *testing.T) {
+	var resp *schemas.BifrostResponsesResponse
+	require.NotPanics(t, func() { resp = nilPartBeforeTextFixture().ToResponsesBifrostResponsesResponse() })
+	require.NotNil(t, resp)
+	var texts []string
+	for _, item := range resp.Output {
+		if item.Content == nil {
+			continue
+		}
+		for _, block := range item.Content.ContentBlocks {
+			if block.Text != nil {
+				texts = append(texts, *block.Text)
+			}
+		}
+	}
+	assert.Equal(t, []string{"Rome was"}, texts, "text after the nil part must survive")
+	assertGeminiResponsesStatus(t, resp.Status, resp.IncompleteDetails, "completed", "")
+}
+
+// TestGeminiResponsesStreamNilPartBeforeTextCompletes pins that the Responses stream
+// converter skips a nil candidate part, streams the valid text after it, and still
+// reaches response.completed.
+func TestGeminiResponsesStreamNilPartBeforeTextCompletes(t *testing.T) {
+	state := &GeminiResponsesStreamState{}
+	state.flush()
+	var events []*schemas.BifrostResponsesStreamResponse
+	var bErr *schemas.BifrostError
+	require.NotPanics(t, func() { events, bErr = nilPartBeforeTextFixture().ToBifrostResponsesStream(0, state) })
+	require.Nil(t, bErr)
+	require.NotEmpty(t, events)
+	var deltas string
+	for _, ev := range events {
+		if ev.Type == schemas.ResponsesStreamResponseTypeOutputTextDelta && ev.Delta != nil {
+			deltas += *ev.Delta
+		}
+	}
+	assert.Equal(t, "Rome was", deltas, "text after the nil part must be streamed")
+	assert.Equal(t, schemas.ResponsesStreamResponseTypeCompleted, events[len(events)-1].Type, "stream must reach its terminal event")
+}
+
 // Issue #7601: response.incomplete is a terminal event. The GenAI stream egress handled
 // only response.completed, so a truncated turn lost its final chunk (finishReason and
 // usage). A provider that reports truncation only via incomplete_details must still

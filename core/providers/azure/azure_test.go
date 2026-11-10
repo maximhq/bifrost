@@ -878,3 +878,129 @@ func BenchmarkAzureWhisperTranscription(b *testing.B) {
 		})
 	}
 }
+
+// azureOnYourDataContext is the citation context Azure On Your Data returns with an answer:
+// on choices[].message.context for a unary reply and on the first delta.context of a stream.
+const azureOnYourDataContext = `{"citations":[{"content":"Bifrost routes requests across providers.","title":"overview.md","url":"https://example.com/overview.md","filepath":"overview.md","chunk_id":"0"}],"intent":"[\"what does bifrost do\"]"}`
+
+func newAzureOnYourDataRequest() *schemas.BifrostChatRequest {
+	text := "What does Bifrost do?"
+	return &schemas.BifrostChatRequest{
+		Provider: schemas.Azure,
+		Model:    "gpt-4o",
+		Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: &text}}},
+		Params: &schemas.ChatParameters{ExtraParams: map[string]interface{}{
+			"data_sources": []interface{}{map[string]interface{}{"type": "azure_search", "parameters": map[string]interface{}{"endpoint": "https://search.example.com", "index_name": "docs"}}},
+		}},
+	}
+}
+
+// TestAzureOnYourDataKeepsCitationContext pins that the citations Azure On Your Data returns
+// reach the caller. The deployments route answers with choices[].message.context (unary) and
+// delta.context (streaming); Bifrost's chat message had no such field, so the answer came back
+// without its sources once data_sources requests started reaching On Your Data.
+func TestAzureOnYourDataKeepsCitationContext(t *testing.T) {
+	var wantContext any
+	if err := json.Unmarshal([]byte(azureOnYourDataContext), &wantContext); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("unary", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/openai/deployments/gpt-4o/chat/completions" {
+				t.Errorf("path = %s, want the deployments route", r.URL.Path)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"id":"chatcmpl-oyd","object":"chat.completion","created":1,"model":"gpt-4o","choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"Bifrost routes requests [doc1].","context":`+azureOnYourDataContext+`}}],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}`)
+		}))
+		defer server.Close()
+
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		resp, bifrostErr := newAzureDecisionProvider(t).ChatCompletion(ctx, newAzureDecisionKey(server.URL), newAzureOnYourDataRequest())
+		if bifrostErr != nil {
+			t.Fatalf("ChatCompletion: %+v", bifrostErr.Error)
+		}
+		encoded, err := json.Marshal(resp)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var decoded struct {
+			Choices []struct {
+				Message struct {
+					Content string `json:"content"`
+					Context any    `json:"context"`
+				} `json:"message"`
+			} `json:"choices"`
+		}
+		if err := json.Unmarshal(encoded, &decoded); err != nil {
+			t.Fatal(err)
+		}
+		if len(decoded.Choices) != 1 || decoded.Choices[0].Message.Content != "Bifrost routes requests [doc1]." {
+			t.Fatalf("unexpected response: %s", encoded)
+		}
+		if !reflect.DeepEqual(decoded.Choices[0].Message.Context, wantContext) {
+			t.Errorf("message.context = %v, want Azure's citation context; response: %s", decoded.Choices[0].Message.Context, encoded)
+		}
+	})
+
+	t.Run("streaming", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/openai/deployments/gpt-4o/chat/completions" {
+				t.Errorf("path = %s, want the deployments route", r.URL.Path)
+			}
+			w.Header().Set("Content-Type", "text/event-stream")
+			frames := []string{
+				`{"id":"chatcmpl-oyd","object":"chat.completion.chunk","created":1,"model":"gpt-4o","choices":[{"index":0,"delta":{"role":"assistant","context":` + azureOnYourDataContext + `}}]}`,
+				`{"id":"chatcmpl-oyd","object":"chat.completion.chunk","created":1,"model":"gpt-4o","choices":[{"index":0,"delta":{"content":"Bifrost routes requests [doc1]."}}]}`,
+				`{"id":"chatcmpl-oyd","object":"chat.completion.chunk","created":1,"model":"gpt-4o","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}`,
+			}
+			for _, f := range frames {
+				_, _ = io.WriteString(w, "data: "+f+"\n\n")
+			}
+			_, _ = io.WriteString(w, "data: [DONE]\n\n")
+		}))
+		defer server.Close()
+
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		passThrough := func(_ *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+			return result, err
+		}
+		stream, bifrostErr := newAzureDecisionProvider(t).ChatCompletionStream(ctx, passThrough, nil, newAzureDecisionKey(server.URL), newAzureOnYourDataRequest())
+		if bifrostErr != nil {
+			t.Fatalf("ChatCompletionStream: %+v", bifrostErr.Error)
+		}
+		var contexts []any
+		var chunks []string
+		for chunk := range stream {
+			if chunk.BifrostError != nil {
+				t.Fatalf("stream error: %+v", chunk.BifrostError.Error)
+			}
+			if chunk.BifrostChatResponse == nil {
+				continue
+			}
+			encoded, err := json.Marshal(chunk.BifrostChatResponse)
+			if err != nil {
+				t.Fatal(err)
+			}
+			chunks = append(chunks, string(encoded))
+			var decoded struct {
+				Choices []struct {
+					Delta struct {
+						Context any `json:"context"`
+					} `json:"delta"`
+				} `json:"choices"`
+			}
+			if err := json.Unmarshal(encoded, &decoded); err != nil {
+				t.Fatal(err)
+			}
+			for _, c := range decoded.Choices {
+				if c.Delta.Context != nil {
+					contexts = append(contexts, c.Delta.Context)
+				}
+			}
+		}
+		if len(contexts) != 1 || !reflect.DeepEqual(contexts[0], wantContext) {
+			t.Errorf("delta.context seen %d times, want Azure's citation context once; chunks:\n%s", len(contexts), strings.Join(chunks, "\n"))
+		}
+	})
+}

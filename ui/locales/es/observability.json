@@ -945,6 +945,9 @@
 		"copyToClipboard": "Copiado para el portapapeles",
 		"stats": {
 			"totalExecutions": "Total Execuciones",
+			"executions": "Ejecuciones",
+			"ofAllExecutions": "De todas las llamadas a herramientas MCP en esta ventana",
+			"perExecution": "{{value}}/llamada",
 			"successRate": "Tasa de éxito",
 			"avgLatency": "Latencia media",
 			"totalCost": "Costo total"
@@ -974,7 +977,6 @@
 			"toolName": "Nombre de la herramienta",
 			"server": "Servidor",
 			"virtualKey": "Clave virtual",
-			"llmRequestId": "LLM Solicitud de identificación",
 			"metadata": "Metadatos",
 			"deleteFailed": "Error al eliminar el registro",
 			"invalidDate": "Fecha inválida",
@@ -1025,6 +1027,7 @@
 		"rounds": "Rondas",
 		"execution": "Ejecución",
 		"errorDetails": "Detalles del error",
+		"errorNoMessage": "La llamada a la herramienta falló sin un mensaje de error.",
 		"pluginLogs": "Registros de complementos",
 		"loading": "Cargando registros MCP...",
 		"native": "Nativo",
@@ -1046,8 +1049,7 @@
 			"blockedDescription": "Bloqueado antes de la ejecución.",
 			"observedDescription": "La actividad de la herramienta fue capturada, pero su resultado de ejecución no es conocido.",
 			"inputRequiredDescription": "El servidor MCP pidió una entrada al llamador antes de completar. El reintento que la responde es una entrada aparte.",
-			"retryLaterDescription": "El servidor MCP pidió al llamador que lo reintentara más tarde, sin solicitar ninguna entrada. El reintento es una entrada aparte.",
-			"executionDescription": "Resultado de ejecución de herramientas grabada."
+			"retryLaterDescription": "El servidor MCP pidió al llamador que lo reintentara más tarde, sin solicitar ninguna entrada. El reintento es una entrada aparte."
 		},
 		"noResults": "No se han encontrado resultados. Intente ajustar tus filtros y/o rango de tiempo.",
 		"observedRoundTrip": "Viaje redondo observado"

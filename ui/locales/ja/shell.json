@@ -14,6 +14,7 @@
 		"logsSettings": "ログ設定",
 		"models": "モデル",
 		"modelCatalog": "モデルカタログ",
+		"datasheet": "データシートエディター",
 		"modelProviders": "モデルプロバイダー",
 		"budgetsLimits": "予算と制限",
 		"routingRules": "ルーティングルール",
@@ -96,6 +97,7 @@
 		"logsSettings": "ログの構成",
 		"models": "モデルを構成",
 		"modelCatalog": "プロバイダー、キー、利用状況の概要",
+		"datasheet": "モデルの上限、機能、価格を編集",
 		"modelProviders": "モデルを構成",
 		"budgetsLimits": "予算とレート制限",
 		"routingRules": "インテリジェントルーティングルール",
@@ -350,6 +352,12 @@
 		"descriptionWaitingEnterprise": "組織で Bifrost の新バージョンのロールアウトが選択されました。ロールアウトは 1 インスタンスずつ進行します。すべてのインスタンスで完了すると、このページは自動的に再読み込みされます。",
 		"descriptionStuckEnterprise": "ロールアウトはまだ進行中です。1 分後に再読み込みして再確認してください。解決しない場合は、Bifrost デプロイメントの管理者に連絡してください。",
 		"waitingEnterprise": "ロールアウトの完了を待っています…"
+	},
+	"assetLoadFailed": {
+		"bannerTitle": "ダッシュボードの一部を読み込めませんでした",
+		"bannerDescription": "ネットワーク、プロキシ、またはブラウザ拡張機能を確認してから再読み込みしてください。",
+		"screenTitle": "このページを読み込めませんでした",
+		"screenDescription": "ブラウザがダッシュボードの一部のファイルをダウンロードできませんでした。プロキシ、ファイアウォール、またはブラウザ拡張機能がブロックしている可能性があります。ネットワークを確認して再読み込みしてください。"
 	},
 	"onboarding": {
 		"expandSetupChecklist": "セットアップチェックリストを展開",

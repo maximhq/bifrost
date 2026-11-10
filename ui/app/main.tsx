@@ -10,7 +10,7 @@ import "@/app/globals.css";
 
 import { ErrorComponent } from "./__error";
 import { NotFoundComponent } from "./__notFound";
-import { UpdatingBanner, UpdatingScreen } from "./__updating";
+import { SkewBanner, SkewScreen } from "./__updating";
 import { routeTree } from "./routeTree.gen";
 import { getBasePath } from "@/lib/utils/basePath";
 
@@ -70,12 +70,12 @@ function Root() {
 		return () => clearTimeout(timer);
 	}, [skewMode]);
 
-	if (skewMode === "hard") return <UpdatingScreen />;
+	if (skewMode === "hard") return <SkewScreen />;
 
 	return (
 		<>
 			<RouterProvider router={router} />
-			{skewMode === "soft" && <UpdatingBanner />}
+			{skewMode === "soft" && <SkewBanner />}
 		</>
 	);
 }
