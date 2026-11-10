@@ -2439,17 +2439,57 @@ func (gs *LocalGovernanceStore) aliasTargets(ctx context.Context, provider *stri
 	if provider == nil || gs.inMemoryStore == nil {
 		return nil
 	}
+	// The context reads come after HasKeyAliases: each takes the context's lock, and a provider
+	// without aliases, the common case, must not pay for them.
 	cfg, ok := configuredProvider(gs.inMemoryStore, schemas.ModelProvider(*provider))
 	if !ok || !modelcatalog.HasKeyAliases(cfg.Keys) || runsAsWritten(ctx) {
 		return nil
 	}
+	keys, ok := pinnedKeys(ctx, cfg.Keys)
+	if !ok {
+		return nil
+	}
 	var targets []string
-	modelcatalog.KeyAliasTargets(model, cfg.Keys, func(target string) {
+	modelcatalog.KeyAliasTargets(model, keys, func(target string) {
 		if !slices.Contains(targets, target) {
 			targets = append(targets, target)
 		}
 	})
 	return targets
+}
+
+// pinnedKeys narrows keys to the one a pinned request is served from, in core's order: a routing-rule
+// pin, then the caller's key id, then the caller's key name. Unpinned, keys is returned as is. A pin
+// that names no key returns false: core refuses that request, so no alias of it applies. The result
+// is a subslice, so nothing is allocated.
+func pinnedKeys(ctx context.Context, keys []schemas.Key) ([]schemas.Key, bool) {
+	if ctx == nil {
+		return keys, true
+	}
+	byID := func(id string) ([]schemas.Key, bool) {
+		for i := range keys {
+			if keys[i].ID == id {
+				return keys[i : i+1], true
+			}
+		}
+		return nil, false
+	}
+	if pin, _ := ctx.Value(schemas.BifrostContextKeyRoutingPinnedAPIKeyID).(string); strings.TrimSpace(pin) != "" {
+		return byID(strings.TrimSpace(pin))
+	}
+	if pin, _ := ctx.Value(schemas.BifrostContextKeyAPIKeyID).(string); strings.TrimSpace(pin) != "" {
+		return byID(strings.TrimSpace(pin))
+	}
+	if pin, _ := ctx.Value(schemas.BifrostContextKeyAPIKeyName).(string); strings.TrimSpace(pin) != "" {
+		name := strings.TrimSpace(pin)
+		for i := range keys {
+			if keys[i].Name == name {
+				return keys[i : i+1], true
+			}
+		}
+		return nil, false
+	}
+	return keys, true
 }
 
 // collectModelConfigsFor returns every model config that applies to a request for

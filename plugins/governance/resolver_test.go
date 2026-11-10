@@ -1675,6 +1675,88 @@ func TestBlacklistHoldsAliasTargetsThroughTheHookChain(t *testing.T) {
 	assert.Equal(t, literalLookups, aliasLookups)
 }
 
+// A request that runs its model as written (a direct key, or a skip-key-selection credential) is
+// admitted by the literal access, and its limits must come from that same access. The alias-aware
+// one drops a permit whose blacklist names the alias target, and with it the permit's provider rate
+// limit, so an exhausted limit stopped applying to exactly the requests the literal check admits.
+func TestLiteralRequestsKeepProviderLimitsWhenAnAliasTargetIsBlacklisted(t *testing.T) {
+	store := &providerLookupCountingStore{mockInMemoryStore: mockInMemoryStore{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{
+		schemas.OpenAI: {Keys: []schemas.Key{{ID: "k1", Models: schemas.WhiteList{"*"}, Aliases: schemas.KeyAliases{"gpt-4o": {ModelID: "gpt-4o-mini"}}}}},
+	}}}
+	exhausted := buildRateLimitWithUsage("rl-openai-exhausted", 1_000_000, 0, 1, 1)
+	pc := buildProviderConfigWithRateLimit("openai", []string{"gpt-4o"}, exhausted)
+	pc.BlacklistedModels = schemas.BlackList{"gpt-4o-mini"}
+	vk := buildVirtualKeyWithProviders("vk-literal", mcpTestVKValue, "literal-vk", []configstoreTables.TableVirtualKeyProviderConfig{pc})
+	logger := NewMockLogger()
+	local, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+		RateLimits:  []configstoreTables.TableRateLimit{*exhausted},
+	}, nil, store)
+	require.NoError(t, err)
+
+	for _, catalog := range []struct {
+		name    string
+		catalog *modelcatalog.ModelCatalog
+	}{{"with catalog", modelcatalog.NewTestCatalog(nil)}, {"without catalog", nil}} {
+		plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, local, nil, catalog.catalog, nil, store)
+		require.NoError(t, err)
+		t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
+		for _, cred := range []struct {
+			name string
+			set  func(*schemas.BifrostContext)
+		}{
+			{"direct key", func(ctx *schemas.BifrostContext) {
+				ctx.SetValue(schemas.BifrostContextKeyDirectKey, schemas.Key{ID: "direct"})
+			}},
+			{"skip key selection", func(ctx *schemas.BifrostContext) {
+				ctx.SetValue(schemas.BifrostContextKeySkipKeySelection, true)
+			}},
+		} {
+			t.Run(catalog.name+"/"+cred.name, func(t *testing.T) {
+				ctx := presentCtx(mcpTestVKValue)
+				cred.set(ctx)
+				req := &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: "gpt-4o"}}
+				require.NoError(t, plugin.PreRequestHook(ctx, req))
+				_, shortCircuit, err := plugin.PreLLMHook(ctx, req)
+				require.NoError(t, err)
+				require.NotNil(t, shortCircuit, "gpt-4o runs as written, so the provider's exhausted rate limit applies")
+				require.NotNil(t, shortCircuit.Error)
+				require.NotNil(t, shortCircuit.Error.StatusCode)
+				assert.Equal(t, 429, *shortCircuit.Error.StatusCode, "refused by the rate limit, not as a blocked model: %+v", shortCircuit.Error.Error)
+			})
+		}
+	}
+}
+
+// BenchmarkLiteralAccessFor is the extra work limit settlement now does for a request that runs its
+// model as written (a literal batch item, a direct key, skip key selection): one rebuild of the
+// access without alias targets. Requests that go through key selection never reach it.
+func BenchmarkLiteralAccessFor(b *testing.B) {
+	vk := buildVirtualKeyWithProviders("vk-bench", mcpTestVKValue, "bench-vk", []configstoreTables.TableVirtualKeyProviderConfig{
+		buildProviderConfig("openai", []string{"gpt-4o"}),
+	})
+	local, err := NewLocalGovernanceStore(context.Background(), NewMockLogger(), nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+	}, nil, &mockInMemoryStore{})
+	if err != nil {
+		b.Fatal(err)
+	}
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, NewMockLogger(), local, nil, modelcatalog.NewTestCatalog(nil), nil, &mockInMemoryStore{})
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.Cleanup(func() { _ = plugin.Cleanup() })
+	ctx := presentCtx(mcpTestVKValue)
+	access, err := plugin.ResolveAccess(ctx)
+	if err != nil || access == nil {
+		b.Fatalf("no access: %v", err)
+	}
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_ = literalAccessFor(access, plugin.modelCatalog, plugin.inMemoryStore)
+	}
+}
+
 // Inline batch items reach the provider exactly as written: key selection resolves the request's
 // own model, never an item's. An item is therefore held to its literal name, so an alias of an
 // allowed model that is also a real upstream model cannot slip through as the allowed one.

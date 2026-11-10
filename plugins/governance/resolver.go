@@ -321,22 +321,33 @@ func reasonFromErr(err error, decision Decision) string {
 }
 
 // literalAccess is access matched without key aliases, for a model that reaches the provider as
-// written. The matcher resolves the provider's configuration as GovernancePlugin.modelMatcher does,
-// so the custom-provider exemption still applies, but on a copy with its keys cleared: key aliases
-// are the only thing IsModelAllowedForProvider reads them for. Without a catalog names already match
-// as written and access is returned as is.
+// written. See literalAccessFor.
 func (r *BudgetResolver) literalAccess(access schemas.Access) schemas.Access {
-	if r.modelCatalog == nil {
-		return access
+	return literalAccessFor(access, r.modelCatalog, r.governanceInMemoryStore)
+}
+
+// literalAccessFor rebuilds access without the alias-target source, so a blacklist on a model the name
+// would become through a key alias does not refuse a name that is never resolved. The matcher resolves
+// the provider's configuration as GovernancePlugin.modelMatcher does, so the custom-provider exemption
+// still applies, but on a copy with its keys cleared: key aliases are the only thing
+// IsModelAllowedForProvider reads them for. Without a catalog names match as written. Admission and
+// limit settlement both use it, so a literal request answers to the permits that admitted it.
+func literalAccessFor(access schemas.Access, catalog *modelcatalog.ModelCatalog, store InMemoryStore) schemas.Access {
+	if access == nil {
+		return nil
 	}
-	return grant.NewAccess(access.Bases(), access.Scoping(), grant.CompositionMode(access.Mode()), func(provider, model string, allowed []string) bool {
-		var providerConfig *configstore.ProviderConfig
-		if r.governanceInMemoryStore != nil {
-			if config, ok := configuredProvider(r.governanceInMemoryStore, schemas.ModelProvider(provider)); ok {
-				config.Keys = nil // config is a copy; with no keys no alias can widen the match
-				providerConfig = &config
+	var matcher grant.ModelMatcher
+	if catalog != nil {
+		matcher = func(provider, model string, allowed []string) bool {
+			var providerConfig *configstore.ProviderConfig
+			if store != nil {
+				if config, ok := configuredProvider(store, schemas.ModelProvider(provider)); ok {
+					config.Keys = nil // config is a copy; with no keys no alias can widen the match
+					providerConfig = &config
+				}
 			}
+			return catalog.IsModelAllowedForProvider(schemas.ModelProvider(provider), model, providerConfig, schemas.WhiteList(allowed))
 		}
-		return r.modelCatalog.IsModelAllowedForProvider(schemas.ModelProvider(provider), model, providerConfig, schemas.WhiteList(allowed))
-	})
+	}
+	return grant.NewAccess(access.Bases(), access.Scoping(), grant.CompositionMode(access.Mode()), matcher)
 }

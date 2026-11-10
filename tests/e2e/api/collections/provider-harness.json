@@ -315837,8 +315837,28 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.collectionVariables.unset('aliasLimitKeyId');",
-                  "pm.collectionVariables.set('aliasLimitKeyName', 'harness-alias-limit-key-' + Date.now() + '-' + pm.variables.replaceIn('{{$guid}}'));"
+                  "function startFresh() {",
+                  "  pm.collectionVariables.unset('aliasLimitKeyId');",
+                  "  pm.collectionVariables.set('aliasLimitKeyName', 'harness-alias-limit-key-' + Date.now() + '-' + pm.variables.replaceIn('{{$guid}}'));",
+                  "}",
+                  "// A restricted key a previous run failed to delete is retained; delete it before this run replaces it.",
+                  "var staleId = pm.collectionVariables.get('aliasLimitKeyId');",
+                  "if (!staleId) {",
+                  "  startFresh();",
+                  "} else {",
+                  "  var headers = {};",
+                  "  var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "  if (managementToken) { headers.Authorization = 'Bearer ' + managementToken; }",
+                  "  pm.sendRequest({url: pm.variables.replaceIn('{{baseUrl}}') + '/api/providers/deepseek/keys/' + staleId, method: 'DELETE', header: headers}, function (err, response) {",
+                  "    var deleted = !err && (response.code === 200 || response.code === 404);",
+                  "    pm.test('alias-limit: the retained restricted key from an earlier run is deleted', function () {",
+                  "      pm.expect(err, 'stale restricted key ' + staleId + ' delete errored: ' + err).to.equal(null);",
+                  "      pm.expect([200, 404], 'stale restricted key ' + staleId + ' not deleted: ' + (response && response.text())).to.include(response.code);",
+                  "    });",
+                  "    if (deleted) { startFresh(); return; }",
+                  "    pm.execution.skipRequest();",
+                  "  });",
+                  "}"
                 ]
               }
             },
@@ -315985,7 +316005,27 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.collectionVariables.unset('aliasLimitMcId');"
+                  "function startFresh() {",
+                  "  pm.collectionVariables.unset('aliasLimitMcId');",
+                  "}",
+                  "// A model limit a previous run failed to delete is retained; delete it before this run replaces it.",
+                  "var staleId = pm.collectionVariables.get('aliasLimitMcId');",
+                  "if (!staleId) {",
+                  "  startFresh();",
+                  "} else {",
+                  "  var headers = {};",
+                  "  var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "  if (managementToken) { headers.Authorization = 'Bearer ' + managementToken; }",
+                  "  pm.sendRequest({url: pm.variables.replaceIn('{{baseUrl}}') + '/api/governance/model-configs/' + staleId, method: 'DELETE', header: headers}, function (err, response) {",
+                  "    var deleted = !err && (response.code === 200 || response.code === 404);",
+                  "    pm.test('alias-limit: the retained model limit from an earlier run is deleted', function () {",
+                  "      pm.expect(err, 'stale model limit ' + staleId + ' delete errored: ' + err).to.equal(null);",
+                  "      pm.expect([200, 404], 'stale model limit ' + staleId + ' not deleted: ' + (response && response.text())).to.include(response.code);",
+                  "    });",
+                  "    if (deleted) { startFresh(); return; }",
+                  "    pm.execution.skipRequest();",
+                  "  });",
+                  "}"
                 ]
               }
             },

@@ -765,12 +765,25 @@ func (p *GovernancePlugin) Evaluate(ctx *schemas.BifrostContext, evaluationReque
 	// A settling error is held rather than refused on the spot: the ordering below puts identity
 	// refusals first, and a caller whose credential is dead must be told that before anything about
 	// how the request would have been funded.
+	//
+	// A model that runs as written (a literal batch item, a direct key, skip key selection) was admitted
+	// by the literal access, so its limits are gathered from that access too: the alias-aware one
+	// drops a permit whose blacklist names an alias target, and that permit's limits with it.
 	limits, limitsErr := func() (schemas.Limits, error) {
 		if evaluationRequest.LiteralModel {
+			prev, _ := ctx.Value(literalLimitsContextKey).(bool)
 			ctx.SetValue(literalLimitsContextKey, true)
-			defer ctx.SetValue(literalLimitsContextKey, false)
+			defer ctx.SetValue(literalLimitsContextKey, prev)
 		}
-		return resolveLimits(ctx, p.store, evaluationRequest.Provider, evaluationRequest.Model)
+		g := ctx.Grant()
+		if g == nil {
+			return nil, nil
+		}
+		access := g.Access()
+		if access != nil && runsAsWritten(ctx) {
+			access = literalAccessFor(access, p.modelCatalog, p.inMemoryStore)
+		}
+		return resolveLimitsWith(ctx, p.store, access, evaluationRequest.Provider, evaluationRequest.Model)
 	}()
 
 	// The order of everything below is load bearing:
@@ -1116,7 +1129,18 @@ func resolveLimits(ctx *schemas.BifrostContext, store GovernanceStore, provider 
 	if g == nil {
 		return nil, nil
 	}
-	budgets, rateLimits, err := store.GatherLimits(ctx, g.Access(), provider, model)
+	return resolveLimitsWith(ctx, store, g.Access(), provider, model)
+}
+
+// resolveLimitsWith is resolveLimits over a given access rather than the grant's own, for a request
+// whose model check used a different one (see literalAccessFor). The grant is still where the
+// settled limits are recorded.
+func resolveLimitsWith(ctx *schemas.BifrostContext, store GovernanceStore, access schemas.Access, provider schemas.ModelProvider, model string) (schemas.Limits, error) {
+	g := ctx.Grant()
+	if g == nil {
+		return nil, nil
+	}
+	budgets, rateLimits, err := store.GatherLimits(ctx, access, provider, model)
 	if err != nil {
 		return nil, err
 	}

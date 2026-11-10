@@ -2437,6 +2437,26 @@ func TestGovernanceStore_CollectModelConfigsForKeyAliases(t *testing.T) {
 		other := "openai"
 		assert.Empty(t, collect(store, "claude-sonnet", &other))
 	})
+	// Core serves a pinned request from the pinned key alone (a routing-rule pin first, then the
+	// caller's id, then the caller's name), so only that key's alias decides what the name becomes.
+	t.Run("a pinned key contributes only its own target", func(t *testing.T) {
+		store := withKeys(
+			schemas.Key{ID: "k-alias", Name: "alias-key", Models: anyModel, Aliases: schemas.KeyAliases{"claude-sonnet": {ModelID: sonnet}}},
+			schemas.Key{ID: "k-plain", Name: "plain-key", Models: anyModel},
+		)
+		pinned := func(key schemas.BifrostContextKey, value string) context.Context {
+			return context.WithValue(ctx, key, value)
+		}
+		assert.Equal(t, []string{sonnet}, store.aliasTargets(ctx, &provider, "claude-sonnet"), "unpinned: every eligible key's target")
+		assert.Nil(t, store.aliasTargets(pinned(schemas.BifrostContextKeyAPIKeyID, "k-plain"), &provider, "claude-sonnet"))
+		assert.Nil(t, store.aliasTargets(pinned(schemas.BifrostContextKeyAPIKeyName, "plain-key"), &provider, "claude-sonnet"))
+		assert.Equal(t, []string{sonnet}, store.aliasTargets(pinned(schemas.BifrostContextKeyAPIKeyID, "k-alias"), &provider, "claude-sonnet"))
+		assert.Nil(t, store.aliasTargets(pinned(schemas.BifrostContextKeyAPIKeyID, "k-missing"), &provider, "claude-sonnet"), "core refuses an unknown pin, so nothing is added")
+
+		routed := context.WithValue(pinned(schemas.BifrostContextKeyAPIKeyID, "k-alias"), schemas.BifrostContextKeyRoutingPinnedAPIKeyID, "k-plain")
+		assert.Nil(t, store.aliasTargets(routed, &provider, "claude-sonnet"), "a routing-rule pin overrides the caller's pin")
+		assert.Empty(t, ids(store.collectModelConfigsFor(routed, global, "", "claude-sonnet", &provider, store.aliasTargets(routed, &provider, "claude-sonnet"))))
+	})
 
 	// A model that runs at the provider exactly as written is never resolved through a key alias,
 	// so the limits of the alias's target must not be added to it.
@@ -2567,22 +2587,34 @@ func BenchmarkGatherLimits_KeyAliases(b *testing.B) {
 	aliased["claude-sonnet"] = schemas.AliasConfig{ModelID: "us.anthropic.claude-sonnet-4-6"}
 	plain := []schemas.Key{{Models: schemas.WhiteList{"*"}}, {Models: schemas.WhiteList{"*"}}}
 	withAliases := []schemas.Key{{Models: schemas.WhiteList{"*"}, Aliases: aliased}, {Models: schemas.WhiteList{"*"}, Aliases: aliased}}
-	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	withAliases[0].ID = "k-aliased"
 	for _, tc := range []struct {
 		name  string
 		keys  []schemas.Key
 		noMem bool
 		model string
 		want  int
+		set   func(*schemas.BifrostContext)
 	}{
 		// baseline and no_aliases name the canonical model too, so every row does the same limit work and the
 		// allocation difference between rows is the alias resolution alone.
-		{"baseline_no_store", nil, true, "us.anthropic.claude-sonnet-4-6", 1},
-		{"no_aliases", plain, false, "us.anthropic.claude-sonnet-4-6", 1},
-		{"aliases_unused", withAliases, false, "us.anthropic.claude-sonnet-4-6", 1},
-		{"alias_used", withAliases, false, "claude-sonnet", 1},
+		{"baseline_no_store", nil, true, "us.anthropic.claude-sonnet-4-6", 1, nil},
+		{"no_aliases", plain, false, "us.anthropic.claude-sonnet-4-6", 1, nil},
+		{"aliases_unused", withAliases, false, "us.anthropic.claude-sonnet-4-6", 1, nil},
+		{"alias_used", withAliases, false, "claude-sonnet", 1, nil},
+		// A pinned key resolves through that key alone; a direct key runs the name as written.
+		{"alias_used_pinned_key", withAliases, false, "claude-sonnet", 1, func(ctx *schemas.BifrostContext) {
+			ctx.SetValue(schemas.BifrostContextKeyAPIKeyID, "k-aliased")
+		}},
+		{"alias_direct_key", withAliases, false, "claude-sonnet", 0, func(ctx *schemas.BifrostContext) {
+			ctx.SetValue(schemas.BifrostContextKeyDirectKey, schemas.Key{ID: "direct"})
+		}},
 	} {
 		b.Run(tc.name, func(b *testing.B) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			if tc.set != nil {
+				tc.set(ctx)
+			}
 			if tc.noMem {
 				store.inMemoryStore = nil
 			} else {
