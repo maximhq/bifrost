@@ -24,7 +24,12 @@ import {
 } from "@/lib/types/complexityRouter";
 import type { LogFilters } from "@/lib/types/logs";
 import { cn } from "@/lib/utils";
-import { metadataFilterValueCount, normalizeMetadataFilters, toggleMetadataFilterValue } from "@/lib/utils/metadataFilters";
+import {
+	mergeMetadataOptions,
+	metadataFilterValueCount,
+	normalizeMetadataFilters,
+	toggleMetadataFilterValue,
+} from "@/lib/utils/metadataFilters";
 import { getRangeForPeriod } from "@/lib/utils/timeRange";
 import "@enterprise/lib/registrations/logs";
 import { ChevronDown, LoaderCircle, PanelLeftClose, Plus, RotateCcw, Search } from "lucide-react";
@@ -1633,8 +1638,11 @@ function MetadataFilters({ filters, onFiltersChange, defaultOpen }: FilterCompon
 		isUninitialized,
 		isLoading,
 		isFetching,
-	} = useGetAvailableFilterDataQuery({ dimensions: ["metadata_keys"], q: debouncedQuery || undefined }, { skip: !opened && !hasActive });
-	const availableMetadataKeys = filterData?.metadata_keys || {};
+	} = useGetAvailableFilterDataQuery(
+		{ dimensions: ["metadata_keys"], q: debouncedQuery || undefined, filters },
+		{ skip: !opened && !hasActive },
+	);
+	const availableMetadataKeys = mergeMetadataOptions(filterData?.metadata_keys ?? {}, filters.metadata_filters);
 	const [customInputs, setCustomInputs] = useState<Record<string, string>>({});
 
 	const handleToggle = useCallback(
@@ -1687,12 +1695,10 @@ function MetadataFilters({ filters, onFiltersChange, defaultOpen }: FilterCompon
 					)}
 					{entries.map(([metadataKey, values]) => {
 						const selected = selectedMetadataValues(filters, metadataKey);
-						// Checked values the key no longer lists (typed, or from a link) stay listed so they can be unchecked.
-						const listed = [...values, ...selected.filter((value) => !values.includes(value))];
 						return (
 							<div key={metadataKey} data-testid={`metadata-${metadataKey}-filter-group`}>
 								<div className="text-muted-foreground px-3 pt-2 pb-1 text-xs font-medium">{metadataKey}</div>
-								{listed.map((value) => (
+								{values.map((value) => (
 									<CheckboxFilterItem
 										key={value}
 										label={value}

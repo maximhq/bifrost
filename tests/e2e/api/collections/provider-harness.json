@@ -316402,6 +316402,56 @@
           ]
         }
       ]
+    },
+    {
+      "name": "Metadata facets - openai management filters",
+      "description": "Read-only management regression on a populated logs store. No provider calls. An impossible request ID must not offer unrelated metadata. On an empty store this is a smoke check; deterministic seeded scope coverage lives in Go and UI tests.",
+      "item": [
+        {
+          "name": "openai metadata facets empty request scope",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/logs/filterdata?dimensions=metadata_keys&request_id=metadata-facet-nonexistent-560cdb35-c446-44eb-b3c1-1c0233841410"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Metadata options respect empty scope\", function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+                  "  pm.expect(pm.response.json().metadata_keys).to.eql({});",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "openai metadata facets empty virtual-key scope",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/logs/filterdata?dimensions=metadata_keys&virtual_key_ids=metadata-facet-nonexistent-560cdb35-c446-44eb-b3c1-1c0233841410"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Metadata options respect empty scope\", function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+                  "  pm.expect(pm.response.json().metadata_keys).to.eql({});",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }

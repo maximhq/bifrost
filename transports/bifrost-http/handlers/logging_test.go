@@ -1420,7 +1420,7 @@ func (m *dashboardLogManager) GetAvailableProjects(ctx context.Context, limit in
 }
 
 // GetAvailableMetadataKeys implements the test double used by logging handler tests.
-func (m *dashboardLogManager) GetAvailableMetadataKeys(ctx context.Context, limit int, query string) (map[string][]string, error) {
+func (m *dashboardLogManager) GetAvailableMetadataKeys(ctx context.Context, limit int, query string, scope *logstore.SearchFilters) (map[string][]string, error) {
 	return nil, nil
 }
 
@@ -2187,5 +2187,44 @@ func TestParseBucketSizeOverride(t *testing.T) {
 				t.Fatalf("got %d, %v; want %d", got, err, tc.want)
 			}
 		})
+	}
+}
+
+type metadataFacetLogManager struct {
+	loggingplugin.LogManager
+	seen []logstore.SearchFilters
+}
+
+func (m *metadataFacetLogManager) GetAvailableMetadataKeys(ctx context.Context, limit int, query string, scope *logstore.SearchFilters) (map[string][]string, error) {
+	if scope == nil {
+		return map[string][]string{"stand": {"unscoped"}}, nil
+	}
+	m.seen = append(m.seen, *scope)
+	return map[string][]string{"stand": scope.VirtualKeyIDs}, nil
+}
+
+func TestMetadataFilterDataUsesRequestScope(t *testing.T) {
+	SetLogger(&mockLogger{})
+	mgr := &metadataFacetLogManager{}
+	h := &LoggingHandler{logManager: mgr}
+	for _, vk := range []string{"prod", "spark"} {
+		var ctx fasthttp.RequestCtx
+		var req fasthttp.Request
+		req.SetRequestURI("/api/logs/filterdata?dimensions=metadata_keys&virtual_key_ids=" + vk + "&period=24h&metadata_tenant=bank&status=success")
+		ctx.Init(&req, &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 12345}, nil)
+		h.getAvailableFilterData(&ctx)
+		require.Equal(t, 200, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+		var body struct {
+			Metadata map[string][]string `json:"metadata_keys"`
+		}
+		require.NoError(t, json.Unmarshal(ctx.Response.Body(), &body))
+		require.Equal(t, []string{vk}, body.Metadata["stand"])
+	}
+	require.Len(t, mgr.seen, 2, "scoped dropdowns must not reuse another filter's cached response")
+	for _, scope := range mgr.seen {
+		require.Equal(t, []string{"success"}, scope.Status)
+		require.Equal(t, []string{"bank"}, scope.MetadataFilters["tenant"])
+		require.NotNil(t, scope.StartTime)
+		require.NotNil(t, scope.EndTime)
 	}
 }

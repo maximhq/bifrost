@@ -51,3 +51,12 @@ export function metadataFilterQueryValue(values: string[]): string {
 export function metadataFilterValueCount(filters: MetadataFilters | undefined): number {
 	return Object.values(normalizeMetadataFilters(filters) ?? {}).reduce((count, values) => count + values.length, 0);
 }
+
+/** Keep selected keys and values removable even when the current facet scope has no matches. */
+export function mergeMetadataOptions(available: Record<string, string[]>, selected: MetadataFilters | undefined): Record<string, string[]> {
+	const merged = { ...available };
+	for (const [key, values] of Object.entries(normalizeMetadataFilters(selected) ?? {})) {
+		merged[key] = [...new Set([...(Object.hasOwn(available, key) ? available[key] : []), ...values])];
+	}
+	return merged;
+}

@@ -5114,64 +5114,43 @@ const (
 	maxMetadataValuesPerKey = 100
 )
 
-// GetDistinctMetadataKeys returns unique metadata keys and their distinct values from recent logs.
-// It scans a bounded number of recent rows to avoid memory bloat on large tables.
-func (s *RDBLogStore) GetDistinctMetadataKeys(ctx context.Context, limit int, query string) (map[string][]string, error) {
-	cutoff := time.Now().UTC().AddDate(0, 0, -defaultFilterDataCutoffDays)
-	var metadataStrings []string
-	// Guard must match the partial-index predicate so the planner uses the GIN index.
-	var metadataGuard string
-	switch s.db.Dialector.Name() {
-	case "postgres":
-		metadataGuard = "metadata IS NOT NULL AND metadata IS JSON OBJECT AND metadata != '{}' AND timestamp >= ?"
-	case "clickhouse":
-		metadataGuard = "metadata IS NOT NULL AND isValidJSON(metadata) AND metadata != '{}' AND timestamp >= ?"
-	default:
-		metadataGuard = "metadata IS NOT NULL AND json_valid(metadata) AND json_type(metadata) = 'object' AND metadata != '{}' AND timestamp >= ?"
+// GetDistinctMetadataKeys returns metadata facets within an optional log scope.
+// Each active metadata key ignores its own predicate, allowing additional selections.
+// Each scan reads at most maxMetadataRows rows; absent a time range, recent logs are used.
+func (s *RDBLogStore) GetDistinctMetadataKeys(ctx context.Context, limit int, query string, scope *SearchFilters) (map[string][]string, error) {
+	filters := SearchFilters{}
+	if scope != nil {
+		filters = *scope
 	}
-	err := s.scopedLogsDB(ctx).Model(&Log{}).
-		Where(metadataGuard, cutoff).
-		Order("timestamp DESC").
-		Limit(maxMetadataRows).
-		Pluck("metadata", &metadataStrings).Error
+	// Legacy callers keep the recency window; an explicit range is authoritative.
+	if filters.StartTime == nil && filters.EndTime == nil && filters.RequestID == "" {
+		cutoff := time.Now().UTC().AddDate(0, 0, -defaultFilterDataCutoffDays)
+		filters.StartTime = &cutoff
+	}
+	keyValues, err := s.metadataFacetValues(ctx, filters, "")
 	if err != nil {
-		return nil, fmt.Errorf("failed to get metadata: %w", err)
+		return nil, err
 	}
-
-	// Collect unique key-value pairs with bounded sizes
-	keyValues := make(map[string]map[string]struct{})
-	for _, raw := range metadataStrings {
-		var parsed map[string]interface{}
-		if err := sonic.UnmarshalString(raw, &parsed); err != nil {
+	// Unselected facets share the fully filtered scan. Only active facets need
+	// another scan, with their own predicate removed but all visibility rules intact.
+	for key, values := range filters.MetadataFilters {
+		if !isValidMetadataKey(key) || isMetadataSystemKey(key) || len(values) == 0 {
 			continue
 		}
-		for key, val := range parsed {
-			if isMetadataSystemKey(key) {
-				continue
+		facetFilters := filters
+		facetFilters.MetadataFilters = make(MetadataFilterMap, len(filters.MetadataFilters)-1)
+		for other, selected := range filters.MetadataFilters {
+			if other != key {
+				facetFilters.MetadataFilters[other] = selected
 			}
-			if !isValidMetadataKey(key) {
-				continue
-			}
-			if _, ok := keyValues[key]; !ok {
-				keyValues[key] = make(map[string]struct{})
-			}
-			if len(keyValues[key]) >= maxMetadataValuesPerKey {
-				continue
-			}
-			var strVal string
-			switch v := val.(type) {
-			case string:
-				strVal = v
-			case float64:
-				strVal = fmt.Sprint(v)
-			case bool:
-				strVal = fmt.Sprint(v)
-			default:
-				continue
-			}
-			if strVal != "" {
-				keyValues[key][strVal] = struct{}{}
-			}
+		}
+		facetValues, err := s.metadataFacetValues(ctx, facetFilters, key)
+		if err != nil {
+			return nil, err
+		}
+		delete(keyValues, key)
+		if vals, ok := facetValues[key]; ok {
+			keyValues[key] = vals
 		}
 	}
 
@@ -5216,6 +5195,67 @@ func (s *RDBLogStore) GetDistinctMetadataKeys(ctx context.Context, limit int, qu
 		result[key] = values
 	}
 	return result, nil
+}
+
+// metadataFacetValues applies scope before LIMIT so rare matches are not lost
+// behind unrelated recent rows. Memory is bounded by the existing row/value caps.
+func (s *RDBLogStore) metadataFacetValues(ctx context.Context, filters SearchFilters, onlyKey string) (map[string]map[string]struct{}, error) {
+	var metadataStrings []string
+	var metadataGuard string
+	switch s.db.Dialector.Name() {
+	case "postgres":
+		metadataGuard = "metadata IS NOT NULL AND metadata IS JSON OBJECT AND metadata != '{}'"
+	case "clickhouse":
+		metadataGuard = "metadata IS NOT NULL AND isValidJSON(metadata) AND metadata != '{}'"
+	default:
+		metadataGuard = "metadata IS NOT NULL AND json_valid(metadata) AND json_type(metadata) = 'object' AND metadata != '{}'"
+	}
+	q := s.applyFilters(s.scopedLogsDB(ctx).Model(&Log{}), filters)
+	err := q.Where(metadataGuard).Order("timestamp DESC").Limit(maxMetadataRows).Pluck("metadata", &metadataStrings).Error
+	if err != nil {
+		return nil, fmt.Errorf("failed to get metadata: %w", err)
+	}
+	// Collect unique key-value pairs with bounded sizes
+	keyValues := make(map[string]map[string]struct{})
+	for _, raw := range metadataStrings {
+		var parsed map[string]interface{}
+		if err := sonic.UnmarshalString(raw, &parsed); err != nil {
+			continue
+		}
+		for key, val := range parsed {
+			if onlyKey != "" && key != onlyKey {
+				continue
+			}
+			if isMetadataSystemKey(key) {
+				continue
+			}
+			if !isValidMetadataKey(key) {
+				continue
+			}
+			if _, ok := keyValues[key]; !ok {
+				keyValues[key] = make(map[string]struct{})
+			}
+			if len(keyValues[key]) >= maxMetadataValuesPerKey {
+				continue
+			}
+			var strVal string
+			switch v := val.(type) {
+			case string:
+				strVal = v
+			case float64:
+				strVal = fmt.Sprint(v)
+			case bool:
+				strVal = fmt.Sprint(v)
+			default:
+				continue
+			}
+			if strVal != "" {
+				keyValues[key][strVal] = struct{}{}
+			}
+		}
+	}
+
+	return keyValues, nil
 }
 
 // FindAll finds all log entries from the database.

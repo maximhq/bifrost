@@ -800,6 +800,16 @@ FilterDataResponse:
         Warp topics with a request the caller may see in the last 30 days,
         largest first, for the `topics` dimension. Empty when Warp has no
         topics, and narrowed by `q` against the topic's name.
+    metadata_keys:
+      type: object
+      additionalProperties:
+        type: array
+        items:
+          type: string
+      description: >-
+        Metadata keys and suggested values matching the active log filters.
+        Each key excludes its own selection; other metadata keys still constrain it.
+        Results are bounded samples, not exhaustive inventories.
 
 DeleteLogsRequest:
   type: object

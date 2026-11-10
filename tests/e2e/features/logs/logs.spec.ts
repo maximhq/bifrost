@@ -651,6 +651,36 @@ test.describe("LLM Logs", () => {
   });
 
   test.describe("Advanced Filtering", () => {
+    test("metadata facets forward scope and keep selected missing values removable", async ({ logsPage, page }) => {
+      const requests: URLSearchParams[] = [];
+      await page.route("**/api/logs/filterdata**", async (route) => {
+        const params = new URL(route.request().url()).searchParams;
+        if (params.get("dimensions") !== "metadata_keys") return route.continue();
+        requests.push(params);
+        const narrowed = params.get("metadata_tenant") === "bank";
+        await route.fulfill({ json: { metadata_keys: narrowed
+          ? { tenant: ["bank", "shop"], user: ["alice", "bob"] }
+          : { tenant: ["bank", "shop"], user: ["alice", "bob", "carol"] },
+        } });
+      });
+      await page.goto("/workspace/logs?period=7d&virtual_key_ids=facet-prod");
+      const toggle = page.getByTestId("metadata-filter-toggle");
+      if (!(await toggle.isVisible())) await logsPage.filtersButton.first().click();
+      await toggle.click();
+      await page.getByTestId("metadata-user-filter-checkbox-carol").click();
+      await page.getByTestId("metadata-tenant-filter-checkbox-bank").click();
+      await expect.poll(() => requests.some((p) => p.get("period") === "7d" &&
+        p.get("virtual_key_ids") === "facet-prod" && p.get("metadata_tenant") === "bank" &&
+        p.get("metadata_user") === "carol")).toBe(true);
+      // The server no longer offers carol, but her active filter must remain removable.
+      await expect(page.getByTestId("metadata-user-filter-checkbox-carol")).toBeChecked();
+      await page.getByTestId("metadata-user-filter-checkbox-carol").click();
+      await expect(page.getByTestId("metadata-user-filter-checkbox-carol")).toHaveCount(0);
+      await page.getByTestId("metadata-user-filter-checkbox-alice").click();
+      await page.getByTestId("metadata-user-filter-checkbox-bob").click();
+      await expect.poll(() => requests.some((p) => p.get("metadata_user") === '["alice","bob"]')).toBe(true);
+    });
+
     // The topics dimension is Warp's own list, so it is mocked here: what the
     // browser has to show is that a topic the server offered can be picked by
     // name, lands in the URL by id, and narrows the request for the rows.

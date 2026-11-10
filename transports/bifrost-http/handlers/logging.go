@@ -2231,10 +2231,29 @@ func (h *LoggingHandler) getAvailableFilterData(ctx *fasthttp.RequestCtx) {
 	dims := parseFilterDimensions(string(ctx.QueryArgs().Peek("dimensions")), allFilterDimensions)
 	want := dimSet(dims)
 	query := strings.TrimSpace(string(ctx.QueryArgs().Peek("q")))
+	// Metadata facets accept the same scope as the log list. Keep legacy
+	// dimension-only requests unchanged and never cache scoped results under
+	// the unscoped dimension key (or retain an unbounded cache of combinations).
+	var metadataScope *logstore.SearchFilters
+	if _, ok := want[filterDimMetadataKeys]; ok {
+		scoped := false
+		ctx.QueryArgs().VisitAll(func(key, value []byte) {
+			if string(key) != "dimensions" && string(key) != "q" {
+				scoped = true
+			}
+		})
+		if scoped {
+			filters := parseHistogramFilters(ctx)
+			if filters == nil {
+				return
+			}
+			metadataScope = filters
+		}
+	}
 	hiddenTypes := logstore.HiddenRequestTypesFromContext(ctx)
 	// Hidden types require raw-table dropdown queries even on PostgreSQL, so
 	// cache those responses and partition them by the configured visibility.
-	useCache := shouldUseFilterDataCache(ctx, query) && (len(hiddenTypes) > 0 || h.shouldCacheFilterDimensions(dims))
+	useCache := metadataScope == nil && shouldUseFilterDataCache(ctx, query) && (len(hiddenTypes) > 0 || h.shouldCacheFilterDimensions(dims))
 
 	var entry *filterDataCacheEntry
 	if useCache {
@@ -2474,7 +2493,7 @@ func (h *LoggingHandler) getAvailableFilterData(ctx *fasthttp.RequestCtx) {
 	}
 	if _, ok := want[filterDimMetadataKeys]; ok {
 		g.Go(func() error {
-			result, err := h.logManager.GetAvailableMetadataKeys(gCtx, defaultFilterDataLimit, query)
+			result, err := h.logManager.GetAvailableMetadataKeys(gCtx, defaultFilterDataLimit, query, metadataScope)
 			if err != nil {
 				return err
 			}
