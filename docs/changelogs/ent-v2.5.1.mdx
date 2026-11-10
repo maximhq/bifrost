@@ -7,11 +7,16 @@ description: "v2.5.1 changelog - 2026-11-10"
 
 ## Changelog
 
-v2.5.1 is a maintenance release. It rebuilds the gateway image on a newer Alpine runtime base. The gateway code, the OSS base (`transports/v2.5.0`) and the database schema are the same as v2.5.0.
+v2.5.1 is a maintenance release. It moves the enterprise gateway onto OSS transports v2.5.1, which stops three request and streaming failures from crashing the gateway. The gateway image is rebuilt on Alpine 3.23.7 and clears two critical CVEs, one in zlib and one in the brotli Go library. There are no new features and no database migrations.
 
 ## 🐞 Fixed
 
-- **Runtime Base Image** - The gateway images (static and dynamic-plugin builds) now run on Alpine 3.23.7, up from 3.23.5, and pick up the Alpine package updates shipped between those two versions. The image is pinned by digest.
+- **Empty Chat Messages** - A chat completion request with missing or empty `messages` returns a 400 instead of crashing the gateway
+- **Null Entries in Gemini Requests** - A `null` inside `parts` or `functionDeclarations` on a GenAI request is skipped instead of failing with a 500. Null entries in Gemini and Vertex responses are skipped too
+- **Streaming Panic Recovery** - A panic in a provider stream, a stream chunk converter, a plugin post-hook or chunk hook, or stream teardown no longer takes down the gateway. The client gets a terminal error frame in the route's own format, and logging and billing record the failure
+- **Runtime Base Image** - The gateway images (static and dynamic-plugin builds) now run on Alpine 3.23.7, up from 3.23.5. The image is pinned by digest
+- **zlib CVE-2026-4738** - The runtime image upgrades zlib to 1.4-r0 at build time
+- **brotli CVE-2026-111497** - `github.com/andybalholm/brotli` moves from v1.2.2 to v1.2.7 in the gateway binary
 
 ## 🗄️ Database Migrations
 
@@ -21,11 +26,11 @@ v2.5.1 is a maintenance release. It rebuilds the gateway image on a newer Alpine
 
 ### Open Source
 
-- No new database migrations in this release. The OSS base is unchanged from v2.5.0.
+- No new database migrations in this release.
 
 ## 📀 Base OSS version
 
-`transports/v2.5.0`
+`transports/v2.5.1`
 
 ## 🔌 If you are compiling plugin against this release - use following deps
 
@@ -44,14 +49,14 @@ require (
 	github.com/maximhq/bifrost-enterprise/core v0.0.0
 	github.com/maximhq/bifrost-enterprise/framework v0.0.0
 	github.com/maximhq/bifrost-enterprise/plugins v0.0.0
-	github.com/maximhq/bifrost/core v1.15.1
-	github.com/maximhq/bifrost/framework v1.12.1
-	github.com/maximhq/bifrost/plugins/governance v1.12.1
-	github.com/maximhq/bifrost/plugins/logging v1.12.1
-	github.com/maximhq/bifrost/plugins/routing v1.3.1
-	github.com/maximhq/bifrost/plugins/semanticcache v1.7.6
-	github.com/maximhq/bifrost/plugins/telemetry v1.9.6
-	github.com/maximhq/bifrost/transports/v2 v2.5.0
+	github.com/maximhq/bifrost/core v1.15.2
+	github.com/maximhq/bifrost/framework v1.12.2
+	github.com/maximhq/bifrost/plugins/governance v1.12.2
+	github.com/maximhq/bifrost/plugins/logging v1.12.2
+	github.com/maximhq/bifrost/plugins/routing v1.3.2
+	github.com/maximhq/bifrost/plugins/semanticcache v1.7.7
+	github.com/maximhq/bifrost/plugins/telemetry v1.9.7
+	github.com/maximhq/bifrost/transports/v2 v2.5.1
 	github.com/stretchr/testify v1.12.1
 	github.com/valyala/fasthttp v1.74.0
 	golang.org/x/sync v0.24.0
@@ -109,7 +114,7 @@ require (
 	github.com/ProtonMail/go-crypto v1.1.6 // indirect
 	github.com/STARRY-S/zip v0.2.1 // indirect
 	github.com/a2aproject/a2a-go/v2 v2.5.0 // indirect
-	github.com/andybalholm/brotli v1.2.2 // indirect
+	github.com/andybalholm/brotli v1.2.7 // indirect
 	github.com/antlr4-go/antlr/v4 v4.13.1 // indirect
 	github.com/apache/arrow/go/v15 v15.0.2 // indirect
 	github.com/apapsch/go-jsonmerge/v2 v2.0.0 // indirect
@@ -266,12 +271,12 @@ require (
 	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/mattn/go-runewidth v0.0.17 // indirect
 	github.com/mattn/go-sqlite3 v1.14.32 // indirect
-	github.com/maximhq/bifrost/plugins/compat v0.5.5 // indirect
-	github.com/maximhq/bifrost/plugins/maxim v1.7.16 // indirect
-	github.com/maximhq/bifrost/plugins/mocker v1.6.16 // indirect
-	github.com/maximhq/bifrost/plugins/modelcatalogresolver v1.1.16 // indirect
-	github.com/maximhq/bifrost/plugins/otel v1.6.6 // indirect
-	github.com/maximhq/bifrost/plugins/prompts v1.1.16 // indirect
+	github.com/maximhq/bifrost/plugins/compat v0.5.6 // indirect
+	github.com/maximhq/bifrost/plugins/maxim v1.7.17 // indirect
+	github.com/maximhq/bifrost/plugins/mocker v1.6.17 // indirect
+	github.com/maximhq/bifrost/plugins/modelcatalogresolver v1.1.17 // indirect
+	github.com/maximhq/bifrost/plugins/otel v1.6.7 // indirect
+	github.com/maximhq/bifrost/plugins/prompts v1.1.17 // indirect
 	github.com/maximhq/maxim-go v0.2.1 // indirect
 	github.com/mholt/archives v0.1.2 // indirect
 	github.com/miekg/dns v1.1.68 // indirect
