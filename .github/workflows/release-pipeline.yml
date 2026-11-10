@@ -2204,9 +2204,10 @@ jobs:
           echo "$PWD/node_modules/.bin" >> "$GITHUB_PATH"
         working-directory: .github/workflows/tools
 
-      # The content-logging matrix reads raw log rows from the Postgres logs store through `pg`,
-      # pinned in tests/e2e/api/package-lock.json. --ignore-scripts skips better-sqlite3's native
-      # build: this job's logs store is Postgres, so the SQLite reader is never loaded.
+      # The content-logging and relay matrices read raw log rows through `pg`, pinned in
+      # tests/e2e/api/package-lock.json, and through Node's built-in node:sqlite for the SQLite
+      # cells (tests/e2e/api/lib/sqlite-readonly.js). --ignore-scripts skips better-sqlite3's
+      # native build, which that reader only falls back to on a Node without node:sqlite.
       - name: Install e2e API test deps (lockfile)
         run: npm ci --ignore-scripts --no-audit --no-fund
         working-directory: tests/e2e/api
@@ -2314,7 +2315,9 @@ jobs:
           # their published ports, which DNAT to the pinned bridge IPs in
           # .github/workflows/configs/docker-compose.yml (Postgres 172.38.0.11,
           # Weaviate 172.38.0.12, which also gossips to itself on 8301). Warp's
-          # agent and embeddings call OpenAI.
+          # agent and embeddings call OpenAI. getbifrost.ai / www.getbifrost.ai serve
+          # the pricing datasheet the gateway must sync at boot; without it
+          # bifrost-http exits fatally.
           allowed-endpoints: >
             127.0.0.1:5432
             172.38.0.11:5432
@@ -2324,6 +2327,7 @@ jobs:
             api.openai.com:443
             auth.docker.io:443
             cr.weaviate.io:443
+            getbifrost.ai:443
             github.com:443
             iojs.org:443
             nodejs.org:443
@@ -2335,6 +2339,7 @@ jobs:
             release-assets.githubusercontent.com:443
             storage.googleapis.com:443
             sum.golang.org:443
+            www.getbifrost.ai:443
 
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2

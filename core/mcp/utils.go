@@ -816,6 +816,80 @@ func AppToolsAllowed(ctx context.Context) bool {
 	if client, _ := ctx.Value(schemas.BifrostContextKeyMCPGatewayClient).(string); client == "" {
 		return false
 	}
+	return CallerDeclaresApps(ctx)
+}
+
+// InputRequiredForLog returns, for the MCP log, what a relayed input_required result asked the caller;
+// ok is false for any other message.
+func InputRequiredForLog(message *schemas.ChatMessage) (asked any, ok bool) {
+	if message == nil || message.ChatToolMessage == nil {
+		return nil, false
+	}
+	result := message.ChatToolMessage.MCPResult(message.Content)
+	if result == nil || !result.NeedsInput() {
+		return nil, false
+	}
+	if len(result.InputRequests) == 0 {
+		return nil, true // a retry-later round asks nothing
+	}
+	return map[string]any{"input_requests": result.InputRequests}, true
+}
+
+// InputResumptionForLog returns the answers a gateway caller's retry carried.
+func InputResumptionForLog(ctx context.Context) any {
+	resume, _ := ctx.Value(schemas.BifrostContextKeyMCPInputResumption).(*mcp.MultiRoundTripParams)
+	if resume == nil || len(resume.InputResponses) == 0 {
+		return nil
+	}
+	return resume.InputResponses
+}
+
+// roundTripStatePrefix marks a requestState Bifrost wrapped: "bfrt1.<round-trip id>.<upstream's state>".
+const roundTripStatePrefix = "bfrt1."
+
+const roundTripIDLen = 16
+
+// RoundTripID is the id every round of one gateway tool call shares in the MCP logs: a short hash of the
+// first round's request id.
+func RoundTripID(requestID string) string {
+	sum := sha256.Sum256([]byte(requestID))
+	return hex.EncodeToString(sum[:roundTripIDLen/2])
+}
+
+// CallRoundTripID is the round-trip id of the gateway tool call on ctx: the one its retry carried, else
+// one derived from this request.
+func CallRoundTripID(ctx context.Context) string {
+	if carried, _ := ctx.Value(schemas.BifrostContextKeyMCPRoundTripID).(string); carried != "" {
+		return carried
+	}
+	requestID, _ := ctx.Value(schemas.BifrostContextKeyRequestID).(string)
+	return RoundTripID(requestID)
+}
+
+// WrapRoundTripState is the requestState Bifrost hands its caller: the upstream's state behind the call's
+// round-trip id, so the retry names the call it continues.
+func WrapRoundTripState(id, state string) string {
+	return roundTripStatePrefix + id + "." + state
+}
+
+// UnwrapRoundTripState splits a caller's requestState into the round-trip id and the upstream's state. A
+// state Bifrost did not wrap comes back unchanged, with no id.
+func UnwrapRoundTripState(state string) (id, upstream string) {
+	rest, ok := strings.CutPrefix(state, roundTripStatePrefix)
+	if !ok || len(rest) <= roundTripIDLen || rest[roundTripIDLen] != '.' {
+		return "", state
+	}
+	for _, c := range rest[:roundTripIDLen] {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return "", state
+		}
+	}
+	return rest[:roundTripIDLen], rest[roundTripIDLen+1:]
+}
+
+// CallerDeclaresApps reports whether ctx carries a gateway caller's capabilities that declare MCP Apps,
+// on any gateway endpoint.
+func CallerDeclaresApps(ctx context.Context) bool {
 	caller, _ := ctx.Value(schemas.BifrostContextKeyMCPCallerCapabilities).(*mcp.ClientCapabilities)
 	if caller == nil {
 		return false

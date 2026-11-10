@@ -25,6 +25,7 @@ import (
 	mistralprovider "github.com/maximhq/bifrost/core/providers/mistral"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/core/streamusage"
 	"github.com/tidwall/gjson"
 	"golang.org/x/text/cases"
 	"golang.org/x/text/language"
@@ -5075,6 +5076,48 @@ func TestPrepareResponsesRequest_NormalizesEmbeddedToolSchemasForKimi(t *testing
 	}
 }
 
+// A Codex thread whose tool definitions changed mid-session carries a second
+// additional_tools item re-declaring functions.exec. Every wire that hoists those items
+// must send exec once, with the later definition, instead of rejecting the request
+// with "tool name \"exec\" is not unique after flattening namespace tools".
+func TestPrepareResponsesRequest_AdditionalToolsRedeclaration(t *testing.T) {
+	first := `[{"type":"namespace","name":"functions","tools":[{"type":"function","name":"exec","description":"v1","parameters":{"type":"object"}},{"type":"function","name":"wait","parameters":{"type":"object"}}]}]`
+	second := `[{"type":"namespace","name":"functions","tools":[{"type":"function","name":"exec","description":"v2","parameters":{"type":"object"}}]}]`
+	for _, tc := range []struct {
+		name     string
+		provider schemas.ModelProvider
+		model    string
+	}{
+		{"bedrock converse", schemas.Bedrock, "us.anthropic.claude-sonnet-4-5-20250929-v1:0"},
+		{"anthropic", schemas.Anthropic, "claude-sonnet-4-5"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			req := &schemas.BifrostResponsesRequest{Provider: tc.provider, Model: tc.model, Input: []schemas.ResponsesMessage{
+				{Type: new(schemas.ResponsesMessageTypeAdditionalTools), AdditionalTools: []byte(first)},
+				{Type: new(schemas.ResponsesMessageTypeAdditionalTools), AdditionalTools: []byte(second)},
+			}}
+			prepared, bifrostErr := prepareResponsesRequest(ctx, &schemas.ProviderConfig{}, stubProvider{key: tc.provider}, schemas.Key{}, req)
+			if bifrostErr != nil {
+				t.Fatalf("prepare failed: %v", bifrostErr.Error.Message)
+			}
+			var names []string
+			for _, tool := range prepared.Params.Tools {
+				names = append(names, *tool.Name)
+			}
+			if len(names) != 2 || names[0] != "exec" || names[1] != "wait" {
+				t.Fatalf("want [exec wait] on the wire, got %v", names)
+			}
+			if got := *prepared.Params.Tools[0].Description; got != "v2" {
+				t.Fatalf("want the later exec definition, got description %q", got)
+			}
+			if len(prepared.Input) != 0 {
+				t.Fatalf("additional_tools items must be consumed, got %d input items", len(prepared.Input))
+			}
+		})
+	}
+}
+
 // The Chat Completions path reaches kimi-k3 too and must normalize the same way.
 func TestHandleProviderRequest_ChatNormalizesToolSchemasForKimi(t *testing.T) {
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
@@ -8387,6 +8430,164 @@ func TestScenarioInferredFallbacksStopOnCallerFault(t *testing.T) {
 	}
 }
 
+// scenarioPolicyRefuser refuses every attempt on one provider the way the governance plugin refuses
+// a provider a virtual key does not allow: a 403 short-circuit that leaves fallbacks allowed.
+type scenarioPolicyRefuser struct{ refuses schemas.ModelProvider }
+
+func (p *scenarioPolicyRefuser) GetName() string { return "scenario-policy-refuser" }
+func (p *scenarioPolicyRefuser) Cleanup() error  { return nil }
+func (p *scenarioPolicyRefuser) PreRequestHook(*schemas.BifrostContext, *schemas.BifrostRequest) error {
+	return nil
+}
+func (p *scenarioPolicyRefuser) PreLLMHook(_ *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	if provider, _, _ := req.GetRequestFields(); provider != p.refuses {
+		return req, nil, nil
+	}
+	return req, &schemas.LLMPluginShortCircuit{Error: &schemas.BifrostError{
+		Type:       schemas.Ptr("provider_blocked"),
+		StatusCode: schemas.Ptr(http.StatusForbidden),
+		Error:      &schemas.ErrorField{Message: fmt.Sprintf("Provider '%s' is not allowed for virtual key 'vk'", p.refuses)},
+	}}, nil
+}
+func (p *scenarioPolicyRefuser) PostLLMHook(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	return resp, bifrostErr, nil
+}
+
+// TestScenarioExhaustedFallbacksReportEachAttempt pins #3261. When the primary and every fallback
+// fail, the caller gets the primary's error, and that error has to say what became of each
+// fallback: a fallback a virtual key refuses never reaches its provider, and without this the
+// caller reads the primary's fast 429 as a routing rule whose fallback never ran. A fallback that
+// could not even be prepared is reported as skipped. Both orchestrator loops are covered.
+func TestScenarioExhaustedFallbacksReportEachAttempt(t *testing.T) {
+	for _, stream := range []bool{false, true} {
+		t.Run(fmt.Sprintf("stream=%v", stream), func(t *testing.T) {
+			u := newScenarioUpstream(t)
+			account := scenarioAccount(u, map[schemas.ModelProvider][]schemas.Key{
+				provA: {scenarioKey("a1", 1)},
+				provB: {scenarioKey("b1", 1)},
+			})
+			// provC has no provider config, so its fallback is skipped before any attempt.
+			router := &scenarioRouter{route: fixedRoute(schemas.Fallback{Provider: provA, Model: "m"}, schemas.Fallback{Provider: provB, Model: "m-b"}, schemas.Fallback{Provider: provC, Model: "m-c"})}
+			client, err := Init(context.Background(), schemas.BifrostConfig{
+				Account:    account,
+				Logger:     NewDefaultLogger(schemas.LogLevelError),
+				LLMPlugins: []schemas.LLMPlugin{router, &scenarioPolicyRefuser{refuses: provB}},
+			})
+			if err != nil {
+				t.Fatalf("Init: %v", err)
+			}
+			t.Cleanup(client.Shutdown)
+			u.reply("sk-a1", scenarioReply{status: http.StatusTooManyRequests, body: `{"error":{"message":"Rate limit reached for requests","type":"requests","code":"rate_limit_exceeded"}}`})
+
+			ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(30*time.Second))
+			var bifrostErr *schemas.BifrostError
+			if stream {
+				_, bifrostErr = client.ChatCompletionStreamRequest(ctx, scenarioRequest("", "m", nil))
+			} else {
+				_, bifrostErr = client.ChatCompletionRequest(ctx, scenarioRequest("", "m", nil))
+			}
+
+			if bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusTooManyRequests {
+				t.Fatalf("want the primary's 429 back, got %v", bifrostErr)
+			}
+			if got := u.count("sk-b1"); got != 0 {
+				t.Fatalf("the refused fallback reached its upstream %d times, want 0", got)
+			}
+			attempts := bifrostErr.ExtraFields.FallbackAttempts
+			if len(attempts) != 2 {
+				t.Fatalf("fallback_attempts = %+v, want one entry per fallback (refused, skipped)", attempts)
+			}
+			refused := attempts[0]
+			if refused.Provider != provB || refused.Model != "m-b" || refused.StatusCode == nil || *refused.StatusCode != http.StatusForbidden || refused.Type != "provider_blocked" || !strings.Contains(refused.Message, "not allowed") || refused.Skipped {
+				t.Fatalf("the refused fallback must carry its provider, model, status, type and message: %+v", refused)
+			}
+			skipped := attempts[1]
+			if skipped.Provider != provC || skipped.Model != "m-c" || !skipped.Skipped || skipped.StatusCode != nil {
+				t.Fatalf("the unprepared fallback must be reported as skipped: %+v", skipped)
+			}
+			body, err := json.Marshal(bifrostErr)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			if !strings.Contains(string(body), `"fallback_attempts":[{"provider":"prov-b","model":"m-b","status_code":403,"type":"provider_blocked"`) {
+				t.Fatalf("the wire error must carry fallback_attempts: %s", body)
+			}
+		})
+	}
+}
+
+// scenarioErrorRetainer keeps the first error its PostLLMHook sees, as the logging plugin does
+// with raw logging on, where the error is serialized later on another goroutine.
+type scenarioErrorRetainer struct {
+	mu       sync.Mutex
+	retained *schemas.BifrostError
+}
+
+func (p *scenarioErrorRetainer) GetName() string { return "scenario-error-retainer" }
+func (p *scenarioErrorRetainer) Cleanup() error  { return nil }
+func (p *scenarioErrorRetainer) PreRequestHook(*schemas.BifrostContext, *schemas.BifrostRequest) error {
+	return nil
+}
+func (p *scenarioErrorRetainer) PreLLMHook(_ *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	return req, nil, nil
+}
+func (p *scenarioErrorRetainer) PostLLMHook(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	p.mu.Lock()
+	if p.retained == nil && bifrostErr != nil {
+		p.retained = bifrostErr
+	}
+	p.mu.Unlock()
+	return resp, bifrostErr, nil
+}
+
+// TestScenarioExhaustedFallbacksLeaveRetainedPrimaryErrorUnchanged pins that reporting the
+// fallbacks' outcomes does not write to the primary's error after its post-hooks ran: a plugin may
+// still hold that pointer, and a write there races its asynchronous serialization.
+func TestScenarioExhaustedFallbacksLeaveRetainedPrimaryErrorUnchanged(t *testing.T) {
+	for _, stream := range []bool{false, true} {
+		t.Run(fmt.Sprintf("stream=%v", stream), func(t *testing.T) {
+			u := newScenarioUpstream(t)
+			account := scenarioAccount(u, map[schemas.ModelProvider][]schemas.Key{
+				provA: {scenarioKey("a1", 1)},
+				provB: {scenarioKey("b1", 1)},
+			})
+			retainer := &scenarioErrorRetainer{}
+			router := &scenarioRouter{route: fixedRoute(schemas.Fallback{Provider: provA, Model: "m"}, schemas.Fallback{Provider: provB, Model: "m-b"})}
+			client, err := Init(context.Background(), schemas.BifrostConfig{
+				Account:    account,
+				Logger:     NewDefaultLogger(schemas.LogLevelError),
+				LLMPlugins: []schemas.LLMPlugin{router, retainer, &scenarioPolicyRefuser{refuses: provB}},
+			})
+			if err != nil {
+				t.Fatalf("Init: %v", err)
+			}
+			t.Cleanup(client.Shutdown)
+			u.reply("sk-a1", scenarioReply{status: http.StatusTooManyRequests, body: `{"error":{"message":"Rate limit reached for requests","type":"requests","code":"rate_limit_exceeded"}}`})
+
+			ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(30*time.Second))
+			var bifrostErr *schemas.BifrostError
+			if stream {
+				_, bifrostErr = client.ChatCompletionStreamRequest(ctx, scenarioRequest("", "m", nil))
+			} else {
+				_, bifrostErr = client.ChatCompletionRequest(ctx, scenarioRequest("", "m", nil))
+			}
+
+			if bifrostErr == nil || len(bifrostErr.ExtraFields.FallbackAttempts) != 1 {
+				t.Fatalf("want the primary's error with one fallback attempt, got %v", bifrostErr)
+			}
+			retainer.mu.Lock()
+			retained := retainer.retained
+			retainer.mu.Unlock()
+			if retained == nil || retained.StatusCode == nil || *retained.StatusCode != http.StatusTooManyRequests {
+				t.Fatalf("the retainer must have kept the primary's 429, got %v", retained)
+			}
+			if retained.ExtraFields.FallbackAttempts != nil {
+				t.Fatalf("the primary's error a plugin retained was written after its post-hooks ran: %+v", retained.ExtraFields.FallbackAttempts)
+			}
+		})
+	}
+}
+
 // TestScenarioInferredFallbacksPassNoKeySupportsModel pins that a primary whose key pool has no
 // key for the model (400 no_key_supports_model, built before any upstream call) does not stop an
 // inferred chain: that 400 says this provider cannot serve the model, not that the request is
@@ -8472,6 +8673,17 @@ func BenchmarkShouldTryFallbacks(b *testing.B) {
 				_ = bifrost.shouldTryFallbacks(nil, req, primaryErr)
 			}
 		})
+	}
+}
+
+// BenchmarkFallbackAttemptOf measures summarizing one failed fallback for the primary's error. It
+// runs only on a fallback that already failed, never on a request its primary served.
+func BenchmarkFallbackAttemptOf(b *testing.B) {
+	fallback := schemas.Fallback{Provider: provB, Model: "m"}
+	fallbackErr := &schemas.BifrostError{Type: schemas.Ptr("provider_blocked"), StatusCode: schemas.Ptr(http.StatusForbidden), Error: &schemas.ErrorField{Message: "Provider 'prov-b' is not allowed"}}
+	b.ReportAllocs()
+	for b.Loop() {
+		_ = fallbackAttemptOf(fallback, fallbackErr)
 	}
 }
 
@@ -9139,4 +9351,77 @@ func TestVideo_ListResumesFromNativeCursor(t *testing.T) {
 	if decodeErr != nil || decoded.KeyIndex != 2 {
 		t.Fatalf("cursor = %+v (%v), want the third key", decoded, decodeErr)
 	}
+}
+
+// snapshotTracer hands a fixed accumulated response to cancelled-stream estimation.
+type snapshotTracer struct {
+	schemas.NoOpTracer
+	snapshot *schemas.BifrostResponse
+}
+
+func (s *snapshotTracer) GetAccumulatedResponse(string) *schemas.BifrostResponse { return s.snapshot }
+
+// usageEstimationTokenizerFor reports the tokenizer a cancelled stream of model is
+// estimated with under the families currently configured.
+func usageEstimationTokenizerFor(t *testing.T, model string) string {
+	t.Helper()
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyTracer, schemas.Tracer(&snapshotTracer{snapshot: &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{
+		Choices: []schemas.BifrostResponseChoice{{ChatNonStreamResponseChoice: &schemas.ChatNonStreamResponseChoice{Message: &schemas.ChatMessage{
+			Role: schemas.ChatMessageRoleAssistant, Content: &schemas.ChatMessageContent{ContentStr: new("hello world")},
+		}}}},
+	}}}))
+	ctx.SetValue(schemas.BifrostContextKeyTraceID, "trace-usage-estimation")
+	failure := &schemas.BifrostError{Error: &schemas.ErrorField{Type: new(schemas.RequestCancelled)}}
+	streamusage.Estimate(ctx, &schemas.BifrostRequest{RequestType: schemas.ChatCompletionStreamRequest, ChatRequest: &schemas.BifrostChatRequest{
+		Model: model, Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: new("hi")}}},
+	}}, model, failure)
+	if failure.ExtraFields.BilledUsage == nil || failure.ExtraFields.BilledUsage.Estimation == nil {
+		t.Fatalf("no estimate for %s: %+v", model, failure.ExtraFields.BilledUsage)
+	}
+	return failure.ExtraFields.BilledUsage.Estimation.Tokenizer
+}
+
+// UsageEstimationTokenizers reaches cancelled-stream estimation from every path that
+// carries it: Init, ReloadConfig (the path a saved config takes) and the runtime update.
+func TestUsageEstimationTokenizersFollowConfig(t *testing.T) {
+	t.Cleanup(func() { streamusage.Configure(nil) })
+	const model = "claude-opus-4-5"
+	account := NewMockAccount()
+	account.AddProvider(schemas.OpenAI, 1, 1)
+	client, err := Init(context.Background(), schemas.BifrostConfig{
+		Account: account, Logger: NewNoOpLogger(), UsageEstimationTokenizers: []string{"anthropic"},
+	})
+	if err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+	t.Cleanup(client.Shutdown)
+	expect := func(step, want string) {
+		t.Helper()
+		if got := usageEstimationTokenizerFor(t, model); got != want {
+			t.Fatalf("%s: %s estimated with %q, want %q", step, model, got, want)
+		}
+	}
+
+	expect("Init with anthropic", "anthropic")
+
+	if err := client.ReloadConfig(schemas.BifrostConfig{Account: account}); err != nil {
+		t.Fatalf("ReloadConfig: %v", err)
+	}
+	expect("ReloadConfig with no families", "cl100k_base")
+
+	if err := client.ReloadConfig(schemas.BifrostConfig{Account: account, UsageEstimationTokenizers: []string{"llama3", "Anthropic"}}); err != nil {
+		t.Fatalf("ReloadConfig: %v", err)
+	}
+	expect("ReloadConfig with anthropic", "anthropic")
+
+	client.UpdateUsageEstimationTokenizers([]string{"deepseek"})
+	expect("update to another family", "cl100k_base")
+
+	client.UpdateUsageEstimationTokenizers([]string{"all"})
+	expect("update to all", "anthropic")
+
+	// An unknown name is ignored with a warning; it must not enable anything.
+	client.UpdateUsageEstimationTokenizers([]string{"gpt2"})
+	expect("update to an unknown family", "cl100k_base")
 }

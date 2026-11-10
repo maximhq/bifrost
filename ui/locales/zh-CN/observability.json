@@ -632,7 +632,8 @@
 			"success": "成功",
 			"error": "错误",
 			"processing": "处理中",
-			"cancelled": "已取消"
+			"cancelled": "已取消",
+			"input_required": "需要输入"
 		},
 		"rowsPerPage": "每页行数",
 		"resetZoom": "重置缩放",
@@ -939,6 +940,9 @@
 		"copyToClipboard": "复制到剪贴板",
 		"stats": {
 			"totalExecutions": "总执行次数",
+			"executions": "执行次数",
+			"ofAllExecutions": "占此时间窗口内所有 MCP 工具调用的比例",
+			"perExecution": "{{value}}/次调用",
 			"successRate": "成功率",
 			"avgLatency": "平均延迟",
 			"totalCost": "总费用"
@@ -968,7 +972,6 @@
 			"toolName": "工具名称",
 			"server": "服务器",
 			"virtualKey": "虚拟密钥",
-			"llmRequestId": "LLM 请求 ID",
 			"metadata": "元数据",
 			"deleteFailed": "删除日志失败",
 			"invalidDate": "无效日期",
@@ -983,6 +986,11 @@
 			"localNative": "本地 · 原生",
 			"requestId": "请求 ID",
 			"decision": "决策",
+			"mcpApps": "MCP Apps",
+			"appsHost": "调用方支持 MCP Apps",
+			"appOnly": "仅限应用的工具",
+			"opensUi": "打开 {{uri}}",
+			"calledAs": "以 {{name}} 调用",
 			"nativeTool": "原生工具",
 			"mcpTool": "MCP 工具",
 			"inspectionTime": "检查耗时",
@@ -1008,8 +1016,13 @@
 		"showOriginal": "显示原始值",
 		"arguments": "参数",
 		"result": "结果",
+		"inputRequested": "请求的输入",
+		"retryLater": "服务器要求调用方稍后重试，未请求任何输入。",
+		"inputAnswered": "已回答",
+		"rounds": "轮次",
 		"execution": "执行",
 		"errorDetails": "错误详情",
+		"errorNoMessage": "工具调用失败，但没有返回错误消息。",
 		"pluginLogs": "插件日志",
 		"loading": "正在加载 MCP 日志…",
 		"native": "原生",
@@ -1024,11 +1037,14 @@
 			"succeeded": "成功",
 			"failed": "失败",
 			"cancelled": "已取消",
+			"inputRequired": "需要输入",
+			"retryLater": "稍后重试",
 			"processing": "处理中",
 			"approvedDescription": "执行前已获允许。此记录中没有实际执行结果。",
 			"blockedDescription": "在执行前被阻止。",
 			"observedDescription": "已捕获工具活动，但执行结果未知。",
-			"executionDescription": "已记录的工具执行结果。"
+			"inputRequiredDescription": "MCP 服务器在完成前向调用方请求了输入。回答该请求的重试是单独的条目。",
+			"retryLaterDescription": "MCP 服务器要求调用方稍后重试，未请求任何输入。重试是一条单独的记录。"
 		},
 		"noResults": "未找到结果，请尝试调整筛选条件或时间范围。",
 		"observedRoundTrip": "观测往返时延"
@@ -1208,6 +1224,8 @@
 		"searchAgents": "搜索代理",
 		"agentCorrelationID": "代理关联 ID",
 		"exactAgentCorrelationID": "精确代理关联 ID",
+		"roundTripID": "往返 ID",
+		"exactRoundTripID": "精确往返 ID",
 		"nothingRecorded": "此时间范围内没有记录",
 		"topics": "主题",
 		"searchTopics": "搜索主题"

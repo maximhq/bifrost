@@ -344,6 +344,10 @@
 		"removeAria": "{{label}} entfernen"
 	},
 	"validation": {
+		"modeIsRequired": "Modus ist erforderlich",
+		"valueMustBeAPositiveWholeNumber": "Muss eine positive ganze Zahl sein",
+		"mustBeAJsonObject": "Muss ein JSON-Objekt sein",
+		"providerCannotBePatched": "provider kann nicht gepatcht werden; er identifiziert den Eintrag",
 		"customProviderNameIsRequired": "Name des benutzerdefinierten Anbieters ist erforderlich",
 		"endpointIsRequired": "Endpunkt ist erforderlich",
 		"clientIdClientSecretAndTenantIdAreAllRequired": "Client-ID, Client-Secret und Tenant-ID sind für die Entra-ID-Authentifizierung erforderlich",

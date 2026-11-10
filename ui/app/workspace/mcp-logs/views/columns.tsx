@@ -4,7 +4,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdownMenu";
 import { TruncatedLabel } from "@/components/ui/truncatedLabel";
-import { mapAppToClientApp, mapUserAgentToApp, Status, StatusBarColors, Statuses } from "@/lib/constants/logs";
+import { mapAppToClientApp, mapUserAgentToApp, MCPStatus, MCPStatuses, StatusBarColors } from "@/lib/constants/logs";
 import type { MCPToolLogEntry } from "@/lib/types/logs";
 import { ColumnDef, Row } from "@tanstack/react-table";
 import { format, formatDistanceToNow, isValid } from "date-fns";
@@ -14,10 +14,10 @@ import { getLocale } from "@/lib/i18n";
 import { dateFnsLocale } from "@/lib/i18n/dateLocale";
 
 // Helper function to validate status and return a safe Status value
-const getValidatedStatus = (status: string): Status => {
-	// Check if status is a valid Status by checking against Statuses array
-	if (Statuses.includes(status as Status)) {
-		return status as Status;
+const getValidatedStatus = (status: string): MCPStatus => {
+	// Check if status is a valid MCP status
+	if (MCPStatuses.includes(status as MCPStatus)) {
+		return status as MCPStatus;
 	}
 	if (status === "unknown") return "cancelled";
 	// Fallback to "processing" for unknown statuses

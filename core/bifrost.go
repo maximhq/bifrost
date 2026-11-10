@@ -60,6 +60,7 @@ import (
 	"github.com/maximhq/bifrost/core/providers/wafer"
 	"github.com/maximhq/bifrost/core/providers/xai"
 	schemas "github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/core/streamusage"
 	"github.com/valyala/fasthttp"
 )
 
@@ -343,6 +344,7 @@ func Init(ctx context.Context, config schemas.BifrostConfig) (*Bifrost, error) {
 	bifrost.providers.Store(&[]schemas.Provider{})
 
 	bifrost.dropExcessRequests.Store(config.DropExcessRequests)
+	bifrost.configureUsageEstimationTokenizers(config.UsageEstimationTokenizers)
 
 	if bifrost.keySelector == nil {
 		bifrost.keySelector = keyselectors.WeightedRandom
@@ -519,6 +521,7 @@ func (bifrost *Bifrost) setModelCatalogOnContext(ctx *schemas.BifrostContext) {
 // We will keep on adding other aspects as required
 func (bifrost *Bifrost) ReloadConfig(config schemas.BifrostConfig) error {
 	bifrost.dropExcessRequests.Store(config.DropExcessRequests)
+	bifrost.configureUsageEstimationTokenizers(config.UsageEstimationTokenizers)
 	return nil
 }
 
@@ -4568,6 +4571,21 @@ func (bifrost *Bifrost) UpdateDropExcessRequests(value bool) {
 	bifrost.logger.Info("drop_excess_requests updated to: %v", value)
 }
 
+// UpdateUsageEstimationTokenizers sets, at runtime, the embedded tokenizer
+// vocabularies a cancelled stream's usage is estimated with.
+func (bifrost *Bifrost) UpdateUsageEstimationTokenizers(families []string) {
+	bifrost.configureUsageEstimationTokenizers(families)
+	bifrost.logger.Info("usage_estimation_tokenizers updated to: %v", families)
+}
+
+// configureUsageEstimationTokenizers enables the listed tokenizer families and
+// warns about names it does not know; transport validation rejects those first.
+func (bifrost *Bifrost) configureUsageEstimationTokenizers(families []string) {
+	if unknown := streamusage.Configure(families); len(unknown) > 0 && bifrost.logger != nil {
+		bifrost.logger.Warn("ignoring unknown usage_estimation_tokenizers %v; supported: %v or %q", unknown, streamusage.Families, streamusage.FamilyAll)
+	}
+}
+
 // getProviderMutex gets or creates a mutex for the given provider
 func (bifrost *Bifrost) getProviderMutex(providerKey schemas.ModelProvider) *sync.RWMutex {
 	mutexValue, _ := bifrost.providerMutexes.LoadOrStore(providerKey, &sync.RWMutex{})
@@ -6176,6 +6194,8 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 	// the error that triggered it (primary error for the first iteration, the
 	// prior fallback's error for subsequent iterations).
 	lastErr := primaryErr
+	// What became of each fallback, for the primary's error should the whole chain fail.
+	var fallbackAttempts []schemas.FallbackAttempt
 
 	// Try fallbacks in order
 	for i, fallback := range fallbacks {
@@ -6203,6 +6223,7 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 		if fallbackReq == nil {
 			bifrost.logger.Debug("fallback provider %s with model %s is nil", fallback.Provider, fallback.Model)
 			ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelWarn, fmt.Sprintf("Fallback %s/%s skipped: missing provider config or unsupported request type", fallback.Provider, fallback.Model))
+			fallbackAttempts = append(fallbackAttempts, fallbackAttemptOf(fallback, nil))
 			tracer.SetAttribute(handle, "error", "fallback request preparation failed")
 			tracer.EndSpan(handle, schemas.SpanStatusError, "fallback request preparation failed")
 			continue
@@ -6237,12 +6258,19 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 		}
 
 		lastErr = fallbackErr
+		fallbackAttempts = append(fallbackAttempts, fallbackAttemptOf(fallback, fallbackErr))
 	}
 
 	ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelError, fmt.Sprintf("All %d fallback(s) exhausted; returning primary error (%s)", len(fallbacks), routingErrorSummary(primaryErr)))
 	// All providers failed, return the original error, with the provider headers it came with
 	restoreProviderResponseHeaders(ctx, primaryHeaders)
-	return nil, primaryErr
+	// The caller sees only the primary's error, so it carries the fallbacks' outcomes: one refused
+	// before reaching its provider would otherwise look like a fallback that never ran (#3261).
+	// A copy carries them, because a post-hook may still hold primaryErr (raw logging serializes it
+	// on another goroutine), and writing to it here would race that read.
+	exhaustedErr := *primaryErr
+	exhaustedErr.ExtraFields.FallbackAttempts = fallbackAttempts
+	return nil, &exhaustedErr
 }
 
 // continueOnServedRoute sends a later turn of an MCP agent loop to the provider/model that
@@ -6395,6 +6423,8 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 	ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelInfo, fmt.Sprintf("Primary %s/%s failed (%s); evaluating %d configured fallback(s)", provider, model, routingErrorSummary(primaryErr), len(fallbacks)))
 
 	lastErr := primaryErr
+	// What became of each fallback, for the primary's error should the whole chain fail.
+	var fallbackAttempts []schemas.FallbackAttempt
 
 	// Try fallbacks in order
 	for i, fallback := range fallbacks {
@@ -6420,6 +6450,7 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 		fallbackReq := bifrost.prepareFallbackRequest(req, fallback)
 		if fallbackReq == nil {
 			ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelWarn, fmt.Sprintf("Fallback %s/%s skipped: missing provider config or unsupported request type", fallback.Provider, fallback.Model))
+			fallbackAttempts = append(fallbackAttempts, fallbackAttemptOf(fallback, nil))
 			tracer.SetAttribute(handle, "error", "fallback request preparation failed")
 			tracer.EndSpan(handle, schemas.SpanStatusError, "fallback request preparation failed")
 			continue
@@ -6470,12 +6501,19 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 		}
 
 		lastErr = fallbackErr
+		fallbackAttempts = append(fallbackAttempts, fallbackAttemptOf(fallback, fallbackErr))
 	}
 
 	ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelError, fmt.Sprintf("All %d fallback(s) exhausted; returning primary error (%s)", len(fallbacks), routingErrorSummary(primaryErr)))
 	// All providers failed, return the original error, with the provider headers it came with
 	restoreProviderResponseHeaders(ctx, primaryHeaders)
-	return nil, primaryErr
+	// The caller sees only the primary's error, so it carries the fallbacks' outcomes: one refused
+	// before reaching its provider would otherwise look like a fallback that never ran (#3261).
+	// A copy carries them, because a post-hook may still hold primaryErr (raw logging serializes it
+	// on another goroutine), and writing to it here would race that read.
+	exhaustedErr := *primaryErr
+	exhaustedErr.ExtraFields.FallbackAttempts = fallbackAttempts
+	return nil, &exhaustedErr
 }
 
 // tryRequest is a generic function that handles common request processing logic
@@ -6590,10 +6628,7 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 			}
 		}
 		if reroutedPq == nil {
-			bifrost.releaseChannelMessage(msg)
-			bifrostErr := newBifrostErrorFromMsg("provider is shutting down")
-			bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
-			return nil, bifrostErr
+			return bifrost.rejectUnqueuedRequest(ctx, pipeline, preCount, msg, req.RequestType, provider, model, newBifrostErrorFromMsg("provider is shutting down"))
 		}
 		pq = reroutedPq
 	}
@@ -6603,43 +6638,25 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 	case pq.queue <- msg:
 		// Message was sent successfully
 	case <-pq.done:
-		bifrost.releaseChannelMessage(msg)
-		bifrostErr := newBifrostErrorFromMsg("provider is shutting down")
-		bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
-		return nil, bifrostErr
+		return bifrost.rejectUnqueuedRequest(ctx, pipeline, preCount, msg, req.RequestType, provider, model, newBifrostErrorFromMsg("provider is shutting down"))
 	case <-ctx.Done():
-		bifrost.releaseChannelMessage(msg)
-		bifrostErr := newBifrostCtxDoneError(ctx, "while waiting for queue space")
-		bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
-		return nil, bifrostErr
+		return bifrost.rejectUnqueuedRequest(ctx, pipeline, preCount, msg, req.RequestType, provider, model, newBifrostCtxDoneError(ctx, "while waiting for queue space"))
 	default:
 		if bifrost.dropExcessRequests.Load() {
-			bifrost.releaseChannelMessage(msg)
 			bifrost.logger.Warn("request dropped: queue is full, please increase the queue size or set dropExcessRequests to false")
-			bifrostErr := newBifrostQueueFullError()
-			bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
-			return nil, bifrostErr
+			return bifrost.rejectUnqueuedRequest(ctx, pipeline, preCount, msg, req.RequestType, provider, model, newBifrostQueueFullError())
 		}
 		// Re-check closing flag before blocking send (lock-free atomic check)
 		if pq.isClosing() {
-			bifrost.releaseChannelMessage(msg)
-			bifrostErr := newBifrostErrorFromMsg("provider is shutting down")
-			bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
-			return nil, bifrostErr
+			return bifrost.rejectUnqueuedRequest(ctx, pipeline, preCount, msg, req.RequestType, provider, model, newBifrostErrorFromMsg("provider is shutting down"))
 		}
 		select {
 		case pq.queue <- msg:
 			// Message was sent successfully
 		case <-pq.done:
-			bifrost.releaseChannelMessage(msg)
-			bifrostErr := newBifrostErrorFromMsg("provider is shutting down")
-			bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
-			return nil, bifrostErr
+			return bifrost.rejectUnqueuedRequest(ctx, pipeline, preCount, msg, req.RequestType, provider, model, newBifrostErrorFromMsg("provider is shutting down"))
 		case <-ctx.Done():
-			bifrost.releaseChannelMessage(msg)
-			bifrostErr := newBifrostCtxDoneError(ctx, "while waiting for queue space")
-			bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
-			return nil, bifrostErr
+			return bifrost.rejectUnqueuedRequest(ctx, pipeline, preCount, msg, req.RequestType, provider, model, newBifrostCtxDoneError(ctx, "while waiting for queue space"))
 		}
 	}
 
@@ -7006,10 +7023,7 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 			}
 		}
 		if reroutedPq == nil {
-			bifrost.releaseChannelMessage(msg)
-			bifrostErr := newBifrostErrorFromMsg("provider is shutting down")
-			bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
-			return nil, bifrostErr
+			return bifrost.rejectUnqueuedStreamRequest(ctx, pipeline, preCount, msg, req.RequestType, provider, model, newBifrostErrorFromMsg("provider is shutting down"))
 		}
 		pq = reroutedPq
 	}
@@ -7019,43 +7033,25 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 	case pq.queue <- msg:
 		// Message was sent successfully
 	case <-pq.done:
-		bifrost.releaseChannelMessage(msg)
-		bifrostErr := newBifrostErrorFromMsg("provider is shutting down")
-		bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
-		return nil, bifrostErr
+		return bifrost.rejectUnqueuedStreamRequest(ctx, pipeline, preCount, msg, req.RequestType, provider, model, newBifrostErrorFromMsg("provider is shutting down"))
 	case <-ctx.Done():
-		bifrost.releaseChannelMessage(msg)
-		bifrostErr := newBifrostCtxDoneError(ctx, "while waiting for queue space")
-		bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
-		return nil, bifrostErr
+		return bifrost.rejectUnqueuedStreamRequest(ctx, pipeline, preCount, msg, req.RequestType, provider, model, newBifrostCtxDoneError(ctx, "while waiting for queue space"))
 	default:
 		if bifrost.dropExcessRequests.Load() {
-			bifrost.releaseChannelMessage(msg)
 			bifrost.logger.Warn("request dropped: queue is full, please increase the queue size or set dropExcessRequests to false")
-			bifrostErr := newBifrostQueueFullError()
-			bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
-			return nil, bifrostErr
+			return bifrost.rejectUnqueuedStreamRequest(ctx, pipeline, preCount, msg, req.RequestType, provider, model, newBifrostQueueFullError())
 		}
 		// Re-check closing flag before blocking send (lock-free atomic check)
 		if pq.isClosing() {
-			bifrost.releaseChannelMessage(msg)
-			bifrostErr := newBifrostErrorFromMsg("provider is shutting down")
-			bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
-			return nil, bifrostErr
+			return bifrost.rejectUnqueuedStreamRequest(ctx, pipeline, preCount, msg, req.RequestType, provider, model, newBifrostErrorFromMsg("provider is shutting down"))
 		}
 		select {
 		case pq.queue <- msg:
 			// Message was sent successfully
 		case <-pq.done:
-			bifrost.releaseChannelMessage(msg)
-			bifrostErr := newBifrostErrorFromMsg("provider is shutting down")
-			bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
-			return nil, bifrostErr
+			return bifrost.rejectUnqueuedStreamRequest(ctx, pipeline, preCount, msg, req.RequestType, provider, model, newBifrostErrorFromMsg("provider is shutting down"))
 		case <-ctx.Done():
-			bifrost.releaseChannelMessage(msg)
-			bifrostErr := newBifrostCtxDoneError(ctx, "while waiting for queue space")
-			bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
-			return nil, bifrostErr
+			return bifrost.rejectUnqueuedStreamRequest(ctx, pipeline, preCount, msg, req.RequestType, provider, model, newBifrostCtxDoneError(ctx, "while waiting for queue space"))
 		}
 	}
 
@@ -8537,6 +8533,13 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 				// a concurrent request can then reuse it and overwrite RequestType.
 				// Reading req.RequestType inside the closure would observe the new request's type.
 				attemptRequestType := req.RequestType
+				// The request payloads a cancelled attempt's prompt is estimated from. Only
+				// these three pointers are kept: copying the whole BifrostRequest into the
+				// closure moved it to the heap on every streamed attempt.
+				attemptChat, attemptResponses, attemptText := req.ChatRequest, req.ResponsesRequest, req.TextCompletionRequest
+				// The Anthropic stream handlers mark usage provisional per attempt; a mark left
+				// by an earlier attempt must not mark this one's usage as provisional.
+				req.Context.ClearValue(schemas.BifrostContextKeyStreamUsageProvisional)
 				pipeline := bifrost.getPluginPipeline()
 				// Mirrors the retry loop's startup check for this attempt.
 				var isPreamble func(*schemas.BifrostStreamChunk) bool
@@ -8566,6 +8569,9 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 					if result == nil && startup.IsStartupError(err) && err.ExtraFields.BilledUsage == nil && ctx.Err() == nil {
 						heldBackError.Store(true)
 						return nil, err
+					}
+					if err != nil {
+						streamusage.Estimate(ctx, &schemas.BifrostRequest{ChatRequest: attemptChat, ResponsesRequest: attemptResponses, TextCompletionRequest: attemptText}, attemptResolvedModel, err)
 					}
 					resp, bifrostErr := pipeline.RunPostLLMHooks(ctx, result, err, len(*bifrost.llmPlugins.Load()))
 					if IsFinalChunk(ctx) {
@@ -8790,6 +8796,36 @@ func (bifrost *Bifrost) runStreamErrorPostHooks(ctx *schemas.BifrostContext, bif
 		return nil, bifrostErr
 	}
 	return resp, recoveredErr
+}
+
+// rejectUnqueuedRequest fails a request whose pre-hooks ran but which never reached a
+// worker (queue full, provider shutting down, ctx done), running the matching post-hooks.
+func (bifrost *Bifrost) rejectUnqueuedRequest(ctx *schemas.BifrostContext, pipeline *PluginPipeline, preCount int, msg *ChannelMessage, requestType schemas.RequestType, provider schemas.ModelProvider, model string, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	bifrost.releaseChannelMessage(msg)
+	bifrostErr.PopulateExtraFields(requestType, provider, model, model)
+	resp, recoveredErr := pipeline.RunPostLLMHooks(ctx, nil, bifrostErr, preCount)
+	if recoveredErr != nil {
+		recoveredErr.PopulateExtraFields(requestType, provider, model, model)
+	} else if resp != nil {
+		resp.PopulateExtraFields(requestType, provider, model, model)
+	}
+	drainAndAttachPluginLogs(ctx)
+	if recoveredErr == nil && resp == nil {
+		return nil, bifrostErr
+	}
+	return resp, recoveredErr
+}
+
+// rejectUnqueuedStreamRequest is rejectUnqueuedRequest for streams: it marks the stream
+// ended so plugins finalize, and wraps a recovered response in a one-chunk stream.
+func (bifrost *Bifrost) rejectUnqueuedStreamRequest(ctx *schemas.BifrostContext, pipeline *PluginPipeline, preCount int, msg *ChannelMessage, requestType schemas.RequestType, provider schemas.ModelProvider, model string, bifrostErr *schemas.BifrostError) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+	resp, recoveredErr := bifrost.rejectUnqueuedRequest(ctx, pipeline, preCount, msg, requestType, provider, model, bifrostErr)
+	pipeline.FinalizeStreamingPostHookSpans(ctx)
+	if recoveredErr != nil {
+		return nil, recoveredErr
+	}
+	return newBifrostMessageChan(resp), nil
 }
 
 // sendWorkerError hands an error the worker produced without a provider call
@@ -9019,6 +9055,10 @@ func prepareResponsesRequest(ctx *schemas.BifrostContext, config *schemas.Provid
 	if !supported {
 		var bifrostErr *schemas.BifrostError
 		r, bifrostErr = hoistResponsesAdditionalTools(r)
+		if bifrostErr != nil {
+			return nil, bifrostErr
+		}
+		r, bifrostErr = hoistClientToolSearchOutputTools(ctx, r)
 		if bifrostErr != nil {
 			return nil, bifrostErr
 		}

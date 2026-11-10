@@ -44141,6 +44141,786 @@
         }
       }
     },
+    "/api/models/datasheet": {
+      "get": {
+        "operationId": "listDatasheetEntries",
+        "x-mint": {
+          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `ModelProvider:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+        },
+        "summary": "List datasheet entries",
+        "description": "Lists the synced model datasheet as the datasheet editor shows it: one entry per (provider, model, mode) with the upstream values, the effective values after datasheet overrides, the overrides that apply, and the patched fields whose upstream value changed since the override was saved. Custom entries and overrides whose model is no longer in the datasheet are included.",
+        "tags": [
+          "Providers"
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "query",
+            "in": "query",
+            "description": "Case-insensitive substring match on the model name",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "provider",
+            "in": "query",
+            "description": "Only entries for this provider",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "overridden_only",
+            "in": "query",
+            "description": "Only entries with at least one datasheet override",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Page size (default 50, maximum 500)",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 500
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "entries": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "provider": {
+                            "type": "string"
+                          },
+                          "model": {
+                            "type": "string"
+                          },
+                          "mode": {
+                            "type": "string"
+                          },
+                          "is_custom": {
+                            "type": "boolean"
+                          },
+                          "upstream": {
+                            "description": "Upstream values; null for a custom entry or an override whose model left the datasheet",
+                            "oneOf": [
+                              {
+                                "type": "object",
+                                "description": "A datasheet pricing entry (the governance_model_pricing row shape)",
+                                "additionalProperties": true,
+                                "properties": {
+                                  "model": {
+                                    "type": "string"
+                                  },
+                                  "provider": {
+                                    "type": "string"
+                                  },
+                                  "mode": {
+                                    "type": "string"
+                                  },
+                                  "context_length": {
+                                    "type": "integer"
+                                  },
+                                  "max_input_tokens": {
+                                    "type": "integer"
+                                  },
+                                  "max_output_tokens": {
+                                    "type": "integer"
+                                  },
+                                  "is_deprecated": {
+                                    "type": "boolean"
+                                  },
+                                  "input_cost_per_token": {
+                                    "type": "number"
+                                  },
+                                  "output_cost_per_token": {
+                                    "type": "number"
+                                  }
+                                }
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "effective": {
+                            "description": "Values after datasheet overrides; null when no row exists",
+                            "oneOf": [
+                              {
+                                "type": "object",
+                                "description": "A datasheet pricing entry (the governance_model_pricing row shape)",
+                                "additionalProperties": true,
+                                "properties": {
+                                  "model": {
+                                    "type": "string"
+                                  },
+                                  "provider": {
+                                    "type": "string"
+                                  },
+                                  "mode": {
+                                    "type": "string"
+                                  },
+                                  "context_length": {
+                                    "type": "integer"
+                                  },
+                                  "max_input_tokens": {
+                                    "type": "integer"
+                                  },
+                                  "max_output_tokens": {
+                                    "type": "integer"
+                                  },
+                                  "is_deprecated": {
+                                    "type": "boolean"
+                                  },
+                                  "input_cost_per_token": {
+                                    "type": "number"
+                                  },
+                                  "output_cost_per_token": {
+                                    "type": "number"
+                                  }
+                                }
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "overrides": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "description": "A user edit of one datasheet entry, re-applied on top of the synced datasheet after every sync.",
+                              "properties": {
+                                "id": {
+                                  "type": "string"
+                                },
+                                "provider": {
+                                  "type": "string"
+                                },
+                                "model": {
+                                  "type": "string"
+                                },
+                                "mode": {
+                                  "type": "string",
+                                  "description": "Datasheet mode; empty applies the pricing patch to every mode of the model"
+                                },
+                                "is_custom": {
+                                  "type": "boolean",
+                                  "description": "The entry is absent from the upstream datasheet"
+                                },
+                                "pricing_patch": {
+                                  "type": "object",
+                                  "additionalProperties": true,
+                                  "description": "RFC 7386 merge patch over the pricing entry (context_length, max_output_tokens, is_deprecated, cost fields, ...)"
+                                },
+                                "params_patch": {
+                                  "type": "object",
+                                  "additionalProperties": true,
+                                  "description": "RFC 7386 merge patch over the model-parameters entry (supports_* flags, reasoning_effort_levels, ...)"
+                                },
+                                "baseline": {
+                                  "type": "object",
+                                  "description": "Upstream value of every patched key when the override was last saved",
+                                  "properties": {
+                                    "pricing": {
+                                      "type": "object",
+                                      "additionalProperties": true
+                                    },
+                                    "params": {
+                                      "type": "object",
+                                      "additionalProperties": true
+                                    }
+                                  }
+                                },
+                                "config_hash": {
+                                  "type": "string",
+                                  "description": "Set when the override came from config.json"
+                                },
+                                "created_at": {
+                                  "type": "string",
+                                  "format": "date-time"
+                                },
+                                "updated_at": {
+                                  "type": "string",
+                                  "format": "date-time"
+                                }
+                              }
+                            }
+                          },
+                          "drifted_fields": {
+                            "type": "array",
+                            "description": "Patched fields whose upstream value changed since the override was saved, prefixed pricing. or params.",
+                            "items": {
+                              "type": "string"
+                            }
+                          }
+                        }
+                      }
+                    },
+                    "count": {
+                      "type": "integer"
+                    },
+                    "total_count": {
+                      "type": "integer"
+                    },
+                    "limit": {
+                      "type": "integer"
+                    },
+                    "offset": {
+                      "type": "integer"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/models/datasheet/entry": {
+      "get": {
+        "operationId": "getDatasheetEntry",
+        "x-mint": {
+          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `ModelProvider:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+        },
+        "summary": "Get a datasheet entry",
+        "description": "Returns one datasheet entry with its model-parameters record before and after datasheet overrides.",
+        "tags": [
+          "Providers"
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "provider",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "model",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "mode",
+            "in": "query",
+            "description": "Datasheet mode of the entry, e.g. chat. Every datasheet entry has a mode, so omit it only to read a mode-wide override whose model the datasheet does not list; otherwise the request returns 404",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "provider": {
+                          "type": "string"
+                        },
+                        "model": {
+                          "type": "string"
+                        },
+                        "mode": {
+                          "type": "string"
+                        },
+                        "is_custom": {
+                          "type": "boolean"
+                        },
+                        "upstream": {
+                          "description": "Upstream values; null for a custom entry or an override whose model left the datasheet",
+                          "oneOf": [
+                            {
+                              "type": "object",
+                              "description": "A datasheet pricing entry (the governance_model_pricing row shape)",
+                              "additionalProperties": true,
+                              "properties": {
+                                "model": {
+                                  "type": "string"
+                                },
+                                "provider": {
+                                  "type": "string"
+                                },
+                                "mode": {
+                                  "type": "string"
+                                },
+                                "context_length": {
+                                  "type": "integer"
+                                },
+                                "max_input_tokens": {
+                                  "type": "integer"
+                                },
+                                "max_output_tokens": {
+                                  "type": "integer"
+                                },
+                                "is_deprecated": {
+                                  "type": "boolean"
+                                },
+                                "input_cost_per_token": {
+                                  "type": "number"
+                                },
+                                "output_cost_per_token": {
+                                  "type": "number"
+                                }
+                              }
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "effective": {
+                          "description": "Values after datasheet overrides; null when no row exists",
+                          "oneOf": [
+                            {
+                              "type": "object",
+                              "description": "A datasheet pricing entry (the governance_model_pricing row shape)",
+                              "additionalProperties": true,
+                              "properties": {
+                                "model": {
+                                  "type": "string"
+                                },
+                                "provider": {
+                                  "type": "string"
+                                },
+                                "mode": {
+                                  "type": "string"
+                                },
+                                "context_length": {
+                                  "type": "integer"
+                                },
+                                "max_input_tokens": {
+                                  "type": "integer"
+                                },
+                                "max_output_tokens": {
+                                  "type": "integer"
+                                },
+                                "is_deprecated": {
+                                  "type": "boolean"
+                                },
+                                "input_cost_per_token": {
+                                  "type": "number"
+                                },
+                                "output_cost_per_token": {
+                                  "type": "number"
+                                }
+                              }
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "overrides": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "description": "A user edit of one datasheet entry, re-applied on top of the synced datasheet after every sync.",
+                            "properties": {
+                              "id": {
+                                "type": "string"
+                              },
+                              "provider": {
+                                "type": "string"
+                              },
+                              "model": {
+                                "type": "string"
+                              },
+                              "mode": {
+                                "type": "string",
+                                "description": "Datasheet mode; empty applies the pricing patch to every mode of the model"
+                              },
+                              "is_custom": {
+                                "type": "boolean",
+                                "description": "The entry is absent from the upstream datasheet"
+                              },
+                              "pricing_patch": {
+                                "type": "object",
+                                "additionalProperties": true,
+                                "description": "RFC 7386 merge patch over the pricing entry (context_length, max_output_tokens, is_deprecated, cost fields, ...)"
+                              },
+                              "params_patch": {
+                                "type": "object",
+                                "additionalProperties": true,
+                                "description": "RFC 7386 merge patch over the model-parameters entry (supports_* flags, reasoning_effort_levels, ...)"
+                              },
+                              "baseline": {
+                                "type": "object",
+                                "description": "Upstream value of every patched key when the override was last saved",
+                                "properties": {
+                                  "pricing": {
+                                    "type": "object",
+                                    "additionalProperties": true
+                                  },
+                                  "params": {
+                                    "type": "object",
+                                    "additionalProperties": true
+                                  }
+                                }
+                              },
+                              "config_hash": {
+                                "type": "string",
+                                "description": "Set when the override came from config.json"
+                              },
+                              "created_at": {
+                                "type": "string",
+                                "format": "date-time"
+                              },
+                              "updated_at": {
+                                "type": "string",
+                                "format": "date-time"
+                              }
+                            }
+                          }
+                        },
+                        "drifted_fields": {
+                          "type": "array",
+                          "description": "Patched fields whose upstream value changed since the override was saved, prefixed pricing. or params.",
+                          "items": {
+                            "type": "string"
+                          }
+                        }
+                      }
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "upstream_params": {
+                          "type": "object",
+                          "additionalProperties": true
+                        },
+                        "effective_params": {
+                          "type": "object",
+                          "additionalProperties": true
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/models/datasheet/overrides": {
+      "put": {
+        "operationId": "saveDatasheetOverride",
+        "x-mint": {
+          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `ModelProvider:Update` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+        },
+        "summary": "Save a datasheet override",
+        "description": "Creates or replaces the datasheet override for a (provider, model, mode) target. Both patches are RFC 7386 JSON merge patches applied on top of the synced datasheet after every sync, so the values survive datasheet updates. Saving re-records the upstream baseline, which clears drift. A body with no patches for a non-custom target removes that target's override and restores the upstream entry.",
+        "tags": [
+          "Providers"
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "provider",
+                  "model"
+                ],
+                "properties": {
+                  "provider": {
+                    "type": "string"
+                  },
+                  "model": {
+                    "type": "string"
+                  },
+                  "mode": {
+                    "type": "string",
+                    "description": "Required when is_custom is true"
+                  },
+                  "is_custom": {
+                    "type": "boolean",
+                    "default": false
+                  },
+                  "pricing_patch": {
+                    "type": "object",
+                    "additionalProperties": true,
+                    "description": "Keys are datasheet pricing fields; null clears a value, an omitted key keeps upstream"
+                  },
+                  "params_patch": {
+                    "type": "object",
+                    "additionalProperties": true,
+                    "description": "Keys are model-parameters fields; provider cannot be patched"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Override saved, or removed when the body carried no patches",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "message": {
+                      "type": "string"
+                    },
+                    "override": {
+                      "oneOf": [
+                        {
+                          "type": "object",
+                          "description": "A user edit of one datasheet entry, re-applied on top of the synced datasheet after every sync.",
+                          "properties": {
+                            "id": {
+                              "type": "string"
+                            },
+                            "provider": {
+                              "type": "string"
+                            },
+                            "model": {
+                              "type": "string"
+                            },
+                            "mode": {
+                              "type": "string",
+                              "description": "Datasheet mode; empty applies the pricing patch to every mode of the model"
+                            },
+                            "is_custom": {
+                              "type": "boolean",
+                              "description": "The entry is absent from the upstream datasheet"
+                            },
+                            "pricing_patch": {
+                              "type": "object",
+                              "additionalProperties": true,
+                              "description": "RFC 7386 merge patch over the pricing entry (context_length, max_output_tokens, is_deprecated, cost fields, ...)"
+                            },
+                            "params_patch": {
+                              "type": "object",
+                              "additionalProperties": true,
+                              "description": "RFC 7386 merge patch over the model-parameters entry (supports_* flags, reasoning_effort_levels, ...)"
+                            },
+                            "baseline": {
+                              "type": "object",
+                              "description": "Upstream value of every patched key when the override was last saved",
+                              "properties": {
+                                "pricing": {
+                                  "type": "object",
+                                  "additionalProperties": true
+                                },
+                                "params": {
+                                  "type": "object",
+                                  "additionalProperties": true
+                                }
+                              }
+                            },
+                            "config_hash": {
+                              "type": "string",
+                              "description": "Set when the override came from config.json"
+                            },
+                            "created_at": {
+                              "type": "string",
+                              "format": "date-time"
+                            },
+                            "updated_at": {
+                              "type": "string",
+                              "format": "date-time"
+                            }
+                          }
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/models/datasheet/overrides/{id}": {
+      "delete": {
+        "operationId": "deleteDatasheetOverride",
+        "x-mint": {
+          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `ModelProvider:Update` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+        },
+        "summary": "Delete a datasheet override",
+        "description": "Removes a datasheet override, restoring the upstream values it replaced.",
+        "tags": [
+          "Providers"
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Override deleted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "message": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/models/base": {
       "get": {
         "operationId": "listBaseModels",
@@ -91911,6 +92691,22 @@
                           "p99_latency": {
                             "type": "number"
                           },
+                          "avg_overhead": {
+                            "type": "number",
+                            "description": "Average Bifrost overhead in milliseconds (total minus upstream latency). Always 0 for MCP tool calls, which record no overhead."
+                          },
+                          "p90_overhead": {
+                            "type": "number",
+                            "description": "90th percentile Bifrost overhead in milliseconds. Always 0 for MCP tool calls."
+                          },
+                          "p95_overhead": {
+                            "type": "number",
+                            "description": "95th percentile Bifrost overhead in milliseconds. Always 0 for MCP tool calls."
+                          },
+                          "p99_overhead": {
+                            "type": "number",
+                            "description": "99th percentile Bifrost overhead in milliseconds. Always 0 for MCP tool calls."
+                          },
                           "total_requests": {
                             "type": "integer",
                             "format": "int64"
@@ -96432,6 +97228,22 @@
                                   "p99_latency": {
                                     "type": "number"
                                   },
+                                  "avg_overhead": {
+                                    "type": "number",
+                                    "description": "Average Bifrost overhead in milliseconds (total minus upstream latency). Always 0 for MCP tool calls, which record no overhead."
+                                  },
+                                  "p90_overhead": {
+                                    "type": "number",
+                                    "description": "90th percentile Bifrost overhead in milliseconds. Always 0 for MCP tool calls."
+                                  },
+                                  "p95_overhead": {
+                                    "type": "number",
+                                    "description": "95th percentile Bifrost overhead in milliseconds. Always 0 for MCP tool calls."
+                                  },
+                                  "p99_overhead": {
+                                    "type": "number",
+                                    "description": "99th percentile Bifrost overhead in milliseconds. Always 0 for MCP tool calls."
+                                  },
                                   "total_requests": {
                                     "type": "integer",
                                     "format": "int64"
@@ -96843,6 +97655,11 @@
                                   "error": {
                                     "type": "integer",
                                     "format": "int64"
+                                  },
+                                  "cancelled": {
+                                    "type": "integer",
+                                    "format": "int64",
+                                    "description": "Calls the caller cancelled"
                                   }
                                 }
                               }
@@ -97849,14 +98666,9 @@
           {
             "name": "status",
             "in": "query",
-            "description": "Comma-separated list of statuses to filter by",
+            "description": "Comma-separated list of statuses to filter by (processing, success, error, cancelled, input_required)",
             "schema": {
-              "type": "string",
-              "enum": [
-                "processing",
-                "success",
-                "error"
-              ]
+              "type": "string"
             }
           },
           {
@@ -97942,6 +98754,15 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "compare_to_previous",
+            "in": "query",
+            "description": "When true, also return the same statistics for the immediately preceding window of equal length, so callers can render change-vs-previous-period. Requires a bounded window (start_time and end_time, or period); an unbounded all-time filter has no preceding window, and the response then omits `previous` with `has_previous_period` false. A failure to compute the previous period degrades to `has_previous_period` false rather than failing the request.",
+            "schema": {
+              "type": "boolean",
+              "default": false
+            }
           }
         ],
         "security": [
@@ -97958,26 +98779,91 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object",
-                  "description": "MCP tool log statistics",
-                  "properties": {
-                    "total_executions": {
-                      "type": "integer",
-                      "description": "Total number of tool executions"
+                  "description": "MCP tool log statistics for the requested window. The current period's fields are at the top level, so a request without `compare_to_previous` returns exactly the MCPToolLogStats shape.",
+                  "allOf": [
+                    {
+                      "type": "object",
+                      "description": "MCP tool log statistics",
+                      "properties": {
+                        "total_executions": {
+                          "type": "integer",
+                          "description": "Total number of tool executions, including calls still running"
+                        },
+                        "success_count": {
+                          "type": "integer",
+                          "description": "Finished calls that succeeded"
+                        },
+                        "error_count": {
+                          "type": "integer",
+                          "description": "Finished calls that failed"
+                        },
+                        "cancelled_count": {
+                          "type": "integer",
+                          "description": "Finished calls the caller cancelled"
+                        },
+                        "success_rate": {
+                          "type": "number",
+                          "description": "Percentage of finished calls (succeeded, failed or cancelled) that succeeded, as on the LLM logs stats"
+                        },
+                        "average_latency": {
+                          "type": "number",
+                          "description": "Average execution latency in milliseconds, over finished calls"
+                        },
+                        "total_cost": {
+                          "type": "number",
+                          "description": "Total cost in dollars of finished calls"
+                        }
+                      }
                     },
-                    "success_rate": {
-                      "type": "number",
-                      "description": "Success rate percentage"
-                    },
-                    "average_latency": {
-                      "type": "number",
-                      "description": "Average execution latency in milliseconds"
-                    },
-                    "total_cost": {
-                      "type": "number",
-                      "description": "Total cost in dollars for all executions"
+                    {
+                      "type": "object",
+                      "properties": {
+                        "has_previous_period": {
+                          "type": "boolean",
+                          "description": "True when `previous` is populated. False when the comparison was not requested, the window is unbounded, or the previous-period query failed."
+                        },
+                        "previous": {
+                          "allOf": [
+                            {
+                              "type": "object",
+                              "description": "MCP tool log statistics",
+                              "properties": {
+                                "total_executions": {
+                                  "type": "integer",
+                                  "description": "Total number of tool executions, including calls still running"
+                                },
+                                "success_count": {
+                                  "type": "integer",
+                                  "description": "Finished calls that succeeded"
+                                },
+                                "error_count": {
+                                  "type": "integer",
+                                  "description": "Finished calls that failed"
+                                },
+                                "cancelled_count": {
+                                  "type": "integer",
+                                  "description": "Finished calls the caller cancelled"
+                                },
+                                "success_rate": {
+                                  "type": "number",
+                                  "description": "Percentage of finished calls (succeeded, failed or cancelled) that succeeded, as on the LLM logs stats"
+                                },
+                                "average_latency": {
+                                  "type": "number",
+                                  "description": "Average execution latency in milliseconds, over finished calls"
+                                },
+                                "total_cost": {
+                                  "type": "number",
+                                  "description": "Total cost in dollars of finished calls"
+                                }
+                              }
+                            }
+                          ],
+                          "description": "The same statistics for the preceding window of equal length, ending immediately before the requested window starts. Present only when `compare_to_previous` is true and `has_previous_period` is true."
+                        }
+                      }
                     }
-                  }
+                  ]
                 }
               }
             }
@@ -98012,9 +98898,27 @@
           "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `MCPLogs:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "Get available MCP log filter data",
-        "description": "Returns all unique filter data from MCP tool logs (tool names, server labels).\n",
+        "description": "Returns the values each MCP log filter can take, read from the MCP tool logs of the last 30 days.\n",
         "tags": [
           "Logging"
+        ],
+        "parameters": [
+          {
+            "name": "dimensions",
+            "in": "query",
+            "description": "Comma-separated dimensions to return. One or more of `tool_names`, `server_labels`, `apps`, `user_agents`, `virtual_keys`, `users`, `teams`, `customers`, `business_units`, `projects`. Unrecognised values are ignored, and asking for none returns every dimension.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "description": "Free-text search within the requested dimensions. Passing it bypasses the response cache.",
+            "schema": {
+              "type": "string"
+            }
+          }
         ],
         "security": [
           {
@@ -98067,6 +98971,100 @@
                         }
                       },
                       "description": "All unique virtual keys"
+                    },
+                    "apps": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "Client apps detected from the callers' User-Agent, for the `apps` dimension."
+                    },
+                    "user_agents": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "Raw caller User-Agent strings, for the `user_agents` dimension."
+                    },
+                    "users": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "description": "An id and its display name, as offered by a filter dimension.",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "name": {
+                            "type": "string"
+                          }
+                        }
+                      },
+                      "description": "Users that appear in the MCP logs, for the `users` dimension. A user with no recorded name is listed with an empty name."
+                    },
+                    "teams": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "description": "An id and its display name, as offered by a filter dimension.",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "name": {
+                            "type": "string"
+                          }
+                        }
+                      },
+                      "description": "Teams that appear in the MCP logs, for the `teams` dimension, including every team of a call recorded under several."
+                    },
+                    "customers": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "description": "An id and its display name, as offered by a filter dimension.",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "name": {
+                            "type": "string"
+                          }
+                        }
+                      },
+                      "description": "Customers that appear in the MCP logs, for the `customers` dimension, including every customer of a call recorded under several."
+                    },
+                    "business_units": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "description": "An id and its display name, as offered by a filter dimension.",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "name": {
+                            "type": "string"
+                          }
+                        }
+                      },
+                      "description": "Business units that appear in the MCP logs, for the `business_units` dimension, including every business unit of a call recorded under several."
+                    },
+                    "projects": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "description": "An id and its display name, as offered by a filter dimension.",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "name": {
+                            "type": "string"
+                          }
+                        }
+                      },
+                      "description": "Projects that appear in the MCP logs, for the `projects` dimension."
                     }
                   }
                 }
@@ -98093,7 +99091,7 @@
           "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `MCPLogs:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "Get MCP tool call volume histogram",
-        "description": "Returns time-bucketed MCP tool call volume with success/error breakdown.\n",
+        "description": "Returns time-bucketed volume of finished MCP tool calls with a success, error and cancelled breakdown.\n",
         "tags": [
           "Logging"
         ],
@@ -98117,7 +99115,7 @@
           {
             "name": "status",
             "in": "query",
-            "description": "Comma-separated list of statuses to filter by (processing, success, error)",
+            "description": "Comma-separated list of statuses to filter by (processing, success, error, cancelled, input_required)",
             "schema": {
               "type": "string"
             }
@@ -98245,6 +99243,11 @@
                           "error": {
                             "type": "integer",
                             "format": "int64"
+                          },
+                          "cancelled": {
+                            "type": "integer",
+                            "format": "int64",
+                            "description": "Calls the caller cancelled"
                           }
                         }
                       }
@@ -98431,6 +99434,221 @@
                           },
                           "total_cost": {
                             "type": "number"
+                          }
+                        }
+                      }
+                    },
+                    "bucket_size_seconds": {
+                      "type": "integer",
+                      "format": "int64"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/mcp-logs/histogram/latency": {
+      "get": {
+        "operationId": "getMCPLogsLatencyHistogram",
+        "x-mint": {
+          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `MCPLogs:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+        },
+        "summary": "Get MCP tool call latency histogram",
+        "description": "Returns time-bucketed latency percentiles (avg, p90, p95, p99) of finished MCP tool calls, in the\nshape of `/api/logs/histogram/latency`. MCP tool calls record no Bifrost overhead, so the overhead\nfields are always 0.\n",
+        "tags": [
+          "Logging"
+        ],
+        "parameters": [
+          {
+            "name": "tool_names",
+            "in": "query",
+            "description": "Comma-separated list of tool names to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "server_labels",
+            "in": "query",
+            "description": "Comma-separated list of server labels to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "description": "Comma-separated list of statuses to filter by (processing, success, error, cancelled, input_required)",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "virtual_key_ids",
+            "in": "query",
+            "description": "Comma-separated list of virtual key IDs to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "llm_request_ids",
+            "in": "query",
+            "description": "Comma-separated list of LLM request IDs to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "start_time",
+            "in": "query",
+            "description": "Start time filter (RFC3339 format)",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "end_time",
+            "in": "query",
+            "description": "End time filter (RFC3339 format)",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "period",
+            "in": "query",
+            "description": "Time window resolved server-side; takes precedence over start_time and end_time. Sliding periods (1h, 6h, 24h, 7d, 30d) end now. Calendar periods (today, this_week, this_month) start at midnight of the current day, week (Monday) or month in `timezone`.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "1h",
+                "6h",
+                "24h",
+                "7d",
+                "30d",
+                "today",
+                "this_week",
+                "this_month"
+              ]
+            }
+          },
+          {
+            "name": "timezone",
+            "in": "query",
+            "description": "IANA timezone that calendar periods are measured in (e.g. America/New_York). Empty or unknown values fall back to UTC. Ignored for sliding periods.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "min_latency",
+            "in": "query",
+            "description": "Minimum latency filter (milliseconds)",
+            "schema": {
+              "type": "number"
+            }
+          },
+          {
+            "name": "max_latency",
+            "in": "query",
+            "description": "Maximum latency filter (milliseconds)",
+            "schema": {
+              "type": "number"
+            }
+          },
+          {
+            "name": "content_search",
+            "in": "query",
+            "description": "Search in tool arguments and results",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "MCP latency histogram retrieved successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "Time-bucketed latency histogram",
+                  "properties": {
+                    "buckets": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "description": "Time-bucketed latency percentiles",
+                        "properties": {
+                          "timestamp": {
+                            "type": "string",
+                            "format": "date-time"
+                          },
+                          "avg_latency": {
+                            "type": "number"
+                          },
+                          "p90_latency": {
+                            "type": "number"
+                          },
+                          "p95_latency": {
+                            "type": "number"
+                          },
+                          "p99_latency": {
+                            "type": "number"
+                          },
+                          "avg_overhead": {
+                            "type": "number",
+                            "description": "Average Bifrost overhead in milliseconds (total minus upstream latency). Always 0 for MCP tool calls, which record no overhead."
+                          },
+                          "p90_overhead": {
+                            "type": "number",
+                            "description": "90th percentile Bifrost overhead in milliseconds. Always 0 for MCP tool calls."
+                          },
+                          "p95_overhead": {
+                            "type": "number",
+                            "description": "95th percentile Bifrost overhead in milliseconds. Always 0 for MCP tool calls."
+                          },
+                          "p99_overhead": {
+                            "type": "number",
+                            "description": "99th percentile Bifrost overhead in milliseconds. Always 0 for MCP tool calls."
+                          },
+                          "total_requests": {
+                            "type": "integer",
+                            "format": "int64"
                           }
                         }
                       }
@@ -117070,6 +118288,34 @@
                 },
                 "error": {
                   "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "fallback_attempts": {
+            "type": "array",
+            "description": "Set when the primary and every fallback failed and the primary's error was returned: what became of each fallback, in chain order. A fallback refused before reaching its provider (for example by a virtual key that does not allow it) is only visible here.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "provider": {
+                  "$ref": "#/components/schemas/ModelProvider"
+                },
+                "model": {
+                  "type": "string"
+                },
+                "status_code": {
+                  "type": "integer"
+                },
+                "type": {
+                  "type": "string"
+                },
+                "message": {
+                  "type": "string"
+                },
+                "skipped": {
+                  "type": "boolean",
+                  "description": "The fallback was never attempted (no provider config, or the request type has no fallback support)"
                 }
               }
             }
@@ -140224,6 +141470,46 @@
             "type": "number",
             "minimum": 0,
             "description": "Fast mode (Anthropic) cache rate - flat across the full context window, no tiering."
+          },
+          "cache_creation_input_token_cost_above_12hr": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Cache creation cost for OpenAI 12h TTL entries."
+          },
+          "cache_creation_input_token_cost_above_12hr_above_272k_tokens": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Cache creation above 272k context for OpenAI 12h TTL entries."
+          },
+          "cache_creation_input_token_cost_above_12hr_priority": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Priority cache creation cost for OpenAI 12h TTL entries."
+          },
+          "cache_creation_input_token_cost_above_12hr_above_272k_tokens_priority": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Cache creation above 272k context for priority requests with OpenAI 12h TTL entries."
+          },
+          "cache_creation_input_token_cost_above_12hr_flex": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Flex cache creation cost for OpenAI 12h TTL entries."
+          },
+          "cache_creation_input_token_cost_above_12hr_above_272k_tokens_flex": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Cache creation above 272k context for flex requests with OpenAI 12h TTL entries."
+          },
+          "cache_creation_input_token_cost_above_12hr_ultrafast": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Ultrafast cache creation cost for OpenAI 12h TTL entries."
+          },
+          "cache_creation_input_token_cost_above_12hr_above_272k_tokens_ultrafast": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Cache creation above 272k context for ultrafast requests with OpenAI 12h TTL entries."
           },
           "cache_read_input_token_cost_fast": {
             "type": "number",

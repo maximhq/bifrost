@@ -632,7 +632,8 @@
 			"success": "성공",
 			"error": "오류",
 			"processing": "처리",
-			"cancelled": "취소됨"
+			"cancelled": "취소됨",
+			"input_required": "입력 필요"
 		},
 		"rowsPerPage": "페이지당 행 수",
 		"resetZoom": "확대/축소 재설정",
@@ -939,6 +940,9 @@
 		"copyToClipboard": "클립보드에 복사",
 		"stats": {
 			"totalExecutions": "총 처형",
+			"executions": "실행",
+			"ofAllExecutions": "이 기간의 전체 MCP 도구 호출 중",
+			"perExecution": "{{value}}/호출",
 			"successRate": "성공률",
 			"avgLatency": "평균 지연 시간",
 			"totalCost": "총 비용"
@@ -968,7 +972,6 @@
 			"toolName": "도구 이름",
 			"server": "서버",
 			"virtualKey": "가상 키",
-			"llmRequestId": "LLM 요청 ID",
 			"metadata": "메타데이터",
 			"deleteFailed": "로그를 삭제하지 못했어요.",
 			"invalidDate": "잘못된 날짜",
@@ -983,6 +986,11 @@
 			"localNative": "지역 · 원주민",
 			"requestId": "요청 ID",
 			"decision": "결정",
+			"mcpApps": "MCP Apps",
+			"appsHost": "호출자가 MCP Apps 지원",
+			"appOnly": "앱 전용 도구",
+			"opensUi": "{{uri}} 열기",
+			"calledAs": "{{name}}(으)로 호출됨",
 			"nativeTool": "기본 도구",
 			"mcpTool": "MCP 도구",
 			"inspectionTime": "검사 시간",
@@ -1008,8 +1016,13 @@
 		"showOriginal": "원래 값 표시",
 		"arguments": "인수",
 		"result": "결과",
+		"inputRequested": "요청된 입력",
+		"retryLater": "서버가 입력을 요청하지 않고 호출자에게 나중에 다시 시도하도록 요청했습니다.",
+		"inputAnswered": "응답",
+		"rounds": "라운드",
 		"execution": "실행",
 		"errorDetails": "오류 세부정보",
+		"errorNoMessage": "도구 호출이 오류 메시지 없이 실패했습니다.",
 		"pluginLogs": "플러그인 로그",
 		"loading": "MCP 로그 로드 중...",
 		"native": "네이티브",
@@ -1024,11 +1037,14 @@
 			"succeeded": "성공함",
 			"failed": "실패",
 			"cancelled": "취소됨",
+			"inputRequired": "입력 필요",
+			"retryLater": "나중에 재시도",
 			"processing": "처리",
 			"approvedDescription": "실행 전에 허용돼요. 이 항목에는 실행 결과가 기록되지 않어요.",
 			"blockedDescription": "실행 전에 차단되었어요.",
 			"observedDescription": "도구 활동이 캡처되었지만 실행 결과는 알 수 없어요.",
-			"executionDescription": "기록된 도구 실행 결과이에요."
+			"inputRequiredDescription": "MCP 서버가 완료하기 전에 호출자에게 입력을 요청했습니다. 이에 응답하는 재시도는 별도 항목입니다.",
+			"retryLaterDescription": "MCP 서버가 입력을 요청하지 않고 호출자에게 나중에 다시 시도하도록 요청했습니다. 재시도는 별도의 항목입니다."
 		},
 		"noResults": "검색된 결과가 없어요. 필터 및/또는 시간 범위를 조정해 보세요.",
 		"observedRoundTrip": "왕복 관찰"
@@ -1208,6 +1224,8 @@
 		"searchAgents": "검색 에이전트",
 		"agentCorrelationID": "에이전트 상관관계 ID",
 		"exactAgentCorrelationID": "정확한 에이전트 상관 관계 ID",
+		"roundTripID": "라운드 트립 ID",
+		"exactRoundTripID": "정확한 라운드 트립 ID",
 		"nothingRecorded": "이 기간에는 기록된 내용이 없습니다.",
 		"topics": "주제",
 		"searchTopics": "주제 검색"
