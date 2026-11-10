@@ -353,6 +353,12 @@
 		"descriptionStuckEnterprise": "O lançamento ainda está em curso. Recarregue para verificar novamente dentro de um minuto. Se não funcionar, contacte o administrador da sua implementação do Bifrost.",
 		"waitingEnterprise": "A aguardar a conclusão do lançamento…"
 	},
+	"assetLoadFailed": {
+		"bannerTitle": "Não foi possível carregar parte do painel",
+		"bannerDescription": "Verifique sua rede, seu proxy ou as extensões do navegador e recarregue.",
+		"screenTitle": "Não foi possível carregar esta página",
+		"screenDescription": "Seu navegador não conseguiu baixar alguns arquivos do painel. Um proxy, firewall ou extensão do navegador pode estar bloqueando-os. Verifique sua rede e recarregue."
+	},
 	"onboarding": {
 		"expandSetupChecklist": "Expandir lista de configuração",
 		"setupChecklist": "Lista de configuração",

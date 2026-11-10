@@ -353,6 +353,12 @@
 		"descriptionStuckEnterprise": "ロールアウトはまだ進行中です。1 分後に再読み込みして再確認してください。解決しない場合は、Bifrost デプロイメントの管理者に連絡してください。",
 		"waitingEnterprise": "ロールアウトの完了を待っています…"
 	},
+	"assetLoadFailed": {
+		"bannerTitle": "ダッシュボードの一部を読み込めませんでした",
+		"bannerDescription": "ネットワーク、プロキシ、またはブラウザ拡張機能を確認してから再読み込みしてください。",
+		"screenTitle": "このページを読み込めませんでした",
+		"screenDescription": "ブラウザがダッシュボードの一部のファイルをダウンロードできませんでした。プロキシ、ファイアウォール、またはブラウザ拡張機能がブロックしている可能性があります。ネットワークを確認して再読み込みしてください。"
+	},
 	"onboarding": {
 		"expandSetupChecklist": "セットアップチェックリストを展開",
 		"setupChecklist": "セットアップチェックリスト",
