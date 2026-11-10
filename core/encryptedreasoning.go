@@ -731,6 +731,13 @@ func stripResponsesEncryptedContent(ctx *schemas.BifrostContext, req *schemas.Bi
 	for _, message := range input {
 		messageChanged := false
 
+		// A compaction item is nothing but its token: without it the item is invalid and
+		// the history it stands for is gone. It is left exactly as the client sent it.
+		if message.Type != nil && *message.Type == schemas.ResponsesMessageTypeCompaction {
+			stripped = append(stripped, message)
+			continue
+		}
+
 		// Gemini and Vertex mint no encrypted_content: the thought signature rides on the
 		// function call, and the converters carry it inside the call id as
 		// "<id>_ts_<signature>" and rebuild thoughtSignature from that suffix on the way
@@ -757,6 +764,9 @@ func stripResponsesEncryptedContent(ctx *schemas.BifrostContext, req *schemas.Bi
 				continue
 			}
 		}
+
+		// Recorded before the strip: an item that had content and lost all of it is empty.
+		hadContent := message.Content != nil
 
 		if message.ResponsesReasoning != nil && message.ResponsesReasoning.EncryptedContent != nil {
 			reasoningCopy := *message.ResponsesReasoning
@@ -808,7 +818,11 @@ func stripResponsesEncryptedContent(ctx *schemas.BifrostContext, req *schemas.Bi
 		hasSummary := message.ResponsesReasoning != nil && len(message.ResponsesReasoning.Summary) > 0
 		hasContent := message.Content != nil &&
 			(len(message.Content.ContentBlocks) > 0 || message.Content.ContentStr != nil)
-		if !hasSummary && !hasContent {
+		itemType := ""
+		if message.Type != nil {
+			itemType = string(*message.Type)
+		}
+		if !hasSummary && !hasContent && (hadContent || emptiedItemIsDroppable(itemType)) {
 			continue
 		}
 		stripped = append(stripped, message)
@@ -827,6 +841,18 @@ func stripResponsesEncryptedContent(ctx *schemas.BifrostContext, req *schemas.Bi
 
 	*inputRef = stripped
 	return true
+}
+
+// emptiedItemIsDroppable reports whether an item that never had content, and is left with
+// no summary after the strip, can be removed from the replay. Only a reasoning item, a
+// message, or an untyped item is defined by that payload. Every other type (a tool call, a
+// web search call) still stands on its own fields, and removing it would orphan its output:
+// OpenAI answers "No tool call found for function call output". An item that had content
+// and lost all of it is dropped whatever its type; the callers check that separately.
+func emptiedItemIsDroppable(itemType string) bool {
+	return itemType == "" ||
+		itemType == string(schemas.ResponsesMessageTypeReasoning) ||
+		itemType == string(schemas.ResponsesMessageTypeMessage)
 }
 
 // detachableItemTypes replay without an id; the strip clears theirs so none points at dropped reasoning.
@@ -897,6 +923,13 @@ func stripRawResponsesEncryptedContent(rawBody *[]byte, dropItemIDs, clearIDs bo
 	for _, item := range input.Array() {
 		rest := item.Raw
 		itemChanged := false
+
+		// Same rule as the typed path: a compaction item is its token, so it is kept as sent.
+		rawItemType := gjson.Get(rest, "type").Str
+		if rawItemType == string(schemas.ResponsesMessageTypeCompaction) {
+			items = append(items, item.Raw)
+			continue
+		}
 
 		// The raw analogue of the call-id strip on the typed path: a Gemini/Vertex thought
 		// signature lives in call_id (and in an item id built from it), not in any
@@ -990,7 +1023,9 @@ func stripRawResponsesEncryptedContent(rawBody *[]byte, dropItemIDs, clearIDs bo
 				rest = withoutID
 			}
 		}
-		if len(gjson.Get(rest, "summary").Array()) == 0 && !gjson.Get(rest, "content").Exists() {
+		hadContent := gjson.Get(item.Raw, "content").Exists()
+		if len(gjson.Get(rest, "summary").Array()) == 0 && !gjson.Get(rest, "content").Exists() &&
+			(hadContent || emptiedItemIsDroppable(rawItemType)) {
 			continue
 		}
 		items = append(items, rest)
