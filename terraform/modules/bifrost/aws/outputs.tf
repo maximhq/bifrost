@@ -15,3 +15,14 @@ output "health_check_url" {
     null,
   )
 }
+
+output "setup_token" {
+  description = "Generated bootstrap token for the first admin account (ECS with generate_secrets)."
+  value       = local.generate_secrets ? random_password.setup_token[0].result : null
+  sensitive   = true
+}
+
+output "database_endpoint" {
+  description = "RDS endpoint as host:port (ECS with create_database)."
+  value       = local.manage_database ? aws_db_instance.bifrost[0].endpoint : null
+}

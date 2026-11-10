@@ -42,11 +42,43 @@ locals {
   # setup provided via config_json/config_json_file is never silently rewritten.
   schema_url = coalesce(var.schema_url, try(local.base_config["$schema"], null), "https://www.getbifrost.ai/schema")
 
+  # Managed database and generated secrets are only wired for the two
+  # container services that read PG_* / BIFROST_* from their task environment.
+  managed_runtime_supported = contains(["aws/ecs", "gcp/cloud-run"], "${var.cloud_provider}/${var.service}")
+
+  # Store definition injected when create_database is on. Every value is an
+  # env reference resolved inside the container, so the same config.json works
+  # for RDS (TLS required) and Cloud SQL over its unix socket (TLS disabled);
+  # the platform module decides PG_SSL_MODE.
+  managed_store = var.create_database ? {
+    enabled = true
+    type    = "postgres"
+    config = {
+      host     = "env.PG_HOST"
+      port     = "env.PG_PORT"
+      user     = "env.PG_USER"
+      password = "env.PG_PASSWORD"
+      db_name  = "env.PG_DATABASE"
+      ssl_mode = "env.PG_SSL_MODE"
+    }
+  } : null
+
+  # Managed values fill gaps only: an explicit variable wins, then whatever the
+  # base config already sets, then the generated/managed value. Replacing a
+  # base-config encryption_key would make existing encrypted data unreadable.
+  base_has = { for k in ["encryption_key", "setup_token", "config_store", "logs_store"] : k => contains(keys(local.base_config), k) }
+
+  effective_encryption_key = var.encryption_key != null ? var.encryption_key : (var.generate_secrets && !local.base_has.encryption_key ? "env.BIFROST_ENCRYPTION_KEY" : null)
+  effective_setup_token    = var.setup_token != null ? var.setup_token : (var.generate_secrets && !local.base_has.setup_token ? "env.BIFROST_SETUP_TOKEN" : null)
+  effective_config_store   = var.config_store != null ? var.config_store : (local.base_has.config_store ? null : local.managed_store)
+  effective_logs_store     = var.logs_store != null ? var.logs_store : (local.base_has.logs_store ? null : local.managed_store)
+
   # Terraform variable overrides (non-null values only)
   overrides = {
     for k, v in {
       "$schema"            = local.schema_url
-      encryption_key       = var.encryption_key
+      encryption_key       = local.effective_encryption_key
+      setup_token          = local.effective_setup_token
       auth_config          = var.auth_config
       client               = var.client
       framework            = var.framework
@@ -54,8 +86,8 @@ locals {
       governance           = var.governance
       mcp                  = var.mcp
       vector_store         = var.vector_store
-      config_store         = var.config_store
-      logs_store           = var.logs_store
+      config_store         = local.effective_config_store
+      logs_store           = local.effective_logs_store
       cluster_config       = var.cluster_config
       scim_config          = var.scim_config
       load_balancer_config = var.load_balancer_config
@@ -89,6 +121,14 @@ resource "terraform_data" "validate_service_combination" {
     precondition {
       condition     = contains(local.valid_services[var.cloud_provider], var.service)
       error_message = "Invalid service '${var.service}' for cloud_provider '${var.cloud_provider}'. Valid services: ${join(", ", local.valid_services[var.cloud_provider])}."
+    }
+    precondition {
+      condition     = !var.create_database || local.managed_runtime_supported
+      error_message = "create_database is supported for aws/ecs and gcp/cloud-run only. Point config_store and logs_store at your own PostgreSQL for '${var.cloud_provider}/${var.service}'."
+    }
+    precondition {
+      condition     = !var.generate_secrets || local.managed_runtime_supported
+      error_message = "generate_secrets is supported for aws/ecs and gcp/cloud-run only. Pass encryption_key and setup_token explicitly for '${var.cloud_provider}/${var.service}'."
     }
   }
 }
@@ -128,6 +168,14 @@ module "aws" {
   node_count                   = var.node_count
   node_machine_type            = var.node_machine_type
   volume_size_gb               = var.volume_size_gb
+  create_database              = var.create_database
+  database_name                = var.database_name
+  database_user                = var.database_user
+  database_instance_class      = var.database_instance_class
+  database_storage_gb          = var.database_storage_gb
+  database_deletion_protection = var.database_deletion_protection
+  database_skip_final_snapshot = var.database_skip_final_snapshot
+  generate_secrets             = var.generate_secrets
 }
 
 # --- GCP ---
@@ -163,6 +211,13 @@ module "gcp" {
   node_count                   = var.node_count
   node_machine_type            = var.node_machine_type
   volume_size_gb               = var.volume_size_gb
+  create_database              = var.create_database
+  database_name                = var.database_name
+  database_user                = var.database_user
+  database_instance_class      = var.database_instance_class
+  database_storage_gb          = var.database_storage_gb
+  database_deletion_protection = var.database_deletion_protection
+  generate_secrets             = var.generate_secrets
 }
 
 # --- Azure ---

@@ -140,7 +140,43 @@ run "invalid_service_rejected" {
   expect_failures = [var.service]
 }
 
-# NOTE: Cross-validation tests (aws+gke, gcp+ecs, etc.) cannot use
-# expect_failures with nested module resources — a Terraform limitation.
-# The cross-validation precondition is exercised implicitly: all 7 valid
-# combos above pass, and any mismatch would fail at the precondition.
+# --- Cross-validation and feature gates ---
+# Also run against the root module: expect_failures can name
+# terraform_data.validate_service_combination there, which it cannot inside the
+# wrapper's nested module. kubernetes/deployment has no cloud API to provision a
+# database or a secret store with, so it stays unsupported for both flags.
+
+run "cross_validation_rejects_aws_gke" {
+  command = plan
+  variables {
+    cloud_provider = "aws"
+    service        = "gke"
+    region         = "us-east-1"
+    config_json    = jsonencode({})
+  }
+  expect_failures = [terraform_data.validate_service_combination]
+}
+
+run "create_database_rejected_on_kubernetes" {
+  command = plan
+  variables {
+    cloud_provider  = "kubernetes"
+    service         = "deployment"
+    region          = "local"
+    config_json     = jsonencode({})
+    create_database = true
+  }
+  expect_failures = [terraform_data.validate_service_combination]
+}
+
+run "generate_secrets_rejected_on_kubernetes" {
+  command = plan
+  variables {
+    cloud_provider   = "kubernetes"
+    service          = "deployment"
+    region           = "local"
+    config_json      = jsonencode({})
+    generate_secrets = true
+  }
+  expect_failures = [terraform_data.validate_service_combination]
+}

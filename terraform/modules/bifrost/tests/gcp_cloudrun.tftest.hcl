@@ -27,6 +27,7 @@ mock_provider "azurerm" {
   }
 }
 mock_provider "kubernetes" {}
+mock_provider "random" {}
 
 run "cloudrun_basic" {
   command = plan
@@ -91,5 +92,54 @@ run "cloudrun_custom_compute" {
     config_json    = jsonencode({})
     cpu            = 1000
     memory         = 2048
+  }
+}
+
+# --- Managed database and generated secrets (the one-click GCP stack) ---
+
+run "cloudrun_with_managed_database" {
+  command = plan
+  module { source = "./tests/setup" }
+  variables {
+    cloud_provider       = "gcp"
+    service              = "cloud-run"
+    region               = "us-central1"
+    gcp_project_id       = "test-project"
+    config_json          = jsonencode({})
+    create_database      = true
+    generate_secrets     = true
+    create_load_balancer = true
+  }
+
+  assert {
+    condition     = jsondecode(nonsensitive(output.config_json)).config_store.config.host == "env.PG_HOST"
+    error_message = "create_database must inject an env-referenced postgres config_store"
+  }
+
+  assert {
+    condition     = jsondecode(nonsensitive(output.config_json)).setup_token == "env.BIFROST_SETUP_TOKEN"
+    error_message = "generate_secrets must reference BIFROST_SETUP_TOKEN"
+  }
+}
+
+run "cloudrun_without_managed_database_keeps_config" {
+  command = plan
+  module { source = "./tests/setup" }
+  variables {
+    cloud_provider = "gcp"
+    service        = "cloud-run"
+    region         = "us-central1"
+    gcp_project_id = "test-project"
+    config_json    = jsonencode({ config_store = { enabled = true, type = "sqlite", config = { path = "/app/data/bifrost.db" } } })
+  }
+
+  assert {
+    condition     = jsondecode(nonsensitive(output.config_json)).config_store.type == "sqlite"
+    error_message = "without create_database the base config must pass through untouched"
+  }
+
+  assert {
+    condition     = !contains(keys(jsondecode(nonsensitive(output.config_json))), "setup_token")
+    error_message = "without generate_secrets no setup_token must be injected"
   }
 }
