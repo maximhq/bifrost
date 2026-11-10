@@ -9,6 +9,7 @@ import { Loader2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { LogDetailView } from "./logDetailView";
+import { AddToDatasetButton } from "@/app/workspace/evals/datasets/views/addToDatasetDialog";
 
 interface LogDetailSheetProps {
 	log: LogEntry | null;
@@ -97,6 +98,7 @@ export function LogDetailSheet({
 						onOpenLog={onOpenLog}
 						headerAction={
 							<>
+								<AddToDatasetButton logId={displayLog.id} />
 								{displayLog.parent_request_id && onViewSession ? (
 									<Button
 										variant="outline"

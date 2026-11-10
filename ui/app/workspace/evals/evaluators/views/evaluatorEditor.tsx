@@ -3,6 +3,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
+import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { TagInput } from "@/components/ui/tagInput";
 import { useToast } from "@/hooks/use-toast";
 import { useDebouncedValue } from "@/hooks/useDebounce";
@@ -16,14 +17,18 @@ import {
 import type { EvaluatorConfig, EvaluatorType, EvaluatorWithConfig, ValidateEvaluatorResponse } from "@/lib/types/evals";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { Link, useNavigate } from "@tanstack/react-router";
-import { Save, Undo2 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Play, Save, Undo2 } from "lucide-react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useForm } from "react-hook-form";
 import { useTranslation } from "react-i18next";
 import { EvaluatorConfigFields } from "./evaluatorConfigFields";
 import { EvaluatorTestPanel } from "./evaluatorTestPanel";
 import { EvaluatorTypeBadge } from "./evaluatorTypeBadge";
 import { defaultConfig, evalKeyFor } from "./evaluatorUtils";
+
+// Below this width the two panels do not fit side by side, and the test bench moves
+// into a sheet. It is the room the editor needs plus the narrowest test bench.
+const SIDE_BY_SIDE_MIN_PX = 900;
 
 interface EvaluatorEditorProps {
 	// The evaluator being edited, or undefined for a new one.
@@ -143,6 +148,35 @@ export function EvaluatorEditor({ evaluator, newType }: EvaluatorEditorProps) {
 			? t("evals.editor.saveAsVersion", { version: evaluator.current_version + 1 })
 			: t("evals.editor.save");
 
+	// The room is measured on the panels' own box, not the window: the sidebar and the
+	// Warp panel both take width away without the window changing size.
+	const panelsRef = useRef<HTMLDivElement>(null);
+	const [sideBySide, setSideBySide] = useState(true);
+	const [testOpen, setTestOpen] = useState(false);
+	useLayoutEffect(() => {
+		const element = panelsRef.current;
+		if (!element || typeof ResizeObserver === "undefined") return;
+		const measure = () => setSideBySide(element.clientWidth >= SIDE_BY_SIDE_MIN_PX);
+		measure();
+		const observer = new ResizeObserver(measure);
+		observer.observe(element);
+		return () => observer.disconnect();
+	}, []);
+	useEffect(() => {
+		if (sideBySide) setTestOpen(false);
+	}, [sideBySide]);
+
+	const testPanel = (inSheet: boolean) => (
+		<EvaluatorTestPanel
+			draft={{ type, builtin_key: evaluator?.builtin_key, config, evaluator_id: evaluator?.id }}
+			variables={variables}
+			optionalVariables={optionalVariables}
+			blockedReason={blockedReason}
+			evalKeys={evalKeys}
+			hideHeader={inSheet}
+		/>
+	);
+
 	return (
 		<Form {...form}>
 			<form onSubmit={(e) => void form.handleSubmit(onSubmit)(e)} className="flex h-full flex-col" data-testid="evaluator-editor-form">
@@ -153,11 +187,8 @@ export function EvaluatorEditor({ evaluator, newType }: EvaluatorEditorProps) {
 					]}
 				/>
 				{/* Two panels side by side: the evaluator on the left, its test bench on the right. */}
-				<div className="bg-background flex h-full flex-col gap-3 overflow-y-auto lg:flex-row lg:overflow-hidden">
-					<div
-						className="bg-card flex min-w-0 flex-1 flex-col rounded-md border lg:h-full lg:overflow-hidden"
-						data-testid="evaluator-edit-panel"
-					>
+				<div ref={panelsRef} className="bg-background flex h-full flex-row gap-3 overflow-hidden">
+					<div className="bg-card flex h-full min-w-0 flex-1 flex-col overflow-hidden rounded-md border" data-testid="evaluator-edit-panel">
 						<div className="flex shrink-0 flex-wrap items-center gap-2 border-b px-4 py-3">
 							<h1 className="truncate text-base font-semibold" data-testid="evaluator-editor-title">
 								{evaluator?.name ?? t("evals.editor.newTitle")}
@@ -178,11 +209,23 @@ export function EvaluatorEditor({ evaluator, newType }: EvaluatorEditorProps) {
 									{t("evals.editor.unsaved")}
 								</Badge>
 							)}
+							{!sideBySide && (
+								<Button
+									type="button"
+									variant="outline"
+									className="ml-auto h-8"
+									onClick={() => setTestOpen(true)}
+									data-testid="evaluator-editor-open-test"
+								>
+									<Play className="size-4" />
+									{t("evals.test.title")}
+								</Button>
+							)}
 						</div>
 
 						{/* relative: Radix selects render a hidden, absolutely positioned native select. Without a
 						    positioned scroller it escapes this box and makes the whole page scroll. */}
-						<div className="relative flex min-h-0 grow flex-col gap-6 p-4 lg:overflow-y-auto">
+						<div className="relative flex min-h-0 grow flex-col gap-6 overflow-y-auto p-4">
 							<div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
 								<FormField
 									control={form.control}
@@ -313,16 +356,22 @@ export function EvaluatorEditor({ evaluator, newType }: EvaluatorEditorProps) {
 						</div>
 					</div>
 
-					<div className="bg-card flex w-full shrink-0 flex-col rounded-md border lg:h-full lg:w-[24rem] lg:overflow-hidden xl:w-[28rem]">
-						<EvaluatorTestPanel
-							draft={{ type, builtin_key: evaluator?.builtin_key, config, evaluator_id: evaluator?.id }}
-							variables={variables}
-							optionalVariables={optionalVariables}
-							blockedReason={blockedReason}
-							evalKeys={evalKeys}
-						/>
-					</div>
+					{sideBySide && (
+						<div className="bg-card flex h-full w-[24rem] shrink-0 flex-col overflow-hidden rounded-md border xl:w-[28rem]">
+							{testPanel(false)}
+						</div>
+					)}
 				</div>
+				{/* Too narrow for two panels: the same test bench, in a sheet. */}
+				<Sheet open={testOpen && !sideBySide} onOpenChange={setTestOpen}>
+					<SheetContent className="p-0 pt-4 sm:max-w-xl" data-testid="evaluator-test-sheet">
+						<SheetHeader className="flex flex-col items-start px-0 py-4" headerClassName="mb-0 sticky -top-4 bg-card z-10 px-4 md:px-8">
+							<SheetTitle>{t("evals.test.title")}</SheetTitle>
+							<SheetDescription>{t("evals.test.description")}</SheetDescription>
+						</SheetHeader>
+						{testPanel(true)}
+					</SheetContent>
+				</Sheet>
 			</form>
 		</Form>
 	);

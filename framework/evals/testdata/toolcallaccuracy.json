@@ -1,0 +1,1805 @@
+{
+ "source": "Ported from Maxim's toolCallAccuracy.test.ts. Each case holds the actual calls, the expected calls and the score Maxim asserts.",
+ "tool_sets": [
+  [
+   {
+    "type": "function",
+    "function": {
+     "name": "search_web",
+     "parameters": {
+      "type": "object",
+      "properties": {
+       "query": {
+        "type": "string"
+       },
+       "num_results": {
+        "type": "integer"
+       },
+       "filters": {
+        "type": "object",
+        "properties": {
+         "site": {
+          "type": "string"
+         },
+         "date_range": {
+          "type": "string"
+         }
+        }
+       }
+      },
+      "required": [
+       "query"
+      ]
+     }
+    }
+   },
+   {
+    "type": "function",
+    "function": {
+     "name": "send_email",
+     "parameters": {
+      "type": "object",
+      "properties": {
+       "to": {
+        "type": "string"
+       },
+       "subject": {
+        "type": "string"
+       },
+       "body": {
+        "type": "string"
+       },
+       "urgent": {
+        "type": "boolean"
+       }
+      },
+      "required": [
+       "to",
+       "subject",
+       "body"
+      ]
+     }
+    }
+   },
+   {
+    "type": "function",
+    "function": {
+     "name": "calculate",
+     "parameters": {
+      "type": "object",
+      "properties": {
+       "expression": {
+        "type": "string"
+       },
+       "precision": {
+        "type": "integer"
+       }
+      },
+      "required": [
+       "expression"
+      ]
+     }
+    }
+   },
+   {
+    "type": "function",
+    "function": {
+     "name": "save_file",
+     "parameters": {
+      "type": "object",
+      "properties": {
+       "filename": {
+        "type": "string"
+       },
+       "content": {
+        "type": "string"
+       },
+       "overwrite": {
+        "type": "boolean"
+       }
+      },
+      "required": [
+       "filename",
+       "content"
+      ]
+     }
+    }
+   }
+  ],
+  []
+ ],
+ "cases": [
+  {
+   "name": "Simple Tool Call Matching / should match single tool call perfectly",
+   "tool_set": 0,
+   "actual": [
+    {
+     "name": "search_web",
+     "arguments": {
+      "query": "test search"
+     }
+    }
+   ],
+   "expected": [
+    {
+     "name": "search_web",
+     "arguments": {
+      "query": "test search"
+     }
+    }
+   ],
+   "score": 1
+  },
+  {
+   "name": "Simple Tool Call Matching / should fail when function names don't match",
+   "tool_set": 0,
+   "actual": [
+    {
+     "name": "send_email",
+     "arguments": {
+      "to": "test@example.com",
+      "subject": "test",
+      "body": "test"
+     }
+    }
+   ],
+   "expected": [
+    {
+     "name": "search_web",
+     "arguments": {
+      "query": "test"
+     }
+    }
+   ],
+   "score": 0
+  },
+  {
+   "name": "Simple Tool Call Matching / should fail when required parameters are missing",
+   "tool_set": 0,
+   "actual": [
+    {
+     "name": "search_web",
+     "arguments": {}
+    }
+   ],
+   "expected": [
+    {
+     "name": "search_web",
+     "arguments": {
+      "query": "test"
+     }
+    }
+   ],
+   "score": 0
+  },
+  {
+   "name": "Simple Tool Call Matching / should fail when actual call has hallucinated parameters",
+   "tool_set": 0,
+   "actual": [
+    {
+     "name": "search_web",
+     "arguments": {
+      "query": "test",
+      "invalid_param": "should not exist"
+     }
+    }
+   ],
+   "expected": [
+    {
+     "name": "search_web",
+     "arguments": {
+      "query": "test"
+     }
+    }
+   ],
+   "score": 0
+  },
+  {
+   "name": "Multiple Sequential Tool Calls / should match multiple tool calls in sequence",
+   "tool_set": 0,
+   "actual": [
+    {
+     "name": "search_web",
+     "arguments": {
+      "query": "test search"
+     }
+    },
+    {
+     "name": "send_email",
+     "arguments": {
+      "to": "test@example.com",
+      "subject": "Results",
+      "body": "Found results"
+     }
+    },
+    {
+     "name": "calculate",
+     "arguments": {
+      "expression": "2 + 2"
+     }
+    }
+   ],
+   "expected": [
+    {
+     "name": "search_web",
+     "arguments": {
+      "query": "test search"
+     }
+    },
+    {
+     "name": "send_email",
+     "arguments": {
+      "to": "test@example.com",
+      "subject": "Results",
+      "body": "Found results"
+     }
+    },
+    {
+     "name": "calculate",
+     "arguments": {
+      "expression": "2 + 2"
+     }
+    }
+   ],
+   "score": 1
+  },
+  {
+   "name": "Multiple Sequential Tool Calls / should fail if order is wrong",
+   "tool_set": 0,
+   "actual": [
+    {
+     "name": "send_email",
+     "arguments": {
+      "to": "test@example.com",
+      "subject": "Results",
+      "body": "Found results"
+     }
+    },
+    {
+     "name": "search_web",
+     "arguments": {
+      "query": "test search"
+     }
+    }
+   ],
+   "expected": [
+    {
+     "name": "search_web",
+     "arguments": {
+      "query": "test search"
+     }
+    },
+    {
+     "name": "send_email",
+     "arguments": {
+      "to": "test@example.com",
+      "subject": "Results",
+      "body": "Found results"
+     }
+    }
+   ],
+   "score": 0
+  },
+  {
+   "name": "Multiple Sequential Tool Calls / should fail if there are missing tool calls",
+   "tool_set": 0,
+   "actual": [
+    {
+     "name": "search_web",
+     "arguments": {
+      "query": "test search"
+     }
+    }
+   ],
+   "expected": [
+    {
+     "name": "search_web",
+     "arguments": {
+      "query": "test search"
+     }
+    },
+    {
+     "name": "send_email",
+     "arguments": {
+      "to": "test@example.com",
+      "subject": "Results",
+      "body": "Found results"
+     }
+    }
+   ],
+   "score": 0
+  },
+  {
+   "name": "Multiple Sequential Tool Calls / should fail if there are extra tool calls",
+   "tool_set": 0,
+   "actual": [
+    {
+     "name": "search_web",
+     "arguments": {
+      "query": "test search"
+     }
+    },
+    {
+     "name": "send_email",
+     "arguments": {
+      "to": "test@example.com",
+      "subject": "Results",
+      "body": "Found results"
+     }
+    },
+    {
+     "name": "calculate",
+     "arguments": {
+      "expression": "2 + 2"
+     }
+    }
+   ],
+   "expected": [
+    {
+     "name": "search_web",
+     "arguments": {
+      "query": "test search"
+     }
+    },
+    {
+     "name": "send_email",
+     "arguments": {
+      "to": "test@example.com",
+      "subject": "Results",
+      "body": "Found results"
+     }
+    }
+   ],
+   "score": 0
+  },
+  {
+   "name": "inAnyOrder Blocks / should match inAnyOrder tool calls regardless of order",
+   "tool_set": 0,
+   "actual": [
+    {
+     "name": "send_email",
+     "arguments": {
+      "to": "test@example.com",
+      "subject": "Test",
+      "body": "Test body"
+     }
+    },
+    {
+     "name": "search_web",
+     "arguments": {
+      "query": "test search"
+     }
+    },
+    {
+     "name": "calculate",
+     "arguments": {
+      "expression": "2 + 2"
+     }
+    }
+   ],
+   "expected": [
+    {
+     "inAnyOrder": [
+      {
+       "name": "search_web",
+       "arguments": {
+        "query": "test search"
+       }
+      },
+      {
+       "name": "send_email",
+       "arguments": {
+        "to": "test@example.com",
+        "subject": "Test",
+        "body": "Test body"
+       }
+      },
+      {
+       "name": "calculate",
+       "arguments": {
+        "expression": "2 + 2"
+       }
+      }
+     ]
+    }
+   ],
+   "score": 1
+  },
+  {
+   "name": "inAnyOrder Blocks / should fail inAnyOrder block if one tool call doesn't match",
+   "tool_set": 0,
+   "actual": [
+    {
+     "name": "send_email",
+     "arguments": {
+      "to": "test@example.com",
+      "subject": "Test",
+      "body": "Test body"
+     }
+    },
+    {
+     "name": "search_web",
+     "arguments": {
+      "query": "wrong query"
+     }
+    }
+   ],
+   "expected": [
+    {
+     "inAnyOrder": [
+      {
+       "name": "search_web",
+       "arguments": {
+        "query": "test search"
+       }
+      },
+      {
+       "name": "send_email",
+       "arguments": {
+        "to": "test@example.com",
+        "subject": "Test",
+        "body": "Test body"
+       }
+      }
+     ]
+    }
+   ],
+   "score": 0
+  },
+  {
+   "name": "inAnyOrder Blocks / should fail inAnyOrder block if not enough tool calls available",
+   "tool_set": 0,
+   "actual": [
+    {
+     "name": "search_web",
+     "arguments": {
+      "query": "test search"
+     }
+    }
+   ],
+   "expected": [
+    {
+     "inAnyOrder": [
+      {
+       "name": "search_web",
+       "arguments": {
+        "query": "test search"
+       }
+      },
+      {
+       "name": "send_email",
+       "arguments": {
+        "to": "test@example.com",
+        "subject": "Test",
+        "body": "Test body"
+       }
+      }
+     ]
+    }
+   ],
+   "score": 0
+  },
+  {
+   "name": "anyOf Blocks / should succeed when exactly one branch matches",
+   "tool_set": 0,
+   "actual": [
+    {
+     "name": "search_web",
+     "arguments": {
+      "query": "test search"
+     }
+    }
+   ],
+   "expected": [
+    {
+     "anyOne": [
+      [
+       {
+        "name": "send_email",
+        "arguments": {
+         "to": "test@example.com",
+         "subject": "Test",
+         "body": "Test body"
+        }
+       }
+      ],
+      [
+       {
+        "name": "search_web",
+        "arguments": {
+         "query": "test search"
+        }
+       }
+      ],
+      [
+       {
+        "name": "calculate",
+        "arguments": {
+         "expression": "2 + 2"
+        }
+       }
+      ]
+     ]
+    }
+   ],
+   "score": 1
+  },
+  {
+   "name": "anyOf Blocks / should fail when no branches match",
+   "tool_set": 0,
+   "actual": [
+    {
+     "name": "save_file",
+     "arguments": {
+      "filename": "test.txt",
+      "content": "test content"
+     }
+    }
+   ],
+   "expected": [
+    {
+     "anyOne": [
+      [
+       {
+        "name": "send_email",
+        "arguments": {
+         "to": "test@example.com",
+         "subject": "Test",
+         "body": "Test body"
+        }
+       }
+      ],
+      [
+       {
+        "name": "search_web",
+        "arguments": {
+         "query": "test search"
+        }
+       }
+      ],
+      [
+       {
+        "name": "calculate",
+        "arguments": {
+         "expression": "2 + 2"
+        }
+       }
+      ]
+     ]
+    }
+   ],
+   "score": 0
+  },
+  {
+   "name": "anyOf Blocks / should fail when multiple branches match - ambiguous",
+   "tool_set": 0,
+   "actual": [
+    {
+     "name": "search_web",
+     "arguments": {
+      "query": "test search"
+     }
+    }
+   ],
+   "expected": [
+    {
+     "anyOne": [
+      [
+       {
+        "name": "search_web",
+        "arguments": {
+         "query": "test search"
+        }
+       }
+      ],
+      [
+       {
+        "name": "search_web",
+        "arguments": {
+         "query": "test search"
+        }
+       }
+      ]
+     ]
+    }
+   ],
+   "score": 0
+  },
+  {
+   "name": "anyOf Blocks / should handle anyOf block with multi-call branches",
+   "tool_set": 0,
+   "actual": [
+    {
+     "name": "search_web",
+     "arguments": {
+      "query": "test search"
+     }
+    },
+    {
+     "name": "send_email",
+     "arguments": {
+      "to": "test@example.com",
+      "subject": "Results",
+      "body": "Found results"
+     }
+    }
+   ],
+   "expected": [
+    {
+     "anyOne": [
+      [
+       {
+        "name": "calculate",
+        "arguments": {
+         "expression": "2 + 2"
+        }
+       }
+      ],
+      [
+       {
+        "name": "search_web",
+        "arguments": {
+         "query": "test search"
+        }
+       },
+       {
+        "name": "send_email",
+        "arguments": {
+         "to": "test@example.com",
+         "subject": "Results",
+         "body": "Found results"
+        }
+       }
+      ]
+     ]
+    }
+   ],
+   "score": 1
+  },
+  {
+   "name": "anyOf Blocks / should handle new simple array format for anyOf blocks",
+   "tool_set": 0,
+   "actual": [
+    {
+     "name": "search_web",
+     "arguments": {
+      "query": "test search"
+     }
+    }
+   ],
+   "expected": [
+    {
+     "anyOne": [
+      {
+       "name": "send_email",
+       "arguments": {
+        "to": "test@example.com",
+        "subject": "Test",
+        "body": "Test body"
+       }
+      },
+      {
+       "name": "search_web",
+       "arguments": {
+        "query": "test search"
+       }
+      },
+      {
+       "name": "calculate",
+       "arguments": {
+        "expression": "2 + 2"
+       }
+      }
+     ]
+    }
+   ],
+   "score": 1
+  },
+  {
+   "name": "anyOf Blocks / should handle simple array format with no matches",
+   "tool_set": 0,
+   "actual": [
+    {
+     "name": "save_file",
+     "arguments": {
+      "filename": "test.txt",
+      "content": "test content"
+     }
+    }
+   ],
+   "expected": [
+    {
+     "anyOne": [
+      {
+       "name": "send_email",
+       "arguments": {
+        "to": "test@example.com",
+        "subject": "Test",
+        "body": "Test body"
+       }
+      },
+      {
+       "name": "search_web",
+       "arguments": {
+        "query": "test search"
+       }
+      },
+      {
+       "name": "calculate",
+       "arguments": {
+        "expression": "2 + 2"
+       }
+      }
+     ]
+    }
+   ],
+   "score": 0
+  },
+  {
+   "name": "anyOf Blocks / should handle simple array format with parameter validation",
+   "tool_set": 0,
+   "actual": [
+    {
+     "name": "search_web",
+     "arguments": {
+      "query": "  TEST  SEARCH  "
+     }
+    }
+   ],
+   "expected": [
+    {
+     "anyOne": [
+      {
+       "name": "send_email",
+       "arguments": {
+        "to": "test@example.com",
+        "subject": "Test",
+        "body": "Test body"
+       }
+      },
+      {
+       "name": "search_web",
+       "arguments": {
+        "query": "test search"
+       }
+      }
+     ]
+    }
+   ],
+   "score": 1
+  },
+  {
+   "name": "anyOf Blocks / should fail simple array format when multiple branches match - ambiguous",
+   "tool_set": 0,
+   "actual": [
+    {
+     "name": "search_web",
+     "arguments": {
+      "query": "test search"
+     }
+    }
+   ],
+   "expected": [
+    {
+     "anyOne": [
+      {
+       "name": "search_web",
+       "arguments": {
+        "query": "test search"
+       }
+      },
+      {
+       "name": "search_web",
+       "arguments": {
+        "query": "test search"
+       }
+      }
+     ]
+    }
+   ],
+   "score": 0
+  },
+  {
+   "name": "anyOf Blocks / should handle simple array format with mixed parameter types",
+   "tool_set": 0,
+   "actual": [
+    {
+     "name": "search_web",
+     "arguments": {
+      "query": "test",
+      "num_results": 5
+     }
+    }
+   ],
+   "expected": [
+    {
+     "anyOne": [
+      {
+       "name": "send_email",
+       "arguments": {
+        "to": "test@example.com",
+        "subject": "Test",
+        "body": "Test body"
+       }
+      },
+      {
+       "name": "search_web",
+       "arguments": {
+        "query": "test",
+        "num_results": 5
+       }
+      },
+      {
+       "name": "calculate",
+       "arguments": {
+        "expression": "2 + 2"
+       }
+      }
+     ]
+    }
+   ],
+   "score": 1
+  },
+  {
+   "name": "anyOf Blocks / should handle simple array format nested within inAnyOrder blocks",
+   "tool_set": 0,
+   "actual": [
+    {
+     "name": "calculate",
+     "arguments": {
+      "expression": "2 + 2"
+     }
+    },
+    {
+     "name": "search_web",
+     "arguments": {
+      "query": "initial search"
+     }
+    }
+   ],
+   "expected": [
+    {
+     "inAnyOrder": [
+      {
+       "name": "search_web",
+       "arguments": {
+        "query": "initial search"
+       }
+      },
+      {
+       "anyOne": [
+        {
+         "name": "send_email",
+         "arguments": {
+          "to": "test@example.com",
+          "subject": "Test",
+          "body": "Test body"
+         }
+        },
+        {
+         "name": "calculate",
+         "arguments": {
+          "expression": "2 + 2"
+         }
+        }
+       ]
+      }
+     ]
+    }
+   ],
+   "score": 1
+  },
+  {
+   "name": "anyOf Blocks / should handle inAnyOrder blocks within simple array format anyOf blocks",
+   "tool_set": 0,
+   "actual": [
+    {
+     "name": "calculate",
+     "arguments": {
+      "expression": "2 + 2"
+     }
+    },
+    {
+     "name": "search_web",
+     "arguments": {
+      "query": "test search"
+     }
+    }
+   ],
+   "expected": [
+    {
+     "anyOne": [
+      {
+       "name": "send_email",
+       "arguments": {
+        "to": "test@example.com",
+        "subject": "Test",
+        "body": "Test body"
+       }
+      },
+      {
+       "inAnyOrder": [
+        {
+         "name": "search_web",
+         "arguments": {
+          "query": "test search"
+         }
+        },
+        {
+         "name": "calculate",
+         "arguments": {
+          "expression": "2 + 2"
+         }
+        }
+       ]
+      }
+     ]
+    }
+   ],
+   "score": 1
+  },
+  {
+   "name": "anyOf Blocks / should handle deeply nested anyOf blocks with simple array format",
+   "tool_set": 0,
+   "actual": [
+    {
+     "name": "search_web",
+     "arguments": {
+      "query": "test search"
+     }
+    }
+   ],
+   "expected": [
+    {
+     "anyOne": [
+      {
+       "name": "send_email",
+       "arguments": {
+        "to": "test@example.com",
+        "subject": "Test",
+        "body": "Test body"
+       }
+      },
+      {
+       "anyOne": [
+        {
+         "name": "search_web",
+         "arguments": {
+          "query": "test search"
+         }
+        },
+        {
+         "name": "calculate",
+         "arguments": {
+          "expression": "2 + 2"
+         }
+        }
+       ]
+      }
+     ]
+    }
+   ],
+   "score": 1
+  },
+  {
+   "name": "anyOf Blocks / should handle empty simple array format anyOf block",
+   "tool_set": 0,
+   "actual": [],
+   "expected": [
+    {
+     "anyOne": []
+    }
+   ],
+   "score": 1
+  },
+  {
+   "name": "anyOf Blocks / should handle anyOf block with empty branches",
+   "tool_set": 0,
+   "actual": [],
+   "expected": [
+    {
+     "anyOne": [
+      [],
+      []
+     ]
+    }
+   ],
+   "score": 1
+  },
+  {
+   "name": "anyOf Blocks / should handle empty inAnyOrder block",
+   "tool_set": 0,
+   "actual": [],
+   "expected": [
+    {
+     "inAnyOrder": []
+    }
+   ],
+   "score": 1
+  },
+  {
+   "name": "Parameter Type Validation / should validate string parameters correctly",
+   "tool_set": 0,
+   "actual": [
+    {
+     "name": "search_web",
+     "arguments": {
+      "query": "  TEST  SEARCH  "
+     }
+    }
+   ],
+   "expected": [
+    {
+     "name": "search_web",
+     "arguments": {
+      "query": "test search"
+     }
+    }
+   ],
+   "score": 1
+  },
+  {
+   "name": "Parameter Type Validation / should validate integer parameters correctly",
+   "tool_set": 0,
+   "actual": [
+    {
+     "name": "search_web",
+     "arguments": {
+      "query": "test",
+      "num_results": 10
+     }
+    }
+   ],
+   "expected": [
+    {
+     "name": "search_web",
+     "arguments": {
+      "query": "test",
+      "num_results": 10
+     }
+    }
+   ],
+   "score": 1
+  },
+  {
+   "name": "Parameter Type Validation / should fail when integer parameter has wrong type",
+   "tool_set": 0,
+   "actual": [
+    {
+     "name": "search_web",
+     "arguments": {
+      "query": "test",
+      "num_results": "10"
+     }
+    }
+   ],
+   "expected": [
+    {
+     "name": "search_web",
+     "arguments": {
+      "query": "test",
+      "num_results": 10
+     }
+    }
+   ],
+   "score": 0
+  },
+  {
+   "name": "Parameter Type Validation / should validate boolean parameters correctly",
+   "tool_set": 0,
+   "actual": [
+    {
+     "name": "send_email",
+     "arguments": {
+      "to": "test@example.com",
+      "subject": "Test",
+      "body": "Test",
+      "urgent": true
+     }
+    }
+   ],
+   "expected": [
+    {
+     "name": "send_email",
+     "arguments": {
+      "to": "test@example.com",
+      "subject": "Test",
+      "body": "Test",
+      "urgent": true
+     }
+    }
+   ],
+   "score": 1
+  },
+  {
+   "name": "Parameter Type Validation / should validate object parameters correctly",
+   "tool_set": 0,
+   "actual": [
+    {
+     "name": "search_web",
+     "arguments": {
+      "query": "test",
+      "filters": {
+       "site": "example.com",
+       "date_range": "last_week"
+      }
+     }
+    }
+   ],
+   "expected": [
+    {
+     "name": "search_web",
+     "arguments": {
+      "query": "test",
+      "filters": {
+       "site": "example.com",
+       "date_range": "last_week"
+      }
+     }
+    }
+   ],
+   "score": 1
+  },
+  {
+   "name": "Complex Nested Scenarios / should handle sequential steps with inAnyOrder and anyOf blocks",
+   "tool_set": 0,
+   "actual": [
+    {
+     "name": "search_web",
+     "arguments": {
+      "query": "initial search"
+     }
+    },
+    {
+     "name": "calculate",
+     "arguments": {
+      "expression": "2 + 2"
+     }
+    },
+    {
+     "name": "send_email",
+     "arguments": {
+      "to": "test@example.com",
+      "subject": "Test",
+      "body": "Test body"
+     }
+    },
+    {
+     "name": "save_file",
+     "arguments": {
+      "filename": "results.txt",
+      "content": "final results"
+     }
+    }
+   ],
+   "expected": [
+    {
+     "name": "search_web",
+     "arguments": {
+      "query": "initial search"
+     }
+    },
+    {
+     "inAnyOrder": [
+      {
+       "name": "send_email",
+       "arguments": {
+        "to": "test@example.com",
+        "subject": "Test",
+        "body": "Test body"
+       }
+      },
+      {
+       "name": "calculate",
+       "arguments": {
+        "expression": "2 + 2"
+       }
+      }
+     ]
+    },
+    {
+     "anyOne": [
+      [
+       {
+        "name": "calculate",
+        "arguments": {
+         "expression": "wrong expression"
+        }
+       }
+      ],
+      [
+       {
+        "name": "save_file",
+        "arguments": {
+         "filename": "results.txt",
+         "content": "final results"
+        }
+       }
+      ]
+     ]
+    }
+   ],
+   "score": 1
+  },
+  {
+   "name": "Complex Nested Scenarios / should handle inAnyOrder block containing anyOf blocks",
+   "tool_set": 0,
+   "actual": [
+    {
+     "name": "search_web",
+     "arguments": {
+      "query": "test search"
+     }
+    },
+    {
+     "name": "calculate",
+     "arguments": {
+      "expression": "2 + 2"
+     }
+    }
+   ],
+   "expected": [
+    {
+     "inAnyOrder": [
+      {
+       "anyOne": [
+        [
+         {
+          "name": "send_email",
+          "arguments": {
+           "to": "test@example.com",
+           "subject": "Test",
+           "body": "Test"
+          }
+         }
+        ],
+        [
+         {
+          "name": "search_web",
+          "arguments": {
+           "query": "test search"
+          }
+         }
+        ]
+       ]
+      },
+      {
+       "name": "calculate",
+       "arguments": {
+        "expression": "2 + 2"
+       }
+      }
+     ]
+    }
+   ],
+   "score": 1
+  },
+  {
+   "name": "Edge Cases / should handle empty expected tool calls",
+   "tool_set": 0,
+   "actual": [],
+   "expected": [],
+   "score": 1
+  },
+  {
+   "name": "Edge Cases / should handle empty expected and actual tool calls with empty blocks",
+   "tool_set": 0,
+   "actual": [],
+   "expected": [
+    {
+     "inAnyOrder": []
+    },
+    {
+     "anyOne": []
+    }
+   ],
+   "score": 1
+  },
+  {
+   "name": "Edge Cases / should handle empty actual tool calls with non-empty expected",
+   "tool_set": 0,
+   "actual": [],
+   "expected": [
+    {
+     "name": "search_web",
+     "arguments": {
+      "query": "test"
+     }
+    }
+   ],
+   "score": 0
+  },
+  {
+   "name": "Edge Cases / should handle tool calls without schema definitions",
+   "tool_set": 1,
+   "actual": [
+    {
+     "name": "unknown_function",
+     "arguments": {
+      "param": "value"
+     }
+    }
+   ],
+   "expected": [
+    {
+     "name": "unknown_function",
+     "arguments": {
+      "param": "value"
+     }
+    }
+   ],
+   "score": 1
+  },
+  {
+   "name": "Edge Cases / should handle malformed tool call arguments",
+   "tool_set": 0,
+   "actual": [
+    {
+     "name": "search_web",
+     "arguments": {}
+    }
+   ],
+   "expected": [
+    {
+     "name": "search_web",
+     "arguments": {
+      "query": "test"
+     }
+    }
+   ],
+   "score": 0
+  },
+  {
+   "name": "Real-world Complex Scenarios / should handle multi-step workflow with conditional branches",
+   "tool_set": 0,
+   "actual": [
+    {
+     "name": "search_web",
+     "arguments": {
+      "query": "user question"
+     }
+    },
+    {
+     "name": "calculate",
+     "arguments": {
+      "expression": "complex calculation"
+     }
+    },
+    {
+     "name": "send_email",
+     "arguments": {
+      "to": "user@example.com",
+      "subject": "Results",
+      "body": "Here are the results"
+     }
+    },
+    {
+     "name": "save_file",
+     "arguments": {
+      "filename": "backup.txt",
+      "content": "backup data"
+     }
+    }
+   ],
+   "expected": [
+    {
+     "name": "search_web",
+     "arguments": {
+      "query": "user question"
+     }
+    },
+    {
+     "anyOne": [
+      [
+       {
+        "name": "send_email",
+        "arguments": {
+         "to": "user@example.com",
+         "subject": "Error",
+         "body": "No results found"
+        }
+       }
+      ],
+      [
+       {
+        "name": "calculate",
+        "arguments": {
+         "expression": "complex calculation"
+        }
+       },
+       {
+        "inAnyOrder": [
+         {
+          "name": "save_file",
+          "arguments": {
+           "filename": "backup.txt",
+           "content": "backup data"
+          }
+         },
+         {
+          "name": "send_email",
+          "arguments": {
+           "to": "user@example.com",
+           "subject": "Results",
+           "body": "Here are the results"
+          }
+         }
+        ]
+       }
+      ]
+     ]
+    }
+   ],
+   "score": 1
+  },
+  {
+   "name": "Real-world Complex Scenarios / should handle agent decision tree scenario",
+   "tool_set": 0,
+   "actual": [
+    {
+     "name": "search_web",
+     "arguments": {
+      "query": "weather today"
+     }
+    },
+    {
+     "name": "send_email",
+     "arguments": {
+      "to": "user@example.com",
+      "subject": "Weather Update",
+      "body": "Today will be sunny"
+     }
+    }
+   ],
+   "expected": [
+    {
+     "name": "search_web",
+     "arguments": {
+      "query": "weather today"
+     }
+    },
+    {
+     "anyOne": [
+      [
+       {
+        "name": "calculate",
+        "arguments": {
+         "expression": "temperature conversion"
+        }
+       }
+      ],
+      [
+       {
+        "name": "send_email",
+        "arguments": {
+         "to": "user@example.com",
+         "subject": "Weather Update",
+         "body": "Today will be sunny"
+        }
+       }
+      ],
+      [
+       {
+        "name": "save_file",
+        "arguments": {
+         "filename": "weather.txt",
+         "content": "weather data"
+        }
+       }
+      ]
+     ]
+    }
+   ],
+   "score": 1
+  },
+  {
+   "name": "Real-world Complex Scenarios / should handle parallel processing with error handling",
+   "tool_set": 0,
+   "actual": [
+    {
+     "name": "search_web",
+     "arguments": {
+      "query": "data source 1"
+     }
+    },
+    {
+     "name": "calculate",
+     "arguments": {
+      "expression": "process data"
+     }
+    },
+    {
+     "name": "send_email",
+     "arguments": {
+      "to": "admin@example.com",
+      "subject": "Processing Complete",
+      "body": "All data processed"
+     }
+    }
+   ],
+   "expected": [
+    {
+     "inAnyOrder": [
+      {
+       "name": "calculate",
+       "arguments": {
+        "expression": "process data"
+       }
+      },
+      {
+       "name": "search_web",
+       "arguments": {
+        "query": "data source 1"
+       }
+      }
+     ]
+    },
+    {
+     "anyOne": [
+      [
+       {
+        "name": "send_email",
+        "arguments": {
+         "to": "admin@example.com",
+         "subject": "Error",
+         "body": "Processing failed"
+        }
+       }
+      ],
+      [
+       {
+        "name": "send_email",
+        "arguments": {
+         "to": "admin@example.com",
+         "subject": "Processing Complete",
+         "body": "All data processed"
+        }
+       }
+      ]
+     ]
+    }
+   ],
+   "score": 1
+  },
+  {
+   "name": "Real-world Complex Scenarios / should handle customer service workflow with new simple array format",
+   "tool_set": 0,
+   "actual": [
+    {
+     "name": "search_web",
+     "arguments": {
+      "query": "customer issue"
+     }
+    },
+    {
+     "name": "send_email",
+     "arguments": {
+      "to": "customer@example.com",
+      "subject": "We found a solution",
+      "body": "Here's how to fix it"
+     }
+    }
+   ],
+   "expected": [
+    {
+     "name": "search_web",
+     "arguments": {
+      "query": "customer issue"
+     }
+    },
+    {
+     "anyOne": [
+      {
+       "name": "send_email",
+       "arguments": {
+        "to": "customer@example.com",
+        "subject": "We found a solution",
+        "body": "Here's how to fix it"
+       }
+      },
+      {
+       "name": "send_email",
+       "arguments": {
+        "to": "support@example.com",
+        "subject": "Escalate issue",
+        "body": "Needs manual review"
+       }
+      },
+      {
+       "name": "save_file",
+       "arguments": {
+        "filename": "unresolved.txt",
+        "content": "Could not resolve automatically"
+       }
+      }
+     ]
+    }
+   ],
+   "score": 1
+  },
+  {
+   "name": "Real-world Complex Scenarios / should handle e-commerce order processing with new format",
+   "tool_set": 0,
+   "actual": [
+    {
+     "name": "search_web",
+     "arguments": {
+      "query": "inventory check"
+     }
+    },
+    {
+     "name": "calculate",
+     "arguments": {
+      "expression": "total cost + tax"
+     }
+    },
+    {
+     "name": "send_email",
+     "arguments": {
+      "to": "customer@example.com",
+      "subject": "Order Confirmed",
+      "body": "Your order is confirmed"
+     }
+    }
+   ],
+   "expected": [
+    {
+     "name": "search_web",
+     "arguments": {
+      "query": "inventory check"
+     }
+    },
+    {
+     "anyOne": [
+      {
+       "name": "send_email",
+       "arguments": {
+        "to": "customer@example.com",
+        "subject": "Out of Stock",
+        "body": "Item unavailable"
+       }
+      },
+      {
+       "inAnyOrder": [
+        {
+         "name": "send_email",
+         "arguments": {
+          "to": "customer@example.com",
+          "subject": "Order Confirmed",
+          "body": "Your order is confirmed"
+         }
+        },
+        {
+         "name": "calculate",
+         "arguments": {
+          "expression": "total cost + tax"
+         }
+        }
+       ]
+      }
+     ]
+    }
+   ],
+   "score": 1
+  },
+  {
+   "name": "Real-world Complex Scenarios / should handle research assistant workflow with nested decision trees",
+   "tool_set": 0,
+   "actual": [
+    {
+     "name": "search_web",
+     "arguments": {
+      "query": "recent AI developments"
+     }
+    },
+    {
+     "name": "calculate",
+     "arguments": {
+      "expression": "data analysis"
+     }
+    },
+    {
+     "name": "save_file",
+     "arguments": {
+      "filename": "research_summary.txt",
+      "content": "AI research findings"
+     }
+    }
+   ],
+   "expected": [
+    {
+     "name": "search_web",
+     "arguments": {
+      "query": "recent AI developments"
+     }
+    },
+    {
+     "anyOne": [
+      {
+       "name": "send_email",
+       "arguments": {
+        "to": "researcher@example.com",
+        "subject": "No results found",
+        "body": "Search returned empty"
+       }
+      },
+      {
+       "anyOne": [
+        {
+         "name": "save_file",
+         "arguments": {
+          "filename": "raw_data.txt",
+          "content": "Unprocessed findings"
+         }
+        },
+        {
+         "inAnyOrder": [
+          {
+           "name": "save_file",
+           "arguments": {
+            "filename": "research_summary.txt",
+            "content": "AI research findings"
+           }
+          },
+          {
+           "name": "calculate",
+           "arguments": {
+            "expression": "data analysis"
+           }
+          }
+         ]
+        }
+       ]
+      }
+     ]
+    }
+   ],
+   "score": 1
+  },
+  {
+   "name": "Real-world Complex Scenarios / should handle simple decision workflow for content moderation",
+   "tool_set": 0,
+   "actual": [
+    {
+     "name": "send_email",
+     "arguments": {
+      "to": "user@example.com",
+      "subject": "Content Approved",
+      "body": "Your post is approved"
+     }
+    }
+   ],
+   "expected": [
+    {
+     "anyOne": [
+      {
+       "name": "send_email",
+       "arguments": {
+        "to": "user@example.com",
+        "subject": "Content Rejected",
+        "body": "Your post violates guidelines"
+       }
+      },
+      {
+       "name": "send_email",
+       "arguments": {
+        "to": "user@example.com",
+        "subject": "Content Approved",
+        "body": "Your post is approved"
+       }
+      },
+      {
+       "name": "send_email",
+       "arguments": {
+        "to": "moderator@example.com",
+        "subject": "Manual Review",
+        "body": "Content needs human review"
+       }
+      }
+     ]
+    }
+   ],
+   "score": 1
+  }
+ ]
+}

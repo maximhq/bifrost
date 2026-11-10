@@ -25,6 +25,7 @@
 		"@date-fns/tz": "1.5.0",
 		"@dnd-kit/react": "0.3.2",
 		"@hookform/resolvers": "5.2.1",
+		"@maximai/glide-data-grid": "6.0.20",
 		"@monaco-editor/react": "4.7.0",
 		"@number-flow/react": "0.6.0",
 		"@phosphor-icons/react": "2.1.9",
@@ -62,8 +63,10 @@
 		"i18next": "26.4.1",
 		"i18next-browser-languagedetector": "8.2.1",
 		"jspdf": "4.2.1",
+		"lodash": "4.18.1",
 		"lodash.isequal": "4.5.0",
 		"lucide-react": "0.552.0",
+		"marked": "4.3.0",
 		"monaco-editor": "0.52.2",
 		"next-themes": "0.4.6",
 		"nuqs": "2.8.8",
@@ -76,6 +79,7 @@
 		"react-i18next": "17.0.13",
 		"react-querybuilder": "8.11.1",
 		"react-resizable-panels": "4.5.3",
+		"react-responsive-carousel": "3.2.23",
 		"react-select": "5.10.2",
 		"react-textarea-autosize": "8.5.9",
 		"recharts": "3.8.1",
@@ -108,9 +112,14 @@
 		"vitest": "4.1.12"
 	},
 	"overrides": {
+		"@maximai/glide-data-grid": {
+			"react": "$react",
+			"react-dom": "$react-dom"
+		},
 		"dompurify": "3.4.17",
 		"esbuild": "0.28.1",
 		"follow-redirects": "1.16.2",
+		"minimatch": "11.0.3",
 		"seroval": "1.6.11",
 		"tar": "7.5.3",
 		"tinypool": "2.1.2",

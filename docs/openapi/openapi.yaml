@@ -1323,6 +1323,66 @@ paths:
   /api/evals/keys:
     $ref: "./paths/management/evals.yaml#/keys"
 
+  # Datasets
+  /api/evals/datasets:
+    $ref: "./paths/management/evalsdatasets.yaml#/datasets"
+  /api/evals/datasets/{id}:
+    $ref: "./paths/management/evalsdatasets.yaml#/datasets-by-id"
+  /api/evals/datasets/{id}/duplicate:
+    $ref: "./paths/management/evalsdatasets.yaml#/datasets-duplicate"
+  /api/evals/datasets/folders:
+    $ref: "./paths/management/evalsdatasets.yaml#/datasets-folders"
+  /api/evals/datasets/folders/{folderId}:
+    $ref: "./paths/management/evalsdatasets.yaml#/datasets-folder"
+  /api/evals/datasets/folders/{folderId}/parent:
+    $ref: "./paths/management/evalsdatasets.yaml#/datasets-folder-parent"
+  /api/evals/datasets/{id}/folder:
+    $ref: "./paths/management/evalsdatasets.yaml#/datasets-dataset-folder"
+  /api/evals/datasets/{id}/columns:
+    $ref: "./paths/management/evalsdatasets.yaml#/datasets-columns"
+  /api/evals/datasets/{id}/columns/order:
+    $ref: "./paths/management/evalsdatasets.yaml#/datasets-columns-order"
+  /api/evals/datasets/{id}/columns/{columnId}:
+    $ref: "./paths/management/evalsdatasets.yaml#/datasets-column"
+  /api/evals/datasets/{id}/files:
+    $ref: "./paths/management/evalsdatasets.yaml#/datasets-files"
+  /api/evals/datasets/{id}/files/{fileId}:
+    $ref: "./paths/management/evalsdatasets.yaml#/datasets-file"
+  /api/evals/datasets/{id}/rows:
+    $ref: "./paths/management/evalsdatasets.yaml#/datasets-rows"
+  /api/evals/datasets/{id}/rows/batch:
+    $ref: "./paths/management/evalsdatasets.yaml#/datasets-rows-batch"
+  /api/evals/datasets/{id}/rows/delete:
+    $ref: "./paths/management/evalsdatasets.yaml#/datasets-rows-delete"
+  /api/evals/datasets/{id}/rows/from-logs:
+    $ref: "./paths/management/evalsdatasets.yaml#/datasets-rows-from-logs"
+  /api/evals/datasets/{id}/rows/from-sessions:
+    $ref: "./paths/management/evalsdatasets.yaml#/datasets-rows-from-sessions"
+  /api/evals/datasets/{id}/rows/{rowId}:
+    $ref: "./paths/management/evalsdatasets.yaml#/datasets-row"
+  /api/evals/datasets/{id}/rows/{rowId}/variables:
+    $ref: "./paths/management/evalsdatasets.yaml#/datasets-row-variables"
+  /api/evals/datasets/{id}/import:
+    $ref: "./paths/management/evalsdatasets.yaml#/datasets-import"
+  /api/evals/datasets/{id}/import/preview:
+    $ref: "./paths/management/evalsdatasets.yaml#/datasets-import-preview"
+  /api/evals/datasets/{id}/export:
+    $ref: "./paths/management/evalsdatasets.yaml#/datasets-export"
+  /api/evals/datasets/{id}/versions:
+    $ref: "./paths/management/evalsdatasets.yaml#/datasets-versions"
+  /api/evals/datasets/{id}/versions/{number}:
+    $ref: "./paths/management/evalsdatasets.yaml#/datasets-version"
+  /api/evals/datasets/{id}/versions/{number}/diff:
+    $ref: "./paths/management/evalsdatasets.yaml#/datasets-version-diff"
+  /api/evals/datasets/{id}/versions/{number}/restore:
+    $ref: "./paths/management/evalsdatasets.yaml#/datasets-version-restore"
+  /api/evals/datasets/{id}/splits:
+    $ref: "./paths/management/evalsdatasets.yaml#/datasets-splits"
+  /api/evals/datasets/{id}/splits/{splitId}:
+    $ref: "./paths/management/evalsdatasets.yaml#/datasets-split"
+  /api/evals/datasets/{id}/splits/{splitId}/rows:
+    $ref: "./paths/management/evalsdatasets.yaml#/datasets-split-rows"
+
   # Skills Repository
   /api/skills/files/upload:
     $ref: "./paths/management/skills.yaml#/skill-file-upload"

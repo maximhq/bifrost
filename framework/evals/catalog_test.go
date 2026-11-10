@@ -28,7 +28,7 @@ func TestCatalog_CoversEveryBuiltin(t *testing.T) {
 		assert.Equal(t, EvaluatorTypeAI, entry.Type)
 		assert.True(t, entry.NeedsJudgeModel)
 	}
-	statistical := []string{BuiltinSQLiteValidation}
+	statistical := []string{BuiltinSQLiteValidation, BuiltinToolCallAccuracy}
 	for key := range textMetrics {
 		statistical = append(statistical, key)
 	}
