@@ -2355,6 +2355,23 @@
         "finance"
       ],
       "icon_url": "https://fxmacrodata.com/static/logos/pwa-512.png"
+    },
+    {
+      "name": "Imagera",
+      "description": "Generate and edit images, video, voice and music with many AI models from your agent, with a cost estimate before each run. Hosted remotely by Imagera.",
+      "category": "Design",
+      "connection_type": "http",
+      "connection_url": "https://mcp.imagera.ai/mcp",
+      "auth_type": "oauth",
+      "docs_url": "https://imagera.ai/mcp",
+      "publisher": "Imagera",
+      "tags": [
+        "image-generation",
+        "video-generation",
+        "text-to-speech",
+        "music",
+        "image-editing"
+      ]
     }
   ]
 }
