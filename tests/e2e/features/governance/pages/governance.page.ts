@@ -1,7 +1,7 @@
 import { Locator, Page } from '@playwright/test'
 import { expect } from '../../../core/fixtures/base.fixture'
 import { BasePage } from '../../../core/pages/base.page'
-import { fillSelect, waitForNetworkIdle } from '../../../core/utils/test-helpers'
+import { fillRequestLimitLines, fillSelect, type RequestLimitLineInput, waitForNetworkIdle } from '../../../core/utils/test-helpers'
 
 export interface TeamConfig {
   name: string
@@ -17,9 +17,9 @@ export interface TeamConfig {
   rateLimit?: {
     tokenMaxLimit?: number
     tokenResetDuration?: string
-    requestMaxLimit?: number
-    requestResetDuration?: string
   }
+  /** Request limit lines, filled from line 0 (an existing line is overwritten in place). */
+  requestLimits?: RequestLimitLineInput[]
 }
 
 export interface CustomerConfig {
@@ -28,8 +28,6 @@ export interface CustomerConfig {
   rateLimit?: {
     tokenMaxLimit?: number
     tokenResetDuration?: string
-    requestMaxLimit?: number
-    requestResetDuration?: string
   }
 }
 
@@ -125,6 +123,9 @@ export class GovernancePage extends BasePage {
       await this.teamDialog.getByTestId('team-add-budget-btn').click()
       await this.teamDialog.getByTestId('budget-max-limit-input-0').fill(String(config.budget.maxLimit))
     }
+    if (config.requestLimits) {
+      await fillRequestLimitLines(this.teamDialog, 'team-request-limit-lines', config.requestLimits)
+    }
 
     const saveBtn = this.teamDialog.getByRole('button', { name: /Create Team/i })
     await expect(saveBtn).toBeEnabled()
@@ -214,6 +215,9 @@ export class GovernancePage extends BasePage {
         await this.teamDialog.getByTestId('team-add-budget-btn').click()
       }
       await budgetInput.fill(String(updates.budget.maxLimit))
+    }
+    if (updates.requestLimits) {
+      await fillRequestLimitLines(this.teamDialog, 'team-request-limit-lines', updates.requestLimits)
     }
 
     const saveBtn = this.teamDialog.getByRole('button', { name: /Save|Update/i })

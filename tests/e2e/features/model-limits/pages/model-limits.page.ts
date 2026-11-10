@@ -1,7 +1,7 @@
 import type { Locator, Page } from '@playwright/test'
 import { expect } from '../../../core/fixtures/base.fixture'
 import { BasePage } from '../../../core/pages/base.page'
-import { fillSelect, waitForNetworkIdle } from '../../../core/utils/test-helpers'
+import { fillRequestLimitLines, fillSelect, waitForNetworkIdle } from '../../../core/utils/test-helpers'
 
 const resetPeriodLabels: Record<string, string> = {
   '1m': 'Every Minute',
@@ -23,6 +23,16 @@ export interface ModelLimitConfig {
     tokenMaxLimit?: number
     requestMaxLimit?: number
   }
+}
+
+/** A model config as GET /api/governance/model-configs returns it, with the fields these tests read. */
+export interface ModelConfigRow {
+  id: string
+  model_name: string
+  provider?: string
+  budgets?: { max_limit: number; reset_duration: string; scope?: string }[]
+  rate_limit?: { token_max_limit?: number; token_reset_duration?: string }
+  request_limits?: { request_max_limit: number; request_reset_duration: string; scope?: string }[]
 }
 
 function toTestIdPart(value: string): string {
@@ -120,7 +130,7 @@ export class ModelLimitsPage extends BasePage {
       if (!resetPeriodLabel) {
         throw new Error(`unsupported resetDuration: ${config.resetDuration}`)
       }
-      // An all-models limit with no provider also shows the budget scope select after the reset period.
+      // Every budget line also shows the scope select after the reset period.
       const budgetLine = this.page.getByTestId('model-limit-budget-lines-line-0')
       await budgetLine.getByRole('combobox').first().click()
       await this.page.getByRole('option', { name: resetPeriodLabel }).click()
@@ -162,7 +172,7 @@ export class ModelLimitsPage extends BasePage {
       await this.page.locator('#modelTokenMaxLimit').fill(String(config.rateLimit.tokenMaxLimit))
     }
     if (config.rateLimit?.requestMaxLimit !== undefined) {
-      await this.page.locator('#modelRequestMaxLimit').fill(String(config.rateLimit.requestMaxLimit))
+      await fillRequestLimitLines(this.page, 'model-limit-request-limit-lines', [{ maxLimit: config.rateLimit.requestMaxLimit }])
     }
 
     const saveBtn = this.page.getByRole('button', { name: /Create Limit/i })
@@ -189,9 +199,8 @@ export class ModelLimitsPage extends BasePage {
       await tokenInput.fill(String(updates.rateLimit.tokenMaxLimit))
     }
     if (updates.rateLimit?.requestMaxLimit !== undefined) {
-      const requestInput = this.page.locator('#modelRequestMaxLimit')
-      await requestInput.clear()
-      await requestInput.fill(String(updates.rateLimit.requestMaxLimit))
+      // Line 0 is updated in place, keeping its counter, or added when the limit had none.
+      await fillRequestLimitLines(this.page, 'model-limit-request-limit-lines', [{ maxLimit: updates.rateLimit.requestMaxLimit }])
     }
 
     const saveBtn = this.page.getByRole('button', { name: /Save Changes|Create Limit/i })
@@ -214,6 +223,79 @@ export class ModelLimitsPage extends BasePage {
     const confirmDialog = this.page.locator('[role="alertdialog"]')
     await confirmDialog.getByRole('button', { name: /Delete/i }).click()
     await expect(this.getModelLimitRow(modelName, provider)).not.toBeVisible({ timeout: 15000 })
+  }
+
+  /** The deployment's model config for a model ('*' for all) and provider ('all' for none), if any. */
+  async getGlobalModelConfig(modelName: string, provider: string): Promise<ModelConfigRow | undefined> {
+    const res = await this.page.request.get(`/api/governance/model-configs?scope=global&search=${encodeURIComponent(modelName)}&limit=100`)
+    expect(res.status(), await res.text()).toBe(200)
+    const rows = ((await res.json()).model_configs ?? []) as ModelConfigRow[]
+    return rows.find((mc) => mc.model_name === modelName && (mc.provider || 'all') === provider)
+  }
+
+  /** Removes the deployment's model config for a tier so a test can create it, returning what was there. */
+  async takeGlobalModelConfig(modelName: string, provider: string): Promise<ModelConfigRow | undefined> {
+    const saved = await this.getGlobalModelConfig(modelName, provider)
+    if (saved) {
+      const res = await this.page.request.delete(`/api/governance/model-configs/${saved.id}`)
+      expect(res.status(), await res.text()).toBe(200)
+    }
+    return saved
+  }
+
+  /** Puts back what takeGlobalModelConfig removed, dropping whatever the test left on the tier. */
+  async restoreGlobalModelConfig(modelName: string, provider: string, saved: ModelConfigRow | undefined): Promise<void> {
+    const current = await this.getGlobalModelConfig(modelName, provider)
+    if (current) {
+      await this.page.request.delete(`/api/governance/model-configs/${current.id}`)
+    }
+    if (!saved) return
+    const res = await this.page.request.post('/api/governance/model-configs', {
+      data: {
+        model_name: saved.model_name,
+        provider: saved.provider,
+        scope: 'global',
+        budgets: (saved.budgets ?? []).map((b) => ({ max_limit: b.max_limit, reset_duration: b.reset_duration, scope: b.scope })),
+        // Token fields only: the request side is sent as request_limits, and both together are refused.
+        rate_limit: saved.rate_limit?.token_max_limit
+          ? { token_max_limit: saved.rate_limit.token_max_limit, token_reset_duration: saved.rate_limit.token_reset_duration }
+          : undefined,
+        request_limits: (saved.request_limits ?? []).map((r) => ({
+          max_limit: r.request_max_limit,
+          reset_duration: r.request_reset_duration,
+          scope: r.scope,
+        })),
+      },
+    })
+    expect(res.status(), await res.text()).toBe(200)
+  }
+
+  /** Opens the create sheet on a tier: a provider ('all' keeps All Providers) and a model ('*' keeps All Models). */
+  async openCreateSheet(modelName: string, provider: string): Promise<void> {
+    await this.createBtn.click()
+    await expect(this.sheet).toBeVisible({ timeout: 5000 })
+    await this.waitForSheetAnimation()
+    if (provider !== 'all') {
+      await fillSelect(this.page, '[data-testid="model-limit-provider-select"]', provider)
+    }
+    if (modelName !== '*') {
+      await this.sheet.getByTestId('model-limit-model-select').getByRole('combobox').click()
+      await this.page.getByPlaceholder('Search models...').fill(modelName)
+      const option = this.page.getByRole('option', { name: modelName, exact: true }).first()
+      await expect(option).toBeVisible({ timeout: 10000 })
+      await option.click()
+      await this.page.keyboard.press('Tab')
+    }
+  }
+
+  /** Opens the edit sheet of a listed model limit. */
+  async openEditSheet(modelName: string, provider: string): Promise<void> {
+    await this.openModelLimitActions(modelName, provider)
+    const editBtn = this.page.getByTestId(`model-limit-button-edit-${toTestIdPart(modelName)}-${toTestIdPart(provider)}`)
+    await editBtn.waitFor({ state: 'visible', timeout: 10000 })
+    await editBtn.click()
+    await expect(this.sheet).toBeVisible({ timeout: 5000 })
+    await this.waitForSheetAnimation()
   }
 
   async closeSheet(): Promise<void> {

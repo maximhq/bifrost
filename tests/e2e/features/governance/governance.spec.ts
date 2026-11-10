@@ -1,4 +1,4 @@
-import { customersApi } from '../../core/actions/api'
+import { customersApi, teamsApi } from '../../core/actions/api'
 import { expect, test } from '../../core/fixtures/base.fixture'
 import { expectListLoadError } from '../../core/utils/test-helpers'
 import { createCustomerData, createTeamData } from './governance.data'
@@ -64,6 +64,43 @@ test.describe('Governance - Teams', () => {
 
     const exists = await governancePage.teamExists(teamData.name)
     expect(exists).toBe(true)
+  })
+
+  test('should save team request limits and show them when reopened', async ({ governancePage }) => {
+    const teamData = createTeamData({
+      name: `E2E Request Limits Team ${Date.now()}`,
+      requestLimits: [
+        { maxLimit: 200, resetDuration: '1d' },
+        { maxLimit: 40, resetDuration: '1d', scope: 'mcp' },
+      ],
+    })
+    createdTeams.push(teamData.name)
+    await governancePage.createTeam(teamData)
+
+    const page = governancePage.page
+    const { teams } = (await teamsApi.getAll(page.request)) as {
+      teams: Array<{ name: string; request_limits?: Array<{ request_max_limit: number; request_reset_duration: string; scope: string }> }>
+    }
+    const stored = teams.find((team) => team.name === teamData.name)
+    expect(stored, `team ${teamData.name} should exist`).toBeDefined()
+    expect(
+      (stored!.request_limits ?? []).map((rl) => `${rl.request_max_limit}/${rl.request_reset_duration}/${rl.scope}`).sort(),
+    ).toEqual(['200/1d/shared', '40/1d/mcp'])
+
+    await page.getByTestId(`team-actions-btn-${teamData.name}`).click()
+    await page.getByTestId(`team-edit-btn-${teamData.name}`).click()
+    await expect(governancePage.teamDialog).toBeVisible({ timeout: 5000 })
+    const dialog = governancePage.teamDialog
+    const amounts = [
+      await dialog.getByTestId('team-request-limit-lines-amount-0').inputValue(),
+      await dialog.getByTestId('team-request-limit-lines-amount-1').inputValue(),
+    ]
+    const mcpIndex = amounts.indexOf('40')
+    expect(mcpIndex).toBeGreaterThanOrEqual(0)
+    expect(amounts[1 - mcpIndex]).toBe('200')
+    await expect(dialog.getByTestId(`team-request-limit-lines-scope-${mcpIndex}-trigger`)).toHaveText('MCP')
+    await expect(dialog.getByTestId(`team-request-limit-lines-scope-${1 - mcpIndex}-trigger`)).toHaveText('Shared')
+    await governancePage.closeTeamDialog()
   })
 
   test('should create team with customer assignment', async ({ governancePage }) => {
@@ -180,7 +217,8 @@ test.describe('Governance - Customers', () => {
     await expect(governancePage.customerDialog).toBeVisible({ timeout: 5000 })
 
     // An empty field means no limit, so the placeholder must not read like a value.
-    for (const testId of ['customer-token-max-limit-input', 'customer-request-max-limit-input']) {
+    await governancePage.customerDialog.getByTestId('customer-request-limit-lines-add-btn').click()
+    for (const testId of ['customer-token-max-limit-input', 'customer-request-limit-lines-amount-0']) {
       await expect(governancePage.customerDialog.getByTestId(testId)).toHaveAttribute('placeholder', 'No limit')
     }
 

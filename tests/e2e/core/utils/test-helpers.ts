@@ -1,4 +1,4 @@
-import { Page, expect } from '@playwright/test';
+import { Locator, Page, expect } from '@playwright/test';
 
 /**
  * Wait for network to be idle
@@ -191,5 +191,55 @@ export async function screenshotOnError(
   } catch (error) {
     await page.screenshot({ path: `./screenshots/error-${testName}-${Date.now()}.png` })
     throw error
+  }
+}
+
+/** One request limit line to fill in a RequestLimitLines editor. */
+export interface RequestLimitLineInput {
+  maxLimit: number
+  resetDuration?: string // e.g. "1m", "1h", "1d" (no quarterly: request limits do not support it)
+  scope?: 'shared' | 'model' | 'mcp' // only where the editor offers a scope; omitted keeps "shared"
+}
+
+const REQUEST_LIMIT_RESET_LABELS: Record<string, string> = {
+  '1m': 'Every Minute',
+  '5m': 'Every 5 Minutes',
+  '15m': 'Every 15 Minutes',
+  '30m': 'Every 30 Minutes',
+  '1h': 'Hourly',
+  '6h': 'Every 6 Hours',
+  '1d': 'Daily',
+  '1w': 'Weekly',
+  '1M': 'Monthly',
+}
+
+/**
+ * Fill request limit lines in the RequestLimitLines editor whose data-testid is `testId`
+ * (e.g. "vk-request-limit-lines"). Line i is filled in place when it exists, else added.
+ */
+export async function fillRequestLimitLines(
+  root: Page | Locator,
+  testId: string,
+  lines: RequestLimitLineInput[]
+): Promise<void> {
+  const page = 'page' in root ? root.page() : root
+  const existing = await root.locator(`[data-testid^="${testId}-line-"]`).count()
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]
+    if (i >= existing) {
+      await root.getByTestId(`${testId}-add-btn`).click()
+    }
+    await root.getByTestId(`${testId}-amount-${i}`).fill(String(line.maxLimit))
+    if (line.resetDuration) {
+      const label = REQUEST_LIMIT_RESET_LABELS[line.resetDuration]
+      if (!label) throw new Error(`unsupported request limit resetDuration: ${line.resetDuration}`)
+      // The reset period select comes before the scope select in a line.
+      await root.getByTestId(`${testId}-line-${i}`).getByRole('combobox').first().click()
+      await page.getByRole('option', { name: label, exact: true }).click()
+    }
+    if (line.scope) {
+      await root.getByTestId(`${testId}-scope-${i}-trigger`).click()
+      await page.getByTestId(`${testId}-scope-${i}-option-${line.scope}`).click()
+    }
   }
 }
