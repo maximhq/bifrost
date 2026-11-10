@@ -14,6 +14,7 @@
 		"logsSettings": "Definições de registos",
 		"models": "Modelos",
 		"modelCatalog": "Catálogo de modelos",
+		"datasheet": "Editor de fichas técnicas",
 		"modelProviders": "Fornecedores de modelos",
 		"budgetsLimits": "Orçamentos e limites",
 		"routingRules": "Regras de encaminhamento",
@@ -96,6 +97,7 @@
 		"logsSettings": "Configuração de registos",
 		"models": "Configurar modelos",
 		"modelCatalog": "Visão geral de fornecedores, chaves e utilização",
+		"datasheet": "Edite limites, capacidades e preços de modelos",
 		"modelProviders": "Configurar modelos",
 		"budgetsLimits": "Orçamentos e limites de taxa",
 		"routingRules": "Regras de encaminhamento inteligente",
@@ -350,6 +352,12 @@
 		"descriptionWaitingEnterprise": "A sua organização optou por lançar uma nova versão do Bifrost. O lançamento avança uma instância de cada vez. Esta página será recarregada automaticamente quando o lançamento terminar em todas as instâncias.",
 		"descriptionStuckEnterprise": "O lançamento ainda está em curso. Recarregue para verificar novamente dentro de um minuto. Se não funcionar, contacte o administrador da sua implementação do Bifrost.",
 		"waitingEnterprise": "A aguardar a conclusão do lançamento…"
+	},
+	"assetLoadFailed": {
+		"bannerTitle": "Não foi possível carregar parte do painel",
+		"bannerDescription": "Verifique sua rede, seu proxy ou as extensões do navegador e recarregue.",
+		"screenTitle": "Não foi possível carregar esta página",
+		"screenDescription": "Seu navegador não conseguiu baixar alguns arquivos do painel. Um proxy, firewall ou extensão do navegador pode estar bloqueando-os. Verifique sua rede e recarregue."
 	},
 	"onboarding": {
 		"expandSetupChecklist": "Expandir lista de configuração",

@@ -14,6 +14,7 @@
 		"logsSettings": "日志设置",
 		"models": "模型",
 		"modelCatalog": "模型目录",
+		"datasheet": "数据表编辑器",
 		"modelProviders": "模型提供商",
 		"budgetsLimits": "预算与限额",
 		"routingRules": "路由规则",
@@ -96,6 +97,7 @@
 		"logsSettings": "日志配置",
 		"models": "配置模型",
 		"modelCatalog": "提供商、密钥与用量总览",
+		"datasheet": "编辑模型限制、能力和价格",
 		"modelProviders": "配置模型",
 		"budgetsLimits": "预算与速率限制",
 		"routingRules": "智能路由规则",
@@ -350,6 +352,12 @@
 		"descriptionWaitingEnterprise": "你的组织已选择推出新版本的 Bifrost。更新正逐个实例进行。所有实例完成更新后，此页面将自动重新加载。",
 		"descriptionStuckEnterprise": "更新仍在进行中。请稍后一分钟重新加载以再次检查。如果仍无法完成，请联系 Bifrost 部署管理员。",
 		"waitingEnterprise": "等待更新完成…"
+	},
+	"assetLoadFailed": {
+		"bannerTitle": "部分控制台内容无法加载",
+		"bannerDescription": "请检查网络、代理或浏览器扩展，然后重新加载。",
+		"screenTitle": "此页面无法加载",
+		"screenDescription": "浏览器无法下载部分控制台文件，可能是代理、防火墙或浏览器扩展拦截了它们。请检查网络后重新加载。"
 	},
 	"onboarding": {
 		"expandSetupChecklist": "展开设置清单",

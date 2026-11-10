@@ -344,6 +344,10 @@
 		"removeAria": "{{label}} 제거"
 	},
 	"validation": {
+		"modeIsRequired": "모드는 필수입니다",
+		"valueMustBeAPositiveWholeNumber": "양의 정수여야 합니다",
+		"mustBeAJsonObject": "JSON 객체여야 합니다",
+		"providerCannotBePatched": "provider는 항목을 식별하므로 패치할 수 없습니다",
 		"customProviderNameIsRequired": "커스텀 프로바이더 이름은 필수예요",
 		"endpointIsRequired": "엔드포인트는 필수예요",
 		"clientIdClientSecretAndTenantIdAreAllRequired": "Entra ID 인증에는 클라이언트 ID, 클라이언트 시크릿, 테넌트 ID가 모두 필요해요",
@@ -507,6 +511,7 @@
 		"grpcHostPortFormat": "gRPC는 <host>:<port> 형식이어야 해요 (예: {{example}})",
 		"invalidInput": "잘못된 입력이에요",
 		"vertexEndpointId": "Vertex 엔드포인트 ID를 입력하거나 지원되는 엔드포인트 URL을 붙여넣으세요",
+		"basetenDeploymentUrl": "배포 URL은 자격 증명, 쿼리, 프래그먼트가 없는 절대 https URL이어야 합니다",
 		"mcp": {
 			"privateKeyRequired": "private_key_jwt에는 개인 키가 필요합니다",
 			"secretRequiredForMethod": "전송 방식을 선택하려면 클라이언트 시크릿이 필요합니다",

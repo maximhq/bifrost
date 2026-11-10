@@ -1,4 +1,1 @@
-- feat: confidence thresholds for decision model routers
-- fix: routing rules fall back when the primary target returns 4xx
-- fix: scope complexity session state per subagent
-- chore: upgraded core to v1.15.0 and framework to v1.12.0
+- chore: upgraded core to v1.15.2 and framework to v1.12.2

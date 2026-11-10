@@ -531,6 +531,18 @@ const isLiteralHTTPSOrLoopbackURL = (v: { value?: string; ref?: string; type?: s
 	return hasHTTPSOrLoopbackScheme(v?.value ?? "");
 };
 
+// isLiteralHTTPSURL mirrors BasetenAliasCfg.Validate: a literal deployment URL must be an
+// absolute https URL with a host and no userinfo, query or fragment. References and masked values pass; the server resolves them.
+// The literal must spell out "https://" and a host: the browser parser reads "https:///host"
+// or "https:host" as having that host, while Go's url.Parse finds none and rejects it.
+export const isLiteralHTTPSURL = (v: { value?: string; ref?: string; type?: string } | undefined): boolean => {
+	if (!isSecretVarSet(v)) return true;
+	if (isSecretVarRef(v) || isSecretVarMasked(v)) return true;
+	if (!/^https:\/\/[^/\\]/i.test((v?.value ?? "").trim())) return false;
+	const u = parseLiteralURL(v);
+	return !!u && u.protocol === "https:" && u.hostname !== "" && u.username === "" && u.password === "" && u.search === "" && u.hash === "";
+};
+
 // OAuth key config schema. Honoured by openai-based providers: the key value may be empty
 // when this block is whole for its grant. Literal values are shape-checked so a typo fails in
 // the form rather than at the first inference call; references resolve elsewhere.
@@ -787,6 +799,8 @@ const aliasConfigObjectSchema = z.object({
 	inference_profile_arn: secretVarSchema.optional(),
 	// Replicate overrides
 	use_deployments_endpoint: z.boolean().optional(),
+	// Baseten overrides
+	deployment_url: secretVarSchema.optional().refine(isLiteralHTTPSURL, msg("validation.basetenDeploymentUrl")),
 	use_anthropic_endpoints: z.boolean().optional(),
 	use_openai_endpoints: z.boolean().optional(),
 });
@@ -2589,3 +2603,45 @@ export const relayPreviewSampleSchema = z.object({
 		),
 	status_code: z.number().int().min(100, msg("validation.relays.statusRange")).max(599, msg("validation.relays.statusRange")),
 });
+// Datasheet editor (app/workspace/datasheet-editor). An empty input or an "upstream"
+// choice leaves the key out of the override, so it keeps following the synced
+// datasheet. Pricing values are checked per field with pricingFieldError.
+const datasheetTriState = z.enum(["upstream", "on", "off"]);
+const datasheetLimit = z
+	.string()
+	.refine((v) => v.trim() === "" || (/^\d+$/.test(v.trim()) && Number(v) > 0), msg("validation.valueMustBeAPositiveWholeNumber"));
+
+export const datasheetOverrideFormSchema = z
+	.object({
+		provider: z.string(),
+		model: z.string(),
+		mode: z.string(),
+		isCustom: z.boolean(),
+		limits: z.object({ context_length: datasheetLimit, max_input_tokens: datasheetLimit, max_output_tokens: datasheetLimit }),
+		deprecated: datasheetTriState,
+		pricingValues: z.record(z.string(), z.string()),
+		flags: z.record(z.string(), datasheetTriState),
+		otherParamsJSON: z.string(),
+		preservedPricing: z.record(z.string(), z.unknown()),
+	})
+	.superRefine((data, ctx) => {
+		if (data.isCustom) {
+			if (!data.provider.trim()) ctx.addIssue({ code: "custom", path: ["provider"], message: i18n.t("validation.providerIsRequired") });
+			if (!data.model.trim()) ctx.addIssue({ code: "custom", path: ["model"], message: i18n.t("validation.modelNameIsRequired") });
+			if (!data.mode.trim()) ctx.addIssue({ code: "custom", path: ["mode"], message: i18n.t("validation.modeIsRequired") });
+		}
+		if (data.otherParamsJSON.trim() === "") return;
+		let parsed: unknown;
+		try {
+			parsed = JSON.parse(data.otherParamsJSON);
+		} catch {
+			parsed = undefined;
+		}
+		if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+			ctx.addIssue({ code: "custom", path: ["otherParamsJSON"], message: i18n.t("validation.mustBeAJsonObject") });
+		} else if ("provider" in parsed) {
+			ctx.addIssue({ code: "custom", path: ["otherParamsJSON"], message: i18n.t("validation.providerCannotBePatched") });
+		}
+	});
+
+export type DatasheetOverrideFormSchema = z.infer<typeof datasheetOverrideFormSchema>;

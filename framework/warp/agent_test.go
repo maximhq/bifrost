@@ -2158,6 +2158,8 @@ func TestWarpSystemPromptStatesWhatItCanAndCannotDo(t *testing.T) {
 	require.Contains(t, content, `one query_metrics call with interval "hour" or "day" returns the whole series`)
 	require.Contains(t, content, "You only read")
 	require.Contains(t, content, "Nothing carries over between conversations")
+	// "Remember my team" got "I'll use it in this conversation" and no link.
+	require.Contains(t, content, "saying you will use it here does not replace the link")
 	require.Contains(t, content, "Describe your own limits, not Bifrost's")
 	require.Contains(t, content, "Never point to a place in the dashboard")
 }
