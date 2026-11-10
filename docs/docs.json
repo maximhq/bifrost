@@ -2307,6 +2307,7 @@
             "item": "Enterprise",
             "icon": "building",
             "pages": [
+              "changelogs/ent-v2.5.1",
               "changelogs/ent-v2.5.0",
               {
                 "group": "October 2026",

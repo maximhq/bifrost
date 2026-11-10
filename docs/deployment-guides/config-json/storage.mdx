@@ -283,6 +283,36 @@ ClickHouse is a **`logs_store`-only** backend. The `config_store` supports only 
 With ClickHouse, `retention_days` is enforced by a native table **TTL** rather than a background delete job. The TTL is reconciled on every startup, so changing `retention_days` later updates the existing `logs`, `mcp_tool_logs` and `webhook_deliveries` tables (metadata only; expired rows are dropped by ClickHouse's regular TTL merges). Setting it to `0` (or omitting it) leaves any existing TTL untouched and creates new tables without one, so ClickHouse itself never expires rows unless you manage the TTL yourself. Background cleanup is controlled separately by `client_config.log_retention_days`; on ClickHouse each run is a single lightweight `DELETE FROM ... WHERE created_at < cutoff`, as are the periodic sweeps of stale `processing` rows, so setting both is safe. Lightweight deletes require ClickHouse 24.4 or newer. `matview_refresh_interval` and `matview_refresh_timeout` do not apply - they are PostgreSQL-only settings for materialized views.
 </Note>
 
+#### Required privileges
+
+Bifrost creates and evolves its own tables on every startup, so the ClickHouse user needs DDL rights as well as read and write access. The database itself must already exist. Bifrost does not create it.
+
+```sql
+GRANT SELECT, INSERT, ALTER, CREATE TABLE ON bifrost.* TO bifrost_user;
+GRANT SELECT ON system.tables TO bifrost_user;
+GRANT SELECT ON system.columns TO bifrost_user;
+GRANT SELECT ON system.data_skipping_indices TO bifrost_user;
+
+-- Only when `cluster` is set
+GRANT CLUSTER ON *.* TO bifrost_user;
+```
+
+Replace `bifrost` with your database and `bifrost_user` with your user.
+
+| Privilege | Used for |
+|-----------|----------|
+| `SELECT`, `INSERT` | Reading and writing logs |
+| `CREATE TABLE` | Creating tables at startup |
+| `ALTER` | Adding columns and skip indexes, updating the table TTL, and deleting logs |
+| `SELECT` on `system.tables`, `system.columns`, `system.data_skipping_indices` | Schema checks during startup migrations |
+| `CLUSTER` | Running DDL `ON CLUSTER`. Needed only when `cluster` is set |
+
+<Note>
+Managed services such as ClickHouse Cloud do not let a user read `system` tables without an explicit grant. A missing grant fails startup with `Not enough privileges ... SELECT ON system.data_skipping_indices`.
+
+The user's settings profile must not be `readonly`. Bifrost sets query settings such as `final`, `mutations_sync` and `max_query_size` on its connections.
+</Note>
+
 ### Disabled
 
 ```json
