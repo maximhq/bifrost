@@ -2140,6 +2140,28 @@ func TestResponsesMessageSummaryOnlyOnReasoningItems(t *testing.T) {
 	}
 }
 
+// TestResponsesMessageCodexItemFieldsSurviveRoundTrip: fields Codex replays on history
+// items must come back out unchanged. A find_in_page web search action used to decode
+// as a computer action and lose url and pattern, and encrypted_function_args had no
+// field to land in.
+func TestResponsesMessageCodexItemFieldsSurviveRoundTrip(t *testing.T) {
+	for _, tc := range []struct {
+		name, in string
+	}{
+		{"web_search_find_in_page", `{"type":"web_search_call","id":"ws_1","status":"completed","action":{"type":"find_in_page","url":"https://example.com","pattern":"needle"}}`},
+		{"web_search_find", `{"type":"web_search_call","id":"ws_1","status":"completed","action":{"type":"find","url":"https://example.com","pattern":"needle"}}`},
+		{"function_call_encrypted_args", `{"type":"function_call","call_id":"c1","name":"shell","arguments":"{}","encrypted_function_args":["a","b"]}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var msg ResponsesMessage
+			require.NoError(t, Unmarshal([]byte(tc.in), &msg))
+			out, err := Marshal(msg)
+			require.NoError(t, err)
+			assert.JSONEq(t, tc.in, string(out))
+		})
+	}
+}
+
 // An output_text history block that omits logprobs must not gain "logprobs": null on
 // re-marshal (strict upstreams 400 on it), while an explicit empty array stays an array.
 func TestResponsesOutputTextLogProbsNotNulled(t *testing.T) {
