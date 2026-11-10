@@ -1,10 +1,10 @@
 import { Button } from "@/components/ui/button";
 import i18n from "@/lib/i18n";
-import { isSkewError, reportSkew } from "@/lib/utils/versionSkew";
+import { extractAssetUrl, isSkewError, reportSkew } from "@/lib/utils/versionSkew";
 import type { ErrorComponentProps } from "@tanstack/react-router";
 import { useEffect } from "react";
 import { I18nextProvider, useTranslation } from "react-i18next";
-import { UpdatingScreen } from "./__updating";
+import { SkewScreen } from "./__updating";
 
 function ErrorBody({ error }: Partial<ErrorComponentProps>) {
 	const { t } = useTranslation("shell");
@@ -12,11 +12,11 @@ function ErrorBody({ error }: Partial<ErrorComponentProps>) {
 
 	// Notifying skew subscribers is a store write, so keep it out of render.
 	useEffect(() => {
-		if (skew) reportSkew("hard");
-	}, [skew]);
+		if (skew) reportSkew("hard", extractAssetUrl(error));
+	}, [skew, error]);
 
 	if (skew) {
-		return <UpdatingScreen />;
+		return <SkewScreen />;
 	}
 
 	return (

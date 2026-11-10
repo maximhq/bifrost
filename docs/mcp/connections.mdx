@@ -131,7 +131,7 @@ Per-user clients have **two entirely separate credential paths**, which is the s
 
 ```mermaid
 flowchart TB
-    subgraph Admin["Admin discovery credential (retained once)"]
+    subgraph Admin["Admin discovery credential (retained once; none with Per-Caller Discovery on)"]
         A1[Bootstrap verify: admin submits sample credential] --> A2[Credential retained]
         A2 --> A3[AddClient / periodic checker: refreshes the server's advertised tool list]
         A3 -->|credential dies| A4[needs_reauth projection]
@@ -145,7 +145,7 @@ flowchart TB
     end
 ```
 
-**Admin discovery credential** — exists purely to keep the *advertised tool list* current, independent of any individual user:
+**Admin discovery credential** — exists purely to keep the *advertised tool list* current, independent of any individual user. The steps below apply only while [Per-Caller Discovery](./per-caller-discovery) is off. With it on, the client keeps no admin credential: its admin step only verifies the server, there is no periodic refresh, and each caller's tools are discovered with their own credential.
 
 1. **Bootstrap.** An admin submits a sample credential once (`POST /verify-headers`, `POST /verify-exchange`, or the `complete-oauth` callback for `per_user_oauth`). This is the one and only time a live admin session is required. As a side effect, that credential is **retained** server-side.
 2. **Ongoing refresh.** `AddClient`'s own synchronous first-discovery pass and the periodic checker's ongoing ticks both reuse the *retained* credential (never a fresh admin login) to keep the tool list current — same content-hash-gated persistence as server-level clients.
@@ -176,9 +176,11 @@ Because these two paths are independent, a per-user client's tool list can go st
 | `POST /api/mcp/client/{oauth_config_id}/complete-oauth` | ✅ Completes the bootstrap or reauthorize OAuth dance | ✅ Same | ✅ Completes `per_user_oauth` bootstrap or admin-credential repair |
 | `PUT /api/mcp/client/{id}` (disable/enable, non-credential edits) | ✅ | ✅ | ✅ |
 
+The per-user column assumes the client keeps an admin discovery credential. With [Per-Caller Discovery](./per-caller-discovery) on it keeps none, so once it is verified, `refresh-tools`, `reauthorize` and the repair runs of `verify-headers` and `verify-exchange` return `400`. Its first verification works as in the table, and so does `POST /api/mcp/client/{id}/reregister` for `per_user_oauth`.
+
 A `reconnect`/`reauthorize`/`close` call that doesn't apply to a client's current connection mode returns a consistent error (`client uses per-call connections; there is no persistent connection to reconnect/close`) rather than one that implies something is specifically wrong with per-user auth — the same message applies to any per-call client, shared or per-user.
 
-`refresh-tools` is the exception to that table's shape: it is the one endpoint that applies to every combination. Where the others recover a *connection* or a *credential* — and so only mean something for the modes that hold one — it re-discovers the *tool list*, which every client has regardless of how it connects. Reach for it when an upstream server's tools changed and you don't want to wait out the [tool sync interval](./connecting-to-servers#global-tool-manager-settings) (10 minutes by default). It returns `400` when the client is in a state where discovery is meaningless: `disabled`, `needs_reauth`, or `pending_verification`.
+`refresh-tools` is the exception to that table's shape: it applies to every combination of connection mode and auth type. Where the others recover a *connection* or a *credential* — and so only mean something for the modes that hold one — it re-discovers the *tool list*, which every client has regardless of how it connects. Reach for it when an upstream server's tools changed and you don't want to wait out the [tool sync interval](./connecting-to-servers#global-tool-manager-settings) (10 minutes by default). It returns `400` when the client is in a state where discovery is meaningless: `disabled`, `needs_reauth`, or `pending_verification`. It also returns `400` for a client with [Per-Caller Discovery](./per-caller-discovery) on, which keeps no tool list of its own: refresh a Per-User OAuth or Per-User Headers caller's tools from their [session](./sessions#refresh-tools-per-caller-discovery) instead. A Token Exchange caller has no session, so their discovery is made again only after it is [deleted](./per-caller-discovery#when-a-discovery-is-deleted).
 
 ---
 

@@ -342,6 +342,7 @@ func buildRealtimeTurnPostResponse(
 	contentOverride string,
 	latency int64,
 	transcriptionSession bool,
+	interimUsage *schemas.BifrostLLMUsage,
 ) *schemas.BifrostResponse {
 	output := buildRealtimeTurnOutputMessages(rtProvider, rawResponse, contentOverride)
 	resp := &schemas.BifrostResponsesResponse{
@@ -358,7 +359,13 @@ func buildRealtimeTurnPostResponse(
 	if transcriptionSession {
 		resp.ExtraFields.PricingRequestType = schemas.TranscriptionRequest
 	}
-	if usage := extractRealtimeTurnUsage(rtProvider, rawResponse); usage != nil {
+	usage := extractRealtimeTurnUsage(rtProvider, rawResponse)
+	if interimUsage != nil {
+		// The generations before the one that ended the turn are billed with it.
+		interimUsage.AddTokenCounts(usage)
+		usage = interimUsage
+	}
+	if usage != nil {
 		resp.Usage = buildRealtimeResponsesUsage(usage)
 	}
 	if strings.TrimSpace(rawRequest) != "" {
@@ -713,6 +720,7 @@ func startRealtimeTurnHooks(
 		// fallback finalization does not emit the same error a second time.
 		session.ConsumeRealtimeTurnInputs()
 		session.ConsumeRealtimeOutputText()
+		session.ConsumeRealtimeInterimUsage()
 		return bifrostErr
 	}
 
@@ -750,6 +758,7 @@ func finalizeRealtimeTurnHooks(
 
 	turnInputs := session.ConsumeRealtimeTurnInputs()
 	rawRequest := combineRealtimeInputRaw(turnInputs)
+	interimUsage := session.ConsumeRealtimeInterimUsage()
 
 	if activeHooks := session.ConsumeRealtimeTurnHooks(); activeHooks != nil {
 		defer func() {
@@ -766,6 +775,7 @@ func finalizeRealtimeTurnHooks(
 			contentOverride,
 			time.Since(activeHooks.StartedAt).Milliseconds(),
 			transcriptionSession,
+			interimUsage,
 		)
 		if surface, _ := baseCtx.Value(schemas.BifrostContextKeyRealtimePricingSurface).(schemas.PricingSurface); surface == schemas.PricingSurfaceVoiceLive {
 			applyVoiceLivePricing(postResponse, session.RealtimeVoiceType(), model)
@@ -806,6 +816,7 @@ func finalizeRealtimeTurnHooks(
 		contentOverride,
 		time.Since(startedAt).Milliseconds(),
 		transcriptionSession,
+		interimUsage,
 	)
 	if surface, _ := baseCtx.Value(schemas.BifrostContextKeyRealtimePricingSurface).(schemas.PricingSurface); surface == schemas.PricingSurfaceVoiceLive {
 		applyVoiceLivePricing(postResponse, session.RealtimeVoiceType(), model)
@@ -843,6 +854,7 @@ func finalizeRealtimeTurnHooksWithError(
 	turnInputs := session.ConsumeRealtimeTurnInputs()
 	rawRequest := combineRealtimeInputRaw(turnInputs)
 	session.ConsumeRealtimeOutputText()
+	session.ConsumeRealtimeInterimUsage()
 
 	if activeHooks := session.ConsumeRealtimeTurnHooks(); activeHooks != nil {
 		defer func() {

@@ -4404,3 +4404,55 @@ func TestBuildAnthropicResponsesRequestBody_InvalidFunctionCallArgumentsReplayAs
 		}
 	}
 }
+
+// TestMCPToolBlocksDroppedOnChatFallback pins #9721: an Anthropic Messages request whose
+// history holds mcp_tool_use / mcp_tool_result (or server web_search) blocks, routed to a
+// chat-only (OpenAI-compatible) provider, must not produce a roleless chat message. The
+// server-tool turns have no chat rendering, so only the plain user text survives.
+func TestMCPToolBlocksDroppedOnChatFallback(t *testing.T) {
+	var req AnthropicMessageRequest
+	if err := schemas.Unmarshal([]byte(`{
+		"model": "deepseek/deepseek-flash",
+		"max_tokens": 30,
+		"messages": [
+			{"role": "user", "content": "look"},
+			{"role": "assistant", "content": [
+				{"type": "mcp_tool_use", "id": "call_1", "name": "analyze_image",
+				 "input": {"prompt": "desc"}, "server_name": "4_5v_mcp"}
+			]},
+			{"role": "user", "content": [
+				{"type": "mcp_tool_result", "tool_use_id": "call_1",
+				 "content": [{"type": "text", "text": "a red pixel"}]}
+			]},
+			{"role": "assistant", "content": [
+				{"type": "server_tool_use", "id": "srvtoolu_1", "name": "web_search", "input": {"query": "red pixel"}},
+				{"type": "web_search_tool_result", "tool_use_id": "srvtoolu_1", "content": [
+					{"type": "web_search_result", "url": "https://example.org", "title": "Pixels", "encrypted_content": "abc"}
+				]}
+			]},
+			{"role": "user", "content": "reply OK"}
+		]
+	}`), &req); err != nil {
+		t.Fatalf("unmarshal request: %v", err)
+	}
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+
+	chatReq := req.ToBifrostResponsesRequest(ctx).ToChatRequest()
+	if chatReq == nil {
+		t.Fatal("ToChatRequest returned nil")
+	}
+	want := []string{"look", "reply OK"}
+	if len(chatReq.Input) != len(want) {
+		t.Fatalf("expected %d chat messages, got %d: %+v", len(want), len(chatReq.Input), chatReq.Input)
+	}
+	for i, msg := range chatReq.Input {
+		if msg.Role != schemas.ChatMessageRoleUser {
+			t.Fatalf("chat message %d role = %q, want user: %+v", i, msg.Role, msg)
+		}
+		if msg.Content == nil || msg.Content.ContentStr == nil || *msg.Content.ContentStr != want[i] {
+			t.Fatalf("chat message %d content = %+v, want %q", i, msg.Content, want[i])
+		}
+	}
+}

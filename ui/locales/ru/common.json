@@ -362,6 +362,10 @@
 		"removeAria": "Удалить {{label}}"
 	},
 	"validation": {
+		"modeIsRequired": "Режим обязателен",
+		"valueMustBeAPositiveWholeNumber": "Должно быть целым положительным числом",
+		"mustBeAJsonObject": "Должен быть объект JSON",
+		"providerCannotBePatched": "provider нельзя изменить: он определяет запись",
 		"customProviderNameIsRequired": "Укажите название пользовательского провайдера",
 		"endpointIsRequired": "Укажите конечную точку",
 		"clientIdClientSecretAndTenantIdAreAllRequired": "Для аутентификации Entra ID необходимо указать Client ID, Client Secret и Tenant ID",
@@ -525,6 +529,7 @@
 		"grpcHostPortFormat": "Для gRPC укажите в формате <host>:<port> (например, {{example}})",
 		"invalidInput": "Некорректные данные",
 		"vertexEndpointId": "Введите ID конечной точки Vertex или вставьте поддерживаемый URL конечной точки",
+		"basetenDeploymentUrl": "URL развёртывания должен быть абсолютным https URL",
 		"mcp": {
 			"privateKeyRequired": "Для private_key_jwt требуется закрытый ключ",
 			"secretRequiredForMethod": "Для выбора способа отправки требуется секрет клиента",
