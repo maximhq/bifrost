@@ -93,6 +93,7 @@ const (
 	BytePlus      ModelProvider = "byteplus"
 	Baseten       ModelProvider = "baseten"
 	Kimchi        ModelProvider = "kimchi"
+	Soniox        ModelProvider = "soniox"
 )
 
 // SupportedBaseProviders is the list of base providers allowed for custom providers.
@@ -148,6 +149,7 @@ var StandardProviders = []ModelProvider{
 	BytePlus,
 	Baseten,
 	Kimchi,
+	Soniox,
 }
 
 // RequestType represents the type of request being made to a provider.
