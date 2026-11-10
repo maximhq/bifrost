@@ -115,7 +115,7 @@ func TestToOpenAITextCompletionRequest_FireworksUsesCacheIsolation(t *testing.T)
 	wireBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		bifrostReq,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*OpenAITextCompletionRequest, error) {
 			return ToOpenAITextCompletionRequest(bifrostReq), nil
 		},
 	)

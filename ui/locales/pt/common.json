@@ -344,6 +344,10 @@
 		"removeAria": "Remover {{label}}"
 	},
 	"validation": {
+		"modeIsRequired": "O modo é obrigatório",
+		"valueMustBeAPositiveWholeNumber": "Deve ser um número inteiro positivo",
+		"mustBeAJsonObject": "Deve ser um objeto JSON",
+		"providerCannotBePatched": "provider não pode ser alterado; ele identifica a entrada",
 		"customProviderNameIsRequired": "O nome do fornecedor personalizado é obrigatório",
 		"endpointIsRequired": "O endpoint é obrigatório",
 		"clientIdClientSecretAndTenantIdAreAllRequired": "O ID do cliente, o segredo do cliente e o ID do tenant são todos obrigatórios para a autenticação Entra ID",
@@ -507,6 +511,7 @@
 		"grpcHostPortFormat": "Tem de estar no formato <host>:<port> para gRPC (ex.: {{example}})",
 		"invalidInput": "Entrada inválida",
 		"vertexEndpointId": "Insira um ID de endpoint do Vertex ou cole uma URL de endpoint compatível",
+		"basetenDeploymentUrl": "A URL da implantação deve ser uma URL https absoluta sem credenciais, consulta ou fragmento",
 		"mcp": {
 			"privateKeyRequired": "É necessária uma chave privada para private_key_jwt",
 			"secretRequiredForMethod": "É necessário um segredo do cliente para escolher como ele é enviado",

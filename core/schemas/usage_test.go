@@ -136,6 +136,71 @@ func TestMergeBifrostLLMUsageExplicitZero(t *testing.T) {
 	}
 }
 
+// A cancelled turn's estimated usage is merged with the turns that finished before it.
+// Dropping the marker there hides the estimate from logging, which then keeps the
+// partial usage and cost it captured before the cancel.
+func TestMergeBifrostLLMUsageKeepsEstimation(t *testing.T) {
+	exact := &BifrostLLMUsage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15}
+	estimated := func(prompt, completion bool, tokenizer string) *BifrostLLMUsage {
+		return &BifrostLLMUsage{PromptTokens: 7, CompletionTokens: 3, TotalTokens: 10,
+			Estimation: &TokenUsageEstimation{Prompt: prompt, Completion: completion, Tokenizer: tokenizer}}
+	}
+	for _, tc := range []struct {
+		name        string
+		left, right *BifrostLLMUsage
+		want        *TokenUsageEstimation
+	}{
+		{"neither estimated", exact, exact, nil},
+		{"estimated later turn", exact, estimated(false, true, "o200k_base"), &TokenUsageEstimation{Completion: true, Tokenizer: "o200k_base"}},
+		{"estimated earlier turn", estimated(true, false, "o200k_base"), exact, &TokenUsageEstimation{Prompt: true, Tokenizer: "o200k_base"}},
+		{"same tokenizer", estimated(true, false, "anthropic"), estimated(false, true, "anthropic"), &TokenUsageEstimation{Prompt: true, Completion: true, Tokenizer: "anthropic"}},
+		{"different tokenizers", estimated(false, true, "anthropic"), estimated(false, true, "o200k_base"), &TokenUsageEstimation{Completion: true, Tokenizer: "mixed"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			merged := MergeBifrostLLMUsage(tc.left, tc.right)
+			require.Equal(t, tc.want, merged.Estimation)
+			if tc.want != nil {
+				require.NotSame(t, tc.left.Estimation, merged.Estimation, "merged usage must not alias an input marker")
+				require.NotSame(t, tc.right.Estimation, merged.Estimation, "merged usage must not alias an input marker")
+			}
+		})
+	}
+}
+
+// The estimation marker travels with usage through every hop a cancelled stream's bill
+// takes: the copy logging stores, the Responses shape, and the wire.
+func TestUsageEstimationSurvivesCopyConversionAndWire(t *testing.T) {
+	marker := TokenUsageEstimation{Prompt: true, Completion: true, Tokenizer: "anthropic"}
+	usage := &BifrostLLMUsage{PromptTokens: 12, CompletionTokens: 3, TotalTokens: 15, Estimation: new(marker)}
+
+	copied := usage.DeepCopy()
+	require.Equal(t, &marker, copied.Estimation)
+	require.NotSame(t, usage.Estimation, copied.Estimation, "DeepCopy must clone the marker")
+	copied.Estimation.Tokenizer = "edited"
+	require.Equal(t, "anthropic", usage.Estimation.Tokenizer, "editing the copy must not reach the original")
+
+	responses := usage.ToResponsesResponseUsage()
+	require.Equal(t, &marker, responses.Estimation, "chat to Responses usage")
+	require.Equal(t, &marker, responses.ToBifrostLLMUsage().Estimation, "Responses to chat usage")
+
+	for name, v := range map[string]any{"chat": usage, "responses": responses} {
+		wire, err := MarshalSorted(v)
+		require.NoError(t, err)
+		var decoded struct {
+			Estimation *TokenUsageEstimation `json:"estimation"`
+		}
+		require.NoError(t, json.Unmarshal(wire, &decoded), name)
+		require.Equal(t, &marker, decoded.Estimation, "%s wire: %s", name, wire)
+	}
+
+	// Provider-reported usage carries no marker on the wire.
+	for name, v := range map[string]any{"chat": &BifrostLLMUsage{PromptTokens: 12, TotalTokens: 12}, "responses": &ResponsesResponseUsage{InputTokens: 12, TotalTokens: 12}} {
+		wire, err := MarshalSorted(v)
+		require.NoError(t, err)
+		require.NotContains(t, string(wire), "estimation", name)
+	}
+}
+
 func TestMergeBifrostLLMUsage(t *testing.T) {
 	base := &BifrostLLMUsage{
 		PromptTokens:     10,
@@ -415,4 +480,29 @@ func BenchmarkPreserveTokenCountZeros(b *testing.B) {
 			})
 		}
 	}
+}
+
+func TestBifrostLLMUsageAddTokenCounts(t *testing.T) {
+	total := &BifrostLLMUsage{PromptTokens: 100, CompletionTokens: 10, TotalTokens: 110}
+
+	total.AddTokenCounts(nil)
+	require.Equal(t, 110, total.TotalTokens, "nothing to add")
+	require.Nil(t, total.PromptTokensDetails)
+
+	total.AddTokenCounts(&BifrostLLMUsage{
+		PromptTokens:            150,
+		CompletionTokens:        60,
+		TotalTokens:             210,
+		PromptTokensDetails:     &ChatPromptTokensDetails{TextTokens: 100, AudioTokens: 50, CachedReadTokens: 7},
+		CompletionTokensDetails: &ChatCompletionTokensDetails{AudioTokens: 40, ReasoningTokens: 20},
+	})
+	require.Equal(t, 250, total.PromptTokens)
+	require.Equal(t, 70, total.CompletionTokens)
+	require.Equal(t, 320, total.TotalTokens)
+	require.Equal(t, ChatPromptTokensDetails{TextTokens: 100, AudioTokens: 50, CachedReadTokens: 7}, *total.PromptTokensDetails, "details the total did not have yet")
+	require.Equal(t, 20, total.CompletionTokensDetails.ReasoningTokens)
+
+	total.AddTokenCounts(&BifrostLLMUsage{PromptTokensDetails: &ChatPromptTokensDetails{AudioTokens: 5}})
+	require.Equal(t, 55, total.PromptTokensDetails.AudioTokens, "details it already had")
+	require.Equal(t, 250, total.PromptTokens)
 }

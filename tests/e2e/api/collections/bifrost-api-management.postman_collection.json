@@ -7673,6 +7673,53 @@
           }
         },
         {
+          "name": "Get MCP Logs Stats (Compare To Previous)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('MCP stats count finished calls and compare against the previous period', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  var body = pm.response.json();",
+                  "  ['total_executions', 'success_count', 'error_count', 'cancelled_count', 'success_rate', 'average_latency', 'total_cost'].forEach(function (field) {",
+                  "    pm.expect(body[field], field).to.be.a('number');",
+                  "    pm.expect(body.previous && body.previous[field], 'previous.' + field).to.be.a('number');",
+                  "  });",
+                  "  pm.expect(body.has_previous_period, 'has_previous_period').to.equal(true);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/mcp-logs/stats?period=24h&compare_to_previous=true",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "mcp-logs",
+                "stats"
+              ],
+              "query": [
+                {
+                  "key": "period",
+                  "value": "24h"
+                },
+                {
+                  "key": "compare_to_previous",
+                  "value": "true"
+                }
+              ]
+            }
+          }
+        },
+        {
           "name": "Get MCP Logs Filter Data",
           "request": {
             "method": "GET",
@@ -7686,6 +7733,52 @@
                 "api",
                 "mcp-logs",
                 "filterdata"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get MCP Logs Filter Data (Scope Dimensions)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('MCP filter data lists users, teams, customers, business units and projects as id/name pairs', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(Object.keys(body).sort(), pm.response.text()).to.eql(['business_units', 'customers', 'projects', 'teams', 'users']);",
+                  "  ['users', 'teams', 'customers', 'business_units', 'projects'].forEach(function (dimension) {",
+                  "    pm.expect(body[dimension], dimension).to.be.an('array');",
+                  "    body[dimension].forEach(function (option) {",
+                  "      pm.expect(option.id, dimension + ' id').to.be.a('string').and.not.empty;",
+                  "      pm.expect(option.name, dimension + ' name').to.be.a('string');",
+                  "    });",
+                  "  });",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/mcp-logs/filterdata?dimensions=users,teams,customers,business_units,projects",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "mcp-logs",
+                "filterdata"
+              ],
+              "query": [
+                {
+                  "key": "dimensions",
+                  "value": "users,teams,customers,business_units,projects"
+                }
               ]
             }
           }
@@ -10289,6 +10382,94 @@
           }
         },
         {
+          "name": "Get MCP Latency Histogram",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('MCP latency histogram returns percentile buckets', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.bucket_size_seconds, 'bucket_size_seconds').to.be.a('number').and.above(0);",
+                  "  pm.expect(body.buckets, 'buckets').to.be.an('array').that.is.not.empty;",
+                  "  body.buckets.forEach(function (bucket) {",
+                  "    ['avg_latency', 'p90_latency', 'p95_latency', 'p99_latency', 'total_requests'].forEach(function (field) {",
+                  "      pm.expect(bucket[field], field).to.be.a('number');",
+                  "    });",
+                  "  });",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/mcp-logs/histogram/latency?period=24h",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "mcp-logs",
+                "histogram",
+                "latency"
+              ],
+              "query": [
+                {
+                  "key": "period",
+                  "value": "24h"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get MCP Histogram (Cancelled Counts)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('MCP histogram buckets count cancelled calls', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.buckets, 'buckets').to.be.an('array').that.is.not.empty;",
+                  "  body.buckets.forEach(function (bucket) {",
+                  "    pm.expect(bucket.cancelled, 'cancelled').to.be.a('number');",
+                  "  });",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/mcp-logs/histogram?period=24h",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "mcp-logs",
+                "histogram"
+              ],
+              "query": [
+                {
+                  "key": "period",
+                  "value": "24h"
+                }
+              ]
+            }
+          }
+        },
+        {
           "name": "Get MCP Top Tools (Coverage Probe)",
           "request": {
             "method": "GET",
@@ -12553,6 +12734,34 @@
                 "type": "text/javascript",
                 "exec": [
                   "pm.variables.set(\"secret_redaction_fixture\", JSON.stringify({\n  \"provider\": \"byteplus\",\n  \"key\": {\n    \"value\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n    \"models\": [],\n    \"weight\": 1,\n    \"enabled\": false,\n    \"aliases\": {\n      \"probe\": {\n        \"model_id\": \"secretvar-test-model\",\n        \"region\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n        \"project_id\": \"env.BIFROST_SECRET_REDACTION_CANARY\"\n      },\n      \"literal\": {\n        \"model_id\": \"secretvar-test-model\",\n        \"region\": \"us-east-1\",\n        \"project_id\": \"literal-project\"\n      }\n    }\n  }\n}));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/providers",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers"
+              ]
+            }
+          }
+        },
+        {
+          "name": "baseten - provider key secret redaction",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.variables.set(\"secret_redaction_fixture\", JSON.stringify({\n  \"provider\": \"baseten\",\n  \"key\": {\n    \"value\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n    \"models\": [],\n    \"weight\": 1,\n    \"enabled\": false,\n    \"aliases\": {\n      \"probe\": {\n        \"model_id\": \"secretvar-test-model\",\n        \"region\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n        \"project_id\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n        \"deployment_url\": \"env.BIFROST_SECRET_REDACTION_CANARY\"\n      },\n      \"literal\": {\n        \"model_id\": \"secretvar-test-model\",\n        \"region\": \"us-east-1\",\n        \"project_id\": \"literal-project\"\n      }\n    }\n  }\n}));"
                 ]
               }
             }
