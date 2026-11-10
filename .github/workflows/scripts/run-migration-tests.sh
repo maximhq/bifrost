@@ -860,6 +860,7 @@ append_dynamic_mcp_clients_insert() {
     append_v230_fixtures "$db_type" "$faker_sql" "$now"
     append_v231_fixtures "$db_type" "$faker_sql" "$now"
     append_v240_fixtures "$db_type" "$faker_sql" "$now"
+    append_v250_fixtures "$db_type" "$faker_sql" "$now"
   else
     now="datetime('now')"
     future="datetime('now', '+1 hour')"
@@ -888,6 +889,7 @@ append_dynamic_mcp_clients_insert() {
     append_v230_fixtures "$db_type" "$faker_sql" "$now" "$config_db" "$logs_db"
     append_v231_fixtures "$db_type" "$faker_sql" "$now" "$config_db" "$logs_db"
     append_v240_fixtures "$db_type" "$faker_sql" "$now" "$config_db" "$logs_db"
+    append_v250_fixtures "$db_type" "$faker_sql" "$now" "$config_db" "$logs_db"
   fi
 }
 
@@ -1702,6 +1704,55 @@ log_id|'log-migration-deleted-001'
 namespace|''
 created_at|$now
 V240_ROW
+}
+
+# v2.5.0 introduced these columns (caller identity on every log table, the MCP
+# input-round correlation id, relay large-payload flag) and the per-caller MCP
+# discovery table. Same probing scheme as append_v240_fixtures.
+append_v250_fixtures() {
+  local fixture_db_type="$1" fixture_output="$2" now="$3"
+  local fixture_config_db="${4:-}" fixture_logs_db="${5:-}"
+  local table column value predicate
+  while IFS='|' read -r table column value predicate; do
+    if v200_column_exists "$table" "$column"; then
+      echo "UPDATE $table SET $column = $value WHERE $predicate;" >> "$fixture_output"
+    fi
+  done <<'V250_COLUMNS'
+config_mcp_clients|per_user_discovery|true|client_id = 'mcp-migration-test-001'
+config_mcp_clients|pending_verification|false|client_id = 'mcp-migration-test-001'
+logs|user_email|'migration-test@example.com'|id = 'log-migration-test-001'
+logs|client_ip|'203.0.113.10'|id = 'log-migration-test-001'
+mcp_tool_logs|user_email|'migration-test@example.com'|id = 'mcp-log-migration-001'
+mcp_tool_logs|round_trip_id|'round-trip-migration-001'|id = 'mcp-log-migration-001'
+mcp_tool_logs|client_ip|'203.0.113.10'|id = 'mcp-log-migration-001'
+relay_logs|is_large_payload_response|false|id = 'relay-log-migration-001'
+relay_logs|user_email|'migration-test@example.com'|id = 'relay-log-migration-001'
+relay_logs|session_id|'session-migration-001'|id = 'relay-log-migration-001'
+relay_logs|parent_request_id|'log-migration-test-001'|id = 'relay-log-migration-001'
+relay_logs|agent_correlation_id|'agent-corr-migration-001'|id = 'relay-log-migration-001'
+relay_logs|client_ip|'203.0.113.10'|id = 'relay-log-migration-001'
+V250_COLUMNS
+
+  v200_insert mcp_per_user_discoveries <<V250_ROW
+id|'mcp-per-user-discovery-migration-001'
+virtual_key_id|'vk-migration-test-1'
+user_id|NULL
+mcp_client_id|'mcp-migration-test-001'
+auth_mode|'vk'
+tools_json|'{}'
+instructions|''
+tool_details_json|''
+resources_json|''
+resource_templates_json|''
+prompts_json|''
+discovery_hash|'migration-test-discovery-hash'
+tool_count|0
+prompt_count|0
+resource_count|0
+discovered_at|$now
+created_at|$now
+updated_at|$now
+V250_ROW
 }
 
 # Append dynamic column UPDATEs for columns that may not exist in older schemas (PostgreSQL)
