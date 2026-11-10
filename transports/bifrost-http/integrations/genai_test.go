@@ -222,6 +222,49 @@ func TestGenAICamelCaseSpeechVoiceSurvivesConversion(t *testing.T) {
 	assert.Equal(t, "alloy", *converted.SpeechRequest.Params.VoiceConfig.Voice)
 }
 
+// TestGenAISpeechReachesVertexChirp pins that a GenAI SDK speech request for Vertex's Chirp 3 HD keeps its
+// voice and language through the route, builds a Cloud Text-to-Speech request, and comes back as inline audio.
+func TestGenAISpeechReachesVertexChirp(t *testing.T) {
+	for name, speechConfig := range map[string]string{
+		"camelCase":  `{"voiceConfig":{"prebuiltVoiceConfig":{"voiceName":"hi-IN-Chirp3-HD-Erinome"}},"languageCode":"hi-IN"}`,
+		"snake_case": `{"voice_config":{"prebuilt_voice_config":{"voice_name":"hi-IN-Chirp3-HD-Erinome"}},"language_code":"hi-IN"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			rawBody := []byte(`{"contents":[{"role":"user","parts":[{"text":"नमस्ते"}]}],"generationConfig":{"responseModalities":["AUDIO"],"speechConfig":` + speechConfig + `}}`)
+			requestCtx := &fasthttp.RequestCtx{}
+			requestCtx.SetUserValue("model", "vertex/chirp-3-hd:generateContent")
+			requestCtx.Request.SetBody(rawBody)
+			bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			geminiReq := &gemini.GeminiGenerationRequest{}
+			require.NoError(t, sonic.Unmarshal(rawBody, geminiReq))
+			require.NoError(t, extractAndSetModelAndRequestType(requestCtx, bifrostCtx, geminiReq))
+
+			route := findGenAIRouteForTest(t, CreateGenAIRouteConfigs("/genai"), "/genai/v1beta/models/{model:*}", "POST")
+			converted, err := route.RequestConverter(bifrostCtx, geminiReq)
+			require.NoError(t, err)
+			speech := converted.SpeechRequest
+			require.NotNil(t, speech)
+			assert.Equal(t, schemas.Vertex, speech.Provider)
+			assert.Equal(t, "chirp-3-hd", speech.Model)
+			require.NotNil(t, speech.Params.LanguageCode)
+			assert.Equal(t, "hi-IN", *speech.Params.LanguageCode)
+
+			request, err := vertex.ToVertexSpeechRequest(speech)
+			require.NoError(t, err)
+			assert.Equal(t, "hi-IN", request.Voice.LanguageCode)
+			assert.Equal(t, "hi-IN-Chirp3-HD-Erinome", request.Voice.Name)
+			assert.Equal(t, "MP3", request.AudioConfig.AudioEncoding)
+
+			response, err := route.SpeechResponseConverter(bifrostCtx, &schemas.BifrostSpeechResponse{Audio: []byte("ID3\x04\x00chirp-mp3-frames")})
+			require.NoError(t, err)
+			encoded, err := sonic.Marshal(response)
+			require.NoError(t, err)
+			assert.Equal(t, "audio/mp3", gjson.GetBytes(encoded, "candidates.0.content.parts.0.inlineData.mimeType").String())
+			assert.Equal(t, base64.StdEncoding.EncodeToString([]byte("ID3\x04\x00chirp-mp3-frames")), gjson.GetBytes(encoded, "candidates.0.content.parts.0.inlineData.data").String())
+		})
+	}
+}
+
 func TestExtractAndSetModelAndRequestTypePreservesRawBodyForGenerateContent(t *testing.T) {
 	rawBody := []byte(`{"contents":[{"role":"user","parts":[{"text":"hello"}]}],"generationConfig":{"responseJsonSchema":{"type":"object","properties":{"b":{"type":"string"},"a":{"type":"string"}}}}}`)
 	ctx := &fasthttp.RequestCtx{}
@@ -631,4 +674,111 @@ func TestGenAIFlashLiteMinimalThinkingAfterRouting(t *testing.T) {
 			}
 		}
 	}
+}
+
+// TestGenAISpeechReachesVertexGeminiTTS pins that a GenAI SDK speech request for a Gemini TTS model on Vertex keeps
+// its voice through the route and comes back as inline audio.
+func TestGenAISpeechReachesVertexGeminiTTS(t *testing.T) {
+	rawBody := []byte(`{"contents":[{"role":"user","parts":[{"text":"hello"}]}],"generationConfig":{"responseModalities":["AUDIO"],"speechConfig":{"voiceConfig":{"prebuiltVoiceConfig":{"voiceName":"Kore"}}}}}`)
+	requestCtx := &fasthttp.RequestCtx{}
+	requestCtx.SetUserValue("model", "vertex/gemini-2.5-flash-tts:generateContent")
+	requestCtx.Request.SetBody(rawBody)
+	bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	geminiReq := &gemini.GeminiGenerationRequest{}
+	require.NoError(t, sonic.Unmarshal(rawBody, geminiReq))
+	require.NoError(t, extractAndSetModelAndRequestType(requestCtx, bifrostCtx, geminiReq))
+
+	route := findGenAIRouteForTest(t, CreateGenAIRouteConfigs("/genai"), "/genai/v1beta/models/{model:*}", "POST")
+	converted, err := route.RequestConverter(bifrostCtx, geminiReq)
+	require.NoError(t, err)
+	speech := converted.SpeechRequest
+	require.NotNil(t, speech)
+	assert.Equal(t, schemas.Vertex, speech.Provider)
+	assert.Equal(t, "gemini-2.5-flash-tts", speech.Model)
+
+	request, err := gemini.ToGeminiSpeechRequest(speech)
+	require.NoError(t, err)
+	assert.Equal(t, "Kore", request.GenerationConfig.SpeechConfig.VoiceConfig.PrebuiltVoiceConfig.VoiceName)
+
+	response, err := route.SpeechResponseConverter(bifrostCtx, &schemas.BifrostSpeechResponse{Audio: []byte("pcm-audio-bytes")})
+	require.NoError(t, err)
+	encoded, err := sonic.Marshal(response)
+	require.NoError(t, err)
+	assert.Equal(t, base64.StdEncoding.EncodeToString([]byte("pcm-audio-bytes")), gjson.GetBytes(encoded, "candidates.0.content.parts.0.inlineData.data").String())
+}
+
+// TestGenAIStreamSpeechReachesVertexGeminiTTS pins that a streamGenerateContent speech request for a Gemini TTS
+// model on Vertex is routed as a stream, and that the chunks the provider sends come back to the SDK as inline
+// PCM audio, with the finish reason and token usage on the last one.
+func TestGenAIStreamSpeechReachesVertexGeminiTTS(t *testing.T) {
+	rawBody := []byte(`{"contents":[{"role":"user","parts":[{"text":"hello"}]}],"generationConfig":{"responseModalities":["AUDIO"],"speechConfig":{"voiceConfig":{"prebuiltVoiceConfig":{"voiceName":"Kore"}}}}}`)
+	requestCtx := &fasthttp.RequestCtx{}
+	requestCtx.SetUserValue("model", "vertex/gemini-2.5-flash-tts:streamGenerateContent")
+	requestCtx.Request.SetBody(rawBody)
+	bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	geminiReq := &gemini.GeminiGenerationRequest{}
+	require.NoError(t, sonic.Unmarshal(rawBody, geminiReq))
+	require.NoError(t, extractAndSetModelAndRequestType(requestCtx, bifrostCtx, geminiReq))
+	assert.True(t, geminiReq.IsStreamingRequested(), "the :streamGenerateContent suffix makes it a stream")
+
+	route := findGenAIRouteForTest(t, CreateGenAIRouteConfigs("/genai"), "/genai/v1beta/models/{model:*}", "POST")
+	converted, err := route.RequestConverter(bifrostCtx, geminiReq)
+	require.NoError(t, err)
+	speech := converted.SpeechRequest
+	require.NotNil(t, speech)
+	assert.Equal(t, schemas.Vertex, speech.Provider)
+	assert.Equal(t, "gemini-2.5-flash-tts", speech.Model)
+
+	routing := schemas.BifrostResponseExtraFields{RoutingInfo: schemas.RoutingInfo{Provider: schemas.Vertex}}
+	convert := route.StreamConfig.SpeechStreamResponseConverter
+	_, delta, err := convert(bifrostCtx, &schemas.BifrostSpeechStreamResponse{Type: schemas.SpeechStreamResponseTypeDelta, Audio: []byte("pcm-chunk"), ExtraFields: routing})
+	require.NoError(t, err)
+	encoded, err := sonic.Marshal(delta)
+	require.NoError(t, err)
+	assert.Equal(t, "audio/L16;codec=pcm;rate=24000", gjson.GetBytes(encoded, "candidates.0.content.parts.0.inlineData.mimeType").String(), "the chunks are headerless PCM")
+	assert.Equal(t, base64.StdEncoding.EncodeToString([]byte("pcm-chunk")), gjson.GetBytes(encoded, "candidates.0.content.parts.0.inlineData.data").String())
+	assert.False(t, gjson.GetBytes(encoded, "candidates.0.finishReason").Exists(), "a delta does not end the stream")
+
+	usage := &schemas.SpeechUsage{InputTokens: 12, OutputTokens: 340, TotalTokens: 352}
+	_, done, err := convert(bifrostCtx, &schemas.BifrostSpeechStreamResponse{Type: schemas.SpeechStreamResponseTypeDone, Usage: usage, ExtraFields: routing})
+	require.NoError(t, err)
+	encoded, err = sonic.Marshal(done)
+	require.NoError(t, err)
+	assert.Equal(t, "STOP", gjson.GetBytes(encoded, "candidates.0.finishReason").String())
+	assert.Equal(t, int64(340), gjson.GetBytes(encoded, "usageMetadata.candidatesTokenCount").Int())
+	assert.Equal(t, int64(352), gjson.GetBytes(encoded, "usageMetadata.totalTokenCount").Int())
+}
+
+// TestGenAIStreamSpeechForVertexChirpIsRefused pins that a streamGenerateContent request for Chirp 3 HD is routed
+// as a stream and refused by the provider with a 400 the SDK can read. Cloud Text-to-Speech streams over gRPC
+// only, so REST has nothing to send.
+func TestGenAIStreamSpeechForVertexChirpIsRefused(t *testing.T) {
+	rawBody := []byte(`{"contents":[{"role":"user","parts":[{"text":"नमस्ते"}]}],"generationConfig":{"responseModalities":["AUDIO"],"speechConfig":{"voiceConfig":{"prebuiltVoiceConfig":{"voiceName":"hi-IN-Chirp3-HD-Erinome"}},"languageCode":"hi-IN"}}}`)
+	requestCtx := &fasthttp.RequestCtx{}
+	requestCtx.SetUserValue("model", "vertex/chirp-3-hd:streamGenerateContent")
+	requestCtx.Request.SetBody(rawBody)
+	bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	geminiReq := &gemini.GeminiGenerationRequest{}
+	require.NoError(t, sonic.Unmarshal(rawBody, geminiReq))
+	require.NoError(t, extractAndSetModelAndRequestType(requestCtx, bifrostCtx, geminiReq))
+	assert.True(t, geminiReq.IsStreamingRequested(), "the :streamGenerateContent suffix makes it a stream")
+
+	route := findGenAIRouteForTest(t, CreateGenAIRouteConfigs("/genai"), "/genai/v1beta/models/{model:*}", "POST")
+	converted, err := route.RequestConverter(bifrostCtx, geminiReq)
+	require.NoError(t, err)
+	speech := converted.SpeechRequest
+	require.NotNil(t, speech)
+	assert.Equal(t, schemas.Vertex, speech.Provider)
+	assert.Equal(t, "chirp-3-hd", speech.Model)
+
+	provider, err := vertex.NewVertexProvider(&schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{DefaultRequestTimeoutInSeconds: 10}}, nil)
+	require.NoError(t, err)
+	stream, bifrostErr := provider.SpeechStream(bifrostCtx, nil, func(context.Context) {}, schemas.Key{}, speech)
+	require.Nil(t, stream)
+	require.NotNil(t, bifrostErr)
+	assert.Equal(t, fasthttp.StatusBadRequest, bifrostErr.EffectiveHTTPStatus())
+
+	body, err := sonic.Marshal(route.ErrorConverter(bifrostCtx, bifrostErr))
+	require.NoError(t, err)
+	assert.Contains(t, gjson.GetBytes(body, "error.message").String(), "not supported")
 }
