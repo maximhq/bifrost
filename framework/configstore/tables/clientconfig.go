@@ -71,6 +71,7 @@ type TableClientConfig struct {
 	SkipAccessProfileUserVirtualKeyCreation bool                           `gorm:"default:false" json:"skip_access_profile_user_virtual_key_creation"` // A user's first access profile does not create a virtual key for them
 	SkipAccessProfileUserVirtualKeyDeletion bool                           `gorm:"default:false" json:"skip_access_profile_user_virtual_key_deletion"` // Losing the last access profile does not delete the user's virtual keys
 	HiddenRequestTypesJSON                  string                         `gorm:"type:text" json:"-"`                                                 // JSON serialized []string of request types hidden from log reads
+	UsageEstimationTokenizersJSON           string                         `gorm:"type:text" json:"-"`                                                 // JSON serialized []string of tokenizer families used to estimate a cancelled stream's usage
 	RoutingChainMaxDepth                    int                            `gorm:"default:10" json:"routing_chain_max_depth"`                          // Maximum depth for routing rule chain evaluation (default: 10)
 	MCPExternalClientURL                    string                         `gorm:"type:varchar(512)" json:"mcp_external_client_url,omitempty"`         // Public base URL used as redirect_uri when Bifrost acts as an OAuth client to upstream MCP servers
 	SkillsExternalClientURL                 string                         `gorm:"type:varchar(512)" json:"skills_external_client_url,omitempty"`      // Public base URL for Skills Repository marketplaces; empty disables marketplace serving
@@ -128,6 +129,9 @@ type TableClientConfig struct {
 	Metadata           map[string]any            `gorm:"-" json:"metadata,omitempty"`
 	OAuth2ServerConfig *OAuth2ServerConfig       `gorm:"-" json:"oauth2_server_config,omitempty"`
 	WebhookConfig      *WebhookConfig            `gorm:"-" json:"webhook_config,omitempty"`
+
+	// UsageEstimationTokenizers is persisted as UsageEstimationTokenizersJSON.
+	UsageEstimationTokenizers []string `gorm:"-" json:"usage_estimation_tokenizers,omitempty"`
 
 	MCPCodeModeLimits *schemas.MCPCodeModeLimits `gorm:"-" json:"mcp_code_mode_limits,omitempty"` // Virtual: per-execution code mode limits
 
@@ -225,6 +229,16 @@ func (cc *TableClientConfig) BeforeSave(tx *gorm.DB) error {
 		cc.HiddenRequestTypesJSON = string(data)
 	} else {
 		cc.HiddenRequestTypesJSON = "[]"
+	}
+
+	if cc.UsageEstimationTokenizers != nil {
+		data, err := json.Marshal(cc.UsageEstimationTokenizers)
+		if err != nil {
+			return err
+		}
+		cc.UsageEstimationTokenizersJSON = string(data)
+	} else {
+		cc.UsageEstimationTokenizersJSON = "[]"
 	}
 
 	if cc.HeaderFilterConfig != nil {
@@ -341,6 +355,12 @@ func (cc *TableClientConfig) AfterFind(tx *gorm.DB) error {
 
 	if cc.HiddenRequestTypesJSON != "" {
 		if err := json.Unmarshal([]byte(cc.HiddenRequestTypesJSON), &cc.HiddenRequestTypes); err != nil {
+			return err
+		}
+	}
+
+	if cc.UsageEstimationTokenizersJSON != "" {
+		if err := json.Unmarshal([]byte(cc.UsageEstimationTokenizersJSON), &cc.UsageEstimationTokenizers); err != nil {
 			return err
 		}
 	}

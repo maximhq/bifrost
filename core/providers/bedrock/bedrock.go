@@ -1074,7 +1074,7 @@ func (provider *BedrockProvider) TextCompletion(ctx *schemas.BifrostContext, key
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*BedrockTextCompletionRequest, error) {
 			return ToBedrockTextCompletionRequest(request), nil
 		})
 	if bifrostErr != nil {
@@ -1171,7 +1171,7 @@ func (provider *BedrockProvider) TextCompletionStream(ctx *schemas.BifrostContex
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*BedrockTextCompletionRequest, error) {
 			return ToBedrockTextCompletionRequest(request), nil
 		})
 	if bifrostErr != nil {
@@ -1202,6 +1202,7 @@ func (provider *BedrockProvider) TextCompletionStream(ctx *schemas.BifrostContex
 			}
 			providerUtils.CloseStream(ctx, responseChan)
 		}()
+		defer providerUtils.RecoverStreamPanic(ctx, postHookRunner, responseChan, provider.logger, postHookSpanFinalizer)
 		defer resp.Body.Close()
 
 		// Wrap body with idle timeout to detect stalled streams.
@@ -1315,7 +1316,7 @@ func (provider *BedrockProvider) ChatCompletion(ctx *schemas.BifrostContext, key
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*BedrockConverseRequest, error) {
 			bedrockReq, err := ToBedrockChatCompletionRequest(ctx, request)
 			return withHeaderRequestMetadata(ctx, bedrockReq, err)
 		})
@@ -1518,7 +1519,7 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*BedrockConverseRequest, error) {
 			bedrockReq, err := ToBedrockChatCompletionRequest(ctx, request)
 			return withHeaderRequestMetadata(ctx, bedrockReq, err)
 		})
@@ -1550,6 +1551,7 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 			}
 			providerUtils.CloseStream(ctx, responseChan)
 		}()
+		defer providerUtils.RecoverStreamPanic(ctx, postHookRunner, responseChan, provider.logger, postHookSpanFinalizer)
 		defer resp.Body.Close()
 
 		// Wrap body with idle timeout to detect stalled streams.
@@ -1881,7 +1883,7 @@ func (provider *BedrockProvider) Responses(ctx *schemas.BifrostContext, key sche
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*BedrockConverseRequest, error) {
 			bedrockReq, err := ToBedrockResponsesRequest(ctx, request)
 			return withHeaderRequestMetadata(ctx, bedrockReq, err)
 		})
@@ -1978,7 +1980,7 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*BedrockConverseRequest, error) {
 			bedrockReq, err := ToBedrockResponsesRequest(ctx, request)
 			return withHeaderRequestMetadata(ctx, bedrockReq, err)
 		})
@@ -2012,6 +2014,7 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 			}
 			providerUtils.CloseStream(ctx, responseChan)
 		}()
+		defer providerUtils.RecoverStreamPanic(ctx, postHookRunner, responseChan, provider.logger, postHookSpanFinalizer)
 		// Always release response on exit; bodyStream close should prevent indefinite blocking.
 		defer resp.Body.Close()
 
@@ -2307,7 +2310,7 @@ func (provider *BedrockProvider) Embedding(ctx *schemas.BifrostContext, key sche
 		jsonData, bifrostError = providerUtils.CheckContextAndGetRequestBody(
 			ctx,
 			request,
-			func() (providerUtils.RequestBodyWithExtraParams, error) {
+			func() (*BedrockTitanEmbeddingRequest, error) {
 				return ToBedrockTitanEmbeddingRequest(request)
 			})
 		if bifrostError != nil {
@@ -2320,7 +2323,7 @@ func (provider *BedrockProvider) Embedding(ctx *schemas.BifrostContext, key sche
 		jsonData, bifrostError = providerUtils.CheckContextAndGetRequestBody(
 			ctx,
 			request,
-			func() (providerUtils.RequestBodyWithExtraParams, error) {
+			func() (*BedrockCohereEmbeddingRequest, error) {
 				return ToBedrockCohereEmbeddingRequest(request)
 			})
 		if bifrostError != nil {
@@ -2333,7 +2336,7 @@ func (provider *BedrockProvider) Embedding(ctx *schemas.BifrostContext, key sche
 		jsonData, bifrostError = providerUtils.CheckContextAndGetRequestBody(
 			ctx,
 			request,
-			func() (providerUtils.RequestBodyWithExtraParams, error) {
+			func() (*BedrockNovaEmbeddingRequest, error) {
 				return ToBedrockNovaEmbeddingRequest(request)
 			})
 		if bifrostError != nil {
@@ -2496,7 +2499,7 @@ func (provider *BedrockProvider) Rerank(ctx *schemas.BifrostContext, key schemas
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*BedrockRerankRequest, error) {
 			return ToBedrockRerankRequest(request, modelARN)
 		},
 	)
@@ -2600,15 +2603,22 @@ func (provider *BedrockProvider) ImageGeneration(ctx *schemas.BifrostContext, ke
 
 	path, _ = provider.getModelPathAndRegion(ctx, "invoke", request.Model, key)
 
-	jsonData, bifrostError = providerUtils.CheckContextAndGetRequestBody(
-		ctx,
-		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
-			if isStabilityAIModel(request.Model) {
+	// Branch before the call so each converter keeps its concrete body type.
+	if isStabilityAIModel(request.Model) {
+		jsonData, bifrostError = providerUtils.CheckContextAndGetRequestBody(
+			ctx,
+			request,
+			func() (*StabilityAIImageGenerationRequest, error) {
 				return ToStabilityAIImageGenerationRequest(request)
-			}
-			return ToBedrockImageGenerationRequest(request)
-		})
+			})
+	} else {
+		jsonData, bifrostError = providerUtils.CheckContextAndGetRequestBody(
+			ctx,
+			request,
+			func() (*BedrockImageGenerationRequest, error) {
+				return ToBedrockImageGenerationRequest(request)
+			})
+	}
 	if bifrostError != nil {
 		return nil, bifrostError
 	}
@@ -2686,15 +2696,22 @@ func (provider *BedrockProvider) ImageEdit(ctx *schemas.BifrostContext, key sche
 	// Stability AI routing and task-type inference use the actual model ID.
 	path, _ := provider.getModelPathAndRegion(ctx, "invoke", request.Model, key)
 
-	jsonData, bifrostError = providerUtils.CheckContextAndGetRequestBody(
-		ctx,
-		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
-			if isStabilityAIModel(request.Model) {
+	// Branch before the call so each converter keeps its concrete body type.
+	if isStabilityAIModel(request.Model) {
+		jsonData, bifrostError = providerUtils.CheckContextAndGetRequestBody(
+			ctx,
+			request,
+			func() (*StabilityAIImageEditRequest, error) {
 				return ToStabilityAIImageEditRequest(request, request.Model)
-			}
-			return ToBedrockImageEditRequest(request)
-		})
+			})
+	} else {
+		jsonData, bifrostError = providerUtils.CheckContextAndGetRequestBody(
+			ctx,
+			request,
+			func() (*BedrockImageEditRequest, error) {
+				return ToBedrockImageEditRequest(request)
+			})
+	}
 	if bifrostError != nil {
 		return nil, bifrostError
 	}
@@ -2771,7 +2788,7 @@ func (provider *BedrockProvider) ImageVariation(ctx *schemas.BifrostContext, key
 	jsonData, bifrostError = providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*BedrockImageVariationRequest, error) {
 			return ToBedrockImageVariationRequest(request)
 		})
 	if bifrostError != nil {

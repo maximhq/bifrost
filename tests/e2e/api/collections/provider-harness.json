@@ -314379,7 +314379,2032 @@
       ]
     },
     {
-      "name": "325. Bedrock Request Metadata Headers (#9297 / PR #9189)",
+      "name": "325. Cancelled stream usage estimation controls (PR #9238)",
+      "description": "Cancellation regressions run in runners/run-stream-cancellation.mjs: cancel after 128 generated characters, require input/output usage and cost for every provider, and reject the Anthropic initial output cursor. These controls verify completed streams still return provider usage on each ingress shape. Postman cannot abort mid-stream.",
+      "item": [
+        {
+          "name": "Cancelled usage estimation control - openai/gpt-4o-mini chat - #9238",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say hello.\"\n    }\n  ],\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  },\n  \"max_tokens\": 64\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('completed stream reaches [DONE] with final provider usage', function () {",
+                  "  var text = pm.response.text();",
+                  "  pm.expect(pm.response.code, text).to.equal(200);",
+                  "  pm.expect(text, 'stream never reached [DONE]: ' + text.slice(-600)).to.include('data: [DONE]');",
+                  "  pm.expect(text, 'stream carried an error: ' + text.slice(0, 600)).not.to.match(/\"error\"\\s*:\\s*\\{/);",
+                  "  var chunks = text.split('\\n').filter(function (l) { return l.indexOf('data: {') === 0; }).map(function (l) { return JSON.parse(l.slice(6)); });",
+                  "  // finish_reason comes only from the terminal event (Anthropic's message_delta), so it proves the usage is final, not message_start's provisional count.",
+                  "  var finished = chunks.some(function (c) { return (c.choices || []).some(function (ch) { return !!ch.finish_reason; }); });",
+                  "  pm.expect(finished, 'no chunk carried a finish_reason: ' + text.slice(-600)).to.equal(true);",
+                  "  var last = chunks.filter(function (c) { return c.usage; }).pop();",
+                  "  pm.expect(last ? last.usage.completion_tokens : 0, 'no final provider usage: ' + text.slice(-600)).to.be.above(0);",
+                  "  pm.expect(text, text).not.to.include('\"estimation\":');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Cancelled usage estimation control - anthropic/claude-haiku-4-5 chat - #9238",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-haiku-4-5\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say hello.\"\n    }\n  ],\n  \"stream\": true,\n  \"max_tokens\": 64\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('completed stream reaches [DONE] with final provider usage', function () {",
+                  "  var text = pm.response.text();",
+                  "  pm.expect(pm.response.code, text).to.equal(200);",
+                  "  pm.expect(text, 'stream never reached [DONE]: ' + text.slice(-600)).to.include('data: [DONE]');",
+                  "  pm.expect(text, 'stream carried an error: ' + text.slice(0, 600)).not.to.match(/\"error\"\\s*:\\s*\\{/);",
+                  "  var chunks = text.split('\\n').filter(function (l) { return l.indexOf('data: {') === 0; }).map(function (l) { return JSON.parse(l.slice(6)); });",
+                  "  // finish_reason comes only from the terminal event (Anthropic's message_delta), so it proves the usage is final, not message_start's provisional count.",
+                  "  var finished = chunks.some(function (c) { return (c.choices || []).some(function (ch) { return !!ch.finish_reason; }); });",
+                  "  pm.expect(finished, 'no chunk carried a finish_reason: ' + text.slice(-600)).to.equal(true);",
+                  "  var last = chunks.filter(function (c) { return c.usage; }).pop();",
+                  "  pm.expect(last ? last.usage.completion_tokens : 0, 'no final provider usage: ' + text.slice(-600)).to.be.above(0);",
+                  "  pm.expect(text, text).not.to.include('\"estimation\":');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Cancelled usage estimation control - openai/gpt-4o-mini responses - #9238",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"input\": \"Say hello.\",\n  \"stream\": true,\n  \"max_output_tokens\": 64\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('completed stream reaches response.completed with final provider usage', function () {",
+                  "  var text = pm.response.text();",
+                  "  pm.expect(pm.response.code, text).to.equal(200);",
+                  "  pm.expect(text, 'stream never reached response.completed: ' + text.slice(-600)).to.include('response.completed');",
+                  "  pm.expect(text, 'stream carried an error event: ' + text.slice(0, 600)).to.not.include('event: error');",
+                  "  pm.expect(text, 'stream failed: ' + text.slice(0, 600)).not.to.match(/\"type\"\\s*:\\s*\"(?:error|response\\.failed)\"/);",
+                  "  pm.expect(text, 'no final provider usage: ' + text.slice(-800)).to.match(/response\\.completed[\\s\\S]*\"output_tokens\"\\s*:\\s*[1-9]/);",
+                  "  pm.expect(text, text).not.to.include('\"estimation\":');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Cancelled usage estimation control - anthropic/claude-haiku-4-5 responses - #9238",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-haiku-4-5\",\n  \"input\": \"Say hello.\",\n  \"stream\": true,\n  \"max_output_tokens\": 64\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('completed stream reaches response.completed with final provider usage', function () {",
+                  "  var text = pm.response.text();",
+                  "  pm.expect(pm.response.code, text).to.equal(200);",
+                  "  pm.expect(text, 'stream never reached response.completed: ' + text.slice(-600)).to.include('response.completed');",
+                  "  pm.expect(text, 'stream carried an error event: ' + text.slice(0, 600)).to.not.include('event: error');",
+                  "  pm.expect(text, 'stream failed: ' + text.slice(0, 600)).not.to.match(/\"type\"\\s*:\\s*\"(?:error|response\\.failed)\"/);",
+                  "  pm.expect(text, 'no final provider usage: ' + text.slice(-800)).to.match(/response\\.completed[\\s\\S]*\"output_tokens\"\\s*:\\s*[1-9]/);",
+                  "  pm.expect(text, text).not.to.include('\"estimation\":');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Cancelled usage estimation control - anthropic claude-haiku-4-5 native messages - #9238",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"claude-haiku-4-5\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say hello.\"\n    }\n  ],\n  \"stream\": true,\n  \"max_tokens\": 64\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('completed stream reaches message_stop with final provider usage', function () {",
+                  "  var text = pm.response.text();",
+                  "  pm.expect(pm.response.code, text).to.equal(200);",
+                  "  pm.expect(text, 'stream did not end with message_stop: ' + text.slice(-600)).to.include('message_stop');",
+                  "  pm.expect(text, 'stream carried an error event: ' + text.slice(0, 600)).to.not.include('event: error');",
+                  "  // message_start carries a provisional output count; the final one is on message_delta.",
+                  "  pm.expect(text, 'no final message_delta usage: ' + text.slice(-800)).to.match(/event: message_delta[\\s\\S]*\"output_tokens\"\\s*:\\s*[1-9]/);",
+                  "  pm.expect(text, text).not.to.include('\"estimation\":');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "326. Usage estimation tokenizer setting (usage-estimation-tokenizers) (PR #9657) [SERIAL]",
+      "description": "client_config.usage_estimation_tokenizers lists the embedded tokenizer families (anthropic, deepseek, llama2, llama3, or all) a cancelled stream's usage is estimated with. These cases pin the PUT /api/config contract: an unknown family is refused with 400, names are stored trimmed, lowercased and de-duplicated, a save that a later check rejects (here an invalid mcp_code_mode_binding_level) stores nothing, a save that omits the field keeps the stored list, and an empty list clears it. The handler used to apply the new list to the running client before the later checks and the database write, so a request that returned 400 still switched families; it now applies nothing itself and the reload after a successful save hands the stored list to the client. The harness can only observe the stored list: which tokenizer the running client uses is covered by Go tests (TestUpdateConfig_UsageEstimationTokenizers, TestReloadClientConfigFromConfigStore_AppliesUsageEstimationTokenizers, TestUsageEstimationTokenizersFollowConfig). The folder reads the stored list first and restores it last; an interrupted run can leave anthropic and llama3 enabled. No provider calls; the openai keyword is a harness filter label. Run with FEATURE=usage-estimation-tokenizers.",
+      "item": [
+        {
+          "name": "[EXPECT-200] openai usage-estimation-tokenizers read current config - #9657",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"reads the stored client config\", function () {",
+                  "  pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.equal(200);",
+                  "  var cc = pm.response.json().client_config;",
+                  "  pm.expect(cc, pm.response.text()).to.be.an('object');",
+                  "  // A fresh install reports 0, which PUT /api/config refuses.",
+                  "  if (!(cc.log_retention_days >= 1)) { cc.log_retention_days = 30; }",
+                  "  pm.collectionVariables.set('usageEstimationTokenizersOriginal', JSON.stringify(cc.usage_estimation_tokenizers || []));",
+                  "  pm.collectionVariables.set('usageEstimationTokenizersClientConfig', JSON.stringify(cc));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/config?from_db=true",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ],
+              "query": [
+                {
+                  "key": "from_db",
+                  "value": "true"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] openai usage-estimation-tokenizers PUT /api/config rejects an unknown tokenizer family - #9657",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var cc = JSON.parse(pm.collectionVariables.get('usageEstimationTokenizersClientConfig'));",
+                  "cc.usage_estimation_tokenizers = ['anthropic', 'gpt2'];",
+                  "pm.variables.set('usageEstimationTokenizersBody', JSON.stringify({ client_config: cc }));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"an unknown tokenizer family is refused\", function () {",
+                  "  pm.expect(pm.response.code, 'expected 400, got: ' + pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text()).to.include('usage_estimation_tokenizers');",
+                  "  pm.expect(pm.response.text()).to.include('gpt2');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/config",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{{usageEstimationTokenizersBody}}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai usage-estimation-tokenizers PUT /api/config sets anthropic and llama3 - #9657",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var cc = JSON.parse(pm.collectionVariables.get('usageEstimationTokenizersClientConfig'));",
+                  "// Mixed case, padding and a duplicate: the stored list is normalized.",
+                  "cc.usage_estimation_tokenizers = [' Anthropic ', 'llama3', 'anthropic'];",
+                  "pm.variables.set('usageEstimationTokenizersBody', JSON.stringify({ client_config: cc }));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"the tokenizer families are accepted\", function () {",
+                  "  pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.equal(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/config",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{{usageEstimationTokenizersBody}}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai usage-estimation-tokenizers the normalized list persists - #9657",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"the list is stored trimmed, lowercased and de-duplicated\", function () {",
+                  "  pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.equal(200);",
+                  "  var v = pm.response.json().client_config.usage_estimation_tokenizers || [];",
+                  "  pm.expect(v, 'stored usage_estimation_tokenizers: ' + pm.response.text()).to.eql(['anthropic', 'llama3']);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/config?from_db=true",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ],
+              "query": [
+                {
+                  "key": "from_db",
+                  "value": "true"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] openai usage-estimation-tokenizers PUT /api/config with a valid list and an invalid mcp_code_mode_binding_level - #9657",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var cc = JSON.parse(pm.collectionVariables.get('usageEstimationTokenizersClientConfig'));",
+                  "cc.usage_estimation_tokenizers = ['deepseek'];",
+                  "cc.mcp_code_mode_binding_level = 'bogus';",
+                  "pm.variables.set('usageEstimationTokenizersBody', JSON.stringify({ client_config: cc }));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"a later validation failure refuses the whole save\", function () {",
+                  "  pm.expect(pm.response.code, 'expected 400, got: ' + pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text()).to.include('mcp_code_mode_binding_level');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/config",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{{usageEstimationTokenizersBody}}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai usage-estimation-tokenizers a rejected save leaves the stored list - #9657",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"the list from the rejected request was not stored\", function () {",
+                  "  pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.equal(200);",
+                  "  var v = pm.response.json().client_config.usage_estimation_tokenizers || [];",
+                  "  pm.expect(v, 'stored usage_estimation_tokenizers: ' + pm.response.text()).to.eql(['anthropic', 'llama3']);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/config?from_db=true",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ],
+              "query": [
+                {
+                  "key": "from_db",
+                  "value": "true"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai usage-estimation-tokenizers PUT /api/config without the field - #9657",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var cc = JSON.parse(pm.collectionVariables.get('usageEstimationTokenizersClientConfig'));",
+                  "delete cc.usage_estimation_tokenizers;",
+                  "pm.variables.set('usageEstimationTokenizersBody', JSON.stringify({ client_config: cc }));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"a save that omits the field is accepted\", function () {",
+                  "  pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.equal(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/config",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{{usageEstimationTokenizersBody}}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai usage-estimation-tokenizers omitting the field keeps the list - #9657",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"a caller unaware of the field never clears the list\", function () {",
+                  "  pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.equal(200);",
+                  "  var v = pm.response.json().client_config.usage_estimation_tokenizers || [];",
+                  "  pm.expect(v, 'stored usage_estimation_tokenizers: ' + pm.response.text()).to.eql(['anthropic', 'llama3']);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/config?from_db=true",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ],
+              "query": [
+                {
+                  "key": "from_db",
+                  "value": "true"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai usage-estimation-tokenizers PUT /api/config clears the list - #9657",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var cc = JSON.parse(pm.collectionVariables.get('usageEstimationTokenizersClientConfig'));",
+                  "cc.usage_estimation_tokenizers = [];",
+                  "pm.variables.set('usageEstimationTokenizersBody', JSON.stringify({ client_config: cc }));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"an empty list is accepted\", function () {",
+                  "  pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.equal(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/config",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{{usageEstimationTokenizersBody}}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai usage-estimation-tokenizers an empty list returns to the base encodings - #9657",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"no family is stored\", function () {",
+                  "  pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.equal(200);",
+                  "  var v = pm.response.json().client_config.usage_estimation_tokenizers || [];",
+                  "  pm.expect(v, 'stored usage_estimation_tokenizers: ' + pm.response.text()).to.eql([]);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/config?from_db=true",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ],
+              "query": [
+                {
+                  "key": "from_db",
+                  "value": "true"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai usage-estimation-tokenizers restore the original list - #9657",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var cc = JSON.parse(pm.collectionVariables.get('usageEstimationTokenizersClientConfig'));",
+                  "cc.usage_estimation_tokenizers = JSON.parse(pm.collectionVariables.get('usageEstimationTokenizersOriginal'));",
+                  "pm.variables.set('usageEstimationTokenizersBody', JSON.stringify({ client_config: cc }));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"the original setting is restored\", function () {",
+                  "  pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.equal(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/config",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{{usageEstimationTokenizersBody}}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "327. Server-tool history with no chat role is dropped on the Responses to Chat fallback (server-tool history fallback) (#9721 / PR #9733)",
+      "description": "An Anthropic Messages request whose history holds mcp_tool_use / mcp_tool_result (or server web_search) blocks, sent to a chat-only provider, used to 400 upstream with `messages[0]: missing field 'role'`. The Anthropic converter turns those blocks into Responses items (mcp_call, web_search_call) that Chat Completions has no equivalent for, and ToChatMessages emitted each one as a roleless, contentless chat message. The fix drops every roleless Responses item that has no chat rendering.\n\n327.1 is the issue's own reproduction on /anthropic/v1/messages. 327.2 replays a server web_search turn on the same route, the sibling type the first fix (mcp_call only) still broke. 327.3 sends neutral-shape mcp_list_tools / mcp_call input items on /v1/responses, which reaches the same fallback without the Anthropic converter. Every case asserts on extra_fields.raw_request: each chat message has a role, no server-tool type reaches the wire, and the plain user turns survive in order.",
+      "item": [
+        {
+          "name": "deepseek/deepseek-v4-flash /anthropic/v1/messages mcp_tool_use + mcp_tool_result history - #9721",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash\",\n  \"max_tokens\": 30,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"look\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": [\n        {\n          \"type\": \"mcp_tool_use\",\n          \"id\": \"call_1\",\n          \"name\": \"analyze_image\",\n          \"input\": {\n            \"prompt\": \"desc\"\n          },\n          \"server_name\": \"img_mcp\"\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"mcp_tool_result\",\n          \"tool_use_id\": \"call_1\",\n          \"content\": [\n            {\n              \"type\": \"text\",\n              \"text\": \"red\"\n            }\n          ]\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"reply OK\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('327.1 200 - a 400 \"missing field `role`\" from DeepSeek is the regression', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 600)).to.equal(200);",
+                  "});",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('327.1 raw_request captured as a chat body', function () {",
+                  "  pm.expect(rr, 'raw_request missing: ' + txt.slice(0, 400)).to.be.an('object');",
+                  "  pm.expect(rr.messages, 'no messages[] on the wire: ' + JSON.stringify(rr).slice(0, 400)).to.be.an('array');",
+                  "});",
+                  "var msgs = (rr && rr.messages) || [];",
+                  "pm.test('327.1 every chat message on the wire carries a role', function () {",
+                  "  msgs.forEach(function (m, i) {",
+                  "    pm.expect(m && m.role, 'messages[' + i + '] has no role: ' + JSON.stringify(m).slice(0, 600)).to.be.a('string').and.not.empty;",
+                  "  });",
+                  "});",
+                  "pm.test('327.1 server-tool items are dropped, not forwarded under their Responses type', function () {",
+                  "  var banned = ['mcp_call', 'mcp_list_tools', 'mcp_approval_request', 'mcp_approval_response', 'mcp_tool_use', 'mcp_tool_result', 'web_search_call', 'server_tool_use', 'web_search_tool_result'];",
+                  "  msgs.forEach(function (m, i) {",
+                  "    var shown = 'messages[' + i + ']: ' + JSON.stringify(m).slice(0, 600);",
+                  "    pm.expect(banned.indexOf(m && m.type), 'forwarded under a Responses item type, ' + shown).to.equal(-1);",
+                  "    // The history holds no function calls, so any tool_calls entry can only be a server-tool call that leaked through.",
+                  "    pm.expect(((m && m.tool_calls) || []).length, 'server-tool call forwarded as a tool call, ' + shown).to.equal(0);",
+                  "    (Array.isArray(m && m.content) ? m.content : []).forEach(function (part) {",
+                  "      pm.expect(banned.indexOf(part && part.type), 'content part typed as a server-tool item, ' + shown).to.equal(-1);",
+                  "    });",
+                  "  });",
+                  "});",
+                  "pm.test('327.1 the user turns survive in order', function () {",
+                  "  var users = msgs.filter(function (m) { return m && m.role === 'user'; }).map(function (m) {",
+                  "    return typeof m.content === 'string' ? m.content : JSON.stringify(m.content);",
+                  "  });",
+                  "  pm.expect(users, JSON.stringify(msgs).slice(0, 600)).to.eql([\"look\",\"reply OK\"]);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "deepseek/deepseek-v4-flash /anthropic/v1/messages server web_search history - #9721",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash\",\n  \"max_tokens\": 30,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"look up a red pixel\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": [\n        {\n          \"type\": \"server_tool_use\",\n          \"id\": \"srvtoolu_1\",\n          \"name\": \"web_search\",\n          \"input\": {\n            \"query\": \"red pixel\"\n          }\n        },\n        {\n          \"type\": \"web_search_tool_result\",\n          \"tool_use_id\": \"srvtoolu_1\",\n          \"content\": [\n            {\n              \"type\": \"web_search_result\",\n              \"url\": \"https://example.org/pixel\",\n              \"title\": \"Pixels\",\n              \"encrypted_content\": \"abc\"\n            }\n          ]\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"reply OK\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('327.2 200 - a 400 \"missing field `role`\" from DeepSeek is the regression', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 600)).to.equal(200);",
+                  "});",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('327.2 raw_request captured as a chat body', function () {",
+                  "  pm.expect(rr, 'raw_request missing: ' + txt.slice(0, 400)).to.be.an('object');",
+                  "  pm.expect(rr.messages, 'no messages[] on the wire: ' + JSON.stringify(rr).slice(0, 400)).to.be.an('array');",
+                  "});",
+                  "var msgs = (rr && rr.messages) || [];",
+                  "pm.test('327.2 every chat message on the wire carries a role', function () {",
+                  "  msgs.forEach(function (m, i) {",
+                  "    pm.expect(m && m.role, 'messages[' + i + '] has no role: ' + JSON.stringify(m).slice(0, 600)).to.be.a('string').and.not.empty;",
+                  "  });",
+                  "});",
+                  "pm.test('327.2 server-tool items are dropped, not forwarded under their Responses type', function () {",
+                  "  var banned = ['mcp_call', 'mcp_list_tools', 'mcp_approval_request', 'mcp_approval_response', 'mcp_tool_use', 'mcp_tool_result', 'web_search_call', 'server_tool_use', 'web_search_tool_result'];",
+                  "  msgs.forEach(function (m, i) {",
+                  "    var shown = 'messages[' + i + ']: ' + JSON.stringify(m).slice(0, 600);",
+                  "    pm.expect(banned.indexOf(m && m.type), 'forwarded under a Responses item type, ' + shown).to.equal(-1);",
+                  "    // The history holds no function calls, so any tool_calls entry can only be a server-tool call that leaked through.",
+                  "    pm.expect(((m && m.tool_calls) || []).length, 'server-tool call forwarded as a tool call, ' + shown).to.equal(0);",
+                  "    (Array.isArray(m && m.content) ? m.content : []).forEach(function (part) {",
+                  "      pm.expect(banned.indexOf(part && part.type), 'content part typed as a server-tool item, ' + shown).to.equal(-1);",
+                  "    });",
+                  "  });",
+                  "});",
+                  "pm.test('327.2 the user turns survive in order', function () {",
+                  "  var users = msgs.filter(function (m) { return m && m.role === 'user'; }).map(function (m) {",
+                  "    return typeof m.content === 'string' ? m.content : JSON.stringify(m.content);",
+                  "  });",
+                  "  pm.expect(users, JSON.stringify(msgs).slice(0, 600)).to.eql([\"look up a red pixel\",\"reply OK\"]);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "deepseek/deepseek-v4-flash /v1/responses mcp_list_tools + mcp_call input items - #9721",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash\",\n  \"max_output_tokens\": 30,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"look\"\n    },\n    {\n      \"type\": \"mcp_list_tools\",\n      \"id\": \"mcpl_1\",\n      \"server_label\": \"docs\",\n      \"tools\": [\n        {\n          \"name\": \"search\",\n          \"input_schema\": {\n            \"type\": \"object\"\n          }\n        }\n      ]\n    },\n    {\n      \"type\": \"mcp_call\",\n      \"id\": \"mcp_1\",\n      \"server_label\": \"docs\",\n      \"name\": \"search\",\n      \"arguments\": \"{}\",\n      \"output\": \"red\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"reply OK\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('327.3 200 - a 400 \"missing field `role`\" from DeepSeek is the regression', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 600)).to.equal(200);",
+                  "});",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('327.3 raw_request captured as a chat body', function () {",
+                  "  pm.expect(rr, 'raw_request missing: ' + txt.slice(0, 400)).to.be.an('object');",
+                  "  pm.expect(rr.messages, 'no messages[] on the wire: ' + JSON.stringify(rr).slice(0, 400)).to.be.an('array');",
+                  "});",
+                  "var msgs = (rr && rr.messages) || [];",
+                  "pm.test('327.3 every chat message on the wire carries a role', function () {",
+                  "  msgs.forEach(function (m, i) {",
+                  "    pm.expect(m && m.role, 'messages[' + i + '] has no role: ' + JSON.stringify(m).slice(0, 600)).to.be.a('string').and.not.empty;",
+                  "  });",
+                  "});",
+                  "pm.test('327.3 server-tool items are dropped, not forwarded under their Responses type', function () {",
+                  "  var banned = ['mcp_call', 'mcp_list_tools', 'mcp_approval_request', 'mcp_approval_response', 'mcp_tool_use', 'mcp_tool_result', 'web_search_call', 'server_tool_use', 'web_search_tool_result'];",
+                  "  msgs.forEach(function (m, i) {",
+                  "    var shown = 'messages[' + i + ']: ' + JSON.stringify(m).slice(0, 600);",
+                  "    pm.expect(banned.indexOf(m && m.type), 'forwarded under a Responses item type, ' + shown).to.equal(-1);",
+                  "    // The history holds no function calls, so any tool_calls entry can only be a server-tool call that leaked through.",
+                  "    pm.expect(((m && m.tool_calls) || []).length, 'server-tool call forwarded as a tool call, ' + shown).to.equal(0);",
+                  "    (Array.isArray(m && m.content) ? m.content : []).forEach(function (part) {",
+                  "      pm.expect(banned.indexOf(part && part.type), 'content part typed as a server-tool item, ' + shown).to.equal(-1);",
+                  "    });",
+                  "  });",
+                  "});",
+                  "pm.test('327.3 the user turns survive in order', function () {",
+                  "  var users = msgs.filter(function (m) { return m && m.role === 'user'; }).map(function (m) {",
+                  "    return typeof m.content === 'string' ? m.content : JSON.stringify(m.content);",
+                  "  });",
+                  "  pm.expect(users, JSON.stringify(msgs).slice(0, 600)).to.eql([\"look\",\"reply OK\"]);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "328. Vertex Claude cache prefix keys serialized last (vertex cache key order) (#6406)",
+      "description": "Vertex's Anthropic prompt cache is sensitive to the raw top-level key order of the request body: when the growing `messages` array is serialized before the stable `tools`/`system` prefix, turn-to-turn cache reads miss on a per-request coin flip and usually read only a short stale prefix, re-billing the rest of the context (#6406). Before the fix, every Vertex Claude body Bifrost built put `messages` first: the typed path follows AnthropicMessageRequest's field declaration order and the raw path keeps the client's order (Claude Code sends messages first). The fix (moveCachePrefixKeysLast in core/providers/anthropic/requestbuilder.go, gated by the Vertex-only CachePrefixKeysLast default) re-emits tools, system, messages as the last keys after every other body edit. Each route runs a two-turn pair on vertex/claude-sonnet-4-6 (not affected by the separate Vertex tools-bytes cache pathology the issue reports for Opus 5 / Fable 5) with a fresh per-run nonce in the system block, a tool, a system breakpoint and a rolling last-message breakpoint; turn 2 is turn 1 plus one appended exchange. Each case pins: (1) extra_fields.raw_request ends with tools, system, messages - deterministic, red before the fix; (2) turn 1 honors the breakpoints and turn 2 reads at least everything turn 1 cached - the live cost signature from the issue. Routes: native /anthropic/v1/messages (the Claude Code route), /v1/chat/completions and /v1/responses (neutral shapes converted by the typed builder path). Turns of a pair must run in the same newman process and in order.",
+      "item": [
+        {
+          "name": "vertex claude-sonnet-4-6 /anthropic/v1/messages cache prefix keys last, turn 1 writes the prefix - #6406",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('vertexKeyOrderNonce_native', Date.now().toString(36) + Math.random().toString(36).slice(2, 8));",
+                  "pm.collectionVariables.unset('vertexKeyOrderTurn1_native');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('/anthropic/v1/messages turn 1 returns 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var body = pm.response.json();",
+                  "function cacheUsage(b) {",
+                  "  var u = (b && b.usage) || {};",
+                  "  return { read: u.cache_read_input_tokens || 0, write: u.cache_creation_input_tokens || 0, raw: u };",
+                  "}",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + pm.response.text().slice(0, 300)).to.be.an('object');",
+                  "});",
+                  "if (rr && typeof rr === 'object') {",
+                  "  var keys = Object.keys(rr);",
+                  "  pm.test('Vertex body ends with tools, system, messages (stable cache prefix before the growing messages)', function () {",
+                  "    pm.expect(keys.slice(-3), 'top-level key order sent to Vertex: ' + JSON.stringify(keys)).to.eql(['tools', 'system', 'messages']);",
+                  "  });",
+                  "}",
+                  "var usage = cacheUsage(body);",
+                  "pm.test('turn 1 honors the cache breakpoints', function () {",
+                  "  pm.expect(usage.read + usage.write, 'usage=' + JSON.stringify(usage.raw)).to.be.above(0);",
+                  "});",
+                  "pm.collectionVariables.set('vertexKeyOrderTurn1_native', JSON.stringify({ read: usage.read, write: usage.write }));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/claude-sonnet-4-6\",\n  \"max_tokens\": 16,\n  \"tools\": [\n    {\n      \"name\": \"get_weather\",\n      \"description\": \"Look up the current weather for a city.\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"city\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"city\"\n        ]\n      }\n    }\n  ],\n  \"system\": [\n    {\n      \"type\": \"text\",\n      \"text\": \"[bf-328 {{{{vertexKeyOrderNonce_native}}}}] You are a terse assistant. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates.\",\n      \"cache_control\": {\n        \"type\": \"ephemeral\"\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"First question: reply with the single word OK.\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        }\n      ]\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "vertex claude-sonnet-4-6 /anthropic/v1/messages cache prefix keys last, turn 2 reads the whole turn-1 prefix - #6406",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get('vertexKeyOrderNonce_native')) { pm.collectionVariables.set('vertexKeyOrderNonce_native', 'cold-' + Date.now().toString(36)); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var turn1 = JSON.parse(pm.collectionVariables.get('vertexKeyOrderTurn1_native') || 'null');",
+                  "pm.test('turn 1 ran first in this newman process', function () {",
+                  "  pm.expect(turn1, 'turn 1 recorded no usage - it was filtered out, failed, or ran in another newman process, so this read started cold').to.not.equal(null);",
+                  "});",
+                  "pm.test('/anthropic/v1/messages turn 2 returns 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var body = pm.response.json();",
+                  "function cacheUsage(b) {",
+                  "  var u = (b && b.usage) || {};",
+                  "  return { read: u.cache_read_input_tokens || 0, write: u.cache_creation_input_tokens || 0, raw: u };",
+                  "}",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + pm.response.text().slice(0, 300)).to.be.an('object');",
+                  "});",
+                  "if (rr && typeof rr === 'object') {",
+                  "  var keys = Object.keys(rr);",
+                  "  pm.test('Vertex body ends with tools, system, messages (stable cache prefix before the growing messages)', function () {",
+                  "    pm.expect(keys.slice(-3), 'top-level key order sent to Vertex: ' + JSON.stringify(keys)).to.eql(['tools', 'system', 'messages']);",
+                  "  });",
+                  "}",
+                  "var usage = cacheUsage(body);",
+                  "if (turn1) {",
+                  "  var cachedByTurn1 = turn1.read + turn1.write;",
+                  "  pm.test('turn 2 reads the whole prefix turn 1 cached (no partial stale-prefix read)', function () {",
+                  "    pm.expect(usage.read, 'turn 1 cached ' + cachedByTurn1 + ' tokens; turn 2 usage=' + JSON.stringify(usage.raw)).to.be.at.least(cachedByTurn1);",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/claude-sonnet-4-6\",\n  \"max_tokens\": 16,\n  \"tools\": [\n    {\n      \"name\": \"get_weather\",\n      \"description\": \"Look up the current weather for a city.\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"city\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"city\"\n        ]\n      }\n    }\n  ],\n  \"system\": [\n    {\n      \"type\": \"text\",\n      \"text\": \"[bf-328 {{{{vertexKeyOrderNonce_native}}}}] You are a terse assistant. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates.\",\n      \"cache_control\": {\n        \"type\": \"ephemeral\"\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"First question: reply with the single word OK.\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": \"OK\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"Second question: reply with the single word DONE.\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        }\n      ]\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "vertex claude-sonnet-4-6 /v1/chat/completions cache prefix keys last, turn 1 writes the prefix - #6406",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('vertexKeyOrderNonce_chat', Date.now().toString(36) + Math.random().toString(36).slice(2, 8));",
+                  "pm.collectionVariables.unset('vertexKeyOrderTurn1_chat');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('/v1/chat/completions turn 1 returns 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var body = pm.response.json();",
+                  "function cacheUsage(b) {",
+                  "  var u = (b && b.usage) || {};",
+                  "  var d = u.prompt_tokens_details || {};",
+                  "  return { read: Math.max(d.cached_read_tokens || 0, d.cached_tokens || 0), write: Math.max(d.cached_write_tokens || 0, d.cache_write_tokens || 0), raw: u };",
+                  "}",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + pm.response.text().slice(0, 300)).to.be.an('object');",
+                  "});",
+                  "if (rr && typeof rr === 'object') {",
+                  "  var keys = Object.keys(rr);",
+                  "  pm.test('Vertex body ends with tools, system, messages (stable cache prefix before the growing messages)', function () {",
+                  "    pm.expect(keys.slice(-3), 'top-level key order sent to Vertex: ' + JSON.stringify(keys)).to.eql(['tools', 'system', 'messages']);",
+                  "  });",
+                  "}",
+                  "var usage = cacheUsage(body);",
+                  "pm.test('turn 1 honors the cache breakpoints', function () {",
+                  "  pm.expect(usage.read + usage.write, 'usage=' + JSON.stringify(usage.raw)).to.be.above(0);",
+                  "});",
+                  "pm.collectionVariables.set('vertexKeyOrderTurn1_chat', JSON.stringify({ read: usage.read, write: usage.write }));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/claude-sonnet-4-6\",\n  \"max_tokens\": 16,\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"get_weather\",\n        \"description\": \"Look up the current weather for a city.\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"city\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"city\"\n          ]\n        }\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"[bf-328 {{{{vertexKeyOrderNonce_chat}}}}] You are a terse assistant. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates.\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"First question: reply with the single word OK.\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        }\n      ]\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "vertex claude-sonnet-4-6 /v1/chat/completions cache prefix keys last, turn 2 reads the whole turn-1 prefix - #6406",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get('vertexKeyOrderNonce_chat')) { pm.collectionVariables.set('vertexKeyOrderNonce_chat', 'cold-' + Date.now().toString(36)); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var turn1 = JSON.parse(pm.collectionVariables.get('vertexKeyOrderTurn1_chat') || 'null');",
+                  "pm.test('turn 1 ran first in this newman process', function () {",
+                  "  pm.expect(turn1, 'turn 1 recorded no usage - it was filtered out, failed, or ran in another newman process, so this read started cold').to.not.equal(null);",
+                  "});",
+                  "pm.test('/v1/chat/completions turn 2 returns 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var body = pm.response.json();",
+                  "function cacheUsage(b) {",
+                  "  var u = (b && b.usage) || {};",
+                  "  var d = u.prompt_tokens_details || {};",
+                  "  return { read: Math.max(d.cached_read_tokens || 0, d.cached_tokens || 0), write: Math.max(d.cached_write_tokens || 0, d.cache_write_tokens || 0), raw: u };",
+                  "}",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + pm.response.text().slice(0, 300)).to.be.an('object');",
+                  "});",
+                  "if (rr && typeof rr === 'object') {",
+                  "  var keys = Object.keys(rr);",
+                  "  pm.test('Vertex body ends with tools, system, messages (stable cache prefix before the growing messages)', function () {",
+                  "    pm.expect(keys.slice(-3), 'top-level key order sent to Vertex: ' + JSON.stringify(keys)).to.eql(['tools', 'system', 'messages']);",
+                  "  });",
+                  "}",
+                  "var usage = cacheUsage(body);",
+                  "if (turn1) {",
+                  "  var cachedByTurn1 = turn1.read + turn1.write;",
+                  "  pm.test('turn 2 reads the whole prefix turn 1 cached (no partial stale-prefix read)', function () {",
+                  "    pm.expect(usage.read, 'turn 1 cached ' + cachedByTurn1 + ' tokens; turn 2 usage=' + JSON.stringify(usage.raw)).to.be.at.least(cachedByTurn1);",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/claude-sonnet-4-6\",\n  \"max_tokens\": 16,\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"get_weather\",\n        \"description\": \"Look up the current weather for a city.\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"city\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"city\"\n          ]\n        }\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"[bf-328 {{{{vertexKeyOrderNonce_chat}}}}] You are a terse assistant. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates.\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"First question: reply with the single word OK.\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": \"OK\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"Second question: reply with the single word DONE.\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        }\n      ]\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "vertex claude-sonnet-4-6 /v1/responses cache prefix keys last, turn 1 writes the prefix - #6406",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('vertexKeyOrderNonce_responses', Date.now().toString(36) + Math.random().toString(36).slice(2, 8));",
+                  "pm.collectionVariables.unset('vertexKeyOrderTurn1_responses');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('/v1/responses turn 1 returns 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var body = pm.response.json();",
+                  "function cacheUsage(b) {",
+                  "  var u = (b && b.usage) || {};",
+                  "  var d = u.input_tokens_details || {};",
+                  "  return { read: Math.max(d.cached_read_tokens || 0, d.cached_tokens || 0), write: Math.max(d.cached_write_tokens || 0, d.cache_write_tokens || 0), raw: u };",
+                  "}",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + pm.response.text().slice(0, 300)).to.be.an('object');",
+                  "});",
+                  "if (rr && typeof rr === 'object') {",
+                  "  var keys = Object.keys(rr);",
+                  "  pm.test('Vertex body ends with tools, system, messages (stable cache prefix before the growing messages)', function () {",
+                  "    pm.expect(keys.slice(-3), 'top-level key order sent to Vertex: ' + JSON.stringify(keys)).to.eql(['tools', 'system', 'messages']);",
+                  "  });",
+                  "}",
+                  "var usage = cacheUsage(body);",
+                  "pm.test('turn 1 honors the cache breakpoints', function () {",
+                  "  pm.expect(usage.read + usage.write, 'usage=' + JSON.stringify(usage.raw)).to.be.above(0);",
+                  "});",
+                  "pm.collectionVariables.set('vertexKeyOrderTurn1_responses', JSON.stringify({ read: usage.read, write: usage.write }));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/claude-sonnet-4-6\",\n  \"max_output_tokens\": 16,\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"get_weather\",\n      \"description\": \"Look up the current weather for a city.\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"city\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"city\"\n        ]\n      }\n    }\n  ],\n  \"input\": [\n    {\n      \"role\": \"system\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"[bf-328 {{{{vertexKeyOrderNonce_responses}}}}] You are a terse assistant. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates.\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"First question: reply with the single word OK.\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        }\n      ]\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "vertex claude-sonnet-4-6 /v1/responses cache prefix keys last, turn 2 reads the whole turn-1 prefix - #6406",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get('vertexKeyOrderNonce_responses')) { pm.collectionVariables.set('vertexKeyOrderNonce_responses', 'cold-' + Date.now().toString(36)); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var turn1 = JSON.parse(pm.collectionVariables.get('vertexKeyOrderTurn1_responses') || 'null');",
+                  "pm.test('turn 1 ran first in this newman process', function () {",
+                  "  pm.expect(turn1, 'turn 1 recorded no usage - it was filtered out, failed, or ran in another newman process, so this read started cold').to.not.equal(null);",
+                  "});",
+                  "pm.test('/v1/responses turn 2 returns 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var body = pm.response.json();",
+                  "function cacheUsage(b) {",
+                  "  var u = (b && b.usage) || {};",
+                  "  var d = u.input_tokens_details || {};",
+                  "  return { read: Math.max(d.cached_read_tokens || 0, d.cached_tokens || 0), write: Math.max(d.cached_write_tokens || 0, d.cache_write_tokens || 0), raw: u };",
+                  "}",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + pm.response.text().slice(0, 300)).to.be.an('object');",
+                  "});",
+                  "if (rr && typeof rr === 'object') {",
+                  "  var keys = Object.keys(rr);",
+                  "  pm.test('Vertex body ends with tools, system, messages (stable cache prefix before the growing messages)', function () {",
+                  "    pm.expect(keys.slice(-3), 'top-level key order sent to Vertex: ' + JSON.stringify(keys)).to.eql(['tools', 'system', 'messages']);",
+                  "  });",
+                  "}",
+                  "var usage = cacheUsage(body);",
+                  "if (turn1) {",
+                  "  var cachedByTurn1 = turn1.read + turn1.write;",
+                  "  pm.test('turn 2 reads the whole prefix turn 1 cached (no partial stale-prefix read)', function () {",
+                  "    pm.expect(usage.read, 'turn 1 cached ' + cachedByTurn1 + ' tokens; turn 2 usage=' + JSON.stringify(usage.raw)).to.be.at.least(cachedByTurn1);",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/claude-sonnet-4-6\",\n  \"max_output_tokens\": 16,\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"get_weather\",\n      \"description\": \"Look up the current weather for a city.\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"city\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"city\"\n        ]\n      }\n    }\n  ],\n  \"input\": [\n    {\n      \"role\": \"system\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"[bf-328 {{{{vertexKeyOrderNonce_responses}}}}] You are a terse assistant. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates. This is a padding sentence that keeps the stable system prefix above the model's minimum cacheable length so the breakpoint activates.\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"First question: reply with the single word OK.\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": \"OK\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Second question: reply with the single word DONE.\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        }\n      ]\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "329. Empty chat messages rejected before the Responses reroute (empty chat messages)",
+      "description": "A chat request with no messages on the /openai drop-in reached the provider with an empty Input. When the request was converted to the Responses API, ToOpenAIResponsesRequest returned a nil *OpenAIResponsesRequest that slipped past the nil-body check as a non-nil interface, and MarshalJSON on the nil receiver crashed the gateway process (client saw a 502). Both cases force the chat-to-Responses conversion and must now get a 400 from the core input guard without reaching OpenAI: one omits messages entirely (the reported body), one sends an empty array on the streaming path.",
+      "item": [
+        {
+          "name": "OpenAI gpt-5.6-luna /openai chat with no messages field [EXPECT-400] (empty chat messages)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('empty messages are rejected with 400, not a gateway crash', function () {",
+                  "    pm.expect(pm.response.code, 'expected 400: ' + pm.response.text()).to.equal(400);",
+                  "    var body = pm.response.json();",
+                  "    pm.expect(body.error && body.error.message, 'missing error message: ' + pm.response.text()).to.include('chats not provided');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-compat",
+                "value": "[\"convert_chat_to_responses\"]"
+              },
+              {
+                "key": "x-bf-mcp-include-clients",
+                "value": "__none__"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-5.6-luna\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "OpenAI gpt-5.6-luna /openai chat stream with empty messages array [EXPECT-400] (empty chat messages)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('empty messages are rejected with 400, not a gateway crash', function () {",
+                  "    pm.expect(pm.response.code, 'expected 400: ' + pm.response.text()).to.equal(400);",
+                  "    var body = pm.response.json();",
+                  "    pm.expect(body.error && body.error.message, 'missing error message: ' + pm.response.text()).to.include('chats not provided');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-compat",
+                "value": "[\"convert_chat_to_responses\"]"
+              },
+              {
+                "key": "x-bf-mcp-include-clients",
+                "value": "__none__"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-5.6-luna\",\n  \"messages\": [],\n  \"stream\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "330. Gemini null part skipped on the /genai route (null genai part)",
+      "description": "A GenAI generateContent body whose parts array holds a JSON null decoded to a nil *Part, and request-type detection (isSpeechRequest / isTranscriptionRequest / isImage*Request in transports/bifrost-http/integrations/genai.go) and the Gemini converters dereferenced it. RecoveryMiddleware caught the panic, so the client got a 500 for a request whose other part is perfectly valid. Every loop over []*Part now skips nil entries. Both cases send parts [null, {text}] with a bare model (no gemini/ prefix, so the re-encoded request, not the raw body, goes upstream) and must now get a 200 with model text: one unary generateContent, one streamGenerateContent over SSE that must also reach a finishReason. thinkingLevel minimal keeps gemini-3.6-flash thinking inside the output budget, so a MAX_TOKENS reply with no text cannot fail the case. Two more cases pin the other outcomes: parts holding only a null leave no input at all and must get a 400 from the gateway (before, a 500), and a null function declaration beside a valid one must get a 200. Response-side nil parts cannot be injected over HTTP; core/providers/gemini chat_test.go and responses_test.go pin those.",
+      "item": [
+        {
+          "name": "gemini/gemini-3.6-flash /genai generateContent with a null part before text (null genai part)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        null,\n        {\n          \"text\": \"Reply with the single word: pong\"\n        }\n      ]\n    }\n  ],\n  \"generationConfig\": {\n    \"maxOutputTokens\": 256,\n    \"thinkingConfig\": {\n      \"thinkingLevel\": \"minimal\"\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/gemini-3.6-flash:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "gemini-3.6-flash:generateContent"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('null part is skipped: 200, not a recovered panic', function () {",
+                  "    pm.expect(pm.response.code, 'expected 200: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('the text part beside the null still produced model output', function () {",
+                  "    var body = pm.response.json();",
+                  "    var text = '';",
+                  "    ((body.candidates || [])[0] && body.candidates[0].content && body.candidates[0].content.parts || []).forEach(function (p) { if (p && p.text && !p.thought) { text += p.text; } });",
+                  "    pm.expect(text.length, 'no candidate text: ' + pm.response.text()).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "gemini/gemini-3.6-flash /genai streamGenerateContent with a null part before text (null genai part)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        null,\n        {\n          \"text\": \"Reply with the single word: pong\"\n        }\n      ]\n    }\n  ],\n  \"generationConfig\": {\n    \"maxOutputTokens\": 256,\n    \"thinkingConfig\": {\n      \"thinkingLevel\": \"minimal\"\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/gemini-3.6-flash:streamGenerateContent?alt=sse",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "gemini-3.6-flash:streamGenerateContent"
+              ],
+              "query": [
+                {
+                  "key": "alt",
+                  "value": "sse"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('null part is skipped on the stream: 200, not a recovered panic', function () {",
+                  "    pm.expect(pm.response.code, 'expected 200: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var raw = pm.response.text();",
+                  "var chunks = [];",
+                  "raw.split('\\n').forEach(function (line) {",
+                  "    var t = line.trim();",
+                  "    if (t.indexOf('data:') !== 0) { return; }",
+                  "    var payload = t.slice(5).trim();",
+                  "    if (!payload || payload === '[DONE]') { return; }",
+                  "    try { chunks.push(JSON.parse(payload)); } catch (e) {}",
+                  "});",
+                  "var text = '';",
+                  "var finish = '';",
+                  "chunks.forEach(function (c) {",
+                  "    (c.candidates || []).forEach(function (cand) {",
+                  "        if (cand.finishReason) { finish = cand.finishReason; }",
+                  "        ((cand.content && cand.content.parts) || []).forEach(function (p) { if (p && p.text && !p.thought) { text += p.text; } });",
+                  "    });",
+                  "});",
+                  "pm.test('the text part beside the null streamed model output', function () {",
+                  "    pm.expect(text.length, 'no streamed text: ' + raw.slice(0, 800)).to.be.above(0);",
+                  "});",
+                  "pm.test('the stream reached a finishReason', function () {",
+                  "    pm.expect(finish, 'no finishReason in stream: ' + raw.slice(0, 800)).to.not.equal('');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "gemini/gemini-3.6-flash /genai generateContent with only a null part [EXPECT-400] (null genai part)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        null\n      ]\n    }\n  ],\n  \"generationConfig\": {\n    \"maxOutputTokens\": 256,\n    \"thinkingConfig\": {\n      \"thinkingLevel\": \"minimal\"\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/gemini-3.6-flash:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "gemini-3.6-flash:generateContent"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('parts holding only a null are rejected with 400, not a recovered panic', function () {",
+                  "    pm.expect(pm.response.code, 'expected 400: ' + pm.response.text()).to.equal(400);",
+                  "    var body = pm.response.json();",
+                  "    pm.expect(body.error && body.error.message, 'missing error message: ' + pm.response.text()).to.be.a('string').and.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "gemini/gemini-3.6-flash /genai generateContent with a null function declaration beside a valid one (null genai part)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Reply with the single word: pong\"\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"functionDeclarations\": [\n        null,\n        {\n          \"name\": \"get_weather\",\n          \"description\": \"Get the current weather for a city\",\n          \"parameters\": {\n            \"type\": \"object\",\n            \"properties\": {\n              \"city\": {\n                \"type\": \"string\"\n              }\n            },\n            \"required\": [\n              \"city\"\n            ]\n          }\n        }\n      ]\n    }\n  ],\n  \"generationConfig\": {\n    \"maxOutputTokens\": 256,\n    \"thinkingConfig\": {\n      \"thinkingLevel\": \"minimal\"\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/gemini-3.6-flash:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "gemini-3.6-flash:generateContent"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('a null function declaration is skipped: 200, not a recovered panic', function () {",
+                  "    pm.expect(pm.response.code, 'expected 200: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('the model answered with text or a call to the valid declaration', function () {",
+                  "    var body = pm.response.json();",
+                  "    var parts = ((body.candidates || [])[0] && body.candidates[0].content && body.candidates[0].content.parts) || [];",
+                  "    var answered = parts.some(function (p) { return p && ((p.text && !p.thought) || (p.functionCall && p.functionCall.name === 'get_weather')); });",
+                  "    pm.expect(answered, 'no text or get_weather call: ' + pm.response.text()).to.equal(true);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "331. Vertex reply with a null candidate part (vertex null response part)",
+      "description": "Local fixture regression, no network traffic leaves the machine. Run tests/e2e/api/runners/vertex-endpoint-fixture.mjs --app-dir <dir>, start an isolated gateway with -app-dir <dir>, and pass ENV_FILE=<dir>/harness-environment.json so vertexEndpointFixture is 1; without it both cases skip.\n\nA prompt carrying the marker null-part-fixture makes the fixture answer :generateContent and :streamGenerateContent with Gemini candidates whose parts hold a JSON null beside the text (the final stream chunk carries only [null]). The null decodes to a nil *Part, and the Gemini response converters dereferenced it: the unary chat path panicked in ToBifrostChatResponse (recovered as a 500), and the stream panicked on the provider goroutine. Every loop over []*Part now skips nil entries. Both cases must get a 200 whose text is the fixture's \"hello\": unary through choices[0].message.content, stream through the delta contents, ending with finish_reason stop and [DONE].",
+      "item": [
+        {
+          "name": "331.1 vertex/gemini-2.5-flash chat reply whose candidate parts open with null (vertex null response part)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "vertex-global"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/gemini-2.5-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"null-part-fixture: say hello\"\n    }\n  ],\n  \"max_tokens\": 8\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('vertexEndpointFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "} else {",
+                  "  pm.sendRequest({ url: 'http://127.0.0.1:8792/__reset', method: 'POST' }, function () {});",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('a null candidate part is skipped: 200, not a recovered panic', function () {",
+                  "    pm.expect(pm.response.code, 'expected 200: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('the text part beside the null reaches the client', function () {",
+                  "    var j = pm.response.json();",
+                  "    pm.expect(j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content, pm.response.text().slice(0, 400)).to.equal('hello');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "331.2 vertex/gemini-2.5-flash chat stream whose candidate parts open with null (vertex null response part)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "vertex-global"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/gemini-2.5-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"null-part-fixture: say hello\"\n    }\n  ],\n  \"max_tokens\": 8,\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('vertexEndpointFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "} else {",
+                  "  pm.sendRequest({ url: 'http://127.0.0.1:8792/__reset', method: 'POST' }, function () {});",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('a null candidate part is skipped on the stream: 200', function () {",
+                  "    pm.expect(pm.response.code, 'expected 200: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var raw = pm.response.text();",
+                  "var text = '', finish = '', done = false, errors = [];",
+                  "raw.split('\\n').forEach(function (line) {",
+                  "    var t = line.trim();",
+                  "    if (t.indexOf('data:') !== 0) { return; }",
+                  "    var payload = t.slice(5).trim();",
+                  "    if (payload === '[DONE]') { done = true; return; }",
+                  "    var c; try { c = JSON.parse(payload); } catch (e) { return; }",
+                  "    if (c.error) { errors.push(payload); }",
+                  "    (c.choices || []).forEach(function (ch) {",
+                  "        if (ch.delta && typeof ch.delta.content === 'string') { text += ch.delta.content; }",
+                  "        if (ch.finish_reason) { finish = ch.finish_reason; }",
+                  "    });",
+                  "});",
+                  "pm.test('no error chunk on the stream', function () { pm.expect(errors, raw.slice(0, 800)).to.have.length(0); });",
+                  "pm.test('the text part beside the null is streamed', function () { pm.expect(text, raw.slice(0, 800)).to.equal('hello'); });",
+                  "pm.test('the stream finishes with stop and [DONE]', function () {",
+                  "    pm.expect(finish, raw.slice(0, 800)).to.equal('stop');",
+                  "    pm.expect(done, 'no [DONE]: ' + raw.slice(0, 800)).to.equal(true);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "332. Bedrock Request Metadata Headers (#9297 / PR #9189)",
       "description": "x-bf-bedrock-metadata-<key> request headers must reach the outgoing Bedrock Converse requestMetadata without x-bf-passthrough-extra-params, so routes that try another provider first never forward them there. Cases pin the neutral Chat Completions and Responses routes, the Anthropic messages route, and body precedence on the PydanticAI route, where an extra_params requestMetadata value beats the header for the same key.",
       "item": [
         {

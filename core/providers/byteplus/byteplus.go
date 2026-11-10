@@ -250,7 +250,7 @@ func (provider *BytePlusProvider) ImageGeneration(ctx *schemas.BifrostContext, k
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*BytePlusImageGenerationRequest, error) {
 			return ToBytePlusImageGenerationRequest(request)
 		})
 	if bifrostErr != nil {
@@ -266,7 +266,7 @@ func (provider *BytePlusProvider) ImageEdit(ctx *schemas.BifrostContext, key sch
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*BytePlusImageGenerationRequest, error) {
 			return ToBytePlusImageEditRequest(request)
 		})
 	if bifrostErr != nil {
@@ -313,7 +313,7 @@ func (provider *BytePlusProvider) VideoGeneration(ctx *schemas.BifrostContext, k
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*BytePlusVideoGenerationRequest, error) {
 			return ToBytePlusVideoGenerationRequest(request)
 		})
 	if bifrostErr != nil {
@@ -548,7 +548,7 @@ func (provider *BytePlusProvider) ImageGenerationStream(ctx *schemas.BifrostCont
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*BytePlusImageGenerationRequest, error) {
 			req, err := ToBytePlusImageGenerationRequest(request)
 			if req != nil {
 				req.Stream = schemas.Ptr(true)
@@ -568,7 +568,7 @@ func (provider *BytePlusProvider) ImageEditStream(ctx *schemas.BifrostContext, p
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*BytePlusImageGenerationRequest, error) {
 			req, err := ToBytePlusImageEditRequest(request)
 			if req != nil {
 				req.Stream = schemas.Ptr(true)
@@ -646,6 +646,7 @@ func (provider *BytePlusProvider) doImageStream(ctx *schemas.BifrostContext, pos
 			}
 			providerUtils.CloseStream(ctx, responseChan)
 		}()
+		defer providerUtils.RecoverStreamPanic(ctx, postHookRunner, responseChan, provider.logger, postHookSpanFinalizer)
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
 
 		reader, releaseGzip := providerUtils.DecompressStreamBody(resp)

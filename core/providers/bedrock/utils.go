@@ -1489,7 +1489,7 @@ func applyHeaderRequestMetadata(ctx *schemas.BifrostContext, bedrockReq *Bedrock
 }
 
 // withHeaderRequestMetadata applies x-bf-bedrock-metadata-* headers to a built Converse request.
-func withHeaderRequestMetadata(ctx *schemas.BifrostContext, bedrockReq *BedrockConverseRequest, err error) (providerUtils.RequestBodyWithExtraParams, error) {
+func withHeaderRequestMetadata(ctx *schemas.BifrostContext, bedrockReq *BedrockConverseRequest, err error) (*BedrockConverseRequest, error) {
 	if err == nil {
 		applyHeaderRequestMetadata(ctx, bedrockReq)
 	}
