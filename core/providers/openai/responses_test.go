@@ -11,6 +11,7 @@ import (
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
 
 func TestToOpenAIResponsesRequest_PreservesNamedOutputWithoutCallID(t *testing.T) {
@@ -5710,6 +5711,28 @@ func TestToOpenAIResponsesRequest_TypelessMessageWithEncryptedContent(t *testing
 			require.JSONEq(t, `[{"type":"output_text","text":"ok","annotations":[]}]`, string(item["content"]), "content must survive: %s", wire)
 			require.NotContains(t, item, "summary", "OpenAI rejects summary on a message item: %s", wire)
 			require.NotContains(t, item, "encrypted_content", "OpenAI rejects encrypted_content on a message item: %s", wire)
+		})
+	}
+}
+
+// TestToOpenAIResponsesRequest_WebSearchFindActionRenamed: OpenAI names the find action
+// "find_in_page" and rejects the older "find" spelling ("Invalid value: 'find'"). A
+// history that still carries "find" is rewritten on the way out; the caller's item is
+// left untouched.
+func TestToOpenAIResponsesRequest_WebSearchFindActionRenamed(t *testing.T) {
+	for _, actionType := range []string{"find", "find_in_page"} {
+		t.Run(actionType, func(t *testing.T) {
+			body := `{"model":"gpt-5-mini","input":[{"role":"user","content":"hi"},` +
+				`{"type":"web_search_call","id":"ws_1","status":"completed","action":{"type":"` + actionType + `","url":"https://example.com","pattern":"needle"}}]}`
+			var request OpenAIResponsesRequest
+			require.NoError(t, sonic.Unmarshal([]byte(body), &request))
+			bifrostRequest := request.ToBifrostResponsesRequest(nil)
+			bifrostRequest.Provider = schemas.OpenAI
+
+			wire, err := sonic.Marshal(ToOpenAIResponsesRequest(nil, bifrostRequest))
+			require.NoError(t, err)
+			require.JSONEq(t, `{"type":"find_in_page","url":"https://example.com","pattern":"needle"}`, gjson.GetBytes(wire, "input.1.action").Raw, "wire: %s", wire)
+			require.Equal(t, actionType, bifrostRequest.Input[1].Action.ResponsesWebSearchToolCallAction.Type, "the caller's item must not be mutated")
 		})
 	}
 }

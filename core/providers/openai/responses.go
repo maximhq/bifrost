@@ -910,6 +910,21 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 			message.ResponsesToolMessage = &toolMsgCopy
 		}
 
+		// OpenAI names the web search find action "find_in_page" and rejects the older
+		// "find" spelling with "Invalid value: 'find'". Clone before renaming.
+		if message.Type != nil && *message.Type == schemas.ResponsesMessageTypeWebSearchCall &&
+			message.ResponsesToolMessage != nil && message.ResponsesToolMessage.Action != nil &&
+			message.ResponsesToolMessage.Action.ResponsesWebSearchToolCallAction != nil &&
+			message.ResponsesToolMessage.Action.ResponsesWebSearchToolCallAction.Type == "find" {
+			toolMsgCopy := *message.ResponsesToolMessage
+			actionCopy := *toolMsgCopy.Action
+			searchCopy := *actionCopy.ResponsesWebSearchToolCallAction
+			searchCopy.Type = "find_in_page"
+			actionCopy.ResponsesWebSearchToolCallAction = &searchCopy
+			toolMsgCopy.Action = &actionCopy
+			message.ResponsesToolMessage = &toolMsgCopy
+		}
+
 		// arguments is a required string on function_call items. Gemini streaming emits
 		// "" for argument-less calls and foreign histories may omit the field; OpenAI
 		// rejects both with "Missing required parameter: input[N].arguments", so send the
