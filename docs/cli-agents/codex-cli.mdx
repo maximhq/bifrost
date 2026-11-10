@@ -63,13 +63,29 @@ long-running Codex session reaches token expiry, exit and relaunch it through
 Bifrost so the CLI can refresh the Enterprise session first.
 </Warning>
 
+## Persist a virtual key for direct Codex launches
+
+```bash
+bifrost configure codex --model openai/gpt-5
+codex
+# Restore the original configuration when finished:
+bifrost unconfigure codex
+```
+
+This writes the current context's Bifrost virtual key as `experimental_bearer_token`
+on the `bifrost` provider in `$CODEX_HOME/config.toml` (default
+`~/.codex/config.toml`). It preserves your OpenAI/ChatGPT login in `auth.json`.
+A virtual key is required; Enterprise SSO tokens are not persisted. See
+[Persistent coding-agent configuration](/quickstart/cli/coding-agents#persist-configuration-for-direct-use).
+
 ## Configure Codex manually with a virtual key
 
-<Warning>
-Codex prefers an existing OpenAI OAuth session over custom API credentials. Run
-`/logout` before using a manually configured Bifrost provider. This is not
-required for `bifrost run codex`, which uses an isolated temporary home.
-</Warning>
+<Note>
+An existing ChatGPT or OpenAI login does not need `/logout`. With
+`requires_openai_auth = false`, Codex authenticates the `bifrost` provider with
+its own key (`env_key` here, or `experimental_bearer_token` when written by
+`bifrost configure codex`) and leaves the login in `auth.json` for other providers.
+</Note>
 
 Export the virtual key in the same terminal used to start Codex:
 

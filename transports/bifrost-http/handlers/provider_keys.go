@@ -1239,6 +1239,9 @@ func keyDialTargets(key schemas.Key) map[string]*schemas.SecretVar {
 		if cfg.AzureAliasCfg != nil {
 			add("aliases."+alias+".endpoint", cfg.AzureAliasCfg.Endpoint)
 		}
+		if cfg.BasetenAliasCfg != nil {
+			add("aliases."+alias+".deployment_url", cfg.BasetenAliasCfg.DeploymentURL)
+		}
 	}
 	return targets
 }

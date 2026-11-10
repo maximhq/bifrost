@@ -1173,6 +1173,12 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 				req.ResponsesParameters.Reasoning.Effort = nil
 			}
 
+			// Baseten's /v1/responses takes reasoning.effort minimal through high only,
+			// though its chat route takes none through max.
+			if bifrostReq.Provider == schemas.Baseten {
+				req.ResponsesParameters.Reasoning.Effort = clampBasetenResponsesEffort(req.ResponsesParameters.Reasoning.Effort)
+			}
+
 			// Handle OpenAI-specific parameter filtering
 			// Only o1/o3 series models support reasoning.effort
 			// Regular models like gpt-4o, gpt-4, gpt-3.5-turbo don't support it
