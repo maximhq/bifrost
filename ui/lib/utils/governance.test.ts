@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { Budget, LimitScope, ModelConfig } from "@/lib/types/governance";
+import type { Budget, LimitScope, ModelConfig, RateLimit } from "@/lib/types/governance";
 import { budgetPeriodKey, hasDuplicateBudgetPeriods, periodRank, shortPeriod } from "@/lib/budgetOutline";
 import {
 	budgetResetDurationOptions,
@@ -22,7 +22,11 @@ import {
 	hasActiveBudgetOverride,
 	isHolderLevelModelConfig,
 	modelConfigAppliesToMCP,
+	isRequestLimitExhausted,
 	parseResetPeriod,
+	requestLimitLinesOf,
+	requestLimitsOf,
+	toRequestLimitRequests,
 	validateBudgetOverride,
 } from "./governance";
 
@@ -296,6 +300,53 @@ describe("budgetSignature without ids", () => {
 	});
 });
 
+describe("request limits", () => {
+	const row = (fields: Partial<RateLimit>): RateLimit => ({
+		id: "rl",
+		token_current_usage: 0,
+		token_last_reset: "",
+		request_current_usage: 0,
+		request_last_reset: "",
+		...fields,
+	});
+
+	it("lists a legacy combined rate limit's request limit before the holder's rules", () => {
+		const legacy = row({ id: "legacy", token_max_limit: 100, request_max_limit: 10, request_reset_duration: "1h" });
+		const rule = row({ id: "r1", request_max_limit: 5, request_reset_duration: "1d", scope: "mcp" });
+		expect(requestLimitsOf({ rate_limit: legacy, request_limits: [rule] })).toEqual([legacy, rule]);
+		expect(requestLimitsOf({ rate_limit: row({ token_max_limit: 100 }), request_limits: [rule] })).toEqual([rule]);
+		expect(requestLimitsOf(undefined)).toEqual([]);
+	});
+
+	it("edits a legacy request limit as one shared line without an id", () => {
+		const legacy = row({ id: "legacy", request_max_limit: 10, request_reset_duration: "1h" });
+		const rule = row({ id: "r1", request_max_limit: 5, request_reset_duration: "1d", scope: "mcp" });
+		expect(requestLimitLinesOf({ rate_limit: legacy, request_limits: [rule] })).toEqual([
+			{ id: undefined, max_limit: 10, reset_duration: "1h", scope: undefined },
+			{ id: "r1", max_limit: 5, reset_duration: "1d", scope: "mcp" },
+		]);
+	});
+
+	it("drops empty lines from the payload and keeps each line's scope", () => {
+		const lines = [
+			{ id: "r1", max_limit: 5, reset_duration: "1h", scope: "model" as const },
+			{ max_limit: undefined, reset_duration: "1d" },
+			{ max_limit: 7, reset_duration: "1d" },
+		];
+		expect(toRequestLimitRequests(lines)).toEqual([
+			{ id: "r1", max_limit: 5, reset_duration: "1h", scope: "model" },
+			{ max_limit: 7, reset_duration: "1d" },
+		]);
+		expect(toRequestLimitRequests(undefined)).toEqual([]);
+	});
+
+	it("treats a rule as exhausted once usage reaches its maximum", () => {
+		expect(isRequestLimitExhausted({ request_max_limit: 5, request_current_usage: 5 })).toBe(true);
+		expect(isRequestLimitExhausted({ request_max_limit: 5, request_current_usage: 4 })).toBe(false);
+		expect(isRequestLimitExhausted({ request_current_usage: 9 })).toBe(false);
+	});
+});
+
 describe("actionDisabledReason", () => {
 	it("is undefined when the action is allowed", () => {
 		expect(actionDisabledReason(true, "delete", "teams")).toBeUndefined();
@@ -350,6 +401,9 @@ describe("holder-level limits", () => {
 		expect(modelConfigAppliesToMCP(row([budget("a")]))).toBe(true);
 		expect(modelConfigAppliesToMCP(row([budget("a", "model")]))).toBe(false);
 		expect(modelConfigAppliesToMCP(row([budget("a", "shared")], { provider: "openai" }))).toBe(false);
+		const rule = (scope: LimitScope) => ({ id: scope, scope, request_max_limit: 1 }) as RateLimit;
+		expect(modelConfigAppliesToMCP(row([], { request_limits: [rule("mcp")] }))).toBe(true);
+		expect(modelConfigAppliesToMCP(row([], { request_limits: [rule("model")] }))).toBe(false);
 	});
 
 	it("leaves the other page's lines when one page removes its limits", () => {

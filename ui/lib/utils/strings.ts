@@ -68,6 +68,11 @@ export function cleanNumericInput(raw: string): string {
 	return result;
 }
 
+// cleanNumericInput for whole numbers: anything from the decimal point on is dropped, so "1.5" is "1".
+export function cleanIntegerInput(raw: string): string {
+	return cleanNumericInput(raw).split(".")[0];
+}
+
 export function formatBytes(bytes: number): string {
 	if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
 	const k = 1024;
