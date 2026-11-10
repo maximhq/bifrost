@@ -3385,3 +3385,71 @@ func TestStripUnverifiableReasoning_ChatShape_GeminiToolCallIDSignature(t *testi
 		t.Error("expected no change once the ids are bare")
 	}
 }
+
+// A tool call or compaction item that carries encrypted_content is not a reasoning item.
+// The strip used to drop it once the token was removed, because it has no summary and no
+// content. Dropping a tool call orphans its output ("No tool call found for function call
+// output"), and dropping a compaction item loses the compacted history. Tool calls keep
+// everything but the token; a compaction item is its token, so it is left untouched.
+func TestStripResponsesEncryptedContent_KeepsToolCallAndCompactionItems(t *testing.T) {
+	const items = `{"type":"message","role":"user","content":"run it"},` +
+		`{"type":"compaction","id":"cmp_1","encrypted_content":"gAAAA-compaction"},` +
+		`{"type":"reasoning","id":"rs_1","summary":[],"encrypted_content":"gAAAA-reasoning"},` +
+		`{"type":"function_call","id":"fc_1","call_id":"call_1","name":"shell","arguments":"{}","encrypted_content":"gAAAA-call"},` +
+		`{"type":"function_call_output","call_id":"call_1","output":"ok"},` +
+		`{"type":"custom_tool_call","id":"ctc_1","call_id":"call_2","name":"exec","input":"ls","encrypted_content":"gAAAA-custom"},` +
+		`{"type":"custom_tool_call_output","call_id":"call_2","output":"ok"},` +
+		`{"type":"web_search_call","id":"ws_1","status":"completed","action":{"type":"search","query":"q"},"encrypted_content":"gAAAA-search"}`
+	wantTypes := []string{"message", "compaction", "function_call", "function_call_output", "custom_tool_call", "custom_tool_call_output", "web_search_call"}
+
+	check := func(t *testing.T, wire []byte) {
+		t.Helper()
+		var got []string
+		for _, item := range gjson.ParseBytes(wire).Array() {
+			got = append(got, item.Get("type").Str)
+			switch item.Get("type").Str {
+			case "compaction":
+				if item.Get("encrypted_content").Str != "gAAAA-compaction" {
+					t.Errorf("a compaction item must keep its token, got %s", item.Raw)
+				}
+			default:
+				if item.Get("encrypted_content").Exists() {
+					t.Errorf("encrypted_content must be stripped from %s", item.Raw)
+				}
+			}
+		}
+		if strings.Join(got, ",") != strings.Join(wantTypes, ",") {
+			t.Errorf("surviving items = %v, want %v", got, wantTypes)
+		}
+		if gjson.GetBytes(wire, "2.call_id").Str != "call_1" || gjson.GetBytes(wire, "4.input").Str != "ls" {
+			t.Errorf("tool calls must keep their own fields, got %s", wire)
+		}
+	}
+
+	t.Run("typed input", func(t *testing.T) {
+		var input []schemas.ResponsesMessage
+		if err := schemas.Unmarshal([]byte("["+items+"]"), &input); err != nil {
+			t.Fatal(err)
+		}
+		req := &schemas.BifrostRequest{ResponsesRequest: &schemas.BifrostResponsesRequest{Provider: schemas.OpenAI, Model: "gpt-5-mini", Input: input}}
+		if !stripResponsesEncryptedContent(nil, req) {
+			t.Fatal("expected the strip to report a change")
+		}
+		wire, err := schemas.Marshal(req.ResponsesRequest.Input)
+		if err != nil {
+			t.Fatal(err)
+		}
+		check(t, wire)
+	})
+
+	t.Run("raw body", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+		req := &schemas.BifrostRequest{ResponsesRequest: &schemas.BifrostResponsesRequest{Provider: schemas.OpenAI, Model: "gpt-5-mini",
+			RawRequestBody: []byte(`{"model":"gpt-5-mini","input":[` + items + `],"store":false}`)}}
+		if !stripResponsesEncryptedContent(ctx, req) {
+			t.Fatal("expected the raw strip to report a change")
+		}
+		check(t, []byte(gjson.GetBytes(req.ResponsesRequest.RawRequestBody, "input").Raw))
+	})
+}
