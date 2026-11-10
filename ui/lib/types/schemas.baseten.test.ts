@@ -32,6 +32,16 @@ describe("Baseten deployment_url", () => {
 		expect(isLiteralHTTPSURL(literal(deploymentURL.replace("https", "HTTPS")))).toBe(true);
 	});
 
+	it("rejects literal URLs with userinfo, a query or a fragment", () => {
+		for (const value of [
+			"https://user:pass@model-abc123.api.baseten.co/environments/production/sync/v1",
+			`${deploymentURL}?x=1`,
+			`${deploymentURL}#frag`,
+		]) {
+			expect(isLiteralHTTPSURL(literal(value)), value).toBe(false);
+		}
+	});
+
 	it("accepts env and vault references without resolving them", () => {
 		for (const deployment_url of [
 			{ value: "", ref: "env.BASETEN_DEPLOYMENT_URL", type: "env" as const },

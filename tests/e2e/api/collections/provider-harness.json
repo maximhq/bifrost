@@ -337,7 +337,7 @@
           "  // JSON or multipart body, or from the path on the Gemini-shaped routes, up to the last colon since",
           "  // a Bedrock id can contain one. Only standard provider names count as a prefix: a namespaced",
           "  // model such as meta-llama/Llama-3.1-8B names no provider, and a custom provider is not known here.",
-          "  var __standard = ['openai', 'azure', 'anthropic', 'bedrock', 'bedrock_mantle', 'cohere', 'vertex', 'mistral', 'ollama', 'opencode-go', 'opencode-zen', 'groq', 'sgl', 'parasail', 'perplexity', 'cerebras', 'deepseek', 'gemini', 'openrouter', 'elevenlabs', 'huggingface', 'nebius', 'xai', 'replicate', 'vllm', 'runway', 'runware', 'fireworks', 'sarvam', 'wafer', 'github-copilot', 'databricks', 'cloudflare', 'typesafe', 'minimax', 'byteplus'];",
+          "  var __standard = ['openai', 'azure', 'anthropic', 'bedrock', 'bedrock_mantle', 'cohere', 'vertex', 'mistral', 'ollama', 'opencode-go', 'opencode-zen', 'groq', 'sgl', 'parasail', 'perplexity', 'cerebras', 'deepseek', 'gemini', 'openrouter', 'elevenlabs', 'huggingface', 'nebius', 'xai', 'replicate', 'vllm', 'runway', 'runware', 'fireworks', 'sarvam', 'wafer', 'github-copilot', 'databricks', 'cloudflare', 'typesafe', 'minimax', 'byteplus', 'baseten'];",
           "  var __model = null;",
           "  try {",
           "    var __raw = pm.request && pm.request.body && pm.request.body.mode === 'raw' ? pm.request.body.raw : '';",
@@ -316900,7 +316900,524 @@
       ]
     },
     {
-      "name": "337. Gemini chat sends {} for tool calls without args (PR #8778) (empty tool args)",
+      "name": "337. Baseten provider (baseten provider)",
+      "description": "Baseten Model APIs is OpenAI-compatible at https://inference.baseten.co/v1 with chat completions, a stateless native /responses and /models. Its chat schema sets additionalProperties:false, so Bifrost sends max_completion_tokens as max_tokens and drops service_tier; the second case fails with a Baseten 400 without that. Model APIs accepts reasoning effort up to max, which the fallback ladder used to clamp to xhigh. Baseten streams usage on every chunk by default, and Bifrost must report it once. Dedicated deployments (alias deployment_url) need a live deployment that the shared profile does not have, so they are covered by Go stub tests in core/providers/baseten. gpt-oss-120b makes one tool call per turn, so these cases use GLM-5.3.",
+      "item": [
+        {
+          "name": "/v1/chat/completions - GLM answers through Model APIs - baseten/zai-org/GLM-5.3",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"baseten/zai-org/GLM-5.3\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What is 17 * 23? Answer with just the number.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('answer served by baseten with usage', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.choices[0].message.content, 'wrong answer: ' + pm.response.text()).to.include('391');",
+                  "  pm.expect(j.extra_fields.provider).to.eql('baseten');",
+                  "  pm.expect(j.usage.total_tokens, 'usage missing').to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "/v1/chat/completions - max_completion_tokens is sent as max_tokens and service_tier is dropped - baseten/zai-org/GLM-5.3",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"baseten/zai-org/GLM-5.3\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the word ok.\"\n    }\n  ],\n  \"max_completion_tokens\": 512,\n  \"service_tier\": \"flex\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function rawRequest(j) {",
+                  "  var rr = j && j.extra_fields && j.extra_fields.raw_request;",
+                  "  if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "  return rr;",
+                  "}",
+                  "pm.test('Baseten accepts the request after Bifrost fits it to its strict chat schema', function () {",
+                  "  pm.expect(pm.response.code, 'Baseten rejected the request: ' + pm.response.text()).to.eql(200);",
+                  "  var rr = rawRequest(pm.response.json());",
+                  "  pm.expect(rr, 'raw_request missing; is send_back_raw_request on for baseten? ' + pm.response.text().slice(0, 400)).to.be.an('object');",
+                  "  pm.expect(rr.max_tokens, 'raw_request: ' + JSON.stringify(rr)).to.eql(512);",
+                  "  pm.expect(rr, 'max_completion_tokens reached Baseten').to.not.have.property('max_completion_tokens');",
+                  "  pm.expect(rr, 'service_tier reached Baseten').to.not.have.property('service_tier');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "/v1/chat/completions - reasoning_effort max reaches Baseten unclamped - baseten/zai-org/GLM-5.3",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"baseten/zai-org/GLM-5.3\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the word ok.\"\n    }\n  ],\n  \"reasoning_effort\": \"max\",\n  \"max_completion_tokens\": 512\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function rawRequest(j) {",
+                  "  var rr = j && j.extra_fields && j.extra_fields.raw_request;",
+                  "  if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "  return rr;",
+                  "}",
+                  "pm.test('effort max is sent as max, not clamped to xhigh', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var rr = rawRequest(pm.response.json());",
+                  "  pm.expect(rr, 'raw_request missing: ' + pm.response.text().slice(0, 400)).to.be.an('object');",
+                  "  pm.expect(rr.reasoning_effort, 'raw_request: ' + JSON.stringify(rr)).to.eql('max');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "/v1/chat/completions - OpenAI-only fields are dropped and developer is sent as system - baseten/zai-org/GLM-5.3",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"baseten/zai-org/GLM-5.3\",\n  \"messages\": [\n    {\n      \"role\": \"developer\",\n      \"content\": \"Answer in one word.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the word ok.\"\n    }\n  ],\n  \"metadata\": {\n    \"team\": \"harness\"\n  },\n  \"safety_identifier\": \"harness-user\",\n  \"max_completion_tokens\": 512\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function rawRequest(j) {",
+                  "  var rr = j && j.extra_fields && j.extra_fields.raw_request;",
+                  "  if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "  return rr;",
+                  "}",
+                  "pm.test('Baseten accepts the request once fields outside its strict chat schema are removed', function () {",
+                  "  pm.expect(pm.response.code, 'Baseten rejected the request: ' + pm.response.text()).to.eql(200);",
+                  "  var rr = rawRequest(pm.response.json());",
+                  "  pm.expect(rr, 'raw_request missing; is send_back_raw_request on for baseten? ' + pm.response.text().slice(0, 400)).to.be.an('object');",
+                  "  pm.expect(rr, 'metadata reached Baseten').to.not.have.property('metadata');",
+                  "  pm.expect(rr, 'safety_identifier reached Baseten').to.not.have.property('safety_identifier');",
+                  "  pm.expect(rr.messages[0].role, 'raw_request: ' + JSON.stringify(rr)).to.eql('system');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "/v1/chat/completions stream - usage arrives once despite per-chunk usage upstream - baseten/zai-org/GLM-5.3",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"baseten/zai-org/GLM-5.3\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say hello in one short sentence.\"\n    }\n  ],\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('stream finishes and reports usage on exactly one chunk', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var finished = false, usageChunks = 0, last = null;",
+                  "  pm.response.text().split('\\n').forEach(function (line) {",
+                  "    if (line.indexOf('data:') !== 0) { return; }",
+                  "    var payload = line.slice(5).trim();",
+                  "    if (!payload || payload === '[DONE]') { return; }",
+                  "    var chunk;",
+                  "    try { chunk = JSON.parse(payload); } catch (e) { return; }",
+                  "    if (chunk.usage) { usageChunks++; last = chunk.usage; }",
+                  "    var choice = chunk.choices && chunk.choices[0];",
+                  "    if (choice && choice.finish_reason) { finished = true; }",
+                  "  });",
+                  "  pm.expect(finished, 'no finish_reason in stream: ' + pm.response.text().slice(0, 800)).to.be.true;",
+                  "  pm.expect(usageChunks, 'Baseten sends usage on every chunk; Bifrost must report it once').to.eql(1);",
+                  "  pm.expect(last.total_tokens, 'usage: ' + JSON.stringify(last)).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "/v1/chat/completions - function tool call - baseten/zai-org/GLM-5.3",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"baseten/zai-org/GLM-5.3\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What is the weather in Paris? Use the tool.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"get_weather\",\n        \"description\": \"Get the weather for a city\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"city\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"city\"\n          ]\n        }\n      }\n    }\n  ],\n  \"tool_choice\": \"required\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('model calls get_weather', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var calls = pm.response.json().choices[0].message.tool_calls || [];",
+                  "  pm.expect(calls.length, 'no tool call: ' + pm.response.text().slice(0, 600)).to.be.above(0);",
+                  "  pm.expect(calls[0].function.name).to.eql('get_weather');",
+                  "  pm.expect(JSON.parse(calls[0].function.arguments).city, 'arguments: ' + calls[0].function.arguments).to.match(/paris/i);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "/v1/responses - native Baseten Responses API - baseten/zai-org/GLM-5.3",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"baseten/zai-org/GLM-5.3\",\n  \"input\": \"Name one primary color.\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('responses output carries a message', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.output, 'output not an array').to.be.an('array');",
+                  "  var msg = j.output.filter(function (o) { return o.type === 'message'; })[0];",
+                  "  pm.expect(msg, 'no message item: ' + pm.response.text().slice(0, 500)).to.exist;",
+                  "  pm.expect(msg.content[0].text).to.be.a('string').and.not.empty;",
+                  "  pm.expect(j.extra_fields.provider).to.eql('baseten');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "/v1/responses - reasoning effort max is sent as high - baseten/zai-org/GLM-5.3",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"baseten/zai-org/GLM-5.3\",\n  \"input\": \"Reply with the word ok.\",\n  \"reasoning\": {\n    \"effort\": \"max\"\n  },\n  \"max_output_tokens\": 512\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function rawRequest(j) {",
+                  "  var rr = j && j.extra_fields && j.extra_fields.raw_request;",
+                  "  if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "  return rr;",
+                  "}",
+                  "pm.test('effort max is narrowed to high, the top of the /responses range', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var rr = rawRequest(pm.response.json());",
+                  "  pm.expect(rr, 'raw_request missing: ' + pm.response.text().slice(0, 400)).to.be.an('object');",
+                  "  pm.expect(rr.reasoning && rr.reasoning.effort, 'raw_request: ' + JSON.stringify(rr)).to.eql('high');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "/v1/responses stream - native Baseten Responses events - baseten/zai-org/GLM-5.3",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"baseten/zai-org/GLM-5.3\",\n  \"input\": \"Name one primary color.\",\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('stream ends with response.completed', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var text = pm.response.text();",
+                  "  pm.expect(text, 'no output text deltas: ' + text.slice(0, 600)).to.include('response.output_text.delta');",
+                  "  pm.expect(text, 'no response.completed event: ' + text.slice(-600)).to.include('response.completed');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "/anthropic/v1/messages - Anthropic SDK shape routed to baseten/zai-org/GLM-5.3",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"baseten/zai-org/GLM-5.3\",\n  \"max_tokens\": 1024,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Name one primary color.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Anthropic-shaped reply from baseten', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.type).to.eql('message');",
+                  "  var text = (j.content || []).filter(function (b) { return b.type === 'text'; })[0];",
+                  "  pm.expect(text, 'no text block: ' + pm.response.text().slice(0, 600)).to.exist;",
+                  "  pm.expect(text.text).to.be.a('string').and.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "/v1/models - Model APIs catalog lists baseten/zai-org/GLM-5.3",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/models?provider=baseten",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "models"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "baseten"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('GLM-5.3 is listed under the baseten provider', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var ids = (pm.response.json().data || []).map(function (m) { return m.id; });",
+                  "  pm.expect(ids, 'ids: ' + JSON.stringify(ids).slice(0, 600)).to.include('baseten/zai-org/GLM-5.3');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "338. Gemini chat sends {} for tool calls without args (PR #8778) (empty tool args)",
       "description": "Gemini omits `args` for a function call to a tool that takes no parameters. The chat completion converters (final response and stream) left the tool call arguments as an empty string, which OpenAI-shaped clients cannot json-parse; the Responses path already defaulted them to {}. Both rows force a call to a tool declared without parameters and pin that the arguments the client receives parse as a JSON object.",
       "item": [
         {
