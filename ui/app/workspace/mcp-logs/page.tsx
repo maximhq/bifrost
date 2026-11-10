@@ -3,11 +3,12 @@ import { MCPFilterSidebar } from "@/components/filters/mcpFilterSidebar";
 import FullPageLoader from "@/components/fullPageLoader";
 import { useColumnConfig } from "@/components/table";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { Card, CardContent } from "@/components/ui/card";
 import {
 	getErrorMessage,
 	useDeleteMCPLogsMutation,
+	useGetMCPCostHistogramQuery,
 	useGetMCPHistogramQuery,
+	useGetMCPLatencyHistogramQuery,
 	useGetMCPLogsQuery,
 	useGetMCPLogsStatsQuery,
 	useGetUserAgentMappingsQuery,
@@ -16,18 +17,17 @@ import { useTranslation } from "react-i18next";
 import { useLazyGetMCPLogByIdQuery, useLazyGetMCPLogsQuery } from "@/lib/store/apis/mcpLogsApi";
 import type { MCPToolLogEntry, MCPToolLogFilters, Pagination } from "@/lib/types/logs";
 import { dateUtils } from "@/lib/types/logs";
-import { COMPACT_NUMBER_FORMAT } from "@/lib/utils/numbers";
 import { getLiveToggleState } from "@/lib/utils/timeRange";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
-import NumberFlow from "@number-flow/react";
 import { useLocation } from "@tanstack/react-router";
-import { AlertCircle, CheckCircle, Clock, DollarSign, Hash } from "lucide-react";
+import { AlertCircle } from "lucide-react";
 import { parseAsSafeString } from "@/lib/queryParamsParser";
 import { parseAsArrayOf, parseAsBoolean, parseAsInteger, parseAsString, useQueryStates } from "nuqs";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createMCPColumns } from "./views/columns";
 import { MCPEmptyState } from "./views/emptyState";
 import { McpHeaderView } from "./views/mcpHeaderView";
+import { MCPMetricStrip } from "./views/mcpMetricStrip";
 import { MCPLogDetailSheet } from "./views/mcpLogDetailsSheet";
 import { MCPLogsDataTable } from "./views/mcpLogsTable";
 
@@ -173,20 +173,46 @@ export default function MCPLogsPage() {
 	const {
 		data: statsData,
 		isFetching: statsIsFetching,
+		error: statsError,
 		refetch: refetchStats,
 	} = useGetMCPLogsStatsQuery(
-		{ filters },
+		{ filters, comparePrevious: true },
 		{
 			pollingInterval: polling ? 10000 : 0,
 			skipPollingIfUnfocused: true,
 		},
 	);
 
+	// The volume histogram feeds the volume chart and the executions sparkline; the cost and latency
+	// histograms feed the strip's cost and latency tiles, as on the LLM logs page.
 	const {
 		data: histogram,
 		isLoading: histogramIsLoading,
+		isFetching: histogramIsFetching,
 		refetch: refetchHistogram,
 	} = useGetMCPHistogramQuery(
+		{ filters },
+		{
+			pollingInterval: polling ? 10000 : 0,
+			skipPollingIfUnfocused: true,
+		},
+	);
+	const {
+		data: costHistogram,
+		isFetching: costHistogramIsFetching,
+		refetch: refetchCostHistogram,
+	} = useGetMCPCostHistogramQuery(
+		{ filters },
+		{
+			pollingInterval: polling ? 10000 : 0,
+			skipPollingIfUnfocused: true,
+		},
+	);
+	const {
+		data: latencyHistogram,
+		isFetching: latencyHistogramIsFetching,
+		refetch: refetchLatencyHistogram,
+	} = useGetMCPLatencyHistogramQuery(
 		{ filters },
 		{
 			pollingInterval: polling ? 10000 : 0,
@@ -198,7 +224,9 @@ export default function MCPLogsPage() {
 		refetchLogs();
 		refetchStats();
 		refetchHistogram();
-	}, [refetchLogs, refetchStats, refetchHistogram]);
+		refetchCostHistogram();
+		refetchLatencyHistogram();
+	}, [refetchLogs, refetchStats, refetchHistogram, refetchCostHistogram, refetchLatencyHistogram]);
 
 	const handleTimeRangeChange = useCallback(
 		(startTime: number, endTime: number) => {
@@ -372,45 +400,6 @@ export default function MCPLogsPage() {
 		[setUrlState, refreshAllData, urlState.period],
 	);
 
-	const statCards = useMemo(
-		() => [
-			{
-				title: t("mcpLogs.stats.totalExecutions"),
-				value: <NumberFlow value={statsData?.total_executions ?? 0} format={COMPACT_NUMBER_FORMAT} />,
-				icon: <Hash className="size-4" />,
-			},
-			{
-				title: t("mcpLogs.stats.successRate"),
-				value: (
-					<NumberFlow value={statsData?.success_rate ?? 0} format={{ minimumFractionDigits: 2, maximumFractionDigits: 2 }} suffix="%" />
-				),
-				icon: <CheckCircle className="size-4" />,
-			},
-			{
-				title: t("mcpLogs.stats.avgLatency"),
-				value: (
-					<NumberFlow value={statsData?.average_latency ?? 0} format={{ minimumFractionDigits: 2, maximumFractionDigits: 2 }} suffix="ms" />
-				),
-				icon: <Clock className="size-4" />,
-			},
-			{
-				title: t("mcpLogs.stats.totalCost"),
-				value: (
-					<NumberFlow
-						value={statsData?.total_cost ?? 0}
-						format={{
-							...COMPACT_NUMBER_FORMAT,
-							style: "currency",
-							currency: "USD",
-						}}
-					/>
-				),
-				icon: <DollarSign className="size-4" />,
-			},
-		],
-		[statsData, t],
-	);
-
 	const { data: userAgentMappingsData } = useGetUserAgentMappingsQuery();
 	const customAppIcons = useMemo(() => {
 		const icons: Record<string, string> = {};
@@ -548,22 +537,17 @@ export default function MCPLogsPage() {
 								onResetColumns={resetColumns}
 							/>
 						</div>
-						{/* Quick Stats */}
 						<div className="px-4">
-							<div className="grid shrink-0 grid-cols-1 gap-4 md:grid-cols-4">
-								{statCards.map((card) => (
-									<Card key={card.title} className="py-4 shadow-none">
-										<CardContent
-											className={`flex items-center justify-between px-4 transition-opacity duration-200 ${statsIsFetching ? "opacity-50" : "opacity-100"}`}
-										>
-											<div className="w-full min-w-0">
-												<div className="text-muted-foreground text-xs">{card.title}</div>
-												<div className="truncate font-mono text-xl font-medium sm:text-2xl">{card.value}</div>
-											</div>
-										</CardContent>
-									</Card>
-								))}
-							</div>
+							{/* The stats and histograms resolve independently, so the strip is dimmed until they all agree
+							    on the current filters, as on the LLM and Relay pages. */}
+							<MCPMetricStrip
+								stats={statsData}
+								histogram={histogram}
+								costHistogram={costHistogram}
+								latencyHistogram={latencyHistogram}
+								loading={statsIsFetching || histogramIsFetching || costHistogramIsFetching || latencyHistogramIsFetching}
+								error={statsError}
+							/>
 
 							<div className="mt-2">
 								<LogsVolumeChart

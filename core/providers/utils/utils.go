@@ -287,6 +287,41 @@ func GetJSONSubtree(data []byte, path string) []byte {
 	return out
 }
 
+// MergeJSONObjects lays patch over base the way OpenAI applies a session.update: a key the patch leaves
+// out keeps its value, an object is merged key by key, and anything else, an array or a null included,
+// replaces the value, since a null can be a setting. An empty patch returns base and an empty base
+// returns patch, both as they came; a merge returns its keys sorted. The error is the decoder's, for the
+// caller to name the document it was reading.
+func MergeJSONObjects(base, patch []byte) ([]byte, error) {
+	if len(patch) == 0 {
+		return base, nil
+	}
+	if len(base) == 0 {
+		return patch, nil
+	}
+	var merged, overlay map[string]json.RawMessage
+	if err := schemas.Unmarshal(base, &merged); err != nil {
+		return nil, err
+	}
+	if err := schemas.Unmarshal(patch, &overlay); err != nil {
+		return nil, err
+	}
+	if merged == nil {
+		merged = make(map[string]json.RawMessage, len(overlay))
+	}
+	for key, value := range overlay {
+		if previous, ok := merged[key]; ok && gjson.ParseBytes(previous).IsObject() && gjson.ParseBytes(value).IsObject() {
+			nested, err := MergeJSONObjects(previous, value)
+			if err != nil {
+				return nil, err
+			}
+			value = nested
+		}
+		merged[key] = value
+	}
+	return MarshalSorted(merged)
+}
+
 // UnmarshalOrdered decodes JSON bytes into a *schemas.OrderedMap, preserving the key order
 // of the source document. Use this in preference to sonic.Unmarshal into a map[string]any
 // whenever the caller cares about field order (e.g., LLM prompt-cache keying or property
@@ -596,6 +631,19 @@ func ConfigureDialer(client *fasthttp.Client, allowPrivateNetwork bool) *fasthtt
 		return client
 	}
 
+	return configureDialer(client, allowPrivateNetwork, func(ctx context.Context, network, host string) ([]net.IP, error) {
+		return net.DefaultResolver.LookupIP(ctx, network, host)
+	}, (*net.Dialer).Dial)
+}
+
+// configureDialer allows tests to control DNS resolution and TCP dialing without
+// changing global network state. The dial callback receives the configured dialer.
+func configureDialer(
+	client *fasthttp.Client,
+	allowPrivateNetwork bool,
+	lookupIP func(context.Context, string, string) ([]net.IP, error),
+	dial func(*net.Dialer, string, string) (net.Conn, error),
+) *fasthttp.Client {
 	// Configure stale-connection retry policy
 	client.RetryIfErr = network.StaleConnectionRetryIfErr
 
@@ -653,7 +701,7 @@ func ConfigureDialer(client *fasthttp.Client, allowPrivateNetwork bool) *fasthtt
 				resolveCtx, cancel = context.WithTimeout(resolveCtx, client.ReadTimeout)
 				defer cancel()
 			}
-			ips, resolveErr := net.DefaultResolver.LookupIP(resolveCtx, "ip", host)
+			ips, resolveErr := lookupIP(resolveCtx, "ip", host)
 			if resolveErr != nil {
 				return nil, resolveErr
 			}
@@ -674,7 +722,7 @@ func ConfigureDialer(client *fasthttp.Client, allowPrivateNetwork bool) *fasthtt
 				if !ip.IsLoopback() && !allowPrivateNetwork && network.IsPrivateIP(ip) {
 					return nil, fmt.Errorf("connection to private IP %s is not allowed", ip)
 				}
-				conn, err = dialer.Dial("tcp", net.JoinHostPort(ip.String(), port))
+				conn, err = dial(dialer, "tcp", net.JoinHostPort(ip.String(), port))
 				if err == nil {
 					break
 				}
@@ -4308,6 +4356,11 @@ func ProcessAndSendError(
 	var carrier BifrostErrorCarrier
 	if errors.As(err, &carrier) {
 		if typed := carrier.BifrostError(); typed != nil {
+			// A classified reader error (a Bedrock InvokeModel exception frame) bills
+			// the reported usage too; usage it already carries is kept.
+			if typed.ExtraFields.BilledUsage == nil {
+				attachBilledUsageFromContext(ctx, typed)
+			}
 			ProcessAndSendBifrostError(ctx, postHookRunner, typed, responseChan, logger, postHookSpanFinalizer)
 			return
 		}
@@ -4320,6 +4373,9 @@ func ProcessAndSendError(
 			Error:   err,
 		},
 	}
+	// A read error (an idle timeout, a dropped connection) ends the stream like a
+	// cancel does, so it bills the usage the provider already reported.
+	attachBilledUsageFromContext(ctx, bifrostError)
 	processedResponse, processedError := postHookRunner(ctx, nil, bifrostError)
 
 	if HandleStreamControlSkip(processedError) {

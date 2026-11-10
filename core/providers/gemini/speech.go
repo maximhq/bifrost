@@ -38,6 +38,9 @@ func (request *GeminiGenerationRequest) ToBifrostSpeechRequest(ctx *schemas.Bifr
 
 		// Extract voice config from speech config
 		if request.GenerationConfig.SpeechConfig != nil {
+			if languageCode := request.GenerationConfig.SpeechConfig.LanguageCode; languageCode != "" {
+				bifrostReq.Params.LanguageCode = &languageCode
+			}
 			// Handle single-speaker voice config
 			if request.GenerationConfig.SpeechConfig.VoiceConfig != nil {
 				bifrostReq.Params.VoiceConfig = &schemas.SpeechVoiceInput{}

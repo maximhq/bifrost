@@ -4193,3 +4193,266 @@ func TestToAnthropicResponsesRequest_CustomProviderUsesBaseProviderRow(t *testin
 		t.Errorf("temperature forwarded: %v", *out.Temperature)
 	}
 }
+
+// openAIBreakpointTurn is a /v1/responses body as an OpenAI SDK client sends it, with
+// prompt_cache_breakpoint on a developer block and inside a function_call_output.
+const openAIBreakpointTurn = `[
+	{"role":"developer","content":[{"type":"input_text","text":"stable system","prompt_cache_breakpoint":{"mode":"explicit","ttl":"12h"}}]},
+	{"role":"user","content":[{"type":"input_text","text":"weather in paris?"}]},
+	{"type":"function_call","call_id":"call_1","name":"get_weather","arguments":"{}"},
+	{"type":"function_call_output","call_id":"call_1","output":[{"type":"input_text","text":"18C","prompt_cache_breakpoint":{"mode":"explicit"}}]}
+]`
+
+// TestToAnthropicResponsesRequest_PromptCacheBreakpointBecomesCacheControl pins the
+// OpenAI -> Anthropic half of breakpoint translation on /v1/responses.
+func TestToAnthropicResponsesRequest_PromptCacheBreakpointBecomesCacheControl(t *testing.T) {
+	var input []schemas.ResponsesMessage
+	if err := sonic.Unmarshal([]byte(openAIBreakpointTurn), &input); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	result, err := ToAnthropicResponsesRequest(ctx, &schemas.BifrostResponsesRequest{
+		Provider: schemas.Anthropic,
+		Model:    "claude-sonnet-4-6",
+		Input:    input,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if result.System == nil || len(result.System.ContentBlocks) != 1 {
+		t.Fatalf("expected one system block, got %+v", result.System)
+	}
+	cc := result.System.ContentBlocks[0].CacheControl
+	if cc == nil || cc.Type != schemas.CacheControlTypeEphemeral {
+		t.Fatalf("developer breakpoint must become cache_control ephemeral, got %+v", cc)
+	}
+	if cc.TTL != nil {
+		t.Errorf("a 12h breakpoint has no cache_control equivalent and must fall back to the default lifetime, got ttl %q", *cc.TTL)
+	}
+
+	var toolResult *AnthropicContentBlock
+	for i := range result.Messages {
+		for j := range result.Messages[i].Content.ContentBlocks {
+			block := &result.Messages[i].Content.ContentBlocks[j]
+			if block.Type == AnthropicContentBlockTypeToolResult {
+				toolResult = block
+			} else if block.CacheControl != nil {
+				t.Errorf("unmarked block %q gained cache_control", block.Type)
+			}
+		}
+	}
+	if toolResult == nil {
+		t.Fatal("expected a tool_result block")
+	}
+	if toolResult.CacheControl == nil || toolResult.CacheControl.Type != schemas.CacheControlTypeEphemeral {
+		t.Fatalf("function_call_output breakpoint must become tool_result.cache_control, got %+v", toolResult.CacheControl)
+	}
+	if toolResult.Content != nil {
+		for _, nested := range toolResult.Content.ContentBlocks {
+			if nested.CacheControl != nil {
+				t.Error("Anthropic rejects cache_control inside tool_result.content")
+			}
+		}
+	}
+
+	if input[0].Content.ContentBlocks[0].CacheControl != nil || input[3].CacheControl != nil {
+		t.Error("the caller's input was mutated; fallbacks reuse it")
+	}
+	if input[0].Content.ContentBlocks[0].PromptCacheBreakpoint == nil {
+		t.Error("the caller's breakpoint was removed from the shared input")
+	}
+}
+
+// TestToAnthropicResponsesRequest_PromptCacheBreakpointBudget pins that translated
+// breakpoints only spend the slots the caller's own cache_control markers leave, so the
+// clamp never drops a caller marker to make room for one.
+func TestToAnthropicResponsesRequest_PromptCacheBreakpointBudget(t *testing.T) {
+	breakpoint := &schemas.PromptCacheBreakpoint{Mode: schemas.Ptr("explicit")}
+	ephemeral := func() *schemas.CacheControl { return &schemas.CacheControl{Type: schemas.CacheControlTypeEphemeral} }
+	userBlock := func(text string, cc *schemas.CacheControl, bp *schemas.PromptCacheBreakpoint) schemas.ResponsesMessage {
+		return schemas.ResponsesMessage{
+			Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+			Content: &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{{
+				Type: schemas.ResponsesInputMessageContentBlockTypeText, Text: schemas.Ptr(text),
+				CacheControl: cc, PromptCacheBreakpoint: bp,
+			}}},
+		}
+	}
+	assistant := func(text string) schemas.ResponsesMessage {
+		return schemas.ResponsesMessage{
+			Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+			Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr(text)},
+		}
+	}
+	marked := func(req *AnthropicMessageRequest) []string {
+		var out []string
+		for _, m := range req.Messages {
+			for _, b := range m.Content.ContentBlocks {
+				if b.CacheControl != nil && b.Text != nil {
+					out = append(out, *b.Text)
+				}
+			}
+		}
+		return out
+	}
+	convert := func(input []schemas.ResponsesMessage) *AnthropicMessageRequest {
+		ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+		result, err := ToAnthropicResponsesRequest(ctx, &schemas.BifrostResponsesRequest{
+			Provider: schemas.Anthropic, Model: "claude-sonnet-4-6", Input: input,
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		return result
+	}
+
+	t.Run("caller markers fill the cap", func(t *testing.T) {
+		got := marked(convert([]schemas.ResponsesMessage{
+			userBlock("c1", ephemeral(), nil), assistant("a"),
+			userBlock("c2", ephemeral(), nil), assistant("a"),
+			userBlock("c3", ephemeral(), nil), assistant("a"),
+			userBlock("c4", ephemeral(), nil), assistant("a"),
+			userBlock("bp", nil, breakpoint),
+		}))
+		if !slices.Equal(got, []string{"c1", "c2", "c3", "c4"}) {
+			t.Errorf("caller cache_control markers must survive untouched, got %v", got)
+		}
+	})
+
+	t.Run("over budget keeps the latest breakpoints", func(t *testing.T) {
+		got := marked(convert([]schemas.ResponsesMessage{
+			userBlock("c1", ephemeral(), nil), assistant("a"),
+			userBlock("b1", nil, breakpoint), assistant("a"),
+			userBlock("b2", nil, breakpoint), assistant("a"),
+			userBlock("b3", nil, breakpoint), assistant("a"),
+			userBlock("b4", nil, breakpoint),
+		}))
+		if !slices.Equal(got, []string{"c1", "b2", "b3", "b4"}) {
+			t.Errorf("want the caller marker plus the three latest breakpoints, got %v", got)
+		}
+	})
+
+	t.Run("cache_control on the same block wins", func(t *testing.T) {
+		ttl := "1h"
+		result := convert([]schemas.ResponsesMessage{
+			userBlock("both", &schemas.CacheControl{Type: schemas.CacheControlTypeEphemeral, TTL: &ttl}, breakpoint),
+		})
+		cc := result.Messages[0].Content.ContentBlocks[0].CacheControl
+		if cc == nil || cc.TTL == nil || *cc.TTL != "1h" {
+			t.Errorf("the caller's cache_control (ttl 1h) must win over the breakpoint, got %+v", cc)
+		}
+	})
+
+	t.Run("non-explicit mode is ignored", func(t *testing.T) {
+		got := marked(convert([]schemas.ResponsesMessage{
+			userBlock("implicit", nil, &schemas.PromptCacheBreakpoint{Mode: schemas.Ptr("implicit")}),
+		}))
+		if len(got) != 0 {
+			t.Errorf("only mode explicit is a breakpoint, got markers on %v", got)
+		}
+	})
+}
+
+// Same contract as the chat path (see
+// TestBuildAnthropicChatRequestBody_InvalidToolArgumentsReplayAsEmptyObject):
+// a function_call input item with invalid arguments replays as {} instead of
+// failing the request marshal with a 500.
+func TestBuildAnthropicResponsesRequestBody_InvalidFunctionCallArgumentsReplayAsEmptyObject(t *testing.T) {
+	cases := map[string]struct{ arguments, wantInput string }{
+		"valid keeps keys": {`{"z": 1, "a": {"b": true}}`, `{"z":1,"a":{"b":true}}`},
+	}
+	for name, arguments := range invalidToolArgumentCases {
+		cases[name] = struct{ arguments, wantInput string }{arguments, `{}`}
+	}
+
+	for _, provider := range []schemas.ModelProvider{schemas.Anthropic, schemas.Bedrock} {
+		for name, tc := range cases {
+			t.Run(string(provider)+"/"+name, func(t *testing.T) {
+				input := append(makeSimpleInput("find my notes"),
+					schemas.ResponsesMessage{
+						Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+						ResponsesToolMessage: &schemas.ResponsesToolMessage{
+							CallID:    schemas.Ptr("call_1"),
+							Name:      schemas.Ptr("memory_search"),
+							Arguments: schemas.Ptr(tc.arguments),
+						},
+					},
+					schemas.ResponsesMessage{
+						Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
+						ResponsesToolMessage: &schemas.ResponsesToolMessage{
+							CallID: schemas.Ptr("call_1"),
+							Output: &schemas.ResponsesToolMessageOutputStruct{ResponsesToolCallOutputStr: schemas.Ptr("Error: arguments were not valid JSON, tool not called.")},
+						},
+					},
+				)
+				req := &schemas.BifrostResponsesRequest{
+					Provider: provider,
+					Model:    "claude-sonnet-4-6",
+					Input:    input,
+					Params:   &schemas.ResponsesParameters{MaxOutputTokens: schemas.Ptr(1024)},
+				}
+				ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+				body, bifrostErr := BuildAnthropicResponsesRequestBody(ctx, req, AnthropicRequestBuildConfig{Provider: provider, Model: req.Model})
+				if bifrostErr != nil {
+					t.Fatalf("build failed: %+v", bifrostErr.Error)
+				}
+				if got := toolUseInputsFromBody(t, body); !slices.Equal(got, []string{tc.wantInput}) {
+					t.Errorf("tool_use inputs = %v, want [%s]", got, tc.wantInput)
+				}
+			})
+		}
+	}
+}
+
+// TestMCPToolBlocksDroppedOnChatFallback pins #9721: an Anthropic Messages request whose
+// history holds mcp_tool_use / mcp_tool_result (or server web_search) blocks, routed to a
+// chat-only (OpenAI-compatible) provider, must not produce a roleless chat message. The
+// server-tool turns have no chat rendering, so only the plain user text survives.
+func TestMCPToolBlocksDroppedOnChatFallback(t *testing.T) {
+	var req AnthropicMessageRequest
+	if err := schemas.Unmarshal([]byte(`{
+		"model": "deepseek/deepseek-flash",
+		"max_tokens": 30,
+		"messages": [
+			{"role": "user", "content": "look"},
+			{"role": "assistant", "content": [
+				{"type": "mcp_tool_use", "id": "call_1", "name": "analyze_image",
+				 "input": {"prompt": "desc"}, "server_name": "4_5v_mcp"}
+			]},
+			{"role": "user", "content": [
+				{"type": "mcp_tool_result", "tool_use_id": "call_1",
+				 "content": [{"type": "text", "text": "a red pixel"}]}
+			]},
+			{"role": "assistant", "content": [
+				{"type": "server_tool_use", "id": "srvtoolu_1", "name": "web_search", "input": {"query": "red pixel"}},
+				{"type": "web_search_tool_result", "tool_use_id": "srvtoolu_1", "content": [
+					{"type": "web_search_result", "url": "https://example.org", "title": "Pixels", "encrypted_content": "abc"}
+				]}
+			]},
+			{"role": "user", "content": "reply OK"}
+		]
+	}`), &req); err != nil {
+		t.Fatalf("unmarshal request: %v", err)
+	}
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+
+	chatReq := req.ToBifrostResponsesRequest(ctx).ToChatRequest()
+	if chatReq == nil {
+		t.Fatal("ToChatRequest returned nil")
+	}
+	want := []string{"look", "reply OK"}
+	if len(chatReq.Input) != len(want) {
+		t.Fatalf("expected %d chat messages, got %d: %+v", len(want), len(chatReq.Input), chatReq.Input)
+	}
+	for i, msg := range chatReq.Input {
+		if msg.Role != schemas.ChatMessageRoleUser {
+			t.Fatalf("chat message %d role = %q, want user: %+v", i, msg.Role, msg)
+		}
+		if msg.Content == nil || msg.Content.ContentStr == nil || *msg.Content.ContentStr != want[i] {
+			t.Fatalf("chat message %d content = %+v, want %q", i, msg.Content, want[i])
+		}
+	}
+}

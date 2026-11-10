@@ -303,6 +303,14 @@ func forwardAzureDeploymentChatFields(ctx *fasthttp.RequestCtx, bifrostCtx *sche
 	}
 	req.SetExtraParams(unknown)
 	bifrostCtx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+	// An On Your Data request goes to the deployments route, which takes an api-version: the
+	// caller's picks the Azure API contract its code expects, so the provider sends it instead
+	// of its own default. Recorded only here, so a plain chat request sets nothing on the context.
+	if _, onYourData := unknown["data_sources"]; onYourData {
+		if version := ctx.QueryArgs().Peek("api-version"); len(version) > 0 {
+			bifrostCtx.SetValue(schemas.BifrostContextKeyAzureDeploymentAPIVersion, string(version))
+		}
+	}
 }
 
 // openAIRawPassthrough reports whether the raw upstream bytes are already the
