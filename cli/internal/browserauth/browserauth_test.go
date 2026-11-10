@@ -67,7 +67,7 @@ func TestSignInCompletesLoopbackPKCE(t *testing.T) {
 		query.Set("state", parsed.Query().Get("state"))
 		callback.RawQuery = query.Encode()
 		go func() {
-			response, getErr := http.Get(callback.String())
+			response, getErr := getCallback(callback.String())
 			if getErr == nil {
 				_ = response.Body.Close()
 			}
@@ -167,14 +167,14 @@ func TestSignInRejectsCallbackStateMismatch(t *testing.T) {
 		forged := pastedCallbackURL(t, target, "attacker-code", "wrong-state")
 		real := pastedCallbackURL(t, target, "real-code", "")
 		go func() {
-			response, getErr := http.Get(forged)
+			response, getErr := getCallback(forged)
 			if getErr != nil {
 				forgedStatus <- 0
 				return
 			}
 			_ = response.Body.Close()
 			forgedStatus <- response.StatusCode
-			if response, getErr = http.Get(real); getErr == nil {
+			if response, getErr = getCallback(real); getErr == nil {
 				_ = response.Body.Close()
 			}
 		}()
@@ -233,7 +233,7 @@ func TestSignInBoundsCallbackTokenExchange(t *testing.T) {
 		query.Set("state", parsed.Query().Get("state"))
 		callback.RawQuery = query.Encode()
 		go func() {
-			response, getErr := http.Get(callback.String())
+			response, getErr := getCallback(callback.String())
 			if getErr == nil {
 				_ = response.Body.Close()
 			}
@@ -348,6 +348,15 @@ func ssoGateway(t *testing.T, exchanged chan<- string) *httptest.Server {
 	return gateway
 }
 
+// getCallback requests a loopback callback URL the way a browser would.
+func getCallback(target string) (*http.Response, error) {
+	request, err := http.NewRequestWithContext(context.Background(), http.MethodGet, target, nil)
+	if err != nil {
+		return nil, err
+	}
+	return http.DefaultClient.Do(request)
+}
+
 // maxPortAttempts bounds retries when a released test port is taken before use.
 const maxPortAttempts = 5
 
@@ -396,7 +405,7 @@ func TestSignInUsesConfiguredCallbackPort(t *testing.T) {
 		client.OpenBrowser = func(target string) error {
 			callback := pastedCallbackURL(t, target, "one-time-code", "")
 			go func() {
-				response, getErr := http.Get(callback)
+				response, getErr := getCallback(callback)
 				if getErr == nil {
 					_ = response.Body.Close()
 				}
@@ -506,7 +515,7 @@ func TestSignInWarnsWhenPastedCallbackReadFails(t *testing.T) {
 				warnings <- warning
 			case <-time.After(3 * time.Second):
 			}
-			if response, err := http.Get(callback); err == nil {
+			if response, err := getCallback(callback); err == nil {
 				_ = response.Body.Close()
 			}
 		}()

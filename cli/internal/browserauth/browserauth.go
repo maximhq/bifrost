@@ -146,7 +146,7 @@ func (c *Client) SignIn(ctx context.Context, noBrowser bool) (TokenResponse, err
 	challengeBytes := sha256.Sum256([]byte(verifier))
 	challenge := base64.RawURLEncoding.EncodeToString(challengeBytes[:])
 
-	listener, err := c.listenForCallback()
+	listener, err := c.listenForCallback(ctx)
 	if err != nil {
 		return response, err
 	}
@@ -357,9 +357,10 @@ func callbackErrorPage(err error) string {
 // listenForCallback binds the loopback callback listener, on CallbackPort when
 // one is configured and on an OS-assigned port otherwise. A busy fixed port is
 // an error rather than a silent fallback, since only that port is forwarded.
-func (c *Client) listenForCallback() (net.Listener, error) {
+func (c *Client) listenForCallback(ctx context.Context) (net.Listener, error) {
+	var listenConfig net.ListenConfig
 	if c.CallbackPort == 0 {
-		listener, err := net.Listen("tcp4", "127.0.0.1:0")
+		listener, err := listenConfig.Listen(ctx, "tcp4", "127.0.0.1:0")
 		if err != nil {
 			return nil, fmt.Errorf("listen for browser callback: %w", err)
 		}
@@ -368,7 +369,7 @@ func (c *Client) listenForCallback() (net.Listener, error) {
 	if c.CallbackPort < 1 || c.CallbackPort > 65535 {
 		return nil, fmt.Errorf("callback port %d is out of range 1-65535", c.CallbackPort)
 	}
-	listener, err := net.Listen("tcp4", net.JoinHostPort("127.0.0.1", strconv.Itoa(c.CallbackPort)))
+	listener, err := listenConfig.Listen(ctx, "tcp4", net.JoinHostPort("127.0.0.1", strconv.Itoa(c.CallbackPort)))
 	if err != nil {
 		return nil, fmt.Errorf("callback port %d is unavailable: %w", c.CallbackPort, err)
 	}
