@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"runtime/debug"
 	"slices"
 	"sort"
 	"strings"
@@ -1036,7 +1037,7 @@ func (bifrost *Bifrost) makeChatCompletionRequest(ctx *schemas.BifrostContext, r
 			},
 		}
 	}
-	if req.Input == nil && !isLargePayloadPassthrough(ctx) {
+	if len(req.Input) == 0 && !isLargePayloadPassthrough(ctx) {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
 			Error: &schemas.ErrorField{
@@ -1101,7 +1102,7 @@ func (bifrost *Bifrost) ChatCompletionStreamRequest(ctx *schemas.BifrostContext,
 			},
 		}
 	}
-	if req.Input == nil && !isLargePayloadPassthrough(ctx) {
+	if len(req.Input) == 0 && !isLargePayloadPassthrough(ctx) {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
 			Error: &schemas.ErrorField{
@@ -9959,6 +9960,23 @@ func (p *PluginPipeline) RunPreRequestHooks(ctx *schemas.BifrostContext, req *sc
 // Returns the final response and error after all hooks. If both are set, error takes precedence unless error is nil.
 // runFrom is the count of plugins whose PreHooks ran; PostHooks will run in reverse from index (runFrom - 1) down to 0
 // For streaming requests, it accumulates timing per plugin instead of creating individual spans per chunk.
+// callPostLLMHook runs one plugin's PostLLMHook and turns a panic into a plugin error,
+// which RunPostLLMHooks logs and records like any other: the response and error the hook
+// was handed pass on unchanged, so the rest of the chain and the caller never see it.
+// For streams the hooks run per chunk on the provider goroutine, which has nothing else
+// to catch a panic before it ends the process.
+func (p *PluginPipeline) callPostLLMHook(plugin schemas.LLMPlugin, pluginName string, ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (outResp *schemas.BifrostResponse, outErr *schemas.BifrostError, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			summary := providerUtils.PanicSummary(r)
+			p.logger.Error("recovered from panic in PostLLMHook for plugin %s: %s\n%s", pluginName, summary, debug.Stack())
+			outResp, outErr = resp, bifrostErr
+			err = fmt.Errorf("panic in PostLLMHook for plugin %s: %s", pluginName, summary)
+		}
+	}()
+	return plugin.PostLLMHook(ctx, resp, bifrostErr)
+}
+
 func (p *PluginPipeline) RunPostLLMHooks(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError, runFrom int) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	// If the skip plugin pipeline flag is set, skip the plugin pipeline
 	if skipPluginPipeline, ok := ctx.Value(schemas.BifrostContextKeySkipPluginPipeline).(bool); ok && skipPluginPipeline {
@@ -9990,7 +10008,7 @@ func (p *PluginPipeline) RunPostLLMHooks(ctx *schemas.BifrostContext, resp *sche
 				pluginCtx = p.openStreamPostHook(ctx, pluginName)
 			}
 			start := time.Now()
-			resp, bifrostErr, err = plugin.PostLLMHook(pluginCtx, resp, bifrostErr)
+			resp, bifrostErr, err = p.callPostLLMHook(plugin, pluginName, pluginCtx, resp, bifrostErr)
 			duration := time.Since(start)
 
 			p.accumulatePluginTiming(pluginName, duration, err != nil)
@@ -10013,7 +10031,7 @@ func (p *PluginPipeline) RunPostLLMHooks(ctx *schemas.BifrostContext, resp *sche
 				ctx.SetValue(schemas.BifrostContextKeySpanID, spanID)
 			}
 			pluginCtx := ctx.WithPluginScope(&pluginName)
-			resp, bifrostErr, err = plugin.PostLLMHook(pluginCtx, resp, bifrostErr)
+			resp, bifrostErr, err = p.callPostLLMHook(plugin, pluginName, pluginCtx, resp, bifrostErr)
 			pluginCtx.ReleasePluginScope()
 			// End span with appropriate status
 			if err != nil {
