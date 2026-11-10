@@ -5310,6 +5310,11 @@ func convertSingleBedrockMessageToBifrostMessages(ctx *schemas.BifrostContext, m
 				}
 			}
 
+			// A tool_reference comes only from the InvokeModel ingress, whose UnmarshalJSON yields
+			// just text, image, tool_use and tool_reference inside a tool_result, so these output
+			// blocks hold everything that can be decoded. The envelope above is no fallback here: it
+			// drops the json:"-" reference and only the Converse egress decodes it. If that ingress
+			// learns document or search_result, map them here as well.
 			var outputBlocks []schemas.ResponsesMessageContentBlock
 			if slices.ContainsFunc(block.ToolResult.Content, func(c BedrockContentBlock) bool { return c.AnthropicToolReference != nil }) {
 				for _, c := range block.ToolResult.Content {
