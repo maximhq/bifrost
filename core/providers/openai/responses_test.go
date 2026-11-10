@@ -5681,3 +5681,35 @@ func TestToOpenAIResponsesRequest_MessageItemWithEncryptedContent(t *testing.T) 
 		})
 	}
 }
+
+// TestToOpenAIResponsesRequest_TypelessMessageWithEncryptedContent: an assistant item
+// sent with a role and content but no "type" is still a message. With an
+// encrypted_content on it, it used to take the reasoning path, which sent a bare
+// {"encrypted_content": ...} item for reasoning models (OpenAI answers "Invalid value:
+// ''" for the missing role) and dropped the whole turn for non-reasoning ones.
+func TestToOpenAIResponsesRequest_TypelessMessageWithEncryptedContent(t *testing.T) {
+	const assistant = `{"role":"assistant","content":[{"type":"output_text","text":"ok","annotations":[]}],"encrypted_content":"gAAAA"}`
+	for _, model := range []string{"gpt-5-mini", "gpt-4o"} {
+		t.Run(model, func(t *testing.T) {
+			body := `{"model":"` + model + `","input":[{"role":"user","content":"hi"},` + assistant + `,{"role":"user","content":"hi again"}]}`
+			var request OpenAIResponsesRequest
+			require.NoError(t, sonic.Unmarshal([]byte(body), &request))
+			bifrostRequest := request.ToBifrostResponsesRequest(nil)
+			bifrostRequest.Provider = schemas.OpenAI
+
+			wire, err := sonic.Marshal(ToOpenAIResponsesRequest(nil, bifrostRequest))
+			require.NoError(t, err)
+			var payload struct {
+				Input []map[string]json.RawMessage `json:"input"`
+			}
+			require.NoError(t, sonic.Unmarshal(wire, &payload))
+			require.Len(t, payload.Input, 3, "assistant turn must not be dropped: %s", wire)
+
+			item := payload.Input[1]
+			require.JSONEq(t, `"assistant"`, string(item["role"]))
+			require.JSONEq(t, `[{"type":"output_text","text":"ok","annotations":[]}]`, string(item["content"]), "content must survive: %s", wire)
+			require.NotContains(t, item, "summary", "OpenAI rejects summary on a message item: %s", wire)
+			require.NotContains(t, item, "encrypted_content", "OpenAI rejects encrypted_content on a message item: %s", wire)
+		})
+	}
+}
