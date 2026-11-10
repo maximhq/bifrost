@@ -2423,6 +2423,7 @@
             "item": "Edge",
             "icon": "grip",
             "pages": [
+              "changelogs/edge-v1.0.2",
               "changelogs/edge-v1.0.1",
               {
                 "group": "October 2026",
