@@ -1,0 +1,7 @@
+project_id        = "my-gcp-project"
+region            = "us-central1"
+name_prefix       = "bifrost"
+image_tag         = "latest"
+node_count        = 1
+node_machine_type = "e2-standard-2"
+# image_repository = "us-west1-docker.pkg.dev/bifrost-enterprise/your-org/bifrost"

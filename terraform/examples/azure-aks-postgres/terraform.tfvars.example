@@ -1,0 +1,6 @@
+region            = "eastus"
+name_prefix       = "bifrost"
+image_tag         = "latest"
+node_count        = 2
+node_machine_type = "Standard_D2s_v3"
+# image_repository = "us-west1-docker.pkg.dev/bifrost-enterprise/your-org/bifrost"

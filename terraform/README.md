@@ -93,10 +93,13 @@ terraform/
   examples/
     aws-ecs/                    # Deploy on ECS Fargate
     aws-ecs-postgres/           # ECS Fargate + RDS + ALB (the one-click AWS stack)
+    aws-eks-postgres/           # EKS + RDS + LoadBalancer Service (the one-click EKS stack)
     gcp-gke/                    # Deploy on GKE
     gcp-cloud-run-postgres/     # Cloud Run + Cloud SQL (the one-click GCP stack)
+    gcp-gke-postgres/           # GKE + Cloud SQL private IP + LoadBalancer Service (the one-click GKE stack)
     azure-aks/                  # Deploy on AKS
     azure-aci-postgres/         # Container Instances + Flexible Server (the one-click Azure stack)
+    azure-aks-postgres/         # AKS + Flexible Server + LoadBalancer Service (the one-click AKS stack)
     kubernetes/                 # Deploy on any K8s cluster
 ```
 
@@ -131,8 +134,9 @@ terraform apply
 | `ingress_class_name` | `"nginx"` | Ingress controller class (generic K8s only) |
 | `ingress_annotations` | `{}` | Ingress annotations (generic K8s only) |
 | `ingress_path` | `"/"` | Ingress path prefix routed to Bifrost (EKS, GKE, AKS, generic K8s); match `server.base_path` to serve under a prefix |
-| `create_database` | `false` | Provision RDS (ECS), Cloud SQL (Cloud Run) or Flexible Server (ACI) PostgreSQL 16 and point both stores at it |
-| `generate_secrets` | `false` | Generate and inject `BIFROST_ENCRYPTION_KEY` and `BIFROST_SETUP_TOKEN` (ECS, Cloud Run, ACI) |
+| `create_database` | `false` | Provision RDS (AWS), Cloud SQL (GCP) or Flexible Server (Azure) PostgreSQL 16 and point both stores at it; every aws, gcp and azure target |
+| `generate_secrets` | `false` | Generate and inject `BIFROST_ENCRYPTION_KEY` and `BIFROST_SETUP_TOKEN`; every aws, gcp and azure target |
+| `service_type` | `"ClusterIP"` | Kubernetes Service type on EKS, GKE, AKS; `LoadBalancer` exposes a public URL in `external_url` |
 | `image_repository` | `"maximhq/bifrost"` | Image repository; set to your private registry path for Bifrost Enterprise |
 
 ## Outputs
@@ -143,3 +147,4 @@ terraform apply
 | `health_check_url` | Health endpoint URL |
 | `setup_token` | Generated first-admin token (sensitive, with `generate_secrets`) |
 | `database_endpoint` | RDS `host:port`, Cloud SQL connection name or Flexible Server FQDN (with `create_database`) |
+| `external_url` | Public URL of the `LoadBalancer` Service on EKS, GKE, AKS (with `service_type = "LoadBalancer"`) |

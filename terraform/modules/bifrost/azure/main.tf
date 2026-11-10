@@ -103,6 +103,23 @@ resource "azurerm_network_security_group" "this" {
     source_address_prefix      = var.allowed_cidr
     destination_address_prefix = "*"
   }
+
+  # AKS does not add Service rules to a custom subnet NSG, so a LoadBalancer
+  # Service on port 80 needs its own inbound rule here.
+  dynamic "security_rule" {
+    for_each = var.service == "aks" && var.service_type == "LoadBalancer" ? [1] : []
+    content {
+      name                       = "allow-bifrost-service-inbound"
+      priority                   = 110
+      direction                  = "Inbound"
+      access                     = "Allow"
+      protocol                   = "Tcp"
+      source_port_range          = "*"
+      destination_port_range     = "80"
+      source_address_prefix      = var.allowed_cidr
+      destination_address_prefix = "*"
+    }
+  }
 }
 
 resource "azurerm_subnet_network_security_group_association" "this" {
@@ -183,6 +200,9 @@ module "aks" {
   source = "./services/aks"
   count  = var.service == "aks" ? 1 : 0
 
+  # Narrows the LoadBalancer Service (loadBalancerSourceRanges) to allowed_cidr.
+  allowed_cidr = var.allowed_cidr
+
   name_prefix                  = var.name_prefix
   region                       = var.region
   resource_group_name          = local.resource_group_name
@@ -209,6 +229,16 @@ module "aks" {
   node_machine_type            = var.node_machine_type
   volume_size_gb               = var.volume_size_gb
   identity_id                  = azurerm_user_assigned_identity.this.id
+
+  # Managed database, generated secrets and exposure
+  extra_environment        = local.managed_environment
+  extra_secret_environment = local.managed_secure_environment
+  service_type             = var.service_type
+
+  depends_on = [
+    azurerm_postgresql_flexible_server_database.bifrost,
+    azurerm_postgresql_flexible_server_firewall_rule.azure_services,
+  ]
 }
 
 # --- ACI (Azure Container Instances) ---
@@ -256,8 +286,9 @@ module "aci" {
 
 locals {
   is_aci           = var.service == "aci"
-  manage_database  = local.is_aci && var.create_database
-  generate_secrets = local.is_aci && var.generate_secrets
+  is_aks           = var.service == "aks"
+  manage_database  = (local.is_aci || local.is_aks) && var.create_database
+  generate_secrets = (local.is_aci || local.is_aks) && var.generate_secrets
 
   database_sku = coalesce(var.database_instance_class, "B_Standard_B1ms")
   # Flexible Server accepts only these storage sizes (MB); round the request up

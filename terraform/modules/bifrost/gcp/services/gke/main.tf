@@ -109,6 +109,21 @@ resource "kubernetes_secret" "bifrost_config" {
   type = "Opaque"
 }
 
+# Runtime secrets injected as environment variables (database password,
+# encryption key, setup token) when the platform module manages them.
+resource "kubernetes_secret" "bifrost_runtime" {
+  count = length(var.extra_secret_environment) > 0 ? 1 : 0
+
+  metadata {
+    name      = "${var.name_prefix}-runtime"
+    namespace = kubernetes_namespace.bifrost.metadata[0].name
+    labels    = merge(var.tags, { app = var.service_name })
+  }
+
+  data = var.extra_secret_environment
+  type = "Opaque"
+}
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Persistent Disk + PV + PVC for SQLite storage
 # ──────────────────────────────────────────────────────────────────────────────
@@ -217,6 +232,21 @@ resource "kubernetes_deployment" "bifrost" {
         labels = merge(var.tags, {
           app = var.service_name
         })
+        annotations = merge(
+          {
+            # A hash (not the content) of config.json. The file is a subPath
+            # mount, which Kubernetes never refreshes in a running pod, so a
+            # configuration change has to roll the pods through the template.
+            "bifrost.getbifrost.ai/config-hash" = sha256(var.config_json)
+          },
+          length(var.extra_secret_environment) > 0 ? {
+            # A hash (not the values) of the runtime Secret: when the database
+            # password or a generated secret rotates, the template changes and
+            # the pods restart with the new environment. Running containers do
+            # not see Secret updates otherwise.
+            "bifrost.getbifrost.ai/runtime-secret-hash" = nonsensitive(sha256(jsonencode(var.extra_secret_environment)))
+          } : {}
+        )
       }
 
       spec {
@@ -245,6 +275,30 @@ resource "kubernetes_deployment" "bifrost" {
         container {
           name  = "bifrost"
           image = var.image
+
+          # Managed database and generated secrets (plain values and
+          # Secret-backed values), see the platform module.
+          dynamic "env" {
+            for_each = var.extra_environment
+            content {
+              name  = env.key
+              value = env.value
+            }
+          }
+
+          # The map is sensitive, so iterate over its key names only.
+          dynamic "env" {
+            for_each = toset(nonsensitive(keys(var.extra_secret_environment)))
+            content {
+              name = env.value
+              value_from {
+                secret_key_ref {
+                  name = kubernetes_secret.bifrost_runtime[0].metadata[0].name
+                  key  = env.value
+                }
+              }
+            }
+          }
 
           port {
             container_port = var.container_port
@@ -355,7 +409,10 @@ resource "kubernetes_service" "bifrost" {
       protocol    = "TCP"
     }
 
-    type = "ClusterIP"
+    type = var.service_type
+
+    # Narrow the cloud load balancer itself, not only the node security rules.
+    load_balancer_source_ranges = var.service_type == "LoadBalancer" && !contains(["0.0.0.0/0", "*"], var.allowed_cidr) ? [var.allowed_cidr] : null
   }
 }
 

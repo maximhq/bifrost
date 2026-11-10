@@ -126,4 +126,5 @@ module "bifrost" {
   # Azure-only settings
   key_vault_network_default_action = var.key_vault_network_default_action
   image_registry_credentials       = var.image_registry_credentials
+  service_type                     = var.service_type
 }

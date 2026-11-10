@@ -27,6 +27,7 @@ mock_provider "azurerm" {
   }
 }
 mock_provider "kubernetes" {}
+mock_provider "random" {}
 
 run "gke_basic" {
   command = plan
@@ -146,5 +147,32 @@ run "gke_existing_vpc" {
     config_json         = jsonencode({})
     existing_vpc_id     = "projects/test/global/networks/existing-vpc"
     existing_subnet_ids = ["projects/test/regions/us-central1/subnetworks/existing-subnet"]
+  }
+}
+
+# --- Managed database, generated secrets and a public Service (the one-click GKE stack) ---
+
+run "gke_with_managed_database" {
+  command = plan
+  module { source = "./tests/setup" }
+  variables {
+    cloud_provider   = "gcp"
+    service          = "gke"
+    region           = "us-central1"
+    gcp_project_id   = "test-project"
+    config_json      = jsonencode({})
+    create_database  = true
+    generate_secrets = true
+    service_type     = "LoadBalancer"
+  }
+
+  assert {
+    condition     = jsondecode(nonsensitive(output.config_json)).config_store.config.password == "env.PG_PASSWORD"
+    error_message = "create_database must inject an env-referenced postgres config_store"
+  }
+
+  assert {
+    condition     = jsondecode(nonsensitive(output.config_json)).setup_token == "env.BIFROST_SETUP_TOKEN"
+    error_message = "generate_secrets must reference BIFROST_SETUP_TOKEN"
   }
 }

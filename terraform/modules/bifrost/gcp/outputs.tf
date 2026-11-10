@@ -24,3 +24,23 @@ output "database_endpoint" {
   description = "Cloud SQL connection name (Cloud Run with create_database)."
   value       = local.manage_database ? google_sql_database_instance.bifrost[0].connection_name : null
 }
+
+output "external_url" {
+  description = "Public URL of the GKE LoadBalancer Service when service_type is LoadBalancer."
+  value       = try(module.gke[0].external_url, null)
+}
+
+output "cluster_name" {
+  description = "GKE cluster name (GKE only), for gcloud container clusters get-credentials after a targeted first apply."
+  value       = try(module.gke[0].cluster_name, null)
+}
+
+output "cluster_region" {
+  description = "Region the cluster was created in."
+  value       = var.region
+}
+
+output "cluster_project" {
+  description = "Project the cluster was created in."
+  value       = var.project_id
+}
