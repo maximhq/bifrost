@@ -531,6 +531,18 @@ const isLiteralHTTPSOrLoopbackURL = (v: { value?: string; ref?: string; type?: s
 	return hasHTTPSOrLoopbackScheme(v?.value ?? "");
 };
 
+// isLiteralHTTPSURL mirrors BasetenAliasCfg.Validate: a literal deployment URL must be an
+// absolute https URL with a host. References and masked values pass; the server resolves them.
+// The literal must spell out "https://" and a host: the browser parser reads "https:///host"
+// or "https:host" as having that host, while Go's url.Parse finds none and rejects it.
+export const isLiteralHTTPSURL = (v: { value?: string; ref?: string; type?: string } | undefined): boolean => {
+	if (!isSecretVarSet(v)) return true;
+	if (isSecretVarRef(v) || isSecretVarMasked(v)) return true;
+	if (!/^https:\/\/[^/\\]/i.test((v?.value ?? "").trim())) return false;
+	const u = parseLiteralURL(v);
+	return !!u && u.protocol === "https:" && u.hostname !== "";
+};
+
 // OAuth key config schema. Honoured by openai-based providers: the key value may be empty
 // when this block is whole for its grant. Literal values are shape-checked so a typo fails in
 // the form rather than at the first inference call; references resolve elsewhere.
@@ -787,6 +799,8 @@ const aliasConfigObjectSchema = z.object({
 	inference_profile_arn: secretVarSchema.optional(),
 	// Replicate overrides
 	use_deployments_endpoint: z.boolean().optional(),
+	// Baseten overrides
+	deployment_url: secretVarSchema.optional().refine(isLiteralHTTPSURL, msg("validation.basetenDeploymentUrl")),
 	use_anthropic_endpoints: z.boolean().optional(),
 	use_openai_endpoints: z.boolean().optional(),
 });
