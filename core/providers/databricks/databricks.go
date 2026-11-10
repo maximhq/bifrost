@@ -45,8 +45,9 @@ const (
 	// aiGatewayBasePath is the OpenAI-compatible base path for Unity AI Gateway model APIs.
 	aiGatewayBasePath = "/ai-gateway/mlflow/v1"
 
-	// oauthTokenPath and oauthScope are fixed per workspace; DatabricksKeyConfig.OAuthConfig
-	// folds them into the common OAuth key config the shared token cache mints from.
+	// oauthTokenPath is fixed per workspace and oauthScope is the default when a key names no
+	// scopes; DatabricksKeyConfig.OAuthConfig folds them into the common OAuth key config the
+	// shared token cache mints from.
 	oauthTokenPath = schemas.DatabricksOAuthTokenPath
 	oauthScope     = schemas.DatabricksOAuthScope
 
@@ -273,51 +274,7 @@ func (provider *DatabricksProvider) authHeader(ctx context.Context, key schemas.
 		return nil, bErr
 	}
 	oauthCfg, _ := cfg.OAuthConfig(host)
-	return tokencache.ResolveBearerWithScopeFallbacks(ctx, provider.tokens, oauthCfg, provider.authHTTPClient, oauthScopeFallbacks)
-}
-
-// oauthScopeFallbacks lets a service principal secret created with scopes authenticate with no
-// configuration. Databricks requires a scope on every token request (none at all is a 400
-// invalid_scope) and refuses, with a 403 access_denied, any request naming a scope the secret
-// lacks, even alongside one it has. The default all-apis covers every secret created without
-// scopes. A scoped secret is refused it, so the scopes that can serve Bifrost's calls are tried
-// one at a time: model-serving-inference queries serving endpoints, model-serving also does,
-// and ai-functions serves decisions. Read-only variants (all-apis:read,
-// model-serving-inference:read) are deliberately absent: Databricks refuses every serving
-// endpoint query with them, so minting one would only move the failure to each request.
-var oauthScopeFallbacks = tokencache.ScopeFallbacks{
-	Sets:      [][]string{{"model-serving-inference"}, {"model-serving"}, {"ai-functions"}},
-	Denied:    isScopeDenied,
-	Exhausted: noUsableScopeError,
-}
-
-// oauthUsableScopes names the scopes Bifrost tries, for the error a secret with none of them gets.
-const oauthUsableScopes = "all-apis, model-serving-inference, model-serving or ai-functions"
-
-// isScopeDenied reports whether a failed mint is the token endpoint refusing the requested
-// scopes: a 403 whose OAuth error code (the first word of the forwarded detail) is
-// access_denied. A rejected client secret is a 401 invalid_client and is never retried.
-func isScopeDenied(mintErr *schemas.BifrostError) bool {
-	if mintErr == nil || mintErr.StatusCode == nil || *mintErr.StatusCode != http.StatusForbidden || mintErr.Error == nil {
-		return false
-	}
-	return strings.Contains(mintErr.Error.Message, "): access_denied")
-}
-
-// noUsableScopeError replaces the token endpoint's refusal once every usable scope was denied.
-// The secret has only scopes Bifrost cannot serve a request with, which no retry or fallback
-// provider repairs, so fallbacks stay blocked. The first refusal is kept in the message: for a
-// read-only secret, Databricks lists there the scopes the secret does have.
-func noUsableScopeError(first *schemas.BifrostError) *schemas.BifrostError {
-	detail := ""
-	if first != nil && first.Error != nil {
-		detail = first.Error.Message
-	}
-	bErr := providerUtils.NewProviderAPIError(
-		"databricks service principal secret has none of the OAuth scopes Bifrost can serve requests with ("+oauthUsableScopes+"); create a secret without scopes or with one of these. Databricks answered: "+detail,
-		nil, http.StatusForbidden, nil, nil)
-	bErr.AllowFallbacks = schemas.Ptr(false)
-	return bErr
+	return tokencache.ResolveBearerFrom(ctx, provider.tokens, oauthCfg, provider.authHTTPClient)
 }
 
 // gatewayTagsHeader returns the Databricks-Ai-Gateway-Request-Tags value for this request when

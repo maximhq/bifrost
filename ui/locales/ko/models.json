@@ -731,6 +731,7 @@
 			"projectIdOptional": "프로젝트 ID(선택사항)",
 			"mantleProjectHelp": "추론 및 모델 목록을 특정 Bedrock 프로젝트로 범위 지정합니다(OpenAI-Project / anthropic-workspace-id 헤더로 전송됨). 계정의 기본 프로젝트를 사용하려면 비워 두세요.",
 			"oauthM2mHelp": "Databricks에서는 OAuth 기계 대 기계 생산을 권장해요. 토큰은 작업공간 OIDC 엔드포인트에서 발행되고 자동으로 새로 고쳐집니다.",
+			"databricksScopesHelp": "비워 두면 all-apis를 요청해요. 서비스 주체의 OAuth 시크릿이 스코프를 지정해 생성되었다면 여기에 해당 스코프를 입력하세요. 시크릿에 없는 스코프를 포함한 토큰 요청은 Databricks가 거부해요. Model Serving에는 model-serving, Unity AI Gateway에는 ai-gateway, decisions에는 ai-functions가 필요해요.",
 			"vllmUrlPlaceholder": "http://vllm-서버:8000",
 			"vllmModelPlaceholder": "메타-라마/Llama-3-70b-hf",
 			"databricksWorkspacePlaceholder": "https://dbc-1234abcd-5678.cloud.databricks.com",

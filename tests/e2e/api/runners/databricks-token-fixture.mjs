@@ -9,11 +9,10 @@ import { argValue, createInterceptProxy } from "./lib/tls-intercept-proxy.mjs";
 // invalid_client, a permanent credential fault that must block fallbacks. Every other path is 404.
 //
 // One host is different: SCOPED_HOST stands in for a workspace whose service principal secret was
-// created with only the model-serving-inference scope. Its token endpoint refuses any requested
-// scope outside that set with the 403 access_denied Databricks sends, and mints a token
-// otherwise; its chat completions endpoint answers a canned reply for that token. A gateway
-// that asks for all-apis and stops at the 403 fails the harness row; one that falls back to
-// model-serving-inference is served.
+// created with only the model-serving scope. Its token endpoint refuses any requested
+// scope outside that set with the 403 Databricks sends, and mints a token otherwise; its chat
+// completions endpoint answers a canned reply for that token. A gateway that ignores the key's
+// scopes and asks for all-apis is refused, which is the bug the harness row pins.
 //
 //   node databricks-token-fixture.mjs [--port 8795]
 //
@@ -25,7 +24,7 @@ const args = process.argv.slice(2);
 const port = Number(argValue(args, "--port", process.env.DATABRICKS_TOKEN_FIXTURE_PORT || "8795"));
 
 const SCOPED_HOST = "dbx-scoped-workspace.invalid";
-const SCOPED_GRANTED = ["model-serving-inference"];
+const SCOPED_GRANTED = ["model-serving"];
 const SCOPED_TOKEN = "fixture-scoped-token";
 
 const respondScoped = (req, body, path) => {
@@ -37,8 +36,7 @@ const respondScoped = (req, body, path) => {
 				status: 403,
 				body: JSON.stringify({
 					error: "access_denied",
-					// The shape a live workspace sent for this secret: no list of the scopes it has.
-					error_description: `Scopes '${missing.join(" ")}' are not assigned to the client harness-service-principal`,
+					error_description: `Scopes '${missing.join(" ")}' are not assigned to the client harness-service-principal; the client has scope(s) [${SCOPED_GRANTED.join(", ")}] that cannot send this request`,
 				}),
 			};
 		}

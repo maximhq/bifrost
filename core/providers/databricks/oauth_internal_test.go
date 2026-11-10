@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"strings"
 	"sync"
 
 	"github.com/maximhq/bifrost/core/providers/openai"
@@ -39,7 +38,20 @@ func (testLogger) LogHTTPRequest(schemas.LogLevel, string) schemas.LogEventBuild
 //
 // This lives in the package's own test binary so it can point the token exchange at a stub
 // without exposing a test hook on the public API.
+//
+// The scoped case pins the fix for a service principal secret created with scopes: Databricks
+// refuses a token request naming any scope the secret lacks, so a key that sets scopes must
+// send exactly those and never the all-apis default.
 func TestOAuthM2M(t *testing.T) {
+	t.Run("default scope", func(t *testing.T) {
+		runOAuthM2M(t, nil, oauthScope)
+	})
+	t.Run("configured scopes replace all-apis", func(t *testing.T) {
+		runOAuthM2M(t, []string{"model-serving-inference", "model-serving"}, "model-serving-inference model-serving")
+	})
+}
+
+func runOAuthM2M(t *testing.T, scopes []string, wantScope string) {
 	var mu sync.Mutex
 	var tokenMints int
 	var gotGrantType, gotScope, gotBasicUser, gotBasicPass, gotAuth string
@@ -94,6 +106,7 @@ func TestOAuthM2M(t *testing.T) {
 			WorkspaceURL: *schemas.NewSecretVar(u.Host),
 			ClientID:     schemas.NewSecretVar("sp-client-id"),
 			ClientSecret: schemas.NewSecretVar("sp-client-secret"),
+			Scopes:       scopes,
 		},
 	}
 	request := &schemas.BifrostChatRequest{
@@ -117,8 +130,8 @@ func TestOAuthM2M(t *testing.T) {
 	if gotGrantType != "client_credentials" {
 		t.Errorf("grant_type: got %q, want %q", gotGrantType, "client_credentials")
 	}
-	if gotScope != oauthScope {
-		t.Errorf("scope: got %q, want %q", gotScope, oauthScope)
+	if gotScope != wantScope {
+		t.Errorf("scope: got %q, want %q", gotScope, wantScope)
 	}
 	if gotBasicUser != "sp-client-id" || gotBasicPass != "sp-client-secret" {
 		t.Errorf("basic auth: got %q/%q, want the service principal credentials", gotBasicUser, gotBasicPass)
@@ -128,174 +141,6 @@ func TestOAuthM2M(t *testing.T) {
 	}
 	if tokenMints != 1 {
 		t.Errorf("token mints: got %d, want 1 (the token source must cache across requests)", tokenMints)
-	}
-}
-
-// TestOAuthM2MScopedSecret covers service principal secrets created with scopes. The stub token
-// endpoint behaves like Databricks, as observed against a live workspace: it grants only the
-// scopes the secret has, refuses any other requested scope with a 403 access_denied, and the
-// refusal does not reliably list what the secret has. With no configuration the provider must
-// fall back through the scopes that can serve a request, use the first one granted, and cache
-// it. A secret with only read-only scopes must fail at the mint with an error naming the scopes
-// Bifrost needs. A rejected client secret (401) must not be retried at all.
-func TestOAuthM2MScopedSecret(t *testing.T) {
-	cases := []struct {
-		name        string
-		granted     string // the one scope the stub secret has
-		status      int    // the refusal status for any other scope
-		refusal     string
-		wantScopes  []string
-		wantErr     []string
-		wantBearers bool
-	}{
-		{
-			name:        "model-serving-inference secret",
-			granted:     "model-serving-inference",
-			status:      http.StatusForbidden,
-			refusal:     `{"error":"access_denied","error_description":"Scopes 'all-apis' are not assigned to the client sp-client-id"}`,
-			wantScopes:  []string{"all-apis", "model-serving-inference"},
-			wantBearers: true,
-		},
-		{
-			name:        "model-serving secret",
-			granted:     "model-serving",
-			status:      http.StatusForbidden,
-			refusal:     `{"error":"access_denied","error_description":"Scopes 'all-apis' are not assigned to the client sp-client-id"}`,
-			wantScopes:  []string{"all-apis", "model-serving-inference", "model-serving"},
-			wantBearers: true,
-		},
-		{
-			name:       "read-only secret fails at the mint naming the scopes Bifrost needs",
-			granted:    "all-apis:read",
-			status:     http.StatusForbidden,
-			refusal:    `{"error":"access_denied","error_description":"Scopes 'all-apis' are not assigned to the client sp-client-id; the client has scope(s) [all-apis:read] that cannot send this request"}`,
-			wantScopes: []string{"all-apis", "model-serving-inference", "model-serving", "ai-functions"},
-			wantErr:    []string{"none of the OAuth scopes Bifrost can serve requests with", "model-serving-inference", "the client has scope(s) [all-apis:read]"},
-		},
-		{
-			name:       "a rejected client secret is not retried",
-			granted:    "none",
-			status:     http.StatusUnauthorized,
-			refusal:    `{"error":"invalid_client","error_description":"bad secret"}`,
-			wantScopes: []string{"all-apis"},
-			wantErr:    []string{"failed (401): invalid_client"},
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			var mu sync.Mutex
-			var requested []string
-			var gotAuth string
-
-			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				w.Header().Set("Content-Type", "application/json")
-				if r.URL.Path == oauthTokenPath {
-					body, _ := io.ReadAll(r.Body)
-					form, _ := url.ParseQuery(string(body))
-					scope := form.Get("scope")
-					mu.Lock()
-					requested = append(requested, scope)
-					mu.Unlock()
-					if scope != tc.granted {
-						w.WriteHeader(tc.status)
-						_, _ = w.Write([]byte(tc.refusal))
-						return
-					}
-					_, _ = w.Write([]byte(`{"access_token":"scoped-token","token_type":"Bearer","expires_in":3600,"scope":"` + scope + `"}`))
-					return
-				}
-				mu.Lock()
-				gotAuth = r.Header.Get("Authorization")
-				mu.Unlock()
-				_, _ = w.Write([]byte(`{"id":"chatcmpl-1","object":"chat.completion","created":1700000000,"model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
-			}))
-			defer server.Close()
-
-			provider, err := NewDatabricksProvider(&schemas.ProviderConfig{
-				NetworkConfig: schemas.NetworkConfig{DefaultRequestTimeoutInSeconds: 10, InsecureSkipVerify: true, AllowPrivateNetwork: true},
-			}, testLogger{})
-			if err != nil {
-				t.Fatalf("NewDatabricksProvider: %v", err)
-			}
-			u, _ := url.Parse(server.URL)
-			key := schemas.Key{
-				Models: []string{"*"},
-				DatabricksKeyConfig: &schemas.DatabricksKeyConfig{
-					WorkspaceURL: *schemas.NewSecretVar(u.Host),
-					ClientID:     schemas.NewSecretVar("sp-client-id"),
-					ClientSecret: schemas.NewSecretVar("sp-client-secret"),
-				},
-			}
-			request := &schemas.BifrostChatRequest{
-				Provider: schemas.Databricks,
-				Model:    "databricks-gpt-oss-120b",
-				Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}}},
-			}
-
-			// Two requests: the second must reuse the cached token (or the cached failure)
-			// and send nothing more to the token endpoint.
-			for i := range 2 {
-				ctx, cancel := schemas.NewBifrostContextWithTimeout(context.Background(), 10*time.Second)
-				_, bErr := provider.ChatCompletion(ctx, key, request)
-				cancel()
-				if len(tc.wantErr) == 0 {
-					if bErr != nil {
-						t.Fatalf("ChatCompletion (attempt %d) returned an error: %v", i+1, bErr)
-					}
-					continue
-				}
-				if bErr == nil || bErr.Error == nil {
-					t.Fatalf("attempt %d: expected an error, got %+v", i+1, bErr)
-				}
-				for _, want := range tc.wantErr {
-					if !strings.Contains(bErr.Error.Message, want) {
-						t.Errorf("attempt %d: error %q does not contain %q", i+1, bErr.Error.Message, want)
-					}
-				}
-				if bErr.AllowFallbacks == nil || *bErr.AllowFallbacks {
-					t.Errorf("attempt %d: a credential fault must block fallbacks", i+1)
-				}
-				if strings.Contains(bErr.Error.Message, "sp-client-secret") {
-					t.Errorf("attempt %d: the client secret leaked into the error", i+1)
-				}
-			}
-
-			mu.Lock()
-			defer mu.Unlock()
-			if strings.Join(requested, "|") != strings.Join(tc.wantScopes, "|") {
-				t.Errorf("token requests: got scopes %q, want %q", requested, tc.wantScopes)
-			}
-			if tc.wantBearers && gotAuth != "Bearer scoped-token" {
-				t.Errorf("Authorization: got %q, want the scoped token", gotAuth)
-			}
-		})
-	}
-}
-
-func TestIsScopeDenied(t *testing.T) {
-	mintErr := func(status int, msg string) *schemas.BifrostError {
-		return &schemas.BifrostError{StatusCode: schemas.Ptr(status), Error: &schemas.ErrorField{Message: msg}}
-	}
-	const prefix = "oauth token request to https://dbc-1.cloud.databricks.com/oidc/v1/token failed "
-	cases := []struct {
-		name string
-		err  *schemas.BifrostError
-		want bool
-	}{
-		{"access_denied with a scope list", mintErr(403, prefix+"(403): access_denied Scopes 'all-apis' are not assigned to the client [redacted]; the client has scope(s) [all-apis:read] that cannot send this request"), true},
-		{"access_denied without a scope list", mintErr(403, prefix+"(403): access_denied Scopes 'all-apis' are not assigned to the client [redacted]"), true},
-		{"a 403 with another error code", mintErr(403, prefix+"(403): invalid_client mentions access_denied later"), false},
-		{"a rejected secret", mintErr(401, prefix+"(401): invalid_client"), false},
-		{"missing scope is a 400", mintErr(400, prefix+"(400): invalid_scope Request must specify at least one valid scope"), false},
-		{"no status", &schemas.BifrostError{Error: &schemas.ErrorField{Message: prefix + "(403): access_denied"}}, false},
-		{"nil", nil, false},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := isScopeDenied(tc.err); got != tc.want {
-				t.Errorf("got %v, want %v", got, tc.want)
-			}
-		})
 	}
 }
 
@@ -339,11 +184,12 @@ func TestChatStreamOptionsFixup(t *testing.T) {
 // then the workspace REST error_code/message pair, then a status-bearing generic.
 func TestParseDatabricksError(t *testing.T) {
 	for _, tc := range []struct {
-		name    string
-		status  int
-		body    string
-		message string
-		code    string
+		name        string
+		status      int
+		contentType string
+		body        string
+		message     string
+		code        string
 	}{
 		{
 			name:    "workspace rest shape",
@@ -372,12 +218,31 @@ func TestParseDatabricksError(t *testing.T) {
 			body:    `{"something_else":true}`,
 			message: "provider API error (status 418)",
 		},
+		{
+			// As a live workspace answers a token whose scopes do not cover the path.
+			name:        "a plain-text scope error sent as text/html keeps its text",
+			status:      403,
+			contentType: "text/html; charset=utf-8",
+			body:        "Invalid scope, required scopes: model-serving",
+			message:     "Invalid scope, required scopes: model-serving",
+		},
+		{
+			name:        "a real html page keeps the generic html message",
+			status:      502,
+			contentType: "text/html; charset=utf-8",
+			body:        "<html><head><title>Bad Gateway</title></head><body><h1>Bad Gateway</h1></body></html>",
+			message:     schemas.ErrProviderResponseHTML,
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			resp := fasthttp.AcquireResponse()
 			defer fasthttp.ReleaseResponse(resp)
 			resp.SetStatusCode(tc.status)
-			resp.Header.SetContentType("application/json")
+			contentType := tc.contentType
+			if contentType == "" {
+				contentType = "application/json"
+			}
+			resp.Header.SetContentType(contentType)
 			resp.SetBodyString(tc.body)
 
 			bErr := parseDatabricksError(resp)

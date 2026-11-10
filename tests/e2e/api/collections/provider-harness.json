@@ -256007,7 +256007,7 @@
     },
     {
       "name": "208. Databricks OAuth M2M token-mint failures and fallback gating (databricks oauth failure)",
-      "description": "Pins the client-visible failure behaviour of Databricks OAuth M2M after the provider moved onto the shared token cache (core/providers/utils/tokencache). Two shapes:\n\n1. The workspace host is unreachable (127.0.0.1:9). The token mint gets no HTTP status, which is a temporary outage: the error allows fallbacks and the configured fallback serves the request (x-bifrost-routing-info-is-fallback: true).\n2. The token endpoint answers 401 invalid_client. That is a credential or configuration fault: the error names the token endpoint, blocks fallbacks, and the request fails even though a fallback is configured. The answer comes from a local fixture so it cannot drift to a 429 or 5xx, which would correctly be treated as transient: start node tests/e2e/api/runners/databricks-token-fixture.mjs (port 8795, override with --port and the databricksTokenFixtureUrl variable) and run with INCLUDE_PREVIEW=1. The row creates the provider with proxy_config pointing at the fixture and trusting the CA it serves at /__ca.\n\nDatabricks is not a supported base for custom providers, so both cases configure the built-in databricks provider itself through the management API (create the provider, then add a key through /keys, since inline keys on provider creation are ignored) with a bogus service principal, so no Databricks credential is needed, and delete it afterwards. Setup refuses to run over an operator-configured databricks provider; only a leftover carrying the harness key name is replaced. Case 2 carries [EXPECT-401] because the token endpoint's status is passed through to the client, which the collection-level status test must expect. Before the shared cache, every mint failure allowed fallbacks, so case 2 served from the fallback; it is the red-before pin for the new gating. The secret must never appear in a response body.\n\nCase 3 pins a scoped service principal secret with no configuration: the fixture's dbx-scoped-workspace.invalid host behaves like a secret created with only model-serving-inference, refusing all-apis with Databricks' 403 access_denied in the shape a live workspace sends (no list of the scopes the secret has). Before the change the row failed with that 403; after it the gateway falls back to model-serving-inference and the fixture serves the chat reply.\n\nRun with FEATURE=\"databricks oauth failure\" or FEATURE=\"databricks oauth scopes\".",
+      "description": "Pins the client-visible failure behaviour of Databricks OAuth M2M after the provider moved onto the shared token cache (core/providers/utils/tokencache). Two shapes:\n\n1. The workspace host is unreachable (127.0.0.1:9). The token mint gets no HTTP status, which is a temporary outage: the error allows fallbacks and the configured fallback serves the request (x-bifrost-routing-info-is-fallback: true).\n2. The token endpoint answers 401 invalid_client. That is a credential or configuration fault: the error names the token endpoint, blocks fallbacks, and the request fails even though a fallback is configured. The answer comes from a local fixture so it cannot drift to a 429 or 5xx, which would correctly be treated as transient: start node tests/e2e/api/runners/databricks-token-fixture.mjs (port 8795, override with --port and the databricksTokenFixtureUrl variable) and run with INCLUDE_PREVIEW=1. The row creates the provider with proxy_config pointing at the fixture and trusting the CA it serves at /__ca.\n\nDatabricks is not a supported base for custom providers, so both cases configure the built-in databricks provider itself through the management API (create the provider, then add a key through /keys, since inline keys on provider creation are ignored) with a bogus service principal, so no Databricks credential is needed, and delete it afterwards. Setup refuses to run over an operator-configured databricks provider; only a leftover carrying the harness key name is replaced. Case 2 carries [EXPECT-401] because the token endpoint's status is passed through to the client, which the collection-level status test must expect. Before the shared cache, every mint failure allowed fallbacks, so case 2 served from the fallback; it is the red-before pin for the new gating. The secret must never appear in a response body.\n\nCase 3 pins databricks_key_config.scopes: the fixture's dbx-scoped-workspace.invalid host behaves like a service principal secret created with only model-serving, refusing a token request for any other scope with Databricks' 403 access_denied. Before the change Bifrost always asked for all-apis, so the row failed with that 403; after it the key's scopes are sent and the fixture serves the chat reply. Its setup also pins that the management API refuses a whitespace-joined scope with a 400, since that entry would go out as two scopes.\n\nRun with FEATURE=\"databricks oauth failure\" or FEATURE=\"databricks oauth scopes\".",
       "item": [
         {
           "name": "databricks/databricks-claude-sonnet-4-5 service principal against an unreachable workspace fails at the token mint and the fallback serves - #8254",
@@ -256272,7 +256272,7 @@
           }
         },
         {
-          "name": "[PREVIEW] databricks/databricks-claude-sonnet-4-5 service principal with a scoped secret recovers from the all-apis denial with no configuration (databricks oauth scopes)",
+          "name": "[PREVIEW] databricks/databricks-claude-sonnet-4-5 service principal with a scoped secret mints with the key's scopes (databricks oauth scopes)",
           "event": [
             {
               "listen": "prerequest",
@@ -256312,13 +256312,24 @@
                   "    });",
                   "    if (err || res.code !== 200) { pm.execution.skipRequest(); return cb(); }",
                   "    pm.variables.set('dbxOauthCreated', '1');",
-                  "    // No scopes on the key: the fixture's scoped host refuses all-apis with Databricks' 403 and grants model-serving-inference.",
-                  "    mgmt('POST', '/api/providers/' + PROVIDER + '/keys', {name: KEY_NAME, models: ['*'], weight: 1, databricks_key_config: {workspace_url: 'dbx-scoped-workspace.invalid', client_id: 'harness-service-principal', client_secret: 'harness-service-principal-secret'}}, function (err2, res2) {",
+                  "    // A scope with whitespace would go out as two scopes, so the management API refuses it at save.",
+                  "    mgmt('POST', '/api/providers/' + PROVIDER + '/keys', {name: KEY_NAME + '-bad', models: ['*'], weight: 1, databricks_key_config: {workspace_url: 'dbx-scoped-workspace.invalid', client_id: 'harness-service-principal', client_secret: 'harness-service-principal-secret', scopes: ['model-serving ai-functions']}}, function (badErr, badRes) {",
+                  "      pm.test('setup: a whitespace-joined scope is refused at save', function () {",
+                  "        pm.expect(badErr).to.equal(null);",
+                  "        pm.expect(badRes.code, badRes.text()).to.equal(400);",
+                  "        pm.expect(badRes.text()).to.include('databricks_key_config.scopes[0]');",
+                  "      });",
+                  "    // The fixture's scoped host mints only for model-serving and refuses all-apis with Databricks' 403.",
+                  "    mgmt('POST', '/api/providers/' + PROVIDER + '/keys', {name: KEY_NAME, models: ['*'], weight: 1, databricks_key_config: {workspace_url: 'dbx-scoped-workspace.invalid', client_id: 'harness-service-principal', client_secret: 'harness-service-principal-secret', scopes: ['model-serving']}}, function (err2, res2) {",
                   "      pm.test('setup: added the scoped harness service principal key', function () {",
                   "        pm.expect(err2).to.equal(null);",
                   "        pm.expect(res2.code, res2.text()).to.equal(200);",
+                  "        var saved = res2.json();",
+                  "        var cfg = (saved && (saved.databricks_key_config || (saved.key && saved.key.databricks_key_config))) || null;",
+                  "        if (cfg) { pm.expect(cfg.scopes, 'scopes must round-trip: ' + res2.text()).to.eql(['model-serving']); }",
                   "      });",
                   "      cb();",
+                  "    });",
                   "    });",
                   "  });",
                   "}",
@@ -256369,8 +256380,8 @@
                   "    });",
                   "  });",
                   "}",
-                  "pm.test('a scoped service principal is denied all-apis, falls back to model-serving-inference, and the request is served', function () {",
-                  "  pm.expect(pm.response.code, 'failed (a 403 naming all-apis means the gateway did not fall back to model-serving-inference): ' + pm.response.text()).to.equal(200);",
+                  "pm.test('a scoped service principal mints with the key\\'s scopes, not all-apis, and the request is served', function () {",
+                  "  pm.expect(pm.response.code, 'failed (a 403 naming all-apis means the key scopes were ignored): ' + pm.response.text()).to.equal(200);",
                   "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-is-fallback'), 'no fallback is configured: ' + pm.response.text()).to.not.equal('true');",
                   "  var json = pm.response.json();",
                   "  pm.expect(json.choices, pm.response.text()).to.be.an('array').that.is.not.empty;",

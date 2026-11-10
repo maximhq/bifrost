@@ -2,11 +2,7 @@ package tokencache
 
 import (
 	"context"
-	"io"
 	"net/http"
-	"net/http/httptest"
-	"net/url"
-	"sync"
 	"testing"
 
 	schemas "github.com/maximhq/bifrost/core/schemas"
@@ -85,90 +81,6 @@ func TestResolveBearer(t *testing.T) {
 		assert.False(t, *bErr.AllowFallbacks)
 		hits, _, _, _, _ := ts.snapshot()
 		assert.Equal(t, 0, hits)
-	})
-}
-
-func TestResolveBearerWithScopeFallbacks(t *testing.T) {
-	// scopedServer grants only the given scope and answers every other with status.
-	scopedServer := func(t *testing.T, granted string, status int) (*httptest.Server, func() []string) {
-		var mu sync.Mutex
-		var requested []string
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			raw, _ := io.ReadAll(r.Body)
-			form, _ := url.ParseQuery(string(raw))
-			mu.Lock()
-			requested = append(requested, form.Get("scope"))
-			mu.Unlock()
-			w.Header().Set("Content-Type", "application/json")
-			if form.Get("scope") != granted {
-				w.WriteHeader(status)
-				_, _ = w.Write([]byte(`{"error":"access_denied"}`))
-				return
-			}
-			_, _ = w.Write([]byte(`{"access_token":"for-` + granted + `","token_type":"Bearer","expires_in":3600}`))
-		}))
-		t.Cleanup(srv.Close)
-		return srv, func() []string {
-			mu.Lock()
-			defer mu.Unlock()
-			return append([]string(nil), requested...)
-		}
-	}
-	denied := func(e *schemas.BifrostError) bool {
-		return e.StatusCode != nil && *e.StatusCode == http.StatusForbidden
-	}
-	sets := [][]string{{"all-apis"}, {"second"}, {"third"}}
-
-	t.Run("tries the sets in order and caches the first granted", func(t *testing.T) {
-		srv, requested := scopedServer(t, "second", http.StatusForbidden)
-		cache := New[string](Options{})
-		for range 2 {
-			h, bErr := ResolveBearerWithScopeFallbacks(context.Background(), cache, *ccConfig(srv.URL), authClient(t), ScopeFallbacks{Sets: sets, Denied: denied})
-			require.Nil(t, bErr)
-			assert.Equal(t, "Bearer for-second", h["Authorization"])
-		}
-		// The configured all-apis is tried once; the identical first fallback set is skipped.
-		assert.Equal(t, []string{"all-apis", "second"}, requested())
-	})
-
-	t.Run("a failure that is not a denial stops at once", func(t *testing.T) {
-		srv, requested := scopedServer(t, "second", http.StatusUnauthorized)
-		_, bErr := ResolveBearerWithScopeFallbacks(context.Background(), New[string](Options{}), *ccConfig(srv.URL), authClient(t), ScopeFallbacks{Sets: sets, Denied: denied})
-		require.NotNil(t, bErr)
-		assert.Equal(t, http.StatusUnauthorized, *bErr.StatusCode)
-		assert.Equal(t, []string{"all-apis"}, requested())
-	})
-
-	t.Run("every set denied returns Exhausted built from the first refusal", func(t *testing.T) {
-		srv, requested := scopedServer(t, "never", http.StatusForbidden)
-		var first *schemas.BifrostError
-		_, bErr := ResolveBearerWithScopeFallbacks(context.Background(), New[string](Options{}), *ccConfig(srv.URL), authClient(t), ScopeFallbacks{
-			Sets:   sets,
-			Denied: denied,
-			Exhausted: func(e *schemas.BifrostError) *schemas.BifrostError {
-				first = e
-				return &schemas.BifrostError{StatusCode: schemas.Ptr(http.StatusForbidden), Error: &schemas.ErrorField{Message: "exhausted"}}
-			},
-		})
-		require.NotNil(t, bErr)
-		assert.Equal(t, "exhausted", bErr.Error.Message)
-		require.NotNil(t, first)
-		assert.Contains(t, first.Error.Message, "access_denied")
-		assert.Equal(t, []string{"all-apis", "second", "third"}, requested())
-	})
-
-	t.Run("no Exhausted returns the first refusal", func(t *testing.T) {
-		srv, _ := scopedServer(t, "never", http.StatusForbidden)
-		_, bErr := ResolveBearerWithScopeFallbacks(context.Background(), New[string](Options{}), *ccConfig(srv.URL), authClient(t), ScopeFallbacks{Sets: sets, Denied: denied})
-		require.NotNil(t, bErr)
-		assert.Contains(t, bErr.Error.Message, "access_denied")
-	})
-
-	t.Run("a zero value is ResolveBearerFrom", func(t *testing.T) {
-		srv, requested := scopedServer(t, "second", http.StatusForbidden)
-		_, bErr := ResolveBearerWithScopeFallbacks(context.Background(), New[string](Options{}), *ccConfig(srv.URL), authClient(t), ScopeFallbacks{})
-		require.NotNil(t, bErr)
-		assert.Equal(t, []string{"all-apis"}, requested())
 	})
 }
 
@@ -359,6 +271,33 @@ func TestDatabricksOAuthConfig(t *testing.T) {
 		_, mint, bErr := MinterForConfig(&cfg, nil)
 		assert.Nil(t, bErr)
 		assert.NotNil(t, mint)
+	})
+
+	t.Run("configured scopes replace the default", func(t *testing.T) {
+		scopes := []string{"model-serving-inference", "ai-functions"}
+		cfg, ok := (&schemas.DatabricksKeyConfig{
+			ClientID:     schemas.NewSecretVar("sp"),
+			ClientSecret: schemas.NewSecretVar("s"),
+			Scopes:       scopes,
+		}).OAuthConfig("dbc-1.cloud.databricks.com")
+		require.True(t, ok)
+		assert.Equal(t, scopes, cfg.Scopes)
+	})
+
+	t.Run("keys that differ only in scopes never share a token", func(t *testing.T) {
+		base := schemas.DatabricksKeyConfig{ClientID: schemas.NewSecretVar("sp"), ClientSecret: schemas.NewSecretVar("s")}
+		scoped := base
+		scoped.Scopes = []string{"model-serving-inference"}
+		defaultCfg, _ := base.OAuthConfig("h")
+		scopedCfg, _ := scoped.OAuthConfig("h")
+		assert.NotEqual(t, oauthKeyCacheKey(&defaultCfg, "https://h/oidc/v1/token"), oauthKeyCacheKey(&scopedCfg, "https://h/oidc/v1/token"))
+	})
+
+	t.Run("scope validation", func(t *testing.T) {
+		assert.NoError(t, (&schemas.DatabricksKeyConfig{Scopes: []string{"model-serving", "all-apis:read"}}).ValidateScopes())
+		assert.NoError(t, (*schemas.DatabricksKeyConfig)(nil).ValidateScopes())
+		assert.Error(t, (&schemas.DatabricksKeyConfig{Scopes: []string{""}}).ValidateScopes())
+		assert.Error(t, (&schemas.DatabricksKeyConfig{Scopes: []string{"model-serving ai-functions"}}).ValidateScopes())
 	})
 
 	t.Run("a missing half yields nothing", func(t *testing.T) {

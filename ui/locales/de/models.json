@@ -731,6 +731,7 @@
 			"projectIdOptional": "Projekt-ID (optional)",
 			"mantleProjectHelp": "Beschränkt Inferenz und Modellauflistung auf ein bestimmtes Bedrock-Projekt (gesendet als Header OpenAI-Project / anthropic-workspace-id). Leer lassen, um das Standardprojekt des Kontos zu verwenden.",
 			"oauthM2mHelp": "Databricks empfiehlt OAuth Machine-to-Machine für die Produktion. Tokens werden über den OIDC-Endpunkt des Workspace generiert und automatisch aktualisiert.",
+			"databricksScopesHelp": "Leer lassen, um all-apis anzufordern. Wurde das OAuth-Secret des Service Principals mit Scopes erstellt, tragen Sie diese hier ein. Databricks lehnt eine Token-Anfrage ab, die einen Scope nennt, den das Secret nicht hat. Model Serving benötigt model-serving, Unity AI Gateway benötigt ai-gateway, Entscheidungen benötigen ai-functions.",
 			"vllmUrlPlaceholder": "http://vllm-server:8000",
 			"vllmModelPlaceholder": "meta-llama/Llama-3-70b-hf",
 			"databricksWorkspacePlaceholder": "https://dbc-1234abcd-5678.cloud.databricks.com",
