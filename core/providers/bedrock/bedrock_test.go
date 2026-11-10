@@ -4373,6 +4373,90 @@ func TestBedrockAnthropicChatUntypedOpenObjectUsesSyntheticTool(t *testing.T) {
 	requireSyntheticStructuredOutputTool(t, result.ToolConfig, result.AdditionalModelRequestFields)
 }
 
+// TestBedrockAnthropicChatFreeFormObjectUsesSyntheticTool: a nested object with
+// no properties allows any keys, and closing it would allow only {}, so the
+// request keeps the bf_so_* tool, whose schema still allows any keys.
+func TestBedrockAnthropicChatFreeFormObjectUsesSyntheticTool(t *testing.T) {
+	schema := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"name":     map[string]any{"type": "string"},
+			"metadata": map[string]any{"type": "object"},
+		},
+		"required": []any{"name", "metadata"},
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	result, err := bedrock.ToBedrockChatCompletionRequest(ctx, chatStructuredOutputRequest(schema))
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	requireSyntheticStructuredOutputTool(t, result.ToolConfig, result.AdditionalModelRequestFields)
+	require.Len(t, result.ToolConfig.Tools, 1)
+	toolSchema := string(result.ToolConfig.Tools[0].ToolSpec.InputSchema.JSON)
+	assert.False(t, gjson.Get(toolSchema, "properties.metadata.additionalProperties").Exists(), "the free-form object keeps allowing any keys")
+}
+
+// TestBedrockAnthropicChatComposedObjectUsesSyntheticTool: closing an object
+// would forbid the keys its allOf branches define, so the request keeps the
+// bf_so_* tool.
+func TestBedrockAnthropicChatComposedObjectUsesSyntheticTool(t *testing.T) {
+	schema := map[string]any{
+		"type":       "object",
+		"properties": map[string]any{"name": map[string]any{"type": "string"}},
+		"allOf": []any{
+			map[string]any{"properties": map[string]any{"age": map[string]any{"type": "integer"}}},
+		},
+		"required": []any{"name"},
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	result, err := bedrock.ToBedrockChatCompletionRequest(ctx, chatStructuredOutputRequest(schema))
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	requireSyntheticStructuredOutputTool(t, result.ToolConfig, result.AdditionalModelRequestFields)
+}
+
+// TestBedrockAnthropicChatClosedEmptyObjectUsesNativeOutputConfig: an object
+// that already sets additionalProperties false is sent natively as written,
+// properties or not.
+func TestBedrockAnthropicChatClosedEmptyObjectUsesNativeOutputConfig(t *testing.T) {
+	schema := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"name":  map[string]any{"type": "string"},
+			"extra": map[string]any{"type": "object", "additionalProperties": false},
+		},
+		"required": []any{"name", "extra"},
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	result, err := bedrock.ToBedrockChatCompletionRequest(ctx, chatStructuredOutputRequest(schema))
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	fields := additionalFieldsJSON(t, result.AdditionalModelRequestFields)
+	assert.True(t, gjson.Get(fields, "output_config.format.schema").Exists(), "expected native output_config.format")
+	assert.Nil(t, result.ToolConfig, "expected no synthetic bf_so_* tool")
+}
+
+// TestToBedrockResponsesRequest_AnthropicBooleanSchemaUsesSyntheticTool: the
+// boolean schema `true` has no schema object for output_config.format, so a
+// verified Claude model keeps the bf_so_* tool and its unconstrained object
+// schema instead of sending no structured output at all.
+func TestToBedrockResponsesRequest_AnthropicBooleanSchemaUsesSyntheticTool(t *testing.T) {
+	req := classificationResponsesRequest("eu.anthropic.claude-opus-5-5")
+	req.Params.Text.Format.JSONSchema.Schema = &schemas.JSONSchemaOrBool{SchemaBool: schemas.Ptr(true)}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bedrockReq, err := bedrock.ToBedrockResponsesRequest(ctx, req)
+	require.NoError(t, err)
+	require.NotNil(t, bedrockReq)
+
+	requireSyntheticStructuredOutputTool(t, bedrockReq.ToolConfig, bedrockReq.AdditionalModelRequestFields)
+}
+
 // TestToBedrockResponsesRequest_AnthropicNestedOpenObjectUsesSyntheticTool: an
 // additionalProperties schema on a nested object can't be sent natively either,
 // so the whole request keeps the bf_so_* tool.

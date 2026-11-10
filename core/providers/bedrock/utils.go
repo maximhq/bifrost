@@ -626,12 +626,10 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 		outputFormat, native = nativeAnthropicOutputFormat(chatResponseFormatSchema(bifrostReq.Params))
 	}
 	if native {
-		if outputFormat != nil {
-			if bedrockReq.AdditionalModelRequestFields == nil {
-				bedrockReq.AdditionalModelRequestFields = schemas.NewOrderedMap()
-			}
-			setOutputConfigField(bedrockReq.AdditionalModelRequestFields, "format", outputFormat)
+		if bedrockReq.AdditionalModelRequestFields == nil {
+			bedrockReq.AdditionalModelRequestFields = schemas.NewOrderedMap()
 		}
+		setOutputConfigField(bedrockReq.AdditionalModelRequestFields, "format", outputFormat)
 	} else {
 		responseFormatTool, _ = convertResponseFormatToTool(ctx, bifrostReq.Model, bifrostReq.Params)
 	}
@@ -2632,14 +2630,15 @@ func convertImageToBedrockSource(ctx context.Context, model, imageURL string) (*
 
 // nativeAnthropicOutputFormat is the output_config.format Claude takes for
 // structured output, built from the same schema the synthetic bf_so_* tool would
-// carry, with every object that leaves additionalProperties unset closed. Nil
-// when there is no schema to constrain the reply to. ok is false when the
-// schema can't be sent natively: an object that sets additionalProperties to
-// true or a schema is rejected by output_config.format, so the request keeps
-// the bf_so_* tool, which enforces the schema as written.
+// carry, with every object that leaves additionalProperties unset closed. ok is
+// false when there is no schema object, such as the boolean schema `true`, or
+// when output_config.format can't carry the schema as written: an open object,
+// or one that closing would narrow. The request then keeps the bf_so_* path,
+// which carries the schema as written, or adds no tool when there is no
+// structured output to ask for.
 func nativeAnthropicOutputFormat(schema json.RawMessage) (format json.RawMessage, ok bool) {
 	if len(schema) == 0 {
-		return nil, true
+		return nil, false
 	}
 	closed, ok := anthropic.CloseObjectSchemasRaw(anthropic.NormalizeSchemaForAnthropicRaw(schema))
 	if !ok {

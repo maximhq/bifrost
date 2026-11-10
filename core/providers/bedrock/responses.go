@@ -2855,12 +2855,10 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 				outputFormat, native = nativeAnthropicOutputFormat(schema)
 			}
 			if native {
-				if outputFormat != nil {
-					if bedrockReq.AdditionalModelRequestFields == nil {
-						bedrockReq.AdditionalModelRequestFields = schemas.NewOrderedMap()
-					}
-					setOutputConfigField(bedrockReq.AdditionalModelRequestFields, "format", outputFormat)
+				if bedrockReq.AdditionalModelRequestFields == nil {
+					bedrockReq.AdditionalModelRequestFields = schemas.NewOrderedMap()
 				}
+				setOutputConfigField(bedrockReq.AdditionalModelRequestFields, "format", outputFormat)
 			} else {
 				// Other models, and schemas output_config.format can't carry, go
 				// through the synthetic `bf_so_*` tool path. We capture the tool

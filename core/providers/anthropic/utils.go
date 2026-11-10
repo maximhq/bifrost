@@ -4578,11 +4578,16 @@ func NormalizeSchemaForAnthropicRaw(schema json.RawMessage) json.RawMessage {
 // CloseObjectSchemasRaw sets additionalProperties false on every object schema
 // that leaves it unset, at any depth: output_config.format rejects an object
 // without it, nested ones included. It reports false, and returns the schema
-// unchanged, when any schema, typed "object" or not, sets additionalProperties
-// to true or a schema.
-// output_config.format rejects those too, and closing them would reject replies
-// the caller's schema allows. It visits the same subschemas as
-// NormalizeSchemaForAnthropicRaw.
+// unchanged, when closing would reject replies the caller's schema allows:
+//   - any schema, typed "object" or not, sets additionalProperties to true or a
+//     schema, which output_config.format rejects too;
+//   - an object to close declares no properties, so closing it would allow
+//     only {};
+//   - an object to close has anyOf, oneOf or allOf branches, so closing it
+//     would forbid keys the branches define.
+//
+// An object that already sets additionalProperties false is kept as written.
+// It visits the same subschemas as NormalizeSchemaForAnthropicRaw.
 func CloseObjectSchemasRaw(schema json.RawMessage) (json.RawMessage, bool) {
 	node := gjson.ParseBytes(schema)
 	if !node.IsObject() {
@@ -4598,6 +4603,9 @@ func CloseObjectSchemasRaw(schema json.RawMessage) (json.RawMessage, bool) {
 		return schema, false
 	}
 	if node.Get("type").String() == "object" && !additional.Exists() {
+		if !declaresProperties(node) || hasCompositionBranches(node) {
+			return schema, false
+		}
 		body, _ = sjson.SetBytes(body, "additionalProperties", false)
 	}
 
@@ -4645,6 +4653,20 @@ func CloseObjectSchemasRaw(schema json.RawMessage) (json.RawMessage, bool) {
 	}
 
 	return body, true
+}
+
+func declaresProperties(node gjson.Result) bool {
+	properties := node.Get("properties")
+	return properties.IsObject() && len(properties.Map()) > 0
+}
+
+func hasCompositionBranches(node gjson.Result) bool {
+	for _, key := range []string{"anyOf", "oneOf", "allOf"} {
+		if node.Get(key).Exists() {
+			return true
+		}
+	}
+	return false
 }
 
 // normalizeSchemaForAnthropic recursively normalizes a JSON schema to be compatible with Anthropic's API.
