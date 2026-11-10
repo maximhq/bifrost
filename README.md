@@ -46,11 +46,11 @@ The AWS, GCP and Azure buttons open Cloud Shell; paste the matching line there t
 
 ```bash
 # AWS CloudShell: ECS Fargate + RDS + ALB
-git clone --depth 1 https://github.com/maximhq/bifrost && bifrost/deploy/aws/deploy.sh
+( git -C bifrost pull --ff-only 2>/dev/null || git clone --depth 1 https://github.com/maximhq/bifrost ) && bifrost/deploy/aws/deploy.sh
 # Google Cloud Shell: Cloud Run + Cloud SQL
-git clone --depth 1 https://github.com/maximhq/bifrost && bifrost/deploy/gcp/deploy.sh
+( git -C bifrost pull --ff-only 2>/dev/null || git clone --depth 1 https://github.com/maximhq/bifrost ) && bifrost/deploy/gcp/deploy.sh
 # Azure Cloud Shell: Container Instances + PostgreSQL Flexible Server
-git clone --depth 1 https://github.com/maximhq/bifrost && bifrost/deploy/azure/deploy.sh
+( git -C bifrost pull --ff-only 2>/dev/null || git clone --depth 1 https://github.com/maximhq/bifrost ) && bifrost/deploy/azure/deploy.sh
 ```
 
 After any cloud deployment, use its URL wherever the steps below say `http://localhost:8080`; the setup token each path prints is what the first admin account is created with (Render and Railway generate it as the `BIFROST_SETUP_TOKEN` environment variable, shown in the service's environment settings). The AWS and Azure endpoints are plain HTTP until you add TLS, so follow the guide's "Before you open the dashboard" step before creating the admin account or pasting provider keys. Cloud deployments require a virtual key on inference routes, so Step 3 becomes the request below. Put TLS in front before you enter any credential, as each guide describes, and use that HTTPS URL. Narrowing `allowed_cidr` (on AWS and the Kubernetes paths; it does not restrict the Azure Container Instances endpoint) limits who can connect but encrypts nothing, so it adds to TLS rather than replacing it.

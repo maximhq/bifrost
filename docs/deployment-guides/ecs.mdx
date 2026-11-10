@@ -31,7 +31,7 @@ If you use PostgreSQL for `config_store` or `logs_store`, ensure the target data
 The button opens AWS CloudShell in your account. Paste one line into it:
 
 ```bash
-git clone --depth 1 https://github.com/maximhq/bifrost && bifrost/deploy/aws/deploy.sh
+( git -C bifrost pull --ff-only 2>/dev/null || git clone --depth 1 https://github.com/maximhq/bifrost ) && bifrost/deploy/aws/deploy.sh
 ```
 
 The script installs Terraform if CloudShell lacks it, asks for a region, and applies [`terraform/examples/aws-ecs-postgres`](https://github.com/maximhq/bifrost/tree/main/terraform/examples/aws-ecs-postgres). It needs no prepared VPC, cluster, or secrets; everything in the note above is created for you:

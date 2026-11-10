@@ -1,7 +1,7 @@
 ---
 title: "Google Cloud Run"
 description: "Deploy the Bifrost container on Google Cloud Run"
-icon: "google"
+icon: "/media/gcp-icon.svg"
 ---
 
 import { GoogleCloudMark } from "/snippets/deploy-marks.jsx";
@@ -29,10 +29,10 @@ Cloud Run supports `linux/amd64` for a multi-architecture image, matching the Bi
 
 <a className="deploy-btn" href="https://shell.cloud.google.com/?show=terminal" target="_blank" rel="noopener noreferrer"><GoogleCloudMark />Deploy on GCP</a>
 
-The button opens Google Cloud Shell, already signed in as you. Paste one line into it:
+The button opens Google Cloud Shell, already signed in as you. Paste one line into it (it updates an existing `bifrost` clone to the current revision, or clones one; the kept `terraform.tfvars` and state in the example directory are untracked files and survive the update):
 
 ```bash
-git clone --depth 1 https://github.com/maximhq/bifrost && bifrost/deploy/gcp/deploy.sh
+( git -C bifrost pull --ff-only 2>/dev/null || git clone --depth 1 https://github.com/maximhq/bifrost ) && bifrost/deploy/gcp/deploy.sh
 ```
 
 The script uses your current `gcloud` project (it asks when none is set; on a rerun the project recorded in the kept `terraform.tfvars` wins, and an explicit `GOOGLE_CLOUD_PROJECT` that disagrees with it is refused, so use a separate clone for a second project), enables the Cloud Run, Cloud SQL, Secret Manager, IAM, and Compute APIs, and applies [`terraform/examples/gcp-cloud-run-postgres`](https://github.com/maximhq/bifrost/tree/main/terraform/examples/gcp-cloud-run-postgres). Cloud Shell no longer bundles Terraform, so the script installs a pinned release into your home directory first, where it survives between sessions:
