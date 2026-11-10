@@ -4,7 +4,7 @@ description: "Get Bifrost running as an HTTP API gateway in 30 seconds with zero
 icon: "play"
 ---
 
-import { RailwayMark, RenderMark, AwsMark, GoogleCloudMark } from "/snippets/deploy-marks.jsx";
+import { RailwayMark, RenderMark, FlyMark, AwsMark, GoogleCloudMark, AzureMark } from "/snippets/deploy-marks.jsx";
 
 ![Bifrost Gateway Installation](../../media/getting-started.png)
 
@@ -61,13 +61,15 @@ These unversioned commands are for local evaluation. For a hosted or production 
 <div className="deploy-cloud">
   <strong>Deploy to the cloud in one click</strong>
   <p>
-    Railway and Render host the gateway and PostgreSQL for you. AWS and GCP open Cloud Shell and deploy the production stack into your account with Terraform; see the <a href="/deployment-guides/ecs#one-click-deploy">AWS steps</a> or the <a href="/deployment-guides/platforms/cloud-run#one-click-deploy">GCP steps</a>. Every path generates a setup token for the first admin account and requires a virtual key on inference routes. Use your deployment's URL wherever this guide says <code>http://localhost:8080</code>.
+    Railway and Render host the gateway and PostgreSQL for you. AWS, GCP, and Azure open Cloud Shell and deploy a stack into your account with Terraform; those endpoints serve plain HTTP until you add TLS, and each guide says what to do before using the dashboard; see the <a href="/deployment-guides/ecs#one-click-deploy">AWS steps</a>, the <a href="/deployment-guides/platforms/cloud-run#one-click-deploy">GCP steps</a>, or the <a href="/deployment-guides/platforms/aks#one-click-deploy">Azure steps</a>. Fly.io runs one line from your terminal; see the <a href="/deployment-guides/fly#one-click-deploy">Fly.io steps</a>. Every path generates a setup token for the first admin account and requires a virtual key on inference routes. Use your deployment's URL wherever this guide says <code>http://localhost:8080</code>.
   </p>
   <div className="deploy-buttons">
     <a className="deploy-btn" href="https://railway.com/new/template/RAILWAY_TEMPLATE_CODE?utm_medium=integration&utm_source=button&utm_campaign=bifrost" target="_blank" rel="noopener noreferrer"><RailwayMark />Deploy on Railway</a>
     <a className="deploy-btn" href="https://render.com/deploy?repo=https://github.com/maximhq/bifrost" target="_blank" rel="noopener noreferrer"><RenderMark />Deploy to Render</a>
+    <a className="deploy-btn" href="/deployment-guides/fly#one-click-deploy"><FlyMark />Deploy on Fly.io</a>
     <a className="deploy-btn" href="https://console.aws.amazon.com/cloudshell/home" target="_blank" rel="noopener noreferrer"><AwsMark />Deploy on AWS</a>
     <a className="deploy-btn" href="https://shell.cloud.google.com/?show=terminal" target="_blank" rel="noopener noreferrer"><GoogleCloudMark />Deploy on GCP</a>
+    <a className="deploy-btn" href="https://shell.azure.com" target="_blank" rel="noopener noreferrer"><AzureMark />Deploy on Azure</a>
   </div>
 </div>
 
@@ -132,6 +134,15 @@ curl -X POST http://localhost:8080/v1/chat/completions \
     "model": "openai/gpt-4o-mini",
     "messages": [{"role": "user", "content": "Hello, Bifrost!"}]
   }'
+```
+
+On a cloud deployment from the buttons above, inference routes require a virtual key, so add it as a bearer token and use your deployment's URL:
+
+```bash
+curl -X POST https://<your-deployment>/v1/chat/completions \
+  -H "Authorization: Bearer <virtual key>" \
+  -H "Content-Type: application/json" \
+  -d '{"model": "openai/gpt-4o-mini", "messages": [{"role": "user", "content": "Hello, Bifrost!"}]}'
 ```
 
 **🎉 That's it!** Bifrost is running and ready to route AI requests.
