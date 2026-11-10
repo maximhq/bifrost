@@ -648,6 +648,17 @@ func TestService_ListSuppliesEvalKeyProvidersForTheStatusFilter(t *testing.T) {
 	assert.Empty(t, h.store.lastList.KeyProviders, "no key lookup without the filter")
 }
 
+// The status filter's providers are built in a new slice: a caller's KeyProviders slice
+// must not be overwritten through its backing array.
+func TestService_ListLeavesTheCallersProviderSliceAlone(t *testing.T) {
+	h := newServiceHarness(t, []EvalKey{{ID: "k2", Provider: "p2", Concurrency: 1}})
+	callers := []string{"p1"}
+	_, _, err := h.service.List(context.Background(), configstore.EvaluatorListParams{KeyStatus: configstore.EvaluatorKeyStatusMissing, KeyProviders: callers})
+	require.NoError(t, err)
+	assert.Equal(t, "p1", callers[0], "the caller's slice is untouched")
+	assert.Equal(t, []string{"p2"}, h.store.lastList.KeyProviders)
+}
+
 func TestService_Validate(t *testing.T) {
 	h := newServiceHarness(t, nil)
 
@@ -956,6 +967,12 @@ func TestService_ExecuteLeavesAnUncertainPublishQueued(t *testing.T) {
 	view, err := h.service.Execution(ctx, id)
 	require.NoError(t, err)
 	assert.Equal(t, BoolScore(true), view.Result.Score, "the evaluator's own result is stored, not a submission error: %s", view.Result.Reasoning)
+
+	// A caller outside this package tells the uncertain publish apart by ErrPlacementUnknown.
+	err = h.service.runner.Submit(ctx, &Job{ID: "uncertain", Exec: func(context.Context) Result { return Result{Score: NAScore()} }})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrPlacementUnknown, "an uncertain publish matches ErrPlacementUnknown")
+	assert.NotErrorIs(t, err, ErrNoEvalKey, "an uncertain publish must not match ErrNoEvalKey")
 }
 
 // The wait bounds the whole call, store reads included: a store that stops answering

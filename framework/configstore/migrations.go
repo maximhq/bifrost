@@ -622,6 +622,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_evals_dataset_folders"}, run: migrationAddEvalsDatasetFolders},
 	{IDs: []string{"add_evals_dataset_folder_parent"}, run: migrationAddEvalsDatasetFolderParent},
 	{IDs: []string{"add_evals_dataset_files"}, run: migrationAddEvalsDatasetFiles},
+	{IDs: []string{"add_evals_run_tables"}, run: migrationAddEvalsRunTables},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -1457,18 +1458,57 @@ func migrationAddEvalsDatasetFiles(ctx context.Context, db *gorm.DB, logger sche
 	})
 }
 
+// migrationAddEvalsRunTables creates the test run tables: runs, their entries, and one
+// result per entry and evaluator. All are additive: older binaries ignore them. Every
+// column ships with the tables, score_number included: it lets two runs be compared row
+// by row in one query.
+func migrationAddEvalsRunTables(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_evals_run_tables"
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			mgr := tx.WithContext(ctx).Migrator()
+			for _, table := range []any{&tables.TableEvalRun{}, &tables.TableEvalRunEntry{}, &tables.TableEvalRunResult{}} {
+				if mgr.HasTable(table) {
+					continue
+				}
+				if err := mgr.CreateTable(table); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(*gorm.DB) error {
+			return fmt.Errorf("%s is non-rollbackable: dropping the run tables would permanently delete test run results", migrationName)
+		},
+	})
+}
+
 // migrationAddEvaluatorVersionModelProviderColumn adds model_provider to evaluator
 // versions and fills it from each stored config. The column lets a listing filter
 // evaluators by whether their provider has an eval key. A table created by the step
 // above already has the column; this covers one created before the column existed.
 func migrationAddEvaluatorVersionModelProviderColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	return RunSingleMigration(ctx, nil, db, logger, evaluatorVersionModelProviderMigration(ctx, logger))
+}
+
+// evaluatorVersionModelProviderMigration is the migration that
+// migrationAddEvaluatorVersionModelProviderColumn runs.
+func evaluatorVersionModelProviderMigration(ctx context.Context, logger schemas.Logger) *migrator.Migration {
 	migrationName := "add_evaluator_version_model_provider_column"
-	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+	return &migrator.Migration{
 		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			if err := addColumnIfNotExists(tx, logger, &tables.TableEvaluatorVersion{}, "model_provider"); err != nil {
 				return fmt.Errorf("failed to add model_provider column: %w", err)
+			}
+			// Adding a column does not create the index its tag declares, so a table that
+			// existed before the column would have none.
+			if !tx.Migrator().HasIndex(&tables.TableEvaluatorVersion{}, "ModelProvider") {
+				if err := tx.Migrator().CreateIndex(&tables.TableEvaluatorVersion{}, "ModelProvider"); err != nil {
+					return fmt.Errorf("failed to create model_provider index: %w", err)
+				}
 			}
 			// Only rows the column default left empty. An AI judge config names its provider
 			// under "provider", an embedding metric under "embedding_provider"; no other
@@ -1494,10 +1534,28 @@ func migrationAddEvaluatorVersionModelProviderColumn(ctx context.Context, db *go
 			}
 			return nil
 		},
+		// SQLite drops a column by rebuilding the table, which loses its other indexes, and
+		// it refuses to drop an indexed column. The model_provider index goes first, and the
+		// unique version index is put back after.
 		Rollback: func(tx *gorm.DB) error {
-			return dropColumnIfExists(tx.WithContext(ctx), logger, &tables.TableEvaluatorVersion{}, "model_provider")
+			tx = tx.WithContext(ctx)
+			m := tx.Migrator()
+			if m.HasIndex(&tables.TableEvaluatorVersion{}, "ModelProvider") {
+				if err := m.DropIndex(&tables.TableEvaluatorVersion{}, "ModelProvider"); err != nil {
+					return fmt.Errorf("failed to drop model_provider index: %w", err)
+				}
+			}
+			if err := dropColumnIfExists(tx, logger, &tables.TableEvaluatorVersion{}, "model_provider"); err != nil {
+				return err
+			}
+			if !m.HasIndex(&tables.TableEvaluatorVersion{}, "idx_evals_evaluator_version") {
+				if err := m.CreateIndex(&tables.TableEvaluatorVersion{}, "idx_evals_evaluator_version"); err != nil {
+					return fmt.Errorf("failed to restore the evaluator version index: %w", err)
+				}
+			}
+			return nil
 		},
-	})
+	}
 }
 
 // migrationAddKeyEvalColumns adds use_for_evals and eval_concurrency to config_keys.

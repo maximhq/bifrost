@@ -229,6 +229,12 @@ func toColumns(stored []tables.TableEvalDatasetColumn) []Column {
 	return columns
 }
 
+// VersionColumns returns the columns a saved version had, in order. A test run reads
+// a pinned version through them.
+func VersionColumns(version *tables.TableEvalDatasetVersion) []Column {
+	return versionColumns(version)
+}
+
 func versionColumns(version *tables.TableEvalDatasetVersion) []Column {
 	columns := make([]Column, len(version.Columns))
 	for i, column := range version.Columns {
@@ -990,6 +996,8 @@ type RowQuery struct {
 	After   int64
 	Offset  int // skips rows by position; not with After
 	Limit   int
+	// SkipTotal leaves Total at 0 and reads no count, for a reader that only walks the rows.
+	SkipTotal bool
 }
 
 // RowsPage is a page of rows. NextAfter is the cursor for the next page, 0 at the
@@ -1079,6 +1087,9 @@ func (s *Service) Rows(ctx context.Context, id string, query RowQuery) (*RowsPag
 	page.Rows = rows
 	if page.Rows == nil {
 		page.Rows = []tables.TableEvalDatasetRow{}
+	}
+	if query.SkipTotal {
+		return page, nil
 	}
 	if page.Total, err = s.store.CountEvalDatasetRows(ctx, configstore.EvalDatasetRowListParams{
 		DatasetID: id, Version: query.Version, SplitID: query.SplitID, Search: query.Search, SearchColumns: searchColumns,

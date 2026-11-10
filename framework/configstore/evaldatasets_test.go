@@ -22,6 +22,7 @@ func setupEvalDatasetTestStore(t *testing.T) *RDBConfigStore {
 	require.NoError(t, store.DB().AutoMigrate(
 		&tables.TableEvalDataset{}, &tables.TableEvalDatasetColumn{}, &tables.TableEvalDatasetVersion{},
 		&tables.TableEvalDatasetRow{}, &tables.TableEvalDatasetSplit{}, &tables.TableEvalDatasetSplitRow{}, &tables.TableEvalDatasetFolder{}, &tables.TableEvalDatasetFile{},
+		&tables.TableEvalRun{}, &tables.TableEvalRunEntry{}, &tables.TableEvalRunResult{},
 	))
 	return store
 }
@@ -418,6 +419,44 @@ func TestEvalDatasetDeleteVersionAndMaxVersions(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, versions, 1)
 	assert.Equal(t, 8, versions[0].Number)
+
+	// With a pinned version stepped over, the pruned numbers are deleted in chunks of
+	// evalDatasetBatch, so a long history never passes the database's bind limit.
+	saved := evalDatasetBatch
+	evalDatasetBatch = 2
+	t.Cleanup(func() { evalDatasetBatch = saved })
+	pinned, pinnedInput, _ := newTestEvalDataset(t, store, "pinned prune")
+	pinnedIDs := addTestRows(t, store, pinned.ID, pinnedInput, "p")
+	first := saveTestVersion(t, store, pinned.ID, "")
+	require.NoError(t, store.CreateEvalRun(ctx, &tables.TableEvalRun{Name: "pin", Status: tables.EvalRunCompleted, TargetType: "dataset", DatasetID: pinned.ID, DatasetVersion: first.Number}))
+	for _, value := range []string{"p2", "p3", "p4", "p5", "p6"} {
+		evalDatasetDo(t, store, pinned.ID, func(tx EvalDatasetTx) error {
+			_, err := tx.SetRowCells(pinnedIDs[0], cellsJSON(pinnedInput, value))
+			return err
+		})
+		saveTestVersion(t, store, pinned.ID, "")
+	}
+	var pruneDeletes int
+	require.NoError(t, db.Callback().Delete().After("gorm:delete").Register("count_prune_deletes", func(tx *gorm.DB) {
+		if tx.Statement.Table == "evals_dataset_versions" {
+			pruneDeletes++
+		}
+	}))
+	t.Cleanup(func() { _ = db.Callback().Delete().Remove("count_prune_deletes") })
+	evalDatasetDo(t, store, pinned.ID, func(tx EvalDatasetTx) error {
+		if err := tx.UpdateMetadata(pinned.Name, pinned.Description, pinned.Tags, new(1)); err != nil {
+			return err
+		}
+		return tx.PruneVersions()
+	})
+	assert.Equal(t, 2, pruneDeletes, "versions 2 to 5 go in two statements of two")
+	versions, err = store.ListEvalDatasetVersions(ctx, pinned.ID)
+	require.NoError(t, err)
+	numbers := make([]int, len(versions))
+	for i, version := range versions {
+		numbers[i] = version.Number
+	}
+	assert.ElementsMatch(t, []int{1, 6}, numbers, "the pinned version and the latest are kept")
 }
 
 func TestEvalDatasetColumns(t *testing.T) {
@@ -727,7 +766,8 @@ func TestEvalDatasetVersionDiffReadsOnePage(t *testing.T) {
 func TestEvalDatasetPostgresSearchLocksAndDiff(t *testing.T) {
 	store := trySetupPostgresSchemaStore(t, "configstore_evaldatasets_pg_test",
 		&tables.TableEvalDatasetFolder{}, &tables.TableEvalDataset{}, &tables.TableEvalDatasetColumn{}, &tables.TableEvalDatasetRow{},
-		&tables.TableEvalDatasetVersion{}, &tables.TableEvalDatasetSplit{}, &tables.TableEvalDatasetSplitRow{}, &tables.TableEvalDatasetFile{})
+		&tables.TableEvalDatasetVersion{}, &tables.TableEvalDatasetSplit{}, &tables.TableEvalDatasetSplitRow{}, &tables.TableEvalDatasetFile{},
+		&tables.TableEvalRun{}, &tables.TableEvalRunEntry{}, &tables.TableEvalRunResult{})
 	if store == nil {
 		t.Skip("Postgres not available")
 	}

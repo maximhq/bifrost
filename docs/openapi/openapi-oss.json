@@ -186,6 +186,10 @@
       "description": "Evaluation datasets, their columns, rows, versions, splits, files, CSV import, CSV and JSONL export, and rows added from logs and sessions. The /api/evals/datasets routes exist only when Bifrost runs with a config store; without one none of them are registered. They do not need the evaluation queue. Adding rows from logs or sessions also needs a log store."
     },
     {
+      "name": "Test Runs",
+      "description": "Test runs score a dataset version against a target and evaluators, with reruns, added evaluators, reviews and run comparison. The /api/evals/runs routes exist only when Bifrost runs with a config store. Starting a run, rerunning entries and adding evaluators also need the evaluation runner: without the evaluation queue, or when the runner fails to start, those calls answer 422 while the read routes keep working."
+    },
+    {
       "name": "Routing",
       "description": "Routing rules and complexity analyzer configuration"
     },
@@ -86959,6 +86963,3955 @@
         }
       }
     },
+    "/api/evals/runs": {
+      "get": {
+        "operationId": "listEvalRuns",
+        "x-mint": {
+          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Evaluators:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+        },
+        "summary": "List test runs",
+        "description": "Returns test runs, newest first, each with its entry counts. A run that finished its entries carries its summary. A run that failed before its rows were planned has none; its `error` says why.\n",
+        "tags": [
+          "Test Runs"
+        ],
+        "parameters": [
+          {
+            "name": "search",
+            "in": "query",
+            "required": false,
+            "description": "Case-insensitive match on the run name",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "description": "Only runs in this status: queued, running, completed, failed or stopped",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "dataset_id",
+            "in": "query",
+            "required": false,
+            "description": "Only runs on this dataset",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "tag",
+            "in": "query",
+            "required": false,
+            "description": "Only runs with this tag",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "Page size. 0 or absent means 50; a value above 200 is read as 200",
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "description": "Rows to skip",
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "runs": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "description": "A test run",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "name": {
+                            "type": "string"
+                          },
+                          "tags": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "status": {
+                            "type": "string",
+                            "enum": [
+                              "queued",
+                              "running",
+                              "completed",
+                              "failed",
+                              "stopped"
+                            ],
+                            "description": "When the entries finish, failed means that no entry completed, and a run with some failed entries is still completed. A run also ends failed when its planning or a whole-run step fails for good; `error` gives the reason, and entries may have completed before it."
+                          },
+                          "target_type": {
+                            "type": "string"
+                          },
+                          "target": {
+                            "type": "object",
+                            "description": "What a run calls for each row",
+                            "properties": {
+                              "type": {
+                                "type": "string",
+                                "enum": [
+                                  "dataset",
+                                  "prompt",
+                                  "model",
+                                  "http"
+                                ],
+                                "description": "dataset scores outputs already in the dataset. prompt calls a prompt version. model calls a plain model. http calls an endpoint"
+                              },
+                              "prompt_id": {
+                                "type": "string",
+                                "description": "Prompt targets. The prompt in the prompt repository"
+                              },
+                              "prompt_version": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "description": "Prompt targets. The version number. 0 or absent means the latest. A stored run carries the number it resolved to"
+                              },
+                              "messages": {
+                                "type": "array",
+                                "description": "Prompt targets. The version's messages, copied when the run starts. Read only",
+                                "items": {
+                                  "type": "object",
+                                  "additionalProperties": true
+                                }
+                              },
+                              "provider": {
+                                "type": "string",
+                                "description": "Model targets. A prompt target takes it from its version"
+                              },
+                              "model": {
+                                "type": "string",
+                                "description": "Model targets. A prompt target takes it from its version"
+                              },
+                              "system": {
+                                "type": "string",
+                                "description": "Model targets. An optional system message"
+                              },
+                              "params": {
+                                "type": "object",
+                                "additionalProperties": true,
+                                "description": "Model parameters, in the provider's wire form"
+                              },
+                              "http": {
+                                "type": "object",
+                                "additionalProperties": true,
+                                "description": "HTTP targets. The request, in the shape of an API evaluator's config (method, url, headers, params, payload, timeout_ms). The value at output_mapping.score is the output. Header values are encrypted at rest when an encryption key is configured, and redacted on read."
+                              }
+                            }
+                          },
+                          "dataset_id": {
+                            "type": "string"
+                          },
+                          "dataset_version": {
+                            "type": "integer",
+                            "description": "The dataset version the run reads. It is kept while the run exists"
+                          },
+                          "split_id": {
+                            "type": "string"
+                          },
+                          "evaluators": {
+                            "type": "array",
+                            "description": "The evaluator definitions copied onto the run, secrets redacted",
+                            "items": {
+                              "type": "object",
+                              "additionalProperties": true
+                            }
+                          },
+                          "target_concurrency": {
+                            "type": "integer"
+                          },
+                          "total": {
+                            "type": "integer",
+                            "description": "How many entries the run has"
+                          },
+                          "counts": {
+                            "type": "object",
+                            "additionalProperties": {
+                              "type": "integer"
+                            },
+                            "description": "Entries by status"
+                          },
+                          "passed": {
+                            "type": "integer",
+                            "description": "Completed entries that passed every evaluator with a pass rule"
+                          },
+                          "summary": {
+                            "type": "object",
+                            "properties": {
+                              "evaluators": {
+                                "type": "array",
+                                "items": {
+                                  "type": "object",
+                                  "description": "One evaluator's results across a run",
+                                  "properties": {
+                                    "evaluator_id": {
+                                      "type": "string"
+                                    },
+                                    "name": {
+                                      "type": "string"
+                                    },
+                                    "type": {
+                                      "type": "string"
+                                    },
+                                    "version": {
+                                      "type": "integer"
+                                    },
+                                    "total": {
+                                      "type": "integer",
+                                      "description": "Results that are in, scored or not"
+                                    },
+                                    "scored": {
+                                      "type": "integer"
+                                    },
+                                    "na": {
+                                      "type": "integer",
+                                      "description": "Results skipped because a variable was missing"
+                                    },
+                                    "errors": {
+                                      "type": "integer"
+                                    },
+                                    "passed": {
+                                      "type": "integer"
+                                    },
+                                    "pass_rate": {
+                                      "type": "number",
+                                      "description": "Percent of scored results that passed"
+                                    },
+                                    "mean": {
+                                      "type": "number"
+                                    },
+                                    "median": {
+                                      "type": "number"
+                                    },
+                                    "min": {
+                                      "type": "number"
+                                    },
+                                    "max": {
+                                      "type": "number"
+                                    },
+                                    "histogram": {
+                                      "type": "object",
+                                      "additionalProperties": {
+                                        "type": "integer"
+                                      },
+                                      "description": "Count per label, for evaluators that score with labels"
+                                    },
+                                    "pending": {
+                                      "type": "integer",
+                                      "description": "Results still queued, running or waiting for a reviewer"
+                                    },
+                                    "run_pass": {
+                                      "type": "boolean",
+                                      "description": "The run-level verdict. Absent while the run is active"
+                                    }
+                                  }
+                                }
+                              },
+                              "latency": {
+                                "type": "object",
+                                "description": "The target's latency over the completed entries, in milliseconds",
+                                "properties": {
+                                  "count": {
+                                    "type": "integer"
+                                  },
+                                  "min": {
+                                    "type": "integer"
+                                  },
+                                  "max": {
+                                    "type": "integer"
+                                  },
+                                  "mean": {
+                                    "type": "number"
+                                  },
+                                  "p50": {
+                                    "type": "integer"
+                                  },
+                                  "p90": {
+                                    "type": "integer"
+                                  },
+                                  "p95": {
+                                    "type": "integer"
+                                  },
+                                  "p99": {
+                                    "type": "integer"
+                                  }
+                                }
+                              },
+                              "totals": {
+                                "type": "object",
+                                "description": "Tokens and cost the run spent",
+                                "properties": {
+                                  "target_tokens": {
+                                    "type": "integer"
+                                  },
+                                  "target_cost": {
+                                    "type": "number"
+                                  },
+                                  "evaluator_tokens": {
+                                    "type": "integer"
+                                  },
+                                  "evaluator_cost": {
+                                    "type": "number"
+                                  }
+                                }
+                              }
+                            }
+                          },
+                          "error": {
+                            "type": "string"
+                          },
+                          "created_by": {
+                            "type": "string"
+                          },
+                          "created_at": {
+                            "type": "string",
+                            "format": "date-time"
+                          },
+                          "updated_at": {
+                            "type": "string",
+                            "format": "date-time"
+                          },
+                          "started_at": {
+                            "type": "string",
+                            "format": "date-time"
+                          },
+                          "ended_at": {
+                            "type": "string",
+                            "format": "date-time"
+                          }
+                        }
+                      }
+                    },
+                    "total": {
+                      "type": "integer"
+                    },
+                    "limit": {
+                      "type": "integer"
+                    },
+                    "offset": {
+                      "type": "integer"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "createEvalRun",
+        "x-mint": {
+          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Evaluators:Create` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+        },
+        "summary": "Start a test run",
+        "description": "Starts a run: one target, run on every row of one dataset version, or only on the rows of one split of it when `split_id` is set, and scored by the listed evaluators. When `dataset_version` is 0 or left out, the dataset's unsaved edits are saved as a version first and the run reads that version. A given `dataset_version` is read as it is, and the draft is left alone. The target and the evaluators are copied onto the run. The call returns at once; the entries are created in the background.\n",
+        "tags": [
+          "Test Runs"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "description": "A run to start. The same fields as RunInput, with name, target, dataset_id and at least one evaluator required.",
+                "allOf": [
+                  {
+                    "type": "object",
+                    "description": "A run's settings. Checking a run takes an incomplete draft and reports the problems it finds; the checks that need the dataset (the version, the split, the variables the target and evaluators need) run only once the dataset resolves, so check again after fixing it. Starting a run needs name, target, dataset_id and evaluators (RunCreateInput).",
+                    "properties": {
+                      "name": {
+                        "type": "string"
+                      },
+                      "tags": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "target": {
+                        "type": "object",
+                        "description": "What a run calls for each row",
+                        "properties": {
+                          "type": {
+                            "type": "string",
+                            "enum": [
+                              "dataset",
+                              "prompt",
+                              "model",
+                              "http"
+                            ],
+                            "description": "dataset scores outputs already in the dataset. prompt calls a prompt version. model calls a plain model. http calls an endpoint"
+                          },
+                          "prompt_id": {
+                            "type": "string",
+                            "description": "Prompt targets. The prompt in the prompt repository"
+                          },
+                          "prompt_version": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "description": "Prompt targets. The version number. 0 or absent means the latest. A stored run carries the number it resolved to"
+                          },
+                          "messages": {
+                            "type": "array",
+                            "description": "Prompt targets. The version's messages, copied when the run starts. Read only",
+                            "items": {
+                              "type": "object",
+                              "additionalProperties": true
+                            }
+                          },
+                          "provider": {
+                            "type": "string",
+                            "description": "Model targets. A prompt target takes it from its version"
+                          },
+                          "model": {
+                            "type": "string",
+                            "description": "Model targets. A prompt target takes it from its version"
+                          },
+                          "system": {
+                            "type": "string",
+                            "description": "Model targets. An optional system message"
+                          },
+                          "params": {
+                            "type": "object",
+                            "additionalProperties": true,
+                            "description": "Model parameters, in the provider's wire form"
+                          },
+                          "http": {
+                            "type": "object",
+                            "additionalProperties": true,
+                            "description": "HTTP targets. The request, in the shape of an API evaluator's config (method, url, headers, params, payload, timeout_ms). The value at output_mapping.score is the output. Header values are encrypted at rest when an encryption key is configured, and redacted on read."
+                          }
+                        }
+                      },
+                      "dataset_id": {
+                        "type": "string"
+                      },
+                      "dataset_version": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "The dataset version to read. 0 or absent means the dataset as it is now. Starting a run saves unsaved edits as a version first. Checking a run reads the draft and saves nothing."
+                      },
+                      "split_id": {
+                        "type": "string",
+                        "description": "Only the rows of this split"
+                      },
+                      "evaluators": {
+                        "type": "array",
+                        "description": "At least one",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "id": {
+                              "type": "string",
+                              "description": "A saved evaluator"
+                            },
+                            "version": {
+                              "type": "integer",
+                              "minimum": 0,
+                              "description": "Its version. 0 or absent means the current one"
+                            }
+                          },
+                          "required": [
+                            "id"
+                          ]
+                        }
+                      },
+                      "target_concurrency": {
+                        "type": "integer",
+                        "description": "HTTP targets. The most calls in flight to the endpoint, per gateway instance"
+                      }
+                    }
+                  },
+                  {
+                    "type": "object",
+                    "required": [
+                      "name",
+                      "target",
+                      "dataset_id",
+                      "evaluators"
+                    ],
+                    "properties": {
+                      "evaluators": {
+                        "minItems": 1
+                      },
+                      "target": {
+                        "description": "A target needs type. A model target also needs provider and model, a prompt target prompt_id, and an http target http",
+                        "required": [
+                          "type"
+                        ],
+                        "allOf": [
+                          {
+                            "if": {
+                              "properties": {
+                                "type": {
+                                  "const": "model"
+                                }
+                              },
+                              "required": [
+                                "type"
+                              ]
+                            },
+                            "then": {
+                              "required": [
+                                "provider",
+                                "model"
+                              ]
+                            }
+                          },
+                          {
+                            "if": {
+                              "properties": {
+                                "type": {
+                                  "const": "prompt"
+                                }
+                              },
+                              "required": [
+                                "type"
+                              ]
+                            },
+                            "then": {
+                              "required": [
+                                "prompt_id"
+                              ]
+                            }
+                          },
+                          {
+                            "if": {
+                              "properties": {
+                                "type": {
+                                  "const": "http"
+                                }
+                              },
+                              "required": [
+                                "type"
+                              ]
+                            },
+                            "then": {
+                              "required": [
+                                "http"
+                              ]
+                            }
+                          }
+                        ]
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "run": {
+                      "type": "object",
+                      "description": "A test run",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "tags": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "queued",
+                            "running",
+                            "completed",
+                            "failed",
+                            "stopped"
+                          ],
+                          "description": "When the entries finish, failed means that no entry completed, and a run with some failed entries is still completed. A run also ends failed when its planning or a whole-run step fails for good; `error` gives the reason, and entries may have completed before it."
+                        },
+                        "target_type": {
+                          "type": "string"
+                        },
+                        "target": {
+                          "type": "object",
+                          "description": "What a run calls for each row",
+                          "properties": {
+                            "type": {
+                              "type": "string",
+                              "enum": [
+                                "dataset",
+                                "prompt",
+                                "model",
+                                "http"
+                              ],
+                              "description": "dataset scores outputs already in the dataset. prompt calls a prompt version. model calls a plain model. http calls an endpoint"
+                            },
+                            "prompt_id": {
+                              "type": "string",
+                              "description": "Prompt targets. The prompt in the prompt repository"
+                            },
+                            "prompt_version": {
+                              "type": "integer",
+                              "minimum": 0,
+                              "description": "Prompt targets. The version number. 0 or absent means the latest. A stored run carries the number it resolved to"
+                            },
+                            "messages": {
+                              "type": "array",
+                              "description": "Prompt targets. The version's messages, copied when the run starts. Read only",
+                              "items": {
+                                "type": "object",
+                                "additionalProperties": true
+                              }
+                            },
+                            "provider": {
+                              "type": "string",
+                              "description": "Model targets. A prompt target takes it from its version"
+                            },
+                            "model": {
+                              "type": "string",
+                              "description": "Model targets. A prompt target takes it from its version"
+                            },
+                            "system": {
+                              "type": "string",
+                              "description": "Model targets. An optional system message"
+                            },
+                            "params": {
+                              "type": "object",
+                              "additionalProperties": true,
+                              "description": "Model parameters, in the provider's wire form"
+                            },
+                            "http": {
+                              "type": "object",
+                              "additionalProperties": true,
+                              "description": "HTTP targets. The request, in the shape of an API evaluator's config (method, url, headers, params, payload, timeout_ms). The value at output_mapping.score is the output. Header values are encrypted at rest when an encryption key is configured, and redacted on read."
+                            }
+                          }
+                        },
+                        "dataset_id": {
+                          "type": "string"
+                        },
+                        "dataset_version": {
+                          "type": "integer",
+                          "description": "The dataset version the run reads. It is kept while the run exists"
+                        },
+                        "split_id": {
+                          "type": "string"
+                        },
+                        "evaluators": {
+                          "type": "array",
+                          "description": "The evaluator definitions copied onto the run, secrets redacted",
+                          "items": {
+                            "type": "object",
+                            "additionalProperties": true
+                          }
+                        },
+                        "target_concurrency": {
+                          "type": "integer"
+                        },
+                        "total": {
+                          "type": "integer",
+                          "description": "How many entries the run has"
+                        },
+                        "counts": {
+                          "type": "object",
+                          "additionalProperties": {
+                            "type": "integer"
+                          },
+                          "description": "Entries by status"
+                        },
+                        "passed": {
+                          "type": "integer",
+                          "description": "Completed entries that passed every evaluator with a pass rule"
+                        },
+                        "summary": {
+                          "type": "object",
+                          "properties": {
+                            "evaluators": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "description": "One evaluator's results across a run",
+                                "properties": {
+                                  "evaluator_id": {
+                                    "type": "string"
+                                  },
+                                  "name": {
+                                    "type": "string"
+                                  },
+                                  "type": {
+                                    "type": "string"
+                                  },
+                                  "version": {
+                                    "type": "integer"
+                                  },
+                                  "total": {
+                                    "type": "integer",
+                                    "description": "Results that are in, scored or not"
+                                  },
+                                  "scored": {
+                                    "type": "integer"
+                                  },
+                                  "na": {
+                                    "type": "integer",
+                                    "description": "Results skipped because a variable was missing"
+                                  },
+                                  "errors": {
+                                    "type": "integer"
+                                  },
+                                  "passed": {
+                                    "type": "integer"
+                                  },
+                                  "pass_rate": {
+                                    "type": "number",
+                                    "description": "Percent of scored results that passed"
+                                  },
+                                  "mean": {
+                                    "type": "number"
+                                  },
+                                  "median": {
+                                    "type": "number"
+                                  },
+                                  "min": {
+                                    "type": "number"
+                                  },
+                                  "max": {
+                                    "type": "number"
+                                  },
+                                  "histogram": {
+                                    "type": "object",
+                                    "additionalProperties": {
+                                      "type": "integer"
+                                    },
+                                    "description": "Count per label, for evaluators that score with labels"
+                                  },
+                                  "pending": {
+                                    "type": "integer",
+                                    "description": "Results still queued, running or waiting for a reviewer"
+                                  },
+                                  "run_pass": {
+                                    "type": "boolean",
+                                    "description": "The run-level verdict. Absent while the run is active"
+                                  }
+                                }
+                              }
+                            },
+                            "latency": {
+                              "type": "object",
+                              "description": "The target's latency over the completed entries, in milliseconds",
+                              "properties": {
+                                "count": {
+                                  "type": "integer"
+                                },
+                                "min": {
+                                  "type": "integer"
+                                },
+                                "max": {
+                                  "type": "integer"
+                                },
+                                "mean": {
+                                  "type": "number"
+                                },
+                                "p50": {
+                                  "type": "integer"
+                                },
+                                "p90": {
+                                  "type": "integer"
+                                },
+                                "p95": {
+                                  "type": "integer"
+                                },
+                                "p99": {
+                                  "type": "integer"
+                                }
+                              }
+                            },
+                            "totals": {
+                              "type": "object",
+                              "description": "Tokens and cost the run spent",
+                              "properties": {
+                                "target_tokens": {
+                                  "type": "integer"
+                                },
+                                "target_cost": {
+                                  "type": "number"
+                                },
+                                "evaluator_tokens": {
+                                  "type": "integer"
+                                },
+                                "evaluator_cost": {
+                                  "type": "number"
+                                }
+                              }
+                            }
+                          }
+                        },
+                        "error": {
+                          "type": "string"
+                        },
+                        "created_by": {
+                          "type": "string"
+                        },
+                        "created_at": {
+                          "type": "string",
+                          "format": "date-time"
+                        },
+                        "updated_at": {
+                          "type": "string",
+                          "format": "date-time"
+                        },
+                        "started_at": {
+                          "type": "string",
+                          "format": "date-time"
+                        },
+                        "ended_at": {
+                          "type": "string",
+                          "format": "date-time"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Test runs are not available on this gateway: it has no evaluation queue, or the evaluation runner failed to start. The gateway log has the reason.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManagementErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/evals/runs/validate": {
+      "post": {
+        "operationId": "validateEvalRun",
+        "x-mint": {
+          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Evaluators:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+        },
+        "summary": "Check a test run",
+        "description": "Checks a run's settings without starting it: a missing dataset or version, an evaluator that needs a variable the run does not provide, a provider with no eval key. The eval key check needs the gateway's evaluation queue. Without one, no key problem is reported, and starting the run fails.\n",
+        "tags": [
+          "Test Runs"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "description": "A run's settings. Checking a run takes an incomplete draft and reports the problems it finds; the checks that need the dataset (the version, the split, the variables the target and evaluators need) run only once the dataset resolves, so check again after fixing it. Starting a run needs name, target, dataset_id and evaluators (RunCreateInput).",
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "tags": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "target": {
+                    "type": "object",
+                    "description": "What a run calls for each row",
+                    "properties": {
+                      "type": {
+                        "type": "string",
+                        "enum": [
+                          "dataset",
+                          "prompt",
+                          "model",
+                          "http"
+                        ],
+                        "description": "dataset scores outputs already in the dataset. prompt calls a prompt version. model calls a plain model. http calls an endpoint"
+                      },
+                      "prompt_id": {
+                        "type": "string",
+                        "description": "Prompt targets. The prompt in the prompt repository"
+                      },
+                      "prompt_version": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "Prompt targets. The version number. 0 or absent means the latest. A stored run carries the number it resolved to"
+                      },
+                      "messages": {
+                        "type": "array",
+                        "description": "Prompt targets. The version's messages, copied when the run starts. Read only",
+                        "items": {
+                          "type": "object",
+                          "additionalProperties": true
+                        }
+                      },
+                      "provider": {
+                        "type": "string",
+                        "description": "Model targets. A prompt target takes it from its version"
+                      },
+                      "model": {
+                        "type": "string",
+                        "description": "Model targets. A prompt target takes it from its version"
+                      },
+                      "system": {
+                        "type": "string",
+                        "description": "Model targets. An optional system message"
+                      },
+                      "params": {
+                        "type": "object",
+                        "additionalProperties": true,
+                        "description": "Model parameters, in the provider's wire form"
+                      },
+                      "http": {
+                        "type": "object",
+                        "additionalProperties": true,
+                        "description": "HTTP targets. The request, in the shape of an API evaluator's config (method, url, headers, params, payload, timeout_ms). The value at output_mapping.score is the output. Header values are encrypted at rest when an encryption key is configured, and redacted on read."
+                      }
+                    }
+                  },
+                  "dataset_id": {
+                    "type": "string"
+                  },
+                  "dataset_version": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "The dataset version to read. 0 or absent means the dataset as it is now. Starting a run saves unsaved edits as a version first. Checking a run reads the draft and saves nothing."
+                  },
+                  "split_id": {
+                    "type": "string",
+                    "description": "Only the rows of this split"
+                  },
+                  "evaluators": {
+                    "type": "array",
+                    "description": "At least one",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "description": "A saved evaluator"
+                        },
+                        "version": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "description": "Its version. 0 or absent means the current one"
+                        }
+                      },
+                      "required": [
+                        "id"
+                      ]
+                    }
+                  },
+                  "target_concurrency": {
+                    "type": "integer",
+                    "description": "HTTP targets. The most calls in flight to the endpoint, per gateway instance"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "The outcome of checking a run's settings",
+                  "properties": {
+                    "valid": {
+                      "type": "boolean",
+                      "description": "Whether the settings checked are valid. It does not say that the gateway can queue the run."
+                    },
+                    "problems": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "What would stop the run from starting"
+                    },
+                    "variables": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "The variables the run provides to its evaluators"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/evals/runs/compare": {
+      "get": {
+        "operationId": "compareEvalRuns",
+        "x-mint": {
+          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Evaluators:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+        },
+        "summary": "Compare test runs",
+        "description": "Puts two to five runs on the same dataset side by side: their summaries, and a page of dataset rows with each run's entry for the row. A row that only some of the runs have is listed with null for the others.\n",
+        "tags": [
+          "Test Runs"
+        ],
+        "parameters": [
+          {
+            "name": "ids",
+            "in": "query",
+            "required": true,
+            "description": "Two to five different run IDs, separated by commas. A repeated ID is compared once, at its first position.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "Page size. 0 or absent means 100; a value above 200 is read as 200",
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "description": "Rows to skip",
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "runs": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "description": "A test run",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "name": {
+                            "type": "string"
+                          },
+                          "tags": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "status": {
+                            "type": "string",
+                            "enum": [
+                              "queued",
+                              "running",
+                              "completed",
+                              "failed",
+                              "stopped"
+                            ],
+                            "description": "When the entries finish, failed means that no entry completed, and a run with some failed entries is still completed. A run also ends failed when its planning or a whole-run step fails for good; `error` gives the reason, and entries may have completed before it."
+                          },
+                          "target_type": {
+                            "type": "string"
+                          },
+                          "target": {
+                            "type": "object",
+                            "description": "What a run calls for each row",
+                            "properties": {
+                              "type": {
+                                "type": "string",
+                                "enum": [
+                                  "dataset",
+                                  "prompt",
+                                  "model",
+                                  "http"
+                                ],
+                                "description": "dataset scores outputs already in the dataset. prompt calls a prompt version. model calls a plain model. http calls an endpoint"
+                              },
+                              "prompt_id": {
+                                "type": "string",
+                                "description": "Prompt targets. The prompt in the prompt repository"
+                              },
+                              "prompt_version": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "description": "Prompt targets. The version number. 0 or absent means the latest. A stored run carries the number it resolved to"
+                              },
+                              "messages": {
+                                "type": "array",
+                                "description": "Prompt targets. The version's messages, copied when the run starts. Read only",
+                                "items": {
+                                  "type": "object",
+                                  "additionalProperties": true
+                                }
+                              },
+                              "provider": {
+                                "type": "string",
+                                "description": "Model targets. A prompt target takes it from its version"
+                              },
+                              "model": {
+                                "type": "string",
+                                "description": "Model targets. A prompt target takes it from its version"
+                              },
+                              "system": {
+                                "type": "string",
+                                "description": "Model targets. An optional system message"
+                              },
+                              "params": {
+                                "type": "object",
+                                "additionalProperties": true,
+                                "description": "Model parameters, in the provider's wire form"
+                              },
+                              "http": {
+                                "type": "object",
+                                "additionalProperties": true,
+                                "description": "HTTP targets. The request, in the shape of an API evaluator's config (method, url, headers, params, payload, timeout_ms). The value at output_mapping.score is the output. Header values are encrypted at rest when an encryption key is configured, and redacted on read."
+                              }
+                            }
+                          },
+                          "dataset_id": {
+                            "type": "string"
+                          },
+                          "dataset_version": {
+                            "type": "integer",
+                            "description": "The dataset version the run reads. It is kept while the run exists"
+                          },
+                          "split_id": {
+                            "type": "string"
+                          },
+                          "evaluators": {
+                            "type": "array",
+                            "description": "The evaluator definitions copied onto the run, secrets redacted",
+                            "items": {
+                              "type": "object",
+                              "additionalProperties": true
+                            }
+                          },
+                          "target_concurrency": {
+                            "type": "integer"
+                          },
+                          "total": {
+                            "type": "integer",
+                            "description": "How many entries the run has"
+                          },
+                          "counts": {
+                            "type": "object",
+                            "additionalProperties": {
+                              "type": "integer"
+                            },
+                            "description": "Entries by status"
+                          },
+                          "passed": {
+                            "type": "integer",
+                            "description": "Completed entries that passed every evaluator with a pass rule"
+                          },
+                          "summary": {
+                            "type": "object",
+                            "properties": {
+                              "evaluators": {
+                                "type": "array",
+                                "items": {
+                                  "type": "object",
+                                  "description": "One evaluator's results across a run",
+                                  "properties": {
+                                    "evaluator_id": {
+                                      "type": "string"
+                                    },
+                                    "name": {
+                                      "type": "string"
+                                    },
+                                    "type": {
+                                      "type": "string"
+                                    },
+                                    "version": {
+                                      "type": "integer"
+                                    },
+                                    "total": {
+                                      "type": "integer",
+                                      "description": "Results that are in, scored or not"
+                                    },
+                                    "scored": {
+                                      "type": "integer"
+                                    },
+                                    "na": {
+                                      "type": "integer",
+                                      "description": "Results skipped because a variable was missing"
+                                    },
+                                    "errors": {
+                                      "type": "integer"
+                                    },
+                                    "passed": {
+                                      "type": "integer"
+                                    },
+                                    "pass_rate": {
+                                      "type": "number",
+                                      "description": "Percent of scored results that passed"
+                                    },
+                                    "mean": {
+                                      "type": "number"
+                                    },
+                                    "median": {
+                                      "type": "number"
+                                    },
+                                    "min": {
+                                      "type": "number"
+                                    },
+                                    "max": {
+                                      "type": "number"
+                                    },
+                                    "histogram": {
+                                      "type": "object",
+                                      "additionalProperties": {
+                                        "type": "integer"
+                                      },
+                                      "description": "Count per label, for evaluators that score with labels"
+                                    },
+                                    "pending": {
+                                      "type": "integer",
+                                      "description": "Results still queued, running or waiting for a reviewer"
+                                    },
+                                    "run_pass": {
+                                      "type": "boolean",
+                                      "description": "The run-level verdict. Absent while the run is active"
+                                    }
+                                  }
+                                }
+                              },
+                              "latency": {
+                                "type": "object",
+                                "description": "The target's latency over the completed entries, in milliseconds",
+                                "properties": {
+                                  "count": {
+                                    "type": "integer"
+                                  },
+                                  "min": {
+                                    "type": "integer"
+                                  },
+                                  "max": {
+                                    "type": "integer"
+                                  },
+                                  "mean": {
+                                    "type": "number"
+                                  },
+                                  "p50": {
+                                    "type": "integer"
+                                  },
+                                  "p90": {
+                                    "type": "integer"
+                                  },
+                                  "p95": {
+                                    "type": "integer"
+                                  },
+                                  "p99": {
+                                    "type": "integer"
+                                  }
+                                }
+                              },
+                              "totals": {
+                                "type": "object",
+                                "description": "Tokens and cost the run spent",
+                                "properties": {
+                                  "target_tokens": {
+                                    "type": "integer"
+                                  },
+                                  "target_cost": {
+                                    "type": "number"
+                                  },
+                                  "evaluator_tokens": {
+                                    "type": "integer"
+                                  },
+                                  "evaluator_cost": {
+                                    "type": "number"
+                                  }
+                                }
+                              }
+                            }
+                          },
+                          "error": {
+                            "type": "string"
+                          },
+                          "created_by": {
+                            "type": "string"
+                          },
+                          "created_at": {
+                            "type": "string",
+                            "format": "date-time"
+                          },
+                          "updated_at": {
+                            "type": "string",
+                            "format": "date-time"
+                          },
+                          "started_at": {
+                            "type": "string",
+                            "format": "date-time"
+                          },
+                          "ended_at": {
+                            "type": "string",
+                            "format": "date-time"
+                          }
+                        }
+                      }
+                    },
+                    "rows": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "dataset_row_id": {
+                            "type": "string"
+                          },
+                          "variables": {
+                            "type": "object",
+                            "additionalProperties": {
+                              "type": "string"
+                            }
+                          },
+                          "entries": {
+                            "type": "array",
+                            "description": "One per run, in the order of `runs`. Null for a run that does not have the row.",
+                            "items": {
+                              "anyOf": [
+                                {
+                                  "$ref": "#/components/schemas/RunEntry"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            }
+                          }
+                        }
+                      }
+                    },
+                    "total": {
+                      "type": "integer",
+                      "description": "Dataset rows across the runs, over all pages"
+                    },
+                    "changes": {
+                      "type": "object",
+                      "description": "Keyed by run ID, then evaluator ID. How that run's scores moved against the first run, the baseline, over every row. The baseline has no entry",
+                      "additionalProperties": {
+                        "type": "object",
+                        "additionalProperties": {
+                          "type": "object",
+                          "properties": {
+                            "improved": {
+                              "type": "integer",
+                              "description": "Rows with a higher score than the baseline (numeric; `reversed` is not applied)"
+                            },
+                            "regressed": {
+                              "type": "integer",
+                              "description": "Rows with a lower score than the baseline (numeric; `reversed` is not applied)"
+                            },
+                            "compared": {
+                              "type": "integer",
+                              "description": "Rows both runs have a numeric score for"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/evals/runs/{id}": {
+      "get": {
+        "operationId": "getEvalRun",
+        "x-mint": {
+          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Evaluators:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+        },
+        "summary": "Get a test run",
+        "description": "Returns one run with its entry counts and summary. While the run is active the summary has pass rates and progress only; a finished run stores the full one.\n",
+        "tags": [
+          "Test Runs"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "The run ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "run": {
+                      "type": "object",
+                      "description": "A test run",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "tags": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "queued",
+                            "running",
+                            "completed",
+                            "failed",
+                            "stopped"
+                          ],
+                          "description": "When the entries finish, failed means that no entry completed, and a run with some failed entries is still completed. A run also ends failed when its planning or a whole-run step fails for good; `error` gives the reason, and entries may have completed before it."
+                        },
+                        "target_type": {
+                          "type": "string"
+                        },
+                        "target": {
+                          "type": "object",
+                          "description": "What a run calls for each row",
+                          "properties": {
+                            "type": {
+                              "type": "string",
+                              "enum": [
+                                "dataset",
+                                "prompt",
+                                "model",
+                                "http"
+                              ],
+                              "description": "dataset scores outputs already in the dataset. prompt calls a prompt version. model calls a plain model. http calls an endpoint"
+                            },
+                            "prompt_id": {
+                              "type": "string",
+                              "description": "Prompt targets. The prompt in the prompt repository"
+                            },
+                            "prompt_version": {
+                              "type": "integer",
+                              "minimum": 0,
+                              "description": "Prompt targets. The version number. 0 or absent means the latest. A stored run carries the number it resolved to"
+                            },
+                            "messages": {
+                              "type": "array",
+                              "description": "Prompt targets. The version's messages, copied when the run starts. Read only",
+                              "items": {
+                                "type": "object",
+                                "additionalProperties": true
+                              }
+                            },
+                            "provider": {
+                              "type": "string",
+                              "description": "Model targets. A prompt target takes it from its version"
+                            },
+                            "model": {
+                              "type": "string",
+                              "description": "Model targets. A prompt target takes it from its version"
+                            },
+                            "system": {
+                              "type": "string",
+                              "description": "Model targets. An optional system message"
+                            },
+                            "params": {
+                              "type": "object",
+                              "additionalProperties": true,
+                              "description": "Model parameters, in the provider's wire form"
+                            },
+                            "http": {
+                              "type": "object",
+                              "additionalProperties": true,
+                              "description": "HTTP targets. The request, in the shape of an API evaluator's config (method, url, headers, params, payload, timeout_ms). The value at output_mapping.score is the output. Header values are encrypted at rest when an encryption key is configured, and redacted on read."
+                            }
+                          }
+                        },
+                        "dataset_id": {
+                          "type": "string"
+                        },
+                        "dataset_version": {
+                          "type": "integer",
+                          "description": "The dataset version the run reads. It is kept while the run exists"
+                        },
+                        "split_id": {
+                          "type": "string"
+                        },
+                        "evaluators": {
+                          "type": "array",
+                          "description": "The evaluator definitions copied onto the run, secrets redacted",
+                          "items": {
+                            "type": "object",
+                            "additionalProperties": true
+                          }
+                        },
+                        "target_concurrency": {
+                          "type": "integer"
+                        },
+                        "total": {
+                          "type": "integer",
+                          "description": "How many entries the run has"
+                        },
+                        "counts": {
+                          "type": "object",
+                          "additionalProperties": {
+                            "type": "integer"
+                          },
+                          "description": "Entries by status"
+                        },
+                        "passed": {
+                          "type": "integer",
+                          "description": "Completed entries that passed every evaluator with a pass rule"
+                        },
+                        "summary": {
+                          "type": "object",
+                          "properties": {
+                            "evaluators": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "description": "One evaluator's results across a run",
+                                "properties": {
+                                  "evaluator_id": {
+                                    "type": "string"
+                                  },
+                                  "name": {
+                                    "type": "string"
+                                  },
+                                  "type": {
+                                    "type": "string"
+                                  },
+                                  "version": {
+                                    "type": "integer"
+                                  },
+                                  "total": {
+                                    "type": "integer",
+                                    "description": "Results that are in, scored or not"
+                                  },
+                                  "scored": {
+                                    "type": "integer"
+                                  },
+                                  "na": {
+                                    "type": "integer",
+                                    "description": "Results skipped because a variable was missing"
+                                  },
+                                  "errors": {
+                                    "type": "integer"
+                                  },
+                                  "passed": {
+                                    "type": "integer"
+                                  },
+                                  "pass_rate": {
+                                    "type": "number",
+                                    "description": "Percent of scored results that passed"
+                                  },
+                                  "mean": {
+                                    "type": "number"
+                                  },
+                                  "median": {
+                                    "type": "number"
+                                  },
+                                  "min": {
+                                    "type": "number"
+                                  },
+                                  "max": {
+                                    "type": "number"
+                                  },
+                                  "histogram": {
+                                    "type": "object",
+                                    "additionalProperties": {
+                                      "type": "integer"
+                                    },
+                                    "description": "Count per label, for evaluators that score with labels"
+                                  },
+                                  "pending": {
+                                    "type": "integer",
+                                    "description": "Results still queued, running or waiting for a reviewer"
+                                  },
+                                  "run_pass": {
+                                    "type": "boolean",
+                                    "description": "The run-level verdict. Absent while the run is active"
+                                  }
+                                }
+                              }
+                            },
+                            "latency": {
+                              "type": "object",
+                              "description": "The target's latency over the completed entries, in milliseconds",
+                              "properties": {
+                                "count": {
+                                  "type": "integer"
+                                },
+                                "min": {
+                                  "type": "integer"
+                                },
+                                "max": {
+                                  "type": "integer"
+                                },
+                                "mean": {
+                                  "type": "number"
+                                },
+                                "p50": {
+                                  "type": "integer"
+                                },
+                                "p90": {
+                                  "type": "integer"
+                                },
+                                "p95": {
+                                  "type": "integer"
+                                },
+                                "p99": {
+                                  "type": "integer"
+                                }
+                              }
+                            },
+                            "totals": {
+                              "type": "object",
+                              "description": "Tokens and cost the run spent",
+                              "properties": {
+                                "target_tokens": {
+                                  "type": "integer"
+                                },
+                                "target_cost": {
+                                  "type": "number"
+                                },
+                                "evaluator_tokens": {
+                                  "type": "integer"
+                                },
+                                "evaluator_cost": {
+                                  "type": "number"
+                                }
+                              }
+                            }
+                          }
+                        },
+                        "error": {
+                          "type": "string"
+                        },
+                        "created_by": {
+                          "type": "string"
+                        },
+                        "created_at": {
+                          "type": "string",
+                          "format": "date-time"
+                        },
+                        "updated_at": {
+                          "type": "string",
+                          "format": "date-time"
+                        },
+                        "started_at": {
+                          "type": "string",
+                          "format": "date-time"
+                        },
+                        "ended_at": {
+                          "type": "string",
+                          "format": "date-time"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "operationId": "updateEvalRun",
+        "x-mint": {
+          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Evaluators:Update` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+        },
+        "summary": "Update a test run",
+        "description": "Renames a run and replaces its tags.\n",
+        "tags": [
+          "Test Runs"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "The run ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "tags": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "required": [
+                  "name"
+                ]
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "run": {
+                      "type": "object",
+                      "description": "A test run",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "tags": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "queued",
+                            "running",
+                            "completed",
+                            "failed",
+                            "stopped"
+                          ],
+                          "description": "When the entries finish, failed means that no entry completed, and a run with some failed entries is still completed. A run also ends failed when its planning or a whole-run step fails for good; `error` gives the reason, and entries may have completed before it."
+                        },
+                        "target_type": {
+                          "type": "string"
+                        },
+                        "target": {
+                          "type": "object",
+                          "description": "What a run calls for each row",
+                          "properties": {
+                            "type": {
+                              "type": "string",
+                              "enum": [
+                                "dataset",
+                                "prompt",
+                                "model",
+                                "http"
+                              ],
+                              "description": "dataset scores outputs already in the dataset. prompt calls a prompt version. model calls a plain model. http calls an endpoint"
+                            },
+                            "prompt_id": {
+                              "type": "string",
+                              "description": "Prompt targets. The prompt in the prompt repository"
+                            },
+                            "prompt_version": {
+                              "type": "integer",
+                              "minimum": 0,
+                              "description": "Prompt targets. The version number. 0 or absent means the latest. A stored run carries the number it resolved to"
+                            },
+                            "messages": {
+                              "type": "array",
+                              "description": "Prompt targets. The version's messages, copied when the run starts. Read only",
+                              "items": {
+                                "type": "object",
+                                "additionalProperties": true
+                              }
+                            },
+                            "provider": {
+                              "type": "string",
+                              "description": "Model targets. A prompt target takes it from its version"
+                            },
+                            "model": {
+                              "type": "string",
+                              "description": "Model targets. A prompt target takes it from its version"
+                            },
+                            "system": {
+                              "type": "string",
+                              "description": "Model targets. An optional system message"
+                            },
+                            "params": {
+                              "type": "object",
+                              "additionalProperties": true,
+                              "description": "Model parameters, in the provider's wire form"
+                            },
+                            "http": {
+                              "type": "object",
+                              "additionalProperties": true,
+                              "description": "HTTP targets. The request, in the shape of an API evaluator's config (method, url, headers, params, payload, timeout_ms). The value at output_mapping.score is the output. Header values are encrypted at rest when an encryption key is configured, and redacted on read."
+                            }
+                          }
+                        },
+                        "dataset_id": {
+                          "type": "string"
+                        },
+                        "dataset_version": {
+                          "type": "integer",
+                          "description": "The dataset version the run reads. It is kept while the run exists"
+                        },
+                        "split_id": {
+                          "type": "string"
+                        },
+                        "evaluators": {
+                          "type": "array",
+                          "description": "The evaluator definitions copied onto the run, secrets redacted",
+                          "items": {
+                            "type": "object",
+                            "additionalProperties": true
+                          }
+                        },
+                        "target_concurrency": {
+                          "type": "integer"
+                        },
+                        "total": {
+                          "type": "integer",
+                          "description": "How many entries the run has"
+                        },
+                        "counts": {
+                          "type": "object",
+                          "additionalProperties": {
+                            "type": "integer"
+                          },
+                          "description": "Entries by status"
+                        },
+                        "passed": {
+                          "type": "integer",
+                          "description": "Completed entries that passed every evaluator with a pass rule"
+                        },
+                        "summary": {
+                          "type": "object",
+                          "properties": {
+                            "evaluators": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "description": "One evaluator's results across a run",
+                                "properties": {
+                                  "evaluator_id": {
+                                    "type": "string"
+                                  },
+                                  "name": {
+                                    "type": "string"
+                                  },
+                                  "type": {
+                                    "type": "string"
+                                  },
+                                  "version": {
+                                    "type": "integer"
+                                  },
+                                  "total": {
+                                    "type": "integer",
+                                    "description": "Results that are in, scored or not"
+                                  },
+                                  "scored": {
+                                    "type": "integer"
+                                  },
+                                  "na": {
+                                    "type": "integer",
+                                    "description": "Results skipped because a variable was missing"
+                                  },
+                                  "errors": {
+                                    "type": "integer"
+                                  },
+                                  "passed": {
+                                    "type": "integer"
+                                  },
+                                  "pass_rate": {
+                                    "type": "number",
+                                    "description": "Percent of scored results that passed"
+                                  },
+                                  "mean": {
+                                    "type": "number"
+                                  },
+                                  "median": {
+                                    "type": "number"
+                                  },
+                                  "min": {
+                                    "type": "number"
+                                  },
+                                  "max": {
+                                    "type": "number"
+                                  },
+                                  "histogram": {
+                                    "type": "object",
+                                    "additionalProperties": {
+                                      "type": "integer"
+                                    },
+                                    "description": "Count per label, for evaluators that score with labels"
+                                  },
+                                  "pending": {
+                                    "type": "integer",
+                                    "description": "Results still queued, running or waiting for a reviewer"
+                                  },
+                                  "run_pass": {
+                                    "type": "boolean",
+                                    "description": "The run-level verdict. Absent while the run is active"
+                                  }
+                                }
+                              }
+                            },
+                            "latency": {
+                              "type": "object",
+                              "description": "The target's latency over the completed entries, in milliseconds",
+                              "properties": {
+                                "count": {
+                                  "type": "integer"
+                                },
+                                "min": {
+                                  "type": "integer"
+                                },
+                                "max": {
+                                  "type": "integer"
+                                },
+                                "mean": {
+                                  "type": "number"
+                                },
+                                "p50": {
+                                  "type": "integer"
+                                },
+                                "p90": {
+                                  "type": "integer"
+                                },
+                                "p95": {
+                                  "type": "integer"
+                                },
+                                "p99": {
+                                  "type": "integer"
+                                }
+                              }
+                            },
+                            "totals": {
+                              "type": "object",
+                              "description": "Tokens and cost the run spent",
+                              "properties": {
+                                "target_tokens": {
+                                  "type": "integer"
+                                },
+                                "target_cost": {
+                                  "type": "number"
+                                },
+                                "evaluator_tokens": {
+                                  "type": "integer"
+                                },
+                                "evaluator_cost": {
+                                  "type": "number"
+                                }
+                              }
+                            }
+                          }
+                        },
+                        "error": {
+                          "type": "string"
+                        },
+                        "created_by": {
+                          "type": "string"
+                        },
+                        "created_at": {
+                          "type": "string",
+                          "format": "date-time"
+                        },
+                        "updated_at": {
+                          "type": "string",
+                          "format": "date-time"
+                        },
+                        "started_at": {
+                          "type": "string",
+                          "format": "date-time"
+                        },
+                        "ended_at": {
+                          "type": "string",
+                          "format": "date-time"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "operationId": "deleteEvalRun",
+        "x-mint": {
+          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Evaluators:Delete` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+        },
+        "summary": "Delete a test run",
+        "description": "Deletes a run that is not active, with its entries and results. The dataset version it read can be deleted once no other run reads it, unless it is the latest version.\n",
+        "tags": [
+          "Test Runs"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "The run ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "deleted": {
+                      "type": "boolean"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/evals/runs/{id}/stop": {
+      "post": {
+        "operationId": "stopEvalRun",
+        "x-mint": {
+          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Evaluators:Update` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+        },
+        "summary": "Stop a test run",
+        "description": "Stops an active run. Entries that are waiting stop at once. An entry whose target is being called finishes that call and then stops.\n",
+        "tags": [
+          "Test Runs"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "The run ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "run": {
+                      "type": "object",
+                      "description": "A test run",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "tags": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "queued",
+                            "running",
+                            "completed",
+                            "failed",
+                            "stopped"
+                          ],
+                          "description": "When the entries finish, failed means that no entry completed, and a run with some failed entries is still completed. A run also ends failed when its planning or a whole-run step fails for good; `error` gives the reason, and entries may have completed before it."
+                        },
+                        "target_type": {
+                          "type": "string"
+                        },
+                        "target": {
+                          "type": "object",
+                          "description": "What a run calls for each row",
+                          "properties": {
+                            "type": {
+                              "type": "string",
+                              "enum": [
+                                "dataset",
+                                "prompt",
+                                "model",
+                                "http"
+                              ],
+                              "description": "dataset scores outputs already in the dataset. prompt calls a prompt version. model calls a plain model. http calls an endpoint"
+                            },
+                            "prompt_id": {
+                              "type": "string",
+                              "description": "Prompt targets. The prompt in the prompt repository"
+                            },
+                            "prompt_version": {
+                              "type": "integer",
+                              "minimum": 0,
+                              "description": "Prompt targets. The version number. 0 or absent means the latest. A stored run carries the number it resolved to"
+                            },
+                            "messages": {
+                              "type": "array",
+                              "description": "Prompt targets. The version's messages, copied when the run starts. Read only",
+                              "items": {
+                                "type": "object",
+                                "additionalProperties": true
+                              }
+                            },
+                            "provider": {
+                              "type": "string",
+                              "description": "Model targets. A prompt target takes it from its version"
+                            },
+                            "model": {
+                              "type": "string",
+                              "description": "Model targets. A prompt target takes it from its version"
+                            },
+                            "system": {
+                              "type": "string",
+                              "description": "Model targets. An optional system message"
+                            },
+                            "params": {
+                              "type": "object",
+                              "additionalProperties": true,
+                              "description": "Model parameters, in the provider's wire form"
+                            },
+                            "http": {
+                              "type": "object",
+                              "additionalProperties": true,
+                              "description": "HTTP targets. The request, in the shape of an API evaluator's config (method, url, headers, params, payload, timeout_ms). The value at output_mapping.score is the output. Header values are encrypted at rest when an encryption key is configured, and redacted on read."
+                            }
+                          }
+                        },
+                        "dataset_id": {
+                          "type": "string"
+                        },
+                        "dataset_version": {
+                          "type": "integer",
+                          "description": "The dataset version the run reads. It is kept while the run exists"
+                        },
+                        "split_id": {
+                          "type": "string"
+                        },
+                        "evaluators": {
+                          "type": "array",
+                          "description": "The evaluator definitions copied onto the run, secrets redacted",
+                          "items": {
+                            "type": "object",
+                            "additionalProperties": true
+                          }
+                        },
+                        "target_concurrency": {
+                          "type": "integer"
+                        },
+                        "total": {
+                          "type": "integer",
+                          "description": "How many entries the run has"
+                        },
+                        "counts": {
+                          "type": "object",
+                          "additionalProperties": {
+                            "type": "integer"
+                          },
+                          "description": "Entries by status"
+                        },
+                        "passed": {
+                          "type": "integer",
+                          "description": "Completed entries that passed every evaluator with a pass rule"
+                        },
+                        "summary": {
+                          "type": "object",
+                          "properties": {
+                            "evaluators": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "description": "One evaluator's results across a run",
+                                "properties": {
+                                  "evaluator_id": {
+                                    "type": "string"
+                                  },
+                                  "name": {
+                                    "type": "string"
+                                  },
+                                  "type": {
+                                    "type": "string"
+                                  },
+                                  "version": {
+                                    "type": "integer"
+                                  },
+                                  "total": {
+                                    "type": "integer",
+                                    "description": "Results that are in, scored or not"
+                                  },
+                                  "scored": {
+                                    "type": "integer"
+                                  },
+                                  "na": {
+                                    "type": "integer",
+                                    "description": "Results skipped because a variable was missing"
+                                  },
+                                  "errors": {
+                                    "type": "integer"
+                                  },
+                                  "passed": {
+                                    "type": "integer"
+                                  },
+                                  "pass_rate": {
+                                    "type": "number",
+                                    "description": "Percent of scored results that passed"
+                                  },
+                                  "mean": {
+                                    "type": "number"
+                                  },
+                                  "median": {
+                                    "type": "number"
+                                  },
+                                  "min": {
+                                    "type": "number"
+                                  },
+                                  "max": {
+                                    "type": "number"
+                                  },
+                                  "histogram": {
+                                    "type": "object",
+                                    "additionalProperties": {
+                                      "type": "integer"
+                                    },
+                                    "description": "Count per label, for evaluators that score with labels"
+                                  },
+                                  "pending": {
+                                    "type": "integer",
+                                    "description": "Results still queued, running or waiting for a reviewer"
+                                  },
+                                  "run_pass": {
+                                    "type": "boolean",
+                                    "description": "The run-level verdict. Absent while the run is active"
+                                  }
+                                }
+                              }
+                            },
+                            "latency": {
+                              "type": "object",
+                              "description": "The target's latency over the completed entries, in milliseconds",
+                              "properties": {
+                                "count": {
+                                  "type": "integer"
+                                },
+                                "min": {
+                                  "type": "integer"
+                                },
+                                "max": {
+                                  "type": "integer"
+                                },
+                                "mean": {
+                                  "type": "number"
+                                },
+                                "p50": {
+                                  "type": "integer"
+                                },
+                                "p90": {
+                                  "type": "integer"
+                                },
+                                "p95": {
+                                  "type": "integer"
+                                },
+                                "p99": {
+                                  "type": "integer"
+                                }
+                              }
+                            },
+                            "totals": {
+                              "type": "object",
+                              "description": "Tokens and cost the run spent",
+                              "properties": {
+                                "target_tokens": {
+                                  "type": "integer"
+                                },
+                                "target_cost": {
+                                  "type": "number"
+                                },
+                                "evaluator_tokens": {
+                                  "type": "integer"
+                                },
+                                "evaluator_cost": {
+                                  "type": "number"
+                                }
+                              }
+                            }
+                          }
+                        },
+                        "error": {
+                          "type": "string"
+                        },
+                        "created_by": {
+                          "type": "string"
+                        },
+                        "created_at": {
+                          "type": "string",
+                          "format": "date-time"
+                        },
+                        "updated_at": {
+                          "type": "string",
+                          "format": "date-time"
+                        },
+                        "started_at": {
+                          "type": "string",
+                          "format": "date-time"
+                        },
+                        "ended_at": {
+                          "type": "string",
+                          "format": "date-time"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/evals/runs/{id}/rerun": {
+      "post": {
+        "operationId": "rerunEvalRun",
+        "x-mint": {
+          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Evaluators:Update` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+        },
+        "summary": "Rerun entries",
+        "description": "Runs entries of a finished run again: the failed and stopped ones, all of them, or the listed ones. The run keeps its dataset version, target and evaluators. A run that failed before its rows were planned cannot be rerun: start a new run. A run stopped while it was being planned can be rerun once its planning has ended.\n",
+        "tags": [
+          "Test Runs"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "The run ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "description": "Which entries to run again. Give a scope, or a nonempty list of entries; a nonempty entry_ids takes precedence over scope.",
+                "anyOf": [
+                  {
+                    "required": [
+                      "scope"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "entry_ids"
+                    ],
+                    "properties": {
+                      "entry_ids": {
+                        "minItems": 1
+                      }
+                    }
+                  }
+                ],
+                "properties": {
+                  "scope": {
+                    "type": "string",
+                    "enum": [
+                      "failed",
+                      "all"
+                    ],
+                    "description": "failed takes the entries that failed or were stopped"
+                  },
+                  "entry_ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "run": {
+                      "type": "object",
+                      "description": "A test run",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "tags": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "queued",
+                            "running",
+                            "completed",
+                            "failed",
+                            "stopped"
+                          ],
+                          "description": "When the entries finish, failed means that no entry completed, and a run with some failed entries is still completed. A run also ends failed when its planning or a whole-run step fails for good; `error` gives the reason, and entries may have completed before it."
+                        },
+                        "target_type": {
+                          "type": "string"
+                        },
+                        "target": {
+                          "type": "object",
+                          "description": "What a run calls for each row",
+                          "properties": {
+                            "type": {
+                              "type": "string",
+                              "enum": [
+                                "dataset",
+                                "prompt",
+                                "model",
+                                "http"
+                              ],
+                              "description": "dataset scores outputs already in the dataset. prompt calls a prompt version. model calls a plain model. http calls an endpoint"
+                            },
+                            "prompt_id": {
+                              "type": "string",
+                              "description": "Prompt targets. The prompt in the prompt repository"
+                            },
+                            "prompt_version": {
+                              "type": "integer",
+                              "minimum": 0,
+                              "description": "Prompt targets. The version number. 0 or absent means the latest. A stored run carries the number it resolved to"
+                            },
+                            "messages": {
+                              "type": "array",
+                              "description": "Prompt targets. The version's messages, copied when the run starts. Read only",
+                              "items": {
+                                "type": "object",
+                                "additionalProperties": true
+                              }
+                            },
+                            "provider": {
+                              "type": "string",
+                              "description": "Model targets. A prompt target takes it from its version"
+                            },
+                            "model": {
+                              "type": "string",
+                              "description": "Model targets. A prompt target takes it from its version"
+                            },
+                            "system": {
+                              "type": "string",
+                              "description": "Model targets. An optional system message"
+                            },
+                            "params": {
+                              "type": "object",
+                              "additionalProperties": true,
+                              "description": "Model parameters, in the provider's wire form"
+                            },
+                            "http": {
+                              "type": "object",
+                              "additionalProperties": true,
+                              "description": "HTTP targets. The request, in the shape of an API evaluator's config (method, url, headers, params, payload, timeout_ms). The value at output_mapping.score is the output. Header values are encrypted at rest when an encryption key is configured, and redacted on read."
+                            }
+                          }
+                        },
+                        "dataset_id": {
+                          "type": "string"
+                        },
+                        "dataset_version": {
+                          "type": "integer",
+                          "description": "The dataset version the run reads. It is kept while the run exists"
+                        },
+                        "split_id": {
+                          "type": "string"
+                        },
+                        "evaluators": {
+                          "type": "array",
+                          "description": "The evaluator definitions copied onto the run, secrets redacted",
+                          "items": {
+                            "type": "object",
+                            "additionalProperties": true
+                          }
+                        },
+                        "target_concurrency": {
+                          "type": "integer"
+                        },
+                        "total": {
+                          "type": "integer",
+                          "description": "How many entries the run has"
+                        },
+                        "counts": {
+                          "type": "object",
+                          "additionalProperties": {
+                            "type": "integer"
+                          },
+                          "description": "Entries by status"
+                        },
+                        "passed": {
+                          "type": "integer",
+                          "description": "Completed entries that passed every evaluator with a pass rule"
+                        },
+                        "summary": {
+                          "type": "object",
+                          "properties": {
+                            "evaluators": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "description": "One evaluator's results across a run",
+                                "properties": {
+                                  "evaluator_id": {
+                                    "type": "string"
+                                  },
+                                  "name": {
+                                    "type": "string"
+                                  },
+                                  "type": {
+                                    "type": "string"
+                                  },
+                                  "version": {
+                                    "type": "integer"
+                                  },
+                                  "total": {
+                                    "type": "integer",
+                                    "description": "Results that are in, scored or not"
+                                  },
+                                  "scored": {
+                                    "type": "integer"
+                                  },
+                                  "na": {
+                                    "type": "integer",
+                                    "description": "Results skipped because a variable was missing"
+                                  },
+                                  "errors": {
+                                    "type": "integer"
+                                  },
+                                  "passed": {
+                                    "type": "integer"
+                                  },
+                                  "pass_rate": {
+                                    "type": "number",
+                                    "description": "Percent of scored results that passed"
+                                  },
+                                  "mean": {
+                                    "type": "number"
+                                  },
+                                  "median": {
+                                    "type": "number"
+                                  },
+                                  "min": {
+                                    "type": "number"
+                                  },
+                                  "max": {
+                                    "type": "number"
+                                  },
+                                  "histogram": {
+                                    "type": "object",
+                                    "additionalProperties": {
+                                      "type": "integer"
+                                    },
+                                    "description": "Count per label, for evaluators that score with labels"
+                                  },
+                                  "pending": {
+                                    "type": "integer",
+                                    "description": "Results still queued, running or waiting for a reviewer"
+                                  },
+                                  "run_pass": {
+                                    "type": "boolean",
+                                    "description": "The run-level verdict. Absent while the run is active"
+                                  }
+                                }
+                              }
+                            },
+                            "latency": {
+                              "type": "object",
+                              "description": "The target's latency over the completed entries, in milliseconds",
+                              "properties": {
+                                "count": {
+                                  "type": "integer"
+                                },
+                                "min": {
+                                  "type": "integer"
+                                },
+                                "max": {
+                                  "type": "integer"
+                                },
+                                "mean": {
+                                  "type": "number"
+                                },
+                                "p50": {
+                                  "type": "integer"
+                                },
+                                "p90": {
+                                  "type": "integer"
+                                },
+                                "p95": {
+                                  "type": "integer"
+                                },
+                                "p99": {
+                                  "type": "integer"
+                                }
+                              }
+                            },
+                            "totals": {
+                              "type": "object",
+                              "description": "Tokens and cost the run spent",
+                              "properties": {
+                                "target_tokens": {
+                                  "type": "integer"
+                                },
+                                "target_cost": {
+                                  "type": "number"
+                                },
+                                "evaluator_tokens": {
+                                  "type": "integer"
+                                },
+                                "evaluator_cost": {
+                                  "type": "number"
+                                }
+                              }
+                            }
+                          }
+                        },
+                        "error": {
+                          "type": "string"
+                        },
+                        "created_by": {
+                          "type": "string"
+                        },
+                        "created_at": {
+                          "type": "string",
+                          "format": "date-time"
+                        },
+                        "updated_at": {
+                          "type": "string",
+                          "format": "date-time"
+                        },
+                        "started_at": {
+                          "type": "string",
+                          "format": "date-time"
+                        },
+                        "ended_at": {
+                          "type": "string",
+                          "format": "date-time"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Test runs are not available on this gateway: it has no evaluation queue, or the evaluation runner failed to start. The gateway log has the reason.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManagementErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/evals/runs/{id}/evaluators": {
+      "post": {
+        "operationId": "addEvalRunEvaluators",
+        "x-mint": {
+          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Evaluators:Update` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+        },
+        "summary": "Add evaluators",
+        "description": "Scores a finished run's stored outputs with more evaluators. The target is not called again. A run that failed before its rows were planned has no outputs to score: start a new run. A run stopped while it was being planned takes evaluators once its planning has ended.\n",
+        "tags": [
+          "Test Runs"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "The run ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "evaluators": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "description": "A saved evaluator"
+                        },
+                        "version": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "description": "Its version. 0 or absent means the current one"
+                        }
+                      },
+                      "required": [
+                        "id"
+                      ]
+                    }
+                  }
+                },
+                "required": [
+                  "evaluators"
+                ]
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "run": {
+                      "type": "object",
+                      "description": "A test run",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "tags": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "queued",
+                            "running",
+                            "completed",
+                            "failed",
+                            "stopped"
+                          ],
+                          "description": "When the entries finish, failed means that no entry completed, and a run with some failed entries is still completed. A run also ends failed when its planning or a whole-run step fails for good; `error` gives the reason, and entries may have completed before it."
+                        },
+                        "target_type": {
+                          "type": "string"
+                        },
+                        "target": {
+                          "type": "object",
+                          "description": "What a run calls for each row",
+                          "properties": {
+                            "type": {
+                              "type": "string",
+                              "enum": [
+                                "dataset",
+                                "prompt",
+                                "model",
+                                "http"
+                              ],
+                              "description": "dataset scores outputs already in the dataset. prompt calls a prompt version. model calls a plain model. http calls an endpoint"
+                            },
+                            "prompt_id": {
+                              "type": "string",
+                              "description": "Prompt targets. The prompt in the prompt repository"
+                            },
+                            "prompt_version": {
+                              "type": "integer",
+                              "minimum": 0,
+                              "description": "Prompt targets. The version number. 0 or absent means the latest. A stored run carries the number it resolved to"
+                            },
+                            "messages": {
+                              "type": "array",
+                              "description": "Prompt targets. The version's messages, copied when the run starts. Read only",
+                              "items": {
+                                "type": "object",
+                                "additionalProperties": true
+                              }
+                            },
+                            "provider": {
+                              "type": "string",
+                              "description": "Model targets. A prompt target takes it from its version"
+                            },
+                            "model": {
+                              "type": "string",
+                              "description": "Model targets. A prompt target takes it from its version"
+                            },
+                            "system": {
+                              "type": "string",
+                              "description": "Model targets. An optional system message"
+                            },
+                            "params": {
+                              "type": "object",
+                              "additionalProperties": true,
+                              "description": "Model parameters, in the provider's wire form"
+                            },
+                            "http": {
+                              "type": "object",
+                              "additionalProperties": true,
+                              "description": "HTTP targets. The request, in the shape of an API evaluator's config (method, url, headers, params, payload, timeout_ms). The value at output_mapping.score is the output. Header values are encrypted at rest when an encryption key is configured, and redacted on read."
+                            }
+                          }
+                        },
+                        "dataset_id": {
+                          "type": "string"
+                        },
+                        "dataset_version": {
+                          "type": "integer",
+                          "description": "The dataset version the run reads. It is kept while the run exists"
+                        },
+                        "split_id": {
+                          "type": "string"
+                        },
+                        "evaluators": {
+                          "type": "array",
+                          "description": "The evaluator definitions copied onto the run, secrets redacted",
+                          "items": {
+                            "type": "object",
+                            "additionalProperties": true
+                          }
+                        },
+                        "target_concurrency": {
+                          "type": "integer"
+                        },
+                        "total": {
+                          "type": "integer",
+                          "description": "How many entries the run has"
+                        },
+                        "counts": {
+                          "type": "object",
+                          "additionalProperties": {
+                            "type": "integer"
+                          },
+                          "description": "Entries by status"
+                        },
+                        "passed": {
+                          "type": "integer",
+                          "description": "Completed entries that passed every evaluator with a pass rule"
+                        },
+                        "summary": {
+                          "type": "object",
+                          "properties": {
+                            "evaluators": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "description": "One evaluator's results across a run",
+                                "properties": {
+                                  "evaluator_id": {
+                                    "type": "string"
+                                  },
+                                  "name": {
+                                    "type": "string"
+                                  },
+                                  "type": {
+                                    "type": "string"
+                                  },
+                                  "version": {
+                                    "type": "integer"
+                                  },
+                                  "total": {
+                                    "type": "integer",
+                                    "description": "Results that are in, scored or not"
+                                  },
+                                  "scored": {
+                                    "type": "integer"
+                                  },
+                                  "na": {
+                                    "type": "integer",
+                                    "description": "Results skipped because a variable was missing"
+                                  },
+                                  "errors": {
+                                    "type": "integer"
+                                  },
+                                  "passed": {
+                                    "type": "integer"
+                                  },
+                                  "pass_rate": {
+                                    "type": "number",
+                                    "description": "Percent of scored results that passed"
+                                  },
+                                  "mean": {
+                                    "type": "number"
+                                  },
+                                  "median": {
+                                    "type": "number"
+                                  },
+                                  "min": {
+                                    "type": "number"
+                                  },
+                                  "max": {
+                                    "type": "number"
+                                  },
+                                  "histogram": {
+                                    "type": "object",
+                                    "additionalProperties": {
+                                      "type": "integer"
+                                    },
+                                    "description": "Count per label, for evaluators that score with labels"
+                                  },
+                                  "pending": {
+                                    "type": "integer",
+                                    "description": "Results still queued, running or waiting for a reviewer"
+                                  },
+                                  "run_pass": {
+                                    "type": "boolean",
+                                    "description": "The run-level verdict. Absent while the run is active"
+                                  }
+                                }
+                              }
+                            },
+                            "latency": {
+                              "type": "object",
+                              "description": "The target's latency over the completed entries, in milliseconds",
+                              "properties": {
+                                "count": {
+                                  "type": "integer"
+                                },
+                                "min": {
+                                  "type": "integer"
+                                },
+                                "max": {
+                                  "type": "integer"
+                                },
+                                "mean": {
+                                  "type": "number"
+                                },
+                                "p50": {
+                                  "type": "integer"
+                                },
+                                "p90": {
+                                  "type": "integer"
+                                },
+                                "p95": {
+                                  "type": "integer"
+                                },
+                                "p99": {
+                                  "type": "integer"
+                                }
+                              }
+                            },
+                            "totals": {
+                              "type": "object",
+                              "description": "Tokens and cost the run spent",
+                              "properties": {
+                                "target_tokens": {
+                                  "type": "integer"
+                                },
+                                "target_cost": {
+                                  "type": "number"
+                                },
+                                "evaluator_tokens": {
+                                  "type": "integer"
+                                },
+                                "evaluator_cost": {
+                                  "type": "number"
+                                }
+                              }
+                            }
+                          }
+                        },
+                        "error": {
+                          "type": "string"
+                        },
+                        "created_by": {
+                          "type": "string"
+                        },
+                        "created_at": {
+                          "type": "string",
+                          "format": "date-time"
+                        },
+                        "updated_at": {
+                          "type": "string",
+                          "format": "date-time"
+                        },
+                        "started_at": {
+                          "type": "string",
+                          "format": "date-time"
+                        },
+                        "ended_at": {
+                          "type": "string",
+                          "format": "date-time"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Test runs are not available on this gateway: it has no evaluation queue, or the evaluation runner failed to start. The gateway log has the reason.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManagementErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/evals/runs/{id}/entries": {
+      "get": {
+        "operationId": "listEvalRunEntries",
+        "x-mint": {
+          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Evaluators:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+        },
+        "summary": "List entries",
+        "description": "Returns a page of a run's entries with their results, by row position.\n",
+        "tags": [
+          "Test Runs"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "The run ID",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "description": "Only entries in these statuses, separated by commas",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "passed",
+            "in": "query",
+            "required": false,
+            "description": "Only entries whose verdict is pass (true) or fail (false). Entries with no verdict (not finished, or whose evaluators have no pass rule) match neither.",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "search",
+            "in": "query",
+            "required": false,
+            "description": "Case-insensitive match on the variables or the output",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "baseline",
+            "in": "query",
+            "required": false,
+            "description": "ID of another run on the same dataset to read the entries against. An entry whose dataset row the baseline run also has then carries that run's entry in `baseline`; an entry without one has no `baseline`.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "change",
+            "in": "query",
+            "required": false,
+            "description": "With `baseline`, `better` keeps entries with a higher number on any evaluator both runs scored, `worse` a lower one. The comparison is numeric and ignores `reversed`: for a lower-is-better evaluator, `better` means a higher, so worse, score.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "worse",
+                "better"
+              ]
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "Page size. 0 or absent means 100; a value above 200 is read as 200",
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "description": "Rows to skip",
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "entries": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/RunEntry"
+                      }
+                    },
+                    "total": {
+                      "type": "integer",
+                      "description": "Entries the filters match, across all pages"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/evals/runs/{id}/entries/{entryId}": {
+      "get": {
+        "operationId": "getEvalRunEntry",
+        "x-mint": {
+          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Evaluators:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+        },
+        "summary": "Get an entry",
+        "description": "Returns one entry with its results.\n",
+        "tags": [
+          "Test Runs"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "The run ID",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "entryId",
+            "in": "path",
+            "required": true,
+            "description": "The entry ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "entry": {
+                      "$ref": "#/components/schemas/RunEntry"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/evals/runs/{id}/entries/{entryId}/results/{evaluatorId}": {
+      "put": {
+        "operationId": "reviewEvalRunResult",
+        "x-mint": {
+          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Evaluators:Update` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+        },
+        "summary": "Score a human evaluator",
+        "description": "Records a reviewer's score for a human evaluator on one entry. The score is checked against the evaluator's type, and the run's summary follows it.\n",
+        "tags": [
+          "Test Runs"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "The run ID",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "entryId",
+            "in": "path",
+            "required": true,
+            "description": "The entry ID",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "evaluatorId",
+            "in": "path",
+            "required": true,
+            "description": "The evaluator ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "score": {
+                    "description": "true or false, a number, or one of the evaluator's choices",
+                    "oneOf": [
+                      {
+                        "type": "boolean"
+                      },
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "type": "string"
+                      }
+                    ]
+                  },
+                  "reasoning": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "score"
+                ]
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "result": {
+                      "type": "object",
+                      "description": "One evaluator's score for one entry",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "run_id": {
+                          "type": "string"
+                        },
+                        "entry_id": {
+                          "type": "string"
+                        },
+                        "evaluator_id": {
+                          "type": "string"
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "queued",
+                            "running",
+                            "completed",
+                            "failed",
+                            "not_applicable",
+                            "awaiting_review"
+                          ]
+                        },
+                        "score": {
+                          "type": "object",
+                          "additionalProperties": true,
+                          "description": "The score as the evaluator produced it"
+                        },
+                        "score_number": {
+                          "type": "number",
+                          "description": "The score as a number, when it has one. 1 and 0 for yes and no"
+                        },
+                        "pass": {
+                          "type": "boolean"
+                        },
+                        "reasoning": {
+                          "type": "string"
+                        },
+                        "latency_ms": {
+                          "type": "integer"
+                        },
+                        "prompt_tokens": {
+                          "type": "integer"
+                        },
+                        "completion_tokens": {
+                          "type": "integer"
+                        },
+                        "total_tokens": {
+                          "type": "integer"
+                        },
+                        "cost": {
+                          "type": "number"
+                        },
+                        "attempt": {
+                          "type": "integer"
+                        },
+                        "key_id": {
+                          "type": "string",
+                          "description": "The eval key whose queue this work waits or ran on. Absent for work that needs no model key."
+                        },
+                        "error": {
+                          "type": "string"
+                        },
+                        "reviewed_by": {
+                          "type": "string"
+                        },
+                        "queued_at": {
+                          "type": "string",
+                          "format": "date-time"
+                        },
+                        "started_at": {
+                          "type": "string",
+                          "format": "date-time"
+                        },
+                        "completed_at": {
+                          "type": "string",
+                          "format": "date-time"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/evals/runs/{id}/export": {
+      "get": {
+        "operationId": "exportEvalRun",
+        "x-mint": {
+          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Evaluators:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+        },
+        "summary": "Export a test run",
+        "description": "Returns the report as CSV: one line per entry, with the row's variables, the output, and each evaluator's score, verdict and reasoning.\n",
+        "tags": [
+          "Test Runs"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "The run ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The report as CSV",
+            "content": {
+              "text/csv": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/evals/datasets": {
       "get": {
         "operationId": "listEvalDatasets",
@@ -87066,7 +91019,7 @@
                           },
                           "max_versions": {
                             "type": "integer",
-                            "description": "The most saved versions to keep. Absent keeps every version"
+                            "description": "The most saved versions to keep. Versions a test run reads and the latest version are kept even past it. Absent keeps every version"
                           },
                           "created_by": {
                             "type": "string",
@@ -87174,7 +91127,7 @@
                   },
                   "max_versions": {
                     "type": "integer",
-                    "description": "The most saved versions to keep, at least 1. Leave out to keep every version",
+                    "description": "The most saved versions to keep, at least 1. Versions a test run reads and the latest version are kept even past it. Leave out to keep every version",
                     "minimum": 1
                   },
                   "template": {
@@ -87282,7 +91235,7 @@
                         },
                         "max_versions": {
                           "type": "integer",
-                          "description": "The most saved versions to keep. Absent keeps every version"
+                          "description": "The most saved versions to keep. Versions a test run reads and the latest version are kept even past it. Absent keeps every version"
                         },
                         "created_by": {
                           "type": "string",
@@ -87528,7 +91481,7 @@
                         },
                         "max_versions": {
                           "type": "integer",
-                          "description": "The most saved versions to keep. Absent keeps every version"
+                          "description": "The most saved versions to keep. Versions a test run reads and the latest version are kept even past it. Absent keeps every version"
                         },
                         "created_by": {
                           "type": "string",
@@ -87683,7 +91636,7 @@
           "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Evaluators:Update` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "Update a dataset",
-        "description": "Replaces the name, description, tags and `max_versions` together. A field left out is cleared: send the current description, tags and `max_versions` to keep them. Leaving out `max_versions` removes the cap. Lowering `max_versions` deletes the oldest versions over the new limit right away.\n",
+        "description": "Replaces the name, description, tags and `max_versions` together. A field left out is cleared: send the current description, tags and `max_versions` to keep them. Leaving out `max_versions` removes the cap. Lowering `max_versions` deletes the oldest versions over the new limit right away. Versions that a test run reads, and the latest version, are never deleted, so more versions than `max_versions` can remain.\n",
         "tags": [
           "Datasets"
         ],
@@ -87726,7 +91679,7 @@
                   },
                   "max_versions": {
                     "type": "integer",
-                    "description": "The most saved versions to keep, at least 1. Leave out to keep every version",
+                    "description": "The most saved versions to keep, at least 1. Versions a test run reads and the latest version are kept even past it. Leave out to keep every version",
                     "minimum": 1
                   },
                   "template": {
@@ -87834,7 +91787,7 @@
                         },
                         "max_versions": {
                           "type": "integer",
-                          "description": "The most saved versions to keep. Absent keeps every version"
+                          "description": "The most saved versions to keep. Versions a test run reads and the latest version are kept even past it. Absent keeps every version"
                         },
                         "created_by": {
                           "type": "string",
@@ -88009,7 +91962,7 @@
           "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Evaluators:Delete` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "Delete a dataset",
-        "description": "Deletes a dataset with its rows, versions and splits. Its name becomes free for reuse.\n",
+        "description": "Deletes a dataset with its rows, versions and splits. Its name becomes free for reuse. A dataset that any test run reads, finished runs included, cannot be deleted (409) until those runs are deleted.\n",
         "tags": [
           "Datasets"
         ],
@@ -88052,6 +92005,16 @@
           },
           "404": {
             "description": "Resource not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict with the current state of the resource",
             "content": {
               "application/json": {
                 "schema": {
@@ -88166,7 +92129,7 @@
                         },
                         "max_versions": {
                           "type": "integer",
-                          "description": "The most saved versions to keep. Absent keeps every version"
+                          "description": "The most saved versions to keep. Versions a test run reads and the latest version are kept even past it. Absent keeps every version"
                         },
                         "created_by": {
                           "type": "string",
@@ -88966,7 +92929,7 @@
                         },
                         "max_versions": {
                           "type": "integer",
-                          "description": "The most saved versions to keep. Absent keeps every version"
+                          "description": "The most saved versions to keep. Versions a test run reads and the latest version are kept even past it. Absent keeps every version"
                         },
                         "created_by": {
                           "type": "string",
@@ -90690,7 +94653,7 @@
           "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Evaluators:Update` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "Add rows from sessions",
-        "description": "Adds one row per session. The session's requests that have content go into a variable column named `session`, which is created when the dataset has none; a request logged without content (content logging off) is left out, and a session with no such request is skipped. The first request fills the input and the last reply fills the output. The added rows are saved as a new version. Needs a log store. A session is read up to 2,000 root requests (retries and fallbacks are not counted); a longer session is not cut short but skipped, and listed in `skipped` with the reason. A session one of whose requests cannot be read is skipped the same way. A request deleted while the session is read, by log retention for example, is left out, and the session is saved with its remaining requests. Requests that arrive while the session is read are not included. The text of all the sessions in one call (requests, replies and tool calls) is capped at 64 MiB: past it the call fails with 400 and nothing is added, so send fewer sessions per call.\n",
+        "description": "Adds one row per session. The session's requests that have content go into a variable column named `session`, which is created when the dataset has none; a request logged without content (content logging off) is left out, and a session with no such request is skipped. The first request fills the input and the last reply fills the output. The added rows are saved as a new version. Needs a log store. A session is read up to 2,000 root requests (retries and fallbacks are not counted); a longer session is not cut short but skipped, and listed in `skipped` with the reason. A session one of whose requests cannot be read is skipped the same way. A request deleted while the session is read, by log retention for example, is left out. The session is saved with the requests that remain, or skipped and listed in `skipped` when none remain. Requests that arrive while the session is read are not included. The text of all the sessions in one call (requests, replies and tool calls) is capped at 64 MiB: past it the call fails with 400 and nothing is added, so send fewer sessions per call.\n",
         "tags": [
           "Datasets"
         ],
@@ -92189,7 +96152,7 @@
           "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Evaluators:Delete` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "Delete a version",
-        "description": "Deletes a saved version and the row records only it needed. The latest version cannot be deleted. A deleted number is never reused.\n",
+        "description": "Deletes a saved version and the row records only it needed. The latest version cannot be deleted. A deleted number is never reused. A version that a test run reads cannot be deleted (409) until those runs are deleted.\n",
         "tags": [
           "Datasets"
         ],
@@ -141606,6 +145569,187 @@
           "options",
           "allow_other"
         ]
+      },
+      "RunEntry": {
+        "type": "object",
+        "description": "One dataset row in a run",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "run_id": {
+            "type": "string"
+          },
+          "seq": {
+            "type": "integer"
+          },
+          "dataset_row_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "queued",
+              "running",
+              "evaluating",
+              "completed",
+              "failed",
+              "stopped"
+            ]
+          },
+          "attempt": {
+            "type": "integer"
+          },
+          "variables": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "What the dataset row gives the evaluators"
+          },
+          "output": {
+            "type": "string"
+          },
+          "tool_calls": {
+            "type": "string",
+            "description": "The target's tool calls, as JSON text"
+          },
+          "context": {
+            "type": "string"
+          },
+          "passed": {
+            "type": "boolean"
+          },
+          "target_latency_ms": {
+            "type": "integer"
+          },
+          "target_prompt_tokens": {
+            "type": "integer"
+          },
+          "target_completion_tokens": {
+            "type": "integer"
+          },
+          "target_total_tokens": {
+            "type": "integer"
+          },
+          "target_cost": {
+            "type": "number"
+          },
+          "key_id": {
+            "type": "string",
+            "description": "The eval key whose queue this work waits or ran on. Absent for work that needs no model key."
+          },
+          "error": {
+            "type": "string"
+          },
+          "queued_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "started_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "ended_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "results": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "One evaluator's score for one entry",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "run_id": {
+                  "type": "string"
+                },
+                "entry_id": {
+                  "type": "string"
+                },
+                "evaluator_id": {
+                  "type": "string"
+                },
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "queued",
+                    "running",
+                    "completed",
+                    "failed",
+                    "not_applicable",
+                    "awaiting_review"
+                  ]
+                },
+                "score": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "description": "The score as the evaluator produced it"
+                },
+                "score_number": {
+                  "type": "number",
+                  "description": "The score as a number, when it has one. 1 and 0 for yes and no"
+                },
+                "pass": {
+                  "type": "boolean"
+                },
+                "reasoning": {
+                  "type": "string"
+                },
+                "latency_ms": {
+                  "type": "integer"
+                },
+                "prompt_tokens": {
+                  "type": "integer"
+                },
+                "completion_tokens": {
+                  "type": "integer"
+                },
+                "total_tokens": {
+                  "type": "integer"
+                },
+                "cost": {
+                  "type": "number"
+                },
+                "attempt": {
+                  "type": "integer"
+                },
+                "key_id": {
+                  "type": "string",
+                  "description": "The eval key whose queue this work waits or ran on. Absent for work that needs no model key."
+                },
+                "error": {
+                  "type": "string"
+                },
+                "reviewed_by": {
+                  "type": "string"
+                },
+                "queued_at": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "started_at": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "completed_at": {
+                  "type": "string",
+                  "format": "date-time"
+                }
+              }
+            }
+          },
+          "baseline": {
+            "description": "The baseline run's entry for the same dataset row. Present when the entries were listed with `baseline` and that run has the row.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/RunEntry"
+              }
+            ]
+          }
+        }
       },
       "RelayAuthConfig": {
         "type": "object",

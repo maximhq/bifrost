@@ -150,7 +150,7 @@ datasets-by-id:
         [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Update a dataset
     description: |
-      Replaces the name, description, tags and `max_versions` together. A field left out is cleared: send the current description, tags and `max_versions` to keep them. Leaving out `max_versions` removes the cap. Lowering `max_versions` deletes the oldest versions over the new limit right away.
+      Replaces the name, description, tags and `max_versions` together. A field left out is cleared: send the current description, tags and `max_versions` to keep them. Leaving out `max_versions` removes the cap. Lowering `max_versions` deletes the oldest versions over the new limit right away. Versions that a test run reads, and the latest version, are never deleted, so more versions than `max_versions` can remain.
     tags:
     - Datasets
     parameters:
@@ -192,7 +192,7 @@ datasets-by-id:
         [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Delete a dataset
     description: |
-      Deletes a dataset with its rows, versions and splits. Its name becomes free for reuse.
+      Deletes a dataset with its rows, versions and splits. Its name becomes free for reuse. A dataset that any test run reads, finished runs included, cannot be deleted (409) until those runs are deleted.
     tags:
     - Datasets
     parameters:
@@ -209,6 +209,8 @@ datasets-by-id:
               $ref: ../../schemas/management/evalsdatasets.yaml#/DeletedResponse
       '404':
         $ref: ../../openapi.yaml#/components/responses/NotFound
+      '409':
+        $ref: ../../openapi.yaml#/components/responses/Conflict
       '500':
         $ref: ../../openapi.yaml#/components/responses/InternalError
 datasets-duplicate:
@@ -789,7 +791,7 @@ datasets-rows-from-sessions:
         [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Add rows from sessions
     description: |
-      Adds one row per session. The session's requests that have content go into a variable column named `session`, which is created when the dataset has none; a request logged without content (content logging off) is left out, and a session with no such request is skipped. The first request fills the input and the last reply fills the output. The added rows are saved as a new version. Needs a log store. A session is read up to 2,000 root requests (retries and fallbacks are not counted); a longer session is not cut short but skipped, and listed in `skipped` with the reason. A session one of whose requests cannot be read is skipped the same way. A request deleted while the session is read, by log retention for example, is left out, and the session is saved with its remaining requests. Requests that arrive while the session is read are not included. The text of all the sessions in one call (requests, replies and tool calls) is capped at 64 MiB: past it the call fails with 400 and nothing is added, so send fewer sessions per call.
+      Adds one row per session. The session's requests that have content go into a variable column named `session`, which is created when the dataset has none; a request logged without content (content logging off) is left out, and a session with no such request is skipped. The first request fills the input and the last reply fills the output. The added rows are saved as a new version. Needs a log store. A session is read up to 2,000 root requests (retries and fallbacks are not counted); a longer session is not cut short but skipped, and listed in `skipped` with the reason. A session one of whose requests cannot be read is skipped the same way. A request deleted while the session is read, by log retention for example, is left out. The session is saved with the requests that remain, or skipped and listed in `skipped` when none remain. Requests that arrive while the session is read are not included. The text of all the sessions in one call (requests, replies and tool calls) is capped at 64 MiB: past it the call fails with 400 and nothing is added, so send fewer sessions per call.
     tags:
     - Datasets
     parameters:
@@ -1240,7 +1242,7 @@ datasets-version:
         [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Delete a version
     description: |
-      Deletes a saved version and the row records only it needed. The latest version cannot be deleted. A deleted number is never reused.
+      Deletes a saved version and the row records only it needed. The latest version cannot be deleted. A deleted number is never reused. A version that a test run reads cannot be deleted (409) until those runs are deleted.
     tags:
     - Datasets
     parameters:

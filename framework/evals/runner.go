@@ -23,6 +23,10 @@ var (
 	ErrNoEvalKey = errors.New("no provider key is enabled for evaluations")
 	// ErrJobNotFound is returned by a JobStore for a job that does not exist.
 	ErrJobNotFound = errors.New("evaluation job not found")
+	// ErrPlacementUnknown matches a Submit or Resume error whose queue publish failed in a
+	// way that may still have stored the message. The job must stay queued: the message
+	// runs if it exists, and the sweep publishes the job again if it does not.
+	ErrPlacementUnknown = errors.New("the evaluation may or may not have been queued")
 )
 
 // Queue names. Every evaluation is a message: evaluators that call a model wait on the
@@ -74,22 +78,43 @@ type EvalKey struct {
 // KeySource returns the provider keys currently enabled for evaluations.
 type KeySource func(ctx context.Context) ([]EvalKey, error)
 
+// Run runs one evaluator on one input in place, with the runner's engine. A job that
+// brings its own work (Exec) uses it to call the evaluator once it has checked the job
+// is still its own to run.
+func (r *Runner) Run(ctx context.Context, def Definition, input Input) Result {
+	return r.engine.Run(ctx, def, input)
+}
+
 // Keys returns the provider keys currently enabled for evaluations, read from the source.
 func (r *Runner) Keys(ctx context.Context) ([]EvalKey, error) {
 	return r.keys(ctx)
 }
 
-// Job is one evaluator run on one input. Callers that submit a job set ID, Definition
-// and Input; the store fills in every other field when it loads the job. KeyID is ""
-// until the job is routed to a key's queue. A started job cannot be moved to another
-// key's queue. ClaimID and StartedAt are filled in only for a started job. Complete, when
-// a store sets it, replaces JobStore.CompleteJob for this job, so a store that already
-// holds what completing it needs does not read the job a second time; an error it
-// returns has the job delivered again.
+// ModelRef names the model a job calls, which decides the eval key it waits on.
+type ModelRef struct {
+	Provider string
+	Model    string
+}
+
+// Job is one unit of work for the runner. Most jobs are one evaluator run on one input:
+// callers that submit one set ID, Definition and Input, and the store fills in every
+// other field when it loads the job. A job can instead bring its own work in Exec, with
+// the model it calls in Model: a test run uses this to send a target's model call through
+// the same per-key queues, so every model call an evaluation makes is under the same
+// concurrency cap. The store sets Exec when it loads such a job, since a job is sent
+// through the queue by ID only; Exec gets a context that carries the eval key it runs on.
+// A nil Model runs the job on the local topic. KeyID is "" until the job is routed to a
+// key's queue. A started job cannot be moved to another key's queue. ClaimID and
+// StartedAt are filled in only for a started job. Complete, when a store sets it,
+// replaces JobStore.CompleteJob for this job, so a store that already holds what
+// completing it needs does not read the job a second time; an error it returns has the
+// job delivered again.
 type Job struct {
 	ID         string
 	Definition Definition
 	Input      Input
+	Model      *ModelRef                                      // the model an Exec job calls; nil runs on the local topic
+	Exec       func(ctx context.Context) Result               // the job's own work, run in place of the evaluator
 	KeyID      string                                         // the key whose queue the job waits on, "" for none
 	Done       bool                                           // the job already has a result
 	Started    bool                                           // a worker began the job and it has no result yet
@@ -138,6 +163,9 @@ type JobStore interface {
 	// the next page. The cursor is built from the last row read, decodable or not, and is
 	// the zero cursor on the last page. The sweep keeps it from one sweep to the next, so
 	// rows it cannot act on never fill every page and hide the newer ones behind them.
+	//
+	// A page may come with an error: the jobs and the cursor returned with it are still
+	// used, and the error is reported.
 	StaleJobs(ctx context.Context, queuedBefore, routedBefore time.Time, skipKeys []string, after JobCursor, limit int) ([]*Job, JobCursor, error)
 	// PurgeJobs deletes jobs that completed before the cutoff.
 	PurgeJobs(ctx context.Context, completedBefore time.Time) (int64, error)
@@ -368,6 +396,10 @@ func (r *Runner) resumeFrom(ctx context.Context, after JobCursor) error {
 		return nil
 	}
 	for {
+		// A canceled start ends the walk even when the store does not watch ctx.
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		jobs, next, err := resumer.UnfinishedJobs(ctx, after, runnerSweepBatch)
 		if err != nil {
 			r.mu.Lock()
@@ -423,10 +455,22 @@ func (r *Runner) retryResume(ctx context.Context) {
 	}
 }
 
+// Resume puts back on the queue a job that a queue which forgets its messages lost.
+// Unlike Submit, it starts from where the store says the job is: on the queue of
+// job.KeyID, and started if job.Started. A job routed to a key that is still eligible
+// goes back to that key's queue; one routed to a key that is gone moves to another, or
+// ends with an error when it had already started.
+func (r *Runner) Resume(ctx context.Context, job *Job) error {
+	if job == nil || job.ID == "" {
+		return errors.New("an evaluation job needs an ID")
+	}
+	return r.resumeJob(ctx, job)
+}
+
 func (r *Runner) resumeJob(ctx context.Context, job *Job) error {
-	_, _, needsModel := r.engine.modelOf(job.Definition)
+	_, _, needsModel := r.modelOf(job)
 	switch {
-	case job.KeyID != "" && r.eligibleServes(job.KeyID, job.Definition):
+	case job.KeyID != "" && r.eligibleServes(job.KeyID, job):
 		// Back on the queue it was on. A job that had started runs again from the top.
 		return r.send(ctx, job.ID, keyTopic(job.KeyID), job.KeyID)
 	case job.KeyID == "" && !needsModel:
@@ -623,18 +667,22 @@ func (r *Runner) Sweep(ctx context.Context) error {
 	r.mu.Lock()
 	batch, after := r.sweepBatch, r.sweepAfter
 	r.mu.Unlock()
-	stale, next, err := r.store.StaleJobs(ctx, time.Now().Add(-r.opts.StrandedAfter), lostBefore, consumed, after, batch)
-	if err != nil {
-		return fmt.Errorf("failed to list stale evaluation jobs: %w", err)
+	stale, next, listErr := r.store.StaleJobs(ctx, time.Now().Add(-r.opts.StrandedAfter), lostBefore, consumed, after, batch)
+	if listErr != nil && len(stale) == 0 && next == (JobCursor{}) {
+		return fmt.Errorf("failed to list stale evaluation jobs: %w", listErr)
 	}
 	// The next sweep reads the page after this one, whatever happens to its jobs: a job
-	// whose recovery fails here is retried on the next lap, not on every sweep.
+	// whose recovery fails here is retried on the next lap, not on every sweep. A page
+	// that came with an error is still processed and its cursor kept.
 	r.mu.Lock()
 	r.sweepAfter = next
 	r.mu.Unlock()
 	// One job that cannot be recovered must not keep the rest of the batch, or the purge,
 	// from running. The failures are reported together at the end.
 	var errs []error
+	if listErr != nil {
+		errs = append(errs, fmt.Errorf("failed to list stale evaluation jobs: %w", listErr))
+	}
 	for _, job := range stale {
 		if job.Started {
 			// Started on a key nothing consumes any more, with its claim long expired. On a
@@ -651,7 +699,7 @@ func (r *Runner) Sweep(ctx context.Context) error {
 		if job.KeyID == "" {
 			// Never routed. A job that needs no model sits on the local topic by design; one
 			// that needs a model was stored and then never published.
-			if _, _, needsModel := r.engine.modelOf(job.Definition); !needsModel {
+			if _, _, needsModel := r.modelOf(job); !needsModel {
 				// It sits on the local topic by design, unless it was stored and never published
 				// (the gateway stopped in between). Publishing Submit's message ID again is a no-op
 				// while that message exists, so only a lost one is replaced.
@@ -903,7 +951,7 @@ func (r *Runner) publish(ctx context.Context, job *Job, messageID, fromKey strin
 	}
 	topic := runnerLocalTopic
 	headers := map[string]string{}
-	if provider, model, needsModel := r.engine.modelOf(job.Definition); needsModel {
+	if provider, model, needsModel := r.modelOf(job); needsModel {
 		// Pick from this call's own read: a concurrent refresh that read the keys earlier
 		// can replace r.eligible with an older map in between.
 		eligible, err := r.refresh(ctx)
@@ -964,6 +1012,22 @@ func (e *placementUnknownError) Error() string {
 
 func (e *placementUnknownError) Unwrap() error { return e.err }
 
+// Is matches ErrPlacementUnknown, so a caller outside this package can tell an uncertain
+// publish from a definite failure.
+func (e *placementUnknownError) Is(target error) bool { return target == ErrPlacementUnknown }
+
+// modelOf reports the model a job calls, if any: the one it names when it brings its
+// own work, and the one its evaluator needs otherwise.
+func (r *Runner) modelOf(job *Job) (provider, model string, needsModel bool) {
+	if job.Exec != nil {
+		if job.Model == nil {
+			return "", "", false
+		}
+		return job.Model.Provider, job.Model.Model, true
+	}
+	return r.engine.modelOf(job.Definition)
+}
+
 // pickKey chooses a key of eligible for a provider and model. Keys are weighted by their
 // concurrency, so a key with twice the room takes twice the jobs. refresh builds a new
 // map per call and never changes it once stored, so eligible is read without r.mu.
@@ -1002,11 +1066,11 @@ func (r *Runner) isEligible(keyID string) bool {
 
 // eligibleServes reports whether a key is in the current eligible map and can run the
 // job, reading the key once under r.mu.
-func (r *Runner) eligibleServes(keyID string, def Definition) bool {
+func (r *Runner) eligibleServes(keyID string, job *Job) bool {
 	r.mu.Lock()
 	key, ok := r.eligible[keyID]
 	r.mu.Unlock()
-	return ok && r.keyServes(key, def)
+	return ok && r.keyServes(key, job)
 }
 
 type jobMessage struct {
@@ -1037,7 +1101,11 @@ func (r *Runner) handler(keyID string) queue.Handler {
 			return nil
 		}
 
-		if keyID != "" {
+		// A job that calls no model needs no eval key, so a key that was unmarked since it
+		// was queued does not stop it: it runs on the topic that delivered it. A test run's
+		// repair of an entry left evaluating is such a job, and as a started entry it could
+		// not be moved anyway.
+		if _, _, needsModel := r.modelOf(job); keyID != "" && needsModel {
 			// The key may have been unmarked since the job was queued on it. Judge it from
 			// this call's own read: a concurrent refresh that read the keys earlier can
 			// replace r.eligible with an older map in between.
@@ -1045,7 +1113,7 @@ func (r *Runner) handler(keyID string) queue.Handler {
 			if err != nil {
 				return err
 			}
-			if key, ok := eligible[keyID]; !ok || !r.keyServes(key, job.Definition) {
+			if key, ok := eligible[keyID]; !ok || !r.keyServes(key, job) {
 				if job.Started {
 					// A worker died partway through it, and it cannot be moved any more. Only
 					// the delivery that started it ends it; another message leaves it to that one.
@@ -1071,7 +1139,12 @@ func (r *Runner) handler(keyID string) queue.Handler {
 		if !claimed {
 			return nil // another delivery of this job holds it
 		}
-		result := r.engine.Run(WithKeyID(ctx, keyID), job.Definition, job.Input)
+		var result Result
+		if job.Exec != nil {
+			result = job.Exec(WithKeyID(ctx, keyID))
+		} else {
+			result = r.engine.Run(WithKeyID(ctx, keyID), job.Definition, job.Input)
+		}
 		return r.complete(ctx, job, result)
 	}
 }
@@ -1135,8 +1208,8 @@ func (r *Runner) deadHandler() queue.Handler {
 // key of its provider that supports the model. A key's model list can change after a job
 // was routed to it. The caller passes the key from the eligible map it read, so the
 // answer never mixes two refreshes.
-func (r *Runner) keyServes(key EvalKey, def Definition) bool {
-	provider, model, needsModel := r.engine.modelOf(def)
+func (r *Runner) keyServes(key EvalKey, job *Job) bool {
+	provider, model, needsModel := r.modelOf(job)
 	if !needsModel {
 		return true
 	}
@@ -1207,12 +1280,32 @@ func (r *Runner) complete(ctx context.Context, job *Job, result Result) error {
 	}
 	writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), completeWriteTimeout)
 	defer cancel()
-	if err := store(writeCtx, job.ID, result); err != nil {
-		return err
+	// A failed write is retried here, with the same result, while this worker holds the
+	// job. Returning it would have the queue redeliver the message under the same delivery,
+	// whose claim holds, and the job would run again: a judge call made twice.
+	for try := 0; ; try++ {
+		err := store(writeCtx, job.ID, result)
+		if err == nil {
+			break
+		}
+		if errors.Is(err, ErrJobNotFound) || try >= len(completeWriteBackoff) {
+			return err
+		}
+		timer := time.NewTimer(completeWriteBackoff[try])
+		select {
+		case <-writeCtx.Done():
+			timer.Stop()
+			return err
+		case <-timer.C:
+		}
 	}
 	r.notify(job.ID)
 	return nil
 }
+
+// completeWriteBackoff is the wait before each retry of a failed result write: three tries
+// in all, inside completeWriteTimeout.
+var completeWriteBackoff = []time.Duration{100 * time.Millisecond, 400 * time.Millisecond}
 
 // Watch returns a channel that is closed when this instance completes the job. A job
 // may complete on another instance, so callers also poll the store. cancel releases

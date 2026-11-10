@@ -115,7 +115,7 @@ DatasetSummary:
       description: Edits made since the last saved version
     max_versions: &id007
       type: integer
-      description: The most saved versions to keep. Absent keeps every version
+      description: The most saved versions to keep. Versions a test run reads and the latest version are kept even past it. Absent keeps every version
     created_by: &id008
       type: string
       description: Who created it
@@ -181,7 +181,7 @@ DatasetInput:
       description: The folder to create the dataset in. Used on create only. Move a dataset with the folder endpoint
     max_versions:
       type: integer
-      description: The most saved versions to keep, at least 1. Leave out to keep every version
+      description: The most saved versions to keep, at least 1. Versions a test run reads and the latest version are kept even past it. Leave out to keep every version
       minimum: 1
     template:
       type: string
