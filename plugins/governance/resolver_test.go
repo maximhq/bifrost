@@ -1609,6 +1609,11 @@ func TestAllowedModelsMatchKeyAliasesThroughTheHookChain(t *testing.T) {
 			require.NoError(t, err)
 			if tc.blocked {
 				require.NotNil(t, shortCircuit, "%q is neither allowed nor an alias of an allowed model", tc.model)
+				// The refusal names the permit that refused, also when the literal check is the one that
+				// refused a name the alias-aware access would have admitted.
+				require.NotNil(t, shortCircuit.Error)
+				require.NotNil(t, shortCircuit.Error.Error)
+				assert.Contains(t, shortCircuit.Error.Error.Message, "for virtual key 'alias-vk'")
 				return
 			}
 			require.Nil(t, shortCircuit, "%q should be admitted", tc.model)

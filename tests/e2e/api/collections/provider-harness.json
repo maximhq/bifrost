@@ -315420,7 +315420,7 @@
       ]
     },
     {
-      "name": "328. Virtual key allowed_models match key aliases (deepseek alias-allowlist)",
+      "name": "328. Virtual key allowed_models match key aliases (deepseek alias-allowlist) (#6620 / PR #8528)",
       "description": "A key alias is a client-facing name for a provider model (here deepseek-v4-flash-anthropic stands for deepseek-v4-flash). Key aliases are resolved only at key selection, after governance has checked the request, so governance compared the alias name against allowed_models and refused a request for the alias even when the virtual key allowed the model it stands for (403 model_blocked, #6620). The check now also accepts a name that every enabled key of the provider maps to an allowed model; a key without the alias would send the name through as written, so one key mapping it is not enough, and the match is one way. A virtual key allows only deepseek-v4-flash. Requesting the alias of that model must be admitted; requesting the model by name still is; requesting the alias of a model the key does not allow (deepseek-v4-pro-anthropic) must still be refused with model_blocked. Red before the change: the alias request returned 403 model_blocked. The cases make two small live DeepSeek calls, and the run-scoped virtual key is deleted at the end.",
       "item": [
         {
@@ -315692,7 +315692,7 @@
       ]
     },
     {
-      "name": "329. Key aliases carry the limits of the model they stand for; batch items and restricted keys (deepseek alias-limit)",
+      "name": "329. Key aliases carry the limits of the model they stand for; batch items and restricted keys (deepseek alias-limit) (#6620 / PR #8528)",
       "description": "A key alias (deepseek-v4-flash-anthropic stands for deepseek-v4-flash) is resolved only at key selection, after governance has run. These cases pin what follows from that, for #6620 / PR #8528: a model-scoped rate limit set on deepseek-v4-flash for a virtual key must also count a request that names the alias; an inline batch item reaches the provider exactly as written, so an item that names an alias is refused instead of being admitted as the model it stands for; and a provider key that only serves other models never vetoes the alias. Every object the folder creates (virtual key, restricted provider key, model limit) is deleted again, and a retained virtual key from an aborted run is deleted before the next run starts. The folder makes two small live DeepSeek calls.",
       "item": [
         {

@@ -177,7 +177,7 @@ func (r *BudgetResolver) evaluateAccess(ctx *schemas.BifrostContext, evaluationR
 		if !modelAccess.IsModelAllowed(string(provider), model) {
 			return &EvaluationResult{
 				Decision: DecisionModelBlocked,
-				Reason:   denialReason(fmt.Sprintf("Model '%s' is not allowed", model), access.DeniedPermitsForModel(string(provider), model)),
+				Reason:   denialReason(fmt.Sprintf("Model '%s' is not allowed", model), modelAccess.DeniedPermitsForModel(string(provider), model)),
 			}
 		}
 	}
