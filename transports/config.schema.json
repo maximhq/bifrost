@@ -739,6 +739,9 @@
         "byteplus": {
           "$ref": "#/$defs/provider"
         },
+        "baseten": {
+          "$ref": "#/$defs/provider"
+        },
         "cloudflare": {
           "$ref": "#/$defs/provider_with_cloudflare_config"
         },
@@ -4560,7 +4563,8 @@
                         "huggingface",
                         "databricks",
                         "cloudflare",
-                        "byteplus"
+                        "byteplus",
+                        "baseten"
                       ]
                     },
                     "embedding_model": {
@@ -7971,6 +7975,10 @@
                   "use_deployments_endpoint": {
                     "type": "boolean",
                     "description": "Replicate: use the deployments endpoint instead of the predictions endpoint for this alias."
+                  },
+                  "deployment_url": {
+                    "type": "string",
+                    "description": "Baseten: OpenAI-compatible base URL of a dedicated deployment, e.g. https://model-<id>.api.baseten.co/environments/production/sync/v1. Requests for this alias go there instead of Model APIs, and model_id is the served model name; Engine-Builder and BEI deployments ignore it, so any value works, such as not-required. Must be https (can use env. prefix)."
                   },
                   "use_anthropic_endpoints": {
                     "type": "boolean",

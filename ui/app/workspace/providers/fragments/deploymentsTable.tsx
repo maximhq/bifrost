@@ -7,7 +7,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { AliasConfig, ModelFamily, ModelFamilyValues } from "@/lib/types/config";
-import { SecretVar } from "@/lib/types/schemas";
+import { isLiteralHTTPSURL, SecretVar } from "@/lib/types/schemas";
 import { cn } from "@/lib/utils";
 import { parseVertexEndpointURL } from "@/lib/vertexEndpoint";
 import { ChevronDown, ChevronRight, Trash } from "lucide-react";
@@ -434,6 +434,39 @@ function ReplicateSection({ config, onChange, disabled }: ProviderSectionProps) 
 	);
 }
 
+function BasetenSection({ config, onChange, disabled }: ProviderSectionProps) {
+	const { t } = useTranslation("models");
+	const { t: tCommon } = useTranslation("common");
+	const inputId = useId();
+	const errorId = `${inputId}-error`;
+	const invalid = !isLiteralHTTPSURL(config.deployment_url);
+	return (
+		<div className="space-y-4">
+			<SectionHeader
+				title={t("providers.deployments.providerOverrides", { provider: "Baseten" })}
+				description={t("providers.deployments.overrideDefaultsShort", { provider: "Baseten" })}
+			/>
+			<FieldRow htmlFor={inputId} label={t("providers.deployments.deploymentUrl")} hint={t("providers.deployments.deploymentUrlHint")}>
+				<SecretVarInput
+					id={inputId}
+					value={config.deployment_url ?? emptySecretVar}
+					onChange={(next) => onChange({ deployment_url: isEmptySecretVar(next) ? undefined : next })}
+					placeholder={t("providers.deployments.deploymentUrlPlaceholder")}
+					disabled={disabled}
+					aria-invalid={invalid}
+					aria-describedby={invalid ? errorId : undefined}
+					data-testid="deployment-baseten-deployment-url"
+				/>
+				{invalid && (
+					<p id={errorId} className="text-destructive text-xs" data-testid="deployment-baseten-deployment-url-error">
+						{tCommon("validation.basetenDeploymentUrl")}
+					</p>
+				)}
+			</FieldRow>
+		</div>
+	);
+}
+
 function UseAnthropicEndpointsToggleSection({ config, onChange, disabled, providerName }: ProviderSectionProps & { providerName: string }) {
 	const { t } = useTranslation("models");
 	return (
@@ -466,6 +499,8 @@ function ProviderSection({ providerName, ...props }: ProviderSectionProps & { pr
 			return <BedrockMantleSection {...props} />;
 		case "replicate":
 			return <ReplicateSection {...props} />;
+		case "baseten":
+			return <BasetenSection {...props} />;
 		case "sgl":
 			return <UseAnthropicEndpointsToggleSection providerName="SGLang" {...props} />;
 		case "deepseek":
