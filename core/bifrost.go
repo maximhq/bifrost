@@ -6369,6 +6369,17 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 	// Handle nil context early to prevent blocking. See the identical
 	// resolution (and why) in handleRequest.
 	ctx, ownedCtx := resolveRequestContext(ctx, bifrost.ctx)
+	// A derived context outlives this call only inside a returned stream. On
+	// every other return it is released here, after the session outcome is
+	// observed on it.
+	streamOwnsCtx := false
+	if ownedCtx != nil {
+		defer func() {
+			if !streamOwnsCtx {
+				ownedCtx.Cancel()
+			}
+		}()
+	}
 
 	// What the caller asked for, before any hook rewrites it: the name under which a session
 	// remembers where these requests were served. Reported back with how the request ended.
@@ -6385,25 +6396,22 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 	// Arms once for the whole call, including every fallback attempt below.
 	// See the identical comment in handleRequest, and armRequestTimeout's doc
 	// comment, for why this must not restart per attempt. Every return path
-	// below either wraps the returned channel with wrapStreamForRequestTimeout
+	// below either wraps the returned channel with wrapStream
 	// (success: stop only once the caller has fully drained the stream) or
 	// calls stopRequestTimeout directly (error: nothing to wrap).
 	stopRequestTimeout, requestTimeoutArmed := armRequestTimeout(ctx)
 	defer func() { bifrostErr = asRequestTimeoutError(ctx, bifrostErr) }()
-	if ownedCtx != nil {
-		// Unlike handleRequest, this returns while the caller is still
-		// draining the stream, so the derived context cannot be released on
-		// return -- it is released wherever the timer is stopped, which every
-		// return path below already reaches exactly once. requestTimeoutArmed
-		// is necessarily true here (resolveRequestContext only derives when
-		// root declares a deadline, which is the same value armRequestTimeout
-		// reads through this context), so the wrapped-stream path that runs
-		// stop after drain is guaranteed to be the one taken on success.
-		stopTimer := stopRequestTimeout
-		stopRequestTimeout = func() {
-			stopTimer()
-			ownedCtx.Cancel()
+	// Success paths hand the caller a stream that keeps using ctx, so the timer
+	// and any derived context are released only once it is fully drained.
+	wrapStream := func(ch chan *schemas.BifrostStreamChunk) chan *schemas.BifrostStreamChunk {
+		if ch == nil || ownedCtx == nil || !requestTimeoutArmed {
+			return wrapStreamForRequestTimeout(ctx, ch, stopRequestTimeout, requestTimeoutArmed)
 		}
+		streamOwnsCtx = true
+		return wrapStreamForRequestTimeout(ctx, ch, func() {
+			stopRequestTimeout()
+			ownedCtx.Cancel()
+		}, requestTimeoutArmed)
 	}
 
 	ctx.ResetUpstreamLatency()
@@ -6480,7 +6488,7 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 			return primaryResult, primaryErr
 		}
 		served = &schemas.Route{Provider: provider, Model: model}
-		return wrapStreamForRequestTimeout(ctx, primaryResult, stopRequestTimeout, requestTimeoutArmed), nil
+		return wrapStream(primaryResult), nil
 	}
 
 	// Mirror handleRequest: register core on the engines-used list and post
@@ -6552,7 +6560,7 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 			tracer.EndSpan(handle, schemas.SpanStatusOk, "")
 			served = &schemas.Route{Provider: fallback.Provider, Model: fallback.Model}
 			servedFallback = true
-			return wrapStreamForRequestTimeout(ctx, result, stopRequestTimeout, requestTimeoutArmed), nil
+			return wrapStream(result), nil
 		}
 
 		// End span with error status

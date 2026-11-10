@@ -846,13 +846,10 @@ func TestResolveRequestContext_ReleasedContextLeaksNoGoroutine(t *testing.T) {
 	}
 }
 
-// TestResolveRequestContext_StreamPathReleasesOwnedContextAfterDrain mirrors
-// how handleStreamRequest composes resolveRequestContext, armRequestTimeout and
-// wrapStreamForRequestTimeout: the stream returns to its caller before it is
-// drained, so the owned context cannot be released with a defer and is instead
-// folded into the stop function that runs once the stream is exhausted. Guards
-// the ordering too -- the context must still be live while chunks are being
-// forwarded, and released only after the channel closes.
+// TestResolveRequestContext_StreamPathReleasesOwnedContextAfterDrain checks the
+// pieces handleStreamRequest's success path relies on: an owned context folded
+// into the stop function stays live while chunks are forwarded and is released
+// only once the wrapped stream closes.
 func TestResolveRequestContext_StreamPathReleasesOwnedContextAfterDrain(t *testing.T) {
 	root, cancelRoot := schemas.NewBifrostContextWithCancel(context.Background())
 	defer cancelRoot()
@@ -1233,5 +1230,63 @@ func TestWrapStreamForRequestTimeout_AbandonedConsumerIsStillBounded(t *testing.
 func TestDefaultDrainBounds_SendWaitsForASlowWriter(t *testing.T) {
 	if defaultDrainBounds.send != time.Minute {
 		t.Fatalf("default terminal-send bound is %v, want 1m", defaultDrainBounds.send)
+	}
+}
+
+// ctxErrAffinity records the request context's error at the moment Observe runs.
+type ctxErrAffinity struct {
+	mu   sync.Mutex
+	errs []error
+}
+
+func (*ctxErrAffinity) ResolveRoute(_ *schemas.BifrostContext, _ schemas.Route, chain []schemas.Route) []schemas.Route {
+	return chain
+}
+
+func (*ctxErrAffinity) ResolveKey(*schemas.BifrostContext, schemas.ModelProvider, string, []schemas.Key) (schemas.Key, bool) {
+	return schemas.Key{}, false
+}
+
+func (a *ctxErrAffinity) Observe(ctx *schemas.BifrostContext, _ schemas.Route, _ schemas.RouteOutcome) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.errs = append(a.errs, ctx.Err())
+}
+
+// A failed stream request on a context derived from root is observed before
+// that context is released, so an observer can still use it.
+func TestHandleStreamRequest_ObservesFailureBeforeReleasingOwnedContext(t *testing.T) {
+	affinity := &ctxErrAffinity{}
+	client, err := Init(context.Background(), schemas.BifrostConfig{
+		Account:         NewMockAccount(),
+		Logger:          NewDefaultLogger(schemas.LogLevelError),
+		SessionAffinity: affinity,
+	})
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	t.Cleanup(client.Shutdown)
+	client.ctx.SetValue(schemas.BifrostContextKeyRequestTimeout, time.Hour)
+	client.ctx.SetValue(schemas.BifrostContextKeySessionID, "s")
+
+	_, bifrostErr := client.ChatCompletionStreamRequest(nil, &schemas.BifrostChatRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4o-mini",
+		Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}}},
+	})
+	if bifrostErr == nil {
+		t.Fatal("expected the request to fail: the account configures no provider")
+	}
+
+	affinity.mu.Lock()
+	defer affinity.mu.Unlock()
+	if len(affinity.errs) != 1 {
+		t.Fatalf("expected one observed outcome, got %d", len(affinity.errs))
+	}
+	if affinity.errs[0] != nil {
+		t.Fatalf("the owned context was released before the outcome was observed: %v", affinity.errs[0])
+	}
+	if client.ctx.Err() != nil {
+		t.Fatalf("releasing the owned context must not cancel root, got %v", client.ctx.Err())
 	}
 }
