@@ -8062,9 +8062,11 @@ func convertAnthropicContentBlocksToResponsesMessagesOrdered(ctx *schemas.Bifros
 		case AnthropicContentBlockTypeServerToolUse:
 			// Check if it's a web_search tool
 			if block.Name != nil && *block.Name == string(AnthropicToolNameWebSearch) {
+				// in_progress until its web_search_tool_result arrives (attachWebSearchSourcesToCall):
+				// a call with no result is a search Anthropic deferred, not a finished one.
 				bifrostMsg := schemas.ResponsesMessage{
 					Type:                 schemas.Ptr(schemas.ResponsesMessageTypeWebSearchCall),
-					Status:               schemas.Ptr("completed"),
+					Status:               schemas.Ptr("in_progress"),
 					ResponsesToolMessage: &schemas.ResponsesToolMessage{},
 				}
 
@@ -8919,7 +8921,14 @@ func convertBifrostWebSearchCallToAnthropicBlocks(msg *schemas.ResponsesMessage)
 
 	blocks = append(blocks, serverToolUseBlock)
 
-	// 2. Always create web_search_tool_result block — Anthropic requires it alongside every server_tool_use.
+	// An in_progress call has no result yet: Anthropic deferred the search (it was called
+	// in the same turn as a client tool, or the turn paused) and runs it when the bare
+	// server_tool_use is sent back. A result block here would make it a finished search.
+	if msg.Status != nil && *msg.Status == "in_progress" {
+		return blocks
+	}
+
+	// 2. Create web_search_tool_result block — Anthropic requires it alongside every finished server_tool_use.
 	// Without this block, the API returns: "web_search tool use was found without a corresponding web_search_tool_result block"
 	var resultBlocks []AnthropicContentBlock
 	for _, source := range action.Sources {
