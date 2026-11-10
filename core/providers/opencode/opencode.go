@@ -21,6 +21,7 @@ type opencodeProvider struct {
 	client              *fasthttp.Client
 	streamingClient     *fasthttp.Client
 	networkConfig       schemas.NetworkConfig
+	listModelsHeaders   map[string]schemas.SecretVar // static ExtraHeaders minus x-opencode-session
 	sendBackRawRequest  bool
 	sendBackRawResponse bool
 	// fallbackResponsesToChat routes Responses API calls through Chat
@@ -78,15 +79,61 @@ func newOpencodeProvider(
 		client:                  client,
 		streamingClient:         streamingClient,
 		networkConfig:           config.NetworkConfig,
+		listModelsHeaders:       withoutOpencodeSessionHeader(config.NetworkConfig.ExtraHeaders),
 		sendBackRawRequest:      config.SendBackRawRequest,
 		sendBackRawResponse:     config.SendBackRawResponse,
 		fallbackResponsesToChat: fallbackResponsesToChat,
 	}, nil
 }
 
+// withoutOpencodeSessionHeader returns the static extra headers with every case
+// variant of x-opencode-session removed, for ListModels: the gateway only takes
+// the header on inference calls, where the resolved value replaces any static
+// one. It is built once per provider, so ListModels pays nothing per call; the
+// original map is returned as-is when it carries no such header.
+func withoutOpencodeSessionHeader(headers map[string]schemas.SecretVar) map[string]schemas.SecretVar {
+	found := false
+	for name := range headers {
+		if strings.EqualFold(name, OpencodeSessionHeader) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return headers
+	}
+	filtered := make(map[string]schemas.SecretVar, len(headers))
+	for name, value := range headers {
+		if !strings.EqualFold(name, OpencodeSessionHeader) {
+			filtered[name] = value
+		}
+	}
+	return filtered
+}
+
 // GetProviderKey returns the provider identifier stored at construction time.
 func (p *opencodeProvider) GetProviderKey() schemas.ModelProvider {
 	return p.providerKey
+}
+
+// inferenceAuthHeaders returns the per-request header map for an inference
+// call: the bearer auth header plus the resolved x-opencode-session header (see
+// ResolveOpencodeSession). Every inference call (chat, responses and their
+// streaming variants) carries the same upstream session identity, so zen→go
+// fallbacks and retries stay on one session.
+//
+// The session travels in the auth-header map rather than in the extra headers
+// because the OpenAI handlers apply the auth map last with Header.Set. That
+// lets the resolved value win over a statically configured header of any case
+// and over a client-forwarded x-bf-eh-x-opencode-session, neither of which went
+// through validation or namespacing. ListModels does not use this helper: the
+// gateway only requires the header on inference calls.
+func (p *opencodeProvider) inferenceAuthHeaders(ctx *schemas.BifrostContext, key schemas.Key) map[string]string {
+	headers := openai.BearerAuthHeader(key)
+	if session := ResolveOpencodeSession(ctx); session != "" {
+		headers[OpencodeSessionHeader] = session
+	}
+	return headers
 }
 
 // ListModels performs a list models request to the Opencode API.
@@ -97,7 +144,7 @@ func (p *opencodeProvider) ListModels(ctx *schemas.BifrostContext, keys []schema
 		request,
 		p.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/models"),
 		keys,
-		p.networkConfig.ExtraHeaders,
+		p.listModelsHeaders,
 		p.providerKey,
 		providerUtils.ShouldSendBackRawRequest(ctx, p.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, p.sendBackRawResponse),
@@ -121,7 +168,7 @@ func (p *opencodeProvider) ChatCompletion(ctx *schemas.BifrostContext, key schem
 		p.client,
 		p.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/chat/completions"),
 		request,
-		openai.BearerAuthHeader(key),
+		p.inferenceAuthHeaders(ctx, key),
 		p.networkConfig.ExtraHeaders,
 		providerUtils.ShouldSendBackRawRequest(ctx, p.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, p.sendBackRawResponse),
@@ -140,7 +187,7 @@ func (p *opencodeProvider) ChatCompletionStream(ctx *schemas.BifrostContext, pos
 		p.streamingClient,
 		p.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/chat/completions"),
 		request,
-		openai.BearerAuthHeader(key),
+		p.inferenceAuthHeaders(ctx, key),
 		p.networkConfig.ExtraHeaders,
 		p.networkConfig.StreamIdleTimeoutInSeconds,
 		providerUtils.ShouldSendBackRawRequest(ctx, p.sendBackRawRequest),
@@ -173,7 +220,7 @@ func (p *opencodeProvider) Responses(ctx *schemas.BifrostContext, key schemas.Ke
 		p.client,
 		p.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/responses"),
 		request,
-		openai.BearerAuthHeader(key),
+		p.inferenceAuthHeaders(ctx, key),
 		p.networkConfig.ExtraHeaders,
 		providerUtils.ShouldSendBackRawRequest(ctx, p.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, p.sendBackRawResponse),
@@ -203,7 +250,7 @@ func (p *opencodeProvider) ResponsesStream(ctx *schemas.BifrostContext, postHook
 		p.streamingClient,
 		p.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/responses"),
 		request,
-		openai.BearerAuthHeader(key),
+		p.inferenceAuthHeaders(ctx, key),
 		p.networkConfig.ExtraHeaders,
 		p.networkConfig.StreamIdleTimeoutInSeconds,
 		providerUtils.ShouldSendBackRawRequest(ctx, p.sendBackRawRequest),

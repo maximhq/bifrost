@@ -373,11 +373,15 @@ func TestMatViewDeadClientHelper(t *testing.T) {
 		_, err = matViewSessionLimits{idleSessionTimeout: 2 * time.Second}.apply(ctx, conn, 2*time.Second)
 		require.NoError(t, err)
 	}
-	var acquired bool
-	require.NoError(t, conn.QueryRowContext(ctx, "SELECT pg_try_advisory_lock($1)", matviewRefreshAdvisoryLockKey).Scan(&acquired))
-	require.True(t, acquired)
+	// Other test packages' migrations hold this lock through their pause, so a
+	// single try loses whenever one runs; wait for it like every refresher does.
+	takeRefreshLock(t, conn)
 	_, _ = conn.ExecContext(ctx, "SELECT pg_sleep(300) /* matview dead client helper */")
 }
+
+// helperStartWait covers takeRefreshLock's wait for the refresh lock in the
+// helper, plus starting the child process.
+const helperStartWait = 2*time.Minute + 30*time.Second
 
 // startDeadClientHelper runs TestMatViewDeadClientHelper in a child process and
 // returns it with the backend pid it is running on, once its statement runs.
@@ -391,7 +395,7 @@ func startDeadClientHelper(t *testing.T, observer *gorm.DB, mode string) (*exec.
 	require.Eventually(t, func() bool {
 		return observer.Raw(`SELECT COALESCE(max(pid), 0) FROM pg_stat_activity
 			WHERE state = 'active' AND query LIKE '%matview dead client helper%' AND pid <> pg_backend_pid()`).Scan(&pid).Error == nil && pid != 0
-	}, 20*time.Second, 100*time.Millisecond, "helper statement never started")
+	}, helperStartWait, 100*time.Millisecond, "helper statement never started")
 	return cmd, pid
 }
 
@@ -423,7 +427,7 @@ func TestMatViewSessionDeadClientReleasesRefreshLock(t *testing.T) {
 		require.Eventually(t, func() bool { return !backendAlive(t, observer, pid) },
 			matViewClientCheckInterval+10*time.Second, 200*time.Millisecond,
 			"the server must end a statement whose client is gone")
-		other := awaitTestAdvisoryLock(t, observer, matviewRefreshAdvisoryLockKey, 5*time.Second)
+		other := awaitTestAdvisoryLock(t, observer, matviewRefreshAdvisoryLockKey, 2*time.Minute)
 		releaseTestAdvisoryLock(t, other, matviewRefreshAdvisoryLockKey)
 	})
 
@@ -438,7 +442,7 @@ func TestMatViewSessionDeadClientReleasesRefreshLock(t *testing.T) {
 		require.Eventually(t, func() bool { return !backendAlive(t, observer, pid) },
 			20*time.Second, 200*time.Millisecond,
 			"the server must end the idle session that still holds the refresh lock")
-		other := awaitTestAdvisoryLock(t, observer, matviewRefreshAdvisoryLockKey, 5*time.Second)
+		other := awaitTestAdvisoryLock(t, observer, matviewRefreshAdvisoryLockKey, 2*time.Minute)
 		releaseTestAdvisoryLock(t, other, matviewRefreshAdvisoryLockKey)
 	})
 }

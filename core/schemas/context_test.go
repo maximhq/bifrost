@@ -774,3 +774,83 @@ func TestBifrostContextFromContext(t *testing.T) {
 		}
 	})
 }
+
+// TestGetOrStoreOpencodeSession pins the load-or-store helper behind the
+// reserved BifrostContextKeyOpencodeSession: the supplier result is cached,
+// later calls skip the supplier, the write lands under BlockRestrictedWrites
+// (where SetValue drops it), and a plugin-scoped context stores on the root.
+func TestGetOrStoreOpencodeSession(t *testing.T) {
+	t.Run("caches the first supplier result", func(t *testing.T) {
+		ctx := NewBifrostContext(context.Background(), NoDeadline)
+		defer ctx.Cancel()
+		calls := 0
+		supplier := func() string { calls++; return fmt.Sprintf("sess-%d", calls) }
+		if got := ctx.GetOrStoreOpencodeSession(supplier); got != "sess-1" {
+			t.Fatalf("first call = %q, want sess-1", got)
+		}
+		if got := ctx.GetOrStoreOpencodeSession(supplier); got != "sess-1" {
+			t.Fatalf("second call = %q, want cached sess-1", got)
+		}
+		if calls != 1 {
+			t.Fatalf("supplier ran %d times, want 1", calls)
+		}
+	})
+
+	t.Run("stores under BlockRestrictedWrites where SetValue is dropped", func(t *testing.T) {
+		ctx := NewBifrostContext(context.Background(), NoDeadline)
+		defer ctx.Cancel()
+		ctx.BlockRestrictedWrites()
+		ctx.SetValue(BifrostContextKeyOpencodeSession, "forged")
+		if got := ctx.Value(BifrostContextKeyOpencodeSession); got != nil {
+			t.Fatalf("SetValue on the reserved key landed under BlockRestrictedWrites: %v", got)
+		}
+		if got := ctx.GetOrStoreOpencodeSession(func() string { return "resolved" }); got != "resolved" {
+			t.Fatalf("GetOrStoreOpencodeSession() = %q, want resolved", got)
+		}
+		if got := ctx.Value(BifrostContextKeyOpencodeSession); got != "resolved" {
+			t.Fatalf("stored value = %v, want resolved", got)
+		}
+	})
+
+	t.Run("plugin-scoped context stores on the root", func(t *testing.T) {
+		root := NewBifrostContext(context.Background(), NoDeadline)
+		defer root.Cancel()
+		name := "plugin"
+		scoped := root.WithPluginScope(&name)
+		if got := scoped.GetOrStoreOpencodeSession(func() string { return "scoped" }); got != "scoped" {
+			t.Fatalf("scoped call = %q, want scoped", got)
+		}
+		if got := root.GetOrStoreOpencodeSession(func() string { return "other" }); got != "scoped" {
+			t.Fatalf("root call = %q, want the value stored through the scoped context", got)
+		}
+	})
+
+	t.Run("concurrent first callers all return one stored value", func(t *testing.T) {
+		ctx := NewBifrostContext(context.Background(), NoDeadline)
+		defer ctx.Cancel()
+		var (
+			wg      sync.WaitGroup
+			mu      sync.Mutex
+			counter int
+		)
+		results := make([]string, 64)
+		for i := range results {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				results[i] = ctx.GetOrStoreOpencodeSession(func() string {
+					mu.Lock()
+					defer mu.Unlock()
+					counter++
+					return fmt.Sprintf("sess-%d", counter)
+				})
+			}(i)
+		}
+		wg.Wait()
+		for _, r := range results {
+			if r != results[0] {
+				t.Fatalf("concurrent callers saw %q and %q, want one value", results[0], r)
+			}
+		}
+	})
+}

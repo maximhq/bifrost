@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	ws "github.com/fasthttp/websocket"
+	"github.com/maximhq/bifrost/core/schemas"
 )
 
 // TestSessionPendingInputsAcrossLongConversation releases each turn without retaining completed IDs.
@@ -162,6 +163,39 @@ func TestSessionManagerCloseAll(t *testing.T) {
 	}
 	if got := manager.Count(); got != 0 {
 		t.Fatalf("Count() after a refused Create = %d, want 0", got)
+	}
+}
+
+// TestSessionRealtimeInterimUsage totals the generations of one turn and starts the next turn from zero.
+func TestSessionRealtimeInterimUsage(t *testing.T) {
+	session := NewSession(nil)
+	session.AddRealtimeInterimUsage(nil)
+	if session.ConsumeRealtimeInterimUsage() != nil {
+		t.Fatal("expected no usage before any was added")
+	}
+
+	first := &schemas.BifrostLLMUsage{PromptTokens: 100, CompletionTokens: 10, TotalTokens: 110}
+	session.AddRealtimeInterimUsage(first)
+	session.AddRealtimeInterimUsage(&schemas.BifrostLLMUsage{PromptTokens: 150, CompletionTokens: 60, TotalTokens: 210})
+	got := session.ConsumeRealtimeInterimUsage()
+	if got == nil || got.PromptTokens != 250 || got.CompletionTokens != 70 || got.TotalTokens != 320 {
+		t.Fatalf("usage = %+v, want 250 in, 70 out, 320 total", got)
+	}
+	if first.PromptTokens != 100 {
+		t.Fatalf("the caller's usage was changed to %d", first.PromptTokens)
+	}
+	if session.ConsumeRealtimeInterimUsage() != nil {
+		t.Fatal("usage carried into the next turn")
+	}
+
+	session.AddRealtimeInterimUsage(first)
+	session.Close()
+	if session.ConsumeRealtimeInterimUsage() != nil {
+		t.Fatal("a closed session kept its usage")
+	}
+	session.AddRealtimeInterimUsage(first)
+	if session.ConsumeRealtimeInterimUsage() != nil {
+		t.Fatal("a closed session took new usage")
 	}
 }
 

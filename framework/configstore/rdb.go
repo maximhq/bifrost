@@ -345,6 +345,7 @@ func (s *RDBConfigStore) UpdateClientConfig(ctx context.Context, config *ClientC
 		SkipAccessProfileUserVirtualKeyCreation:   config.SkipAccessProfileUserVirtualKeyCreation,
 		SkipAccessProfileUserVirtualKeyDeletion:   config.SkipAccessProfileUserVirtualKeyDeletion,
 		HiddenRequestTypes:                        config.HiddenRequestTypes,
+		UsageEstimationTokenizers:                 config.UsageEstimationTokenizers,
 		RoutingChainMaxDepth:                      config.RoutingChainMaxDepth,
 		MCPExternalClientURL:                      mcpExternalURLToString(config.MCPExternalClientURL),
 		SkillsExternalClientURL:                   mcpExternalURLToString(config.SkillsExternalClientURL),
@@ -667,6 +668,7 @@ func (s *RDBConfigStore) GetClientConfig(ctx context.Context) (*ClientConfig, er
 		SkipAccessProfileUserVirtualKeyCreation: dbConfig.SkipAccessProfileUserVirtualKeyCreation,
 		SkipAccessProfileUserVirtualKeyDeletion: dbConfig.SkipAccessProfileUserVirtualKeyDeletion,
 		HiddenRequestTypes:                      dbConfig.HiddenRequestTypes,
+		UsageEstimationTokenizers:               dbConfig.UsageEstimationTokenizers,
 		RoutingChainMaxDepth:                    dbConfig.RoutingChainMaxDepth,
 		MCPExternalClientURL:                    schemas.NewSecretVar(dbConfig.MCPExternalClientURL),
 		SkillsExternalClientURL:                 schemas.NewSecretVar(dbConfig.SkillsExternalClientURL),
@@ -3534,6 +3536,98 @@ func (s *RDBConfigStore) DeletePricingOverride(ctx context.Context, id string, t
 		txDB = s.DB()
 	}
 	res := txDB.WithContext(ctx).Delete(&tables.TablePricingOverride{}, "id = ?", id)
+	if res.Error != nil {
+		return s.parseGormError(res.Error)
+	}
+	if res.RowsAffected == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// DATASHEET OVERRIDES METHODS
+
+// GetDatasheetOverrides returns every datasheet override, oldest first so
+// application order is stable across nodes.
+func (s *RDBConfigStore) GetDatasheetOverrides(ctx context.Context) ([]tables.TableDatasheetOverride, error) {
+	var rows []tables.TableDatasheetOverride
+	if err := s.DB().WithContext(ctx).Order("created_at ASC, id ASC").Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	return rows, nil
+}
+
+// GetDatasheetOverrideByID returns one datasheet override or ErrNotFound.
+func (s *RDBConfigStore) GetDatasheetOverrideByID(ctx context.Context, id string) (*tables.TableDatasheetOverride, error) {
+	var row tables.TableDatasheetOverride
+	if err := s.DB().WithContext(ctx).First(&row, "id = ?", id).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	return &row, nil
+}
+
+// UpsertDatasheetOverride writes the override for its (provider, model, mode)
+// target. An existing row for the same target keeps its ID and created_at, so
+// a client saving by target never forks a second row. The write is a single
+// ON CONFLICT statement on the target index, so nodes saving the same new
+// target at once converge on one row instead of one hitting the index; the
+// stored ID and created_at are then read back into override. Without a
+// caller-supplied tx both statements run in one transaction, so an error from
+// the readback (a cancelled ctx, say) never leaves the write committed.
+func (s *RDBConfigStore) UpsertDatasheetOverride(ctx context.Context, override *tables.TableDatasheetOverride, tx ...*gorm.DB) error {
+	if len(tx) > 0 {
+		return s.upsertDatasheetOverride(tx[0].WithContext(ctx), override)
+	}
+	return s.DB().WithContext(ctx).Transaction(func(db *gorm.DB) error {
+		return s.upsertDatasheetOverride(db, override)
+	})
+}
+
+// upsertDatasheetOverride runs the target upsert and ID readback on db.
+func (s *RDBConfigStore) upsertDatasheetOverride(db *gorm.DB, override *tables.TableDatasheetOverride) error {
+	now := time.Now()
+	if override.CreatedAt.IsZero() {
+		override.CreatedAt = now
+	}
+	override.UpdatedAt = now
+	if err := db.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "provider"}, {Name: "model"}, {Name: "mode"}},
+		DoUpdates: clause.AssignmentColumns([]string{"is_custom", "pricing_patch_json", "params_patch_json", "baseline_json", "config_hash", "pricing_claim", "updated_at"}),
+	}).Create(override).Error; err != nil {
+		if isPricingClaimViolation(err) {
+			return ErrDatasheetPricingClaimTaken
+		}
+		return s.parseGormError(err)
+	}
+	var stored tables.TableDatasheetOverride
+	if err := db.Select("id", "created_at").
+		Where("provider = ? AND model = ? AND mode = ?", override.Provider, override.Model, override.Mode).
+		First(&stored).Error; err != nil {
+		return s.parseGormError(err)
+	}
+	override.ID = stored.ID
+	override.CreatedAt = stored.CreatedAt
+	return nil
+}
+
+// isPricingClaimViolation reports whether err is the unique index on
+// pricing_claim rejecting a second override for the same folded pricing row
+// (SQLite names the column, Postgres the index).
+func isPricingClaimViolation(err error) bool {
+	msg := err.Error()
+	return strings.Contains(msg, "governance_datasheet_overrides.pricing_claim") || strings.Contains(msg, "idx_datasheet_override_pricing_claim")
+}
+
+// DeleteDatasheetOverride removes a datasheet override by ID.
+func (s *RDBConfigStore) DeleteDatasheetOverride(ctx context.Context, id string, tx ...*gorm.DB) error {
+	txDB := s.DB()
+	if len(tx) > 0 {
+		txDB = tx[0]
+	}
+	res := txDB.WithContext(ctx).Delete(&tables.TableDatasheetOverride{}, "id = ?", id)
 	if res.Error != nil {
 		return s.parseGormError(res.Error)
 	}
