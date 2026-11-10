@@ -118071,7 +118071,8 @@
           "cloudflare",
           "typesafe",
           "minimax",
-          "byteplus"
+          "byteplus",
+          "baseten"
         ]
       },
       "Fallback": {

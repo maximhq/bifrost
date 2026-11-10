@@ -3059,11 +3059,103 @@ func TestSupportsFastMode(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.model, func(t *testing.T) {
-			got := schemas.ResolveModelCaps(schemas.Anthropic, tt.model).SupportsFastMode(DefaultSupportsFastMode(tt.model))
+			got := schemas.ResolveModelCaps(schemas.Anthropic, tt.model).SupportsFastMode(DefaultSupportsFastMode(schemas.Anthropic, tt.model))
 			if got != tt.expected {
 				t.Errorf("SupportsFastMode(schemas.Anthropic, %q) = %v, want %v", tt.model, got, tt.expected)
 			}
 		})
+	}
+}
+
+// TestDefaultSupportsFastModePerProvider pins the per-host model lists: the
+// Claude API serves Opus 4.6 / 4.7+, Vertex serves Claude Fable 5.2 only.
+// Source: https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/partner-models/claude/fast-mode
+func TestDefaultSupportsFastModePerProvider(t *testing.T) {
+	tests := []struct {
+		provider schemas.ModelProvider
+		model    string
+		want     bool
+	}{
+		{schemas.Vertex, "claude-fable-5-2", true},
+		{schemas.Vertex, "claude-fable-5-2@20261001", true},
+		{schemas.Vertex, "claude-fable-5.2", true},
+		{schemas.Vertex, "claude-fable-5-1", false},
+		{schemas.Vertex, "claude-fable-5", false},
+		{schemas.Vertex, "claude-opus-4-6", false},
+		{schemas.Vertex, "claude-opus-5", false},
+		{schemas.Anthropic, "claude-fable-5-2", false},
+		{schemas.Anthropic, "claude-opus-4-6", true},
+		{schemas.Bedrock, "claude-opus-4-7", true}, // model gate only; Bedrock's FastMode flag still strips it
+	}
+	for _, tt := range tests {
+		t.Run(string(tt.provider)+"/"+tt.model, func(t *testing.T) {
+			if got := DefaultSupportsFastMode(tt.provider, tt.model); got != tt.want {
+				t.Errorf("DefaultSupportsFastMode(%s, %q) = %v, want %v", tt.provider, tt.model, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestVertexFastMode drives speed:"fast" through the Vertex request builder on
+// both the typed and the raw-body path. Vertex keeps the field for Fable 5.2,
+// strips it for every other model, and never carries the fast-mode-* beta,
+// which Vertex does not use, even when the client sends it.
+func TestVertexFastMode(t *testing.T) {
+	betas := func(body []byte) []string {
+		var out []string
+		for _, v := range providerUtils.GetJSONField(body, "anthropic_beta").Array() {
+			out = append(out, v.String())
+		}
+		return out
+	}
+	build := func(t *testing.T, model string, raw bool) []byte {
+		t.Helper()
+		ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+		ctx.SetValue(schemas.BifrostContextKeyExtraHeaders, map[string][]string{
+			AnthropicBetaHeader: {AnthropicFastModeBetaHeader},
+		})
+		req := &schemas.BifrostResponsesRequest{
+			Provider: schemas.Vertex,
+			Model:    model,
+			Input:    makeSimpleInput("hi"),
+			Params:   &schemas.ResponsesParameters{ExtraParams: map[string]interface{}{"speed": "fast"}},
+		}
+		if raw {
+			ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+			req.RawRequestBody = []byte(`{"model":"` + model + `","speed":"fast","max_tokens":64,"messages":[{"role":"user","content":"hi"}]}`)
+		}
+		body, err := BuildAnthropicResponsesRequestBody(ctx, req, AnthropicRequestBuildConfig{Provider: schemas.Vertex, Model: model})
+		if err != nil {
+			t.Fatalf("build: %v", err.Error.Message)
+		}
+		return body
+	}
+	for _, raw := range []bool{false, true} {
+		path := "typed"
+		if raw {
+			path = "raw"
+		}
+		t.Run(path+"/fable-5-2 keeps speed", func(t *testing.T) {
+			body := build(t, "claude-fable-5-2", raw)
+			if got := providerUtils.GetJSONField(body, "speed").String(); got != "fast" {
+				t.Fatalf("speed = %q, want fast; body=%s", got, body)
+			}
+			if slices.Contains(betas(body), AnthropicFastModeBetaHeader) {
+				t.Fatalf("fast-mode beta must not reach Vertex; body=%s", body)
+			}
+		})
+		t.Run(path+"/opus-4-6 strips speed", func(t *testing.T) {
+			body := build(t, "claude-opus-4-6", raw)
+			if providerUtils.JSONFieldExists(body, "speed") {
+				t.Fatalf("speed must be stripped for a model Vertex does not serve fast; body=%s", body)
+			}
+		})
+	}
+	if slices.Contains(FilterBetaHeadersForProvider([]string{AnthropicFastModeBetaHeader}, schemas.Vertex), AnthropicFastModeBetaHeader) {
+		t.Fatal("FilterBetaHeadersForProvider kept fast-mode beta for Vertex")
+	}
+	if !slices.Contains(FilterBetaHeadersForProvider([]string{AnthropicFastModeBetaHeader}, schemas.Anthropic), AnthropicFastModeBetaHeader) {
+		t.Fatal("FilterBetaHeadersForProvider dropped fast-mode beta for Anthropic")
 	}
 }
 

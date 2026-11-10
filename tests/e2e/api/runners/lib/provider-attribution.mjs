@@ -40,6 +40,9 @@ export const MATCH_ORDER = [
   "github-copilot",
   "huggingface",
   "replicate",
+  // After huggingface, whose router serves Baseten-hosted models; ahead of anthropic and
+  // openai, which Baseten rows name through the /anthropic route and OpenAI-only fields.
+  "baseten",
   "vertex",
   "azure",
   "bedrock_mantle",
