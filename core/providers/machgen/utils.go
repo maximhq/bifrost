@@ -132,6 +132,7 @@ func requireSourceURLs(request *MachGenGenerateRequest) error {
 	return nil
 }
 
+// isHTTPURL reports whether raw parses as an http(s) URL with a host.
 func isHTTPURL(raw string) bool {
 	u, err := url.Parse(raw)
 	return err == nil && (u.Scheme == "http" || u.Scheme == "https") && u.Hostname() != ""

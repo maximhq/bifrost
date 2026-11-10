@@ -61,6 +61,7 @@ func (provider *MachGenProvider) GetProviderKey() schemas.ModelProvider {
 	return schemas.MachGen
 }
 
+// setAuth sends the key as a bearer token, as every MachGen endpoint expects.
 func (provider *MachGenProvider) setAuth(req *fasthttp.Request, key schemas.Key) {
 	if key.Value.GetValue() != "" {
 		req.Header.Set("Authorization", "Bearer "+key.Value.GetValue())
@@ -672,6 +673,7 @@ func (provider *MachGenProvider) Passthrough(_ *schemas.BifrostContext, _ schema
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.PassthroughRequest, provider.GetProviderKey())
 }
 
+// PassthroughStream is not supported: MachGen has no streaming endpoints.
 func (provider *MachGenProvider) PassthroughStream(_ *schemas.BifrostContext, _ schemas.PostHookRunner, _ func(context.Context), _ schemas.Key, _ *schemas.BifrostPassthroughRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.PassthroughStreamRequest, provider.GetProviderKey())
 }

@@ -39,6 +39,7 @@ type MachGenGenerateRequest struct {
 	ExtraParams map[string]interface{} `json:"-"`
 }
 
+// GetExtraParams returns the extra params left after the MachGen fields were lifted, for the passthrough merge.
 func (r *MachGenGenerateRequest) GetExtraParams() map[string]interface{} {
 	return r.ExtraParams
 }

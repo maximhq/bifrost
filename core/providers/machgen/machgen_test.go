@@ -31,6 +31,7 @@ func (testNoopLogger) LogHTTPRequest(schemas.LogLevel, string) schemas.LogEventB
 	return schemas.NoopLogEvent
 }
 
+// Each input shape picks its MachGen task type, and an explicit task_type overrides the inference.
 func TestToMachGenVideoGenerationRequest_InfersTaskTypeFromInputs(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -62,6 +63,7 @@ func TestToMachGenVideoGenerationRequest_InfersTaskTypeFromInputs(t *testing.T) 
 	}
 }
 
+// size becomes height plus a named aspect ratio, and seconds becomes duration_secs.
 func TestToMachGenVideoGenerationRequest_MapsSizeAndDurationToVideoConfig(t *testing.T) {
 	req, err := ToMachGenVideoGenerationRequest(&schemas.BifrostVideoGenerationRequest{
 		Model: "Kling-v3",
@@ -87,6 +89,7 @@ func TestToMachGenVideoGenerationRequest_MapsSizeAndDurationToVideoConfig(t *tes
 	}`, string(body))
 }
 
+// Common sizes whose width is rounded (1366x768) still map to a named ratio rather than a reduced fraction.
 func TestParseSize_SnapsRoundedWidthsToNamedAspectRatios(t *testing.T) {
 	for size, want := range map[string]string{
 		"1280x720":  "16:9",
@@ -102,6 +105,7 @@ func TestParseSize_SnapsRoundedWidthsToNamedAspectRatios(t *testing.T) {
 	}
 }
 
+// Bad seconds or size values are caller errors, not requests sent upstream.
 func TestToMachGenVideoGenerationRequest_RejectsMalformedParams(t *testing.T) {
 	for name, params := range map[string]*schemas.VideoGenerationParameters{
 		"non integer seconds": {Seconds: schemas.Ptr("4.5")},
@@ -119,6 +123,7 @@ func TestToMachGenVideoGenerationRequest_RejectsMalformedParams(t *testing.T) {
 	}
 }
 
+// Image edit takes images by URL only; uploaded bytes are rejected.
 func TestToMachGenImageEditRequest_RequiresImageURLs(t *testing.T) {
 	_, err := ToMachGenImageEditRequest(&schemas.BifrostImageEditRequest{
 		Model: "Nano-Banana-Pro",
@@ -135,6 +140,7 @@ func TestToMachGenImageEditRequest_RequiresImageURLs(t *testing.T) {
 	assert.Equal(t, []string{"https://x/a.png"}, req.SrcImageURLs)
 }
 
+// Every converter rejects a source that is not an http(s) URL with a host, wherever it came from.
 func TestMachGenConverters_RejectInlineDataURLSources(t *testing.T) {
 	const dataURL = "data:image/png;base64,iVBORw0KGgo="
 	convert := map[string]func() (*MachGenGenerateRequest, error){
@@ -188,6 +194,7 @@ func TestMachGenConverters_RejectInlineDataURLSources(t *testing.T) {
 	}
 }
 
+// Lifting MachGen fields must not mutate the caller's extra params, which a retry converts again.
 func TestMachGenConverters_LeaveCallerExtraParamsUntouched(t *testing.T) {
 	extra := map[string]interface{}{
 		"task_type":      "I2I",
@@ -210,6 +217,7 @@ func TestMachGenConverters_LeaveCallerExtraParamsUntouched(t *testing.T) {
 	assert.Len(t, extra, 3)
 }
 
+// A null MachGen field in extra params is dropped instead of reaching the passthrough merge.
 func TestMachGenConverters_DropNullLiftedExtraParams(t *testing.T) {
 	// A null src_image_urls left in ExtraParams would overwrite the input image when
 	// passthrough merges extra params into the body.
@@ -236,6 +244,7 @@ func TestMachGenConverters_DropNullLiftedExtraParams(t *testing.T) {
 	assert.Empty(t, video.ExtraParams)
 }
 
+// MachGen task states map to Bifrost video statuses, with metadata and errors carried over.
 func TestToBifrostVideoGenerationResponse_MapsTaskLifecycle(t *testing.T) {
 	completed, bErr := ToBifrostVideoGenerationResponse(&MachGenTaskStatusResponse{
 		TaskID:     "t-1",
@@ -306,6 +315,7 @@ func fakeMachGen(t *testing.T, apiKey string, asset []byte, assetType string) (*
 	return server, &submitted
 }
 
+// newTestProvider points a provider at a fake MachGen server.
 func newTestProvider(t *testing.T, baseURL string) *MachGenProvider {
 	t.Helper()
 	provider, err := NewMachGenProvider(&schemas.ProviderConfig{
@@ -315,10 +325,12 @@ func newTestProvider(t *testing.T, baseURL string) *MachGenProvider {
 	return provider
 }
 
+// testKey builds a key that allows every model.
 func testKey(value string) schemas.Key {
 	return schemas.Key{Value: *schemas.NewSecretVar(value), Models: []string{"*"}}
 }
 
+// Image generation polls until the task completes, then returns the downloaded image as b64_json.
 func TestMachGenImageGeneration_WaitsForTaskAndReturnsImageInline(t *testing.T) {
 	image := []byte("\xff\xd8jpeg-bytes")
 	server, submitted := fakeMachGen(t, "MGA_test", image, "image/jpeg")
@@ -338,6 +350,7 @@ func TestMachGenImageGeneration_WaitsForTaskAndReturnsImageInline(t *testing.T) 
 	assert.JSONEq(t, `{"model":"FLUX.2-dev","task_type":"T2I","prompt":"a cozy reading nook","image_config":{"height":1024,"aspect_ratio":"1:1"}}`, string(*submitted))
 }
 
+// A video goes through submit, retrieve and download with the provider-suffixed id.
 func TestMachGenVideoLifecycle_SubmitRetrieveDownload(t *testing.T) {
 	video := []byte("mp4-bytes")
 	server, _ := fakeMachGen(t, "MGA_test", video, "video/mp4")
@@ -365,6 +378,7 @@ func TestMachGenVideoLifecycle_SubmitRetrieveDownload(t *testing.T) {
 	assert.Equal(t, "video/mp4", downloaded.ContentType)
 }
 
+// MachGen's error detail reaches the caller as the error message.
 func TestMachGenSurfacesAPIErrorDetail(t *testing.T) {
 	server, _ := fakeMachGen(t, "MGA_test", nil, "")
 	provider := newTestProvider(t, server.URL)
@@ -381,6 +395,7 @@ func TestMachGenSurfacesAPIErrorDetail(t *testing.T) {
 	assert.Equal(t, "Invalid API key", bErr.Error.Message)
 }
 
+// List models reports each model's task types and output modalities, filtered by the key's allow-list.
 func TestMachGenListModels_ReportsTaskTypesAndHonorsKeyAllowlist(t *testing.T) {
 	server, _ := fakeMachGen(t, "MGA_test", nil, "")
 	provider := newTestProvider(t, server.URL)
@@ -432,6 +447,7 @@ func TestMachGenLive(t *testing.T) {
 	assert.NotEmpty(t, resp.Data[0].B64JSON)
 }
 
+// BenchmarkToMachGenVideoGenerationRequest measures a request with sources and MachGen extra params.
 func BenchmarkToMachGenVideoGenerationRequest(b *testing.B) {
 	req := &schemas.BifrostVideoGenerationRequest{
 		Model: "MiniMax-H3",
@@ -449,6 +465,7 @@ func BenchmarkToMachGenVideoGenerationRequest(b *testing.B) {
 	}
 }
 
+// BenchmarkToBifrostImageGenerationResponse measures base64-encoding a 1 MiB image into the response.
 func BenchmarkToBifrostImageGenerationResponse(b *testing.B) {
 	task := &MachGenTaskStatusResponse{TaskID: "t1", Status: MachGenTaskStatusCompleted}
 	image := make([]byte, 1<<20)

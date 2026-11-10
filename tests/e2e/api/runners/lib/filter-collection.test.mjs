@@ -15,6 +15,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 let passed = 0;
+// Runs one check and counts it; a failed assertion throws and stops the file.
 function test(name, fn) {
   fn();
   passed++;
@@ -27,6 +28,7 @@ const SOURCE = join(REPO, "tests/e2e/api/collections/provider-harness.json");
 const AUGMENT = join(REPO, "tests/e2e/api/runners/augment-provider-harness.mjs");
 const FILTER = join(REPO, "tests/e2e/api/runners/filter-collection.mjs");
 
+// Lists every request in a collection as "folder / name".
 const rowNames = (collection) => {
   const names = [];
   const walk = (items, folder = "") => {
