@@ -375,6 +375,7 @@ func TestHybrid_FindByID_GracefulDegradation(t *testing.T) {
 	ctx := context.Background()
 
 	content := "test input"
+	reply := "offloaded reply"
 	entry := &Log{
 		ID:        "degrade-1",
 		Timestamp: time.Now().UTC(),
@@ -385,6 +386,7 @@ func TestHybrid_FindByID_GracefulDegradation(t *testing.T) {
 		InputHistoryParsed: []schemas.ChatMessage{
 			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: &content}},
 		},
+		OutputMessageParsed: &schemas.ChatMessage{Role: schemas.ChatMessageRoleAssistant, Content: &schemas.ChatMessageContent{ContentStr: &reply}},
 	}
 	require.NoError(t, entry.SerializeFields())
 	require.NoError(t, hybrid.CreateIfNotExists(ctx, entry))
@@ -401,6 +403,21 @@ func TestHybrid_FindByID_GracefulDegradation(t *testing.T) {
 	assert.NotEmpty(t, found.InputHistory, "last message should be retained in DB")
 	// But other payload fields (output_message, params, etc.) should be empty.
 	assert.Empty(t, found.OutputMessage, "output should be empty when S3 fails")
+
+	// A caller that needs the content reads it strictly: the failed fetch is an error.
+	strict, err := hybrid.FindByIDStrict(ctx, "degrade-1")
+	require.ErrorIs(t, err, ErrPayloadUnreadable, "a failed object read is not a log without content")
+	require.ErrorIs(t, err, assert.AnError)
+	assert.Nil(t, strict)
+	_, err = hybrid.FindByIDStrict(ctx, "absent")
+	require.ErrorIs(t, err, ErrNotFound, "a missing row is still not found")
+
+	objStore.GetErr = nil
+	strict, err = hybrid.FindByIDStrict(ctx, "degrade-1")
+	require.NoError(t, err)
+	assert.Contains(t, strict.InputHistory, content, "the strict read hydrates the payload")
+	// The DB keeps the last input message, so only the offloaded output proves the hydration.
+	assert.Contains(t, strict.OutputMessage, reply, "the strict read hydrates the offloaded output")
 }
 
 func TestHybrid_CreateAndFindMCPToolLog(t *testing.T) {

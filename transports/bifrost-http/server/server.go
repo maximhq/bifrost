@@ -3400,6 +3400,9 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	if evalsHandler := s.setupEvals(s.Ctx); evalsHandler != nil {
 		evalsHandler.RegisterRoutes(s.Router, configRoutes...)
 	}
+	if datasetsHandler := s.setupEvalDatasets(); datasetsHandler != nil {
+		datasetsHandler.RegisterRoutes(s.Router, configRoutes...)
+	}
 	handlers.NewSkillsHandler(s.Config.ConfigStore, s.Config.ObjectStore).RegisterRoutes(s.Router, configRoutes...)
 	webhookHandler := handlers.NewWebhookHandler(callbacks, s.Config, s.WebhookDispatcher)
 	webhookHandler.RegisterRoutes(s.Router, configRoutes...)

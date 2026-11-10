@@ -66,6 +66,42 @@ func (t template) render(buf *bytes.Buffer, in Input, escape func(string) string
 	}
 }
 
+// renderJSON renders a JSON template to a string. A placeholder inside a JSON string
+// literal is escaped as string content, so a value with quotes or backslashes keeps the
+// document valid. A placeholder outside a string is written raw, so it can hold a JSON
+// fragment such as an object. String state is read from the literal parts only.
+func (t template) renderJSON(in Input) string {
+	if len(t.names) == 0 {
+		return t.literals[0]
+	}
+	buf := getBuffer()
+	defer putBuffer(buf)
+	inString, escaped := false, false
+	for i, literal := range t.literals {
+		buf.WriteString(literal)
+		for j := 0; j < len(literal); j++ {
+			c := literal[j]
+			switch {
+			case escaped:
+				escaped = false
+			case inString && c == '\\':
+				escaped = true
+			case c == '"':
+				inString = !inString
+			}
+		}
+		if i >= len(t.names) {
+			break
+		}
+		value := in.Variables[t.names[i]]
+		if inString {
+			value = jsonStringEscape(value)
+		}
+		buf.WriteString(value)
+	}
+	return buf.String()
+}
+
 // renderString renders the template to a string. A template with no placeholders
 // returns its text without copying.
 func (t template) renderString(in Input, escape func(string) string) string {
@@ -76,4 +112,15 @@ func (t template) renderString(in Input, escape func(string) string) string {
 	defer putBuffer(buf)
 	t.render(buf, in, escape)
 	return buf.String()
+}
+
+// CSVCell neutralises a cell a spreadsheet would run as a formula: one that starts with
+// =, +, - or @, or with a tab or carriage return that some spreadsheets skip first. A
+// leading quote makes it text and keeps the value readable. Only text that comes from
+// rows, models and evaluators goes through it; numbers an export writes itself do not.
+func CSVCell(value string) string {
+	if value != "" && strings.ContainsRune("=+-@\t\r", rune(value[0])) {
+		return "'" + value
+	}
+	return value
 }
