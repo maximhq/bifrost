@@ -1585,6 +1585,11 @@ type ResponsesMessage struct {
 	Author    json.RawMessage `json:"author,omitempty"`
 	Recipient json.RawMessage `json:"recipient,omitempty"`
 
+	// InternalChatMessageMetadataPassthrough is the per-item metadata codex attaches to
+	// history items (turn id, create time, content item kinds) and replays on every
+	// request. Kept as raw JSON so it reaches OpenAI unchanged; other providers never read it.
+	InternalChatMessageMetadataPassthrough json.RawMessage `json:"internal_chat_message_metadata_passthrough,omitempty"`
+
 	// Discovered tool_search_output tools. Programmatic callers must set this,
 	// not ResponsesMCPListTools.Tools, because the entries are ResponsesTool-shaped.
 	ToolSearchOutputTools json.RawMessage `json:"-"`
@@ -2090,6 +2095,8 @@ type ResponsesMessageContentBlock struct {
 	*ResponsesInputMessageContentBlockImage
 	*ResponsesInputMessageContentBlockFile
 	Audio *ResponsesInputMessageContentBlockAudio `json:"input_audio,omitempty"`
+	// AudioURL is the codex input_audio form inside a tool output: a URL, not inline data.
+	AudioURL *string `json:"audio_url,omitempty"`
 
 	*ResponsesOutputMessageContentText            // Normal text output from the model
 	*ResponsesOutputMessageContentRefusal         // Model refusal to answer
