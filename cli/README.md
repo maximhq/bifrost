@@ -549,7 +549,12 @@ Audit registered management routes against both local source checkouts:
 python3 scripts/auditmanagement.py --oss-root .. --enterprise-root ../../bifrost-enterprise
 ```
 
-See [AUDIT.md](AUDIT.md) for coverage, exclusions, and configuration behavior.
+It prints each registered route that neither the public OpenAPI document nor
+[`internal/operations/management.json`](internal/operations/management.json)
+covers, and exits non-zero when any are missing. The workflow and debug routes
+it deliberately skips are listed, with reasons, in `EXCLUDED` in
+[`scripts/auditmanagement.py`](scripts/auditmanagement.py). After adding
+entries to `management.json`, run `go generate ./internal/operations`.
 
 The subprocess configuration suite exercises all six agents and their aliases in
 isolated homes. To additionally run the installed Pi and Antigravity binaries

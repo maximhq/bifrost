@@ -219,6 +219,10 @@ func codexWriteConfigTOML(path, baseURL, apiKey, model string) error {
 		`requires_openai_auth = false`,
 		`supports_websockets = false`,
 	)
+	// A command-based [model_providers.bifrost.auth] would compete with the
+	// credential written above, so drop it; other child tables such as
+	// http_headers and query_params belong to the user and are kept.
+	configured = removeTOMLTableTree(configured, "model_providers.bifrost.auth")
 	configured = replaceTOMLTable(configured, "model_providers.bifrost", providerBody)
 	return config.WriteAtomic(path, configured, 0o600)
 }
@@ -279,6 +283,28 @@ func replaceTOMLTable(data []byte, name string, body []string) []byte {
 	result = append(result, header)
 	result = append(result, body...)
 	return []byte(strings.Join(result, "\n") + "\n")
+}
+
+// removeTOMLTableTree drops a table and all of its descendant tables,
+// preserving everything else.
+func removeTOMLTableTree(data []byte, name string) []byte {
+	hasTrailingNewline := strings.HasSuffix(string(data), "\n")
+	lines := strings.Split(strings.TrimSuffix(string(data), "\n"), "\n")
+	result := make([]string, 0, len(lines))
+	skipping := false
+	for _, line := range lines {
+		if isTOMLTableHeader(line) {
+			skipping = tomlTableHeaderWithin(line, name)
+		}
+		if !skipping {
+			result = append(result, line)
+		}
+	}
+	joined := strings.Join(result, "\n")
+	if hasTrailingNewline && joined != "" {
+		joined += "\n"
+	}
+	return []byte(joined)
 }
 
 // setTopLevelTOMLKeys returns data with each key in targets set to its
@@ -386,12 +412,24 @@ func tomlUnquoteKey(segment string) string {
 	return segment
 }
 
-// tomlTableHeaderMatches reports whether line declares the given dotted
-// table name or a descendant, tolerating a trailing inline comment (e.g.
+// tomlTableHeaderMatches reports whether line declares exactly the given
+// dotted table name, tolerating a trailing inline comment (e.g.
 // "[model_providers.bifrost] # custom provider") and a quoted form of any
 // dotted segment (e.g. [model_providers."bifrost"]), which TOML treats as
-// identical to the bare form.
+// identical to the bare form. Child tables do not match.
 func tomlTableHeaderMatches(line, name string) bool {
+	return tomlTableHeaderPrefix(line, name, false)
+}
+
+// tomlTableHeaderWithin reports whether line declares the given table or one
+// of its descendants.
+func tomlTableHeaderWithin(line, name string) bool {
+	return tomlTableHeaderPrefix(line, name, true)
+}
+
+// tomlTableHeaderPrefix matches name exactly, or also its descendants when
+// descendants is set.
+func tomlTableHeaderPrefix(line, name string, descendants bool) bool {
 	trimmed := strings.TrimSpace(line)
 	if !strings.HasPrefix(trimmed, "[") {
 		return false
@@ -406,7 +444,7 @@ func tomlTableHeaderMatches(line, name string) bool {
 	}
 	declared := strings.Split(trimmed[1:idx], ".")
 	target := strings.Split(name, ".")
-	if len(declared) < len(target) {
+	if len(declared) < len(target) || (!descendants && len(declared) != len(target)) {
 		return false
 	}
 	for i, segment := range target {

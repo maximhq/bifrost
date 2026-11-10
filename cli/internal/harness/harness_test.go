@@ -628,7 +628,8 @@ func TestCodexConfigureReplacesNestedAuthentication(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("CODEX_HOME", home)
 	path := filepath.Join(home, "config.toml")
-	original := "[model_providers.bifrost]\nname = \"Old\"\n[model_providers.bifrost.auth]\ncommand = \"stale-helper\"\n[model_providers.other]\nname = \"Keep\"\n"
+	original := "[model_providers.bifrost]\nname = \"Old\"\n[model_providers.bifrost.auth]\ncommand = \"stale-helper\"\n[model_providers.bifrost.auth.env]\nTOKEN_SOURCE = \"stale-env\"\n" +
+		"[model_providers.bifrost.http_headers]\nX-Team = \"keep-header\"\n[model_providers.bifrost.query_params]\napi-version = \"keep-query\"\n[model_providers.other]\nname = \"Keep\"\n"
 	if err := os.WriteFile(path, []byte(original), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -639,8 +640,15 @@ func TestCodexConfigureReplacesNestedAuthentication(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(body), "stale-helper") || !strings.Contains(string(body), "Keep") {
+	if strings.Contains(string(body), "stale-helper") || strings.Contains(string(body), "stale-env") || !strings.Contains(string(body), "Keep") {
 		t.Fatalf("stale provider auth survived or unrelated config was lost: %s", body)
+	}
+	// Only the conflicting auth table is Bifrost's to remove; the user's own
+	// provider headers and query parameters must survive configure.
+	for _, kept := range []string{"[model_providers.bifrost.http_headers]\nX-Team = \"keep-header\"", "[model_providers.bifrost.query_params]\napi-version = \"keep-query\""} {
+		if !strings.Contains(string(body), kept) {
+			t.Fatalf("configure dropped user provider table %q: %s", kept, body)
+		}
 	}
 }
 
