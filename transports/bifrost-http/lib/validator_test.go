@@ -4218,6 +4218,8 @@ func TestSchemaOAuthKeyConfig(t *testing.T) {
 		{"token_exchange relative subject_token_file", customProvider(`"name": "k", "models": ["*"], "weight": 1.0, "oauth_key_config": {"grant_type": "token_exchange", "token_url": "https://idp/token", "subject_token_file": "token"}`)},
 		{"token_exchange unknown request_encoding", customProvider(`"name": "k", "models": ["*"], "weight": 1.0, "oauth_key_config": {"grant_type": "token_exchange", "token_url": "https://idp/token", "subject_token_file": "/t", "request_encoding": "xml"}`)},
 		{"subject_token_file on client_credentials", customProvider(`"name": "k", "models": ["*"], "weight": 1.0, "oauth_key_config": {"grant_type": "client_credentials", "token_url": "https://idp/token", "client_id": "id", "client_secret": "s", "subject_token_file": "/t"}`)},
+		{"subject_token_type on client_credentials", customProvider(`"name": "k", "models": ["*"], "weight": 1.0, "oauth_key_config": {"grant_type": "client_credentials", "token_url": "https://idp/token", "client_id": "id", "client_secret": "s", "subject_token_type": "urn:ietf:params:oauth:token-type:jwt"}`)},
+		{"request_encoding on client_credentials", customProvider(`"name": "k", "models": ["*"], "weight": 1.0, "oauth_key_config": {"grant_type": "client_credentials", "token_url": "https://idp/token", "client_id": "id", "client_secret": "s", "request_encoding": "json"}`)},
 	}
 	for _, tt := range invalid {
 		t.Run("invalid "+tt.name, func(t *testing.T) {
