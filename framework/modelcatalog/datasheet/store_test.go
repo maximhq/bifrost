@@ -138,6 +138,30 @@ func TestGithubCopilotDatasheetRowsPriceRuntimeProvider(t *testing.T) {
 	}
 }
 
+// The upstream datasheet files some OpenCode Go rows under "opencode_go" while
+// the runtime provider is "opencode-go"; both spellings must price the same
+// provider, otherwise the model costs 0 and /v1/models reports pricing null.
+func TestOpencodeGoUnderscoreDatasheetRowsPriceRuntimeProvider(t *testing.T) {
+	inputCost, outputCost := 0.000002, 0.000008
+	s := NewTestStore(nil)
+	entry := Entry{Provider: "opencode_go", Mode: "chat"}
+	entry.InputCostPerToken = &inputCost
+	entry.OutputCostPerToken = &outputCost
+	s.applyPricingData(map[string]Entry{"opencode_go/deepseek-v4.1-flash": entry})
+
+	if got := s.DatasheetModelsForProvider(schemas.OpencodeGo); !slices.Equal(got, []string{"deepseek-v4.1-flash"}) {
+		t.Fatalf("DatasheetModelsForProvider() = %v, want [deepseek-v4.1-flash]", got)
+	}
+	if got := s.GetPricingEntryForModel("deepseek-v4.1-flash", schemas.OpencodeGo); got == nil {
+		t.Fatal("GetPricingEntryForModel() = nil, want the opencode_go row")
+	}
+
+	usage := &schemas.BifrostLLMUsage{PromptTokens: 1000, CompletionTokens: 500, TotalTokens: 1500}
+	if cost := s.CalculateCost(makeChatResponse(schemas.OpencodeGo, "deepseek-v4.1-flash", usage), nil); math.Abs(cost-0.006) > 1e-12 {
+		t.Fatalf("CalculateCost() = %v, want 0.006", cost)
+	}
+}
+
 // Get, GetPricingEntryForModel and IsTextCompletionSupported read pricingData
 // through makeKeyNormalized, so they match a row in any casing.
 func TestPricingReadsMatchModelCaseInsensitively(t *testing.T) {
