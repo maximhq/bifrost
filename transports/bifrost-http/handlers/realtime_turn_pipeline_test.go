@@ -154,6 +154,15 @@ func TestRealtimeInvalidRequestErrorFinalization(t *testing.T) {
 	assert.Same(t, policyErr, finalizeRealtimeTurnHooksWithError(nil, nil, session, schemas.OpenAI, "realtime", nil, schemas.RTEventError, nil, newRealtimeWireBifrostError(400, "invalid_request_error", "unsupported modality")))
 }
 
+// TestRealtimeErrorFinalizationDropsInterimUsage keeps a failed turn's usage out of the next turn.
+func TestRealtimeErrorFinalizationDropsInterimUsage(t *testing.T) {
+	session := bfws.NewSession(nil)
+	session.AddRealtimeInterimUsage(&schemas.BifrostLLMUsage{PromptTokens: 100, CompletionTokens: 10, TotalTokens: 110})
+	got := finalizeRealtimeTurnHooksWithError(nil, nil, session, schemas.Gemini, "gemini-3.8-live", nil, schemas.RTEventError, nil, newRealtimeWireBifrostError(400, "invalid_request_error", "unsupported modality"))
+	assert.Nil(t, got)
+	assert.Nil(t, session.ConsumeRealtimeInterimUsage())
+}
+
 func TestMapRealtimeWireErrorFields(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
