@@ -27,6 +27,8 @@ export interface ProviderConfigsEditorProps {
 	testIdPrefix?: string;
 	/** Show the per-model budgets tree inside each card. Defaults to true. */
 	showModelBudgets?: boolean;
+	/** Edit request limits as lines (requestLimits) instead of the rate limit's single request field. */
+	showRequestLimits?: boolean;
 	/** Read-only global provider cap per provider, shown on the Provider budget row. */
 	getGlobalProviderCap?: (providerName: string) => { max_limit: number; reset_duration?: string } | undefined;
 	/** When set, the "no providers left" dropdown row becomes a clickable link (e.g. route to provider management). */
@@ -57,6 +59,7 @@ const isDefaultEntry = (e: ProviderConfigCardValue): boolean =>
 	e.keyIds?.[0] === "*" &&
 	(e.budgets || []).length === 0 &&
 	!e.rateLimit &&
+	(e.requestLimits || []).length === 0 &&
 	(e.modelBudgets || []).length === 0 &&
 	(e.weight === undefined || e.weight === null);
 
@@ -67,6 +70,7 @@ export function ProviderConfigsEditor({
 	onAllowAllProvidersChange,
 	testIdPrefix = "provider",
 	showModelBudgets = true,
+	showRequestLimits = false,
 	getGlobalProviderCap,
 	onManageProviders,
 	error,
@@ -218,6 +222,7 @@ export function ProviderConfigsEditor({
 								iconProvider={iconProvider}
 								providerKeys={providerKeys}
 								showModelBudgets={showModelBudgets}
+								showRequestLimits={showRequestLimits}
 								globalProviderCap={getGlobalProviderCap?.(entry.providerName)}
 								onRemove={() => handleRemoveProvider(index)}
 								value={entry}

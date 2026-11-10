@@ -42,7 +42,7 @@ import {
 } from "@/lib/store";
 import { VirtualKey } from "@/lib/types/governance";
 import { cn } from "@/lib/utils";
-import { actionDisabledReason, formatCurrency, getEffectiveBudgetLimit } from "@/lib/utils/governance";
+import { actionDisabledReason, formatCurrency, getEffectiveBudgetLimit, isRequestLimitExhausted } from "@/lib/utils/governance";
 import { virtualKeyMetadataKeyError } from "@/lib/utils/virtualKeyMetadata";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { Link } from "@tanstack/react-router";
@@ -113,7 +113,8 @@ function virtualKeysToCSV(vks: VirtualKey[]): string {
 				vk.rate_limit.token_current_usage >= vk.rate_limit.token_max_limit) ||
 			(vk.rate_limit?.request_current_usage &&
 				vk.rate_limit?.request_max_limit &&
-				vk.rate_limit.request_current_usage >= vk.rate_limit.request_max_limit);
+				vk.rate_limit.request_current_usage >= vk.rate_limit.request_max_limit) ||
+			vk.request_limits?.some(isRequestLimitExhausted);
 		const isExpired = !!vk.expires_at && Date.now() >= new Date(vk.expires_at).getTime();
 		const status = !vk.is_active
 			? t("virtualKeys.inactive", { ns: "models" })
@@ -299,8 +300,10 @@ function VKAssignedToCell({ vk }: { vk: VirtualKey }) {
 }
 
 function VKRateLimitCell({ vk }: { vk: VirtualKey }) {
-	const { displayRateLimit } = useVirtualKeyUsage(vk);
-	return <RateLimitDisplay rateLimits={displayRateLimit} calendarAligned={vk.calendar_aligned} />;
+	const { displayRateLimit, displayRequestLimits } = useVirtualKeyUsage(vk);
+	return (
+		<RateLimitDisplay rateLimits={displayRateLimit} requestLimits={displayRequestLimits} showScope calendarAligned={vk.calendar_aligned} />
+	);
 }
 
 function VKActiveSwitch({
