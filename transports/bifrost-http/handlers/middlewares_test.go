@@ -799,6 +799,7 @@ func TestIsRealtimeTransportEndpoint(t *testing.T) {
 		"/openai/realtime/calls",
 		"/openai/v1/realtime/calls",
 		"/openai/openai/realtime/calls",
+		"/genai/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent",
 	}
 
 	for _, path := range paths {
@@ -5431,10 +5432,49 @@ func TestLogRequestTargetRedactsAPIKeyQuery(t *testing.T) {
 	}
 }
 
+// TestLogRequestTargetRedactsLiveKeyQuery pins that the key a Gemini Live client sends as ?key= never reaches
+// the access log, that every repeat of a secret name is redacted, and that a name that only resembles one is left alone.
+func TestLogRequestTargetRedactsLiveKeyQuery(t *testing.T) {
+	for uri, want := range map[string]string{
+		"/genai/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=sk-bf-secret": "/genai/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=REDACTED",
+		"/genai/ws/live?ke%79=sk-bf-secret&alt=json":                                                           "/genai/ws/live?key=REDACTED&alt=json",
+		"/genai/ws/live?key=AIza-secret&api-key=sk-bf-secret":                                                  "/genai/ws/live?key=REDACTED&api-key=REDACTED",
+		"/genai/ws/live?key=a&key=b":                                                                           "/genai/ws/live?key=REDACTED&key=REDACTED",
+		"/voice-live/realtime?api-key=a&model=m&api-key=b":                                                     "/voice-live/realtime?api-key=REDACTED&model=m&api-key=REDACTED",
+		"/api/logs?keys=a&key_name=b":                                                                          "/api/logs?keys=a&key_name=b",
+	} {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.SetRequestURI(uri)
+		if got := logRequestTarget(ctx); got != want {
+			t.Errorf("logRequestTarget(%q) = %q, want %q", uri, got, want)
+		}
+	}
+}
+
 // BenchmarkLogRequestTarget measures the access log target on a request without a query string, the common case.
 func BenchmarkLogRequestTarget(b *testing.B) {
 	ctx := &fasthttp.RequestCtx{}
 	ctx.Request.SetRequestURI("/v1/chat/completions")
+	b.ReportAllocs()
+	for b.Loop() {
+		_ = logRequestTarget(ctx)
+	}
+}
+
+// BenchmarkLogRequestTargetQuery measures the access log target on a request whose query string holds no secret.
+func BenchmarkLogRequestTargetQuery(b *testing.B) {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.SetRequestURI("/api/logs?limit=50&offset=100&providers=openai")
+	b.ReportAllocs()
+	for b.Loop() {
+		_ = logRequestTarget(ctx)
+	}
+}
+
+// BenchmarkLogRequestTargetRedacted measures the access log target on a request that carries a secret.
+func BenchmarkLogRequestTargetRedacted(b *testing.B) {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.SetRequestURI("/genai/ws/live?alt=json&key=sk-bf-secret")
 	b.ReportAllocs()
 	for b.Loop() {
 		_ = logRequestTarget(ctx)

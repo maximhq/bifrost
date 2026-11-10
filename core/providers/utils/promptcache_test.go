@@ -677,3 +677,136 @@ func TestInjectChat_PointsReachToolMessages(t *testing.T) {
 	assert.Nil(t, out[1].Content.ContentBlocks, "the user message is not the match; its string body stays a string")
 	assert.NotNil(t, in[2].Content.ContentStr, "caller's input must not be mutated")
 }
+
+func breakpointBlock(text string) schemas.ResponsesMessageContentBlock {
+	b := textBlock(text)
+	b.PromptCacheBreakpoint = &schemas.PromptCacheBreakpoint{Mode: schemas.Ptr("explicit")}
+	return b
+}
+
+// TestResponsesBreakpointsAsCacheControl covers the OpenAI -> cache_control translation
+// that the Anthropic and Bedrock converters run before rendering.
+func TestResponsesBreakpointsAsCacheControl(t *testing.T) {
+	t.Run("no breakpoint returns input unchanged", func(t *testing.T) {
+		in := []schemas.ResponsesMessage{blockMsg(schemas.ResponsesInputMessageRoleUser, textBlock("a"))}
+		out := ResponsesBreakpointsAsCacheControl(in, nil, MaxInjectedCacheBreakpoints)
+		assert.Same(t, &in[0], &out[0], "the common case must not copy")
+	})
+
+	t.Run("marks the block and leaves input alone", func(t *testing.T) {
+		in := []schemas.ResponsesMessage{blockMsg(schemas.ResponsesInputMessageRoleUser, textBlock("a"), breakpointBlock("b"))}
+		out := ResponsesBreakpointsAsCacheControl(in, nil, MaxInjectedCacheBreakpoints)
+		assert.Equal(t, map[int][]int{0: {1}}, markers(out))
+		assert.Equal(t, 0, countMarkers(in), "caller's input was mutated")
+	})
+
+	t.Run("tool and top-level markers count against the ceiling", func(t *testing.T) {
+		in := []schemas.ResponsesMessage{
+			blockMsg(schemas.ResponsesInputMessageRoleUser, breakpointBlock("a")),
+			blockMsg(schemas.ResponsesInputMessageRoleUser, breakpointBlock("b")),
+		}
+		cc := &schemas.CacheControl{Type: schemas.CacheControlTypeEphemeral}
+		params := &schemas.ResponsesParameters{
+			Tools:       []schemas.ResponsesTool{{CacheControl: cc}, {CacheControl: cc}},
+			ExtraParams: map[string]interface{}{"cache_control": cc},
+		}
+		out := ResponsesBreakpointsAsCacheControl(in, params, MaxInjectedCacheBreakpoints)
+		assert.Equal(t, map[int][]int{1: {0}}, markers(out), "one slot left, kept on the latest breakpoint")
+	})
+
+	t.Run("function_call_output breakpoint marks the item", func(t *testing.T) {
+		in := []schemas.ResponsesMessage{{
+			Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
+			ResponsesToolMessage: &schemas.ResponsesToolMessage{
+				CallID: schemas.Ptr("call_1"),
+				Output: &schemas.ResponsesToolMessageOutputStruct{
+					ResponsesFunctionToolCallOutputBlocks: []schemas.ResponsesMessageContentBlock{breakpointBlock("18C")},
+				},
+			},
+		}}
+		out := ResponsesBreakpointsAsCacheControl(in, nil, MaxInjectedCacheBreakpoints)
+		require.NotNil(t, out[0].CacheControl)
+		assert.Nil(t, out[0].ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks[0].CacheControl,
+			"Anthropic rejects cache_control inside tool_result.content")
+		assert.Nil(t, in[0].CacheControl, "caller's input was mutated")
+	})
+
+	t.Run("marked message keeps its other fields", func(t *testing.T) {
+		marked := blockMsg(schemas.ResponsesInputMessageRoleUser, breakpointBlock("a"))
+		marked.OutputConfig = &schemas.ResponsesMessageOutputConfig{Effort: new("low")}
+		in := []schemas.ResponsesMessage{marked}
+		out := ResponsesBreakpointsAsCacheControl(in, nil, MaxInjectedCacheBreakpoints)
+		require.NotNil(t, out[0].Content.ContentBlocks[0].CacheControl)
+		assert.Same(t, in[0].OutputConfig, out[0].OutputConfig, "per-message output_config was dropped")
+		assert.Nil(t, in[0].Content.ContentBlocks[0].CacheControl, "caller's input was mutated")
+	})
+}
+
+func TestChatBreakpointsAsCacheControl(t *testing.T) {
+	msg := func(text string, cc *schemas.CacheControl) schemas.ChatMessage {
+		return schemas.ChatMessage{
+			Role: schemas.ChatMessageRoleUser,
+			Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{{
+				Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr(text), CacheControl: cc,
+				PromptCacheBreakpoint: &schemas.PromptCacheBreakpoint{Mode: schemas.Ptr("explicit")},
+			}}},
+		}
+	}
+	cc := &schemas.CacheControl{Type: schemas.CacheControlTypeEphemeral}
+	in := []schemas.ChatMessage{msg("c1", cc), msg("b1", nil), msg("b2", nil), msg("b3", nil), msg("b4", nil)}
+	out := ChatBreakpointsAsCacheControl(in, &schemas.ChatParameters{CacheControl: cc}, MaxInjectedCacheBreakpoints)
+
+	var marked []string
+	for _, m := range out {
+		if m.Content.ContentBlocks[0].CacheControl != nil {
+			marked = append(marked, *m.Content.ContentBlocks[0].Text)
+		}
+	}
+	assert.Equal(t, []string{"c1", "b3", "b4"}, marked, "caller and top-level markers keep their slots; latest breakpoints fill the rest")
+	assert.Nil(t, in[1].Content.ContentBlocks[0].CacheControl, "caller's input was mutated")
+
+	t.Run("marked messages keep their other fields", func(t *testing.T) {
+		failedTool := msg("boom", nil)
+		failedTool.Role = schemas.ChatMessageRoleTool
+		failedTool.ChatToolMessage = &schemas.ChatToolMessage{ToolCallID: new("call_1"), IsError: new(true)}
+		assistant := msg("calling", nil)
+		assistant.Role = schemas.ChatMessageRoleAssistant
+		assistant.ChatAssistantMessage = &schemas.ChatAssistantMessage{
+			ReasoningDetails: []schemas.ChatReasoningDetails{{Type: schemas.BifrostReasoningDetailsTypeText, Text: new("plan"), Signature: new("sig")}},
+			ToolCalls:        []schemas.ChatAssistantMessageToolCall{{ID: new("call_1"), CacheControl: cc}},
+		}
+		in := []schemas.ChatMessage{assistant, failedTool}
+		out := ChatBreakpointsAsCacheControl(in, nil, MaxInjectedCacheBreakpoints)
+
+		require.NotNil(t, out[1].Content.ContentBlocks[0].CacheControl)
+		require.NotNil(t, out[1].ChatToolMessage.IsError, "a failed tool result would reach the provider as a success")
+		assert.True(t, *out[1].ChatToolMessage.IsError)
+		require.NotNil(t, out[0].Content.ContentBlocks[0].CacheControl)
+		assert.Len(t, out[0].ChatAssistantMessage.ReasoningDetails, 1, "thinking blocks and their signatures were dropped")
+		assert.Same(t, cc, out[0].ChatAssistantMessage.ToolCalls[0].CacheControl, "the counted tool-call marker was dropped")
+		assert.Nil(t, in[1].Content.ContentBlocks[0].CacheControl, "caller's input was mutated")
+	})
+}
+
+func BenchmarkResponsesBreakpointsAsCacheControl(b *testing.B) {
+	plain := make([]schemas.ResponsesMessage, 20)
+	marked := make([]schemas.ResponsesMessage, 20)
+	for i := range plain {
+		plain[i] = blockMsg(schemas.ResponsesInputMessageRoleUser, textBlock("turn"))
+		marked[i] = plain[i]
+	}
+	marked[19] = blockMsg(schemas.ResponsesInputMessageRoleUser, breakpointBlock("turn"))
+
+	b.Run("no breakpoint", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			ResponsesBreakpointsAsCacheControl(plain, nil, MaxInjectedCacheBreakpoints)
+		}
+	})
+	b.Run("one breakpoint", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			ResponsesBreakpointsAsCacheControl(marked, nil, MaxInjectedCacheBreakpoints)
+		}
+	})
+}

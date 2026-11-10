@@ -7,7 +7,7 @@ require (
 	github.com/Azure/azure-sdk-for-go/sdk/azcore v1.20.0
 	github.com/Azure/azure-sdk-for-go/sdk/azidentity v1.13.1
 	github.com/a2aproject/a2a-go/v2 v2.5.0
-	github.com/andybalholm/brotli v1.2.2
+	github.com/andybalholm/brotli v1.2.7
 	github.com/aws/aws-sdk-go-v2 v1.42.0
 	github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.7.10
 	github.com/aws/aws-sdk-go-v2/config v1.32.14
@@ -23,7 +23,7 @@ require (
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/google/uuid v1.6.0
 	github.com/hajimehoshi/go-mp3 v0.3.4
-	github.com/klauspost/compress v1.20.0
+	github.com/klauspost/compress v1.20.3
 	github.com/mark3labs/mcp-go v1.5.0
 	github.com/rs/zerolog v1.34.0
 	github.com/stretchr/testify v1.12.1
@@ -31,7 +31,7 @@ require (
 	github.com/tidwall/sjson v1.2.5
 	github.com/valyala/fasthttp v1.74.0
 	golang.org/x/mod v0.41.0
-	golang.org/x/net v0.61.0
+	golang.org/x/net v0.62.0
 	golang.org/x/oauth2 v0.36.0
 	golang.org/x/sync v0.24.0
 	golang.org/x/text v0.43.0
@@ -77,7 +77,7 @@ require (
 	go.opentelemetry.io/otel/sdk/metric v1.45.0 // indirect
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
 	golang.org/x/arch v0.23.0 // indirect
-	golang.org/x/crypto v0.58.0 // indirect
+	golang.org/x/crypto v0.58.1-0.20261009181718-2f1f834330b2 // indirect
 	golang.org/x/sys v0.49.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260803160001-6ac0973c030d // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260803160001-6ac0973c030d // indirect

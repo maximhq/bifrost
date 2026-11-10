@@ -38,6 +38,7 @@ func setupRDBTestStore(t *testing.T) *RDBConfigStore {
 		&tables.TableRoutingRule{},
 		&tables.TableRoutingTarget{},
 		&tables.TablePricingOverride{},
+		&tables.TableDatasheetOverride{},
 		&tables.TableVirtualKey{},
 		&tables.TableVirtualKeyProviderConfig{},
 		&tables.TableVirtualKeyProviderConfigKey{},
@@ -5360,6 +5361,48 @@ func TestUpsertModelPricesBatch_VideoTokenColumnSurvivesResync(t *testing.T) {
 	assert.Equal(t, rate, *found.OutputCostPerVideoToken)
 }
 
+func TestUpsertModelPricesBatch_CacheCreationAbove12hrColumnsSurviveResync(t *testing.T) {
+	s := setupRDBTestStore(t)
+	require.NoError(t, s.DB().AutoMigrate(&tables.TableModelPricing{}))
+	ctx := context.Background()
+
+	row := tables.TableModelPricing{Model: "gpt-5.6-sol", Provider: "openai", Mode: "chat"}
+	require.NoError(t, s.UpsertModelPricesBatch(ctx, []tables.TableModelPricing{row}))
+
+	row.CacheCreationInputTokenCostAbove12hr = schemas.Ptr(0.00001)
+	row.CacheCreationInputTokenCostAbove12hrAbove272kTokens = schemas.Ptr(0.00002)
+	row.CacheCreationInputTokenCostAbove12hrPriority = schemas.Ptr(0.00002)
+	row.CacheCreationInputTokenCostAbove12hrAbove272kTokensPriority = schemas.Ptr(0.00004)
+	row.CacheCreationInputTokenCostAbove12hrFlex = schemas.Ptr(0.000005)
+	row.CacheCreationInputTokenCostAbove12hrAbove272kTokensFlex = schemas.Ptr(0.00001)
+	row.CacheCreationInputTokenCostAbove12hrUltrafast = schemas.Ptr(0.00015)
+	row.CacheCreationInputTokenCostAbove12hrAbove272kTokensUltrafast = schemas.Ptr(0.0003)
+	require.NoError(t, s.UpsertModelPricesBatch(ctx, []tables.TableModelPricing{row}))
+
+	got, err := s.GetModelPrices(ctx)
+	require.NoError(t, err)
+	var found *tables.TableModelPricing
+	for i := range got {
+		if got[i].Model == "gpt-5.6-sol" {
+			found = &got[i]
+			break
+		}
+	}
+	require.NotNil(t, found)
+	for name, v := range map[string]*float64{
+		"cache_creation_input_token_cost_above_12hr":                      found.CacheCreationInputTokenCostAbove12hr,
+		"cache_creation_input_token_cost_above_12hr_above_272k_tokens":    found.CacheCreationInputTokenCostAbove12hrAbove272kTokens,
+		"cache_creation_input_token_cost_above_12hr_priority":             found.CacheCreationInputTokenCostAbove12hrPriority,
+		"cache_creation_input_token_cost_above_12hr_above_272k_priority":  found.CacheCreationInputTokenCostAbove12hrAbove272kTokensPriority,
+		"cache_creation_input_token_cost_above_12hr_flex":                 found.CacheCreationInputTokenCostAbove12hrFlex,
+		"cache_creation_input_token_cost_above_12hr_above_272k_flex":      found.CacheCreationInputTokenCostAbove12hrAbove272kTokensFlex,
+		"cache_creation_input_token_cost_above_12hr_ultrafast":            found.CacheCreationInputTokenCostAbove12hrUltrafast,
+		"cache_creation_input_token_cost_above_12hr_above_272k_ultrafast": found.CacheCreationInputTokenCostAbove12hrAbove272kTokensUltrafast,
+	} {
+		assert.NotNil(t, v, "%s missing from pricingSyncUpdateColumns", name)
+	}
+}
+
 // TestRDBConfigStore_CreatedAtSurvivesConfigSync is the general form of
 // TestRDBConfigStore_RoutingRuleCreatedAtSurvivesUpdate. GORM's Save selects every
 // column, so any entity rebuilt from config.json — which carries no created_at —
@@ -6933,4 +6976,113 @@ func TestUpdateMCPClientConfig_KeepsPerUserDiscoveryWhenUnset(t *testing.T) {
 	row.PerUserDiscovery = schemas.Ptr(false)
 	require.NoError(t, store.UpdateMCPClientConfig(ctx, "pud-client", row))
 	assert.Equal(t, schemas.Ptr(false), stored(), "an update can turn the flag off")
+}
+
+// Saving by target updates the existing row in place: same ID and created_at,
+// new patches. Delete reports a missing row as ErrNotFound.
+func TestDatasheetOverride_UpsertByTargetAndDelete(t *testing.T) {
+	ctx := context.Background()
+	store := setupRDBTestStore(t)
+
+	first := &tables.TableDatasheetOverride{
+		ID: "first", Provider: "openai", Model: "gpt-4o", Mode: "chat",
+		PricingPatch: json.RawMessage(`{"context_length":64000}`),
+	}
+	require.NoError(t, store.UpsertDatasheetOverride(ctx, first))
+	other := &tables.TableDatasheetOverride{
+		ID: "other", Provider: "openai", Model: "gpt-4o", Mode: "responses",
+		ParamsPatch: json.RawMessage(`{"supports_mcp":true}`),
+	}
+	require.NoError(t, store.UpsertDatasheetOverride(ctx, other))
+
+	again := &tables.TableDatasheetOverride{
+		ID: "ignored-new-id", Provider: "openai", Model: "gpt-4o", Mode: "chat",
+		PricingPatch: json.RawMessage(`{"context_length":32000}`),
+		Baseline:     json.RawMessage(`{"pricing":{"context_length":128000}}`),
+	}
+	require.NoError(t, store.UpsertDatasheetOverride(ctx, again))
+	assert.Equal(t, "first", again.ID, "a save for an existing target keeps that row's ID")
+
+	rows, err := store.GetDatasheetOverrides(ctx)
+	require.NoError(t, err)
+	require.Len(t, rows, 2)
+	got, err := store.GetDatasheetOverrideByID(ctx, "first")
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"context_length":32000}`, string(got.PricingPatch))
+	assert.JSONEq(t, `{"pricing":{"context_length":128000}}`, string(got.Baseline))
+	assert.Nil(t, got.ParamsPatch)
+	assert.Equal(t, first.CreatedAt.Unix(), got.CreatedAt.Unix())
+
+	require.NoError(t, store.DeleteDatasheetOverride(ctx, "first"))
+	require.ErrorIs(t, store.DeleteDatasheetOverride(ctx, "first"), ErrNotFound)
+	_, err = store.GetDatasheetOverrideByID(ctx, "first")
+	require.ErrorIs(t, err, ErrNotFound)
+}
+
+// Two overrides whose pricing patches target the same folded pricing row
+// cannot both be stored, whichever node writes them; overrides without a claim
+// never conflict, and re-saving the claim holder is not a conflict.
+func TestDatasheetOverride_PricingClaimIsUnique(t *testing.T) {
+	ctx := context.Background()
+	store := setupRDBTestStore(t)
+	claim := "m|bedrock|chat"
+	require.NoError(t, store.UpsertDatasheetOverride(ctx, &tables.TableDatasheetOverride{
+		ID: "bedrock", Provider: "bedrock", Model: "m", Mode: "chat", PricingClaim: &claim,
+		PricingPatch: json.RawMessage(`{"input_cost_per_token":5}`),
+	}))
+	err := store.UpsertDatasheetOverride(ctx, &tables.TableDatasheetOverride{
+		ID: "mantle", Provider: "bedrock_mantle", Model: "m", Mode: "chat", PricingClaim: &claim,
+		PricingPatch: json.RawMessage(`{"input_cost_per_token":6}`),
+	})
+	require.ErrorIs(t, err, ErrDatasheetPricingClaimTaken)
+	require.NoError(t, store.UpsertDatasheetOverride(ctx, &tables.TableDatasheetOverride{
+		ID: "mantle-params", Provider: "bedrock_mantle", Model: "m", Mode: "chat",
+		ParamsPatch: json.RawMessage(`{"max_output_tokens":200}`),
+	}), "an override without a pricing claim does not conflict")
+	require.NoError(t, store.UpsertDatasheetOverride(ctx, &tables.TableDatasheetOverride{
+		ID: "bedrock", Provider: "bedrock", Model: "m", Mode: "chat", PricingClaim: &claim,
+		PricingPatch: json.RawMessage(`{"input_cost_per_token":7}`),
+	}), "re-saving the claim holder is not a conflict")
+
+	rows, err := store.GetDatasheetOverrides(ctx)
+	require.NoError(t, err)
+	require.Len(t, rows, 2)
+	for _, r := range rows {
+		if r.ID == "bedrock" {
+			require.NotNil(t, r.PricingClaim)
+			assert.Equal(t, claim, *r.PricingClaim)
+		} else {
+			assert.Nil(t, r.PricingClaim)
+		}
+	}
+}
+
+// A context cancelled between the insert and the ID readback must not leave
+// the row saved behind an error: the caller would skip its cache refresh and
+// peer notification for a write that did land.
+func TestDatasheetOverride_UpsertCancelledAfterInsertSavesNothing(t *testing.T) {
+	// File-backed: a cancelled tx can discard its connection, and a fresh
+	// :memory: connection would be an empty database.
+	db, err := gorm.Open(sqlite.Open(t.TempDir()+"/datasheet.db"), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(t, err)
+	require.NoError(t, db.AutoMigrate(&tables.TableDatasheetOverride{}))
+	store := &RDBConfigStore{}
+	store.db.Store(db)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	require.NoError(t, store.DB().Callback().Create().After("gorm:create").Register("test:cancel_after_datasheet_insert", func(db *gorm.DB) {
+		if db.Statement.Table == (tables.TableDatasheetOverride{}).TableName() {
+			cancel()
+		}
+	}))
+
+	err = store.UpsertDatasheetOverride(ctx, &tables.TableDatasheetOverride{
+		ID: "cancelled", Provider: "openai", Model: "gpt-4o", Mode: "chat",
+		PricingPatch: json.RawMessage(`{"context_length":64000}`),
+	})
+	require.Error(t, err, "the readback runs on a cancelled context")
+
+	rows, err := store.GetDatasheetOverrides(context.Background())
+	require.NoError(t, err)
+	assert.Empty(t, rows, "an upsert that returns an error must not have committed the row")
 }
