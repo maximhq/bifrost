@@ -317,7 +317,11 @@ A tool that returns only text comes back as a single string, as shown above. Whe
 
 A tool that returns only structured data comes back as that data, as JSON text.
 
-When the result is sent on to a model, Anthropic, Bedrock and Responses API models receive the images themselves (Responses API models receive files too). Models from other providers cannot take media in a tool result, so they receive a short note naming what the tool returned, such as `[image/png, 34 KB returned by the tool, not shown]`.
+When the result is sent on to a model, Anthropic, Bedrock and Responses API models receive the images themselves (Responses API models receive files too).
+
+On OpenAI-compatible Chat Completions paths, tool messages stay text-only: supported images are moved into user content after the complete group of tool results, labeled with their tool call IDs. If a user message already follows the results, the images are prepended to it. This also applies to requests translated from Responses or another SDK format into Chat Completions. The target model must support image inputs.
+
+Unsupported media, such as audio and files on the Chat Completions path, still becomes a short note naming what the tool returned, such as `[audio/mp3, 34 KB returned by the tool, not shown]`. Other provider paths that cannot accept a tool's media retain this placeholder behavior.
 
 Clients of [Bifrost's MCP server](./tool-hosting) receive each tool's result as the upstream server returned it, images, structured data and errors included, unless a plugin such as guardrails changed it.
 
