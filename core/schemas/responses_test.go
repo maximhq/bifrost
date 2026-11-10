@@ -2151,6 +2151,10 @@ func TestResponsesMessageCodexItemFieldsSurviveRoundTrip(t *testing.T) {
 		{"web_search_find_in_page", `{"type":"web_search_call","id":"ws_1","status":"completed","action":{"type":"find_in_page","url":"https://example.com","pattern":"needle"}}`},
 		{"web_search_find", `{"type":"web_search_call","id":"ws_1","status":"completed","action":{"type":"find","url":"https://example.com","pattern":"needle"}}`},
 		{"function_call_encrypted_args", `{"type":"function_call","call_id":"c1","name":"shell","arguments":"{}","encrypted_function_args":["a","b"]}`},
+		{"tool_output_input_audio", `{"type":"function_call_output","call_id":"c1","output":[{"type":"input_text","text":"ok"},{"type":"input_audio","audio_url":"https://example.com/a.wav"}]}`},
+		{"message_metadata_passthrough", `{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}],"internal_chat_message_metadata_passthrough":{"turn_id":"t1","create_time":1.5,"content_item_kinds":["text"]}}`},
+		{"tool_call_metadata_passthrough", `{"type":"custom_tool_call","call_id":"c1","name":"exec","input":"ls","internal_chat_message_metadata_passthrough":{"turn_id":"t1"}}`},
+		{"reasoning_metadata_passthrough", `{"type":"reasoning","id":"rs_1","summary":[],"encrypted_content":"enc","internal_chat_message_metadata_passthrough":{"turn_id":"t1"}}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var msg ResponsesMessage
