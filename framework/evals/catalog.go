@@ -81,6 +81,12 @@ func measured(key, name, category, description, scale string, criteria PassCrite
 	}
 }
 
+// optional adds variables an entry reads when they are present.
+func optional(entry CatalogEntry, variables ...string) CatalogEntry {
+	entry.OptionalVariables = variables
+	return entry
+}
+
 // loadCatalog builds the catalog on first use. It cannot be a package variable: those
 // are initialised before the init functions that register the built-ins it reads.
 var loadCatalog = sync.OnceValue(buildCatalog)
@@ -121,6 +127,7 @@ func buildCatalog() []CatalogEntry {
 		judged(BuiltinCodeCompletion, "Code completeness", CategoryCode, "Whether generated code is complete and runnable, rated 1 to 5 and mapped onto 0 to 1.", scaleUnit, atLeast(0.75), false),
 		judged(BuiltinCodeLanguageSelection, "Code language selection", CategoryCode, "Whether the code is written in the languages the request called for.", scaleBinary, atLeast(1), false),
 		measured(BuiltinSQLiteValidation, "SQLite validation", CategoryCode, "Whether the generated SQL runs against the schema in SQLite.", scaleBinary, atLeast(1), false, VariableOutput, VariableDBSchema),
+		optional(measured(BuiltinToolCallAccuracy, "Tool call accuracy", CategoryAgent, "Whether the tool calls the model made match the expected calls, by name, order and arguments.", scaleBinary, atLeast(1), false, VariableExpectedToolCalls, VariableToolCalls), VariableTools),
 
 		measured(BuiltinBLEU, "BLEU", CategorySimilarity, "N-gram precision of the output against the expected output, with a brevity penalty. 0 when no four-word sequence is shared.", scaleUnit, atLeast(0.5), false),
 		measured(BuiltinRouge1, "ROUGE-1", CategorySimilarity, "Overlap of single words between the output and the expected output.", scaleUnit, atLeast(0.8), false),

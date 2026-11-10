@@ -72,6 +72,15 @@ func sendEvalsError(ctx *fasthttp.RequestCtx, err error) {
 		SendError(ctx, fasthttp.StatusNotFound, "not found")
 	case errors.Is(err, configstore.ErrEvaluatorNameExists):
 		SendError(ctx, fasthttp.StatusConflict, err.Error())
+	case errors.Is(err, configstore.ErrEvalDatasetNameExists),
+		errors.Is(err, configstore.ErrEvalDatasetFolderNameExists),
+		errors.Is(err, configstore.ErrEvalDatasetColumnNameExists),
+		errors.Is(err, configstore.ErrEvalDatasetSplitNameExists),
+		errors.Is(err, configstore.ErrEvalDatasetNoChanges),
+		errors.Is(err, configstore.ErrEvalDatasetLatestVersion),
+		errors.Is(err, configstore.ErrEvalDatasetDraftNotSaved):
+		// The request is well formed but does not fit the dataset's current state.
+		SendError(ctx, fasthttp.StatusConflict, err.Error())
 	case errors.Is(err, evals.ErrNoEvalKey):
 		// The request is well formed; the gateway is not set up to serve it yet.
 		SendError(ctx, fasthttp.StatusUnprocessableEntity, err.Error())
