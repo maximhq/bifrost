@@ -1931,6 +1931,9 @@ func isTranscriptionRequest(req *gemini.GeminiGenerationRequest) bool {
 	// Check all contents for audio input
 	for _, content := range req.Contents {
 		for _, part := range content.Parts {
+			if part == nil {
+				continue
+			}
 			// Check for inline audio data
 			if part.InlineData != nil && isAudioMimeType(part.InlineData.MIMEType) {
 				return true

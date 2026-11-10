@@ -245,7 +245,7 @@ func (provider *RunwareProvider) ImageGeneration(ctx *schemas.BifrostContext, ke
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		bifrostReq,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*RunwareInferenceRequest, error) {
 			return ToRunwareImageGenerationRequest(bifrostReq)
 		})
 	if bifrostErr != nil {
@@ -260,7 +260,7 @@ func (provider *RunwareProvider) ImageEdit(ctx *schemas.BifrostContext, key sche
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		bifrostReq,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*RunwareInferenceRequest, error) {
 			return ToRunwareImageEditRequest(bifrostReq)
 		})
 	if bifrostErr != nil {
@@ -493,7 +493,7 @@ func (provider *RunwareProvider) VideoGeneration(ctx *schemas.BifrostContext, ke
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		bifrostReq,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*RunwareInferenceRequest, error) {
 			return ToRunwareVideoGenerationRequest(bifrostReq)
 		})
 	if bifrostErr != nil {
@@ -659,7 +659,7 @@ func (provider *RunwareProvider) VideoEdit(ctx *schemas.BifrostContext, key sche
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		bifrostReq,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*RunwareInferenceRequest, error) {
 			return ToRunwareVideoEditRequest(bifrostReq)
 		})
 	if bifrostErr != nil {

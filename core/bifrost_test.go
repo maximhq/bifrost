@@ -25,6 +25,9 @@ import (
 	mistralprovider "github.com/maximhq/bifrost/core/providers/mistral"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/core/streamusage"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 	"golang.org/x/text/cases"
 	"golang.org/x/text/language"
@@ -655,6 +658,30 @@ func TestHandleProviderRequest_OCROperationNotAllowed(t *testing.T) {
 	}
 	if err.ExtraFields.OriginalModelRequested != "custom-mistral/mistral-ocr-latest" {
 		t.Fatalf("expected model to be preserved, got %q", err.ExtraFields.OriginalModelRequested)
+	}
+}
+
+// An integration that decodes a body without messages builds an empty, non-nil Input; it must
+// be rejected as a 400 before dispatch, where the Responses conversion would panic on it.
+func TestChatCompletionRequest_EmptyInputRejected(t *testing.T) {
+	// A bare Bifrost has no request pools, so a request that slips past the guard panics.
+	guard := func(call func() *schemas.BifrostError) (err *schemas.BifrostError, passed bool) {
+		defer func() { passed = recover() != nil }()
+		return call(), false
+	}
+	bifrost := &Bifrost{}
+	for _, input := range [][]schemas.ChatMessage{nil, {}} {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		req := &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: "gpt-5.6-luna", Input: input}
+
+		err, passed := guard(func() *schemas.BifrostError { _, err := bifrost.ChatCompletionRequest(ctx, req); return err })
+		if passed || err == nil || err.EffectiveHTTPStatus() != http.StatusBadRequest {
+			t.Fatalf("chat: expected 400 for input %#v, got err=%v passedGuard=%v", input, err, passed)
+		}
+		err, passed = guard(func() *schemas.BifrostError { _, err := bifrost.ChatCompletionStreamRequest(ctx, req); return err })
+		if passed || err == nil || err.EffectiveHTTPStatus() != http.StatusBadRequest {
+			t.Fatalf("chat stream: expected 400 for input %#v, got err=%v passedGuard=%v", input, err, passed)
+		}
 	}
 }
 
@@ -3496,6 +3523,64 @@ func (f *fakeRoutingPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas
 }
 func (f *fakeRoutingPlugin) PostLLMHook(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
 	return resp, bifrostErr, nil
+}
+
+// panickingPostHookPlugin is an LLM plugin whose PostLLMHook panics after replacing
+// the response, the way a buggy plugin can half-mutate state before it crashes.
+type panickingPostHookPlugin struct{ fakeRoutingPlugin }
+
+func (p *panickingPostHookPlugin) PostLLMHook(_ *schemas.BifrostContext, _ *schemas.BifrostResponse, _ *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	var resp *schemas.BifrostResponse
+	_ = resp.ChatResponse // nil dereference: a runtime.Error panic
+	return nil, nil, nil
+}
+
+// recordingPostHookPlugin records whether its PostLLMHook ran and the response it saw.
+type recordingPostHookPlugin struct {
+	fakeRoutingPlugin
+	ran  bool
+	seen *schemas.BifrostResponse
+}
+
+func (p *recordingPostHookPlugin) PostLLMHook(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	p.ran, p.seen = true, resp
+	return resp, bifrostErr, nil
+}
+
+// TestRunPostLLMHooksRecoversPluginPanic pins that a panicking PostLLMHook is treated like
+// a plugin error: it is logged and recorded, the response it was handed passes on
+// unchanged, the remaining post-hooks still run, and nothing is returned to the caller.
+// For streams the hooks run per chunk on the provider goroutine, which has no other
+// recover, so an escaped panic ends the process.
+func TestRunPostLLMHooksRecoversPluginPanic(t *testing.T) {
+	for _, streaming := range []bool{false, true} {
+		t.Run(fmt.Sprintf("streaming=%v", streaming), func(t *testing.T) {
+			outer := &recordingPostHookPlugin{fakeRoutingPlugin: fakeRoutingPlugin{name: "outer"}}
+			bad := &panickingPostHookPlugin{fakeRoutingPlugin{name: "bad"}}
+			// Post-hooks run in reverse, so "bad" (index 1) runs before "outer" (index 0).
+			p := &PluginPipeline{
+				llmPlugins: []schemas.LLMPlugin{outer, bad},
+				logger:     NewDefaultLogger(schemas.LogLevelError),
+				tracer:     &schemas.NoOpTracer{},
+			}
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			if streaming {
+				ctx.SetValue(schemas.BifrostContextKeyStreamStartTime, time.Now())
+			}
+			in := &schemas.BifrostResponse{}
+
+			var out *schemas.BifrostResponse
+			var outErr *schemas.BifrostError
+			require.NotPanics(t, func() { out, outErr = p.RunPostLLMHooks(ctx, in, nil, 2) })
+			assert.Same(t, in, out, "the response handed to the panicking hook passes on unchanged")
+			assert.Nil(t, outErr, "a plugin panic is not returned to the caller")
+			assert.True(t, outer.ran, "post-hooks after the panicking one still run")
+			assert.Same(t, in, outer.seen)
+			require.Len(t, p.postHookErrors, 1)
+			assert.Contains(t, p.postHookErrors[0].Error(), "panic in PostLLMHook for plugin bad")
+			assert.Contains(t, p.postHookErrors[0].Error(), "nil pointer dereference")
+		})
+	}
 }
 
 type postHookResponsePreservingPlugin struct {
@@ -9350,4 +9435,77 @@ func TestVideo_ListResumesFromNativeCursor(t *testing.T) {
 	if decodeErr != nil || decoded.KeyIndex != 2 {
 		t.Fatalf("cursor = %+v (%v), want the third key", decoded, decodeErr)
 	}
+}
+
+// snapshotTracer hands a fixed accumulated response to cancelled-stream estimation.
+type snapshotTracer struct {
+	schemas.NoOpTracer
+	snapshot *schemas.BifrostResponse
+}
+
+func (s *snapshotTracer) GetAccumulatedResponse(string) *schemas.BifrostResponse { return s.snapshot }
+
+// usageEstimationTokenizerFor reports the tokenizer a cancelled stream of model is
+// estimated with under the families currently configured.
+func usageEstimationTokenizerFor(t *testing.T, model string) string {
+	t.Helper()
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyTracer, schemas.Tracer(&snapshotTracer{snapshot: &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{
+		Choices: []schemas.BifrostResponseChoice{{ChatNonStreamResponseChoice: &schemas.ChatNonStreamResponseChoice{Message: &schemas.ChatMessage{
+			Role: schemas.ChatMessageRoleAssistant, Content: &schemas.ChatMessageContent{ContentStr: new("hello world")},
+		}}}},
+	}}}))
+	ctx.SetValue(schemas.BifrostContextKeyTraceID, "trace-usage-estimation")
+	failure := &schemas.BifrostError{Error: &schemas.ErrorField{Type: new(schemas.RequestCancelled)}}
+	streamusage.Estimate(ctx, &schemas.BifrostRequest{RequestType: schemas.ChatCompletionStreamRequest, ChatRequest: &schemas.BifrostChatRequest{
+		Model: model, Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: new("hi")}}},
+	}}, model, failure)
+	if failure.ExtraFields.BilledUsage == nil || failure.ExtraFields.BilledUsage.Estimation == nil {
+		t.Fatalf("no estimate for %s: %+v", model, failure.ExtraFields.BilledUsage)
+	}
+	return failure.ExtraFields.BilledUsage.Estimation.Tokenizer
+}
+
+// UsageEstimationTokenizers reaches cancelled-stream estimation from every path that
+// carries it: Init, ReloadConfig (the path a saved config takes) and the runtime update.
+func TestUsageEstimationTokenizersFollowConfig(t *testing.T) {
+	t.Cleanup(func() { streamusage.Configure(nil) })
+	const model = "claude-opus-4-5"
+	account := NewMockAccount()
+	account.AddProvider(schemas.OpenAI, 1, 1)
+	client, err := Init(context.Background(), schemas.BifrostConfig{
+		Account: account, Logger: NewNoOpLogger(), UsageEstimationTokenizers: []string{"anthropic"},
+	})
+	if err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+	t.Cleanup(client.Shutdown)
+	expect := func(step, want string) {
+		t.Helper()
+		if got := usageEstimationTokenizerFor(t, model); got != want {
+			t.Fatalf("%s: %s estimated with %q, want %q", step, model, got, want)
+		}
+	}
+
+	expect("Init with anthropic", "anthropic")
+
+	if err := client.ReloadConfig(schemas.BifrostConfig{Account: account}); err != nil {
+		t.Fatalf("ReloadConfig: %v", err)
+	}
+	expect("ReloadConfig with no families", "cl100k_base")
+
+	if err := client.ReloadConfig(schemas.BifrostConfig{Account: account, UsageEstimationTokenizers: []string{"llama3", "Anthropic"}}); err != nil {
+		t.Fatalf("ReloadConfig: %v", err)
+	}
+	expect("ReloadConfig with anthropic", "anthropic")
+
+	client.UpdateUsageEstimationTokenizers([]string{"deepseek"})
+	expect("update to another family", "cl100k_base")
+
+	client.UpdateUsageEstimationTokenizers([]string{"all"})
+	expect("update to all", "anthropic")
+
+	// An unknown name is ignored with a warning; it must not enable anything.
+	client.UpdateUsageEstimationTokenizers([]string{"gpt2"})
+	expect("update to an unknown family", "cl100k_base")
 }

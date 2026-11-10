@@ -110,6 +110,7 @@ func streamPassthrough(
 			}
 			CloseStream(ctx, ch)
 		}()
+		defer RecoverStreamPanic(ctx, postHookRunner, ch, params.Logger, postHookSpanFinalizer)
 		defer release()
 		defer stopIdleTimeout()
 		defer stopCancellation()
