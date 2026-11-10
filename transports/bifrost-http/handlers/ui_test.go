@@ -435,11 +435,9 @@ func BenchmarkUIHandler_DevHTTP(b *testing.B) {
 		run := func(b *testing.B, parallel bool) {
 			b.ReportAllocs()
 			b.SetBytes(int64(size.bytes))
-			call := func(ctx *fasthttp.RequestCtx) {
+			call := func(ctx *fasthttp.RequestCtx) bool {
 				ctx.Response.Reset()
-				if !h.serveDevDashboard(ctx) || ctx.Response.StatusCode() != 200 {
-					b.Fatal("proxy failed")
-				}
+				return h.serveDevDashboard(ctx) && ctx.Response.StatusCode() == fasthttp.StatusOK
 			}
 			makeCtx := func() *fasthttp.RequestCtx {
 				var req fasthttp.Request
@@ -452,13 +450,18 @@ func BenchmarkUIHandler_DevHTTP(b *testing.B) {
 				b.RunParallel(func(pb *testing.PB) {
 					ctx := makeCtx()
 					for pb.Next() {
-						call(ctx)
+						if !call(ctx) {
+							b.Error("proxy failed")
+							return
+						}
 					}
 				})
 			} else {
 				ctx := makeCtx()
 				for b.Loop() {
-					call(ctx)
+					if !call(ctx) {
+						b.Fatal("proxy failed")
+					}
 				}
 			}
 		}
