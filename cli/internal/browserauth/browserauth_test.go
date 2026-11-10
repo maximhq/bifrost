@@ -13,7 +13,9 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"syscall"
 	"testing"
+	"testing/iotest"
 	"time"
 )
 
@@ -152,31 +154,49 @@ func TestCallbackServerDoesNotRedirectWhenExchangeFails(t *testing.T) {
 	}
 }
 
-// TestSignInRejectsCallbackStateMismatch verifies login CSRF protection fails closed.
+// TestSignInRejectsCallbackStateMismatch verifies a wrong-state callback is
+// refused without its code being exchanged, and does not end sign-in: with a
+// fixed callback port any local process can reach the listener, so only the
+// matching callback may decide the outcome.
 func TestSignInRejectsCallbackStateMismatch(t *testing.T) {
-	gateway := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		_, _ = io.WriteString(writer, `{"idp_configured":true}`)
-	}))
-	defer gateway.Close()
-	client := &Client{BaseURL: gateway.URL, HTTPClient: gateway.Client(), CallbackWait: time.Second}
+	exchanged := make(chan string, 2)
+	gateway := ssoGateway(t, exchanged)
+	client := &Client{BaseURL: gateway.URL, HTTPClient: gateway.Client(), CallbackWait: 5 * time.Second}
+	forgedStatus := make(chan int, 1)
 	client.OpenBrowser = func(target string) error {
-		parsed, _ := url.Parse(target)
-		callback, _ := url.Parse(parsed.Query().Get("redirect_uri"))
-		query := callback.Query()
-		query.Set("code", "attacker-code")
-		query.Set("state", "wrong-state")
-		callback.RawQuery = query.Encode()
+		forged := pastedCallbackURL(t, target, "attacker-code", "wrong-state")
+		real := pastedCallbackURL(t, target, "real-code", "")
 		go func() {
-			response, getErr := http.Get(callback.String())
-			if getErr == nil {
+			response, getErr := http.Get(forged)
+			if getErr != nil {
+				forgedStatus <- 0
+				return
+			}
+			_ = response.Body.Close()
+			forgedStatus <- response.StatusCode
+			if response, getErr = http.Get(real); getErr == nil {
 				_ = response.Body.Close()
 			}
 		}()
 		return nil
 	}
-	_, err := client.SignIn(context.Background(), false)
-	if err == nil || !strings.Contains(err.Error(), "state did not match") {
-		t.Fatalf("error = %v, want state mismatch", err)
+	response, err := client.SignIn(context.Background(), false)
+	if err != nil {
+		t.Fatalf("sign-in ended on a wrong-state callback: %v", err)
+	}
+	if response.AccessToken != "ck-bf-agent-access" {
+		t.Fatalf("unexpected response: %#v", response)
+	}
+	if status := <-forgedStatus; status != http.StatusBadRequest {
+		t.Fatalf("wrong-state callback status = %d, want %d", status, http.StatusBadRequest)
+	}
+	if got := <-exchanged; !strings.HasPrefix(got, "real-code ") {
+		t.Fatalf("exchange = %q, want only the matching callback's code", got)
+	}
+	select {
+	case extra := <-exchanged:
+		t.Fatalf("unexpected second exchange %q", extra)
+	default:
 	}
 }
 
@@ -328,6 +348,9 @@ func ssoGateway(t *testing.T, exchanged chan<- string) *httptest.Server {
 	return gateway
 }
 
+// maxPortAttempts bounds retries when a released test port is taken before use.
+const maxPortAttempts = 5
+
 // freeLoopbackPort reserves and releases a loopback port for a static-port test.
 func freeLoopbackPort(t *testing.T) int {
 	t.Helper()
@@ -362,22 +385,31 @@ func pastedCallbackURL(t *testing.T, authorize, code, state string) string {
 // TestSignInUsesConfiguredCallbackPort pins the redirect URI to a fixed port
 // so it can be forwarded into a container before sign-in starts.
 func TestSignInUsesConfiguredCallbackPort(t *testing.T) {
-	port := freeLoopbackPort(t)
 	exchanged := make(chan string, 1)
 	gateway := ssoGateway(t, exchanged)
-	client := &Client{BaseURL: gateway.URL, HTTPClient: gateway.Client(), CallbackWait: 5 * time.Second, CallbackPort: port}
-	client.OpenBrowser = func(target string) error {
-		callback := pastedCallbackURL(t, target, "one-time-code", "")
-		go func() {
-			response, getErr := http.Get(callback)
-			if getErr == nil {
-				_ = response.Body.Close()
-			}
-		}()
-		return nil
-	}
-	if _, err := client.SignIn(context.Background(), false); err != nil {
-		t.Fatal(err)
+	var port int
+	// freeLoopbackPort releases the port before SignIn binds it, so another
+	// process can take it in between; retry only that case.
+	for attempt := 1; ; attempt++ {
+		port = freeLoopbackPort(t)
+		client := &Client{BaseURL: gateway.URL, HTTPClient: gateway.Client(), CallbackWait: 5 * time.Second, CallbackPort: port}
+		client.OpenBrowser = func(target string) error {
+			callback := pastedCallbackURL(t, target, "one-time-code", "")
+			go func() {
+				response, getErr := http.Get(callback)
+				if getErr == nil {
+					_ = response.Body.Close()
+				}
+			}()
+			return nil
+		}
+		_, err := client.SignIn(context.Background(), false)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, syscall.EADDRINUSE) || attempt == maxPortAttempts {
+			t.Fatal(err)
+		}
 	}
 	want := fmt.Sprintf("one-time-code http://127.0.0.1:%d/callback", port)
 	if got := <-exchanged; got != want {
@@ -449,6 +481,46 @@ func TestSignInAcceptsPastedCallbackURL(t *testing.T) {
 	}
 	if len(warnings) != 2 || !strings.Contains(warnings[1], "state did not match") {
 		t.Fatalf("warnings = %q, want one unparseable line and one state mismatch", warnings)
+	}
+}
+
+// TestSignInWarnsWhenPastedCallbackReadFails reports a stdin read error instead
+// of silently waiting for the timeout, and the loopback listener still works.
+func TestSignInWarnsWhenPastedCallbackReadFails(t *testing.T) {
+	gateway := ssoGateway(t, nil)
+	warnings := make(chan string, 4)
+	client := &Client{
+		BaseURL: gateway.URL, HTTPClient: gateway.Client(), CallbackWait: 5 * time.Second,
+		PastedCallback: iotest.ErrReader(errors.New("terminal closed")),
+		Warning:        func(err error) { warnings <- err.Error() },
+	}
+	client.OpenBrowser = func(string) error {
+		t.Fatal("browser opened with noBrowser set")
+		return nil
+	}
+	client.Authorization = func(target string) {
+		callback := pastedCallbackURL(t, target, "listener-code", "")
+		go func() {
+			select {
+			case warning := <-warnings:
+				warnings <- warning
+			case <-time.After(3 * time.Second):
+			}
+			if response, err := http.Get(callback); err == nil {
+				_ = response.Body.Close()
+			}
+		}()
+	}
+	if _, err := client.SignIn(context.Background(), true); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case warning := <-warnings:
+		if !strings.Contains(warning, "stopped reading pasted callbacks: terminal closed") {
+			t.Fatalf("warning = %q, want the read error", warning)
+		}
+	default:
+		t.Fatal("no warning for a failed pasted-callback read")
 	}
 }
 

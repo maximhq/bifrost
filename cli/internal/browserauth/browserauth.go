@@ -287,7 +287,11 @@ func callbackServer(expectedState string, results chan<- callbackResult, exchang
 		code, err := callbackCode(request.URL.Query(), expectedState)
 		if err != nil {
 			http.Error(writer, callbackErrorPage(err), http.StatusBadRequest)
-			sendCallbackResult(results, callbackResult{err: err})
+			// A wrong-state request is not this sign-in's callback. With a fixed
+			// port any local process can send one, so it must not end sign-in.
+			if !errors.Is(err, errCallbackStateMismatch) {
+				sendCallbackResult(results, callbackResult{err: err})
+			}
 			return
 		}
 		response, err := exchange(code)
@@ -410,6 +414,15 @@ func (c *Client) readPastedCallbacks(signInDone <-chan struct{}, expectedState s
 		}
 		if c.Warning != nil {
 			c.Warning(fmt.Errorf("ignored pasted callback: %w", err))
+		}
+	}
+	// A read error or an over-long line stops the reader; say so rather than
+	// leaving the user waiting for the timeout. The listener keeps running.
+	if err := scanner.Err(); err != nil && c.Warning != nil {
+		select {
+		case <-signInDone:
+		default:
+			c.Warning(fmt.Errorf("stopped reading pasted callbacks: %w", err))
 		}
 	}
 }

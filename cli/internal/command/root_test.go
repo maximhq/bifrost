@@ -15,6 +15,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -569,71 +570,92 @@ func TestAuthLoginCallbackPort(t *testing.T) {
 		_ = listener.Close()
 		return port
 	}
-	envPort := reservePort(t)
-	flagPort := reservePort(t)
-	for _, test := range []struct {
-		name     string
+	type loginCase struct {
 		env      string
 		args     []string
 		wantPort int
 		wantErr  string
+	}
+	for _, test := range []struct {
+		name  string
+		build func(envPort, flagPort int) loginCase
 	}{
-		{name: "environment", env: strconv.Itoa(envPort), wantPort: envPort},
-		{name: "flag overrides environment", env: strconv.Itoa(envPort), args: []string{"--callback-port", strconv.Itoa(flagPort)}, wantPort: flagPort},
-		{name: "invalid environment", env: "70000", wantErr: "invalid callback port \"70000\""},
-		{name: "invalid flag", args: []string{"--callback-port", "abc"}, wantErr: "invalid callback port \"abc\""},
+		{name: "environment", build: func(envPort, _ int) loginCase {
+			return loginCase{env: strconv.Itoa(envPort), wantPort: envPort}
+		}},
+		{name: "flag overrides environment", build: func(envPort, flagPort int) loginCase {
+			return loginCase{env: strconv.Itoa(envPort), args: []string{"--callback-port", strconv.Itoa(flagPort)}, wantPort: flagPort}
+		}},
+		{name: "invalid environment", build: func(int, int) loginCase {
+			return loginCase{env: "70000", wantErr: "invalid callback port \"70000\""}
+		}},
+		{name: "invalid flag", build: func(int, int) loginCase {
+			return loginCase{args: []string{"--callback-port", "abc"}, wantErr: "invalid callback port \"abc\""}
+		}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			t.Setenv(browserauth.CallbackPortEnv, test.env)
-			runner, _, _ := newTestRunner(t, testRoundTripFunc(func(request *http.Request) (*http.Response, error) {
-				switch request.URL.Path {
-				case "/api/agent/auth/status":
-					return jsonResponse(request, `{"idp_configured":true}`), nil
-				case "/api/agent/auth/token":
-					return jsonResponse(request, `{"agent_access_token":"ck-bf-agent-login","refresh_token":"refresh-login","user":{"email":"user@example.com"}}`), nil
-				case "/api/agent/virtual-keys":
-					return jsonResponse(request, `{"virtual_keys":[]}`), nil
-				default:
-					t.Fatalf("unexpected path %q", request.URL.Path)
-					return nil, nil
-				}
-			}))
-			env, err := runner.resolveEnvironment(globalOptions{Output: "json", Quiet: true}, credentialAgentToken|credentialAgentVirtualKeyID)
-			if err != nil {
-				t.Fatal(err)
-			}
-			gotPort := 0
-			env.BrowserAuth.OpenBrowser = func(target string) error {
-				authorization, err := url.Parse(target)
-				if err != nil {
-					return err
-				}
-				callback, err := url.Parse(authorization.Query().Get("redirect_uri"))
-				if err != nil {
-					return err
-				}
-				gotPort, _ = strconv.Atoi(callback.Port())
-				callback.RawQuery = url.Values{"state": {authorization.Query().Get("state")}, "code": {"test-code"}}.Encode()
-				go func() {
-					response, getErr := http.Get(callback.String())
-					if getErr == nil {
-						_ = response.Body.Close()
+			login := func(c loginCase) (int, error) {
+				t.Setenv(browserauth.CallbackPortEnv, c.env)
+				runner, _, _ := newTestRunner(t, testRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+					switch request.URL.Path {
+					case "/api/agent/auth/status":
+						return jsonResponse(request, `{"idp_configured":true}`), nil
+					case "/api/agent/auth/token":
+						return jsonResponse(request, `{"agent_access_token":"ck-bf-agent-login","refresh_token":"refresh-login","user":{"email":"user@example.com"}}`), nil
+					case "/api/agent/virtual-keys":
+						return jsonResponse(request, `{"virtual_keys":[]}`), nil
+					default:
+						t.Fatalf("unexpected path %q", request.URL.Path)
+						return nil, nil
 					}
-				}()
-				return nil
+				}))
+				env, err := runner.resolveEnvironment(globalOptions{Output: "json", Quiet: true}, credentialAgentToken|credentialAgentVirtualKeyID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				gotPort := 0
+				env.BrowserAuth.OpenBrowser = func(target string) error {
+					authorization, err := url.Parse(target)
+					if err != nil {
+						return err
+					}
+					callback, err := url.Parse(authorization.Query().Get("redirect_uri"))
+					if err != nil {
+						return err
+					}
+					gotPort, _ = strconv.Atoi(callback.Port())
+					callback.RawQuery = url.Values{"state": {authorization.Query().Get("state")}, "code": {"test-code"}}.Encode()
+					go func() {
+						response, getErr := http.Get(callback.String())
+						if getErr == nil {
+							_ = response.Body.Close()
+						}
+					}()
+					return nil
+				}
+				return gotPort, runner.authLogin(context.Background(), env, c.args)
 			}
-			err = runner.authLogin(context.Background(), env, test.args)
-			if test.wantErr != "" {
-				if err == nil || !strings.Contains(err.Error(), test.wantErr) {
-					t.Fatalf("error = %v, want %q", err, test.wantErr)
+			// Reserved ports are released before the login binds them, so another
+			// process can take one in between; only that case gets fresh ports.
+			for attempt := 1; ; attempt++ {
+				c := test.build(reservePort(t), reservePort(t))
+				gotPort, err := login(c)
+				if c.wantErr != "" {
+					if err == nil || !strings.Contains(err.Error(), c.wantErr) {
+						t.Fatalf("error = %v, want %q", err, c.wantErr)
+					}
+					return
+				}
+				if errors.Is(err, syscall.EADDRINUSE) && attempt < 5 {
+					continue
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				if gotPort != c.wantPort {
+					t.Fatalf("callback port = %d, want %d", gotPort, c.wantPort)
 				}
 				return
-			}
-			if err != nil {
-				t.Fatal(err)
-			}
-			if gotPort != test.wantPort {
-				t.Fatalf("callback port = %d, want %d", gotPort, test.wantPort)
 			}
 		})
 	}
