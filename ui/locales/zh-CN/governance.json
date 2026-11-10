@@ -701,5 +701,15 @@
 		"remove": "移除",
 		"update": "更新",
 		"add": "添加"
+	},
+	"requestLimits": {
+		"title": "请求限额",
+		"add": "添加限额",
+		"empty": "尚未配置请求限额。",
+		"removeAria": "移除请求限额 {{number}}",
+		"duplicate": "重置周期重复；每条请求限额必须使用不同的周期。",
+		"duplicateScope": "该范围内重置周期重复；同一范围的请求限额必须使用不同的周期。",
+		"unique": "同一范围内的每项请求限额必须使用唯一的重置周期",
+		"tokenInfo": "仅适用于模型请求。"
 	}
 }

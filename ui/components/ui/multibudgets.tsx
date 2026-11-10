@@ -4,7 +4,7 @@ import { Label } from "@/components/ui/label";
 import NumberAndSelect from "@/components/ui/numberAndSelect";
 import QuarterStartSelect from "@/components/ui/quarterStartSelect";
 import { budgetPeriodKey } from "@/lib/budgetOutline";
-import { budgetResetDurationOptions } from "@/lib/constants/governance";
+import { budgetResetDurationOptions, resetDurationOptions } from "@/lib/constants/governance";
 import type { LimitScope } from "@/lib/types/governance";
 import { Plus, RotateCcw, Trash2 } from "lucide-react";
 import { useMemo } from "react";
@@ -21,7 +21,17 @@ export interface BudgetLineEntry {
 // Quarterly is the only period with settings beyond the duration itself.
 const isQuarterly = (duration: string) => duration.endsWith("Q");
 
-interface MultiBudgetLinesProps {
+// The wording of a set of lines: spend budgets by default, request limits in RequestLimitLines.
+export interface LineCopy {
+	amountLabel: string;
+	addLabel: string;
+	emptyLabel: string;
+	removeAriaLabel: (number: number) => string;
+	duplicateLabel: string;
+	duplicateScopeLabel: string;
+}
+
+export interface MultiBudgetLinesProps {
 	"data-testid"?: string;
 	label?: string;
 	lines: BudgetLineEntry[];
@@ -40,6 +50,12 @@ interface MultiBudgetLinesProps {
 	scopeOptions?: readonly LimitScope[];
 	// The scope a new line starts with when the selector is shown; the shared default when omitted.
 	defaultScope?: LimitScope;
+	// Wording for lines that are not spend budgets (request limits); the budget strings when omitted.
+	copy?: LineCopy;
+	// Whole numbers only (request counts).
+	integer?: boolean;
+	// Inline error for a line's amount, shown under it (e.g. a request limit below 1).
+	amountError?: (value: number | undefined) => string | undefined;
 }
 
 export default function MultiBudgetLines({
@@ -54,10 +70,21 @@ export default function MultiBudgetLines({
 	showScope = false,
 	scopeOptions,
 	defaultScope,
+	copy,
+	integer = false,
+	amountError,
 }: MultiBudgetLinesProps) {
 	const { t } = useTranslation("governance");
 	const { t: tModels } = useTranslation("models");
 	const label = labelProp ?? tModels("virtualKeys.budgetConfiguration");
+	const lineCopy: LineCopy = copy ?? {
+		amountLabel: t("sheet.maximumSpend"),
+		addLabel: t("sheet.addBudgetButton"),
+		emptyLabel: t("sheet.noBudgetLimits"),
+		removeAriaLabel: (number) => t("sheet.removeBudgetAria", { number }),
+		duplicateLabel: t("sheet.duplicateResetPeriod"),
+		duplicateScopeLabel: t("sheet.duplicateResetPeriodScope"),
+	};
 	// A hidden scope is submitted as the shared default, so it is counted as one.
 	const periodKeyOf = (line: BudgetLineEntry) => budgetPeriodKey(line.reset_duration, showScope ? line.scope : undefined);
 	// Track which reset period + scope pairs are already used (for duplicate detection)
@@ -130,18 +157,19 @@ export default function MultiBudgetLines({
 					{(maxLines === undefined || lines.length < maxLines) && (
 						<Button data-testid={`${testId}-add-btn`} variant="outline" size="sm" type="button" onClick={addLine}>
 							<Plus className="mr-1 h-3 w-3" />
-							{t("sheet.addBudgetButton")}
+							{lineCopy.addLabel}
 						</Button>
 					)}
 				</div>
 			</div>
 
 			{lines.length === 0 && (
-				<div className="text-muted-foreground rounded-md border border-dashed p-3 text-center text-sm">{t("sheet.noBudgetLimits")}</div>
+				<div className="text-muted-foreground rounded-md border border-dashed p-3 text-center text-sm">{lineCopy.emptyLabel}</div>
 			)}
 
 			{lines.map((line, index) => {
 				const isDuplicate = (usedPeriods.get(periodKeyOf(line)) || 0) > 1;
+				const lineAmountError = amountError?.(line.max_limit);
 				return (
 					<div key={index} className="space-y-1" data-testid={`${testId}-line-${index}`}>
 						<div className={showScope ? "flex flex-col gap-2 sm:flex-row sm:items-end" : "flex items-end gap-2"}>
@@ -150,12 +178,13 @@ export default function MultiBudgetLines({
 									id={`${testId}-${index}`}
 									dataTestId={`${testId}-amount-${index}`}
 									labelClassName="font-normal"
-									label={t("sheet.maximumSpend")}
+									label={lineCopy.amountLabel}
 									value={line.max_limit}
 									selectValue={line.reset_duration}
 									onChangeNumber={(value) => updateMaxLimit(index, value)}
 									onChangeSelect={(value) => updateResetDuration(index, value)}
 									options={options}
+									integer={integer}
 								/>
 							</div>
 							{showScope && (
@@ -170,7 +199,7 @@ export default function MultiBudgetLines({
 							)}
 							<Button
 								data-testid={`${testId}-remove-${index}`}
-								aria-label={t("sheet.removeBudgetAria", { number: index + 1 })}
+								aria-label={lineCopy.removeAriaLabel(index + 1)}
 								variant="ghost"
 								size="icon"
 								type="button"
@@ -193,14 +222,38 @@ export default function MultiBudgetLines({
 								/>
 							</div>
 						)}
+						{lineAmountError && <p className="text-destructive pl-0.5 text-xs">{lineAmountError}</p>}
 						{isDuplicate && (
-							<p className="text-destructive pl-0.5 text-xs">
-								{t(showScope ? "sheet.duplicateResetPeriodScope" : "sheet.duplicateResetPeriod")}
-							</p>
+							<p className="text-destructive pl-0.5 text-xs">{showScope ? lineCopy.duplicateScopeLabel : lineCopy.duplicateLabel}</p>
 						)}
 					</div>
 				);
 			})}
 		</div>
+	);
+}
+type RequestLimitLinesProps = Omit<MultiBudgetLinesProps, "options" | "copy" | "integer" | "amountError">;
+
+// Request limit lines: the budget line editor with request wording, whole-number maximums and the
+// rate-limit reset periods (no quarterly window, which request limits do not support).
+export function RequestLimitLines({ label, ...props }: RequestLimitLinesProps) {
+	const { t } = useTranslation("governance");
+	const { t: tCommon } = useTranslation("common");
+	return (
+		<MultiBudgetLines
+			{...props}
+			label={label ?? t("requestLimits.title")}
+			options={resetDurationOptions}
+			copy={{
+				amountLabel: t("sheet.maximumRequests"),
+				addLabel: t("requestLimits.add"),
+				emptyLabel: t("requestLimits.empty"),
+				removeAriaLabel: (number) => t("requestLimits.removeAria", { number }),
+				duplicateLabel: t("requestLimits.duplicate"),
+				duplicateScopeLabel: t("requestLimits.duplicateScope"),
+			}}
+			integer
+			amountError={(value) => (value !== undefined && value < 1 ? tCommon("validation.valueMustBeAPositiveWholeNumber") : undefined)}
+		/>
 	);
 }

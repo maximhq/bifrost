@@ -702,5 +702,15 @@
 		"remove": "Entfernen",
 		"update": "Aktualisieren",
 		"add": "Hinzufügen"
+	},
+	"requestLimits": {
+		"title": "Anfragelimits",
+		"add": "Limit hinzufügen",
+		"empty": "Keine Anfragelimits konfiguriert.",
+		"removeAria": "Anfragelimit {{number}} entfernen",
+		"duplicate": "Doppelter Reset-Zeitraum; jedes Anfragelimit muss ein anderes Intervall verwenden.",
+		"duplicateScope": "Doppelter Reset-Zeitraum für diesen Geltungsbereich; Anfragelimits mit demselben Geltungsbereich müssen unterschiedliche Intervalle verwenden.",
+		"unique": "Jedes Anfragelimit muss innerhalb seines Geltungsbereichs einen eindeutigen Reset-Zeitraum haben",
+		"tokenInfo": "Gilt nur für Modellanfragen."
 	}
 }

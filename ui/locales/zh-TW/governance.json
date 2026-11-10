@@ -701,5 +701,15 @@
 		"remove": "移除",
 		"update": "更新",
 		"add": "新增"
+	},
+	"requestLimits": {
+		"title": "請求限額",
+		"add": "新增限額",
+		"empty": "尚未設定請求限額。",
+		"removeAria": "移除請求限額 {{number}}",
+		"duplicate": "重置週期重複；每條請求限額必須使用不同的間隔。",
+		"duplicateScope": "該範圍內重置週期重複；同一範圍的請求限額必須使用不同的間隔。",
+		"unique": "同一範圍內的每項請求限額必須使用唯一的重置週期",
+		"tokenInfo": "僅適用於模型請求。"
 	}
 }

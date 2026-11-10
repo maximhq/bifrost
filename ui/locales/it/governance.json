@@ -702,5 +702,15 @@
 		"remove": "Rimuovi",
 		"update": "Aggiorna",
 		"add": "Aggiungi"
+	},
+	"requestLimits": {
+		"title": "Limiti richieste",
+		"add": "Aggiungi limite",
+		"empty": "Nessun limite richieste configurato.",
+		"removeAria": "Rimuovi limite richieste {{number}}",
+		"duplicate": "Periodo di ripristino duplicato; ogni limite richieste deve usare un intervallo diverso.",
+		"duplicateScope": "Periodo di ripristino duplicato per questo ambito; i limiti richieste con lo stesso ambito devono usare intervalli diversi.",
+		"unique": "Ogni limite richieste deve avere un periodo di ripristino univoco per il proprio ambito",
+		"tokenInfo": "Si applica solo alle richieste ai modelli."
 	}
 }

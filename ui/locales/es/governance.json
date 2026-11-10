@@ -702,5 +702,15 @@
 		"remove": "Eliminar",
 		"update": "Actualizar",
 		"add": "Agregar"
+	},
+	"requestLimits": {
+		"title": "Límites de solicitudes",
+		"add": "Agregar límite",
+		"empty": "No hay límites de solicitudes configurados.",
+		"removeAria": "Eliminar límite de solicitudes {{number}}",
+		"duplicate": "Período de reinicio duplicado; cada límite de solicitudes debe usar un intervalo distinto.",
+		"duplicateScope": "Período de reinicio duplicado para este ámbito; los límites de solicitudes con el mismo ámbito deben usar intervalos distintos.",
+		"unique": "Cada límite de solicitudes debe tener un período de reinicio único dentro de su ámbito",
+		"tokenInfo": "Solo se aplica a las solicitudes de modelos."
 	}
 }

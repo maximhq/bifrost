@@ -702,5 +702,15 @@
 		"requestTooltip": "{{used}} / {{max}} requests",
 		"keyCount_one": "{{count}} key",
 		"keyCount_other": "{{count}} keys"
+	},
+	"requestLimits": {
+		"title": "Request Limits",
+		"add": "Add Limit",
+		"empty": "No request limits configured.",
+		"removeAria": "Remove request limit {{number}}",
+		"duplicate": "Duplicate reset period; each request limit must use a different interval.",
+		"duplicateScope": "Duplicate reset period for this scope; request limits with the same scope must use different intervals.",
+		"unique": "Each request limit must have a unique reset period for its scope",
+		"tokenInfo": "Applies to model requests only."
 	}
 }

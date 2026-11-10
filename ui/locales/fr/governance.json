@@ -702,5 +702,15 @@
 		"remove": "Supprimer",
 		"update": "Mettre à jour",
 		"add": "Ajouter"
+	},
+	"requestLimits": {
+		"title": "Limites de requêtes",
+		"add": "Ajouter une limite",
+		"empty": "Aucune limite de requêtes configurée.",
+		"removeAria": "Supprimer la limite de requêtes {{number}}",
+		"duplicate": "Période de réinitialisation en double ; chaque limite de requêtes doit utiliser un intervalle différent.",
+		"duplicateScope": "Période de réinitialisation en double pour cette portée ; les limites de requêtes de même portée doivent utiliser des intervalles différents.",
+		"unique": "Chaque limite de requêtes doit avoir une période de réinitialisation unique pour sa portée",
+		"tokenInfo": "S'applique uniquement aux requêtes de modèle."
 	}
 }
