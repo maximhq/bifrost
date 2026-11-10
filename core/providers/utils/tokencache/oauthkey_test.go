@@ -2,7 +2,11 @@ package tokencache
 
 import (
 	"context"
+	"io"
 	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"sync"
 	"testing"
 
 	schemas "github.com/maximhq/bifrost/core/schemas"
@@ -84,55 +88,87 @@ func TestResolveBearer(t *testing.T) {
 	})
 }
 
-func TestResolveBearerWithScopeRetry(t *testing.T) {
-	denied := func(t *testing.T) *tokenServer {
-		ts := newTokenServer(t)
-		ts.set(http.StatusForbidden, `{"error":"access_denied"}`, nil)
-		return ts
+func TestResolveBearerWithScopeFallbacks(t *testing.T) {
+	// scopedServer grants only the given scope and answers every other with status.
+	scopedServer := func(t *testing.T, granted string, status int) (*httptest.Server, func() []string) {
+		var mu sync.Mutex
+		var requested []string
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			raw, _ := io.ReadAll(r.Body)
+			form, _ := url.ParseQuery(string(raw))
+			mu.Lock()
+			requested = append(requested, form.Get("scope"))
+			mu.Unlock()
+			w.Header().Set("Content-Type", "application/json")
+			if form.Get("scope") != granted {
+				w.WriteHeader(status)
+				_, _ = w.Write([]byte(`{"error":"access_denied"}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"access_token":"for-` + granted + `","token_type":"Bearer","expires_in":3600}`))
+		}))
+		t.Cleanup(srv.Close)
+		return srv, func() []string {
+			mu.Lock()
+			defer mu.Unlock()
+			return append([]string(nil), requested...)
+		}
 	}
+	denied := func(e *schemas.BifrostError) bool {
+		return e.StatusCode != nil && *e.StatusCode == http.StatusForbidden
+	}
+	sets := [][]string{{"all-apis"}, {"second"}, {"third"}}
 
-	t.Run("a retry naming other scopes re-mints once with them", func(t *testing.T) {
-		ts := denied(t)
-		var seen *schemas.BifrostError
-		_, bErr := ResolveBearerWithScopeRetry(context.Background(), New[string](Options{}), *ccConfig(ts.URL), authClient(t), func(e *schemas.BifrostError) []string {
-			seen = e
-			return []string{"narrow"}
-		})
-		require.NotNil(t, bErr)
-		require.NotNil(t, seen, "the retry must see the first mint's error")
-		assert.Equal(t, http.StatusForbidden, *seen.StatusCode)
-		hits, form, _, _, _ := ts.snapshot()
-		assert.Equal(t, 2, hits, "one denied mint, then exactly one retry")
-		assert.Equal(t, "narrow", form.Get("scope"), "the retry carries the scopes it was given")
+	t.Run("tries the sets in order and caches the first granted", func(t *testing.T) {
+		srv, requested := scopedServer(t, "second", http.StatusForbidden)
+		cache := New[string](Options{})
+		for range 2 {
+			h, bErr := ResolveBearerWithScopeFallbacks(context.Background(), cache, *ccConfig(srv.URL), authClient(t), ScopeFallbacks{Sets: sets, Denied: denied})
+			require.Nil(t, bErr)
+			assert.Equal(t, "Bearer for-second", h["Authorization"])
+		}
+		// The configured all-apis is tried once; the identical first fallback set is skipped.
+		assert.Equal(t, []string{"all-apis", "second"}, requested())
 	})
 
-	t.Run("a retry naming the same scopes does not loop", func(t *testing.T) {
-		ts := denied(t)
-		_, bErr := ResolveBearerWithScopeRetry(context.Background(), New[string](Options{}), *ccConfig(ts.URL), authClient(t), func(*schemas.BifrostError) []string {
-			return []string{"all-apis"}
-		})
+	t.Run("a failure that is not a denial stops at once", func(t *testing.T) {
+		srv, requested := scopedServer(t, "second", http.StatusUnauthorized)
+		_, bErr := ResolveBearerWithScopeFallbacks(context.Background(), New[string](Options{}), *ccConfig(srv.URL), authClient(t), ScopeFallbacks{Sets: sets, Denied: denied})
 		require.NotNil(t, bErr)
-		hits, _, _, _, _ := ts.snapshot()
-		assert.Equal(t, 1, hits)
+		assert.Equal(t, http.StatusUnauthorized, *bErr.StatusCode)
+		assert.Equal(t, []string{"all-apis"}, requested())
 	})
 
-	t.Run("a retry that declines returns the original error", func(t *testing.T) {
-		ts := denied(t)
-		_, bErr := ResolveBearerWithScopeRetry(context.Background(), New[string](Options{}), *ccConfig(ts.URL), authClient(t), func(*schemas.BifrostError) []string { return nil })
+	t.Run("every set denied returns Exhausted built from the first refusal", func(t *testing.T) {
+		srv, requested := scopedServer(t, "never", http.StatusForbidden)
+		var first *schemas.BifrostError
+		_, bErr := ResolveBearerWithScopeFallbacks(context.Background(), New[string](Options{}), *ccConfig(srv.URL), authClient(t), ScopeFallbacks{
+			Sets:   sets,
+			Denied: denied,
+			Exhausted: func(e *schemas.BifrostError) *schemas.BifrostError {
+				first = e
+				return &schemas.BifrostError{StatusCode: schemas.Ptr(http.StatusForbidden), Error: &schemas.ErrorField{Message: "exhausted"}}
+			},
+		})
+		require.NotNil(t, bErr)
+		assert.Equal(t, "exhausted", bErr.Error.Message)
+		require.NotNil(t, first)
+		assert.Contains(t, first.Error.Message, "access_denied")
+		assert.Equal(t, []string{"all-apis", "second", "third"}, requested())
+	})
+
+	t.Run("no Exhausted returns the first refusal", func(t *testing.T) {
+		srv, _ := scopedServer(t, "never", http.StatusForbidden)
+		_, bErr := ResolveBearerWithScopeFallbacks(context.Background(), New[string](Options{}), *ccConfig(srv.URL), authClient(t), ScopeFallbacks{Sets: sets, Denied: denied})
 		require.NotNil(t, bErr)
 		assert.Contains(t, bErr.Error.Message, "access_denied")
-		hits, _, _, _, _ := ts.snapshot()
-		assert.Equal(t, 1, hits)
 	})
 
-	t.Run("a successful mint never consults the retry", func(t *testing.T) {
-		ts := newTokenServer(t)
-		h, bErr := ResolveBearerWithScopeRetry(context.Background(), New[string](Options{}), *ccConfig(ts.URL), authClient(t), func(*schemas.BifrostError) []string {
-			t.Fatal("retry consulted on a successful mint")
-			return nil
-		})
-		require.Nil(t, bErr)
-		assert.Equal(t, "Bearer minted", h["Authorization"])
+	t.Run("a zero value is ResolveBearerFrom", func(t *testing.T) {
+		srv, requested := scopedServer(t, "second", http.StatusForbidden)
+		_, bErr := ResolveBearerWithScopeFallbacks(context.Background(), New[string](Options{}), *ccConfig(srv.URL), authClient(t), ScopeFallbacks{})
+		require.NotNil(t, bErr)
+		assert.Equal(t, []string{"all-apis"}, requested())
 	})
 }
 

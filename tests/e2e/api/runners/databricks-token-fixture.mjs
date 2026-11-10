@@ -10,10 +10,10 @@ import { argValue, createInterceptProxy } from "./lib/tls-intercept-proxy.mjs";
 //
 // One host is different: SCOPED_HOST stands in for a workspace whose service principal secret was
 // created with only the model-serving-inference scope. Its token endpoint refuses any requested
-// scope outside that set with the 403 Databricks sends, which names the scopes the secret has,
-// and mints a token otherwise; its chat completions endpoint answers a canned reply for that
-// token. A gateway that asks for all-apis and stops at the 403 fails the harness row; one that
-// retries with the named scopes is served.
+// scope outside that set with the 403 access_denied Databricks sends, and mints a token
+// otherwise; its chat completions endpoint answers a canned reply for that token. A gateway
+// that asks for all-apis and stops at the 403 fails the harness row; one that falls back to
+// model-serving-inference is served.
 //
 //   node databricks-token-fixture.mjs [--port 8795]
 //
@@ -37,7 +37,8 @@ const respondScoped = (req, body, path) => {
 				status: 403,
 				body: JSON.stringify({
 					error: "access_denied",
-					error_description: `Scopes '${missing.join(" ")}' are not assigned to the client harness-service-principal; the client has scope(s) [${SCOPED_GRANTED.join(", ")}] that cannot send this request`,
+					// The shape a live workspace sent for this secret: no list of the scopes it has.
+					error_description: `Scopes '${missing.join(" ")}' are not assigned to the client harness-service-principal`,
 				}),
 			};
 		}

@@ -154,14 +154,18 @@ A key needs either a `value` (personal access token) or both `client_id` and `cl
 
 There's nothing to configure. Bifrost asks for `all-apis` when it mints a token, which every secret created without scopes has.
 
-Databricks also lets an admin limit a secret to specific scopes when creating it. A token from such a secret can't exceed those scopes, so Databricks refuses the `all-apis` request with a 403 that lists the scopes the secret does have. Bifrost reads that list, mints again with exactly those scopes, and caches the token. The extra token request happens once per refresh, not per inference request.
+Databricks also lets an admin limit a secret to specific scopes when creating it. Databricks refuses a token request that names any scope the secret lacks, so a scoped secret is refused `all-apis`. Bifrost then tries the scopes that can serve its requests, one at a time, and caches the first token it gets:
 
-The token can still lack a permission the call needs. Databricks then rejects the call itself, and the error comes back from the serving endpoint. A secret limited to `all-apis:read` hits this on every inference request, because querying a serving endpoint isn't a read. Give the service principal a secret with the scopes its features need, from the [Databricks API scopes](https://docs.databricks.com/api/workspace/scopes):
+| Scope | What it serves |
+|-------|----------------|
+| `all-apis` | Everything. Every secret created without scopes has it. |
+| `model-serving-inference` | Chat, Responses and embeddings on serving endpoints (`/serving-endpoints/...`) |
+| `model-serving` | The same, plus endpoint management |
+| `ai-functions` | [Decisions](#decisions) (`/api/2.0/ai-functions/ai-decide`) |
 
-| Bifrost feature | Databricks API | Scope |
-|-----------------|----------------|-------|
-| Chat, Responses, embeddings on Model Serving | `/serving-endpoints/...` | `model-serving-inference` |
-| [Decisions](#decisions) | `/api/2.0/ai-functions/ai-decide` | `ai-functions` |
+The extra token requests happen when the token is minted or refreshed, about once an hour, never per inference request. If a token can't do what a call needs, for example an `ai-functions` token on a chat request, the serving endpoint rejects that call.
+
+Read-only scopes such as `all-apis:read` and `model-serving-inference:read` can't query a serving endpoint. Databricks answers every query with `Invalid scope, required scopes: model-serving, model-serving-inference`. Bifrost never mints those, and a secret that has nothing else fails at the token request with an error naming the scopes above. Create a new secret for the service principal, either without scopes or with one from the table. See the [Databricks API scopes](https://docs.databricks.com/api/workspace/scopes).
 
 Model listing needs no scope. Bifrost lists Databricks models from its own catalog and never calls the workspace for them. Databricks doesn't document a scope for the Unity AI Gateway inference paths (`/ai-gateway/...`), so test a scoped secret against those first, or use a secret without scopes.
 
@@ -383,8 +387,8 @@ Databricks pricing depends on the model, the serving configuration (pay-per-toke
 |---------|-------|
 | `databricks workspace url is not set` | No `workspace_url` on the key. `config.json` and the UI require it; only the Go SDK also accepts a provider-level `base_url` as the workspace host. |
 | `databricks key has no credentials` | Neither a key `value` nor a complete service principal pair. |
-| 403 `access_denied Scopes 'all-apis' are not assigned to the client` | The secret was created with scopes and Bifrost couldn't read the granted scopes from Databricks' denial, which usually means Databricks changed the message. Use a secret without scopes and report it. See [OAuth scopes](#oauth-scopes). |
-| 403 from the serving endpoint with an OAuth key that otherwise works | The secret's scopes don't cover the call. `all-apis:read` can't run inference. See [OAuth scopes](#oauth-scopes). |
+| 403 `databricks service principal secret has none of the OAuth scopes Bifrost can serve requests with` | The secret was created with read-only scopes, such as `all-apis:read`, or scopes unrelated to inference. Create a secret without scopes or with `model-serving-inference`. See [OAuth scopes](#oauth-scopes). |
+| 403 `Invalid scope, required scopes: ...` from the serving endpoint | The secret has a usable scope, but not the one this call needs, for example `ai-functions` on a chat request. See [OAuth scopes](#oauth-scopes). |
 | 403 with `PERMISSION_DENIED` | The principal lacks `EXECUTE` on the model service, or query access to the serving endpoint. Bifrost surfaces this as an authorization error rather than a missing model. |
 | 404 on a model that exists | The request went to the wrong surface. Set `api_format` explicitly. |
 | A model is missing from the model list | Databricks models are listed from Bifrost's model catalog, not from the workspace. Any serving endpoint or model service can still be called by name; `api_format` only affects routing, not listing. |

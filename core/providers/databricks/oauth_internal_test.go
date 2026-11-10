@@ -131,29 +131,54 @@ func TestOAuthM2M(t *testing.T) {
 	}
 }
 
-// TestOAuthM2MScopedSecret covers a service principal secret created with scopes. The token
-// endpoint stands in for Databricks: it refuses any scope the secret lacks with the 403 it
-// sends in production, naming the scopes the secret has. With no configuration, the provider
-// must retry once with those scopes, serve the request with the narrower token, and cache it
-// so the next request mints nothing. A 403 that names no scopes must surface unchanged after a
-// single attempt, so a genuinely rejected client is not retried.
+// TestOAuthM2MScopedSecret covers service principal secrets created with scopes. The stub token
+// endpoint behaves like Databricks, as observed against a live workspace: it grants only the
+// scopes the secret has, refuses any other requested scope with a 403 access_denied, and the
+// refusal does not reliably list what the secret has. With no configuration the provider must
+// fall back through the scopes that can serve a request, use the first one granted, and cache
+// it. A secret with only read-only scopes must fail at the mint with an error naming the scopes
+// Bifrost needs. A rejected client secret (401) must not be retried at all.
 func TestOAuthM2MScopedSecret(t *testing.T) {
 	cases := []struct {
-		name       string
-		denial     string
-		wantScopes []string
-		wantErr    string
+		name        string
+		granted     string // the one scope the stub secret has
+		status      int    // the refusal status for any other scope
+		refusal     string
+		wantScopes  []string
+		wantErr     []string
+		wantBearers bool
 	}{
 		{
-			name:       "retries with the granted scopes",
-			denial:     "Scopes 'all-apis' are not assigned to the client sp-client-id; the client has scope(s) [model-serving-inference] that cannot send this request",
-			wantScopes: []string{"all-apis", "model-serving-inference"},
+			name:        "model-serving-inference secret",
+			granted:     "model-serving-inference",
+			status:      http.StatusForbidden,
+			refusal:     `{"error":"access_denied","error_description":"Scopes 'all-apis' are not assigned to the client sp-client-id"}`,
+			wantScopes:  []string{"all-apis", "model-serving-inference"},
+			wantBearers: true,
 		},
 		{
-			name:       "a denial without a scope list is returned as is",
-			denial:     "client is disabled",
+			name:        "model-serving secret",
+			granted:     "model-serving",
+			status:      http.StatusForbidden,
+			refusal:     `{"error":"access_denied","error_description":"Scopes 'all-apis' are not assigned to the client sp-client-id"}`,
+			wantScopes:  []string{"all-apis", "model-serving-inference", "model-serving"},
+			wantBearers: true,
+		},
+		{
+			name:       "read-only secret fails at the mint naming the scopes Bifrost needs",
+			granted:    "all-apis:read",
+			status:     http.StatusForbidden,
+			refusal:    `{"error":"access_denied","error_description":"Scopes 'all-apis' are not assigned to the client sp-client-id; the client has scope(s) [all-apis:read] that cannot send this request"}`,
+			wantScopes: []string{"all-apis", "model-serving-inference", "model-serving", "ai-functions"},
+			wantErr:    []string{"none of the OAuth scopes Bifrost can serve requests with", "model-serving-inference", "the client has scope(s) [all-apis:read]"},
+		},
+		{
+			name:       "a rejected client secret is not retried",
+			granted:    "none",
+			status:     http.StatusUnauthorized,
+			refusal:    `{"error":"invalid_client","error_description":"bad secret"}`,
 			wantScopes: []string{"all-apis"},
-			wantErr:    "client is disabled",
+			wantErr:    []string{"failed (401): invalid_client"},
 		},
 	}
 	for _, tc := range cases {
@@ -171,12 +196,12 @@ func TestOAuthM2MScopedSecret(t *testing.T) {
 					mu.Lock()
 					requested = append(requested, scope)
 					mu.Unlock()
-					if scope != "model-serving-inference" {
-						w.WriteHeader(http.StatusForbidden)
-						_, _ = w.Write([]byte(`{"error":"access_denied","error_description":"` + tc.denial + `"}`))
+					if scope != tc.granted {
+						w.WriteHeader(tc.status)
+						_, _ = w.Write([]byte(tc.refusal))
 						return
 					}
-					_, _ = w.Write([]byte(`{"access_token":"scoped-token","token_type":"Bearer","expires_in":3600}`))
+					_, _ = w.Write([]byte(`{"access_token":"scoped-token","token_type":"Bearer","expires_in":3600,"scope":"` + scope + `"}`))
 					return
 				}
 				mu.Lock()
@@ -207,61 +232,68 @@ func TestOAuthM2MScopedSecret(t *testing.T) {
 				Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}}},
 			}
 
-			attempts := 2
-			if tc.wantErr != "" {
-				attempts = 1
-			}
-			for i := range attempts {
+			// Two requests: the second must reuse the cached token (or the cached failure)
+			// and send nothing more to the token endpoint.
+			for i := range 2 {
 				ctx, cancel := schemas.NewBifrostContextWithTimeout(context.Background(), 10*time.Second)
 				_, bErr := provider.ChatCompletion(ctx, key, request)
 				cancel()
-				if tc.wantErr == "" && bErr != nil {
-					t.Fatalf("ChatCompletion (attempt %d) returned an error: %v", i+1, bErr)
-				}
-				if tc.wantErr != "" {
-					if bErr == nil || bErr.Error == nil || !strings.Contains(bErr.Error.Message, tc.wantErr) {
-						t.Fatalf("expected the original denial %q, got %+v", tc.wantErr, bErr)
+				if len(tc.wantErr) == 0 {
+					if bErr != nil {
+						t.Fatalf("ChatCompletion (attempt %d) returned an error: %v", i+1, bErr)
 					}
+					continue
+				}
+				if bErr == nil || bErr.Error == nil {
+					t.Fatalf("attempt %d: expected an error, got %+v", i+1, bErr)
+				}
+				for _, want := range tc.wantErr {
+					if !strings.Contains(bErr.Error.Message, want) {
+						t.Errorf("attempt %d: error %q does not contain %q", i+1, bErr.Error.Message, want)
+					}
+				}
+				if bErr.AllowFallbacks == nil || *bErr.AllowFallbacks {
+					t.Errorf("attempt %d: a credential fault must block fallbacks", i+1)
+				}
+				if strings.Contains(bErr.Error.Message, "sp-client-secret") {
+					t.Errorf("attempt %d: the client secret leaked into the error", i+1)
 				}
 			}
 
 			mu.Lock()
 			defer mu.Unlock()
 			if strings.Join(requested, "|") != strings.Join(tc.wantScopes, "|") {
-				t.Errorf("token requests: got scopes %q, want %q (one all-apis attempt, then at most one retry, then cached)", requested, tc.wantScopes)
+				t.Errorf("token requests: got scopes %q, want %q", requested, tc.wantScopes)
 			}
-			if tc.wantErr == "" && gotAuth != "Bearer scoped-token" {
-				t.Errorf("Authorization: got %q, want the narrowed token", gotAuth)
+			if tc.wantBearers && gotAuth != "Bearer scoped-token" {
+				t.Errorf("Authorization: got %q, want the scoped token", gotAuth)
 			}
 		})
 	}
 }
 
-func TestGrantedScopesFromRejection(t *testing.T) {
-	denied := func(status int, msg string) *schemas.BifrostError {
+func TestIsScopeDenied(t *testing.T) {
+	mintErr := func(status int, msg string) *schemas.BifrostError {
 		return &schemas.BifrostError{StatusCode: schemas.Ptr(status), Error: &schemas.ErrorField{Message: msg}}
 	}
-	const prod = "oauth token request to https://dbc-1.cloud.databricks.com/oidc/v1/token failed (403): access_denied Scopes 'all-apis' are not assigned to the client [redacted]; the client has scope(s) [all-apis:read] that cannot send this request"
+	const prefix = "oauth token request to https://dbc-1.cloud.databricks.com/oidc/v1/token failed "
 	cases := []struct {
 		name string
 		err  *schemas.BifrostError
-		want []string
+		want bool
 	}{
-		{"the reported production message", denied(403, prod), []string{"all-apis:read"}},
-		{"several scopes, comma separated", denied(403, "access_denied ...; the client has scope(s) [model-serving-inference, ai-functions] that cannot send this request"), []string{"model-serving-inference", "ai-functions"}},
-		{"several scopes, space separated", denied(403, "access_denied ...; the client has scope(s) [sql jobs] that cannot"), []string{"sql", "jobs"}},
-		{"an empty scope list", denied(403, "access_denied ...; the client has scope(s) [] that cannot"), nil},
-		{"not a 403", denied(401, prod), nil},
-		{"a 403 that is not access_denied", denied(403, "invalid_client the client has scope(s) [sql]"), nil},
-		{"no scope list", denied(403, "access_denied client is disabled"), nil},
-		{"no status", &schemas.BifrostError{Error: &schemas.ErrorField{Message: prod}}, nil},
-		{"nil", nil, nil},
+		{"access_denied with a scope list", mintErr(403, prefix+"(403): access_denied Scopes 'all-apis' are not assigned to the client [redacted]; the client has scope(s) [all-apis:read] that cannot send this request"), true},
+		{"access_denied without a scope list", mintErr(403, prefix+"(403): access_denied Scopes 'all-apis' are not assigned to the client [redacted]"), true},
+		{"a 403 with another error code", mintErr(403, prefix+"(403): invalid_client mentions access_denied later"), false},
+		{"a rejected secret", mintErr(401, prefix+"(401): invalid_client"), false},
+		{"missing scope is a 400", mintErr(400, prefix+"(400): invalid_scope Request must specify at least one valid scope"), false},
+		{"no status", &schemas.BifrostError{Error: &schemas.ErrorField{Message: prefix + "(403): access_denied"}}, false},
+		{"nil", nil, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := grantedScopesFromRejection(tc.err)
-			if strings.Join(got, "|") != strings.Join(tc.want, "|") {
-				t.Errorf("got %q, want %q", got, tc.want)
+			if got := isScopeDenied(tc.err); got != tc.want {
+				t.Errorf("got %v, want %v", got, tc.want)
 			}
 		})
 	}

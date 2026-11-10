@@ -39,18 +39,25 @@ func ResolveBearer(ctx context.Context, cache *Cache[string], value string, cfg 
 // ResolveBearerFrom is ResolveBearer for a config that is known to exist, taken by value so a
 // provider that derives it per request (Databricks) keeps it on the stack.
 func ResolveBearerFrom(ctx context.Context, cache *Cache[string], cfg schemas.OAuthKeyConfig, hc *http.Client) (map[string]string, *schemas.BifrostError) {
-	return ResolveBearerWithScopeRetry(ctx, cache, cfg, hc, nil)
+	return ResolveBearerWithScopeFallbacks(ctx, cache, cfg, hc, ScopeFallbacks{})
 }
 
-// ScopeRetry inspects a failed mint and returns the scopes to request instead, or nil to give
-// up and return the original error. It runs only on the cold path, after a mint has failed.
-type ScopeRetry func(mintErr *schemas.BifrostError) []string
+// ScopeFallbacks lists other scope sets to try, in order, when the token endpoint refuses the
+// configured scopes. Denied decides whether a failed mint is such a refusal: anything else
+// (a bad secret, an outage) stops at once. Exhausted, when set, builds the error returned
+// after every set was refused, from the first refusal. A zero value tries nothing extra.
+type ScopeFallbacks struct {
+	Sets      [][]string
+	Denied    func(mintErr *schemas.BifrostError) bool
+	Exhausted func(first *schemas.BifrostError) *schemas.BifrostError
+}
 
-// ResolveBearerWithScopeRetry is ResolveBearerFrom with one extra attempt: when the mint fails
-// and retry names other scopes, the token is minted once more with them. The token is cached
-// under the original config's key, so the credential keeps one cache entry whichever scopes it
-// ended up with. A nil retry behaves exactly like ResolveBearerFrom.
-func ResolveBearerWithScopeRetry(ctx context.Context, cache *Cache[string], cfg schemas.OAuthKeyConfig, hc *http.Client, retry ScopeRetry) (map[string]string, *schemas.BifrostError) {
+// ResolveBearerWithScopeFallbacks is ResolveBearerFrom for a credential whose scopes are not
+// known up front. The configured scopes are tried first; while the endpoint refuses them, each
+// fallback set is tried in turn. The token is cached under the original config's key, so the
+// credential keeps one cache entry whichever set succeeded, and the fallbacks run only on the
+// cold path, after a mint has failed.
+func ResolveBearerWithScopeFallbacks(ctx context.Context, cache *Cache[string], cfg schemas.OAuthKeyConfig, hc *http.Client, fallbacks ScopeFallbacks) (map[string]string, *schemas.BifrostError) {
 	// The minter is built only on the cold path: a warm request pays for the cache key and
 	// the lookup, not for a clientcredentials.Config it will never use.
 	cacheKey, bErr := validateConfig(&cfg)
@@ -63,20 +70,29 @@ func ResolveBearerWithScopeRetry(ctx context.Context, cache *Cache[string], cfg 
 			return nil, bErr
 		}
 		entry, mintErr := mint(ctx, prev)
-		if mintErr == nil || retry == nil {
+		if mintErr == nil || fallbacks.Denied == nil || !fallbacks.Denied(mintErr) {
 			return entry, mintErr
 		}
-		scopes := retry(mintErr)
-		if len(scopes) == 0 || slices.Equal(scopes, cfg.Scopes) {
-			return nil, mintErr
+		first := mintErr
+		for _, scopes := range fallbacks.Sets {
+			if slices.Equal(scopes, cfg.Scopes) {
+				continue
+			}
+			narrowed := cfg
+			narrowed.Scopes = scopes
+			_, next, bErr := MinterForConfig(&narrowed, hc)
+			if bErr != nil {
+				return nil, bErr
+			}
+			entry, mintErr = next(ctx, prev)
+			if mintErr == nil || !fallbacks.Denied(mintErr) {
+				return entry, mintErr
+			}
 		}
-		narrowed := cfg
-		narrowed.Scopes = scopes
-		_, retryMint, bErr := MinterForConfig(&narrowed, hc)
-		if bErr != nil {
-			return nil, mintErr
+		if fallbacks.Exhausted != nil {
+			return nil, fallbacks.Exhausted(first)
 		}
-		return retryMint(ctx, prev)
+		return nil, first
 	})
 	if bErr != nil {
 		return nil, bErr
