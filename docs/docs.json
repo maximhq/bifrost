@@ -2065,6 +2065,7 @@
             "item": "Open Source",
             "icon": "rocket",
             "pages": [
+              "changelogs/v2.5.1",
               "changelogs/v2.5.0",
               {
                 "group": "October 2026",
