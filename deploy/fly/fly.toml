@@ -1,0 +1,38 @@
+# Fly.io app configuration for Bifrost. Used by deploy/fly/deploy.sh:
+#
+#   fly deploy --config deploy/fly/fly.toml --app <name>
+#
+# The app runs the published image; Postgres comes from `fly postgres create`
+# plus `fly postgres attach`, which sets DATABASE_URL. The image entrypoint
+# derives the PG_* settings the config.json references from that URL.
+# `app` is left empty on purpose: the script passes --app.
+
+# Give in-flight inference requests and streams time to drain on redeploy
+# instead of Fly's 5 second default.
+kill_timeout = "60s"
+
+[build]
+  image = "maximhq/bifrost:latest"
+
+[env]
+  APP_HOST = "0.0.0.0"
+  APP_PORT = "8080"
+  LOG_STYLE = "json"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "off"
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "60s"
+    method = "GET"
+    path = "/health"
+
+[[vm]]
+  size = "shared-cpu-2x"
+  memory = "2gb"
