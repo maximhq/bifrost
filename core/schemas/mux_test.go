@@ -2713,3 +2713,26 @@ func TestChatToResponsesKeepsPromptCacheBreakpoint(t *testing.T) {
 		})
 	}
 }
+
+// BenchmarkToChatMessages measures the Responses->Chat fallback on a typical multi-turn
+// history (text, a function call round trip, and server-tool items that are dropped).
+func BenchmarkToChatMessages(b *testing.B) {
+	var input []ResponsesMessage
+	if err := Unmarshal([]byte(`[
+		{"role":"system","content":"be brief"},
+		{"role":"user","content":"look"},
+		{"type":"function_call","call_id":"fc_1","name":"lookup","arguments":"{}"},
+		{"type":"function_call_output","call_id":"fc_1","output":"ok"},
+		{"role":"assistant","content":[{"type":"output_text","text":"done"}]},
+		{"type":"mcp_call","id":"mcp_1","name":"search","arguments":"{}","server_label":"docs"},
+		{"type":"web_search_call","id":"ws_1","status":"completed"},
+		{"role":"user","content":"reply OK"}
+	]`), &input); err != nil {
+		b.Fatalf("unmarshal input: %v", err)
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = ToChatMessages(input)
+	}
+}
