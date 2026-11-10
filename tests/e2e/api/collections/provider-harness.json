@@ -314377,6 +314377,224 @@
           }
         }
       ]
+    },
+    {
+      "name": "325. Server-tool history with no chat role is dropped on the Responses to Chat fallback (server-tool history fallback) (#9721 / PR #9733)",
+      "description": "An Anthropic Messages request whose history holds mcp_tool_use / mcp_tool_result (or server web_search) blocks, sent to a chat-only provider, used to 400 upstream with `messages[0]: missing field 'role'`. The Anthropic converter turns those blocks into Responses items (mcp_call, web_search_call) that Chat Completions has no equivalent for, and ToChatMessages emitted each one as a roleless, contentless chat message. The fix drops every roleless Responses item that has no chat rendering.\n\n325.1 is the issue's own reproduction on /anthropic/v1/messages. 325.2 replays a server web_search turn on the same route, the sibling type the first fix (mcp_call only) still broke. 325.3 sends neutral-shape mcp_list_tools / mcp_call input items on /v1/responses, which reaches the same fallback without the Anthropic converter. Every case asserts on extra_fields.raw_request: each chat message has a role, no server-tool type reaches the wire, and the plain user turns survive in order.",
+      "item": [
+        {
+          "name": "deepseek/deepseek-v4-flash /anthropic/v1/messages mcp_tool_use + mcp_tool_result history - #9721",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash\",\n  \"max_tokens\": 30,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"look\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": [\n        {\n          \"type\": \"mcp_tool_use\",\n          \"id\": \"call_1\",\n          \"name\": \"analyze_image\",\n          \"input\": {\n            \"prompt\": \"desc\"\n          },\n          \"server_name\": \"img_mcp\"\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"mcp_tool_result\",\n          \"tool_use_id\": \"call_1\",\n          \"content\": [\n            {\n              \"type\": \"text\",\n              \"text\": \"red\"\n            }\n          ]\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"reply OK\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('325.1 200 - a 400 \"missing field `role`\" from DeepSeek is the regression', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 600)).to.equal(200);",
+                  "});",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('325.1 raw_request captured as a chat body', function () {",
+                  "  pm.expect(rr, 'raw_request missing: ' + txt.slice(0, 400)).to.be.an('object');",
+                  "  pm.expect(rr.messages, 'no messages[] on the wire: ' + JSON.stringify(rr).slice(0, 400)).to.be.an('array');",
+                  "});",
+                  "var msgs = (rr && rr.messages) || [];",
+                  "pm.test('325.1 every chat message on the wire carries a role', function () {",
+                  "  msgs.forEach(function (m, i) {",
+                  "    pm.expect(m && m.role, 'messages[' + i + '] has no role: ' + JSON.stringify(msgs).slice(0, 600)).to.be.a('string').and.not.empty;",
+                  "  });",
+                  "});",
+                  "pm.test('325.1 server-tool items are dropped, not forwarded under their Responses type', function () {",
+                  "  var wire = JSON.stringify(msgs);",
+                  "  ['mcp_call', 'mcp_list_tools', 'mcp_tool_use', 'mcp_tool_result', 'web_search_call', 'server_tool_use'].forEach(function (t) {",
+                  "    pm.expect(wire.indexOf(t), t + ' reached the chat wire: ' + wire.slice(0, 600)).to.equal(-1);",
+                  "  });",
+                  "});",
+                  "pm.test('325.1 the user turns survive in order', function () {",
+                  "  var users = msgs.filter(function (m) { return m && m.role === 'user'; }).map(function (m) {",
+                  "    return typeof m.content === 'string' ? m.content : JSON.stringify(m.content);",
+                  "  });",
+                  "  pm.expect(users, JSON.stringify(msgs).slice(0, 600)).to.eql([\"look\",\"reply OK\"]);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "deepseek/deepseek-v4-flash /anthropic/v1/messages server web_search history - #9721",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash\",\n  \"max_tokens\": 30,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"look up a red pixel\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": [\n        {\n          \"type\": \"server_tool_use\",\n          \"id\": \"srvtoolu_1\",\n          \"name\": \"web_search\",\n          \"input\": {\n            \"query\": \"red pixel\"\n          }\n        },\n        {\n          \"type\": \"web_search_tool_result\",\n          \"tool_use_id\": \"srvtoolu_1\",\n          \"content\": [\n            {\n              \"type\": \"web_search_result\",\n              \"url\": \"https://example.org/pixel\",\n              \"title\": \"Pixels\",\n              \"encrypted_content\": \"abc\"\n            }\n          ]\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"reply OK\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('325.2 200 - a 400 \"missing field `role`\" from DeepSeek is the regression', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 600)).to.equal(200);",
+                  "});",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('325.2 raw_request captured as a chat body', function () {",
+                  "  pm.expect(rr, 'raw_request missing: ' + txt.slice(0, 400)).to.be.an('object');",
+                  "  pm.expect(rr.messages, 'no messages[] on the wire: ' + JSON.stringify(rr).slice(0, 400)).to.be.an('array');",
+                  "});",
+                  "var msgs = (rr && rr.messages) || [];",
+                  "pm.test('325.2 every chat message on the wire carries a role', function () {",
+                  "  msgs.forEach(function (m, i) {",
+                  "    pm.expect(m && m.role, 'messages[' + i + '] has no role: ' + JSON.stringify(msgs).slice(0, 600)).to.be.a('string').and.not.empty;",
+                  "  });",
+                  "});",
+                  "pm.test('325.2 server-tool items are dropped, not forwarded under their Responses type', function () {",
+                  "  var wire = JSON.stringify(msgs);",
+                  "  ['mcp_call', 'mcp_list_tools', 'mcp_tool_use', 'mcp_tool_result', 'web_search_call', 'server_tool_use'].forEach(function (t) {",
+                  "    pm.expect(wire.indexOf(t), t + ' reached the chat wire: ' + wire.slice(0, 600)).to.equal(-1);",
+                  "  });",
+                  "});",
+                  "pm.test('325.2 the user turns survive in order', function () {",
+                  "  var users = msgs.filter(function (m) { return m && m.role === 'user'; }).map(function (m) {",
+                  "    return typeof m.content === 'string' ? m.content : JSON.stringify(m.content);",
+                  "  });",
+                  "  pm.expect(users, JSON.stringify(msgs).slice(0, 600)).to.eql([\"look up a red pixel\",\"reply OK\"]);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "deepseek/deepseek-v4-flash /v1/responses mcp_list_tools + mcp_call input items - #9721",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash\",\n  \"max_output_tokens\": 30,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"look\"\n    },\n    {\n      \"type\": \"mcp_list_tools\",\n      \"id\": \"mcpl_1\",\n      \"server_label\": \"docs\",\n      \"tools\": [\n        {\n          \"name\": \"search\",\n          \"input_schema\": {\n            \"type\": \"object\"\n          }\n        }\n      ]\n    },\n    {\n      \"type\": \"mcp_call\",\n      \"id\": \"mcp_1\",\n      \"server_label\": \"docs\",\n      \"name\": \"search\",\n      \"arguments\": \"{}\",\n      \"output\": \"red\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"reply OK\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('325.3 200 - a 400 \"missing field `role`\" from DeepSeek is the regression', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 600)).to.equal(200);",
+                  "});",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('325.3 raw_request captured as a chat body', function () {",
+                  "  pm.expect(rr, 'raw_request missing: ' + txt.slice(0, 400)).to.be.an('object');",
+                  "  pm.expect(rr.messages, 'no messages[] on the wire: ' + JSON.stringify(rr).slice(0, 400)).to.be.an('array');",
+                  "});",
+                  "var msgs = (rr && rr.messages) || [];",
+                  "pm.test('325.3 every chat message on the wire carries a role', function () {",
+                  "  msgs.forEach(function (m, i) {",
+                  "    pm.expect(m && m.role, 'messages[' + i + '] has no role: ' + JSON.stringify(msgs).slice(0, 600)).to.be.a('string').and.not.empty;",
+                  "  });",
+                  "});",
+                  "pm.test('325.3 server-tool items are dropped, not forwarded under their Responses type', function () {",
+                  "  var wire = JSON.stringify(msgs);",
+                  "  ['mcp_call', 'mcp_list_tools', 'mcp_tool_use', 'mcp_tool_result', 'web_search_call', 'server_tool_use'].forEach(function (t) {",
+                  "    pm.expect(wire.indexOf(t), t + ' reached the chat wire: ' + wire.slice(0, 600)).to.equal(-1);",
+                  "  });",
+                  "});",
+                  "pm.test('325.3 the user turns survive in order', function () {",
+                  "  var users = msgs.filter(function (m) { return m && m.role === 'user'; }).map(function (m) {",
+                  "    return typeof m.content === 'string' ? m.content : JSON.stringify(m.content);",
+                  "  });",
+                  "  pm.expect(users, JSON.stringify(msgs).slice(0, 600)).to.eql([\"look\",\"reply OK\"]);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }

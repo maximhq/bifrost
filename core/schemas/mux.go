@@ -812,6 +812,18 @@ func responsesBlocksWithoutToolChanges(blocks []ResponsesMessageContentBlock) []
 	return kept
 }
 
+// chatConvertibleRolelessItem reports whether ToChatMessages has a chat rendering for a
+// Responses item that arrives without a role.
+func chatConvertibleRolelessItem(t ResponsesMessageType) bool {
+	switch t {
+	case ResponsesMessageTypeMessage, ResponsesMessageTypeFunctionCall,
+		ResponsesMessageTypeFunctionCallOutput, ResponsesMessageTypeReasoning,
+		ResponsesMessageTypeRefusal:
+		return true
+	}
+	return false
+}
+
 func ToChatMessages(rms []ResponsesMessage) []ChatMessage {
 	if len(rms) == 0 {
 		return []ChatMessage{}
@@ -873,10 +885,13 @@ func ToChatMessages(rms []ResponsesMessage) []ChatMessage {
 		if rm.Type != nil && *rm.Type == ResponsesMessageTypeConfigurationUpdate {
 			continue
 		}
-		// Chat Completions has no MCP call item either. An mcp_call (which an Anthropic
-		// mcp_tool_use or mcp_tool_result block becomes) carries no role, and a roleless
-		// chat message is rejected with a 400 by every OpenAI-compatible upstream.
-		if rm.Type != nil && *rm.Type == ResponsesMessageTypeMCPCall {
+		// Typed items Chat Completions has no equivalent for (mcp_call, mcp_list_tools,
+		// web_search_call, advisor_call, item_reference, ...) carry no role, and a roleless
+		// chat message is rejected with a 400 by every OpenAI-compatible upstream, so they
+		// are dropped. For an mcp_call standing for an Anthropic mcp_tool_result this drops
+		// the tool output too, on purpose: a function-call rendering would need a matching
+		// assistant tool_calls entry, which an orphan result does not have.
+		if rm.Role == nil && rm.Type != nil && !chatConvertibleRolelessItem(*rm.Type) {
 			continue
 		}
 		if rm.Type != nil && *rm.Type == ResponsesMessageTypeReasoning {
