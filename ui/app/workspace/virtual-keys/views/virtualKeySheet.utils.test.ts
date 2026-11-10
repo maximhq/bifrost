@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { createDeleteAfterExpire, diffVmcpAssignments, updateDeleteAfterExpire, vmcpAssignmentsDirty } from "./virtualKeySheet.utils";
+import {
+	createDeleteAfterExpire,
+	diffVmcpAssignments,
+	resolveOwnerProfileState,
+	updateDeleteAfterExpire,
+	vmcpAssignmentsDirty,
+} from "./virtualKeySheet.utils";
 
 describe("diffVmcpAssignments", () => {
 	it("returns empty diffs when nothing changed (order-insensitive)", () => {
@@ -77,5 +83,62 @@ describe("updateDeleteAfterExpire", () => {
 		expect(updateDeleteAfterExpire({ ...base, switchTouched: true, clientDefault: undefined, value: false })).toBe(false);
 		// A new expiry on a key without an override would otherwise inherit an unseen default.
 		expect(updateDeleteAfterExpire({ ...base, expiryChanged: true, clientDefault: undefined, value: false })).toBe(false);
+	});
+});
+describe("resolveOwnerProfileState", () => {
+	const base = {
+		hasOwner: true,
+		canReadOwnerProfile: true,
+		isFetching: false,
+		isError: false,
+		errorStatus: undefined,
+		hasOwnerProfile: false,
+		isServerFlaggedCurrentOwner: false,
+	};
+
+	it("is ungoverned and settled without an owner", () => {
+		expect(resolveOwnerProfileState({ ...base, hasOwner: false, hasOwnerProfile: true })).toEqual({
+			isGoverned: false,
+			failed: false,
+			unknown: false,
+		});
+	});
+
+	it("is governed when the lookup returns the owner's profile", () => {
+		expect(resolveOwnerProfileState({ ...base, hasOwnerProfile: true })).toEqual({ isGoverned: true, failed: false, unknown: false });
+	});
+
+	it("reads a 404 as no profile", () => {
+		expect(resolveOwnerProfileState({ ...base, isError: true, errorStatus: 404 })).toEqual({
+			isGoverned: false,
+			failed: false,
+			unknown: false,
+		});
+	});
+
+	it("holds Save back while the lookup is in flight or has failed", () => {
+		expect(resolveOwnerProfileState({ ...base, isFetching: true }).unknown).toBe(true);
+		expect(resolveOwnerProfileState({ ...base, isError: true, errorStatus: 500 })).toEqual({
+			isGoverned: false,
+			failed: true,
+			unknown: true,
+		});
+	});
+
+	it("never blocks saving when the caller cannot read the owner's profile", () => {
+		// A skipped lookup reports no error, but a stale one must not leak through either.
+		expect(resolveOwnerProfileState({ ...base, canReadOwnerProfile: false, isError: true, errorStatus: 403 })).toEqual({
+			isGoverned: false,
+			failed: false,
+			unknown: false,
+		});
+	});
+
+	it("trusts the server flag for the current owner when the profile cannot be read", () => {
+		expect(resolveOwnerProfileState({ ...base, canReadOwnerProfile: false, isServerFlaggedCurrentOwner: true })).toEqual({
+			isGoverned: true,
+			failed: false,
+			unknown: false,
+		});
 	});
 });

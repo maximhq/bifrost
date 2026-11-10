@@ -1,5 +1,6 @@
 import { cn } from "@/lib/utils";
 import { Position } from "@xyflow/react";
+import { useTranslation } from "react-i18next";
 import { COND_H, COND_W, SCOPE_CONFIG, type ScopeKey } from "../constants";
 import { RFEdgeHandle } from "./rfEdgeHandle";
 
@@ -7,6 +8,7 @@ import { RFEdgeHandle } from "./rfEdgeHandle";
 const ACCENT_STRIP_CLASS = "w-2.5";
 
 export function RFConditionNode({ data }: { data: any }) {
+	const { t } = useTranslation("models");
 	const condition = data.condition as string;
 	const color = data.color as string | null;
 	const scopes = (data.scopes as string[] | undefined) ?? [];
@@ -37,7 +39,7 @@ export function RFConditionNode({ data }: { data: any }) {
 										className="rounded px-1 py-0 text-[9px] font-semibold"
 										style={{ backgroundColor: `${cfg.color}18`, color: cfg.color }}
 									>
-										{cfg.label}
+										{t(cfg.labelKey)}
 									</span>
 								) : null;
 							})}

@@ -1,11 +1,12 @@
 package bifrost
 
 import (
+	"context"
 	"strings"
 	"sync"
 
 	"github.com/google/uuid"
-	"github.com/maximhq/bifrost/core/internal/injectedauth"
+	"github.com/maximhq/bifrost/core/internal/mcpvouch"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/core/toolsearch"
 )
@@ -20,7 +21,7 @@ import (
 
 // injectedToolSource is the slice of the MCP manager that injected tools need.
 type injectedToolSource interface {
-	GetInjectedTool(clientName, toolName string) (schemas.ChatTool, error)
+	GetInjectedTool(ctx context.Context, clientName, toolName string) (schemas.ChatTool, error)
 	GetMaxAgentDepth() int
 }
 
@@ -71,7 +72,7 @@ func (s *injectedToolSet) duplicates(name string) bool {
 // tool) fails open on its own: it is left out and the rest are still injected. When it
 // is the web_search tool, the caller's native web search goes out untouched. Failing
 // closed would turn an MCP server outage into an outage of every model on the provider.
-func resolveInjectedTools(src injectedToolSource, config *schemas.ProviderConfig, requestType schemas.RequestType, logger schemas.Logger) *injectedToolSet {
+func resolveInjectedTools(ctx context.Context, src injectedToolSource, config *schemas.ProviderConfig, requestType schemas.RequestType, logger schemas.Logger) *injectedToolSet {
 	if src == nil || config == nil || len(config.InjectedTools) == 0 {
 		return nil
 	}
@@ -92,7 +93,7 @@ func resolveInjectedTools(src injectedToolSource, config *schemas.ProviderConfig
 			continue
 		}
 		seen[ref.Name] = struct{}{}
-		tool, err := src.GetInjectedTool(ref.MCPClientName, ref.ToolName)
+		tool, err := src.GetInjectedTool(ctx, ref.MCPClientName, ref.ToolName)
 		if err != nil || tool.Function == nil {
 			if logger != nil {
 				logger.Warn("injected tool %s (%s/%s) unavailable, sending request without it: %v", ref.Name, ref.MCPClientName, ref.ToolName, err)
@@ -734,7 +735,7 @@ func prependChatText(resp *schemas.BifrostChatResponse, prior []string) {
 func (bifrost *Bifrost) injectedToolsForAttempt(ctx *schemas.BifrostContext, config *schemas.ProviderConfig, req *schemas.BifrostRequest, baseProvider schemas.ModelProvider, model string) *injectedToolSet {
 	var set *injectedToolSet
 	if bifrost.MCPManager != nil {
-		set = resolveInjectedTools(bifrost.MCPManager, config, req.RequestType, bifrost.logger)
+		set = resolveInjectedTools(ctx, bifrost.MCPManager, config, req.RequestType, bifrost.logger)
 	}
 	return withGatewayToolSearch(set, req, baseProvider, schemas.ResolveCanonicalModel(ctx, model))
 }
@@ -804,7 +805,7 @@ func (bifrost *Bifrost) executeInjectedCall(ctx *schemas.BifrostContext, set *in
 	toolCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
 	toolCtx.SetValue(schemas.BifrostContextKeyMCPLogID, uuid.New().String())
 	call, target := mcpInjectedCall(set, call)
-	injectedauth.Set(toolCtx, target.clientName, target.toolName)
+	mcpvouch.Set(toolCtx, schemas.MCPToolCallKindInjected, target.clientName, target.toolName)
 	result, bifrostErr := bifrost.MCPManager.ExecuteChatTool(toolCtx, &call)
 	if bifrostErr == nil && result != nil {
 		return result
@@ -903,14 +904,13 @@ const injectedToolsPassthroughKey injectedToolsContextKey = "injected-tools-pass
 var passthroughKeys = []schemas.BifrostContextKey{
 	schemas.BifrostContextKeyUseRawRequestBody,
 	schemas.BifrostContextKeyRawRequestBodyTextRewriter,
-	schemas.BifrostContextKeyRawStreamTextCodec,
 	schemas.BifrostContextKeySendBackRawResponse,
 	schemas.BifrostContextKeyPassthroughOverridesPresent,
 	schemas.BifrostContextKeyURLPath,
 }
 
 // passthroughSnapshot holds the passthrough settings as ingress set them. Small handles
-// only: flags, a path and codec pointers.
+// only: flags, a path and a rewriter func.
 type passthroughSnapshot struct {
 	values map[schemas.BifrostContextKey]any
 }

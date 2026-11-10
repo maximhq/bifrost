@@ -16,10 +16,33 @@ type responseHandler[T any] func(responseBody []byte, response *T, requestBody [
 // Used when the datasheet publishes no row for a (provider, model) pair. Caps
 // gates in this package pass one of these as their fallback.
 
-// defaultSupportsReasoningContentBlocks: gpt-oss carries replayed reasoning as
-// content blocks; the o-series and GPT-5 carry it as summary[] entries.
-func defaultSupportsReasoningContentBlocks(model string) bool {
-	return strings.Contains(strings.ToLower(model), "gpt-oss")
+// defaultSupportsReasoningContentBlocks: gpt-oss and every vLLM-served model carry
+// replayed reasoning as content blocks; the o-series and GPT-5 carry it as summary[] entries.
+func defaultSupportsReasoningContentBlocks(provider schemas.ModelProvider, model string) bool {
+	return provider == schemas.VLLM || strings.Contains(strings.ToLower(model), "gpt-oss")
+}
+
+// joinReasoningBlocks collapses reasoning text blocks into one, in order, joined by "\n" as
+// vLLM's harmony reader does; vLLM's general reader keeps only content[0]. Blocks holding
+// anything but reasoning text are returned unchanged.
+func joinReasoningBlocks(blocks []schemas.ResponsesMessageContentBlock) []schemas.ResponsesMessageContentBlock {
+	if len(blocks) < 2 {
+		return blocks
+	}
+	var b strings.Builder
+	for _, block := range blocks {
+		if block.Type != schemas.ResponsesOutputMessageContentTypeReasoning || block.Text == nil {
+			return blocks
+		}
+		if *block.Text == "" {
+			continue
+		}
+		if b.Len() > 0 {
+			b.WriteByte('\n')
+		}
+		b.WriteString(*block.Text)
+	}
+	return []schemas.ResponsesMessageContentBlock{{Type: schemas.ResponsesOutputMessageContentTypeReasoning, Text: schemas.Ptr(b.String())}}
 }
 
 // IsOpenAIReasoningModel matches OpenAI-family models that accept
@@ -133,13 +156,16 @@ func omittedEffortReasons(caps schemas.ModelCaps, model string) bool {
 // datasheet's per-level booleans take precedence when a row exists.
 func defaultEffortControl(provider schemas.ModelProvider, model string) *schemas.EffortControl {
 	levels := []string{schemas.ReasoningEffortLow, schemas.ReasoningEffortMedium, schemas.ReasoningEffortHigh}
-	if acceptsMinimalEffort(model) {
+	// BytePlus Ark accepts minimal/low/medium/high on every reasoning model; Baseten
+	// Model APIs accepts minimal through max, and models without a level ignore it.
+	if acceptsMinimalEffort(model) || provider == schemas.BytePlus || provider == schemas.Baseten {
 		levels = append([]string{schemas.ReasoningEffortMinimal}, levels...)
 	}
 	if includeXHighInDefaultLadder(provider, model) {
 		levels = append(levels, schemas.ReasoningEffortXHigh)
 	}
-	if acceptsMaxEffort(model) {
+	// MiniMax accepts "max" on every chat model (and defaults to it); M2.x ignores effort entirely.
+	if acceptsMaxEffort(model) || provider == schemas.MiniMax || provider == schemas.Baseten {
 		levels = append(levels, schemas.ReasoningEffortMax)
 	}
 	return &schemas.EffortControl{Levels: levels}
@@ -155,6 +181,9 @@ func includeXHighInDefaultLadder(provider schemas.ModelProvider, model string) b
 	switch provider {
 	case schemas.OpenAI, schemas.Azure, schemas.XAI:
 		return acceptsXHighEffort(model)
+	case schemas.BytePlus:
+		// Ark's ladder tops out at high and rejects xhigh.
+		return false
 	default:
 		return true
 	}
@@ -289,6 +318,7 @@ func ConvertOpenAIMessagesToBifrostMessages(messages []OpenAIMessage) []schemas.
 				ToolCalls:        message.OpenAIChatAssistantMessage.ToolCalls,
 			}
 		}
+		bifrostMessages[i].AttachMessageCacheControl(message.CacheControl)
 	}
 	return bifrostMessages
 }
@@ -307,6 +337,10 @@ func ConvertBifrostMessagesToOpenAIMessages(messages []schemas.ChatMessage) []Op
 			Role:            message.Role,
 			Content:         message.Content,
 			ChatToolMessage: message.ChatToolMessage,
+		}
+		// A tool message takes text only on the OpenAI wire.
+		if message.Role == schemas.ChatMessageRoleTool {
+			openaiMessages[i].Content = schemas.FlattenToolResultMedia(message.Content, nil)
 		}
 		// Strip provider reasoning signatures (e.g. Gemini thoughtSignatures embedded in
 		// call_id as "<baseID>_ts_<sig>") from the tool result's tool_call_id, but only when it
@@ -391,4 +425,79 @@ func toolChoiceAnySupported(provider schemas.ModelProvider, model string) bool {
 	default:
 		return false
 	}
+}
+
+// wrapSystemReminder renders system text for a user turn, matching the Anthropic converter's fallback.
+func wrapSystemReminder(text string) string {
+	return "<system-reminder>\n" + text + "\n</system-reminder>\n"
+}
+
+// inlineChatMidConversationSystem rewrites system / developer messages after the leading run as
+// user turns, prefixed with <system-reminder>
+func inlineChatMidConversationSystem(messages []OpenAIMessage) []OpenAIMessage {
+	leading := true
+	for i := range messages {
+		m := &messages[i]
+		isSystem := m.Role == schemas.ChatMessageRoleSystem || m.Role == schemas.ChatMessageRoleDeveloper
+		if leading && isSystem {
+			continue
+		}
+		leading = false
+		if !isSystem {
+			continue
+		}
+		if m.Content == nil {
+			*m = OpenAIMessage{Name: m.Name, Role: schemas.ChatMessageRoleUser}
+			continue
+		}
+		content := &schemas.ChatMessageContent{}
+		if m.Content.ContentStr != nil {
+			content.ContentStr = new(wrapSystemReminder(*m.Content.ContentStr))
+		}
+		for _, block := range m.Content.ContentBlocks {
+			if block.Text != nil {
+				block.Text = new(wrapSystemReminder(*block.Text))
+			}
+			content.ContentBlocks = append(content.ContentBlocks, block)
+		}
+		*m = OpenAIMessage{Name: m.Name, Role: schemas.ChatMessageRoleUser, Content: content}
+	}
+	return messages
+}
+
+func inlineResponsesMidConversationSystem(messages []schemas.ResponsesMessage) []schemas.ResponsesMessage {
+	leading := true
+	for i := range messages {
+		m := &messages[i]
+		// Tool declarations and configuration updates are not conversation turns, so they do not end the leading run.
+		if m.Type != nil && (*m.Type == schemas.ResponsesMessageTypeAdditionalTools || *m.Type == schemas.ResponsesMessageTypeConfigurationUpdate) {
+			continue
+		}
+		isSystem := m.Role != nil &&
+			(*m.Role == schemas.ResponsesInputMessageRoleSystem || *m.Role == schemas.ResponsesInputMessageRoleDeveloper) &&
+			(m.Type == nil || *m.Type == schemas.ResponsesMessageTypeMessage)
+		if leading && isSystem {
+			continue
+		}
+		leading = false
+		if !isSystem {
+			continue
+		}
+		m.Role = schemas.Ptr(schemas.ResponsesInputMessageRoleUser)
+		if m.Content == nil {
+			continue
+		}
+		content := &schemas.ResponsesMessageContent{}
+		if m.Content.ContentStr != nil {
+			content.ContentStr = schemas.Ptr(wrapSystemReminder(*m.Content.ContentStr))
+		}
+		for _, block := range m.Content.ContentBlocks {
+			if block.Text != nil {
+				block.Text = schemas.Ptr(wrapSystemReminder(*block.Text))
+			}
+			content.ContentBlocks = append(content.ContentBlocks, block)
+		}
+		m.Content = content
+	}
+	return messages
 }

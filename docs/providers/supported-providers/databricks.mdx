@@ -31,7 +31,7 @@ Key characteristics:
 | Responses API | ✅ | ✅ | `/serving-endpoints/responses` where the endpoint supports it; emulated via chat everywhere else |
 | Embeddings | ✅ | - | `<base>/embeddings` |
 | List Models | ✅ | - | Served from Bifrost's model catalog; no workspace API is called |
-| Decisions | ✅ | - | `/api/2.0/ai-functions/ai-decide` (`ai_decide` only) |
+| Decisions | ✅ | - | `/api/2.0/ai-functions/ai-decide` (`ai_decide`), `/ai-gateway/typesafe/v1/systemone` (System One models such as OpenJev and TypeSafe AI Jev) |
 | Text Completions | ❌ | ❌ | - |
 | Image Generation | ❌ | ❌ | - |
 | Speech (TTS) / Transcriptions (STT) | ❌ | ❌ | - |
@@ -293,7 +293,11 @@ A provisioned-throughput endpoint uses the same request format as a pay-per-toke
 
 ## Decisions
 
-Databricks' [`ai_decide`](https://docs.databricks.com/api/ai-functions/v1/ai-decide) AI Function (Beta) answers [`/v1/decisions`](/quickstart/gateway/decisions). It is a workspace function rather than a serving endpoint, so address it as `databricks/ai_decide`:
+Two kinds of Databricks model answer [`/v1/decisions`](/quickstart/gateway/decisions) natively, neither of them a serving endpoint: the `ai_decide` AI Function and the System One models a workspace's Unity Gateway serves.
+
+### ai_decide
+
+Databricks' [`ai_decide`](https://docs.databricks.com/api/ai-functions/v1/ai-decide) AI Function (Beta) is a workspace function rather than a serving endpoint, so address it as `databricks/ai_decide`:
 
 ```bash
 curl http://localhost:8080/v1/decisions \
@@ -316,7 +320,31 @@ Bifrost calls `POST {workspace_url}/api/2.0/ai-functions/ai-decide` with the key
 - **Limits.** Choice questions take 1-255 options and score questions 2-10 levels; every question needs `instructions`.
 - **No usage or response `id`.** Databricks' `x-request-id` is in `extra_fields.provider_response_headers`, and a decision is priced at $0 unless you add a [pricing override](/providers/custom-pricing) for the Decisions request type.
 
-Any other Databricks model returns `unsupported_operation` for decisions; with [`convert_decision_to_responses`](/features/compat-plugin#4-decision-to-responses-emulation) on, it is emulated on the endpoint's Responses API instead. The [complexity router](/features/complexity-router#choosing-the-decision-model) can use `ai_decide` as its classifier.
+### System One models
+
+A workspace with Unity Catalog and Unity Gateway serves [System One models](https://docs.databricks.com/gcp/en/machine-learning/model-serving/query-systemone-models), such as OpenJev and TypeSafe AI Jev, by their Unity Catalog name:
+
+```bash
+curl http://localhost:8080/v1/decisions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "databricks/system.ai.openjev-qwen35-4b",
+    "input": "I was charged twice and need a refund today.",
+    "questions": [
+      { "type": "choice", "name": "intent", "instructions": "Classify the primary intent.",
+        "choices": [{ "value": "billing" }, { "value": "refund" }, { "value": "other" }] }
+    ]
+  }'
+```
+
+Bifrost calls `POST {workspace_url}/ai-gateway/typesafe/v1/systemone` with the key's personal access token or service principal, which needs permission to execute the model service. The body and response are TypeSafe's System One format, so questions are converted as on [TypeSafe](/providers/supported-providers/typesafe#field-mapping-reference) and the Unity Catalog name is sent as the model. Bifrost recognizes OpenJev and TypeSafe AI Jev models by their Unity Catalog names (`system.ai.openjev-*` and `system.ai.typesafeai-jev-*`, such as `system.ai.typesafeai-jev-1-14-0`); their serving endpoint names, such as `databricks-openjev-qwen35-4b`, are not accepted on this route. Another System One model service needs a model catalog entry with `supports_decisions`. TypeSafe AI Jev is hosted by TypeSafe and needs the account's TypeSafe AI Models preview. Differences from TypeSafe:
+
+- **Images by reference.** An `input_image` part with an `id` reaches the model as TypeSafe `assets`, as on [TypeSafe](/providers/supported-providers/typesafe#images-and-box), and Bifrost adds the `TypeSafe-Danger-Zone-Images: true` header that Jev requires. Overriding it to unsupported in the provider's **Beta Headers** settings, or setting `network_config.beta_header_overrides` to `{"typesafe-danger-zone-images": false}`, stops it. An inline `input_image` part without an `id` is rejected by Bifrost with a `400`.
+- **Errors.** Databricks' own errors pass through with their status, `error_code`, and message, such as a `422` for an invalid request or a `400` for an image the model rejects (`Invalid image dimensions`).
+- **Reported model.** The response names the model the gateway served, such as `databricks-openjev-qwen35-4b` or `jev-1.14.0`.
+- **Usage.** Input and output tokens are reported, images included, and a decision is priced from the model catalog, at $0 until it lists the model's rates.
+
+Any other Databricks model returns `unsupported_operation` for decisions; with [`convert_decision_to_responses`](/features/compat-plugin#4-decision-to-responses-emulation) on, it is emulated on the endpoint's Responses API instead. The [complexity router](/features/complexity-router#choosing-the-decision-model) can use `ai_decide` or a System One model as its classifier.
 
 ## Usage attribution
 

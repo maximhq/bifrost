@@ -378,6 +378,123 @@ func TestPreRequestHook_SessionContinuationReusesOrClassifiesRecoveredTask(t *te
 	require.Nil(t, continuationCtx.Value(schemas.BifrostContextKeyGovernanceComplexityScore))
 }
 
+// newTieredComplexityRuleFixture gives each tier its own target, so a test can tell from the routed
+// model which tier's rule selected the request.
+func newTieredComplexityRuleFixture(t *testing.T) *routing.RoutingPlugin {
+	t.Helper()
+	store, err := kvstore.New(kvstore.Config{CleanupInterval: time.Hour})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, store.Close()) })
+
+	logger := rules.NewMockLogger()
+	ruleStore, err := rules.NewLocalStore(context.Background(), logger, nil)
+	require.NoError(t, err)
+	tierTargets := []struct {
+		tier  string
+		model string
+	}{
+		{tier: complexity.TierSimple, model: "tier-simple-model"},
+		{tier: complexity.TierMedium, model: "tier-medium-model"},
+		{tier: complexity.TierComplex, model: "tier-complex-model"},
+	}
+	for priority, target := range tierTargets {
+		provider, model := "openai", target.model
+		require.NoError(t, ruleStore.UpsertRule(context.Background(), &configstoreTables.TableRoutingRule{
+			ID:            "rule-" + strings.ToLower(target.tier),
+			Name:          "Complexity " + target.tier,
+			CelExpression: `complexity_tier == "` + target.tier + `"`,
+			Targets: []configstoreTables.TableRoutingTarget{
+				{Provider: &provider, Model: &model, Weight: 1.0},
+			},
+			Enabled:  schemas.Ptr(true),
+			Scope:    "global",
+			Priority: priority,
+		}))
+	}
+
+	plugin, err := routing.InitFromStore(context.Background(), &routing.Config{KVStore: store}, logger, nil, ruleStore, routing.NewMockGovernance())
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
+	return plugin
+}
+
+func TestPreRequestHook_SubagentComplexityIsClassifiedIndependently(t *testing.T) {
+	plugin := newTieredComplexityRuleFixture(t)
+	plugin.SetEmbeddingRequestExecutor(testEmbeddingExecutor)
+	require.NoError(t, plugin.ReloadComplexityAnalyzerConfig(sessionAnalyzerConfig()))
+	waitForSemanticClassifier(t, plugin)
+
+	// Every request shares one session id, as harness subagents share their parent's.
+	steps := []struct {
+		agentID     string
+		requestText string
+		wantTier    string
+		wantModel   string
+	}{
+		{agentID: "", requestText: "a medium request", wantTier: complexity.TierMedium, wantModel: "tier-medium-model"},
+		// A subagent starts from its own prompt, not the parent's tier.
+		{agentID: "agent-a", requestText: "a simple request", wantTier: complexity.TierSimple, wantModel: "tier-simple-model"},
+		{agentID: "agent-b", requestText: "a complex request", wantTier: complexity.TierComplex, wantModel: "tier-complex-model"},
+		// Neither the parent nor a sibling is escalated by agent-b.
+		{agentID: "", requestText: "a simple request", wantTier: complexity.TierMedium, wantModel: "tier-medium-model"},
+		{agentID: "agent-a", requestText: "a simple request", wantTier: complexity.TierSimple, wantModel: "tier-simple-model"},
+		// Each agent still keeps its own monotonic tier.
+		{agentID: "agent-b", requestText: "a simple request", wantTier: complexity.TierComplex, wantModel: "tier-complex-model"},
+	}
+	for _, step := range steps {
+		ctx := complexitySessionContext("shared-session")
+		if step.agentID != "" {
+			ctx.SetValue(schemas.BifrostContextKeyRequestHeaders, map[string]string{"x-claude-code-agent-id": step.agentID})
+		}
+		req := chatRequest(step.requestText)
+		require.NoError(t, plugin.PreRequestHook(ctx, req))
+		require.Equal(t, step.wantTier, ctx.Value(schemas.BifrostContextKeyGovernanceComplexityTier), "agent=%q request=%q", step.agentID, step.requestText)
+		// The routed target must be the one configured for the tier, not just the right tier label.
+		require.Equal(t, step.wantModel, req.ChatRequest.Model, "agent=%q request=%q", step.agentID, step.requestText)
+	}
+}
+
+func TestPreRequestHook_ToolContinuationReusesTurnTierWithoutSessionRouting(t *testing.T) {
+	plugin := newSessionComplexityRuleFixture(t)
+	plugin.SetEmbeddingRequestExecutor(testEmbeddingExecutor)
+	config := sessionAnalyzerConfig()
+	config.Session = nil
+	require.NoError(t, plugin.ReloadComplexityAnalyzerConfig(config))
+	waitForSemanticClassifier(t, plugin)
+
+	turnCtx := complexitySessionContext("turn-session")
+	require.NoError(t, plugin.PreRequestHook(turnCtx, chatRequest("a medium request")))
+	served := &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{
+		ExtraFields: schemas.BifrostResponseExtraFields{RequestType: schemas.ChatCompletionRequest},
+	}}
+	_, _, err := plugin.PostLLMHook(turnCtx, served, nil)
+	require.NoError(t, err)
+
+	continuationCtx := complexitySessionContext("turn-session")
+	require.NoError(t, plugin.PreRequestHook(continuationCtx, &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-4o",
+			Input: []schemas.ChatMessage{
+				{Role: schemas.ChatMessageRoleUser, Content: chatString("a complex request")},
+				{Role: schemas.ChatMessageRoleAssistant, Content: chatString("Calling the tool")},
+				{Role: schemas.ChatMessageRoleTool, Content: chatString("Tool result received")},
+			},
+		},
+	}))
+	require.Equal(t, complexity.TierMedium, continuationCtx.Value(schemas.BifrostContextKeyGovernanceComplexityTier))
+
+	var messages []string
+	for _, entry := range continuationCtx.GetRoutingEngineLogs() {
+		messages = append(messages, entry.Message)
+	}
+	require.Contains(t, messages, "Complexity reused this turn's tier: tier=MEDIUM reason=tool-continuation")
+	for _, message := range messages {
+		require.NotContains(t, message, "Session complexity", "session routing is off, so no log may claim session state")
+	}
+}
+
 func TestPreRequestHook_ComplexSessionSkipsLaterClassifierCalls(t *testing.T) {
 	plugin := newSessionComplexityRuleFixture(t)
 	var calls atomic.Int64

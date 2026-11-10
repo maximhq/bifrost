@@ -96,6 +96,15 @@ type TableModelPricing struct {
 	CacheCreationInputTokenCostFast         *float64 `gorm:"default:null;column:cache_creation_input_token_cost_fast" json:"cache_creation_input_token_cost_fast,omitempty"`
 	CacheCreationInputTokenCostAbove1hrFast *float64 `gorm:"default:null;column:cache_creation_input_token_cost_above_1hr_fast" json:"cache_creation_input_token_cost_above_1hr_fast,omitempty"`
 	CacheReadInputTokenCostFast             *float64 `gorm:"default:null;column:cache_read_input_token_cost_fast" json:"cache_read_input_token_cost_fast,omitempty"`
+	// OpenAI 12h cache-write rates (prompt_cache_breakpoint.ttl "12h"), tiered like the 30m rates.
+	CacheCreationInputTokenCostAbove12hr                         *float64 `gorm:"default:null;column:cache_creation_input_token_cost_above_12hr" json:"cache_creation_input_token_cost_above_12hr,omitempty"`
+	CacheCreationInputTokenCostAbove12hrAbove272kTokens          *float64 `gorm:"default:null;column:cache_creation_input_token_cost_above_12hr_above_272k_tokens" json:"cache_creation_input_token_cost_above_12hr_above_272k_tokens,omitempty"`
+	CacheCreationInputTokenCostAbove12hrPriority                 *float64 `gorm:"default:null;column:cache_creation_input_token_cost_above_12hr_priority" json:"cache_creation_input_token_cost_above_12hr_priority,omitempty"`
+	CacheCreationInputTokenCostAbove12hrAbove272kTokensPriority  *float64 `gorm:"default:null;column:cache_creation_input_token_cost_above_12hr_above_272k_priority" json:"cache_creation_input_token_cost_above_12hr_above_272k_tokens_priority,omitempty"`
+	CacheCreationInputTokenCostAbove12hrFlex                     *float64 `gorm:"default:null;column:cache_creation_input_token_cost_above_12hr_flex" json:"cache_creation_input_token_cost_above_12hr_flex,omitempty"`
+	CacheCreationInputTokenCostAbove12hrAbove272kTokensFlex      *float64 `gorm:"default:null;column:cache_creation_input_token_cost_above_12hr_above_272k_flex" json:"cache_creation_input_token_cost_above_12hr_above_272k_tokens_flex,omitempty"`
+	CacheCreationInputTokenCostAbove12hrUltrafast                *float64 `gorm:"default:null;column:cache_creation_input_token_cost_above_12hr_ultrafast" json:"cache_creation_input_token_cost_above_12hr_ultrafast,omitempty"`
+	CacheCreationInputTokenCostAbove12hrAbove272kTokensUltrafast *float64 `gorm:"default:null;column:cache_creation_input_token_cost_above_12hr_above_272k_ultrafast" json:"cache_creation_input_token_cost_above_12hr_above_272k_tokens_ultrafast,omitempty"`
 
 	// Costs - Image
 	InputCostPerImage                             *float64 `gorm:"default:null;column:input_cost_per_image" json:"input_cost_per_image,omitempty"`
@@ -148,6 +157,18 @@ type TableModelPricing struct {
 	OutputCostPerVideoPerSecond *float64 `gorm:"default:null;column:output_cost_per_video_per_second" json:"output_cost_per_video_per_second,omitempty"`
 	OutputCostPerSecond         *float64 `gorm:"default:null;column:output_cost_per_second" json:"output_cost_per_second,omitempty"` // For both speech and video models
 
+	// Azure Voice Live rates, used on Voice Live turns in place of the matching rates above when set. The
+	// speech rates price the audio Azure Speech handled.
+	InputCostPerTokenVoiceLive                     *float64 `gorm:"default:null;column:input_cost_per_token_voice_live" json:"input_cost_per_token_voice_live,omitempty"`
+	OutputCostPerTokenVoiceLive                    *float64 `gorm:"default:null;column:output_cost_per_token_voice_live" json:"output_cost_per_token_voice_live,omitempty"`
+	CacheReadInputTokenCostVoiceLive               *float64 `gorm:"default:null;column:cache_read_input_token_cost_voice_live" json:"cache_read_input_token_cost_voice_live,omitempty"`
+	InputCostPerAudioTokenVoiceLive                *float64 `gorm:"default:null;column:input_cost_per_audio_token_voice_live" json:"input_cost_per_audio_token_voice_live,omitempty"`
+	OutputCostPerAudioTokenVoiceLive               *float64 `gorm:"default:null;column:output_cost_per_audio_token_voice_live" json:"output_cost_per_audio_token_voice_live,omitempty"`
+	InputCostPerStandardSpeechAudioTokenVoiceLive  *float64 `gorm:"default:null;column:input_cost_per_standard_speech_audio_token_voice_live" json:"input_cost_per_standard_speech_audio_token_voice_live,omitempty"`
+	OutputCostPerStandardSpeechAudioTokenVoiceLive *float64 `gorm:"default:null;column:output_cost_per_standard_speech_audio_token_voice_live" json:"output_cost_per_standard_speech_audio_token_voice_live,omitempty"`
+	InputCostPerCustomSpeechAudioTokenVoiceLive    *float64 `gorm:"default:null;column:input_cost_per_custom_speech_audio_token_voice_live" json:"input_cost_per_custom_speech_audio_token_voice_live,omitempty"`
+	OutputCostPerCustomSpeechAudioTokenVoiceLive   *float64 `gorm:"default:null;column:output_cost_per_custom_speech_audio_token_voice_live" json:"output_cost_per_custom_speech_audio_token_voice_live,omitempty"`
+
 	// Resolution-banded video output rates, matched on the short edge of the generated
 	// video's size. Absent band falls back to OutputCostPerVideoPerSecond, then OutputCostPerSecond.
 	OutputCostPerVideoPerSecond480p  *float64 `gorm:"default:null;column:output_cost_per_video_per_second_480p" json:"output_cost_per_video_per_second_480p,omitempty"`
@@ -155,6 +176,9 @@ type TableModelPricing struct {
 	OutputCostPerVideoPerSecond1024p *float64 `gorm:"default:null;column:output_cost_per_video_per_second_1024p" json:"output_cost_per_video_per_second_1024p,omitempty"`
 	OutputCostPerVideoPerSecond1080p *float64 `gorm:"default:null;column:output_cost_per_video_per_second_1080p" json:"output_cost_per_video_per_second_1080p,omitempty"`
 	OutputCostPerVideoPerSecond4k    *float64 `gorm:"default:null;column:output_cost_per_video_per_second_4k" json:"output_cost_per_video_per_second_4k,omitempty"`
+
+	// Per-token video output rate, for providers that meter video in tokens (BytePlus Seedance).
+	OutputCostPerVideoToken *float64 `gorm:"default:null;column:output_cost_per_video_token" json:"output_cost_per_video_token,omitempty"`
 
 	// Costs - Other
 	SearchContextCostPerQuery     *float64 `gorm:"default:null;column:search_context_cost_per_query" json:"search_context_cost_per_query,omitempty"`

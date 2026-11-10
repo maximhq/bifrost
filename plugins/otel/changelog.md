@@ -1,2 +1,1 @@
-- feat: A2A spans export request and response bodies and stream updates (#8575)
-- chore: upgraded core to v1.13.0 and framework to v1.10.0
+- chore: upgraded core to v1.15.2 and framework to v1.12.2

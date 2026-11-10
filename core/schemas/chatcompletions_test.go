@@ -148,6 +148,75 @@ func TestChatResponsePreservesAzureContentFilterAnnotations(t *testing.T) {
 	})
 }
 
+// OpenRouter returns generated images on message.images / delta.images beside a
+// string content. Decoding dropped the array: image tokens billed, no image returned.
+func TestChatResponsePreservesGeneratedImages(t *testing.T) {
+	const imageURL = "data:image/png;base64,iVBORw0KGgo="
+	const images = `"images":[{"type":"image_url","image_url":{"url":"` + imageURL + `"}}]`
+
+	type wireMessage struct {
+		Content *string `json:"content"`
+		Images  []struct {
+			Type     string `json:"type"`
+			ImageURL struct {
+				URL string `json:"url"`
+			} `json:"image_url"`
+		} `json:"images"`
+	}
+	roundTrip := func(t *testing.T, upstream string) wireMessage {
+		t.Helper()
+		var resp BifrostChatResponse
+		if err := Unmarshal([]byte(upstream), &resp); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		out, err := json.Marshal(&resp)
+		if err != nil {
+			t.Fatalf("encode: %v", err)
+		}
+		var got struct {
+			Choices []struct {
+				Message wireMessage `json:"message"`
+				Delta   wireMessage `json:"delta"`
+			} `json:"choices"`
+		}
+		if err := json.Unmarshal(out, &got); err != nil {
+			t.Fatalf("re-decode %s: %v", out, err)
+		}
+		if len(got.Choices) != 1 {
+			t.Fatalf("expected one choice: %s", out)
+		}
+		if strings.Contains(upstream, `"delta"`) {
+			return got.Choices[0].Delta
+		}
+		return got.Choices[0].Message
+	}
+	assertImage := func(t *testing.T, msg wireMessage) {
+		t.Helper()
+		if len(msg.Images) != 1 || msg.Images[0].Type != "image_url" || msg.Images[0].ImageURL.URL != imageURL {
+			t.Fatalf("generated image was dropped, got images %+v", msg.Images)
+		}
+	}
+
+	t.Run("message with text keeps images and string content", func(t *testing.T) {
+		msg := roundTrip(t, `{"id":"gen-1","object":"chat.completion","created":1,"model":"google/gemini-2.5-flash-image",
+			"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"Here you go",`+images+`}}]}`)
+		assertImage(t, msg)
+		if msg.Content == nil || *msg.Content != "Here you go" {
+			t.Fatalf("content must stay a string, got %v", msg.Content)
+		}
+	})
+
+	t.Run("image-only message keeps images", func(t *testing.T) {
+		assertImage(t, roundTrip(t, `{"id":"gen-1","object":"chat.completion","created":1,"model":"google/gemini-2.5-flash-image",
+			"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":null,`+images+`}}]}`))
+	})
+
+	t.Run("stream delta keeps images", func(t *testing.T) {
+		assertImage(t, roundTrip(t, `{"id":"gen-1","object":"chat.completion.chunk","created":1,"model":"google/gemini-2.5-flash-image",
+			"choices":[{"index":0,"finish_reason":null,"delta":{"role":"assistant","content":"",`+images+`}}]}`))
+	})
+}
+
 // reasoning.mode ("standard" | "pro") is an OpenAI Responses-only knob that chat
 // callers send inside the reasoning object, next to effort.
 func TestChatParametersReasoningMode(t *testing.T) {
@@ -214,6 +283,141 @@ func BenchmarkBifrostLLMUsageUnmarshal(b *testing.B) {
 					b.Fatal(err)
 				}
 				u.NormalizeReasoningTokens()
+			}
+		})
+	}
+}
+
+// OpenAI-compatible clients such as the AI SDK's openai-compatible provider put
+// cache_control on the message object rather than on a content block. The marker
+// must survive decoding as the same breakpoint on the message's last block, or no
+// provider ever sees it and the prompt is never cached.
+func TestChatMessageUnmarshalMessageLevelCacheControl(t *testing.T) {
+	decode := func(t *testing.T, raw string) ChatMessage {
+		t.Helper()
+		var msg ChatMessage
+		if err := Unmarshal([]byte(raw), &msg); err != nil {
+			t.Fatalf("decode %s: %v", raw, err)
+		}
+		return msg
+	}
+
+	t.Run("string content becomes one marked text block", func(t *testing.T) {
+		msg := decode(t, `{"role":"system","content":"You are a coding agent.","cache_control":{"type":"ephemeral"}}`)
+		if msg.Content == nil || msg.Content.ContentStr != nil || len(msg.Content.ContentBlocks) != 1 {
+			t.Fatalf("expected one content block, got %+v", msg.Content)
+		}
+		block := msg.Content.ContentBlocks[0]
+		if block.Type != ChatContentBlockTypeText || block.Text == nil || *block.Text != "You are a coding agent." {
+			t.Fatalf("block should carry the original text, got %+v", block)
+		}
+		if block.CacheControl == nil || block.CacheControl.Type != CacheControlTypeEphemeral {
+			t.Fatalf("block should carry the marker, got %+v", block.CacheControl)
+		}
+	})
+
+	t.Run("marker lands on the last block and ttl is kept", func(t *testing.T) {
+		msg := decode(t, `{"role":"user","content":[{"type":"text","text":"a"},{"type":"text","text":"b"}],"cache_control":{"type":"ephemeral","ttl":"1h"}}`)
+		blocks := msg.Content.ContentBlocks
+		if blocks[0].CacheControl != nil {
+			t.Fatalf("first block should stay unmarked, got %+v", blocks[0].CacheControl)
+		}
+		if blocks[1].CacheControl == nil || blocks[1].CacheControl.TTL == nil || *blocks[1].CacheControl.TTL != "1h" {
+			t.Fatalf("last block should carry the marker with its ttl, got %+v", blocks[1].CacheControl)
+		}
+	})
+
+	t.Run("a block marker the client set wins", func(t *testing.T) {
+		msg := decode(t, `{"role":"user","content":[{"type":"text","text":"a","cache_control":{"type":"ephemeral","ttl":"1h"}}],"cache_control":{"type":"ephemeral"}}`)
+		got := msg.Content.ContentBlocks[0].CacheControl
+		if got == nil || got.TTL == nil || *got.TTL != "1h" {
+			t.Fatalf("block marker should be kept as sent, got %+v", got)
+		}
+	})
+
+	t.Run("tool result string content is marked", func(t *testing.T) {
+		msg := decode(t, `{"role":"tool","tool_call_id":"call_1","content":"2 notes.txt","cache_control":{"type":"ephemeral"}}`)
+		if msg.ChatToolMessage == nil || msg.ChatToolMessage.ToolCallID == nil || *msg.ChatToolMessage.ToolCallID != "call_1" {
+			t.Fatalf("tool fields should decode, got %+v", msg.ChatToolMessage)
+		}
+		if len(msg.Content.ContentBlocks) != 1 || msg.Content.ContentBlocks[0].CacheControl == nil {
+			t.Fatalf("tool content should carry the marker, got %+v", msg.Content)
+		}
+	})
+
+	t.Run("assistant tool call without content takes the marker", func(t *testing.T) {
+		msg := decode(t, `{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"read","arguments":"{}"}},{"id":"call_2","type":"function","function":{"name":"bash","arguments":"{}"}}],"cache_control":{"type":"ephemeral"}}`)
+		calls := msg.ChatAssistantMessage.ToolCalls
+		if calls[0].CacheControl != nil || calls[1].CacheControl == nil {
+			t.Fatalf("only the last tool call should carry the marker, got %+v / %+v", calls[0].CacheControl, calls[1].CacheControl)
+		}
+	})
+
+	t.Run("assistant tool call with empty string content takes the marker", func(t *testing.T) {
+		msg := decode(t, `{"role":"assistant","content":"","tool_calls":[{"id":"call_1","type":"function","function":{"name":"read","arguments":"{}"}}],"cache_control":{"type":"ephemeral"}}`)
+		if msg.Content == nil || msg.Content.ContentStr == nil || *msg.Content.ContentStr != "" || msg.Content.ContentBlocks != nil {
+			t.Fatalf("empty content should stay an empty string, got %+v", msg.Content)
+		}
+		if calls := msg.ChatAssistantMessage.ToolCalls; calls[0].CacheControl == nil {
+			t.Fatalf("the last tool call should carry the marker, got %+v", calls[0].CacheControl)
+		}
+	})
+
+	t.Run("nowhere to put it is not an error", func(t *testing.T) {
+		msg := decode(t, `{"role":"assistant","content":null,"cache_control":{"type":"ephemeral"}}`)
+		if msg.Content != nil && len(msg.Content.ContentBlocks) > 0 {
+			t.Fatalf("no block should be invented, got %+v", msg.Content)
+		}
+	})
+
+	t.Run("assistant tool call with empty block list takes the marker", func(t *testing.T) {
+		msg := decode(t, `{"role":"assistant","content":[],"tool_calls":[{"id":"call_1","type":"function","function":{"name":"read","arguments":"{}"}}],"cache_control":{"type":"ephemeral"}}`)
+		if msg.ChatAssistantMessage.ToolCalls[0].CacheControl == nil {
+			t.Fatalf("the tool call should carry the marker, got %+v", msg.ChatAssistantMessage.ToolCalls[0])
+		}
+	})
+
+	t.Run("empty string content is not promoted", func(t *testing.T) {
+		msg := decode(t, `{"role":"user","content":"","cache_control":{"type":"ephemeral"}}`)
+		if msg.Content == nil || msg.Content.ContentStr == nil || *msg.Content.ContentStr != "" || msg.Content.ContentBlocks != nil {
+			t.Fatalf("empty content should stay an empty string, got %+v", msg.Content)
+		}
+	})
+
+	t.Run("messages without a marker decode unchanged", func(t *testing.T) {
+		msg := decode(t, `{"role":"user","content":"hi"}`)
+		if msg.Content == nil || msg.Content.ContentStr == nil || *msg.Content.ContentStr != "hi" || msg.Content.ContentBlocks != nil {
+			t.Fatalf("string content should stay a string, got %+v", msg.Content)
+		}
+	})
+
+	t.Run("re-encoding carries the marker on the block only", func(t *testing.T) {
+		msg := decode(t, `{"role":"user","content":"hi","cache_control":{"type":"ephemeral"}}`)
+		out, err := MarshalSorted(msg)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		want := `{"role":"user","content":[{"type":"text","text":"hi","cache_control":{"type":"ephemeral"}}]}`
+		if string(out) != want {
+			t.Fatalf("re-encoded message\n got: %s\nwant: %s", out, want)
+		}
+	})
+}
+
+// BenchmarkChatMessageUnmarshalAssistant measures decoding an assistant reply message, the
+// common shape without Azure's context and the On Your Data shape with it. Only the latter
+// copies the raw context.
+func BenchmarkChatMessageUnmarshalAssistant(b *testing.B) {
+	plain := []byte(`{"role":"assistant","content":"Bifrost routes requests across providers.","refusal":null}`)
+	withContext := []byte(`{"role":"assistant","content":"Bifrost routes requests [doc1].","context":{"citations":[{"content":"Bifrost routes requests across providers.","title":"overview.md","url":"https://example.com/overview.md"}],"intent":"[\"what does bifrost do\"]"}}`)
+	for name, data := range map[string][]byte{"plain": plain, "with_context": withContext} {
+		b.Run(name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				var msg ChatMessage
+				if err := Unmarshal(data, &msg); err != nil {
+					b.Fatal(err)
+				}
 			}
 		})
 	}

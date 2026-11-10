@@ -47,6 +47,7 @@ logs:
         schema:
           type: string
       - $ref: "#/_histogram-parameters/project_ids"
+      - $ref: "#/_histogram-parameters/topic_ids"
       - name: routing_rule_ids
         in: query
         description: Comma-separated list of routing rule IDs to filter by
@@ -277,6 +278,7 @@ logs-stats:
         schema:
           type: string
       - $ref: "#/_histogram-parameters/project_ids"
+      - $ref: "#/_histogram-parameters/topic_ids"
       - name: routing_rule_ids
         in: query
         description: Comma-separated list of routing rule IDs to filter by
@@ -448,7 +450,7 @@ logs-filterdata:
           Comma-separated dimensions to return. One or more of `models`,
           `aliases`, `selected_keys`, `virtual_keys`, `routing_rules`,
           `routing_engines`, `stop_reasons`, `tool_call_names`, `apps`, `user_agents`,
-          `teams`, `customers`, `users`, `business_units`, `projects`, `metadata_keys`.
+          `teams`, `customers`, `users`, `business_units`, `projects`, `topics`, `metadata_keys`.
           Unrecognised values are ignored, and asking for none returns every
           dimension.
         schema:
@@ -497,6 +499,16 @@ logs-by-id:
         description: Log entry ID
         schema:
           type: string
+      - name: timestamp
+        in: query
+        required: false
+        description: |
+          The log entry's `timestamp` as returned by `GET /api/logs`, in RFC 3339 format. Optional:
+          the ClickHouse log store uses it to look the entry up without scanning every partition,
+          and still finds the entry by ID alone when the timestamp does not match. Other log stores ignore it.
+        schema:
+          type: string
+          format: date-time
     security:
       - ManagementBearerAuth: []
       - BasicAuth: []
@@ -507,6 +519,8 @@ logs-by-id:
           application/json:
             schema:
               $ref: "../../schemas/management/logging.yaml#/LogEntry"
+      "400":
+        $ref: "../../openapi.yaml#/components/responses/BadRequest"
       "404":
         description: Log not found
         content:
@@ -546,6 +560,7 @@ logs-histogram:
       - $ref: "#/_histogram-parameters/user_ids"
       - $ref: "#/_histogram-parameters/business_unit_ids"
       - $ref: "#/_histogram-parameters/project_ids"
+      - $ref: "#/_histogram-parameters/topic_ids"
       - $ref: "#/_histogram-parameters/routing_rule_ids"
       - $ref: "#/_histogram-parameters/routing_engine_used"
       - $ref: "#/_histogram-parameters/start_time"
@@ -606,6 +621,7 @@ logs-histogram-tokens:
       - $ref: "#/_histogram-parameters/selected_key_ids"
       - $ref: "#/_histogram-parameters/virtual_key_ids"
       - $ref: "#/_histogram-parameters/project_ids"
+      - $ref: "#/_histogram-parameters/topic_ids"
       - $ref: "#/_histogram-parameters/routing_rule_ids"
       - $ref: "#/_histogram-parameters/routing_engine_used"
       - $ref: "#/_histogram-parameters/start_time"
@@ -662,6 +678,7 @@ logs-histogram-cost:
       - $ref: "#/_histogram-parameters/selected_key_ids"
       - $ref: "#/_histogram-parameters/virtual_key_ids"
       - $ref: "#/_histogram-parameters/project_ids"
+      - $ref: "#/_histogram-parameters/topic_ids"
       - $ref: "#/_histogram-parameters/routing_rule_ids"
       - $ref: "#/_histogram-parameters/routing_engine_used"
       - $ref: "#/_histogram-parameters/start_time"
@@ -724,6 +741,7 @@ logs-histogram-models:
       - $ref: "#/_histogram-parameters/selected_key_ids"
       - $ref: "#/_histogram-parameters/virtual_key_ids"
       - $ref: "#/_histogram-parameters/project_ids"
+      - $ref: "#/_histogram-parameters/topic_ids"
       - $ref: "#/_histogram-parameters/routing_rule_ids"
       - $ref: "#/_histogram-parameters/routing_engine_used"
       - $ref: "#/_histogram-parameters/start_time"
@@ -780,6 +798,7 @@ logs-histogram-latency:
       - $ref: "#/_histogram-parameters/selected_key_ids"
       - $ref: "#/_histogram-parameters/virtual_key_ids"
       - $ref: "#/_histogram-parameters/project_ids"
+      - $ref: "#/_histogram-parameters/topic_ids"
       - $ref: "#/_histogram-parameters/routing_rule_ids"
       - $ref: "#/_histogram-parameters/routing_engine_used"
       - $ref: "#/_histogram-parameters/start_time"
@@ -836,6 +855,7 @@ logs-histogram-cost-by-provider:
       - $ref: "#/_histogram-parameters/selected_key_ids"
       - $ref: "#/_histogram-parameters/virtual_key_ids"
       - $ref: "#/_histogram-parameters/project_ids"
+      - $ref: "#/_histogram-parameters/topic_ids"
       - $ref: "#/_histogram-parameters/routing_rule_ids"
       - $ref: "#/_histogram-parameters/routing_engine_used"
       - $ref: "#/_histogram-parameters/start_time"
@@ -892,6 +912,7 @@ logs-histogram-tokens-by-provider:
       - $ref: "#/_histogram-parameters/selected_key_ids"
       - $ref: "#/_histogram-parameters/virtual_key_ids"
       - $ref: "#/_histogram-parameters/project_ids"
+      - $ref: "#/_histogram-parameters/topic_ids"
       - $ref: "#/_histogram-parameters/routing_rule_ids"
       - $ref: "#/_histogram-parameters/routing_engine_used"
       - $ref: "#/_histogram-parameters/start_time"
@@ -948,6 +969,7 @@ logs-histogram-latency-by-provider:
       - $ref: "#/_histogram-parameters/selected_key_ids"
       - $ref: "#/_histogram-parameters/virtual_key_ids"
       - $ref: "#/_histogram-parameters/project_ids"
+      - $ref: "#/_histogram-parameters/topic_ids"
       - $ref: "#/_histogram-parameters/routing_rule_ids"
       - $ref: "#/_histogram-parameters/routing_engine_used"
       - $ref: "#/_histogram-parameters/start_time"
@@ -1009,6 +1031,7 @@ logs-histogram-throughput:
       - $ref: "#/_histogram-parameters/user_ids"
       - $ref: "#/_histogram-parameters/business_unit_ids"
       - $ref: "#/_histogram-parameters/project_ids"
+      - $ref: "#/_histogram-parameters/topic_ids"
       - $ref: "#/_histogram-parameters/routing_rule_ids"
       - $ref: "#/_histogram-parameters/routing_engine_used"
       - $ref: "#/_histogram-parameters/start_time"
@@ -1068,6 +1091,7 @@ logs-histogram-throughput-by-provider:
       - $ref: "#/_histogram-parameters/user_ids"
       - $ref: "#/_histogram-parameters/business_unit_ids"
       - $ref: "#/_histogram-parameters/project_ids"
+      - $ref: "#/_histogram-parameters/topic_ids"
       - $ref: "#/_histogram-parameters/routing_rule_ids"
       - $ref: "#/_histogram-parameters/routing_engine_used"
       - $ref: "#/_histogram-parameters/start_time"
@@ -1170,6 +1194,16 @@ _histogram-parameters:
     name: project_ids
     in: query
     description: Comma-separated list of project IDs to filter by
+    schema:
+      type: string
+  topic_ids:
+    name: topic_ids
+    in: query
+    description: >-
+      Comma-separated list of Warp topic IDs to filter by: the requests Warp
+      filed under any of them, as its list_topics tool reports them. A topic
+      merged into one of these counts as it. Requests Warp has not indexed
+      never match.
     schema:
       type: string
   routing_rule_ids:
@@ -1742,10 +1776,9 @@ mcp-logs-stats:
           type: string
       - name: status
         in: query
-        description: Comma-separated list of statuses to filter by
+        description: Comma-separated list of statuses to filter by (processing, success, error, cancelled, input_required)
         schema:
           type: string
-          enum: [processing, success, error]
       - name: virtual_key_ids
         in: query
         description: Comma-separated list of virtual key IDs to filter by
@@ -1785,6 +1818,19 @@ mcp-logs-stats:
         description: Search in tool arguments and results
         schema:
           type: string
+      - name: compare_to_previous
+        in: query
+        description: >-
+          When true, also return the same statistics for the immediately
+          preceding window of equal length, so callers can render
+          change-vs-previous-period. Requires a bounded window (start_time and
+          end_time, or period); an unbounded all-time filter has no preceding
+          window, and the response then omits `previous` with
+          `has_previous_period` false. A failure to compute the previous period
+          degrades to `has_previous_period` false rather than failing the request.
+        schema:
+          type: boolean
+          default: false
     security:
       - ManagementBearerAuth: []
       - BasicAuth: []
@@ -1794,7 +1840,7 @@ mcp-logs-stats:
         content:
           application/json:
             schema:
-              $ref: "../../schemas/management/logging.yaml#/MCPToolLogStats"
+              $ref: "../../schemas/management/logging.yaml#/MCPLogStatsResponse"
       "400":
         $ref: "../../openapi.yaml#/components/responses/BadRequest"
       "500":
@@ -1814,9 +1860,26 @@ mcp-logs-filterdata:
         [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get available MCP log filter data
     description: |
-      Returns all unique filter data from MCP tool logs (tool names, server labels).
+      Returns the values each MCP log filter can take, read from the MCP tool logs of the last 30 days.
     tags:
       - Logging
+    parameters:
+      - name: dimensions
+        in: query
+        description: >-
+          Comma-separated dimensions to return. One or more of `tool_names`,
+          `server_labels`, `apps`, `user_agents`, `virtual_keys`, `users`, `teams`,
+          `customers`, `business_units`, `projects`. Unrecognised values are ignored,
+          and asking for none returns every dimension.
+        schema:
+          type: string
+      - name: q
+        in: query
+        description: >-
+          Free-text search within the requested dimensions. Passing it bypasses
+          the response cache.
+        schema:
+          type: string
     security:
       - ManagementBearerAuth: []
       - BasicAuth: []
@@ -1961,6 +2024,7 @@ logs-rankings:
       - $ref: "#/_histogram-parameters/user_ids"
       - $ref: "#/_histogram-parameters/business_unit_ids"
       - $ref: "#/_histogram-parameters/project_ids"
+      - $ref: "#/_histogram-parameters/topic_ids"
       - $ref: "#/_histogram-parameters/routing_rule_ids"
       - $ref: "#/_histogram-parameters/routing_engine_used"
       - $ref: "#/_histogram-parameters/start_time"
@@ -2042,6 +2106,7 @@ logs-rankings-by-dimension:
       - $ref: "#/_histogram-parameters/user_ids"
       - $ref: "#/_histogram-parameters/business_unit_ids"
       - $ref: "#/_histogram-parameters/project_ids"
+      - $ref: "#/_histogram-parameters/topic_ids"
       - $ref: "#/_histogram-parameters/routing_rule_ids"
       - $ref: "#/_histogram-parameters/routing_engine_used"
       - $ref: "#/_histogram-parameters/start_time"
@@ -2119,6 +2184,7 @@ logs-rankings-users:
       - $ref: "#/_histogram-parameters/user_ids"
       - $ref: "#/_histogram-parameters/business_unit_ids"
       - $ref: "#/_histogram-parameters/project_ids"
+      - $ref: "#/_histogram-parameters/topic_ids"
       - $ref: "#/_histogram-parameters/start_time"
       - $ref: "#/_histogram-parameters/end_time"
       - $ref: "#/_histogram-parameters/period"
@@ -2180,6 +2246,7 @@ logs-dashboard:
       - $ref: "#/_histogram-parameters/user_ids"
       - $ref: "#/_histogram-parameters/business_unit_ids"
       - $ref: "#/_histogram-parameters/project_ids"
+      - $ref: "#/_histogram-parameters/topic_ids"
       - $ref: "#/_histogram-parameters/routing_rule_ids"
       - $ref: "#/_histogram-parameters/routing_engine_used"
       - $ref: "#/_histogram-parameters/start_time"
@@ -2262,6 +2329,7 @@ logs-histogram-cost-by-dimension:
       - $ref: "#/_histogram-parameters/selected_key_ids"
       - $ref: "#/_histogram-parameters/virtual_key_ids"
       - $ref: "#/_histogram-parameters/project_ids"
+      - $ref: "#/_histogram-parameters/topic_ids"
       - $ref: "#/_histogram-parameters/routing_rule_ids"
       - $ref: "#/_histogram-parameters/routing_engine_used"
       - $ref: "#/_histogram-parameters/start_time"
@@ -2325,6 +2393,7 @@ logs-histogram-tokens-by-dimension:
       - $ref: "#/_histogram-parameters/selected_key_ids"
       - $ref: "#/_histogram-parameters/virtual_key_ids"
       - $ref: "#/_histogram-parameters/project_ids"
+      - $ref: "#/_histogram-parameters/topic_ids"
       - $ref: "#/_histogram-parameters/routing_rule_ids"
       - $ref: "#/_histogram-parameters/routing_engine_used"
       - $ref: "#/_histogram-parameters/start_time"
@@ -2388,6 +2457,7 @@ logs-histogram-latency-by-dimension:
       - $ref: "#/_histogram-parameters/selected_key_ids"
       - $ref: "#/_histogram-parameters/virtual_key_ids"
       - $ref: "#/_histogram-parameters/project_ids"
+      - $ref: "#/_histogram-parameters/topic_ids"
       - $ref: "#/_histogram-parameters/routing_rule_ids"
       - $ref: "#/_histogram-parameters/routing_engine_used"
       - $ref: "#/_histogram-parameters/start_time"
@@ -2433,7 +2503,7 @@ mcp-logs-histogram:
         [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get MCP tool call volume histogram
     description: |
-      Returns time-bucketed MCP tool call volume with success/error breakdown.
+      Returns time-bucketed volume of finished MCP tool calls with a success, error and cancelled breakdown.
     tags:
       - Logging
     parameters:
@@ -2449,7 +2519,7 @@ mcp-logs-histogram:
           type: string
       - name: status
         in: query
-        description: Comma-separated list of statuses to filter by (processing, success, error)
+        description: Comma-separated list of statuses to filter by (processing, success, error, cancelled, input_required)
         schema:
           type: string
       - name: virtual_key_ids
@@ -2501,6 +2571,95 @@ mcp-logs-histogram:
           application/json:
             schema:
               $ref: "../../schemas/management/logging.yaml#/MCPHistogramResult"
+      "400":
+        $ref: "../../openapi.yaml#/components/responses/BadRequest"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
+
+mcp-logs-histogram-latency:
+  get:
+    operationId: getMCPLogsLatencyHistogram
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `MCPLogs:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Get MCP tool call latency histogram
+    description: |
+      Returns time-bucketed latency percentiles (avg, p90, p95, p99) of finished MCP tool calls, in the
+      shape of `/api/logs/histogram/latency`. MCP tool calls record no Bifrost overhead, so the overhead
+      fields are always 0.
+    tags:
+      - Logging
+    parameters:
+      - name: tool_names
+        in: query
+        description: Comma-separated list of tool names to filter by
+        schema:
+          type: string
+      - name: server_labels
+        in: query
+        description: Comma-separated list of server labels to filter by
+        schema:
+          type: string
+      - name: status
+        in: query
+        description: Comma-separated list of statuses to filter by (processing, success, error, cancelled, input_required)
+        schema:
+          type: string
+      - name: virtual_key_ids
+        in: query
+        description: Comma-separated list of virtual key IDs to filter by
+        schema:
+          type: string
+      - name: llm_request_ids
+        in: query
+        description: Comma-separated list of LLM request IDs to filter by
+        schema:
+          type: string
+      - name: start_time
+        in: query
+        description: Start time filter (RFC3339 format)
+        schema:
+          type: string
+          format: date-time
+      - name: end_time
+        in: query
+        description: End time filter (RFC3339 format)
+        schema:
+          type: string
+          format: date-time
+      - $ref: "#/_histogram-parameters/period"
+      - $ref: "#/_histogram-parameters/timezone"
+      - name: min_latency
+        in: query
+        description: Minimum latency filter (milliseconds)
+        schema:
+          type: number
+      - name: max_latency
+        in: query
+        description: Maximum latency filter (milliseconds)
+        schema:
+          type: number
+      - name: content_search
+        in: query
+        description: Search in tool arguments and results
+        schema:
+          type: string
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      "200":
+        description: MCP latency histogram retrieved successfully
+        content:
+          application/json:
+            schema:
+              $ref: "../../schemas/management/logging.yaml#/LatencyHistogramResult"
       "400":
         $ref: "../../openapi.yaml#/components/responses/BadRequest"
       "500":

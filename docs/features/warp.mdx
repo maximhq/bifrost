@@ -85,7 +85,7 @@ curl -X PUT http://localhost:8080/api/feature-flags/warp \
 
 ## Configure Warp
 
-Warp's own settings are stored in the config store and managed through the Web UI or API. There is no `config.json` section for them.
+Warp's own settings are stored in the config store. Set them in the Web UI, through the API, or declare them in the `warp` section of `config.json`.
 
 <Tabs group="config-method">
 <Tab title="Web UI">
@@ -125,15 +125,58 @@ curl -X PUT http://localhost:8080/api/warp/config \
     "embedding_dimension": 1536,
     "log_vector_store_namespace": "BifrostWarpLogs",
     "semantic_search_threshold": 0.5,
-    "semantic_search_limit": 10
+    "semantic_search_limit": 10,
+    "topic_discovery_min_requests": 100
   }'
 ```
 
 The response is the saved configuration, with a `configured` field that says whether Warp can answer.
 
-`PUT` replaces the configuration. The exceptions are the embedding and search fields (`embedding_*`, `log_vector_store_namespace`, `semantic_search_*`). If you omit one of those, Bifrost keeps its stored value. `additional_models` is replaced as a whole, so leaving it out removes every additional model.
+`PUT` replaces the configuration. The exceptions are the embedding, search, and topic fields (`embedding_*`, `log_vector_store_namespace`, `semantic_search_*`, `topic_discovery_min_requests`). If you omit one of those, Bifrost keeps its stored value. `additional_models` is replaced as a whole, so leaving it out removes every additional model.
 
 Read the current configuration with `GET /api/warp/config`.
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "feature_flags": {
+    "flags": {
+      "warp": { "enabled": true }
+    }
+  },
+  "warp": {
+    "enabled": true,
+    "provider": "anthropic",
+    "model": "claude-sonnet-5-5",
+    "api_key_id": "a1b2c3d4-warp-key",
+    "additional_models": [
+      { "provider": "openai", "model": "gpt-4o" }
+    ],
+    "max_iterations": 8,
+    "request_timeout_seconds": 120,
+    "history_retention_days": 30,
+    "system_prompt_suffix": "Our production virtual keys are prefixed with prod-.",
+    "embedding_provider": "openai",
+    "embedding_model": "text-embedding-3-small",
+    "embedding_dimension": 1536,
+    "log_vector_store_namespace": "BifrostWarpLogs",
+    "semantic_search_threshold": 0.5,
+    "semantic_search_limit": 10,
+    "topic_discovery_min_requests": 100
+  }
+}
+```
+
+The `warp` section takes the same fields as the API, and Bifrost saves it at startup exactly as if it came from the settings page. It is validated the same way, and the log embedding namespace is created the same way. A section the settings page would refuse is logged as a warning and not applied. The stored settings stay as they were.
+
+How the file and the dashboard share these settings depends on [`source_of_truth`](/deployment-guides/config-json/source-of-truth):
+
+- **`split`** (default): the section is applied when it is new or has changed since the last startup. Edits made in the dashboard are kept until you change the section.
+- **`config.json`**: the section is applied on every startup, so dashboard edits last only until the next restart.
+
+Omit the section to manage Warp entirely from the dashboard. The `warp` feature flag is set separately. The section is saved whether or not the flag is on, but Warp stays hidden until the flag is on.
 
 </Tab>
 </Tabs>
@@ -158,6 +201,7 @@ Read the current configuration with `GET /api/warp/config`.
 | `log_vector_store_namespace` | Log embedding namespace | `BifrostWarpLogs` | Must change when the embedding provider, model, or dimension changes | The vector store namespace holding Warp's log index. |
 | `semantic_search_threshold` | Similarity threshold | `0.5` | Greater than `0`, at most `1` | Minimum similarity for a semantic search match. |
 | `semantic_search_limit` | Maximum matches | `10` | `1`–`25` | Most matches one semantic search returns. |
+| `topic_discovery_min_requests` | New topic threshold | `100` | `10`–`20000` | How many requests that matched no topic must be waiting before Warp clusters them into new topics. |
 
 ---
 

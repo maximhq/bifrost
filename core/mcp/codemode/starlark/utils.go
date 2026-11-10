@@ -3,6 +3,7 @@
 package starlark
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"regexp"
@@ -20,9 +21,10 @@ import (
 	"github.com/tidwall/gjson"
 )
 
-// serverInstructionsComment renders the client's upstream instructions, or "" if it advertises
-// none. Shared by readToolFile and getToolDocs: every stub documenting a server carries them.
-func (s *StarlarkCodeMode) serverInstructionsComment(clientName string) string {
+// serverInstructionsComment renders the client's upstream instructions as the caller on ctx sees
+// them, or "" if it advertises none. Shared by readToolFile and getToolDocs: every stub
+// documenting a server carries them.
+func (s *StarlarkCodeMode) serverInstructionsComment(ctx context.Context, clientName string) string {
 	client := s.clientManager.GetClientByName(clientName)
 	if client == nil || client.ExecutionConfig == nil {
 		return ""
@@ -33,7 +35,7 @@ func (s *StarlarkCodeMode) serverInstructionsComment(clientName string) string {
 	if limit <= 0 {
 		limit = s.clientManager.InstructionCaps().PerClient
 	}
-	return codemcp.InstructionsCommentBlock(client.ServerInstructions, limit)
+	return codemcp.InstructionsCommentBlock(s.clientManager.GetInstructionsForClient(ctx, client.ExecutionConfig.ID), limit)
 }
 
 // jsonModuleShadowed reports whether a code mode server is bound as "json", which keeps the
@@ -323,44 +325,19 @@ func extractTextFromMCPResponse(toolResponse *mcp.CallToolResult, toolName strin
 	blocks := make([]string, 0, len(toolResponse.Content))
 	size := 0
 	for _, contentBlock := range toolResponse.Content {
-		// Both values and pointers implement MCP's sealed Content interface.
-		switch content := contentBlock.(type) {
-		case *mcp.TextContent:
-			if content == nil {
-				continue
-			}
-			contentBlock = *content
-		case *mcp.ImageContent:
-			if content == nil {
-				continue
-			}
-			contentBlock = *content
-		case *mcp.AudioContent:
-			if content == nil {
-				continue
-			}
-			contentBlock = *content
-		case *mcp.EmbeddedResource:
-			if content == nil {
-				continue
-			}
-			contentBlock = *content
-		case *mcp.ResourceLink:
-			if content == nil {
-				continue
-			}
-			contentBlock = *content
+		if contentBlock = codemcp.ContentValue(contentBlock); contentBlock == nil {
+			continue
 		}
 		var parts []string
 		switch content := contentBlock.(type) {
 		case mcp.TextContent:
 			parts = []string{content.Text}
 		case mcp.ImageContent:
-			parts = []string{"[Image Response: ", content.Data, ", MIME: ", content.MIMEType, "]"}
+			parts = []string{schemas.MediaPlaceholder(orKind(content.MIMEType, "image"), len(content.Data))}
 		case mcp.AudioContent:
-			parts = []string{"[Audio Response: ", content.Data, ", MIME: ", content.MIMEType, "]"}
+			parts = []string{schemas.MediaPlaceholder(orKind(content.MIMEType, "audio"), len(content.Data))}
 		case mcp.EmbeddedResource:
-			parts = []string{"[Embedded Resource Response: ", content.Type, "]"}
+			parts = []string{embeddedResourceText(content.Resource)}
 		case mcp.ResourceLink:
 			remaining := valueLimit - 256
 			check := func(value string) bool {
@@ -409,6 +386,25 @@ func extractTextFromMCPResponse(toolResponse *mcp.CallToolResult, toolName strin
 		return text, nil
 	}
 	return fmt.Sprintf("MCP tool '%s' executed successfully", toolName), nil
+}
+
+// orKind is mimeType, or kind when the server named none.
+func orKind(mimeType, kind string) string {
+	if mimeType == "" {
+		return kind
+	}
+	return mimeType
+}
+
+// embeddedResourceText is an embedded resource's text, or a placeholder for its blob.
+func embeddedResourceText(resource mcp.ResourceContents) string {
+	switch contents := codemcp.ResourceValue(resource).(type) {
+	case mcp.TextResourceContents:
+		return contents.Text
+	case mcp.BlobResourceContents:
+		return schemas.MediaPlaceholder(orKind(contents.MIMEType, "resource "+contents.URI), len(contents.Blob))
+	}
+	return "[embedded resource returned by the tool, not shown]"
 }
 
 // createToolResponseMessage creates a tool response message with the execution result.

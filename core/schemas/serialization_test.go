@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -1382,6 +1383,24 @@ func TestChatTool_ServerToolNameRoundTrip(t *testing.T) {
 // {type:"bash_20250124", name:"bash"} tool reached Bedrock with no name. This
 // asserts all server-tool fields survive the copy and that the copy is independent
 // of the original (mutating the copy must not affect the source).
+// The copy keeps an MCP tool's title, icons and output schema, and shares none of their memory.
+func TestDeepCopyChatTool_PreservesMCPMetadata(t *testing.T) {
+	original := ChatTool{
+		Type:     ChatToolTypeFunction,
+		Function: &ChatToolFunction{Name: "chart"},
+		MCP:      &MCPToolMetadata{Title: "Chart", Icons: []mcp.Icon{{Src: "https://example.com/c.png"}}, OutputSchema: json.RawMessage(`{"type":"object"}`)},
+	}
+	copied := DeepCopyChatTool(original)
+	if copied.MCP == nil || copied.MCP.Title != "Chart" || len(copied.MCP.Icons) != 1 || string(copied.MCP.OutputSchema) != `{"type":"object"}` {
+		t.Fatalf("metadata lost in copy: %+v", copied.MCP)
+	}
+	copied.MCP.Icons[0].Src = "changed"
+	copied.MCP.OutputSchema[0] = '['
+	if original.MCP.Icons[0].Src != "https://example.com/c.png" || original.MCP.OutputSchema[0] != '{' {
+		t.Fatal("copy shares memory with the original")
+	}
+}
+
 func TestDeepCopyChatTool_PreservesServerToolFields(t *testing.T) {
 	original := ChatTool{
 		Type:                "computer_20251124",
@@ -1771,6 +1790,75 @@ func TestSonic_PromptCacheBreakpoint_RoundTrip(t *testing.T) {
 	require.NoError(t, Unmarshal(out, &cb))
 	require.NotNil(t, cb.PromptCacheBreakpoint)
 	assert.Equal(t, "explicit", *cb.PromptCacheBreakpoint.Mode)
+}
+
+// prompt_cache_breakpoint.ttl ("30m" or "12h", OpenAI gpt-5.6+) must survive both
+// content block types; dropping it silently downgrades a 12h breakpoint to 30m.
+func TestSonic_PromptCacheBreakpoint_TTLRoundTrip(t *testing.T) {
+	var rb ResponsesMessageContentBlock
+	require.NoError(t, Unmarshal([]byte(`{"type":"input_text","text":"x","prompt_cache_breakpoint":{"mode":"explicit","ttl":"12h"}}`), &rb))
+	require.NotNil(t, rb.PromptCacheBreakpoint)
+	require.NotNil(t, rb.PromptCacheBreakpoint.TTL)
+	assert.Equal(t, "12h", *rb.PromptCacheBreakpoint.TTL)
+	out, err := Marshal(rb)
+	require.NoError(t, err)
+	assert.Contains(t, string(out), `"ttl":"12h"`)
+
+	var cb ChatContentBlock
+	require.NoError(t, Unmarshal([]byte(`{"type":"text","text":"x","prompt_cache_breakpoint":{"mode":"explicit","ttl":"12h"}}`), &cb))
+	require.NotNil(t, cb.PromptCacheBreakpoint)
+	require.NotNil(t, cb.PromptCacheBreakpoint.TTL)
+	assert.Equal(t, "12h", *cb.PromptCacheBreakpoint.TTL)
+	out, err = Marshal(cb)
+	require.NoError(t, err)
+	assert.Contains(t, string(out), `"ttl":"12h"`)
+}
+
+// OpenAI gpt-5.6+ Responses usage splits cache writes by lifetime under
+// cache_write_tokens_details; the split must be parsed (12h writes bill at 2.5x
+// input, 30m at 1.25x) and re-emitted in OpenAI's shape for SDK clients.
+func TestSonic_InputTokens_CacheWriteTokensDetailsTTL(t *testing.T) {
+	const wire = `{"cached_tokens":4000,"cache_write_tokens":7000,"cache_write_tokens_details":{"ttl_30m_tokens":3000,"ttl_12h_tokens":4000}}`
+
+	var rd ResponsesResponseInputTokens
+	require.NoError(t, Unmarshal([]byte(wire), &rd))
+	assert.Equal(t, 4000, rd.CachedReadTokens)
+	assert.Equal(t, 7000, rd.CachedWriteTokens)
+	require.NotNil(t, rd.CachedWriteTokenDetails)
+	assert.Equal(t, 3000, rd.CachedWriteTokenDetails.CachedWriteTokens30m)
+	assert.Equal(t, 4000, rd.CachedWriteTokenDetails.CachedWriteTokens12h)
+	out, err := Marshal(rd)
+	require.NoError(t, err)
+	assert.Contains(t, string(out), `"cache_write_tokens_details":{"ttl_30m_tokens":3000,"ttl_12h_tokens":4000}`)
+
+	// Anthropic-sourced 5m/1h writes must not be relabelled as OpenAI lifetimes.
+	out, err = Marshal(ResponsesResponseInputTokens{CachedWriteTokens: 10, CachedWriteTokenDetails: &ChatCachedWriteTokenDetails{CachedWriteTokens5m: 4, CachedWriteTokens1h: 6}})
+	require.NoError(t, err)
+	assert.NotContains(t, string(out), "cache_write_tokens_details")
+
+	// Chat Completions never reports the split, so the chat shape carries only the
+	// native buckets (what pricing reads after Responses usage is converted).
+	cd := ChatPromptTokensDetails{CachedWriteTokens: 7000, CachedWriteTokenDetails: rd.CachedWriteTokenDetails}
+	out, err = Marshal(cd)
+	require.NoError(t, err)
+	assert.NotContains(t, string(out), "cache_write_tokens_details")
+	var back ChatPromptTokensDetails
+	require.NoError(t, Unmarshal(out, &back))
+	require.NotNil(t, back.CachedWriteTokenDetails)
+	assert.Equal(t, 4000, back.CachedWriteTokenDetails.CachedWriteTokens12h)
+
+	// Usage merge (multi-turn agent loops, fallbacks) sums the new buckets.
+	sum := MergeBifrostLLMUsage(&BifrostLLMUsage{PromptTokensDetails: &cd}, &BifrostLLMUsage{PromptTokensDetails: &cd})
+	require.NotNil(t, sum.PromptTokensDetails.CachedWriteTokenDetails)
+	assert.Equal(t, 8000, sum.PromptTokensDetails.CachedWriteTokenDetails.CachedWriteTokens12h)
+	assert.Equal(t, 6000, sum.PromptTokensDetails.CachedWriteTokenDetails.CachedWriteTokens30m)
+}
+
+// All four lifetime buckets render, so they visibly sum to cached_write_tokens.
+func TestSonic_ChatCachedWriteTokenDetails_AllBucketsRendered(t *testing.T) {
+	out, err := Marshal(ChatCachedWriteTokenDetails{CachedWriteTokens12h: 5})
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"cached_write_tokens_5m":0,"cached_write_tokens_1h":0,"cached_write_tokens_30m":0,"cached_write_tokens_12h":5}`, string(out))
 }
 
 // A native Responses stream's response.completed event carries the full response
@@ -2173,5 +2261,23 @@ func TestDeepCopyChatMessageHandlesNilAndEmptyCacheFields(t *testing.T) {
 			}
 			tc.validate(t, tc.input, copied.Content.ContentBlocks[0])
 		})
+	}
+}
+
+// TestDeepCopyChatMessagePreservesAzureContext pins that a deep-copied assistant message keeps
+// Azure On Your Data's citation context, and that the copy does not share the original's bytes.
+func TestDeepCopyChatMessagePreservesAzureContext(t *testing.T) {
+	original := ChatMessage{
+		Role:                 ChatMessageRoleAssistant,
+		Content:              &ChatMessageContent{ContentStr: Ptr("Bifrost routes requests [doc1].")},
+		ChatAssistantMessage: &ChatAssistantMessage{Context: json.RawMessage(`{"citations":[{"title":"overview.md"}]}`)},
+	}
+	copied := DeepCopyChatMessage(original)
+	if copied.ChatAssistantMessage == nil || string(copied.ChatAssistantMessage.Context) != string(original.ChatAssistantMessage.Context) {
+		t.Fatalf("context = %v, want %s", copied.ChatAssistantMessage, original.ChatAssistantMessage.Context)
+	}
+	copied.ChatAssistantMessage.Context[0] = '['
+	if original.ChatAssistantMessage.Context[0] != '{' {
+		t.Errorf("the copy shares the original's context bytes")
 	}
 }

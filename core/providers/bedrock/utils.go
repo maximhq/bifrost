@@ -25,11 +25,11 @@ import (
 	schemas "github.com/maximhq/bifrost/core/schemas"
 )
 
-// awsRegionRegex matches valid AWS region identifiers (e.g. "us-east-1", "eu-north-1", "us-gov-east-1").
+// AWSRegionRegex matches valid AWS region identifiers (e.g. "us-east-1", "eu-north-1", "us-gov-east-1").
 // (?:-[a-z]+)+ allows multi-segment directional parts so GovCloud regions (us-gov-east-1) are
 // recognised alongside standard single-segment ones (eu-north-1, ap-southeast-2).
 var (
-	awsRegionRegex                 = regexp.MustCompile(`^[a-z]{2,3}(?:-[a-z]+)+-\d+$`)
+	AWSRegionRegex                 = regexp.MustCompile(`^[a-z]{2,3}(?:-[a-z]+)+-\d+$`)
 	bedrockUnsafeToolNameCharRegex = regexp.MustCompile(`[^A-Za-z0-9_-]+`)
 )
 
@@ -62,7 +62,7 @@ func resolveMantleProjectID(ctx *schemas.BifrostContext, key schemas.Key) string
 func parseBedrockRegionAndModel(model string) (region, bareModel string) {
 	if idx := strings.IndexByte(model, '/'); idx > 0 {
 		prefix := model[:idx]
-		if awsRegionRegex.MatchString(prefix) {
+		if AWSRegionRegex.MatchString(prefix) {
 			return prefix, model[idx+1:]
 		}
 	}
@@ -720,6 +720,7 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 					} else {
 						thinkingConfig["display"] = "summarized"
 					}
+					applyBedrockThinkingDisplayUpdates(bedrockReq, caps, thinkingConfig)
 					bedrockReq.AdditionalModelRequestFields.Set("thinking", thinkingConfig)
 					// Preserve a co-present effort — these models support effort,
 					// and the budget is otherwise dropped.
@@ -730,10 +731,15 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 					if tokenBudget < anthropic.MinimumReasoningMaxTokens {
 						return fmt.Errorf("reasoning.max_tokens must be >= %d for anthropic", anthropic.MinimumReasoningMaxTokens)
 					}
-					bedrockReq.AdditionalModelRequestFields.Set("thinking", map[string]any{
+					thinkingConfig := map[string]any{
 						"type":          "enabled",
 						"budget_tokens": tokenBudget,
-					})
+					}
+					if bifrostReq.Params.Reasoning.Display != nil {
+						thinkingConfig["display"] = *bifrostReq.Params.Reasoning.Display
+					}
+					applyBedrockThinkingDisplayUpdates(bedrockReq, caps, thinkingConfig)
+					bedrockReq.AdditionalModelRequestFields.Set("thinking", thinkingConfig)
 				}
 			} else if schemas.IsNovaModelFamily(ctx, bifrostReq.Model) {
 				minBudgetTokens := MinimumReasoningMaxTokens
@@ -834,6 +840,7 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 					} else if caps.AdaptiveOnlyThinking(anthropic.DefaultAdaptiveOnlyThinking(caps.Model())) {
 						thinkingConfig["display"] = "summarized"
 					}
+					applyBedrockThinkingDisplayUpdates(bedrockReq, caps, thinkingConfig)
 					bedrockReq.AdditionalModelRequestFields.Set("thinking", thinkingConfig)
 					setOutputConfigField(bedrockReq.AdditionalModelRequestFields, "effort", effort)
 				} else {
@@ -842,10 +849,15 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 					if err != nil {
 						return err
 					}
-					bedrockReq.AdditionalModelRequestFields.Set("thinking", map[string]any{
+					thinkingConfig := map[string]any{
 						"type":          "enabled",
 						"budget_tokens": budgetTokens,
-					})
+					}
+					if bifrostReq.Params.Reasoning.Display != nil {
+						thinkingConfig["display"] = *bifrostReq.Params.Reasoning.Display
+					}
+					applyBedrockThinkingDisplayUpdates(bedrockReq, caps, thinkingConfig)
+					bedrockReq.AdditionalModelRequestFields.Set("thinking", thinkingConfig)
 				}
 			} else if levels, ok := converseReasoningEffortLevels(ctx, caps); ok {
 				setConverseReasoningEffort(bedrockReq.AdditionalModelRequestFields, caps, levels, *bifrostReq.Params.Reasoning.Effort)
@@ -1558,6 +1570,21 @@ func appendAnthropicBetaToFields(fields *schemas.OrderedMap, header string) {
 	fields.Set("anthropic_beta", append(existing, header))
 }
 
+// applyBedrockThinkingDisplayUpdates settles thinking.display:"updates" on a Converse thinking
+// config. A model that takes it gets the beta in additionalModelRequestFields, where Bedrock's edge
+// leaves it for the model; any other model gets "omitted", which Bedrock accepts everywhere and which
+// is what "updates" returns on a model that writes no progress updates.
+func applyBedrockThinkingDisplayUpdates(bedrockReq *BedrockConverseRequest, caps schemas.ModelCaps, thinkingConfig map[string]any) {
+	if thinkingConfig["display"] != anthropic.AnthropicThinkingDisplayUpdates {
+		return
+	}
+	if anthropic.SupportsThinkingDisplayUpdates(caps) {
+		appendAnthropicBetaToFields(bedrockReq.AdditionalModelRequestFields, anthropic.AnthropicThinkingDisplayUpdatesBetaHeader)
+		return
+	}
+	thinkingConfig["display"] = "omitted"
+}
+
 // applyBedrockFineGrainedToolStreaming opts a Claude Converse request into
 // fine-grained tool streaming. Without it Claude emits tool input one complete
 // JSON value at a time, so a long argument arrives as one burst after a long
@@ -1812,6 +1839,17 @@ func encodeRedactedContentForConverse(id *string, token string) string {
 		return token
 	}
 	return wrapRedactedContentForConverse(id, token)
+}
+
+// isConverseBlob reports whether token can be sent upstream as Converse redactedContent.
+// The field is a blob, so a token that is not canonical base64 cannot even deserialize:
+// Bedrock answers 400 SerializationException with an empty message, which names no
+// reasoning token and so never triggers the strip-and-retry fail-soft. Such a token was
+// minted by another host (Mantle hands back the bare rsn_ token Bedrock base64-wraps)
+// and could not verify here anyway, so the replay drops it instead.
+func isConverseBlob(token string) bool {
+	decoded, err := base64.StdEncoding.DecodeString(token)
+	return err == nil && token != "" && base64.StdEncoding.EncodeToString(decoded) == token
 }
 
 // wrapRedactedContentForConverse wraps token unconditionally, embedding id.
@@ -2120,7 +2158,7 @@ func convertMessage(ctx context.Context, model string, msg schemas.ChatMessage, 
 				// signature, without one, empty or not -- with an opaque 500. The
 				// encrypted blob is the only replayable detail, and dropping the
 				// rest beats sending a shape that cannot be accepted.
-				if detail.Type == schemas.BifrostReasoningDetailsTypeEncrypted && detail.Data != nil {
+				if detail.Type == schemas.BifrostReasoningDetailsTypeEncrypted && detail.Data != nil && isConverseBlob(*detail.Data) {
 					contentBlocks = append(contentBlocks, BedrockContentBlock{
 						ReasoningContent: &BedrockReasoningContent{RedactedContent: detail.Data},
 					})
@@ -2240,6 +2278,11 @@ func convertToolMessages(ctx context.Context, model string, msgs []schemas.ChatM
 		var toolResultContent []BedrockContentBlock
 		// Converse ignores a cachePoint inside toolResult content, so the last marker trails the block.
 		var cacheControl *schemas.CacheControl
+		if content := schemas.FlattenToolResultMedia(msg.Content, schemas.IsImageBlock); content != msg.Content {
+			flattened := msg
+			flattened.Content = content
+			msg = flattened
+		}
 		if msg.Content.ContentStr != nil {
 			// Bedrock expects JSON to be a parsed object, not a string. The helper
 			// validates, compacts, wraps arrays and primitives, falls back to a text
@@ -2247,13 +2290,21 @@ func convertToolMessages(ctx context.Context, model string, msgs []schemas.ChatM
 			// as objects carrying an empty-string key).
 			toolResultContent = append(toolResultContent, tryParseJSONIntoContentBlock(*msg.Content.ContentStr))
 		} else if msg.Content.ContentBlocks != nil {
+			// A lone text block renders exactly like the equivalent string. Clients that
+			// put cache_control on the last message send it as one block on that turn and
+			// as a string afterwards, so a text/json flip would break the cached prefix.
+			singleText := len(msg.Content.ContentBlocks) == 1
 			for _, block := range msg.Content.ContentBlocks {
 				switch block.Type {
 				case schemas.ChatContentBlockTypeText:
 					if block.Text != nil {
-						toolResultContent = append(toolResultContent, BedrockContentBlock{
-							Text: block.Text,
-						})
+						if singleText {
+							toolResultContent = append(toolResultContent, tryParseJSONIntoContentBlock(*block.Text))
+						} else {
+							toolResultContent = append(toolResultContent, BedrockContentBlock{
+								Text: block.Text,
+							})
+						}
 						if block.CacheControl != nil {
 							cacheControl = block.CacheControl
 						}
@@ -2844,6 +2895,25 @@ func converseRequiresSignedReasoning(model string) bool {
 	return schemas.ResolveModelCaps(schemas.Bedrock, model).BedrockRequiresSignedReasoning(schemas.IsAnthropicModel(model))
 }
 
+// converseAcceptsStopSequences reports whether Converse accepts inferenceConfig.stopSequences for model
+// most newer families 400 on it, so unknown models default to omitting it.
+func converseAcceptsStopSequences(model string) bool {
+	m := strings.ToLower(model)
+	switch {
+	case schemas.IsAnthropicModel(m), schemas.IsNovaModel(m), schemas.IsTitanModel(m),
+		schemas.IsLlamaModel(m), schemas.IsCohereModel(m):
+		return true
+	case strings.Contains(m, "deepseek.r1"), strings.Contains(m, "writer.palmyra-x"):
+		return true
+	}
+	for _, legacy := range []string{"mistral-7b", "mixtral-8x7b", "mistral-large-2402", "mistral-large-2407", "mistral-small-2402", "pixtral-large-2502"} {
+		if strings.Contains(m, legacy) {
+			return true
+		}
+	}
+	return false
+}
+
 // setConverseReasoningEffort writes the OpenAI-shaped reasoning field, mapping
 // the requested effort onto a rung the model publishes.
 func setConverseReasoningEffort(fields *schemas.OrderedMap, caps schemas.ModelCaps, levels *schemas.EffortControl, effort string) {
@@ -2892,8 +2962,7 @@ func convertInferenceConfig(params *schemas.ChatParameters, caps schemas.ModelCa
 		config.TopP = params.TopP
 	}
 
-	// GLM models on Bedrock reject the stopSequences field.
-	if params.Stop != nil && !caps.FieldUnsupported(schemas.FieldStop, schemas.IsGLMModel(caps.Model())) {
+	if params.Stop != nil && !caps.FieldUnsupported(schemas.FieldStop, !converseAcceptsStopSequences(caps.Model())) {
 		config.StopSequences = params.Stop
 	}
 
@@ -3125,6 +3194,42 @@ func deriveBedrockBetaHeadersForToolType(toolType string) []string {
 	return nil
 }
 
+// bedrockStrictGate decides whether a tool's strict flag reaches Converse
+// toolSpec.strict for one request.
+type bedrockStrictGate struct {
+	ctx      *schemas.BifrostContext
+	model    string
+	resolved bool
+	allowed  bool
+}
+
+// forward returns the client's tool strict flag for Converse toolSpec.strict
+// ("Flag to enable structured output enforcement on a tool usage response",
+// https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_ToolSpecification.html).
+// It is forwarded for Claude only: AWS documents strict tool use for Claude on
+// Converse, while support for other families varies per model and is unverified,
+// so they keep the prior behaviour of dropping it. Only true is forwarded: false
+// is the default, and omitting it keeps clients that never asked for enforcement
+// (Codex sends strict:false on every tool) on the pre-strict bytes even for
+// profiles without structured outputs, such as in.anthropic Claude Haiku 4.5
+// (https://docs.aws.amazon.com/bedrock/latest/userguide/structured-output.html).
+// An explicit true is left for Bedrock to accept or reject rather than silently
+// dropping the enforcement the client asked for. The family is resolved on the
+// first true flag and reused, so requests without one pay nothing.
+func (g *bedrockStrictGate) forward(strict *bool) *bool {
+	if strict == nil || !*strict {
+		return nil
+	}
+	if !g.resolved {
+		g.allowed = schemas.IsAnthropicModelFamily(g.ctx, g.model)
+		g.resolved = true
+	}
+	if !g.allowed {
+		return nil
+	}
+	return strict
+}
+
 // convertToolConfig converts Bifrost tools to Bedrock tool config.
 //
 // Responsibilities (split from collectBedrockServerTools):
@@ -3183,6 +3288,7 @@ func convertToolConfigFromFiltered(ctx *schemas.BifrostContext, model string, ca
 	}
 
 	isNova2 := schemas.IsNova2Model(model)
+	strictGate := bedrockStrictGate{ctx: ctx, model: model}
 	var bedrockTools []BedrockTool
 	var droppedForModel []string
 	for _, tool := range filtered {
@@ -3221,6 +3327,7 @@ func convertToolConfigFromFiltered(ctx *schemas.BifrostContext, model string, ca
 					InputSchema: BedrockToolInputSchema{
 						JSON: json.RawMessage(schemaObjectBytes),
 					},
+					Strict: strictGate.forward(tool.Function.Strict),
 				},
 			}
 			bedrockTools = append(bedrockTools, bedrockTool)
@@ -4025,6 +4132,27 @@ func stripCachePointsFromBedrockRequest(req *BedrockConverseRequest) {
 	}
 }
 
+// stripNonTextCachePoints keeps a message cachePoint only directly after a text block, for
+// Nova, which 400s on one after a toolResult or image ("extraneous key [cachePoint] is not
+// permitted"). A cachePoint nested in a toolResult goes too.
+func stripNonTextCachePoints(req *BedrockConverseRequest) {
+	for i := range req.Messages {
+		content := req.Messages[i].Content
+		n := 0
+		for j := range content {
+			if content[j].CachePoint != nil && (n == 0 || content[n-1].Text == nil) {
+				continue
+			}
+			if tr := content[j].ToolResult; tr != nil {
+				tr.Content = slices.DeleteFunc(tr.Content, func(b BedrockContentBlock) bool { return b.CachePoint != nil })
+			}
+			content[n] = content[j]
+			n++
+		}
+		req.Messages[i].Content = content[:n]
+	}
+}
+
 // downgradeExtendedCacheTTLInBedrockRequest drops the 1h (extended) cache TTL to
 // the default for models that support cache points but not extended TTL (e.g. Nova),
 // which otherwise 400 with "Extended TTL prompt caching is only supported for
@@ -4053,4 +4181,44 @@ func downgradeExtendedCacheTTLInBedrockRequest(req *BedrockConverseRequest) {
 			downgrade(req.ToolConfig.Tools[i].CachePoint)
 		}
 	}
+}
+
+// heldStreamRaw keeps the raw payloads of upstream stream events that produced no chunk of their
+// own (messageStop, metadata, a text block's contentBlockStop), so each rides on a later chunk that
+// has no payload of its own instead of being dropped from the raw record. It lives in the stream
+// goroutine, is used only when raw responses are sent back, and holds a few small events at most.
+//
+// A chunk that carries its own event never takes a held one: raw text plugins edit a single-event
+// payload in place, and a second event in it would leave the chunk's text unsynced. A held event
+// that meets no chunk without a payload before the stream ends goes out on the stream's last chunk.
+type heldStreamRaw struct {
+	payloads []string
+}
+
+// hold copies payload, since the decoder reuses its buffer for the next event.
+func (h *heldStreamRaw) hold(payload []byte) {
+	if h.payloads == nil {
+		h.payloads = make([]string, 0, 4) // a stream's end holds about three
+	}
+	h.payloads = append(h.payloads, string(payload))
+}
+
+// attach gives extra the oldest held payload; with last set it gives it every remaining one, a
+// blank line apart. Several events in one chunk are not a single stream event, so the chunk then
+// declares no raw format and raw text plugins leave it alone.
+func (h *heldStreamRaw) attach(extra *schemas.BifrostResponseExtraFields, last bool) {
+	if len(h.payloads) == 0 || extra.RawResponse != nil {
+		return
+	}
+	n := 1
+	if last {
+		n = len(h.payloads)
+	}
+	if n == 1 {
+		extra.RawResponse = h.payloads[0]
+		extra.RawResponseFormat = schemas.RawResponseFormatBedrockConverseStreamEvent
+	} else {
+		extra.RawResponse = strings.Join(h.payloads[:n], "\n\n")
+	}
+	h.payloads = h.payloads[n:]
 }

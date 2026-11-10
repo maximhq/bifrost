@@ -64,7 +64,7 @@ func (s *StarlarkCodeMode) handleGetToolDocs(ctx context.Context, toolCall schem
 	}
 
 	// Get available tools per client
-	availableToolsPerClient := s.clientManager.GetToolPerClient(ctx)
+	availableToolsPerClient := s.clientManager.GetToolPerClient(codemcp.WithModelToolsOnly(ctx))
 
 	// Find matching client
 	var matchedClientName string
@@ -131,7 +131,7 @@ func (s *StarlarkCodeMode) handleGetToolDocs(ctx context.Context, toolCall schem
 	}
 
 	// Generate detailed documentation using generateTypeDefinitions
-	docContent := generateTypeDefinitions(matchedClientName, []schemas.ChatTool{*matchedTool}, true, s.serverInstructionsComment(matchedClientName), !s.jsonModuleShadowed(availableToolsPerClient))
+	docContent := generateTypeDefinitions(matchedClientName, []schemas.ChatTool{*matchedTool}, true, s.serverInstructionsComment(ctx, matchedClientName), !s.jsonModuleShadowed(availableToolsPerClient))
 
 	return createToolResponseMessage(toolCall, docContent, false), nil
 }

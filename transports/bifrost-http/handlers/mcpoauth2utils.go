@@ -43,13 +43,15 @@ func oauth2RedirectAllowed(store *lib.Config, candidate string) bool {
 // bypassed, which yields relative URLs rather than attacker-chosen absolute
 // ones. The Host-derived fallback remains only for headers mode, where no
 // OAuth issuer identity is served and the value feeds nothing security-relevant.
+// A configured value is returned without trailing slashes, since every endpoint,
+// claim and redirect is built by appending a path that starts with "/".
 func oauth2IssuerURL(ctx *fasthttp.RequestCtx, store *lib.Config) string {
 	store.Mu.RLock()
 	cfg := store.ClientConfig.OAuth2ServerConfig
 	oauthEnabled := store.ClientConfig.IsMCPOAuthDiscoveryEnabled()
 	store.Mu.RUnlock()
 	if cfg != nil && cfg.IssuerURL.IsSet() {
-		return cfg.IssuerURL.GetValue()
+		return strings.TrimRight(cfg.IssuerURL.GetValue(), "/")
 	}
 	if oauthEnabled {
 		return ""
@@ -63,9 +65,13 @@ func oauth2IssuerURL(ctx *fasthttp.RequestCtx, store *lib.Config) string {
 // resource parameter to it, and /mcp token verification checks the audience
 // against it; routing all three through here keeps them from drifting.
 func oauth2MCPResourceURL(ctx *fasthttp.RequestCtx, store *lib.Config) string {
-	// Trim a trailing slash so a slash-suffixed issuer_url can't produce "//mcp"
-	// and drift this canonical resource away from what clients normalize to.
-	return strings.TrimRight(oauth2IssuerURL(ctx, store), "/") + "/mcp"
+	return oauth2IssuerURL(ctx, store) + "/mcp"
+}
+
+// oauth2GatewayAudience identifies Bifrost's inference routes as a resource:
+// the gateway itself, so the issuer URL.
+func oauth2GatewayAudience(ctx *fasthttp.RequestCtx, store *lib.Config) string {
+	return oauth2IssuerURL(ctx, store)
 }
 
 // oauth2ServerCfg returns the OAuth2 AS-specific config under the read lock,
@@ -78,4 +84,23 @@ func oauth2ServerCfg(store *lib.Config) *configtables.OAuth2ServerConfig {
 		return configtables.DefaultOAuth2ServerConfig()
 	}
 	return cfg
+}
+
+// oauth2ResourceMetadataURL returns the RFC 9728 §3.1 protected-resource metadata
+// URL for the /mcp resource under issuer. The well-known segment sits at the origin
+// root with the issuer's path inserted after it, so an issuer that carries
+// server.base_path ("https://host/bifrost") advertises
+// "https://host/.well-known/oauth-protected-resource/bifrost/mcp", which is also
+// where a client that discovers by convention looks. The handlers accept any path
+// under the well-known routes, so the proxy only has to forward "/.well-known/".
+// The issuer path is spliced in as written (percent-escapes preserved), so an
+// escaped delimiter cannot turn the rest of the URL into a query or fragment.
+func oauth2ResourceMetadataURL(issuer string) string {
+	const wellKnown = "/.well-known/oauth-protected-resource"
+	u, err := url.Parse(issuer)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return issuer + wellKnown + "/mcp"
+	}
+	path := strings.TrimRight(u.EscapedPath(), "/")
+	return u.Scheme + "://" + u.Host + wellKnown + path + "/mcp"
 }

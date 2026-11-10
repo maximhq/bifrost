@@ -67,11 +67,11 @@ func TestXAIRealtimeMint(t *testing.T) {
 // TestXAIRealtimeURLHeaders checks selected-key authentication, model escaping, native transport boundaries and absence of generated settings.
 func TestXAIRealtimeURLHeaders(t *testing.T) {
 	provider := &XAIProvider{networkConfig: schemas.NetworkConfig{BaseURL: "https://voice.example/base/", ExtraHeaders: schemas.NewSecretVarMap(map[string]string{"authorization": "wrong", "X-Trace": "test"})}}
-	endpoint, err := provider.RealtimeWebSocketURL(schemas.Key{}, "grok voice+test", "")
+	endpoint, err := provider.RealtimeWebSocketURL(nil, schemas.Key{}, "grok voice+test", "")
 	if err != nil || endpoint != "wss://voice.example/base/v1/realtime?model=grok+voice%2Btest" {
 		t.Fatal(endpoint, err)
 	}
-	if _, err := provider.RealtimeWebSocketURL(schemas.Key{}, "model", "transcription"); err == nil {
+	if _, err := provider.RealtimeWebSocketURL(nil, schemas.Key{}, "model", "transcription"); err == nil {
 		t.Fatal("unsupported intent invented")
 	}
 	headers, err := provider.RealtimeHeaders(nil, schemas.Key{Value: *schemas.NewSecretVar("selected")})

@@ -552,6 +552,30 @@ func TestAttachBilledUsageFromContext_CopiesUsage(t *testing.T) {
 	}
 }
 
+func TestAttachBilledUsageFromContext_CopiesIterations(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	usage := &schemas.BifrostLLMUsage{
+		PromptTokens: 10,
+		TotalTokens:  10,
+		Iterations: []schemas.ResponsesResponseUsage{
+			{Type: schemas.Ptr("advisor_message"), Model: schemas.Ptr("claude-opus-4-8"), InputTokens: 2000, OutputTokens: 900},
+		},
+	}
+	ctx.SetValue(schemas.BifrostContextKeyStreamAccumulatedUsage, usage)
+
+	bifrostErr := &schemas.BifrostError{}
+	attachBilledUsageFromContext(ctx, bifrostErr)
+	usage.Iterations[0].InputTokens = 999
+
+	billed := bifrostErr.ExtraFields.BilledUsage
+	if billed == nil || len(billed.Iterations) != 1 {
+		t.Fatalf("BilledUsage dropped the advisor pass: %+v", billed)
+	}
+	if billed.Iterations[0].InputTokens != 2000 {
+		t.Fatalf("BilledUsage aliases the accumulator's iterations: got %d, want 2000", billed.Iterations[0].InputTokens)
+	}
+}
+
 func TestAttachBilledUsageFromContext_NoOpWhenEmpty(t *testing.T) {
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	ctx.SetValue(schemas.BifrostContextKeyStreamAccumulatedUsage, &schemas.BifrostLLMUsage{})
@@ -559,6 +583,94 @@ func TestAttachBilledUsageFromContext_NoOpWhenEmpty(t *testing.T) {
 	attachBilledUsageFromContext(ctx, bifrostErr)
 	if bifrostErr.ExtraFields.BilledUsage != nil {
 		t.Fatal("BilledUsage should stay nil when nothing measurable accumulated")
+	}
+}
+
+// A stream read error (an idle timeout, a dropped connection) ends the stream as
+// a cancel does, so the error the post-hooks see bills the usage the provider
+// already reported through its accumulated handle; with nothing accumulated it
+// bills nothing.
+func TestProcessAndSendError_BillsAccumulatedUsage(t *testing.T) {
+	for name, tc := range map[string]struct {
+		handle *schemas.BifrostLLMUsage
+		want   *schemas.BifrostLLMUsage
+	}{
+		"reported usage": {handle: &schemas.BifrostLLMUsage{PromptTokens: 125, CompletionTokens: 7, TotalTokens: 132},
+			want: &schemas.BifrostLLMUsage{PromptTokens: 125, CompletionTokens: 7, TotalTokens: 132}},
+		"nothing accumulated": {handle: &schemas.BifrostLLMUsage{}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			ctx.SetValue(schemas.BifrostContextKeyStreamAccumulatedUsage, tc.handle)
+			var seen *schemas.BifrostError
+			hook := func(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+				seen = err
+				return resp, err
+			}
+			responseChan := make(chan *schemas.BifrostStreamChunk, 1)
+			ProcessAndSendError(ctx, hook, ErrStreamIdleTimeout, responseChan, nil, nil)
+			if seen == nil {
+				t.Fatal("the post-hook saw no error")
+			}
+			got := seen.ExtraFields.BilledUsage
+			if tc.want == nil {
+				if got != nil {
+					t.Fatalf("billed %+v with nothing accumulated", got)
+				}
+				return
+			}
+			if got == nil || got.PromptTokens != tc.want.PromptTokens || got.CompletionTokens != tc.want.CompletionTokens || got.TotalTokens != tc.want.TotalTokens {
+				t.Fatalf("read error billed %+v, want %+v", got, tc.want)
+			}
+			if got == tc.handle {
+				t.Fatal("billed usage aliases the provider's live handle")
+			}
+		})
+	}
+}
+
+// carriedStreamError is a reader error that already carries a classified
+// BifrostError, as Bedrock's InvokeModel exception frames do.
+type carriedStreamError struct{ err *schemas.BifrostError }
+
+func (e *carriedStreamError) Error() string                       { return e.err.Error.Message }
+func (e *carriedStreamError) BifrostError() *schemas.BifrostError { return e.err }
+
+// A pre-classified stream error (a throttling exception after usage was reported)
+// bills the accumulated usage too, keeps its own classification, and keeps any
+// billed usage it already carries.
+func TestProcessAndSendError_CarriedErrorBillsAccumulatedUsage(t *testing.T) {
+	throttled := func(billed *schemas.BifrostLLMUsage) *schemas.BifrostError {
+		return &schemas.BifrostError{IsBifrostError: false, StatusCode: schemas.Ptr(429),
+			Error:       &schemas.ErrorField{Message: "throttlingException: rate exceeded"},
+			ExtraFields: schemas.BifrostErrorExtraFields{BilledUsage: billed}}
+	}
+	for name, tc := range map[string]struct {
+		carried *schemas.BifrostError
+		want    int
+	}{
+		"no billed usage":   {carried: throttled(nil), want: 125},
+		"billed usage kept": {carried: throttled(&schemas.BifrostLLMUsage{PromptTokens: 9, TotalTokens: 9}), want: 9},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			ctx.SetValue(schemas.BifrostContextKeyStreamAccumulatedUsage, &schemas.BifrostLLMUsage{PromptTokens: 125, CompletionTokens: 7, TotalTokens: 132})
+			var seen *schemas.BifrostError
+			hook := func(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+				seen = err
+				return resp, err
+			}
+			ProcessAndSendError(ctx, hook, &carriedStreamError{err: tc.carried}, make(chan *schemas.BifrostStreamChunk, 1), nil, nil)
+			if seen == nil {
+				t.Fatal("the post-hook saw no error")
+			}
+			if seen.IsBifrostError || seen.StatusCode == nil || *seen.StatusCode != 429 {
+				t.Fatalf("carried classification changed: IsBifrostError=%v status=%v", seen.IsBifrostError, seen.StatusCode)
+			}
+			if got := seen.ExtraFields.BilledUsage; got == nil || got.PromptTokens != tc.want {
+				t.Fatalf("carried error billed %+v, want prompt %d", got, tc.want)
+			}
+		})
 	}
 }
 
@@ -1154,11 +1266,18 @@ func TestStreamStartupStateAgreesWithStartupChecks(t *testing.T) {
 			committed := err == nil
 
 			startup := NewStreamStartupState(tc.isPreamble, tc.underDeadline)
+			commits := 0
 			for _, chunk := range tc.before {
-				startup.ObserveResult(ctx, &schemas.BifrostResponse{ChatResponse: chunk.BifrostChatResponse}, nil)
+				if startup.ObserveResult(ctx, &schemas.BifrostResponse{ChatResponse: chunk.BifrostChatResponse}, nil) {
+					commits++
+				}
 			}
 			if fails := startup.IsStartupError(failure.BifrostError); fails == committed {
 				t.Fatalf("checker committed the stream = %v, but StreamStartupState.IsStartupError = %v", committed, fails)
+			}
+			// The pause/resume gate commits a held stream on this report, so it must match the checker.
+			if want := map[bool]int{true: 1, false: 0}[committed]; commits != want {
+				t.Fatalf("ObserveResult reported a commit %d times, want %d (checker committed = %v)", commits, want, committed)
 			}
 		})
 	}
@@ -1168,13 +1287,98 @@ func TestStreamStartupStateAgreesWithStartupChecks(t *testing.T) {
 func TestStreamStartupStateIgnoresSkippedChunks(t *testing.T) {
 	startup := NewStreamStartupState(nil, false)
 	skip := &schemas.BifrostError{StreamControl: &schemas.StreamControl{SkipStream: new(true)}}
-	startup.ObserveResult(context.Background(), nil, skip)
+	if startup.ObserveResult(context.Background(), nil, skip) {
+		t.Fatal("a skipped chunk reported a commit")
+	}
 	failure := &schemas.BifrostError{Error: &schemas.ErrorField{Message: "rate limit exceeded"}}
 	if !startup.IsStartupError(failure) {
 		t.Fatal("a skipped chunk committed the stream")
 	}
-	startup.ObserveResult(context.Background(), &schemas.BifrostResponse{ChatResponse: contentChunk().BifrostChatResponse}, nil)
+	if !startup.ObserveResult(context.Background(), &schemas.BifrostResponse{ChatResponse: contentChunk().BifrostChatResponse}, nil) {
+		t.Fatal("output did not report a commit")
+	}
 	if startup.IsStartupError(failure) {
 		t.Fatal("output did not commit the stream")
+	}
+	if startup.ObserveResult(context.Background(), &schemas.BifrostResponse{ChatResponse: contentChunk().BifrostChatResponse}, nil) {
+		t.Fatal("a commit was reported twice")
+	}
+}
+
+// collectStream drains ch, failing the test if it does not close in time.
+func collectStream(t *testing.T, ch chan *schemas.BifrostStreamChunk) []*schemas.BifrostStreamChunk {
+	t.Helper()
+	var out []*schemas.BifrostStreamChunk
+	timeout := time.After(2 * time.Second)
+	for {
+		select {
+		case c, ok := <-ch:
+			if !ok {
+				return out
+			}
+			out = append(out, c)
+		case <-timeout:
+			t.Fatal("stream did not close")
+		}
+	}
+}
+
+// A commit marker first (a plugin holds valid output) commits the stream at once: the marker
+// is consumed, never re-injected, and a late copy behind real chunks is dropped too.
+func TestCheckFirstStreamChunk_CommitMarkerCommitsWithoutForwarding(t *testing.T) {
+	output := &schemas.BifrostStreamChunk{BifrostChatResponse: &schemas.BifrostChatResponse{ID: "output"}}
+	stream := make(chan *schemas.BifrostStreamChunk, 4)
+	stream <- schemas.StreamCommitMarker()
+	stream <- output
+	stream <- schemas.StreamCommitMarker()
+	close(stream)
+
+	wrapped, _, err := CheckFirstStreamChunkForError(context.Background(), stream)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got := collectStream(t, wrapped)
+	if len(got) != 1 || got[0] != output {
+		t.Fatalf("expected only the real chunk, got %d chunks: %+v", len(got), got)
+	}
+}
+
+// The preamble check treats a commit marker as the stream having started: it replays the
+// startup events it held and forwards the rest, dropping every marker.
+func TestCheckStreamPreamble_CommitMarkerCommitsAndReplaysPreamble(t *testing.T) {
+	preamble := &schemas.BifrostStreamChunk{BifrostChatResponse: &schemas.BifrostChatResponse{ID: "metadata"}}
+	output := &schemas.BifrostStreamChunk{BifrostChatResponse: &schemas.BifrostChatResponse{ID: "output"}}
+	stream := make(chan *schemas.BifrostStreamChunk, 4)
+	stream <- preamble
+	stream <- schemas.StreamCommitMarker()
+	stream <- output
+	stream <- schemas.StreamCommitMarker()
+	close(stream)
+
+	isPreamble := func(c *schemas.BifrostStreamChunk) bool { return c == preamble }
+	wrapped, _, err := CheckStreamPreambleForError(context.Background(), "req-commit-marker", stream, isPreamble)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got := collectStream(t, wrapped)
+	if len(got) != 2 || got[0] != preamble || got[1] != output {
+		t.Fatalf("expected [preamble output], got %d chunks: %+v", len(got), got)
+	}
+}
+
+// BenchmarkCheckFirstStreamChunkForwarding measures the first-chunk check plus forwarding a
+// 64-chunk stream through its wrapper, the path every non-gated stream takes.
+func BenchmarkCheckFirstStreamChunkForwarding(b *testing.B) {
+	chunk := &schemas.BifrostStreamChunk{BifrostChatResponse: &schemas.BifrostChatResponse{ID: "c"}}
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		stream := make(chan *schemas.BifrostStreamChunk, 64)
+		for j := 0; j < 64; j++ {
+			stream <- chunk
+		}
+		close(stream)
+		wrapped, _, _ := CheckFirstStreamChunkForError(context.Background(), stream)
+		for range wrapped {
+		}
 	}
 }

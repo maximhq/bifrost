@@ -1,6 +1,7 @@
 import { expect, test } from '../../core/fixtures/base.fixture'
 import type { VirtualKeysPage } from './pages/virtual-keys.page'
 import { createVirtualKeyData } from './virtual-keys.data'
+import { expectListLoadError } from '../../core/utils/test-helpers'
 
 async function skipIfConfigStoreMissing(virtualKeysPage: VirtualKeysPage): Promise<void> {
   const missingConfigStore = await virtualKeysPage.page
@@ -52,6 +53,10 @@ test.describe('Virtual Keys Table', () => {
       return
     }
     await expect(virtualKeysPage.emptyState).toBeVisible({ timeout: 10000 })
+  })
+
+  test('should show the load error instead of the empty state when virtual keys fail to load', async ({ page }) => {
+    await expectListLoadError(page, '/api/governance/virtual-keys', 'virtual-keys-load-error', 'virtual-keys-empty-state')
   })
 })
 

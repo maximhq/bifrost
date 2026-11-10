@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"testing"
+	"time"
 
 	bifrost "github.com/maximhq/bifrost/core"
 
@@ -119,6 +120,46 @@ result = {
 	assert.NotNil(t, returnObj["uuid"], "should have uuid from GoTestServer")
 	assert.NotNil(t, returnObj["echo"], "should have echo from InProcess")
 	assert.Equal(t, float64(3), returnObj["servers_used"], "should use 3 servers")
+}
+
+// Nested tool calls inside code mode block on the tool's socket just like direct calls, so their
+// wait belongs in the request's upstream total. Missing it reports the wait as Bifrost overhead.
+func TestCodeMode_NestedToolWaitCountsAsUpstream(t *testing.T) {
+	t.Parallel()
+	const toolDelay = 200 * time.Millisecond
+
+	manager := setupMCPManager(t)
+	slow := schemas.ChatTool{Type: schemas.ChatToolTypeFunction, Function: &schemas.ChatToolFunction{
+		Name:       "slow",
+		Parameters: &schemas.ToolFunctionParameters{Type: "object"},
+	}}
+	require.NoError(t, manager.RegisterTool("slow", "Waits, then answers", func(any) (string, error) {
+		time.Sleep(toolDelay)
+		return "done", nil
+	}, slow))
+	for _, client := range manager.GetClients() {
+		if client.ExecutionConfig.ID == "bifrostInternal" {
+			config := client.ExecutionConfig
+			config.IsCodeModeClient = true
+			config.ToolsToExecute = []string{"*"}
+			require.NoError(t, manager.UpdateClient(config.ID, config))
+		}
+	}
+	client := setupBifrost(t)
+	client.SetMCPManager(manager)
+
+	ctx := createTestContext()
+	ctx.ResetUpstreamLatency()
+	toolCall := CreateExecuteToolCodeCall("call-nested-wait", "a = bifrostInternal.slow()\nb = bifrostInternal.slow()\nresult = [a, b]")
+	result, bifrostErr := client.ExecuteChatMCPTool(ctx, &toolCall)
+	require.Nil(t, bifrostErr, "code mode execution failed")
+	require.NotNil(t, result)
+	_, hasError, errorMsg := ParseCodeModeResponse(t, *result.Content.ContentStr)
+	require.False(t, hasError, "code mode script failed: %s", errorMsg)
+
+	upstream, ok := schemas.GetUpstreamLatency(ctx)
+	require.True(t, ok, "no upstream accumulator on the context")
+	assert.GreaterOrEqual(t, upstream, 2*toolDelay, "upstream = %v, want >= %v: the nested tool waits were reported as Bifrost overhead", upstream, 2*toolDelay)
 }
 
 // TestCodeMode_MultiServer_ParallelExecution tests parallel execution across multiple servers

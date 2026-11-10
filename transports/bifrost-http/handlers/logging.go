@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -21,6 +22,7 @@ import (
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/queryscope"
 	"github.com/maximhq/bifrost/framework/sidekiq"
+	"github.com/maximhq/bifrost/framework/warp"
 	"github.com/maximhq/bifrost/plugins/logging"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
@@ -48,6 +50,52 @@ type LoggingHandler struct {
 	// in which case the recalculate-cost endpoints return 503.
 	sidekiqRunner *sidekiq.Runner
 	sidekiqStore  SidekiqJobStore
+
+	// topics lists Warp's topics for the topics filter dimension. Nil until
+	// SetTopicLister wires it, in which case the dimension is empty.
+	topics warp.TopicLister
+}
+
+// SetTopicLister wires the Warp topic reader the topics filter dimension
+// lists from.
+func (h *LoggingHandler) SetTopicLister(topics warp.TopicLister) {
+	h.topics = topics
+}
+
+// topicFilterWindow is how far back the topics filter dimension looks for a
+// topic with requests. Warp's upkeep retires a topic silent for this long, so
+// the window holds exactly the topics still in use.
+const topicFilterWindow = 30 * 24 * time.Hour
+
+// topicFilterData lists the topics a caller may filter the logs by: those
+// with a request they may see in the last month, by name, largest first,
+// narrowed to the ones whose name contains query. The reader narrows before it
+// applies limit, so a matching topic outside the largest few is still found.
+//
+// It reads through Warp's own topic reader rather than the topic rows, so a
+// restricted caller is offered only the topics their own requests fall under,
+// as Warp's list_topics shows them (see TopicReader.ListTopics).
+func topicFilterData(ctx context.Context, topics warp.TopicLister, limit int, query string) ([]logging.KeyPair, error) {
+	if topics == nil {
+		return []logging.KeyPair{}, nil
+	}
+	end := time.Now().UTC()
+	start := end.Add(-topicFilterWindow)
+	list, err := topics.ListTopics(ctx, warp.TopicQuery{
+		Filter: logstore.WarpTopicAssignmentFilter{StartTime: &start, EndTime: &end}, Limit: limit,
+		NameContains: strings.ToLower(strings.TrimSpace(query)),
+	})
+	if err != nil {
+		if errors.Is(err, warp.ErrUnavailable) {
+			return []logging.KeyPair{}, nil
+		}
+		return nil, err
+	}
+	pairs := make([]logging.KeyPair, 0, len(list.Topics))
+	for _, topic := range list.Topics {
+		pairs = append(pairs, logging.KeyPair{ID: topic.ID, Name: topic.Label})
+	}
+	return pairs, nil
 }
 
 // SidekiqJobStore is the narrow read surface the recalculate-cost endpoints need
@@ -196,27 +244,34 @@ const (
 	filterDimUsers          = "users"
 	filterDimBusinessUnits  = "business_units"
 	filterDimProjects       = "projects"
+	filterDimTopics         = "topics"
 	filterDimMetadataKeys   = "metadata_keys"
 )
 
 // MCP filter dimensions for /api/mcp-logs/filterdata.
 const (
-	mcpFilterDimToolNames    = "tool_names"
-	mcpFilterDimServerLabels = "server_labels"
-	mcpFilterDimApps         = "apps"
-	mcpFilterDimUserAgents   = "user_agents"
-	mcpFilterDimVirtualKeys  = "virtual_keys"
+	mcpFilterDimToolNames     = "tool_names"
+	mcpFilterDimServerLabels  = "server_labels"
+	mcpFilterDimApps          = "apps"
+	mcpFilterDimUserAgents    = "user_agents"
+	mcpFilterDimVirtualKeys   = "virtual_keys"
+	mcpFilterDimUsers         = "users"
+	mcpFilterDimTeams         = "teams"
+	mcpFilterDimCustomers     = "customers"
+	mcpFilterDimBusinessUnits = "business_units"
+	mcpFilterDimProjects      = "projects"
 )
 
 var allFilterDimensions = []string{
 	filterDimModels, filterDimAliases, filterDimSelectedKeys, filterDimVirtualKeys,
 	filterDimRoutingRules, filterDimRoutingEngines, filterDimStopReasons, filterDimToolCallNames, filterDimApps,
 	filterDimUserAgents, filterDimTeams, filterDimCustomers, filterDimUsers,
-	filterDimBusinessUnits, filterDimProjects, filterDimMetadataKeys,
+	filterDimBusinessUnits, filterDimProjects, filterDimTopics, filterDimMetadataKeys,
 }
 
 var allMCPFilterDimensions = []string{
 	mcpFilterDimToolNames, mcpFilterDimServerLabels, mcpFilterDimApps, mcpFilterDimUserAgents, mcpFilterDimVirtualKeys,
+	mcpFilterDimUsers, mcpFilterDimTeams, mcpFilterDimCustomers, mcpFilterDimBusinessUnits, mcpFilterDimProjects,
 }
 
 // parseFilterDimensions returns the requested subset of dimensions in a
@@ -417,6 +472,7 @@ func (h *LoggingHandler) RegisterRoutes(r *router.Router, middlewares ...schemas
 	r.GET("/api/mcp-logs/filterdata", lib.ChainMiddlewares(h.getMCPLogsFilterData, middlewares...))
 	r.GET("/api/mcp-logs/histogram", lib.ChainMiddlewares(h.getMCPHistogram, middlewares...))
 	r.GET("/api/mcp-logs/histogram/cost", lib.ChainMiddlewares(h.getMCPCostHistogram, middlewares...))
+	r.GET("/api/mcp-logs/histogram/latency", lib.ChainMiddlewares(h.getMCPLatencyHistogram, middlewares...))
 	r.GET("/api/mcp-logs/histogram/top-tools", lib.ChainMiddlewares(h.getMCPTopTools, middlewares...))
 	r.GET("/api/mcp-logs/{id}", lib.ChainMiddlewares(h.getMCPLogByID, middlewares...))
 	r.DELETE("/api/mcp-logs", lib.ChainMiddlewares(h.deleteMCPLogs, middlewares...))
@@ -448,6 +504,9 @@ func (h *LoggingHandler) createUserAgentMapping(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to create user agent mapping: %v", err))
 		return
 	}
+	if created != nil {
+		lib.RecordAuditChange(ctx, "user_agent_mapping.created", "user_agent_mapping", created.ID, created.App, nil, auditUserAgentMapping(created))
+	}
 	SendJSON(ctx, created)
 }
 
@@ -463,6 +522,7 @@ func (h *LoggingHandler) updateUserAgentMapping(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("invalid request format: %v", err))
 		return
 	}
+	before := h.findUserAgentMapping(ctx, id)
 	updated, err := h.logManager.UpdateUserAgentMapping(ctx, id, &mapping)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -476,6 +536,9 @@ func (h *LoggingHandler) updateUserAgentMapping(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to update user agent mapping: %v", err))
 		return
 	}
+	if updated != nil {
+		lib.RecordAuditChange(ctx, "user_agent_mapping.updated", "user_agent_mapping", id, updated.App, auditUserAgentMapping(before), auditUserAgentMapping(updated))
+	}
 	SendJSON(ctx, updated)
 }
 
@@ -486,6 +549,7 @@ func (h *LoggingHandler) deleteUserAgentMapping(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, "id is required")
 		return
 	}
+	before := h.findUserAgentMapping(ctx, id)
 	if err := h.logManager.DeleteUserAgentMapping(ctx, id); err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			SendError(ctx, fasthttp.StatusNotFound, "user agent mapping not found")
@@ -494,7 +558,34 @@ func (h *LoggingHandler) deleteUserAgentMapping(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to delete user agent mapping: %v", err))
 		return
 	}
+	targetName := id
+	if before != nil && before.App != "" {
+		targetName = before.App
+	}
+	lib.RecordAuditChange(ctx, "user_agent_mapping.deleted", "user_agent_mapping", id, targetName, auditUserAgentMapping(before), nil)
 	SendJSON(ctx, map[string]any{"success": true})
+}
+
+// findUserAgentMapping returns the mapping with the given id for an audit before-snapshot, or nil.
+func (h *LoggingHandler) findUserAgentMapping(ctx context.Context, id string) *logstore.UserAgentMapping {
+	mappings, err := h.logManager.ListUserAgentMappings(ctx)
+	if err != nil {
+		return nil
+	}
+	for i := range mappings {
+		if mappings[i].ID == id {
+			return &mappings[i]
+		}
+	}
+	return nil
+}
+
+// auditUserAgentMapping snapshots a mapping without its logo bytes.
+func auditUserAgentMapping(m *logstore.UserAgentMapping) any {
+	if m == nil {
+		return nil
+	}
+	return lib.AuditSnapshot(m, "logo")
 }
 
 // getLogSessionByID handles GET /api/logs/sessions/{session_id} - Get logs in a single session.
@@ -676,6 +767,9 @@ func (h *LoggingHandler) getLogs(ctx *fasthttp.RequestCtx) {
 	}
 	if projectIDs := string(ctx.QueryArgs().Peek("project_ids")); projectIDs != "" {
 		filters.ProjectIDs = parseCommaSeparated(projectIDs)
+	}
+	if !parseTopicIDsFilter(ctx, filters) {
+		return
 	}
 	if routingEngines := string(ctx.QueryArgs().Peek("routing_engine_used")); routingEngines != "" {
 		filters.RoutingEngineUsed = parseCommaSeparated(routingEngines)
@@ -882,6 +976,15 @@ func (h *LoggingHandler) getLogByID(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, "log id is required")
 		return
 	}
+	// The row's timestamp from the list response, so a ClickHouse store can prune the lookup instead of scanning logs.
+	if raw := string(ctx.QueryArgs().Peek("timestamp")); raw != "" {
+		ts, err := time.Parse(time.RFC3339Nano, raw)
+		if err != nil {
+			SendError(ctx, fasthttp.StatusBadRequest, "invalid timestamp: must be RFC 3339")
+			return
+		}
+		ctx.SetUserValue(logstore.LogTimestampContextKey, ts)
+	}
 
 	log, err := h.logManager.GetLog(ctx, id)
 	if err != nil {
@@ -967,6 +1070,9 @@ func (h *LoggingHandler) getLogsStats(ctx *fasthttp.RequestCtx) {
 	}
 	if projectIDs := string(ctx.QueryArgs().Peek("project_ids")); projectIDs != "" {
 		filters.ProjectIDs = parseCommaSeparated(projectIDs)
+	}
+	if !parseTopicIDsFilter(ctx, filters) {
+		return
 	}
 	if routingEngines := string(ctx.QueryArgs().Peek("routing_engine_used")); routingEngines != "" {
 		filters.RoutingEngineUsed = parseCommaSeparated(routingEngines)
@@ -1132,6 +1238,9 @@ func previousPeriodFilters(filters *logstore.SearchFilters) *logstore.SearchFilt
 // getLogsHistogram handles GET /api/logs/histogram - Get time-bucketed request counts
 func (h *LoggingHandler) getLogsHistogram(ctx *fasthttp.RequestCtx) {
 	filters := parseHistogramFilters(ctx)
+	if filters == nil {
+		return
+	}
 	bucketSizeSeconds := calculateBucketSize(filters.StartTime, filters.EndTime)
 
 	result, err := h.logManager.GetHistogram(ctx, filters, bucketSizeSeconds)
@@ -1217,7 +1326,23 @@ func parseGuardrailOutcomesFilter(ctx *fasthttp.RequestCtx, filters *logstore.Se
 	}
 }
 
-// parseHistogramFilters extracts common filter parameters from query args
+// parseTopicIDsFilter reads the Warp topics a query narrows to. A topic_ids
+// that names no id ("," or blanks) writes a 400 and returns false: read as
+// absent it would widen the query to every topic.
+func parseTopicIDsFilter(ctx *fasthttp.RequestCtx, filters *logstore.SearchFilters) bool {
+	if !ctx.QueryArgs().Has("topic_ids") {
+		return true
+	}
+	filters.TopicIDs = parseCommaSeparated(string(ctx.QueryArgs().Peek("topic_ids")))
+	if len(filters.TopicIDs) == 0 {
+		SendError(ctx, fasthttp.StatusBadRequest, "topic_ids must name at least one topic id")
+		return false
+	}
+	return true
+}
+
+// parseHistogramFilters extracts common filter parameters from query args. It
+// returns nil after writing a 400 when a parameter is unusable.
 func parseHistogramFilters(ctx *fasthttp.RequestCtx) *logstore.SearchFilters {
 	filters := &logstore.SearchFilters{}
 
@@ -1262,6 +1387,9 @@ func parseHistogramFilters(ctx *fasthttp.RequestCtx) *logstore.SearchFilters {
 	}
 	if projectIDs := string(ctx.QueryArgs().Peek("project_ids")); projectIDs != "" {
 		filters.ProjectIDs = parseCommaSeparated(projectIDs)
+	}
+	if !parseTopicIDsFilter(ctx, filters) {
+		return nil
 	}
 	if routingEngines := string(ctx.QueryArgs().Peek("routing_engine_used")); routingEngines != "" {
 		filters.RoutingEngineUsed = parseCommaSeparated(routingEngines)
@@ -1351,6 +1479,9 @@ func parseHistogramFilters(ctx *fasthttp.RequestCtx) *logstore.SearchFilters {
 // getLogsTokenHistogram handles GET /api/logs/histogram/tokens - Get time-bucketed token usage
 func (h *LoggingHandler) getLogsTokenHistogram(ctx *fasthttp.RequestCtx) {
 	filters := parseHistogramFilters(ctx)
+	if filters == nil {
+		return
+	}
 	bucketSizeSeconds := calculateBucketSize(filters.StartTime, filters.EndTime)
 
 	result, err := h.logManager.GetTokenHistogram(ctx, filters, bucketSizeSeconds)
@@ -1366,6 +1497,9 @@ func (h *LoggingHandler) getLogsTokenHistogram(ctx *fasthttp.RequestCtx) {
 // getLogsCostHistogram handles GET /api/logs/histogram/cost - Get time-bucketed cost data with model breakdown
 func (h *LoggingHandler) getLogsCostHistogram(ctx *fasthttp.RequestCtx) {
 	filters := parseHistogramFilters(ctx)
+	if filters == nil {
+		return
+	}
 	bucketSizeSeconds := calculateBucketSize(filters.StartTime, filters.EndTime)
 	if ctx.QueryArgs().Has("bucket_size") {
 		size, err := parseBucketSizeOverride(string(ctx.QueryArgs().Peek("bucket_size")), filters.StartTime, filters.EndTime)
@@ -1389,6 +1523,9 @@ func (h *LoggingHandler) getLogsCostHistogram(ctx *fasthttp.RequestCtx) {
 // getLogsModelHistogram handles GET /api/logs/histogram/models - Get time-bucketed model usage with success/error breakdown
 func (h *LoggingHandler) getLogsModelHistogram(ctx *fasthttp.RequestCtx) {
 	filters := parseHistogramFilters(ctx)
+	if filters == nil {
+		return
+	}
 	bucketSizeSeconds := calculateBucketSize(filters.StartTime, filters.EndTime)
 
 	result, err := h.logManager.GetModelHistogram(ctx, filters, bucketSizeSeconds)
@@ -1404,6 +1541,9 @@ func (h *LoggingHandler) getLogsModelHistogram(ctx *fasthttp.RequestCtx) {
 // getLogsLatencyHistogram handles GET /api/logs/histogram/latency - Get time-bucketed latency percentiles
 func (h *LoggingHandler) getLogsLatencyHistogram(ctx *fasthttp.RequestCtx) {
 	filters := parseHistogramFilters(ctx)
+	if filters == nil {
+		return
+	}
 	bucketSizeSeconds := calculateBucketSize(filters.StartTime, filters.EndTime)
 
 	result, err := h.logManager.GetLatencyHistogram(ctx, filters, bucketSizeSeconds)
@@ -1419,6 +1559,9 @@ func (h *LoggingHandler) getLogsLatencyHistogram(ctx *fasthttp.RequestCtx) {
 // getLogsProviderCostHistogram handles GET /api/logs/histogram/cost/by-provider - Get time-bucketed cost data with provider breakdown
 func (h *LoggingHandler) getLogsProviderCostHistogram(ctx *fasthttp.RequestCtx) {
 	filters := parseHistogramFilters(ctx)
+	if filters == nil {
+		return
+	}
 	bucketSizeSeconds := calculateBucketSize(filters.StartTime, filters.EndTime)
 
 	result, err := h.logManager.GetProviderCostHistogram(ctx, filters, bucketSizeSeconds)
@@ -1434,6 +1577,9 @@ func (h *LoggingHandler) getLogsProviderCostHistogram(ctx *fasthttp.RequestCtx) 
 // getLogsProviderTokenHistogram handles GET /api/logs/histogram/tokens/by-provider - Get time-bucketed token usage with provider breakdown
 func (h *LoggingHandler) getLogsProviderTokenHistogram(ctx *fasthttp.RequestCtx) {
 	filters := parseHistogramFilters(ctx)
+	if filters == nil {
+		return
+	}
 	bucketSizeSeconds := calculateBucketSize(filters.StartTime, filters.EndTime)
 
 	result, err := h.logManager.GetProviderTokenHistogram(ctx, filters, bucketSizeSeconds)
@@ -1449,6 +1595,9 @@ func (h *LoggingHandler) getLogsProviderTokenHistogram(ctx *fasthttp.RequestCtx)
 // getLogsProviderLatencyHistogram handles GET /api/logs/histogram/latency/by-provider - Get time-bucketed latency percentiles with provider breakdown
 func (h *LoggingHandler) getLogsProviderLatencyHistogram(ctx *fasthttp.RequestCtx) {
 	filters := parseHistogramFilters(ctx)
+	if filters == nil {
+		return
+	}
 	bucketSizeSeconds := calculateBucketSize(filters.StartTime, filters.EndTime)
 
 	result, err := h.logManager.GetProviderLatencyHistogram(ctx, filters, bucketSizeSeconds)
@@ -1464,6 +1613,9 @@ func (h *LoggingHandler) getLogsProviderLatencyHistogram(ctx *fasthttp.RequestCt
 // getLogsThroughputHistogram handles GET /api/logs/histogram/throughput - Get time-bucketed token-generation throughput (tokens/sec)
 func (h *LoggingHandler) getLogsThroughputHistogram(ctx *fasthttp.RequestCtx) {
 	filters := parseHistogramFilters(ctx)
+	if filters == nil {
+		return
+	}
 	bucketSizeSeconds := calculateBucketSize(filters.StartTime, filters.EndTime)
 
 	result, err := h.logManager.GetThroughputHistogram(ctx, filters, bucketSizeSeconds)
@@ -1479,6 +1631,9 @@ func (h *LoggingHandler) getLogsThroughputHistogram(ctx *fasthttp.RequestCtx) {
 // getLogsProviderThroughputHistogram handles GET /api/logs/histogram/throughput/by-provider - Get time-bucketed tokens/sec with provider breakdown
 func (h *LoggingHandler) getLogsProviderThroughputHistogram(ctx *fasthttp.RequestCtx) {
 	filters := parseHistogramFilters(ctx)
+	if filters == nil {
+		return
+	}
 	bucketSizeSeconds := calculateBucketSize(filters.StartTime, filters.EndTime)
 
 	result, err := h.logManager.GetProviderThroughputHistogram(ctx, filters, bucketSizeSeconds)
@@ -1514,6 +1669,9 @@ func (h *LoggingHandler) getLogsDimensionCostHistogram(ctx *fasthttp.RequestCtx)
 		return
 	}
 	filters := parseHistogramFilters(ctx)
+	if filters == nil {
+		return
+	}
 	bucketSizeSeconds := calculateBucketSize(filters.StartTime, filters.EndTime)
 
 	result, err := h.logManager.GetDimensionCostHistogram(ctx, filters, bucketSizeSeconds, dimension)
@@ -1533,6 +1691,9 @@ func (h *LoggingHandler) getLogsDimensionTokenHistogram(ctx *fasthttp.RequestCtx
 		return
 	}
 	filters := parseHistogramFilters(ctx)
+	if filters == nil {
+		return
+	}
 	bucketSizeSeconds := calculateBucketSize(filters.StartTime, filters.EndTime)
 
 	result, err := h.logManager.GetDimensionTokenHistogram(ctx, filters, bucketSizeSeconds, dimension)
@@ -1552,6 +1713,9 @@ func (h *LoggingHandler) getLogsDimensionLatencyHistogram(ctx *fasthttp.RequestC
 		return
 	}
 	filters := parseHistogramFilters(ctx)
+	if filters == nil {
+		return
+	}
 	bucketSizeSeconds := calculateBucketSize(filters.StartTime, filters.EndTime)
 
 	result, err := h.logManager.GetDimensionLatencyHistogram(ctx, filters, bucketSizeSeconds, dimension)
@@ -1621,6 +1785,9 @@ func ParseRankingLimit(ctx *fasthttp.RequestCtx, filters *logstore.SearchFilters
 // getModelRankings handles GET /api/logs/rankings - Get models ranked by usage with trends
 func (h *LoggingHandler) getModelRankings(ctx *fasthttp.RequestCtx) {
 	filters := parseHistogramFilters(ctx)
+	if filters == nil {
+		return
+	}
 	if !ParseRankingLimit(ctx, filters) {
 		return
 	}
@@ -1648,6 +1815,9 @@ func (h *LoggingHandler) getDimensionRankings(ctx *fasthttp.RequestCtx) {
 	}
 
 	filters := parseHistogramFilters(ctx)
+	if filters == nil {
+		return
+	}
 	if !ParseRankingLimit(ctx, filters) {
 		return
 	}
@@ -1867,6 +2037,9 @@ const dashboardMCPTopToolsLimit = 10
 // complete payload or a clear error, never partial data.
 func (h *LoggingHandler) getDashboard(ctx *fasthttp.RequestCtx) {
 	filters := parseHistogramFilters(ctx)
+	if filters == nil {
+		return
+	}
 	if !ParseRankingLimit(ctx, filters) {
 		return
 	}
@@ -2097,6 +2270,7 @@ func (h *LoggingHandler) getAvailableFilterData(ctx *fasthttp.RequestCtx) {
 		users          []logging.KeyPair
 		businessUnits  []logging.KeyPair
 		projects       []logging.KeyPair
+		topics         []logging.KeyPair
 		metadataKeys   map[string][]string
 		mu             sync.Mutex
 	)
@@ -2286,6 +2460,18 @@ func (h *LoggingHandler) getAvailableFilterData(ctx *fasthttp.RequestCtx) {
 			return nil
 		})
 	}
+	if _, ok := want[filterDimTopics]; ok {
+		g.Go(func() error {
+			result, err := topicFilterData(gCtx, h.topics, defaultFilterDataLimit, query)
+			if err != nil {
+				return err
+			}
+			mu.Lock()
+			topics = result
+			mu.Unlock()
+			return nil
+		})
+	}
 	if _, ok := want[filterDimMetadataKeys]; ok {
 		g.Go(func() error {
 			result, err := h.logManager.GetAvailableMetadataKeys(gCtx, defaultFilterDataLimit, query)
@@ -2444,6 +2630,9 @@ func (h *LoggingHandler) getAvailableFilterData(ctx *fasthttp.RequestCtx) {
 	if _, ok := want[filterDimProjects]; ok {
 		payload[filterDimProjects] = projects
 	}
+	if _, ok := want[filterDimTopics]; ok {
+		payload[filterDimTopics] = topics
+	}
 	if _, ok := want[filterDimMetadataKeys]; ok {
 		if metadataKeys == nil {
 			metadataKeys = make(map[string][]string)
@@ -2477,6 +2666,7 @@ func (h *LoggingHandler) deleteLogs(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to delete logs")
 		return
 	}
+	lib.RecordAuditChange(ctx, "logs.deleted", "logs", "logs", "Logs", auditDeletedIDs(req.IDs), nil)
 
 	SendJSON(ctx, map[string]interface{}{
 		"message": "Logs deleted successfully",
@@ -2547,6 +2737,13 @@ func (h *LoggingHandler) recalculateLogCosts(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	lib.RecordAuditChange(ctx, "logs.cost_recalculation_started", "logs", jobID, "Cost recalculation", nil, map[string]any{
+		"job_id":            jobID,
+		"missing_cost_only": missingCostOnly,
+		"period":            payload.Filters.Period,
+		"start_time":        filters.StartTime,
+		"end_time":          filters.EndTime,
+	})
 	ctx.SetStatusCode(fasthttp.StatusAccepted)
 	if job, err := h.sidekiqStore.GetSidekiqJob(ctx, jobID); err == nil && job != nil {
 		SendJSON(ctx, recalcJobStatusFromRow(job))
@@ -2641,6 +2838,7 @@ func (h *LoggingHandler) cancelRecalculateCost(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to cancel the recalculation")
 		return
 	}
+	lib.RecordAuditChange(ctx, "logs.cost_recalculation_cancelled", "logs", job.ID, "Cost recalculation", nil, map[string]any{"job_id": job.ID})
 
 	// Re-read so the response carries the cancelled status and the counters committed
 	// before the stop. The handler may still be unwinding, so its final progress
@@ -2819,24 +3017,54 @@ func parseStringArrayParam(s string) []string {
 	return parseCommaSeparated(s)
 }
 
-// parseMetadataFilters extracts metadata_* query params and sets them on the filters.
+// parseMetadataFilters extracts metadata_<key> query params and sets them on the filters.
+// A key may carry several values, either repeated (metadata_env=a&metadata_env=b) or as a JSON
+// array (metadata_env=["a","b"]); a row matches when it holds any of them. A plain value is taken
+// literally, commas included, as it always has been. Values past MaxMetadataFilterValuesPerKey are dropped.
 func parseMetadataFilters(ctx *fasthttp.RequestCtx, filters *logstore.SearchFilters) {
-	var metadataFilters map[string]string
+	var metadataFilters map[string][]string
 	ctx.QueryArgs().VisitAll(func(key, value []byte) { //nolint:staticcheck
 		keyStr := string(key)
-		if strings.HasPrefix(keyStr, "metadata_") {
-			metadataKey := strings.TrimPrefix(keyStr, "metadata_")
-			if metadataKey != "" {
-				if metadataFilters == nil {
-					metadataFilters = make(map[string]string)
-				}
-				metadataFilters[metadataKey] = string(value)
+		if !strings.HasPrefix(keyStr, "metadata_") {
+			return
+		}
+		metadataKey := strings.TrimPrefix(keyStr, "metadata_")
+		if metadataKey == "" {
+			return
+		}
+		for _, v := range parseMetadataFilterValues(string(value)) {
+			if metadataFilters == nil {
+				metadataFilters = make(map[string][]string)
+			}
+			if len(metadataFilters[metadataKey]) < logstore.MaxMetadataFilterValuesPerKey && !slices.Contains(metadataFilters[metadataKey], v) {
+				metadataFilters[metadataKey] = append(metadataFilters[metadataKey], v)
 			}
 		}
 	})
 	if len(metadataFilters) > 0 {
 		filters.MetadataFilters = metadataFilters
 	}
+}
+
+// parseMetadataFilterValues reads one metadata_<key> param: a JSON array of strings when it parses
+// as one, otherwise the raw value as a single literal.
+func parseMetadataFilterValues(raw string) []string {
+	if trimmed := strings.TrimSpace(raw); strings.HasPrefix(trimmed, "[") {
+		var values []string
+		if err := sonic.UnmarshalString(trimmed, &values); err == nil {
+			out := values[:0]
+			for _, v := range values {
+				if v != "" {
+					out = append(out, v)
+				}
+			}
+			return out
+		}
+	}
+	if raw == "" {
+		return nil
+	}
+	return []string{raw}
 }
 
 type recalculateCostRequest struct {
@@ -2854,6 +3082,7 @@ func parseMCPCorrelationFilters(ctx *fasthttp.RequestCtx, filters *logstore.MCPT
 	filters.AgentNames = parseCommaSeparated(string(ctx.QueryArgs().Peek("agent_names")))
 	filters.SessionID = strings.TrimSpace(string(ctx.QueryArgs().Peek("session_id")))
 	filters.AgentCorrelationID = strings.TrimSpace(string(ctx.QueryArgs().Peek("agent_correlation_id")))
+	filters.RoundTripID = strings.TrimSpace(string(ctx.QueryArgs().Peek("round_trip_id")))
 }
 
 // parseMCPFiltersAndPagination parses MCP tool log filters and pagination from query parameters.
@@ -3176,8 +3405,52 @@ func (h *LoggingHandler) getMCPLogsStats(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Stats calculation failed: %v", err))
 		return
 	}
+	if stats == nil {
+		logger.Error("MCP tool log stats returned no result")
+		SendError(ctx, fasthttp.StatusInternalServerError, "Stats calculation returned no result")
+		return
+	}
 
-	SendJSON(ctx, stats)
+	response := &MCPLogStatsResponse{MCPToolLogStats: *stats}
+
+	// compare_to_previous adds the same stats for the immediately preceding window of equal length, as
+	// /api/logs/stats does, so the metric strip can show the change against it. A window with no start
+	// and end has nothing before it, and a failed comparison degrades to none.
+	if compare := string(ctx.QueryArgs().Peek("compare_to_previous")); compare != "" {
+		if enabled, parseErr := strconv.ParseBool(compare); parseErr == nil && enabled && filters.StartTime != nil && filters.EndTime != nil && filters.EndTime.After(*filters.StartTime) {
+			previous, prevErr := h.logManager.GetMCPToolLogStats(ctx, previousMCPPeriodFilters(filters))
+			switch {
+			case prevErr != nil:
+				logger.Warn("failed to get previous period MCP tool log stats: %v", prevErr)
+			case previous != nil:
+				response.Previous = previous
+				response.HasPreviousPeriod = true
+			}
+		}
+	}
+
+	SendJSON(ctx, response)
+}
+
+// MCPLogStatsResponse is the GET /api/mcp-logs/stats payload: the current period's stats at the top level,
+// with the preceding period's beside them when compare_to_previous was asked for, as LogStatsResponse.
+type MCPLogStatsResponse struct {
+	logstore.MCPToolLogStats
+	Previous          *logstore.MCPToolLogStats `json:"previous,omitempty"`
+	HasPreviousPeriod bool                      `json:"has_previous_period"`
+}
+
+// previousMCPPeriodFilters is previousPeriodFilters for MCP tool log filters: the same filter over the
+// window of equal length that ends just before this one starts.
+func previousMCPPeriodFilters(filters *logstore.MCPToolLogSearchFilters) *logstore.MCPToolLogSearchFilters {
+	duration := filters.EndTime.Sub(*filters.StartTime)
+	prevStart := filters.StartTime.Add(-duration)
+	prevEnd := filters.StartTime.Add(-time.Nanosecond)
+
+	prev := *filters
+	prev.StartTime = &prevStart
+	prev.EndTime = &prevEnd
+	return &prev
 }
 
 // getMCPLogsFilterData handles GET /api/mcp-logs/filterdata - Get all unique filter data from MCP tool logs
@@ -3210,59 +3483,154 @@ func (h *LoggingHandler) getMCPLogsFilterData(ctx *fasthttp.RequestCtx) {
 		}
 	}()
 
-	var toolNames []string
+	var (
+		toolNames     []string
+		serverLabels  []string
+		apps          []string
+		userAgents    []string
+		virtualKeys   []logging.KeyPair
+		users         []logging.KeyPair
+		teams         []logging.KeyPair
+		customers     []logging.KeyPair
+		businessUnits []logging.KeyPair
+		projects      []logging.KeyPair
+		mu            sync.Mutex
+	)
+
+	// Run concurrently under the same cap as /api/logs/filterdata: a request naming no dimension
+	// issues ten SELECT DISTINCTs.
+	g, gCtx := errgroup.WithContext(ctx)
+	g.SetLimit(filterDataFanOutLimit)
+
 	if _, ok := want[mcpFilterDimToolNames]; ok {
-		var err error
-		toolNames, err = h.logManager.GetAvailableToolNames(ctx, defaultFilterDataLimit, query)
-		if err != nil {
-			logger.Error("failed to get available tool names: %v", err)
-			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get available tool names: %v", err))
-			return
-		}
+		g.Go(func() error {
+			result, err := h.logManager.GetAvailableToolNames(gCtx, defaultFilterDataLimit, query)
+			if err != nil {
+				return err
+			}
+			mu.Lock()
+			toolNames = result
+			mu.Unlock()
+			return nil
+		})
 	}
-
-	var serverLabels []string
 	if _, ok := want[mcpFilterDimServerLabels]; ok {
-		var err error
-		serverLabels, err = h.logManager.GetAvailableServerLabels(ctx, defaultFilterDataLimit, query)
-		if err != nil {
-			logger.Error("failed to get available server labels: %v", err)
-			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get available server labels: %v", err))
-			return
-		}
+		g.Go(func() error {
+			result, err := h.logManager.GetAvailableServerLabels(gCtx, defaultFilterDataLimit, query)
+			if err != nil {
+				return err
+			}
+			mu.Lock()
+			serverLabels = result
+			mu.Unlock()
+			return nil
+		})
 	}
-
-	var apps []string
 	if _, ok := want[mcpFilterDimApps]; ok {
-		var err error
-		apps, err = h.logManager.GetAvailableMCPApps(ctx, defaultFilterDataLimit, query)
-		if err != nil {
-			logger.Error("failed to get available MCP apps: %v", err)
-			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get available MCP apps: %v", err))
-			return
-		}
+		g.Go(func() error {
+			result, err := h.logManager.GetAvailableMCPApps(gCtx, defaultFilterDataLimit, query)
+			if err != nil {
+				return err
+			}
+			mu.Lock()
+			apps = result
+			mu.Unlock()
+			return nil
+		})
+	}
+	if _, ok := want[mcpFilterDimUserAgents]; ok {
+		g.Go(func() error {
+			result, err := h.logManager.GetAvailableMCPUserAgents(gCtx, defaultFilterDataLimit, query)
+			if err != nil {
+				return err
+			}
+			mu.Lock()
+			userAgents = result
+			mu.Unlock()
+			return nil
+		})
+	}
+	if _, ok := want[mcpFilterDimVirtualKeys]; ok {
+		g.Go(func() error {
+			result, err := h.logManager.GetAvailableMCPVirtualKeys(gCtx, defaultFilterDataLimit, query)
+			if err != nil {
+				return err
+			}
+			mu.Lock()
+			virtualKeys = result
+			mu.Unlock()
+			return nil
+		})
+	}
+	if _, ok := want[mcpFilterDimUsers]; ok {
+		g.Go(func() error {
+			result, err := h.logManager.GetAvailableMCPUsers(gCtx, defaultFilterDataLimit, query)
+			if err != nil {
+				return err
+			}
+			mu.Lock()
+			users = result
+			mu.Unlock()
+			return nil
+		})
+	}
+	if _, ok := want[mcpFilterDimTeams]; ok {
+		g.Go(func() error {
+			result, err := h.logManager.GetAvailableMCPTeams(gCtx, defaultFilterDataLimit, query)
+			if err != nil {
+				return err
+			}
+			mu.Lock()
+			teams = result
+			mu.Unlock()
+			return nil
+		})
+	}
+	if _, ok := want[mcpFilterDimCustomers]; ok {
+		g.Go(func() error {
+			result, err := h.logManager.GetAvailableMCPCustomers(gCtx, defaultFilterDataLimit, query)
+			if err != nil {
+				return err
+			}
+			mu.Lock()
+			customers = result
+			mu.Unlock()
+			return nil
+		})
+	}
+	if _, ok := want[mcpFilterDimBusinessUnits]; ok {
+		g.Go(func() error {
+			result, err := h.logManager.GetAvailableMCPBusinessUnits(gCtx, defaultFilterDataLimit, query)
+			if err != nil {
+				return err
+			}
+			mu.Lock()
+			businessUnits = result
+			mu.Unlock()
+			return nil
+		})
+	}
+	if _, ok := want[mcpFilterDimProjects]; ok {
+		g.Go(func() error {
+			result, err := h.logManager.GetAvailableMCPProjects(gCtx, defaultFilterDataLimit, query)
+			if err != nil {
+				return err
+			}
+			mu.Lock()
+			projects = result
+			mu.Unlock()
+			return nil
+		})
 	}
 
-	var userAgents []string
-	if _, ok := want[mcpFilterDimUserAgents]; ok {
-		var err error
-		userAgents, err = h.logManager.GetAvailableMCPUserAgents(ctx, defaultFilterDataLimit, query)
-		if err != nil {
-			logger.Error("failed to get available MCP user agents: %v", err)
-			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get available MCP user agents: %v", err))
-			return
-		}
+	if err := g.Wait(); err != nil {
+		logger.Error("failed to get MCP filter data: %v", err)
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get MCP filter data: %v", err))
+		return
 	}
 
 	var virtualKeysArray []tables.TableVirtualKey
 	if _, ok := want[mcpFilterDimVirtualKeys]; ok {
-		virtualKeys, err := h.logManager.GetAvailableMCPVirtualKeys(ctx, defaultFilterDataLimit, query)
-		if err != nil {
-			logger.Error("failed to get available MCP virtual keys: %v", err)
-			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get available MCP virtual keys: %v", err))
-			return
-		}
-
 		virtualKeyIDs := make([]string, len(virtualKeys))
 		for i, key := range virtualKeys {
 			virtualKeyIDs[i] = key.ID
@@ -3311,6 +3679,21 @@ func (h *LoggingHandler) getMCPLogsFilterData(ctx *fasthttp.RequestCtx) {
 	if _, ok := want[mcpFilterDimVirtualKeys]; ok {
 		payload[mcpFilterDimVirtualKeys] = virtualKeysArray
 	}
+	if _, ok := want[mcpFilterDimUsers]; ok {
+		payload[mcpFilterDimUsers] = users
+	}
+	if _, ok := want[mcpFilterDimTeams]; ok {
+		payload[mcpFilterDimTeams] = teams
+	}
+	if _, ok := want[mcpFilterDimCustomers]; ok {
+		payload[mcpFilterDimCustomers] = customers
+	}
+	if _, ok := want[mcpFilterDimBusinessUnits]; ok {
+		payload[mcpFilterDimBusinessUnits] = businessUnits
+	}
+	if _, ok := want[mcpFilterDimProjects]; ok {
+		payload[mcpFilterDimProjects] = projects
+	}
 	if useCache && entry != nil {
 		h.mcpFilterDataCache.store(entry, payload)
 		released = true
@@ -3343,6 +3726,7 @@ func (h *LoggingHandler) deleteMCPLogs(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to delete MCP tool logs")
 		return
 	}
+	lib.RecordAuditChange(ctx, "mcp_logs.deleted", "mcp_logs", "mcp_logs", "MCP logs", auditDeletedIDs(req.IDs), nil)
 
 	SendJSON(ctx, map[string]interface{}{
 		"message": "MCP tool logs deleted successfully",
@@ -3367,6 +3751,26 @@ func (h *LoggingHandler) getMCPHistogram(ctx *fasthttp.RequestCtx) {
 	if err != nil {
 		logger.Error("failed to get MCP histogram: %v", err)
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("MCP histogram calculation failed: %v", err))
+		return
+	}
+
+	SendJSON(ctx, result)
+}
+
+// getMCPLatencyHistogram handles GET /api/mcp-logs/histogram/latency - Get time-bucketed latency percentiles
+// of finished MCP tool calls, in the /api/logs/histogram/latency shape
+func (h *LoggingHandler) getMCPLatencyHistogram(ctx *fasthttp.RequestCtx) {
+	filters, err := parseMCPHistogramFilters(ctx)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
+	bucketSizeSeconds := calculateBucketSize(filters.StartTime, filters.EndTime)
+
+	result, err := h.logManager.GetMCPLatencyHistogram(ctx, *filters, bucketSizeSeconds)
+	if err != nil {
+		logger.Error("failed to get MCP latency histogram: %v", err)
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("MCP latency histogram calculation failed: %v", err))
 		return
 	}
 

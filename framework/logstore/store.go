@@ -50,12 +50,32 @@ func CostUpdateFromBreakdown(bd *schemas.BifrostCost) CostUpdate {
 	return u
 }
 
+type lookupContextKey string
+
+// LogTimestampContextKey carries the time.Time of the row a FindByID call
+// addresses, as an earlier list response reported it. It is a hint only:
+// stores whose sort key leads with timestamp use it to prune the lookup and
+// fall back to the id alone when no row matches near it.
+const LogTimestampContextKey lookupContextKey = "logstore-log-timestamp"
+
+// logTimestampFromContext returns the FindByID timestamp hint, if any.
+func logTimestampFromContext(ctx context.Context) (time.Time, bool) {
+	if ctx == nil {
+		return time.Time{}, false
+	}
+	ts, ok := ctx.Value(LogTimestampContextKey).(time.Time)
+	return ts, ok && !ts.IsZero()
+}
+
 // LogStore is the interface for the log store.
 type LogStore interface {
 	// WarpConversationStore is Warp's saved-chat surface. Transcripts live here
 	// rather than in the config store because they are user-generated content
 	// that grows with use, not settings an install depends on.
 	WarpConversationStore
+	// WarpTopicStore is where Warp's topics, and each request's place among
+	// them, are kept. See warptopics.go.
+	WarpTopicStore
 
 	Ping(ctx context.Context) error
 	Create(ctx context.Context, entry *Log) error
@@ -124,6 +144,16 @@ type LogStore interface {
 	// read for jobs that rank every user by spend.
 	GetUserSpend(ctx context.Context, filters SearchFilters) ([]UserSpendEntry, error)
 	GetDimensionRankings(ctx context.Context, filters SearchFilters, dimension RankingDimension) (*DimensionRankingResult, error)
+	// GetDimensionUsage returns each entity's requests, tokens and cost on a rollup
+	// dimension in one read, attributed exactly as GetDimensionRankings attributes
+	// them. It skips what the rankings add for the dashboard (ordering, row limit,
+	// request totals, the "Other" bucket); with compare set, the same read covers
+	// the previous window and fills each entry's Trend.
+	GetDimensionUsage(ctx context.Context, filters SearchFilters, dimension RankingDimension, compare bool) ([]DimensionUsageEntry, error)
+	// GetDimensionModelUsage returns requests and cost per (entity, model,
+	// provider) on a rollup dimension in one read, for callers that need the model
+	// mix of many entities at once.
+	GetDimensionModelUsage(ctx context.Context, filters SearchFilters, dimension RankingDimension) ([]DimensionModelUsageEntry, error)
 	// GetDimensionCostHistogram returns time-bucketed cost data grouped by the specified dimension (e.g., team_id, customer_id).
 	GetDimensionCostHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64, dimension HistogramDimension) (*DimensionCostHistogramResult, error)
 	// GetDimensionTokenHistogram returns time-bucketed token usage grouped by the specified dimension.
@@ -147,6 +177,8 @@ type LogStore interface {
 	DeleteLog(ctx context.Context, id string) error
 	DeleteLogs(ctx context.Context, ids []string) error
 	DeleteLogsBatch(ctx context.Context, cutoff time.Time, batchSize int) (deletedCount int64, err error)
+	// RetentionInterval is how often the retention cleaner runs; it lives here so wrappers that embed LogStore forward it.
+	RetentionInterval() time.Duration
 
 	CreateUserAgentMapping(ctx context.Context, mapping *UserAgentMapping) error
 	UpdateUserAgentMapping(ctx context.Context, id string, mapping *UserAgentMapping) error
@@ -169,8 +201,13 @@ type LogStore interface {
 
 	// MCP Tool Log histogram methods
 	GetMCPHistogram(ctx context.Context, filters MCPToolLogSearchFilters, bucketSizeSeconds int64) (*MCPHistogramResult, error)
+	// GetMCPLatencyHistogram returns time-bucketed latency percentiles of finished MCP tool calls.
+	GetMCPLatencyHistogram(ctx context.Context, filters MCPToolLogSearchFilters, bucketSizeSeconds int64) (*LatencyHistogramResult, error)
 	GetMCPCostHistogram(ctx context.Context, filters MCPToolLogSearchFilters, bucketSizeSeconds int64) (*MCPCostHistogramResult, error)
 	GetMCPTopTools(ctx context.Context, filters MCPToolLogSearchFilters, limit int) (*MCPTopToolsResult, error)
+	// GetMCPToolCountsByDimension returns how many distinct tools each user,
+	// team, customer or business unit called, in one read.
+	GetMCPToolCountsByDimension(ctx context.Context, filters MCPToolLogSearchFilters, dimension RankingDimension) (map[string]int, error)
 
 	// MCP Tool Log methods
 	CreateMCPToolLog(ctx context.Context, entry *MCPToolLog) error
@@ -192,6 +229,8 @@ type LogStore interface {
 	// GetAvailableMCPApps returns distinct backend-detected app labels from MCP tool logs.
 	GetAvailableMCPApps(ctx context.Context, limit int, query string) ([]string, error)
 	GetAvailableMCPVirtualKeys(ctx context.Context, limit int, query string) ([]MCPToolLog, error)
+	// GetDistinctMCPKeyPairs returns one MCP tool log dimension's id/name pairs for the filter sidebar.
+	GetDistinctMCPKeyPairs(ctx context.Context, idCol, nameCol string, limit int, query string) ([]KeyPairResult, error)
 
 	// Agent Gateway log methods.
 	BatchCreateAgentLogsIfNotExists(ctx context.Context, entries []*AgentLog) ([]string, error)
@@ -213,6 +252,22 @@ type LogStore interface {
 	// outlive the aggregate request row shown in the UI.
 	DeleteAgentLogs(ctx context.Context, ids []string) error
 	FlushAgentLogs(ctx context.Context, since time.Time) error
+
+	// Relay log methods (Relay Logs).
+	BatchCreateRelayLogsIfNotExists(ctx context.Context, entries []*RelayLog) ([]string, error)
+	FindRelayLog(ctx context.Context, id string) (*RelayLog, error)
+	FindRelayLogsForDeletion(ctx context.Context, ids []string) ([]*RelayLog, error)
+	UpdateRelayLog(ctx context.Context, id string, updates map[string]any) error
+	SearchRelayLogs(ctx context.Context, filters RelayLogFilters, pagination PaginationOptions) (*RelayLogSearchResult, error)
+	GetRelayLogStats(ctx context.Context, filters RelayLogFilters) (*RelayLogStats, error)
+	GetRelayHistogram(ctx context.Context, filters RelayLogFilters, bucketSizeSeconds int64) (*RelayHistogramResult, error)
+	GetRelayLatencyHistogram(ctx context.Context, filters RelayLogFilters, bucketSizeSeconds int64) (*LatencyHistogramResult, error)
+	GetRelayTopEndpoints(ctx context.Context, filters RelayLogFilters, limit int) (*RelayTopResults, error)
+	GetRelayFilterData(ctx context.Context, dimensions []string, limit int, search string) (*RelayFilterData, error)
+	HasRelayLogs(ctx context.Context) (bool, error)
+	DeleteRelayLogs(ctx context.Context, ids []string) error
+	DeleteRelayLogsBatch(ctx context.Context, cutoff time.Time, batchSize int) (int64, error)
+	FlushRelayLogs(ctx context.Context, since time.Time) error
 
 	// Async Job methods
 	CreateAsyncJob(ctx context.Context, job *AsyncJob) error

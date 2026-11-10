@@ -1,2 +1,1 @@
-- feat: completed-trace adapter for A2A operations (#8575)
-- chore: upgraded core to v1.13.0 and framework to v1.10.0
+- chore: upgraded core to v1.15.2 and framework to v1.12.2

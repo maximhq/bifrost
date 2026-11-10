@@ -798,7 +798,7 @@ func TestPrepareDecisionRequestMultipart(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, mapForm)
 	image := req.Input.Messages[0].Content.Parts[1]
-	assert.Equal(t, "PNG-BYTES", string(image.Data))
+	assert.Equal(t, "PNG-BYTES", string(image.Data.File))
 	assert.Equal(t, "photo", *image.Name)
 	assert.Equal(t, schemas.Typesafe, req.Provider)
 
@@ -877,6 +877,20 @@ func TestPrepareDecisionRequestPicksBodyForm(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "s", *req.Input.Text)
 	assert.NotContains(t, req.ExtraParams, "state", "a stray state must not reach the provider as an extension")
+}
+
+// TestPrepareDecisionRequestPromptCache pins that /v1/decisions reads the
+// prompt-cache settings into typed fields rather than leaving them as
+// extensions, which reach a provider only under the passthrough flag.
+func TestPrepareDecisionRequestPromptCache(t *testing.T) {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.SetBodyString(`{"model":"openai/gpt-6-luna","input":"s","questions":[{"type":"predicate","name":"q"}],"prompt_cache_key":"tenant-1","prompt_cache_options":{"mode":"explicit","ttl":"30m"}}`)
+	req, _, err := prepareDecisionRequest(ctx, nil)
+	require.NoError(t, err)
+	assert.Equal(t, "tenant-1", *req.PromptCacheKey)
+	assert.Equal(t, &schemas.PromptCacheOptions{Mode: schemas.Ptr("explicit"), TTL: schemas.Ptr("30m")}, req.PromptCacheOptions)
+	assert.NotContains(t, req.ExtraParams, "prompt_cache_key")
+	assert.NotContains(t, req.ExtraParams, "prompt_cache_options")
 }
 
 // TestPrepareDecisionMapFormRequestNormalizes pins that a map-form body

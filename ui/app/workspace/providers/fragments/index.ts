@@ -6,6 +6,7 @@ export { DebuggingFormFragment } from "./debuggingFormFragment";
 export { GovernanceFormFragment } from "./governanceFormFragment";
 export { InjectedToolsFormFragment } from "./injectedToolsFormFragment";
 export { OpenAIConfigFormFragment } from "./openaiConfigFormFragment";
+export { PassthroughFormFragment } from "./passthroughFormFragment";
 export { NetworkFormFragment } from "./networkFormFragment";
 export { PerformanceFormFragment } from "./performanceFormFragment";
 export { PromptCacheFormFragment } from "./promptCacheFormFragment";

@@ -137,6 +137,65 @@ func TestAnthropicPassthroughStreamUsage(t *testing.T) {
 	})
 }
 
+// An advisor pass runs on the advisor tool's model and is reported only in usage.iterations[], so the
+// passthrough usage keeps that breakdown next to the folded totals: pricing reads the advisor passes
+// from it. The folded totals stay exactly what they were (executor plus compaction), on both the
+// unary body and the stream, where the cumulative iterations list must not be folded a second time.
+func TestPassthroughUsageKeepsAdvisorIterations(t *testing.T) {
+	const usage = `{"input_tokens":1000,"output_tokens":500,"iterations":[` +
+		`{"type":"compaction","input_tokens":300,"output_tokens":100},` +
+		`{"type":"message","input_tokens":1000,"output_tokens":500},` +
+		`{"type":"advisor_message","model":"claude-opus-4-8","input_tokens":2000,"cache_read_input_tokens":100,"output_tokens":1000}]}`
+	check := func(t *testing.T, u *schemas.BifrostPassthroughUsage) {
+		t.Helper()
+		// Folded totals: executor 1000/500 plus compaction 300/100; the advisor pass is not folded in.
+		anthropicMustLLM(t, u, 1300, 600, 1900)
+		if len(u.Iterations) != 3 {
+			t.Fatalf("iterations = %d, want 3: %+v", len(u.Iterations), u.Iterations)
+		}
+		advisor := u.Iterations[2]
+		if advisor.Type == nil || *advisor.Type != "advisor_message" || advisor.Model == nil || *advisor.Model != "claude-opus-4-8" {
+			t.Fatalf("advisor pass lost its type or model: %+v", advisor)
+		}
+		if advisor.InputTokens != 2100 || advisor.OutputTokens != 1000 || advisor.InputTokensDetails == nil || advisor.InputTokensDetails.CachedReadTokens != 100 {
+			t.Fatalf("advisor pass lost its token breakdown: %+v", advisor)
+		}
+	}
+	t.Run("unary", func(t *testing.T) {
+		check(t, anthropic.ExtractAnthropicPassthroughUsage("/v1/messages", nil, []byte(`{"usage":`+usage+`}`)))
+	})
+	t.Run("stream", func(t *testing.T) {
+		acc := &anthropic.AnthropicPassthroughStreamUsage{}
+		acc.ObserveEvent([]byte(`{"type":"message_start","message":{"usage":{"input_tokens":1000,"output_tokens":1}}}`))
+		delta := []byte(`{"type":"message_delta","usage":` + usage + `}`)
+		check(t, acc.ObserveEvent(delta))
+		check(t, acc.ObserveEvent(delta)) // a repeated cumulative list replaces, never adds
+		check(t, acc.ObserveEvent([]byte(`{"type":"message_stop"}`)))
+	})
+	t.Run("no iterations", func(t *testing.T) {
+		u := anthropic.ExtractAnthropicPassthroughUsage("/v1/messages", nil, []byte(`{"usage":{"input_tokens":10,"output_tokens":5}}`))
+		anthropicMustLLM(t, u, 10, 5, 15)
+		if u.Iterations != nil {
+			t.Fatalf("iterations = %+v, want nil", u.Iterations)
+		}
+	})
+}
+
+func BenchmarkExtractAnthropicPassthroughUsageIterations(b *testing.B) {
+	for _, tc := range []struct{ name, body string }{
+		{"no_iterations", `{"usage":{"input_tokens":1000,"output_tokens":500}}`},
+		{"advisor_iterations", `{"usage":{"input_tokens":1000,"output_tokens":500,"iterations":[{"type":"message","input_tokens":1000,"output_tokens":500},{"type":"advisor_message","model":"claude-opus-4-8","input_tokens":2000,"output_tokens":1000}]}}`},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			body := []byte(tc.body)
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				anthropic.ExtractAnthropicPassthroughUsage("/v1/messages", nil, body)
+			}
+		})
+	}
+}
+
 func TestHasAnthropicPassthroughUsage(t *testing.T) {
 	tests := []struct {
 		name  string

@@ -1102,11 +1102,13 @@ func TestWarpSystemInstructionsOmitSemanticSearchWhenUnavailable(t *testing.T) {
 	// Two question shapes, each with exactly one sample, whichever way the
 	// deployment is set up. A topic question ("did anyone ask about refunds")
 	// goes to semantic search when there is one and to a content_search sample
-	// otherwise. A survey question ("what kinds of tasks was Rohan doing") takes
-	// the query_logs include_content sample in both setups: asked to embed a
-	// description of someone's activity, semantic search scored nothing above
-	// the threshold twice, and the hint then forbade the sample that would have
-	// answered, so Warp told a person with 42k requests that nothing matched.
+	// otherwise. A survey question ("what kinds of tasks was Rohan doing") goes
+	// to list_topics, and with no topics built takes the query_logs
+	// include_content sample in both setups - never semantic search first: asked
+	// to embed a description of someone's activity, semantic search scored
+	// nothing above the threshold twice, and the hint then forbade the sample
+	// that would have answered, so Warp told a person with 42k requests that
+	// nothing matched.
 	withSemantic := systemInstructions(&schemas.WarpConfig{}, true)
 	withoutSemantic := systemInstructions(&schemas.WarpConfig{}, false)
 	for _, prompt := range []string{withSemantic, withoutSemantic} {
@@ -1117,7 +1119,7 @@ func TestWarpSystemInstructionsOmitSemanticSearchWhenUnavailable(t *testing.T) {
 	}
 	require.Contains(t, withSemantic, "do not also call query_logs for the same question",
 		"a topic question takes one sample, the semantic one")
-	require.Contains(t, withSemantic, "takes the query_logs sample described above first",
+	require.Contains(t, withSemantic, "never first to semantic_search_logs",
 		"a survey question does not start with semantic search")
 	require.Contains(t, withoutSemantic, "content_search",
 		"without semantic search a topic question still has a sample to take")
@@ -2156,6 +2158,8 @@ func TestWarpSystemPromptStatesWhatItCanAndCannotDo(t *testing.T) {
 	require.Contains(t, content, `one query_metrics call with interval "hour" or "day" returns the whole series`)
 	require.Contains(t, content, "You only read")
 	require.Contains(t, content, "Nothing carries over between conversations")
+	// "Remember my team" got "I'll use it in this conversation" and no link.
+	require.Contains(t, content, "saying you will use it here does not replace the link")
 	require.Contains(t, content, "Describe your own limits, not Bifrost's")
 	require.Contains(t, content, "Never point to a place in the dashboard")
 }
@@ -2284,3 +2288,11 @@ func TestWarpSystemPromptKnowsItCannotSeeItsOwnPastConversations(t *testing.T) {
 	require.Contains(t, content, "never search the logs for them")
 	require.Contains(t, content, "conversation history in the Warp panel")
 }
+
+// NewAgent's signature is what released callers compile against; topic-aware
+// callers use NewAgentWithTopics instead. Changing either line is a breaking
+// change, and this stops it compiling.
+var (
+	_ func(ChatFunc, CostFunc, LogReader, GovernanceReader, Scope, *schemas.WarpConfig, int, string, ...*SemanticSearcher) *Agent              = NewAgent
+	_ func(ChatFunc, CostFunc, LogReader, GovernanceReader, Scope, *schemas.WarpConfig, int, string, TopicLister, ...*SemanticSearcher) *Agent = NewAgentWithTopics
+)

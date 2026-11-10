@@ -176,6 +176,15 @@ func (s *NotificationService) create(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, status, err.Error())
 		return
 	}
+	lib.RecordAuditChange(ctx, "notification.published", "notification", notification.ID, notification.Title, nil, map[string]any{
+		"audience":     notification.Audience,
+		"role_ids":     notification.RoleIDs,
+		"severity":     notification.Severity,
+		"title":        notification.Title,
+		"message":      notification.Message,
+		"action_label": notification.ActionLabel,
+		"action_path":  notification.ActionPath,
+	})
 	SendJSONWithStatus(ctx, notification, fasthttp.StatusCreated)
 }
 

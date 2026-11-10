@@ -32,6 +32,9 @@ func EnsureNPM() error {
 // RunInstall executes the npm install command for the given harness,
 // streaming output to the provided writers.
 func RunInstall(ctx context.Context, stdout, stderr io.Writer, h harness.Harness) error {
+	if h.InstallPkg == "" {
+		return fmt.Errorf("%s requires manual installation", h.Label)
+	}
 	cmdName, args := InstallCommand(h)
 	cmd := exec.CommandContext(ctx, cmdName, args...)
 	cmd.Stdout = stdout

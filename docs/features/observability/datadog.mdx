@@ -832,7 +832,7 @@ Use [Built-in Observability](/features/observability/default) for:
 
 A2A operations are exported as APM spans through the configured agent or agentless mode. When `enable_llm_obs` is enabled, they also appear as **agent** spans in LLM Observability. The existing service, environment, ML app, session, and tracing configuration applies.
 
-Spans carry the operation name, agent, status, timing, and available task, conversation, transport, and governance attributes. Structured input and output include messages, returned tasks, artifacts, and accumulated streaming output. Streaming updates are available as span events or event metadata. `disable_content_logging`, virtual-key content suppression, and `excluded_attributes` apply before export. Raw HTTP capture is not exported by this connector.
+Spans carry the operation name, agent, status, timing, and available task, conversation, transport, and governance attributes. Structured input and output include messages, returned tasks, artifacts, and accumulated streaming output. Streaming updates are available as span events or event metadata. `disable_content_logging`, virtual-key or project content suppression, and `excluded_attributes` apply before export. Raw HTTP capture is not exported by this connector.
 
 `bifrost.a2a.client.operation.duration` records operation duration in seconds. Its dimensions are `operation`, the available `method` and `upstream_transport`, governance attribution, and `error_type` on failures. Failed and rejected tasks retain their error classification; push callback failures and retries are recorded as separate delivery attempts. Task and session IDs remain span attributes rather than metric tags.
 

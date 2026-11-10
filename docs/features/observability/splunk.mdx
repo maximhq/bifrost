@@ -348,7 +348,7 @@ Unlike `disable_content_logging`, this is per-attribute: everything you have not
 
 A2A traces use the existing HEC connection and event and metric indexes. Each completed trace produces a flattened event. Agent fields are `agent_name`, `a2a_operation`, `a2a_task_id`, `a2a_task_state`, and `conversation_id`, alongside the existing trace, request, session, status, error, latency, and governance fields.
 
-Structured bodies use `input_messages` and `output_messages`, including returned tasks, artifacts, and accumulated streaming output. Events summarize the completed operation; they do not contain the full nested stream-event timeline. `disable_content_logging`, virtual-key content suppression, and span-attribute exclusions apply before the event is built. Raw HTTP capture is not exported to Splunk.
+Structured bodies use `input_messages` and `output_messages`, including returned tasks, artifacts, and accumulated streaming output. Events summarize the completed operation; they do not contain the full nested stream-event timeline. `disable_content_logging`, virtual-key or project content suppression, and span-attribute exclusions apply before the event is built. Raw HTTP capture is not exported to Splunk.
 
 When metrics are enabled, `bifrost.a2a.client.operation.duration` records one duration in seconds per operation. Dimensions include `operation`, the available `method` and `upstream_transport`, governance attribution, and `error_type` on failures. Task and session IDs are event fields rather than metric dimensions.
 

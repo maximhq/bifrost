@@ -31,6 +31,8 @@ const (
 	// Beta headers for various Anthropic features
 	// AnthropicFilesAPIBetaHeader is the required beta header for the Files API.
 	AnthropicFilesAPIBetaHeader = "files-api-2025-04-14"
+	// AnthropicOAuthBetaHeader must accompany every request authenticated with an OAuth bearer.
+	AnthropicOAuthBetaHeader = "oauth-2025-04-20"
 	// AnthropicStructuredOutputsBetaHeader is required for strict tool validation and output_format.
 	AnthropicStructuredOutputsBetaHeader = "structured-outputs-2025-11-13"
 	// AnthropicAdvancedToolUseBetaHeader now gates only allowed_callers (programmatic
@@ -97,12 +99,8 @@ const (
 	AnthropicServerSideFallbackDefaultBetaHeader = "server-side-fallback-2026-07-01"
 	// AnthropicFallbackCreditBetaHeader is required to receive fallback_credit_token
 	// on a refusal and to redeem it on the retry. Unlike server-side fallback this is
-	// supported on every Anthropic-family surface — but AWS ships it under its own date.
+	// supported on every Anthropic-family surface, under the same date.
 	AnthropicFallbackCreditBetaHeader = "fallback-credit-2026-06-01"
-	// AnthropicFallbackCreditBetaHeaderAWS is the same feature's header on the
-	// AWS-operated surfaces (Bedrock Converse and Bedrock Mantle), which are a
-	// release behind the Claude API. See betaHeaderProviderVersion in utils.go.
-	AnthropicFallbackCreditBetaHeaderAWS = "fallback-credit-2026-06-09"
 	// AnthropicMidConversationToolChangesBetaHeader enables tool_addition / tool_removal
 	// blocks inside mid_conv_system messages, so tools can be offered/withdrawn mid-turn
 	// while the tools array (and the cached prefix) stays fixed. Native Anthropic surface
@@ -117,6 +115,12 @@ const (
 	// change from that point on without invalidating the cached prefix. Claude API direct;
 	// Fable/Mythos, Opus 5+, Sonnet 5.5. Other models 400 on the field.
 	AnthropicMidConversationOutputConfigBetaHeader = "mid-conversation-output-config-2026-07-01"
+	// AnthropicThinkingDisplayUpdatesBetaHeader gates thinking.display:"updates": reasoning blocks
+	// come back empty (as with "omitted") while the short progress updates written between tool
+	// calls come back as text. Without it the value is rejected like an unknown display value.
+	AnthropicThinkingDisplayUpdatesBetaHeader = "thinking-display-updates-2026-08-18"
+	// AnthropicThinkingDisplayUpdates is the thinking.display value that needs that beta.
+	AnthropicThinkingDisplayUpdates = "updates"
 
 	// AnthropicComputerUseBetaHeader is required for computer use (version-specific).
 	// computer_20251124 (Opus 4.6, Sonnet 4.6, Opus 4.5) uses the newer beta header.
@@ -150,6 +154,7 @@ const (
 	AnthropicMidConversationToolChangesBetaHeaderPrefix  = "mid-conversation-tool-changes-"
 	AnthropicMidConversationOutputConfigBetaHeaderPrefix = "mid-conversation-output-config-"
 	AnthropicInlineToolsBetaHeaderPrefix                 = "inline-tools-"
+	AnthropicThinkingDisplayUpdatesBetaHeaderPrefix      = "thinking-display-updates-"
 )
 
 // ProviderFeatureSupport defines which Anthropic features a given provider supports.
@@ -169,6 +174,8 @@ const (
 //	     https://docs.aws.amazon.com/bedrock/latest/userguide/model-parameters-anthropic-claude-messages.html
 //	B-platform = https://platform.claude.com/docs/en/build-with-claude/claude-on-amazon-bedrock
 //	V-platform = https://platform.claude.com/docs/en/build-with-claude/claude-on-vertex-ai
+//	V-fast = Claude fast mode on Vertex AI (supported models, locations, no beta header):
+//	     https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/partner-models/claude/fast-mode
 //	Az-platform = https://platform.claude.com/docs/en/build-with-claude/claude-in-microsoft-foundry
 //	MCP-excl = MCP connector explicit Bedrock/Vertex exclusion:
 //	     https://platform.claude.com/docs/en/agents-and-tools/mcp-connector
@@ -189,6 +196,7 @@ type ProviderFeatureSupport struct {
 	Memory                 bool // memory client tool — on Bedrock bundled under context-management-2025-06-27 (cite: A, B-header)
 	TextEditor             bool // text_editor client tool (cite: A)
 	ToolSearch             bool // tool_search server tool + tool.defer_loading — tool-search-tool-2025-10-19 (cite: A). On classic Amazon Bedrock AWS restricts this to InvokeModel/InvokeModelWithResponseStream, never Converse (cite: TS-bedrock); the Bedrock provider routes any request carrying a tool_search tool or defer_loading to InvokeModel (bedrock.go, InvokeModel section), so the flag is on.
+	ToolSearchHeaderless   bool // tool search served without (and rejecting) the tool-search-tool-* beta header
 	MCP                    bool // MCP connector — explicit "not supported on Bedrock/Vertex" (cite: MCP-excl)
 	AdvancedToolUse        bool // advanced-tool-use-2025-11-20 bundle: allowed_callers only as of current docs — defer_loading now has its own beta, see ToolSearch (cite: A)
 	InputExamples          bool // tool.input_examples standalone — tool-examples-2025-10-29. Bedrock supports this independently of the AdvancedToolUse bundle (cite: B-header). On Anthropic / Azure the bundle implicitly covers it.
@@ -203,6 +211,7 @@ type ProviderFeatureSupport struct {
 	ContainerBasic         bool // Bare string-form container id — universally supported (cite: A)
 	Context1M              bool // 1M context window — context-1m-2025-08-07 (cite: A)
 	FastMode               bool // Opus 4.6 research preview — fast-mode-2026-02-01 (cite: A)
+	FastModeHeaderless     bool // speed:"fast" served without the fast-mode-* beta header (Vertex); the header is never added and is stripped if a client sends it
 	RedactThinking         bool // redact-thinking-2026-02-12 (cite: A) — note Bedrock has its own "thinking encryption" (different mechanism)
 	TaskBudgets            bool // output_config.task_budget — task-budgets-2026-03-13 (cite: A)
 	InferenceGeo           bool // inference_geo field — Claude API only; Bedrock/Vertex/Azure use their own region-routing mechanisms (cite: A)
@@ -213,10 +222,11 @@ type ProviderFeatureSupport struct {
 	ServiceTier            bool // service_tier request field — strip when false (Vertex uses headers instead)
 	Diagnostics            bool // diagnostics request field — cache diagnostics (cache-diagnosis-2026-04-07 beta, diagnostics.previous_message_id). Claude API only per docs ("not supported on Amazon Bedrock or Vertex AI"); stripped elsewhere fail-closed. Azure rejects it.
 	ServerSideFallback     bool // native "fallbacks" request field — server-side-fallback-2026-06-01. Claude API only per docs ("not available on Amazon Bedrock, Google Cloud, or Microsoft Foundry").
-	FallbackCredit         bool // fallback_credit_token request field + stop_details credit fields — fallback-credit-2026-06-01 (AWS surfaces: -2026-06-09). Documented on the Claude API, Amazon Bedrock, Google Cloud and Microsoft Foundry, i.e. the inverse of ServerSideFallback.
+	FallbackCredit         bool // fallback_credit_token request field + stop_details credit fields — fallback-credit-2026-06-01. Documented on the Claude API, Amazon Bedrock, Google Cloud and Microsoft Foundry, i.e. the inverse of ServerSideFallback.
 	Safeguards             bool // Opaque Claude auto-mode classifier payloads; supported models require the dangerous-tool-use beta.
 	MidConvToolChanges     bool // tool_addition/tool_removal blocks — mid-conversation-tool-changes-2026-07-01. Native Anthropic surface (Claude API + Bedrock Mantle); Bedrock is Opus 5 only, enforced upstream.
 	MidConvOutputConfig    bool // per-message output_config.effort on role:"system" messages — mid-conversation-output-config-2026-07-01. Claude API direct only; model-gated by DefaultSupportsMidConversationOutputConfig.
+	ThinkingDisplayUpdates bool // thinking.display:"updates" — thinking-display-updates-2026-08-18. Surface-level; SupportsThinkingDisplayUpdates adds the per-model gate.
 }
 
 // ProviderFeatures maps each provider to its supported Anthropic features.
@@ -241,10 +251,12 @@ var ProviderFeatures = map[schemas.ModelProvider]ProviderFeatureSupport{
 		Safeguards:          true, // Claude Code auto-mode classifier; model-gated with the required beta.
 		MidConvToolChanges:  true, // mid-conversation-tool-changes-2026-07-01.
 		MidConvOutputConfig: true, // mid-conversation-output-config-2026-07-01.
+
+		ThinkingDisplayUpdates: true, // thinking-display-updates-2026-08-18.
 	},
 	// Google Vertex AI — cite: A (overview table) and V-platform.
 	// Notably NOT supported: MCP (MCP-excl), Skills/container.skills,
-	// InferenceGeo, FastMode, TaskBudgets, AdvisorTool, StructuredOutputs,
+	// InferenceGeo, TaskBudgets, AdvisorTool, StructuredOutputs,
 	// PromptCachingScope (per A overview "Automatic prompt caching" row =
 	//     claudeApi + azureAiBeta only; not yet rolled out to Vertex),
 	// FilesAPI, WebFetch, CodeExecution, AdvancedToolUse, RedactThinking.
@@ -270,6 +282,9 @@ var ProviderFeatures = map[schemas.ModelProvider]ProviderFeatureSupport{
 		Context1M:              true,
 		EagerInputStreaming:    true, // fine-grained-tool-streaming GA per A
 		FallbackCredit:         true, // fallback credit is documented on Google Cloud
+		ThinkingDisplayUpdates: true, // thinking-display-updates-2026-08-18 — accepted on Vertex (verified live with the beta forwarded; without it display:"updates" 400s).
+		FastMode:               true, // speed:"fast" GA on Vertex for the models DefaultSupportsFastMode lists (Fable 5.2); global/us/eu locations only, Vertex 400s elsewhere (cite: V-fast)
+		FastModeHeaderless:     true, // V-fast: "No anthropic-beta header is required"
 		Safeguards:             true, // Claude Code auto-mode classifier — Vertex shares Anthropic's native request shape via BuildAnthropicResponsesRequestBody, so this is model-gated the same way as Anthropic direct's own model list (Sonnet 5 / Opus 4.7+ / Fable) via SupportsSafeguards.
 	},
 	// AWS Bedrock — cite: A + B-header (definitive beta-header list).
@@ -298,8 +313,10 @@ var ProviderFeatures = map[schemas.ModelProvider]ProviderFeatureSupport{
 		// (advanced-tool-use-2025-11-20) is not listed in B-header; only the
 		// narrow tool-examples-2025-10-29 header is, gated via InputExamples above.
 		ServiceTier:    true, // Bedrock handles service_tier via its own typed conversion
-		FallbackCredit: true, // fallback-credit-2026-06-09 (AWS date) per the Bedrock userguide
+		FallbackCredit: true, // fallback-credit-2026-06-01 per docs.aws.amazon.com/bedrock/latest/userguide/claude-messages-fallback-credit.html; -07-01 also enables it (verified live)
 		Safeguards:     true, // Claude Code auto-mode classifier, model-gated via SupportsSafeguards (Sonnet 5 / Opus 4.7+ / Fable). Converse has no slot for this undocumented Anthropic-native field, so responsesUsesAnthropicInvokePath (bedrock.go) routes a safeguards-bearing request to InvokeModel — same pattern as Compaction/ToolSearch above (#6825) — which reuses this package's builder end to end and this flag applies there.
+
+		ThinkingDisplayUpdates: true, // thinking-display-updates-2026-08-18 — accepted on Converse (verified live, beta in additionalModelRequestFields.anthropic_beta); InvokeModel carries the same body field.
 	},
 	// Bedrock Mantle — same AWS-hosted Claude models as Bedrock, reached through
 	// the native Anthropic Messages surface (/anthropic/v1/messages) instead of
@@ -311,7 +328,7 @@ var ProviderFeatures = map[schemas.ModelProvider]ProviderFeatureSupport{
 	// does support it is "Claude Platform on AWS"
 	// (aws-external-anthropic.{region}.api.aws), a separate Anthropic-operated
 	// endpoint Bifrost does not implement. FallbackCredit is a different feature and
-	// is supported here — see AnthropicFallbackCreditBetaHeaderAWS for the date skew.
+	// is supported here.
 	//
 	// WebSearchNova / CodeExecNova are intentionally OFF here. They exist only to
 	// keep web_search / code_interpreter tools so the Bedrock Converse/Responses
@@ -340,8 +357,9 @@ var ProviderFeatures = map[schemas.ModelProvider]ProviderFeatureSupport{
 		EagerInputStreaming:    true,
 		InputExamples:          true,
 		ServiceTier:            true,
-		FallbackCredit:         true, // fallback-credit-2026-06-09 (AWS date) per the Bedrock userguide
+		FallbackCredit:         true, // same date as Bedrock; the AWS userguide covers bedrock-mantle
 		MidConvToolChanges:     true, // mid-conversation-tool-changes-2026-07-01 — Opus 5 on Bedrock, enforced upstream.
+		ThinkingDisplayUpdates: true, // thinking-display-updates-2026-08-18 — accepted on Mantle (verified live with the beta forwarded).
 		Safeguards:             true,
 	},
 	// Microsoft Azure AI Foundry — cite: A (most features azureAiBeta) +
@@ -362,6 +380,8 @@ var ProviderFeatures = map[schemas.ModelProvider]ProviderFeatureSupport{
 		ServiceTier:    true,
 		FallbackCredit: true, // fallback credit is documented on Microsoft Foundry
 		Safeguards:     true, // Claude Code auto-mode classifier — Azure shares Anthropic's native request shape via BuildAnthropicResponsesRequestBody, model-gated via SupportsSafeguards (Sonnet 5 / Opus 4.7+ / Fable), same as Vertex above.
+
+		ThinkingDisplayUpdates: true, // thinking-display-updates-2026-08-18 — accepted on Foundry (verified live with the beta forwarded).
 	},
 	schemas.DeepSeek: {
 		WebSearch:              true,
@@ -432,6 +452,17 @@ var ProviderFeatures = map[schemas.ModelProvider]ProviderFeatureSupport{
 	// through the capability datasheet.
 	schemas.VLLM: {},
 	schemas.SGL:  {},
+	// GitHub documents no feature list, so the cells are what the first-party
+	// VS Code Copilot Chat client sends. Tool search works with no beta header or
+	// advanced-tool-use-2025-11-20, but tool-search-tool-2025-10-19 is a 400.
+	schemas.GithubCopilot: {
+		ToolSearch:             true,
+		ToolSearchHeaderless:   true,
+		AdvancedToolUse:        true,
+		ContextEditing:         true,
+		ContextManagementField: true,
+		InterleavedThinking:    true,
+	},
 }
 
 // ==================== REQUEST TYPES ====================
@@ -747,7 +778,7 @@ type AnthropicDiagnostics struct {
 type AnthropicThinking struct {
 	Type         string  `json:"type"`                    // "enabled", "disabled", "adaptive", or "between_tools"
 	BudgetTokens *int    `json:"budget_tokens,omitempty"` // Only for type "enabled" (not supported on Opus 4.7+)
-	Display      *string `json:"display,omitempty"`       // "summarized" | "omitted" — controls whether thinking content appears in the response (Opus 4.7+)
+	Display      *string `json:"display,omitempty"`       // "summarized" | "omitted" | "updates" (beta) — controls whether thinking content appears in the response (Opus 4.7+)
 }
 
 type ContextManagementEditType string
@@ -2103,6 +2134,8 @@ type AnthropicUsage struct {
 	Speed                    *string                       `json:"speed,omitempty"`                 // "fast" or "standard" — which speed was actually served (fast mode research preview)
 	InferenceGeo             *string                       `json:"inference_geo,omitempty"`         // the geographic region for inference processing. If not specified, the workspace's default_inference_geo is used.
 	Iterations               []AnthropicUsage              `json:"iterations,omitempty"`            // Iterations statistics
+
+	absentPromptCounters uint8 // prompt counters to render as absent, not zero; see MarshalJSON in streamdeltausage.go
 }
 
 // AnthropicOutputTokensDetails breaks down output_tokens for extended-thinking responses.
