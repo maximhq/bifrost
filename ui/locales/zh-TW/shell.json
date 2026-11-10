@@ -353,6 +353,12 @@
 		"descriptionStuckEnterprise": "推出仍在進行中。稍後重新加載以再次檢查。如果这不起作用，请联系 Bifrost 部署的管理员。",
 		"waitingEnterprise": "等待發布完成..."
 	},
+	"assetLoadFailed": {
+		"bannerTitle": "部分控制台內容無法載入",
+		"bannerDescription": "請檢查網路、代理伺服器或瀏覽器擴充功能，然後重新載入。",
+		"screenTitle": "此頁面無法載入",
+		"screenDescription": "瀏覽器無法下載部分控制台檔案，可能是代理伺服器、防火牆或瀏覽器擴充功能封鎖了它們。請檢查網路後重新載入。"
+	},
 	"onboarding": {
 		"expandSetupChecklist": "展開設定清單",
 		"setupChecklist": "設定清單",

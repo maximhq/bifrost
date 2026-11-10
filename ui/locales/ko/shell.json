@@ -353,6 +353,12 @@
 		"descriptionStuckEnterprise": "출시가 아직 진행 중입니다. 잠시 후 다시 확인하려면 새로고침하세요. 그래도 문제가 해결되지 않으면 Bifrost 배포 관리자에게 문의하세요.",
 		"waitingEnterprise": "출시가 완료되기를 기다리는 중…"
 	},
+	"assetLoadFailed": {
+		"bannerTitle": "대시보드 일부를 불러오지 못했습니다",
+		"bannerDescription": "네트워크, 프록시 또는 브라우저 확장 프로그램을 확인한 후 새로고침하세요.",
+		"screenTitle": "이 페이지를 불러오지 못했습니다",
+		"screenDescription": "브라우저가 일부 대시보드 파일을 다운로드하지 못했습니다. 프록시, 방화벽 또는 브라우저 확장 프로그램이 차단하고 있을 수 있습니다. 네트워크를 확인하고 새로고침하세요."
+	},
 	"onboarding": {
 		"expandSetupChecklist": "설정 체크리스트 펼치기",
 		"setupChecklist": "설정 체크리스트",
