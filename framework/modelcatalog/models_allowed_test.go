@@ -3,6 +3,7 @@ package modelcatalog
 import (
 	"fmt"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -131,6 +132,137 @@ func TestIsModelAllowedForProvider_KeyAliases(t *testing.T) {
 	}
 }
 
+// A key the request's key restriction excludes is never selected, so its missing alias does not veto
+// the name, and a restriction that allows no key admits no alias (#6620 review: the virtual key's
+// own key_ids were ignored by the every-key rule).
+func TestKeyAliasesResolveToAllowed_KeyIDs(t *testing.T) {
+	mc := &ModelCatalog{
+		datasheet: datasheet.NewTestStore(nil),
+		live:      live.New(nil),
+		keyconf:   keyconfig.New(nil),
+		done:      make(chan struct{}),
+	}
+	mc.initCaches()
+	const canonical = "us.anthropic.claude-sonnet-4-6"
+	anyModel := schemas.WhiteList{"*"}
+	sonnet := schemas.KeyAliases{"claude-sonnet": {ModelID: canonical}}
+	keys := []schemas.Key{
+		{ID: "aliased", Aliases: sonnet, Models: anyModel},
+		{ID: "plain", Models: anyModel},
+	}
+	allowed := schemas.WhiteList{canonical}
+	for _, tc := range []struct {
+		name    string
+		keyIDs  schemas.WhiteList
+		allowed schemas.WhiteList
+		want    bool
+	}{
+		{"every key: the plain key would send the name as written", allKeyIDs, allowed, false},
+		{"restricted to the aliased key: admitted", schemas.WhiteList{"aliased"}, allowed, true},
+		{"restricted to the plain key: refused", schemas.WhiteList{"plain"}, allowed, false},
+		{"restricted to no key: nothing is admitted", schemas.WhiteList{}, allowed, false},
+		{"restricted to an unknown key: nothing is admitted", schemas.WhiteList{"gone"}, allowed, false},
+		{"a wildcard allowlist is not decided here", schemas.WhiteList{"aliased"}, schemas.WhiteList{"*"}, false},
+		{"an empty allowlist allows nothing", schemas.WhiteList{"aliased"}, schemas.WhiteList{}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := mc.KeyAliasesResolveToAllowed(schemas.Bedrock, "claude-sonnet", keys, tc.keyIDs, tc.allowed); got != tc.want {
+				t.Errorf("KeyAliasesResolveToAllowed(keyIDs=%v) = %v, want %v", tc.keyIDs, got, tc.want)
+			}
+		})
+	}
+	// The whole-provider check keeps its every-key rule.
+	if mc.IsModelAllowedForProvider(schemas.Bedrock, "claude-sonnet", &configstore.ProviderConfig{Keys: keys}, allowed) {
+		t.Error("IsModelAllowedForProvider admitted an alias a selectable key lacks")
+	}
+
+	// KeyAliasTargets reads only the keys the restriction allows.
+	other := []schemas.Key{
+		{ID: "a", Aliases: sonnet, Models: anyModel},
+		{ID: "b", Aliases: schemas.KeyAliases{"claude-sonnet": {ModelID: "us.anthropic.claude-opus-4-6"}}, Models: anyModel},
+	}
+	for _, tc := range []struct {
+		keyIDs schemas.WhiteList
+		want   []string
+	}{
+		{allKeyIDs, []string{canonical, "us.anthropic.claude-opus-4-6"}},
+		{schemas.WhiteList{"a"}, []string{canonical}},
+		{schemas.WhiteList{"b"}, []string{"us.anthropic.claude-opus-4-6"}},
+		{schemas.WhiteList{}, nil},
+	} {
+		var got []string
+		KeyAliasTargets("claude-sonnet", other, tc.keyIDs, func(target string) { got = append(got, target) })
+		if !slices.Equal(got, tc.want) {
+			t.Errorf("KeyAliasTargets(keyIDs=%v) = %v, want %v", tc.keyIDs, got, tc.want)
+		}
+	}
+}
+
+// foldName must agree with strings.EqualFold, or the alias-name index would reject a name that alias
+// resolution accepts: the long s and the Kelvin sign fold with ASCII letters, sigma has three forms,
+// the dotted and dotless i of Turkish fold with nothing ASCII, and invalid bytes decode alike.
+func TestFoldNameAgreesWithEqualFold(t *testing.T) {
+	names := []string{
+		"sonnet", "SONNET", "Sonnet", "\u017fonnet", "\u017fONNET", "kelvin", "\u212aelvin", "KELVIN",
+		"\u03a3\u03c3\u03c2", "\u03c3\u03c3\u03c3", "\u03c2\u03a3\u03c3", "\u0130stanbul", "istanbul", "\u0131stanbul", "Istanbul",
+		"claude-sonnet-4.6", "Claude-Sonnet-4.6", "a\xffb", "a\xfeb", "", "\u00df", "SS", "\u1e9e",
+	}
+	for _, a := range names {
+		for _, b := range names {
+			if got, want := foldName(a) == foldName(b), strings.EqualFold(a, b); got != want {
+				t.Errorf("foldName(%q) == foldName(%q) is %v, strings.EqualFold is %v", a, b, got, want)
+			}
+		}
+	}
+	if s := "claude-sonnet-4.6"; foldName(s) != s {
+		t.Errorf("an already-folded name is returned as is")
+	}
+}
+
+// MayBeKeyAlias answers from an index of the provider's alias names, rebuilt when the provider's
+// configuration publishes a new keys slice, and never rejects a name some key would resolve.
+func TestMayBeKeyAlias(t *testing.T) {
+	const provider = schemas.ModelProvider("alias-index-test")
+	first := []schemas.Key{
+		{ID: "a", Aliases: schemas.KeyAliases{"Claude-Sonnet": {ModelID: "x"}}},
+		{ID: "b"},
+	}
+	for _, tc := range []struct {
+		model string
+		want  bool
+	}{
+		{"Claude-Sonnet", true},
+		{"claude-sonnet", true}, // resolution is case-insensitive
+		{"CLAUDE-SONNET", true},
+		{"claude-opus", false},
+		{"claude-sonnet-4-6", false},
+	} {
+		if got := MayBeKeyAlias(provider, tc.model, first); got != tc.want {
+			t.Errorf("MayBeKeyAlias(%q) = %v, want %v", tc.model, got, tc.want)
+		}
+	}
+	// An edited key publishes a new slice: the index follows it, and the old names are gone.
+	second := []schemas.Key{{ID: "a", Aliases: schemas.KeyAliases{"claude-opus": {ModelID: "y"}}}, {ID: "b"}}
+	if !MayBeKeyAlias(provider, "claude-opus", second) || MayBeKeyAlias(provider, "claude-sonnet", second) {
+		t.Error("the index did not follow the new keys slice")
+	}
+	// So does a slice of another length sharing the first one's array.
+	if MayBeKeyAlias(provider, "claude-opus", second[1:]) {
+		t.Error("a narrowed slice was answered from the whole slice's index")
+	}
+	if MayBeKeyAlias(provider, "claude-opus", nil) {
+		t.Error("no keys carry no alias")
+	}
+	// Every name an alias scan resolves passes the index.
+	for _, model := range []string{"Claude-Sonnet", "claude-sonnet", "CLAUDE-SONNET"} {
+		resolved := false
+		KeyAliasTargets(model, []schemas.Key{{ID: "a", Models: schemas.WhiteList{"*"}, Aliases: first[0].Aliases}}, allKeyIDs, func(string) { resolved = true })
+		if resolved && !MayBeKeyAlias(provider, model, first) {
+			t.Errorf("%q resolves but the index rejects it", model)
+		}
+	}
+}
+
 // BenchmarkIsModelAllowedForProvider_ExplicitList is the per-request model check against an
 // explicit allowlist. "direct" is the common case and must not change; "alias" and "blocked" are
 // the paths the key-alias lookup adds work to, on a provider with 3 keys of 20 aliases each.
@@ -177,7 +309,7 @@ func TestKeyAliasTargets(t *testing.T) {
 	off := false
 	collect := func(model string, keys []schemas.Key) []string {
 		var got []string
-		KeyAliasTargets(model, keys, func(target string) { got = append(got, target) })
+		KeyAliasTargets(model, keys, allKeyIDs, func(target string) { got = append(got, target) })
 		return got
 	}
 	sonnet := schemas.KeyAliases{"claude-sonnet": {ModelID: "us.anthropic.claude-sonnet-4-6"}}

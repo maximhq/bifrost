@@ -317226,6 +317226,525 @@
           }
         }
       ]
+    },
+    {
+      "name": "334. Key aliases follow the keys that can serve the request (deepseek alias-keys) (#6620 / PR #8528)",
+      "item": [
+        {
+          "name": "deepseek alias-keys setup: create a virtual key over every key that allows only deepseek-v4-flash - alias-keys - #6620",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The run id keeps parallel runs against one server from colliding on the key name.",
+                  "function startFresh() {",
+                  "  pm.collectionVariables.unset('aliasKeysVkId');",
+                  "  pm.collectionVariables.unset('aliasKeysVkValue');",
+                  "  pm.collectionVariables.set('aliasKeysVkName', 'harness-alias-keys-run-' + Date.now() + '-' + pm.variables.replaceIn('{{$guid}}'));",
+                  "}",
+                  "// An object a previous run failed to delete is retained; delete it before this run replaces it.",
+                  "var staleId = pm.collectionVariables.get('aliasKeysVkId');",
+                  "if (!staleId) {",
+                  "  startFresh();",
+                  "} else {",
+                  "  var headers = {};",
+                  "  var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "  if (managementToken) { headers.Authorization = 'Bearer ' + managementToken; }",
+                  "  pm.sendRequest({url: pm.variables.replaceIn('{{baseUrl}}') + '/api/governance/virtual-keys/' + staleId, method: 'DELETE', header: headers}, function (err, response) {",
+                  "    var deleted = !err && (response.code === 200 || response.code === 404);",
+                  "    pm.test('alias-keys: the retained virtual key from an earlier run is deleted', function () {",
+                  "      pm.expect(err, 'stale virtual key ' + staleId + ' delete errored: ' + err).to.equal(null);",
+                  "      pm.expect([200, 404], 'stale virtual key ' + staleId + ' not deleted: ' + (response && response.text())).to.include(response.code);",
+                  "    });",
+                  "    if (deleted) { startFresh(); return; }",
+                  "    pm.collectionVariables.unset('aliasKeysVkValue');",
+                  "    pm.execution.skipRequest();",
+                  "  });",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('alias-keys: virtual key created', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var vk = {};",
+                  "try { vk = pm.response.json().virtual_key || {}; } catch (e) { vk = {}; }",
+                  "pm.test('alias-keys: the virtual key has an id and a value', function () {",
+                  "  pm.expect(vk.id, 'no id: ' + pm.response.text()).to.be.a('string').and.not.equal('');",
+                  "  pm.expect(vk.value, 'no value: ' + pm.response.text()).to.be.a('string').and.not.equal('');",
+                  "});",
+                  "if (vk.id) { pm.collectionVariables.set('aliasKeysVkId', vk.id); }",
+                  "if (vk.value) { pm.collectionVariables.set('aliasKeysVkValue', vk.value); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"{{aliasKeysVkName}}\",\"is_active\":true,\"provider_configs\":[{\"provider\":\"deepseek\",\"key_ids\":[\"*\"],\"allowed_models\":[\"deepseek-v4-flash\"]}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/governance/virtual-keys"
+          }
+        },
+        {
+          "name": "deepseek alias-keys setup: add a key that maps deepseek-v4-flash-anthropic to deepseek-v4-pro - alias-keys - #6620",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get('aliasKeysVkValue')) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function startFresh() {",
+                  "  pm.collectionVariables.unset('aliasKeysConflictKeyId');",
+                  "  pm.collectionVariables.set('aliasKeysConflictKeyName', 'harness-alias-keys-conflict-' + Date.now() + '-' + pm.variables.replaceIn('{{$guid}}'));",
+                  "}",
+                  "// An object a previous run failed to delete is retained; delete it before this run replaces it.",
+                  "var staleId = pm.collectionVariables.get('aliasKeysConflictKeyId');",
+                  "if (!staleId) {",
+                  "  startFresh();",
+                  "} else {",
+                  "  var headers = {};",
+                  "  var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "  if (managementToken) { headers.Authorization = 'Bearer ' + managementToken; }",
+                  "  pm.sendRequest({url: pm.variables.replaceIn('{{baseUrl}}') + '/api/providers/deepseek/keys/' + staleId, method: 'DELETE', header: headers}, function (err, response) {",
+                  "    var deleted = !err && (response.code === 200 || response.code === 404);",
+                  "    pm.test('alias-keys: the retained conflicting key from an earlier run is deleted', function () {",
+                  "      pm.expect(err, 'stale conflicting key ' + staleId + ' delete errored: ' + err).to.equal(null);",
+                  "      pm.expect([200, 404], 'stale conflicting key ' + staleId + ' not deleted: ' + (response && response.text())).to.include(response.code);",
+                  "    });",
+                  "    if (deleted) { startFresh(); return; }",
+                  "    pm.execution.skipRequest();",
+                  "  });",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('alias-keys: conflicting key added', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var key = {};",
+                  "try { key = pm.response.json() || {}; } catch (e) { key = {}; }",
+                  "pm.test('alias-keys: the conflicting key has an id', function () {",
+                  "  pm.expect(key.id, 'no id: ' + pm.response.text()).to.be.a('string').and.not.equal('');",
+                  "});",
+                  "if (key.id) { pm.collectionVariables.set('aliasKeysConflictKeyId', key.id); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"{{aliasKeysConflictKeyName}}\",\"value\":\"sk-harness-unused-key\",\"models\":[\"deepseek-v4-flash-anthropic\"],\"weight\":1,\"aliases\":{\"deepseek-v4-flash-anthropic\":{\"model_id\":\"deepseek-v4-pro\"}}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/providers/deepseek/keys"
+          }
+        },
+        {
+          "name": "[EXPECT-403] deepseek/deepseek-v4-flash-anthropic is refused while a selectable key maps it to deepseek-v4-pro - alias-keys - #6620",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get('aliasKeysConflictKeyId')) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('alias-keys: an alias some selectable key turns into a model the virtual key does not allow is refused', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(403);",
+                  "  pm.expect(pm.response.text(), 'not a governance refusal: ' + pm.response.text()).to.contain('model_blocked');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{aliasKeysVkValue}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash-anthropic\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say hello in exactly one word.\"\n    }\n  ],\n  \"max_tokens\": 16\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/v1/chat/completions"
+          }
+        },
+        {
+          "name": "deepseek/deepseek-v4-flash-anthropic is admitted when the request pins the key that maps it to deepseek-v4-flash - alias-keys - #6620",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get('aliasKeysConflictKeyId')) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('alias-keys: a pinned key is the only key whose alias counts', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var body = {};",
+                  "  try { body = pm.response.json(); } catch (e) { body = {}; }",
+                  "  pm.expect(pm.response.text(), 'blocked by governance: ' + pm.response.text()).to.not.contain('model_blocked');",
+                  "  pm.expect(body.choices, 'no choices: ' + pm.response.text()).to.be.an('array').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{aliasKeysVkValue}}"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "DeepSeek API Key"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash-anthropic\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say hello in exactly one word.\"\n    }\n  ],\n  \"max_tokens\": 16\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/v1/chat/completions"
+          }
+        },
+        {
+          "name": "deepseek alias-keys setup: create a virtual key restricted to the key that maps the alias to deepseek-v4-flash - alias-keys - #6620",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get('aliasKeysConflictKeyId')) { pm.execution.skipRequest(); }",
+                  "function startFresh() {",
+                  "  pm.collectionVariables.unset('aliasKeysRestrictedVkId');",
+                  "  pm.collectionVariables.unset('aliasKeysRestrictedVkValue');",
+                  "  pm.collectionVariables.set('aliasKeysRestrictedVkName', 'harness-alias-keys-restricted-' + Date.now() + '-' + pm.variables.replaceIn('{{$guid}}'));",
+                  "  // The profile key's id is assigned at load, so it is looked up by name.",
+                  "  pm.collectionVariables.unset('aliasKeysProfileKeyId');",
+                  "  var listHeaders = {};",
+                  "  var listToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "  if (listToken) { listHeaders.Authorization = 'Bearer ' + listToken; }",
+                  "  pm.sendRequest({url: pm.variables.replaceIn('{{baseUrl}}') + '/api/providers/deepseek/keys', method: 'GET', header: listHeaders}, function (err, response) {",
+                  "    var keys = [];",
+                  "    try { keys = (response && response.json().keys) || []; } catch (e) { keys = []; }",
+                  "    var profile = keys.filter(function (k) { return k.name === 'DeepSeek API Key'; })[0];",
+                  "    pm.test('alias-keys: the profile key is found by name', function () {",
+                  "      pm.expect(err, 'key list errored: ' + err).to.equal(null);",
+                  "      pm.expect(profile && profile.id, 'no key named DeepSeek API Key: ' + (response && response.text())).to.be.a('string').and.not.equal('');",
+                  "    });",
+                  "    if (!profile || !profile.id) { pm.execution.skipRequest(); return; }",
+                  "    pm.collectionVariables.set('aliasKeysProfileKeyId', profile.id);",
+                  "  });",
+                  "}",
+                  "// An object a previous run failed to delete is retained; delete it before this run replaces it.",
+                  "var staleId = pm.collectionVariables.get('aliasKeysRestrictedVkId');",
+                  "if (!staleId) {",
+                  "  startFresh();",
+                  "} else {",
+                  "  var headers = {};",
+                  "  var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "  if (managementToken) { headers.Authorization = 'Bearer ' + managementToken; }",
+                  "  pm.sendRequest({url: pm.variables.replaceIn('{{baseUrl}}') + '/api/governance/virtual-keys/' + staleId, method: 'DELETE', header: headers}, function (err, response) {",
+                  "    var deleted = !err && (response.code === 200 || response.code === 404);",
+                  "    pm.test('alias-keys: the retained virtual key from an earlier run is deleted', function () {",
+                  "      pm.expect(err, 'stale virtual key ' + staleId + ' delete errored: ' + err).to.equal(null);",
+                  "      pm.expect([200, 404], 'stale virtual key ' + staleId + ' not deleted: ' + (response && response.text())).to.include(response.code);",
+                  "    });",
+                  "    if (deleted) { startFresh(); return; }",
+                  "    pm.collectionVariables.unset('aliasKeysRestrictedVkValue');",
+                  "    pm.execution.skipRequest();",
+                  "  });",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('alias-keys: virtual key created', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var vk = {};",
+                  "try { vk = pm.response.json().virtual_key || {}; } catch (e) { vk = {}; }",
+                  "pm.test('alias-keys: the virtual key has an id and a value', function () {",
+                  "  pm.expect(vk.id, 'no id: ' + pm.response.text()).to.be.a('string').and.not.equal('');",
+                  "  pm.expect(vk.value, 'no value: ' + pm.response.text()).to.be.a('string').and.not.equal('');",
+                  "});",
+                  "if (vk.id) { pm.collectionVariables.set('aliasKeysRestrictedVkId', vk.id); }",
+                  "if (vk.value) { pm.collectionVariables.set('aliasKeysRestrictedVkValue', vk.value); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"{{aliasKeysRestrictedVkName}}\",\"is_active\":true,\"provider_configs\":[{\"provider\":\"deepseek\",\"key_ids\":[\"{{aliasKeysProfileKeyId}}\"],\"allowed_models\":[\"deepseek-v4-flash\"]}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/governance/virtual-keys"
+          }
+        },
+        {
+          "name": "deepseek/deepseek-v4-flash-anthropic is admitted through a virtual key whose key_ids exclude the conflicting key - alias-keys - #6620",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get('aliasKeysRestrictedVkValue')) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('alias-keys: a key the virtual key may not use does not veto the alias', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var body = {};",
+                  "  try { body = pm.response.json(); } catch (e) { body = {}; }",
+                  "  pm.expect(pm.response.text(), 'blocked by governance: ' + pm.response.text()).to.not.contain('model_blocked');",
+                  "  pm.expect(body.choices, 'no choices: ' + pm.response.text()).to.be.an('array').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{aliasKeysRestrictedVkValue}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash-anthropic\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say hello in exactly one word.\"\n    }\n  ],\n  \"max_tokens\": 16\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/v1/chat/completions"
+          }
+        },
+        {
+          "name": "deepseek alias-keys cleanup: delete the restricted virtual key - alias-keys - #6620",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Nothing was created, so there is nothing to delete.",
+                  "if (!pm.collectionVariables.get('aliasKeysRestrictedVkId')) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('alias-keys: deleted', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "// Keep the id when the object is still there, so the next run retries the delete.",
+                  "if (pm.response.code === 200 || pm.response.code === 404) {",
+                  "  pm.collectionVariables.unset('aliasKeysRestrictedVkId');",
+                  "  pm.collectionVariables.unset('aliasKeysRestrictedVkValue');",
+                  "  pm.collectionVariables.unset('aliasKeysProfileKeyId');",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": "{{baseUrl}}/api/governance/virtual-keys/{{aliasKeysRestrictedVkId}}"
+          }
+        },
+        {
+          "name": "deepseek alias-keys cleanup: delete the conflicting key - alias-keys - #6620",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Nothing was created, so there is nothing to delete.",
+                  "if (!pm.collectionVariables.get('aliasKeysConflictKeyId')) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('alias-keys: deleted', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "// Keep the id when the object is still there, so the next run retries the delete.",
+                  "if (pm.response.code === 200 || pm.response.code === 404) {",
+                  "  pm.collectionVariables.unset('aliasKeysConflictKeyId');",
+                  "  pm.collectionVariables.unset('aliasKeysConflictKeyName');",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": "{{baseUrl}}/api/providers/deepseek/keys/{{aliasKeysConflictKeyId}}"
+          }
+        },
+        {
+          "name": "deepseek alias-keys cleanup: delete the virtual key - alias-keys - #6620",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Nothing was created, so there is nothing to delete.",
+                  "if (!pm.collectionVariables.get('aliasKeysVkId')) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('alias-keys: deleted', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "// Keep the id when the object is still there, so the next run retries the delete.",
+                  "if (pm.response.code === 200 || pm.response.code === 404) {",
+                  "  pm.collectionVariables.unset('aliasKeysVkId');",
+                  "  pm.collectionVariables.unset('aliasKeysVkValue');",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": "{{baseUrl}}/api/governance/virtual-keys/{{aliasKeysVkId}}"
+          }
+        }
+      ]
     }
   ]
 }

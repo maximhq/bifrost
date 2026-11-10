@@ -1067,41 +1067,98 @@ func (p *GovernancePlugin) ResolveAccess(ctx *schemas.BifrostContext) (schemas.A
 	if len(bases) == 0 && scoping == nil {
 		return nil, nil
 	}
-	access := grant.NewAccess(bases, scoping, mode, p.modelMatcher()).WithAliasTargets(p.aliasTargets)
+	access := p.newAccess(ctx, bases, scoping, mode)
 	g.SetAccess(access)
 	return access, nil
+}
+
+// newAccess folds the permits into an access whose model checks resolve key aliases the way key
+// selection will for this request: through the model catalog, over the keys that can serve it.
+func (p *GovernancePlugin) newAccess(ctx *schemas.BifrostContext, bases []schemas.Permit, scoping schemas.Permit, mode grant.CompositionMode) *grant.Access {
+	return grant.NewAccess(bases, scoping, mode, nil).
+		WithKeyScopedMatcher(p.modelMatcher(ctx)).
+		WithAliasTargets(p.aliasTargets(ctx))
 }
 
 // modelMatcher is how an access resolves a model name against a provider's allowed-models list:
 // through the model catalog, with the provider's own configuration, so cross-provider naming and
 // provider-prefixed entries resolve exactly as they do everywhere else. Without a catalog, names
-// are matched as written.
-func (p *GovernancePlugin) modelMatcher() grant.ModelMatcher {
+// are matched as written. A name that only a key alias makes allowed is judged over the keys that
+// can serve this request (see allowedThroughKeys).
+func (p *GovernancePlugin) modelMatcher(ctx *schemas.BifrostContext) grant.KeyScopedModelMatcher {
 	if p.modelCatalog == nil {
 		return nil
 	}
-	return func(provider, model string, allowed []string) bool {
+	return func(provider, model string, allowed, keyIDs []string) bool {
 		var providerConfig *configstore.ProviderConfig
 		if p.inMemoryStore != nil {
 			if config, ok := configuredProvider(p.inMemoryStore, schemas.ModelProvider(provider)); ok {
 				providerConfig = &config
 			}
 		}
-		return p.modelCatalog.IsModelAllowedForProvider(schemas.ModelProvider(provider), model, providerConfig, schemas.WhiteList(allowed))
+		return allowedThroughKeys(contextOf(ctx), p.modelCatalog, schemas.ModelProvider(provider), model, providerConfig, allowed, keyIDs)
 	}
 }
 
+// contextOf is ctx as a context.Context, nil when ctx is. The access closures hold the concrete
+// pointer, a word smaller than the interface, since they are built for every request.
+func contextOf(ctx *schemas.BifrostContext) context.Context {
+	if ctx == nil {
+		return nil
+	}
+	return ctx
+}
+
+// allowedThroughKeys is IsModelAllowedForProvider with the key-alias rule held to the keys key
+// selection can pick for this request: only keys the permit's key restriction allows, and the pinned
+// key when the request pins one. providerConfig must be the caller's own copy.
+//
+// The pin is consulted only when the unpinned keys refuse the alias. Narrowing a set of keys that
+// all map the name to an allowed model can only turn the answer into a refusal where the pin names
+// no key that can serve the name, and core refuses that request at key selection anyway; so the
+// common alias request reads nothing from the context. A request that runs as written (a direct key,
+// skip key selection) never has an alias resolved, but is admitted on the literal access (see
+// literalAccessFor), so this access only widens what such a request may be told it reaches.
+func allowedThroughKeys(ctx context.Context, catalog *modelcatalog.ModelCatalog, provider schemas.ModelProvider, model string, providerConfig *configstore.ProviderConfig, allowed, keyIDs []string) bool {
+	if providerConfig == nil || !modelcatalog.HasKeyAliases(providerConfig.Keys) {
+		return catalog.IsModelAllowedForProvider(provider, model, providerConfig, schemas.WhiteList(allowed))
+	}
+	keys := providerConfig.Keys
+	providerConfig.Keys = nil // the direct match only; the alias rule runs below over the servable keys
+	if catalog.IsModelAllowedForProvider(provider, model, providerConfig, schemas.WhiteList(allowed)) {
+		return true
+	}
+	if !modelcatalog.MayBeKeyAlias(provider, model, keys) {
+		return false
+	}
+	if catalog.KeyAliasesResolveToAllowed(provider, model, keys, schemas.WhiteList(keyIDs), schemas.WhiteList(allowed)) {
+		return true
+	}
+	pinned, ok := pinnedKeys(ctx, keys)
+	if !ok || len(pinned) == len(keys) || runsAsWritten(ctx) {
+		return false
+	}
+	return catalog.KeyAliasesResolveToAllowed(provider, model, pinned, schemas.WhiteList(keyIDs), schemas.WhiteList(allowed))
+}
+
 // aliasTargets is how an access learns which models a requested name can become through the
-// provider's key aliases, resolved only at key selection.
-func (p *GovernancePlugin) aliasTargets(provider, model string, visit func(target string)) {
-	if p.inMemoryStore == nil {
-		return
+// provider's key aliases, resolved only at key selection: over the pinned key when the request pins
+// one, and over the keys the permit allows. A request that runs as written becomes nothing else.
+func (p *GovernancePlugin) aliasTargets(ctx *schemas.BifrostContext) grant.AliasTargets {
+	return func(provider, model string, keyIDs []string, visit func(target string)) {
+		if p.inMemoryStore == nil {
+			return
+		}
+		cfg, ok := configuredProvider(p.inMemoryStore, schemas.ModelProvider(provider))
+		if !ok || !modelcatalog.HasKeyAliases(cfg.Keys) || !modelcatalog.MayBeKeyAlias(schemas.ModelProvider(provider), model, cfg.Keys) || runsAsWritten(contextOf(ctx)) {
+			return
+		}
+		keys, ok := pinnedKeys(contextOf(ctx), cfg.Keys)
+		if !ok {
+			return
+		}
+		modelcatalog.KeyAliasTargets(model, keys, schemas.WhiteList(keyIDs), visit)
 	}
-	cfg, ok := configuredProvider(p.inMemoryStore, schemas.ModelProvider(provider))
-	if !ok || !modelcatalog.HasKeyAliases(cfg.Keys) {
-		return
-	}
-	modelcatalog.KeyAliasTargets(model, cfg.Keys, visit)
 }
 
 // resolveLimits settles the limits an attempt answers to, now that the provider and model it will
@@ -2047,7 +2104,7 @@ func (p *GovernancePlugin) PreA2AHook(ctx *schemas.BifrostContext, req *schemas.
 			scoping = access.Scoping()
 			mode = grant.CompositionMode(access.Mode())
 		}
-		access = grant.NewAccess(bases, scoping, mode, p.modelMatcher()).WithAliasTargets(p.aliasTargets)
+		access = p.newAccess(ctx, bases, scoping, mode)
 	}
 	if refusal := unusablePermit(access); refusal != nil {
 		return deny(refusal.Decision, refusal.Reason)

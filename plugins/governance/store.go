@@ -2439,10 +2439,10 @@ func (gs *LocalGovernanceStore) aliasTargets(ctx context.Context, provider *stri
 	if provider == nil || gs.inMemoryStore == nil {
 		return nil
 	}
-	// The context reads come after HasKeyAliases: each takes the context's lock, and a provider
-	// without aliases, the common case, must not pay for them.
+	// The context reads come after HasKeyAliases and MayBeKeyAlias: each takes the context's lock,
+	// and a provider without aliases, or a name that is no alias, must not pay for them.
 	cfg, ok := configuredProvider(gs.inMemoryStore, schemas.ModelProvider(*provider))
-	if !ok || !modelcatalog.HasKeyAliases(cfg.Keys) || runsAsWritten(ctx) {
+	if !ok || !modelcatalog.HasKeyAliases(cfg.Keys) || !modelcatalog.MayBeKeyAlias(schemas.ModelProvider(*provider), model, cfg.Keys) || runsAsWritten(ctx) {
 		return nil
 	}
 	keys, ok := pinnedKeys(ctx, cfg.Keys)
@@ -2450,12 +2450,48 @@ func (gs *LocalGovernanceStore) aliasTargets(ctx context.Context, provider *stri
 		return nil
 	}
 	var targets []string
-	modelcatalog.KeyAliasTargets(model, keys, func(target string) {
+	collect := func(target string) {
 		if !slices.Contains(targets, target) {
 			targets = append(targets, target)
 		}
-	})
+	}
+	modelcatalog.KeyAliasTargets(model, keys, allKeyIDs, collect)
+	// Key selection picks only among the keys the request's access allows. Asked only once the name
+	// is an alias at all, so a provider whose aliases do not cover the name pays nothing for it.
+	if len(targets) > 0 {
+		if keyIDs, restricted := accessKeysForModel(ctx, *provider, model); restricted {
+			targets = targets[:0]
+			modelcatalog.KeyAliasTargets(model, keys, keyIDs, collect)
+		}
+	}
 	return targets
+}
+
+// allKeyIDs is the key restriction that restricts nothing.
+var allKeyIDs = schemas.WhiteList{"*"}
+
+// accessKeysForModel is the key restriction the access on ctx's grant places on (provider, model),
+// as Evaluate publishes it to key selection. No grant, no access, or no restriction answers false.
+func accessKeysForModel(ctx context.Context, provider, model string) (schemas.WhiteList, bool) {
+	bctx, ok := ctx.(*schemas.BifrostContext)
+	if !ok || bctx == nil {
+		return nil, false
+	}
+	g := bctx.Grant()
+	if g == nil {
+		return nil, false
+	}
+	access := g.Access()
+	if access == nil {
+		return nil, false
+	}
+	// KeysForModel re-runs the model checks; an access none of whose permits restricts the
+	// provider's keys answers without them.
+	if ga, ok := access.(*grant.Access); ok && !ga.RestrictsKeys(provider) {
+		return nil, false
+	}
+	keyIDs, restricted := access.KeysForModel(provider, model)
+	return schemas.WhiteList(keyIDs), restricted
 }
 
 // pinnedKeys narrows keys to the one a pinned request is served from, in core's order: a routing-rule

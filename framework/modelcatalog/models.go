@@ -4,6 +4,9 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"sync"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
@@ -353,7 +356,24 @@ func (mc *ModelCatalog) IsModelAllowedForProvider(provider schemas.ModelProvider
 	// A key alias is a client-facing name for a provider model, resolved only after governance has
 	// decided, so a request for "claude-sonnet" reaches this check under the alias, not under the
 	// model it stands for. An allowlist that names the model should permit it.
-	return providerConfig != nil && mc.aliasesResolveToAllowed(provider, model, providerConfig.Keys, allowedModels)
+	return providerConfig != nil && MayBeKeyAlias(provider, model, providerConfig.Keys) &&
+		mc.aliasesResolveToAllowed(provider, model, providerConfig.Keys, allKeyIDs, allowedModels)
+}
+
+// allKeyIDs is the key restriction that restricts nothing.
+var allKeyIDs = schemas.WhiteList{"*"}
+
+// KeyAliasesResolveToAllowed is the key-alias half of IsModelAllowedForProvider for a caller that
+// knows which keys can serve the request: keys is the provider's keys, already narrowed to a pinned
+// key when the request pins one, and keyIDs the key restriction it is served under (["*"] for every
+// key, empty for none). Keys outside keyIDs cannot be selected, so their missing alias does not veto
+// the name. It answers false for a wildcard or empty allowlist, which IsModelAllowedForProvider
+// decides without aliases.
+func (mc *ModelCatalog) KeyAliasesResolveToAllowed(provider schemas.ModelProvider, model string, keys []schemas.Key, keyIDs, allowedModels schemas.WhiteList) bool {
+	if allowedModels.IsUnrestricted() || allowedModels.IsEmpty() {
+		return false
+	}
+	return mc.aliasesResolveToAllowed(provider, model, keys, keyIDs, allowedModels)
 }
 
 // aliasesResolveToAllowed reports whether model is a key alias that resolves to an allowed model
@@ -361,7 +381,7 @@ func (mc *ModelCatalog) IsModelAllowedForProvider(provider schemas.ModelProvider
 // key, and a key without the alias sends the name to the provider as written, so one key mapping
 // the name to an allowed model is not enough: each enabled key must map it, and to an allowed
 // model. The match is one way: an allowlist naming only the alias does not open the model's own id.
-func (mc *ModelCatalog) aliasesResolveToAllowed(provider schemas.ModelProvider, model string, keys []schemas.Key, allowedModels schemas.WhiteList) bool {
+func (mc *ModelCatalog) aliasesResolveToAllowed(provider schemas.ModelProvider, model string, keys []schemas.Key, keyIDs, allowedModels schemas.WhiteList) bool {
 	matched := false
 	// Last target that passed aliasTargetAllowed for this model and allowlist; keys that agree on
 	// a target skip the catalog work. Only passing targets are stored.
@@ -380,7 +400,7 @@ func (mc *ModelCatalog) aliasesResolveToAllowed(provider schemas.ModelProvider, 
 		// A key that cannot serve the name (disabled, or its models or blacklisted_models exclude
 		// it, both written in alias names) cannot be picked, so its missing alias must not veto
 		// the request.
-		if !keyServesName(&keys[i], model) {
+		if !keyServesName(&keys[i], model) || !keyIDs.IsAllowed(keys[i].ID) {
 			continue
 		}
 		// Same resolution as schemas.KeyAliases.ResolveConfig (exact name, then case-insensitive),
@@ -435,14 +455,91 @@ func HasKeyAliases(keys []schemas.Key) bool {
 	return false
 }
 
+// aliasNameIndex is the set of alias names a provider's keys carry, case-folded, for one published
+// keys slice.
+type aliasNameIndex struct {
+	keys  *schemas.Key // first element of the indexed slice; holding it keeps the address from being reused
+	n     int
+	names map[string]struct{}
+}
+
+// aliasNameIndexes holds one aliasNameIndex per provider; a new keys slice replaces its entry.
+var aliasNameIndexes sync.Map // schemas.ModelProvider -> *aliasNameIndex
+
+// MayBeKeyAlias reports whether some key of keys carries an alias whose name equals model under
+// case folding, the comparison alias resolution uses. False means model is no alias on any key, so a
+// caller can skip the per-key alias scan, which ranges over every alias map and is what a provider
+// with aliases otherwise pays on every request. True decides nothing: the scan still decides.
+//
+// keys must be the provider's whole published keys slice, not a narrowed one. The set is built once
+// per slice and reused while the provider's configuration hands back that same slice. Provider
+// configuration is copy-on-write (an edited key publishes a new slice) and alias maps are never
+// edited in place, so the slice's identity stands for its aliases. Memory: one entry per provider,
+// holding each distinct alias name once, freed when the provider's next keys slice replaces it.
+func MayBeKeyAlias(provider schemas.ModelProvider, model string, keys []schemas.Key) bool {
+	if len(keys) == 0 {
+		return false
+	}
+	var idx *aliasNameIndex
+	if v, ok := aliasNameIndexes.Load(provider); ok {
+		if cached := v.(*aliasNameIndex); cached.keys == &keys[0] && cached.n == len(keys) {
+			idx = cached
+		}
+	}
+	if idx == nil {
+		idx = &aliasNameIndex{keys: &keys[0], n: len(keys), names: map[string]struct{}{}}
+		for i := range keys {
+			for name := range keys[i].Aliases {
+				idx.names[foldName(name)] = struct{}{}
+			}
+		}
+		aliasNameIndexes.Store(provider, idx)
+	}
+	_, ok := idx.names[foldName(model)]
+	return ok
+}
+
+// foldName maps s to a string that is equal for two names exactly when strings.EqualFold reports
+// them equal: each rune becomes the representative of its simple case-folding orbit. A name of
+// ASCII lower-case letters, digits and punctuation is its own representative and is returned as is.
+func foldName(s string) string {
+	for i := 0; i < len(s); i++ {
+		if c := s[i]; c >= utf8.RuneSelf || ('A' <= c && c <= 'Z') {
+			var b strings.Builder
+			b.Grow(len(s))
+			for _, r := range s {
+				b.WriteRune(foldRune(r))
+			}
+			return b.String()
+		}
+	}
+	return s
+}
+
+// foldRune is the representative of r's simple case-folding orbit (the runes strings.EqualFold treats
+// as equal to r): its ASCII lower-case letter when the orbit has one, otherwise its smallest rune.
+func foldRune(r rune) rune {
+	rep := r
+	for f := unicode.SimpleFold(r); f != r; f = unicode.SimpleFold(f) {
+		if f < rep {
+			rep = f
+		}
+	}
+	if 'A' <= rep && rep <= 'Z' {
+		return rep + ('a' - 'A')
+	}
+	return rep
+}
+
 // KeyAliasTargets calls visit with each model an eligible key maps the requested name to, exact
 // name first, then case-insensitively, the same lookup order as schemas.KeyAliases.ResolveConfig
-// without the pointer it returns. Empty targets and targets equal to the name are skipped.
+// without the pointer it returns. A key is eligible when it can serve the name and keyIDs allows it
+// (["*"] for every key, empty for none). Empty targets and targets equal to the name are skipped.
 // Duplicates are not collapsed: keys that agree call visit once each.
-func KeyAliasTargets(model string, keys []schemas.Key, visit func(target string)) {
+func KeyAliasTargets(model string, keys []schemas.Key, keyIDs schemas.WhiteList, visit func(target string)) {
 	for i := range keys {
 		key := &keys[i]
-		if len(key.Aliases) == 0 || !keyServesName(key, model) {
+		if len(key.Aliases) == 0 || !keyServesName(key, model) || !keyIDs.IsAllowed(key.ID) {
 			continue
 		}
 		if ac, ok := key.Aliases[model]; ok {

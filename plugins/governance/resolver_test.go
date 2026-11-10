@@ -1499,9 +1499,9 @@ func TestModelMatcherReadsOnlyTheProviderItChecks(t *testing.T) {
 	}}}
 	plugin := &GovernancePlugin{modelCatalog: modelcatalog.NewTestCatalog(nil), inMemoryStore: store}
 
-	matcher := plugin.modelMatcher()
+	matcher := plugin.modelMatcher(emptyCtx())
 	require.NotNil(t, matcher)
-	assert.True(t, matcher("openai", "gpt-4o", []string{"gpt-4o"}))
+	assert.True(t, matcher("openai", "gpt-4o", []string{"gpt-4o"}, []string{"*"}))
 	assert.Zero(t, store.wholeMap, "a model check does not read the whole provider map")
 	assert.Equal(t, 1, store.single, "a model check reads the one provider it checks")
 
@@ -1562,7 +1562,7 @@ func TestAllowedModelsMatchKeyAliasesThroughTheHookChain(t *testing.T) {
 		}},
 	}}}
 	vk := buildVirtualKeyWithProviders("vk-alias", mcpTestVKValue, "alias-vk", []configstoreTables.TableVirtualKeyProviderConfig{
-		buildProviderConfig("openai", []string{"gpt-4o"}),
+		withAllKeys(buildProviderConfig("openai", []string{"gpt-4o"})),
 	})
 	logger := NewMockLogger()
 	local, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
@@ -1621,6 +1621,13 @@ func TestAllowedModelsMatchKeyAliasesThroughTheHookChain(t *testing.T) {
 	}
 }
 
+// withAllKeys lets a test virtual key's provider config use every key of the provider, as a key
+// alias can only be resolved on a key the virtual key may use.
+func withAllKeys(pc configstoreTables.TableVirtualKeyProviderConfig) configstoreTables.TableVirtualKeyProviderConfig {
+	pc.AllowAllKeys = true
+	return pc
+}
+
 // A model-scoped limit on the alias target applies to a request that names the alias (#6620 review),
 // through the whole hook chain: an exhausted limit on gpt-4o refuses best-gpt with a 429, and a
 // best-gpt request within the limit is charged against it.
@@ -1633,7 +1640,7 @@ func TestModelLimitOnAliasTargetGovernsTheAliasThroughTheHookChain(t *testing.T)
 			}}}},
 		}}
 		vk := buildVirtualKeyWithProviders("vk-alias-limit", mcpTestVKValue, "alias-limit-vk", []configstoreTables.TableVirtualKeyProviderConfig{
-			buildProviderConfig("openai", []string{"gpt-4o", "gpt-4o-mini"}),
+			withAllKeys(buildProviderConfig("openai", []string{"gpt-4o", "gpt-4o-mini"})),
 		})
 		logger := NewMockLogger()
 		local, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
@@ -1699,6 +1706,160 @@ func TestModelLimitOnAliasTargetGovernsTheAliasThroughTheHookChain(t *testing.T)
 	})
 }
 
+// The key-alias rules are judged over the keys key selection can actually pick for the request
+// (#6620 review): the virtual key's own key_ids, and the key a request pins by id, by name, or through
+// a routing rule. A key outside that set neither vetoes an alias nor adds a target to check against a
+// blacklist, and a request that runs as written becomes no alias target at all.
+func TestAliasRulesFollowTheKeysThatCanServeTheRequest(t *testing.T) {
+	keys := []schemas.Key{
+		{ID: "k1", Name: "key-one", Models: schemas.WhiteList{"*"}, Aliases: schemas.KeyAliases{"best-gpt": {ModelID: "gpt-4o"}}},
+		{ID: "k2", Name: "key-two", Models: schemas.WhiteList{"*"}, Aliases: schemas.KeyAliases{"best-gpt": {ModelID: "gpt-4o-mini"}}},
+		{ID: "k3", Name: "key-three", Models: schemas.WhiteList{"embedding-*"}},
+	}
+	onKeys := func(pc configstoreTables.TableVirtualKeyProviderConfig, ids ...string) configstoreTables.TableVirtualKeyProviderConfig {
+		for _, id := range ids {
+			pc.Keys = append(pc.Keys, configstoreTables.TableKey{KeyID: id, Provider: "openai"})
+		}
+		return pc
+	}
+	blacklisting := func(allowed ...string) configstoreTables.TableVirtualKeyProviderConfig {
+		pc := buildProviderConfig("openai", allowed)
+		pc.BlacklistedModels = schemas.BlackList{"gpt-4o-mini"}
+		return pc
+	}
+	vks := map[string]configstoreTables.TableVirtualKeyProviderConfig{
+		"all":    withAllKeys(buildProviderConfig("openai", []string{"gpt-4o"})),
+		"k1":     onKeys(buildProviderConfig("openai", []string{"gpt-4o"}), "k1"),
+		"k2":     onKeys(buildProviderConfig("openai", []string{"gpt-4o"}), "k2"),
+		"none":   buildProviderConfig("openai", []string{"gpt-4o"}),
+		"bl":     withAllKeys(blacklisting("regex:^gpt-.*")),
+		"bl-k1":  onKeys(blacklisting("regex:^gpt-.*"), "k1"),
+		"bl-lit": withAllKeys(blacklisting("regex:^gpt-.*", "best-gpt")),
+	}
+	var tables []configstoreTables.TableVirtualKey
+	for name, pc := range vks {
+		tables = append(tables, *buildVirtualKeyWithProviders("vk-"+name, "sk-bf-"+name, name, []configstoreTables.TableVirtualKeyProviderConfig{pc}))
+	}
+	store := &mockInMemoryStore{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{schemas.OpenAI: {Keys: keys}}}
+	logger := NewMockLogger()
+	local, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{VirtualKeys: tables}, nil, store)
+	require.NoError(t, err)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, local, nil, modelcatalog.NewTestCatalog(nil), nil, store)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
+
+	pinID := func(id string) func(*schemas.BifrostContext) {
+		return func(ctx *schemas.BifrostContext) { ctx.SetValue(schemas.BifrostContextKeyAPIKeyID, id) }
+	}
+	for _, tc := range []struct {
+		name    string
+		vk      string
+		set     func(*schemas.BifrostContext)
+		blocked bool
+	}{
+		{"every key: k2 maps the alias to a model that is not allowed", "all", nil, true},
+		{"key_ids [k1]: only k1 can serve, and it maps to the allowed model", "k1", nil, false},
+		{"key_ids [k2]: k2 maps to a model that is not allowed", "k2", nil, true},
+		{"no key allowed: nothing can serve the alias", "none", nil, true},
+		{"pinned to k1 by id", "all", pinID("k1"), false},
+		{"pinned to k2 by id", "all", pinID("k2"), true},
+		{"pinned to an unknown key", "all", pinID("gone"), true},
+		{"pinned to k1 by name", "all", func(ctx *schemas.BifrostContext) { ctx.SetValue(schemas.BifrostContextKeyAPIKeyName, "key-one") }, false},
+		{"pinned to k1 by a routing rule", "all", func(ctx *schemas.BifrostContext) { ctx.SetValue(schemas.BifrostContextKeyRoutingPinnedAPIKeyID, "k1") }, false},
+		{"a routing-rule pin outranks the caller's", "all", func(ctx *schemas.BifrostContext) {
+			ctx.SetValue(schemas.BifrostContextKeyRoutingPinnedAPIKeyID, "k2")
+			ctx.SetValue(schemas.BifrostContextKeyAPIKeyID, "k1")
+		}, true},
+		{"blacklist: k2 turns the alias into the blacklisted model", "bl", nil, true},
+		{"blacklist, pinned to k1: the blacklisted target is unreachable", "bl", pinID("k1"), false},
+		{"blacklist, key_ids [k1]: the blacklisted target is unreachable", "bl-k1", nil, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := presentCtx("sk-bf-" + tc.vk)
+			if tc.set != nil {
+				tc.set(ctx)
+			}
+			req := &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: "best-gpt"}}
+			require.NoError(t, plugin.PreRequestHook(ctx, req))
+			_, shortCircuit, err := plugin.PreLLMHook(ctx, req)
+			require.NoError(t, err)
+			if !tc.blocked {
+				if shortCircuit != nil && shortCircuit.Error != nil && shortCircuit.Error.Error != nil {
+					t.Fatalf("best-gpt should be admitted: %s", shortCircuit.Error.Error.Message)
+				}
+				require.Nil(t, shortCircuit)
+				return
+			}
+			require.NotNil(t, shortCircuit, "best-gpt should be refused")
+			require.NotNil(t, shortCircuit.Error)
+			require.NotNil(t, shortCircuit.Error.StatusCode)
+			assert.Equal(t, 403, *shortCircuit.Error.StatusCode)
+		})
+	}
+
+	// A direct key never has an alias resolved, so the access the request carries does not refuse the
+	// literal name over a model an alias would have made of it, wherever else that access is asked.
+	t.Run("a direct key turns the name into no alias target", func(t *testing.T) {
+		for _, direct := range []bool{false, true} {
+			ctx := presentCtx("sk-bf-bl-lit")
+			if direct {
+				ctx.SetValue(schemas.BifrostContextKeyDirectKey, schemas.Key{ID: "direct"})
+			}
+			access, err := plugin.ResolveAccess(ctx)
+			require.NoError(t, err)
+			require.NotNil(t, access)
+			assert.Equal(t, direct, access.IsModelAllowed("openai", "best-gpt"), "direct key: %v", direct)
+		}
+	})
+}
+
+// Alias-target limits come only from keys the virtual key may use: a limit on a model only an
+// excluded key maps the alias to does not refuse the request (#6620 review).
+func TestAliasTargetLimitsFollowTheVirtualKeysKeys(t *testing.T) {
+	keys := []schemas.Key{
+		{ID: "k1", Models: schemas.WhiteList{"*"}, Aliases: schemas.KeyAliases{"best-gpt": {ModelID: "gpt-4o"}}},
+		{ID: "k2", Models: schemas.WhiteList{"*"}, Aliases: schemas.KeyAliases{"best-gpt": {ModelID: "gpt-4o-mini"}}},
+	}
+	onlyK2 := buildProviderConfig("openai", []string{"gpt-4o", "gpt-4o-mini"})
+	onlyK2.Keys = []configstoreTables.TableKey{{KeyID: "k2", Provider: "openai"}}
+	exhausted := buildRateLimitWithUsage("rl-gpt-4o", 1_000_000, 0, 1, 1)
+	store := &mockInMemoryStore{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{schemas.OpenAI: {Keys: keys}}}
+	logger := NewMockLogger()
+	local, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{
+			*buildVirtualKeyWithProviders("vk-all", "sk-bf-all", "all", []configstoreTables.TableVirtualKeyProviderConfig{withAllKeys(buildProviderConfig("openai", []string{"gpt-4o", "gpt-4o-mini"}))}),
+			*buildVirtualKeyWithProviders("vk-k2", "sk-bf-k2", "k2", []configstoreTables.TableVirtualKeyProviderConfig{onlyK2}),
+		},
+		ModelConfigs: []configstoreTables.TableModelConfig{*buildModelConfig("mc-gpt-4o", "gpt-4o", nil, nil, exhausted)},
+		RateLimits:   []configstoreTables.TableRateLimit{*exhausted},
+	}, nil, store)
+	require.NoError(t, err)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, local, nil, modelcatalog.NewTestCatalog(nil), nil, store)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
+
+	for _, tc := range []struct {
+		vk      string
+		refused bool
+	}{
+		{"all", true}, // k1 may serve it as gpt-4o, whose limit is exhausted
+		{"k2", false}, // only k2 may serve it, as gpt-4o-mini
+	} {
+		ctx := presentCtx("sk-bf-" + tc.vk)
+		req := &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: "best-gpt"}}
+		require.NoError(t, plugin.PreRequestHook(ctx, req))
+		_, shortCircuit, err := plugin.PreLLMHook(ctx, req)
+		require.NoError(t, err)
+		if !tc.refused {
+			assert.Nil(t, shortCircuit, "vk %s: gpt-4o's limit does not apply", tc.vk)
+			continue
+		}
+		require.NotNil(t, shortCircuit, "vk %s: gpt-4o's limit applies", tc.vk)
+		require.NotNil(t, shortCircuit.Error.StatusCode)
+		assert.Equal(t, 429, *shortCircuit.Error.StatusCode)
+	}
+}
+
 // A blacklist wins over a key alias (#6620 review): a virtual key that allows claude-* and blocks
 // claude-opus-4-6 refuses a request that names the blocked model through an alias, through the whole
 // hook chain, while an alias of a model it does not block is still admitted. A virtual key with no
@@ -1712,11 +1873,11 @@ func TestBlacklistHoldsAliasTargetsThroughTheHookChain(t *testing.T) {
 			"good-model": {ModelID: "claude-sonnet-4-6"},
 		}}}},
 	}}}
-	blocking := buildProviderConfig("anthropic", []string{"regex:^claude-.*"})
+	blocking := withAllKeys(buildProviderConfig("anthropic", []string{"regex:^claude-.*"}))
 	blocking.BlacklistedModels = schemas.BlackList{"claude-opus-4-6"}
 	vk := buildVirtualKeyWithProviders("vk-blocking", mcpTestVKValue, "blocking-vk", []configstoreTables.TableVirtualKeyProviderConfig{blocking})
 	plain := buildVirtualKeyWithProviders("vk-plain", plainVKValue, "plain-vk", []configstoreTables.TableVirtualKeyProviderConfig{
-		buildProviderConfig("anthropic", []string{"regex:^claude-.*"}),
+		withAllKeys(buildProviderConfig("anthropic", []string{"regex:^claude-.*"})),
 	})
 	logger := NewMockLogger()
 	local, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
@@ -1848,7 +2009,7 @@ func TestBatchItemModelsAreCheckedByLiteralName(t *testing.T) {
 		schemas.Anthropic: {Keys: []schemas.Key{{ID: "k1", Models: schemas.WhiteList{"*"}, Aliases: schemas.KeyAliases{"claude-opus-4-6": {ModelID: "claude-sonnet-4-6"}}}}},
 	}}}
 	vk := buildVirtualKeyWithProviders("vk-batch", mcpTestVKValue, "batch-vk", []configstoreTables.TableVirtualKeyProviderConfig{
-		buildProviderConfig("anthropic", []string{"claude-sonnet-4-6"}),
+		withAllKeys(buildProviderConfig("anthropic", []string{"claude-sonnet-4-6"})),
 	})
 	logger := NewMockLogger()
 	local, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
@@ -1907,7 +2068,7 @@ func TestBatchItemLiteralModelTakesNoAliasTargetLimits(t *testing.T) {
 		schemas.Anthropic: {Keys: []schemas.Key{{ID: "k1", Models: schemas.WhiteList{"*"}, Aliases: schemas.KeyAliases{"claude-opus-4-6": {ModelID: "claude-sonnet-4-6"}}}}},
 	}}}
 	vk := buildVirtualKeyWithProviders("vk-batch", mcpTestVKValue, "batch-vk", []configstoreTables.TableVirtualKeyProviderConfig{
-		buildProviderConfig("anthropic", []string{"claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5"}),
+		withAllKeys(buildProviderConfig("anthropic", []string{"claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5"})),
 	})
 	provider := "anthropic"
 	exhausted := buildModelConfig("sonnet-exhausted", "claude-sonnet-4-6", &provider, buildBudgetWithUsage("b-sonnet-exhausted", 10.0, 10.0, "1d"), nil)
@@ -2004,6 +2165,73 @@ func BenchmarkPreLLMHookBatchCreate(b *testing.B) {
 				if _, _, err := plugin.PreLLMHook(presentCtx(mcpTestVKValue), tc.build()); err != nil {
 					b.Fatal(err)
 				}
+			}
+		})
+	}
+}
+
+// BenchmarkPreLLMHookKeyAliases is the governance pre-hook for a virtual key with an explicit model
+// list, end to end (access, model check, limits). "no_aliases" is the common case, a provider whose
+// keys carry no alias; "aliases_unused" names an allowed model on a provider that has aliases; the
+// rest name an alias, unrestricted, restricted to the virtual key's keys, and pinned to a key.
+func BenchmarkPreLLMHookKeyAliases(b *testing.B) {
+	aliased := []schemas.Key{
+		{ID: "k1", Models: schemas.WhiteList{"*"}, Aliases: schemas.KeyAliases{"best-gpt": {ModelID: "gpt-4o"}}},
+		{ID: "k2", Models: schemas.WhiteList{"*"}, Aliases: schemas.KeyAliases{"best-gpt": {ModelID: "gpt-4o"}}},
+	}
+	store := &mockInMemoryStore{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{
+		schemas.OpenAI:    {Keys: aliased},
+		schemas.Anthropic: {Keys: []schemas.Key{{ID: "a1", Models: schemas.WhiteList{"*"}}}},
+	}}
+	onK1 := buildProviderConfig("openai", []string{"gpt-4o"})
+	onK1.Keys = []configstoreTables.TableKey{{KeyID: "k1", Provider: "openai"}}
+	vks := []configstoreTables.TableVirtualKey{
+		*buildVirtualKeyWithProviders("vk-all", "sk-bf-all", "all", []configstoreTables.TableVirtualKeyProviderConfig{
+			withAllKeys(buildProviderConfig("openai", []string{"gpt-4o"})),
+			withAllKeys(buildProviderConfig("anthropic", []string{"claude-sonnet-4-6"})),
+		}),
+		*buildVirtualKeyWithProviders("vk-k1", "sk-bf-k1", "k1", []configstoreTables.TableVirtualKeyProviderConfig{onK1}),
+	}
+	logger := NewMockLogger()
+	local, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{VirtualKeys: vks}, nil, store)
+	if err != nil {
+		b.Fatal(err)
+	}
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, local, nil, modelcatalog.NewTestCatalog(nil), nil, store)
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.Cleanup(func() { _ = plugin.Cleanup() })
+	for _, tc := range []struct {
+		name, vk string
+		provider schemas.ModelProvider
+		model    string
+		pin      string
+	}{
+		{"no_aliases", "all", schemas.Anthropic, "claude-sonnet-4-6", ""},
+		{"aliases_unused", "all", schemas.OpenAI, "gpt-4o", ""},
+		{"alias_used", "all", schemas.OpenAI, "best-gpt", ""},
+		{"alias_vk_keys", "k1", schemas.OpenAI, "best-gpt", ""},
+		{"alias_pinned", "all", schemas.OpenAI, "best-gpt", "k1"},
+	} {
+		run := func() *schemas.LLMPluginShortCircuit {
+			ctx := presentCtx("sk-bf-" + tc.vk)
+			if tc.pin != "" {
+				ctx.SetValue(schemas.BifrostContextKeyAPIKeyID, tc.pin)
+			}
+			_, sc, err := plugin.PreLLMHook(ctx, &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{Provider: tc.provider, Model: tc.model}})
+			if err != nil {
+				b.Fatal(err)
+			}
+			return sc
+		}
+		if sc := run(); sc != nil {
+			b.Fatalf("%s: refused", tc.name)
+		}
+		b.Run(tc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				run()
 			}
 		})
 	}
