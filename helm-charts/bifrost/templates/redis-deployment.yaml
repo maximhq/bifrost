@@ -20,6 +20,12 @@ spec:
       labels:
         {{- include "bifrost.labels" . | nindent 8 }}
         app.kubernetes.io/component: redis
+      {{- if .Values.vectorStore.redis.metrics.enabled }}
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: {{ include "bifrost.redis.metricsPort" . | quote }}
+        prometheus.io/path: "/metrics"
+      {{- end }}
     spec:
       containers:
         - name: redis
@@ -42,15 +48,28 @@ spec:
                   name: {{ include "bifrost.fullname" . }}-redis
                   key: password
             {{- end }}
-          {{- if .Values.vectorStore.redis.auth.enabled }}
-          command:
-            {{- if contains "redis-stack" .Values.vectorStore.redis.image.repository }}
-            - redis-stack-server
-            {{- else }}
-            - redis-server
+            {{- with .Values.vectorStore.redis.master.extraEnv }}
+            {{- toYaml . | nindent 12 }}
             {{- end }}
+          {{- with .Values.vectorStore.redis.master.envFrom }}
+          envFrom:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- if .Values.vectorStore.redis.auth.enabled }}
+          {{- $server := ternary "redis-stack-server" "redis-server" (contains "redis-stack" .Values.vectorStore.redis.image.repository) }}
+          command:
+            {{- /* The launcher does not read REDIS_ARGS (only the image entrypoint does), so with extra env
+                   set the server starts through a shell that appends it. Without extra env the command is
+                   left as it was, so existing pods do not roll. */}}
+            {{- if or .Values.vectorStore.redis.master.extraEnv .Values.vectorStore.redis.master.envFrom }}
+            - sh
+            - -c
+            - exec {{ $server }} --requirepass "$REDIS_PASSWORD" $REDIS_ARGS
+            {{- else }}
+            - {{ $server }}
             - --requirepass
             - $(REDIS_PASSWORD)
+            {{- end }}
           {{- end }}
           livenessProbe:
             exec:
@@ -77,6 +96,53 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /data
+        {{- with .Values.vectorStore.redis.metrics }}
+        {{- if .enabled }}
+        {{- $image := .image | default dict }}
+        {{- $port := include "bifrost.redis.metricsPort" $ }}
+        - name: metrics
+          image: "{{ $image.repository | default "oliver006/redis_exporter" }}:{{ $image.tag | default "v1.97.0" }}"
+          imagePullPolicy: {{ $image.pullPolicy | default "IfNotPresent" }}
+          ports:
+            - name: metrics
+              containerPort: {{ $port }}
+              protocol: TCP
+          env:
+            - name: REDIS_ADDR
+              value: "redis://localhost:6379"
+            - name: REDIS_EXPORTER_WEB_LISTEN_ADDRESS
+              value: {{ printf ":%v" $port | quote }}
+            {{- /* /scrape takes any target and sends it the Redis password. Set before extraEnv so a user
+                   who needs it can override with "false". */}}
+            - name: REDIS_EXPORTER_DISABLE_SCRAPE_ENDPOINT
+              value: "true"
+            {{- if $.Values.vectorStore.redis.auth.enabled }}
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "bifrost.fullname" $ }}-redis
+                  key: password
+            {{- end }}
+            {{- with .extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- /* TCP, not /health: exporter basic auth set through extraEnv also guards /health, and an
+                 unauthenticated probe would restart a healthy exporter. */}}
+          livenessProbe:
+            tcpSocket:
+              port: metrics
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          {{- /* No readinessProbe, so a slow /metrics never gates Redis. This is not full isolation: a
+                 crashing or unpullable exporter still leaves the pod unready and off the Service. */}}
+          {{- with .resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+        {{- end }}
+        {{- end }}
       volumes:
         - name: data
           {{- if .Values.vectorStore.redis.master.persistence.enabled }}

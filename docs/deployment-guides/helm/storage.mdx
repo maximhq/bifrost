@@ -764,6 +764,41 @@ vectorStore:
         size: 8Gi
 ```
 
+**Extra environment variables:** `master.extraEnv` (Kubernetes `EnvVar` entries) and `master.envFrom` (`secretRef` / `configMapRef`) are added to the embedded Redis container after the chart's own `REDIS_PASSWORD` and `REDISCLI_AUTH`. Use `REDIS_ARGS` for server flags and module arguments such as `REDISEARCH_ARGS` for `redis-stack-server`:
+
+```yaml
+vectorStore:
+  redis:
+    master:
+      extraEnv:
+        - name: REDIS_ARGS
+          value: "--maxmemory 400mb --maxmemory-policy allkeys-lru"
+      envFrom:
+        - configMapRef:
+            name: redis-tuning
+```
+
+With `auth.enabled: true` (the default) the chart starts Redis with its own `--requirepass` command, which bypasses the image entrypoint that normally reads `REDIS_ARGS`. So when `extraEnv` or `envFrom` is set, the chart starts the server through `sh -c 'exec redis-stack-server --requirepass "$REDIS_PASSWORD" $REDIS_ARGS'` instead (`redis-server` for a plain Redis image). `REDIS_ARGS` is split on whitespace, as the image entrypoint does, so values cannot contain spaces. Releases that set neither keep the exact command they had.
+
+**Prometheus metrics:** `metrics.enabled: true` runs an [`oliver006/redis_exporter`](https://github.com/oliver006/redis_exporter) sidecar in the Redis pod. It authenticates with the Redis password when `auth.enabled` is true. Its `/scrape` endpoint is turned off, since it sends the Redis password to any target it is given; set `REDIS_EXPORTER_DISABLE_SCRAPE_ENDPOINT: "false"` in `metrics.extraEnv` to turn it back on. If you protect the exporter with `REDIS_EXPORTER_BASIC_AUTH_USERNAME` and `REDIS_EXPORTER_BASIC_AUTH_PASSWORD`, set `metrics.serviceMonitor.basicAuth` (`enabled`, `existingSecret`, optional `usernameKey` / `passwordKey`) so Prometheus sends the same credentials. The chart also adds a `metrics` port (9121) to the `<fullname>-redis-master` Service (`bifrost-redis-master` for `helm install bifrost`) and `prometheus.io/scrape`, `prometheus.io/port` and `prometheus.io/path` annotations to the pod. With the Prometheus Operator, also enable the ServiceMonitor:
+
+```yaml
+vectorStore:
+  redis:
+    metrics:
+      enabled: true
+      # extraEnv:                 # exporter flags, e.g. REDIS_EXPORTER_CHECK_KEYS
+      #   - name: REDIS_EXPORTER_INCL_SYSTEM_METRICS
+      #     value: "true"
+      serviceMonitor:
+        enabled: true             # requires the monitoring.coreos.com/v1 CRDs
+        interval: 30s
+        labels:
+          release: kube-prometheus-stack   # match your Prometheus serviceMonitorSelector
+```
+
+These settings apply only to the embedded Redis. An external Redis is not changed: run the exporter next to it instead.
+
 **External Redis / AWS MemoryDB:**
 
 ```bash
