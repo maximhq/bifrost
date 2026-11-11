@@ -16570,6 +16570,28 @@
             },
             {
               "name": "Anthropic: output_config format json_schema with optional property → openai/gpt-4o-mini - #8159",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// #8159: the reply must be the requested JSON object, not just any text.",
+                      "if (pm.response.code >= 400) { return; }",
+                      "pm.test('output_config format returns a JSON object matching the schema - #8159', function () {",
+                      "  var j = pm.response.json();",
+                      "  var block = (j.content || []).find(function (c) { return c.type === 'text'; });",
+                      "  pm.expect(block, 'expected a text content block').to.exist;",
+                      "  var obj = JSON.parse(block.text);",
+                      "  pm.expect(obj).to.be.an('object');",
+                      "  pm.expect(obj.city, 'required city must be a string').to.be.a('string');",
+                      "  if (obj.country !== undefined) { pm.expect(obj.country).to.be.a('string'); }",
+                      "  Object.keys(obj).forEach(function (k) { pm.expect(['city', 'country'], 'unexpected key ' + k).to.include(k); });",
+                      "});"
+                    ]
+                  }
+                }
+              ],
               "request": {
                 "method": "POST",
                 "header": [
