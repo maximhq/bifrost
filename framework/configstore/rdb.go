@@ -3960,8 +3960,10 @@ func preloadCustomerRelationsWithoutVirtualKeys(db *gorm.DB, prefix string) *gor
 	return db.
 		Preload(relation("Teams")).
 		Preload(relation("Teams.Budgets")).
+		Preload(relation("Teams.RequestLimits")).
 		Preload(relation("Budgets")).
-		Preload(relation("RateLimit"))
+		Preload(relation("RateLimit")).
+		Preload(relation("RequestLimits"))
 }
 
 // attachCustomerVirtualKeyCounts populates VirtualKeyCount on each customer
@@ -5602,7 +5604,7 @@ func (s *RDBConfigStore) GetTeams(ctx context.Context, customerID string) ([]tab
 	// Preload relationships for complete information
 	query := s.ScopedDB(ctx).
 		Select(teamSelectWithVKCount).
-		Preload("Customer").Preload("Budgets").Preload("RateLimit")
+		Preload("Customer").Preload("Budgets").Preload("RateLimit").Preload("RequestLimits")
 	// Optional filtering by customer
 	if customerID != "" {
 		query = query.Where("customer_id = ?", customerID)
@@ -5646,7 +5648,7 @@ func (s *RDBConfigStore) GetTeamsPaginated(ctx context.Context, params TeamsQuer
 	var teams []tables.TableTeam
 	if err := baseQuery.
 		Select(teamSelectWithVKCount).
-		Preload("Customer").Preload("Budgets").Preload("RateLimit").
+		Preload("Customer").Preload("Budgets").Preload("RateLimit").Preload("RequestLimits").
 		Order("created_at ASC, id ASC").
 		Offset(offset).Limit(limit).
 		Find(&teams).Error; err != nil {
@@ -5666,7 +5668,7 @@ func (s *RDBConfigStore) GetTeam(ctx context.Context, id string, tx ...*gorm.DB)
 	var team tables.TableTeam
 	if err := s.ScopedDB(ctx, tx...).
 		Select(teamSelectWithVKCount).
-		Preload("Customer").Preload("Budgets").Preload("RateLimit").
+		Preload("Customer").Preload("Budgets").Preload("RateLimit").Preload("RequestLimits").
 		First(&team, "governance_teams.id = ?", id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrNotFound
@@ -5681,7 +5683,7 @@ func (s *RDBConfigStore) GetTeamByName(ctx context.Context, name string, custome
 	var team tables.TableTeam
 	q := s.DB().WithContext(ctx).
 		Select(teamSelectWithVKCount).
-		Preload("Customer").Preload("Budgets").Preload("RateLimit").
+		Preload("Customer").Preload("Budgets").Preload("RateLimit").Preload("RequestLimits").
 		Where("name = ?", name)
 	if customerID != "" {
 		q = q.Where("customer_id = ?", customerID)
@@ -5705,7 +5707,7 @@ func (s *RDBConfigStore) GetTeamBySourceID(ctx context.Context, sourceID string)
 	var team tables.TableTeam
 	if err := s.DB().WithContext(ctx).
 		Select(teamSelectWithVKCount).
-		Preload("Customer").Preload("Budgets").Preload("RateLimit").
+		Preload("Customer").Preload("Budgets").Preload("RateLimit").Preload("RequestLimits").
 		Where("source_id = ?", sourceID).
 		First(&team).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -5779,6 +5781,10 @@ func (s *RDBConfigStore) DeleteTeam(ctx context.Context, id string, tx ...*gorm.
 		return err
 	}
 	rateLimitID := team.RateLimitID
+	// Owned request limits carry no FK constraint, so they are deleted explicitly.
+	if err := txDB.WithContext(ctx).Where("team_id = ?", id).Delete(&tables.TableRateLimit{}).Error; err != nil {
+		return err
+	}
 	// Delete the team - owned budgets cascade via FK on governance_budgets.team_id
 	if err := txDB.WithContext(ctx).Delete(&tables.TableTeam{}, "id = ?", id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -5841,6 +5847,7 @@ func (s *RDBConfigStore) GetCustomersPaginated(ctx context.Context, params Custo
 	if err := baseQuery.
 		Preload("Budgets").
 		Preload("RateLimit").
+		Preload("RequestLimits").
 		Order("created_at ASC, id ASC").
 		Offset(offset).Limit(limit).
 		Find(&customers).Error; err != nil {
@@ -5944,6 +5951,9 @@ func (s *RDBConfigStore) DeleteCustomer(ctx context.Context, id string, tx ...*g
 	if err := txDB.WithContext(ctx).Where("customer_id = ?", id).Delete(&tables.TableBudget{}).Error; err != nil {
 		return err
 	}
+	if err := txDB.WithContext(ctx).Where("customer_id = ?", id).Delete(&tables.TableRateLimit{}).Error; err != nil {
+		return err
+	}
 	if err := txDB.WithContext(ctx).Delete(&tables.TableCustomer{}, "id = ?", id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return ErrNotFound
@@ -6025,6 +6035,16 @@ func (s *RDBConfigStore) UpdateRateLimit(ctx context.Context, rateLimit *tables.
 		rateLimit.TokenLastReset = existing.TokenLastReset
 		rateLimit.RequestCurrentUsage = existing.RequestCurrentUsage
 		rateLimit.RequestLastReset = existing.RequestLastReset
+		// A request limit keeps its owner and scope when the caller sends neither, so a
+		// write that only names the limits cannot turn it into an unowned rate limit.
+		if !rateLimit.IsRequestLimit() && existing.IsRequestLimit() {
+			rateLimit.ModelConfigID = existing.ModelConfigID
+			rateLimit.TeamID = existing.TeamID
+			rateLimit.CustomerID = existing.CustomerID
+			if rateLimit.Scope == "" {
+				rateLimit.Scope = existing.Scope
+			}
+		}
 		// created_at is immutable: Save writes every column, so a caller passing a row
 		// it didn't read from the DB (e.g. a config.json reload) would zero it out.
 		rateLimit.CreatedAt = existing.CreatedAt
@@ -6769,7 +6789,7 @@ func (s *RDBConfigStore) GetModelConfigs(ctx context.Context) ([]tables.TableMod
 
 	for {
 		var page []tables.TableModelConfig
-		query := s.DB().WithContext(ctx).Preload("Budgets").Preload("Budget").Preload("RateLimit")
+		query := s.DB().WithContext(ctx).Preload("Budgets").Preload("Budget").Preload("RateLimit").Preload("RequestLimits")
 		if hasCursor {
 			query = query.Where("governance_model_configs.id > ?", lastID)
 		}
@@ -6846,8 +6866,9 @@ func (s *RDBConfigStore) GetModelConfigsByScopeAndScopeIDs(ctx context.Context, 
 	return modelConfigs, nil
 }
 
-// loadModelConfigRelations attaches Budgets, the legacy Budget and RateLimit to
-// configs, exactly what Preload("Budgets").Preload("Budget").Preload("RateLimit")
+// loadModelConfigRelations attaches Budgets, the legacy Budget, RateLimit and
+// RequestLimits to configs, exactly what
+// Preload("Budgets").Preload("Budget").Preload("RateLimit").Preload("RequestLimits")
 // loads, but binds each id list as a single parameter instead of one per row. It
 // then re-applies the calendar-alignment stamp AfterFind would have applied had
 // the budgets been present when the configs were scanned.
@@ -6886,6 +6907,17 @@ func loadModelConfigRelations(db *gorm.DB, configs []tables.TableModelConfig) er
 		}
 	}
 
+	var ownedRequestLimits []tables.TableRateLimit
+	if err := db.Where(queryscope.InStrings(db, "model_config_id", configIDs)).Find(&ownedRequestLimits).Error; err != nil {
+		return err
+	}
+	requestLimitsByConfig := make(map[string][]tables.TableRateLimit, len(configs))
+	for _, rl := range ownedRequestLimits {
+		if rl.ModelConfigID != nil {
+			requestLimitsByConfig[*rl.ModelConfigID] = append(requestLimitsByConfig[*rl.ModelConfigID], rl)
+		}
+	}
+
 	legacyBudgets := make(map[string]tables.TableBudget, len(budgetIDs))
 	if len(budgetIDs) > 0 {
 		var rows []tables.TableBudget
@@ -6911,6 +6943,7 @@ func loadModelConfigRelations(db *gorm.DB, configs []tables.TableModelConfig) er
 	for i := range configs {
 		mc := &configs[i]
 		mc.Budgets = ownedByConfig[mc.ID]
+		mc.RequestLimits = requestLimitsByConfig[mc.ID]
 		if mc.BudgetID != nil {
 			if b, ok := legacyBudgets[*mc.BudgetID]; ok {
 				mc.Budget = &b
@@ -6922,6 +6955,7 @@ func loadModelConfigRelations(db *gorm.DB, configs []tables.TableModelConfig) er
 			}
 		}
 		tables.StampCalendarAlignment(mc.CalendarAligned, mc.Budgets, nil)
+		tables.StampRequestLimitsCalendarAlignment(mc.CalendarAligned, mc.RequestLimits)
 	}
 	return nil
 }
@@ -6930,7 +6964,7 @@ func loadModelConfigRelations(db *gorm.DB, configs []tables.TableModelConfig) er
 func (s *RDBConfigStore) GetProviderGovernanceModelConfigs(ctx context.Context) ([]tables.TableModelConfig, error) {
 	var modelConfigs []tables.TableModelConfig
 	if err := s.DB().WithContext(ctx).
-		Preload("Budgets").Preload("Budget").Preload("RateLimit").
+		Preload("Budgets").Preload("Budget").Preload("RateLimit").Preload("RequestLimits").
 		Where("scope = ? AND model_name = ? AND provider IS NOT NULL", tables.ModelConfigScopeGlobal, tables.ModelConfigAllModels).
 		Find(&modelConfigs).Error; err != nil {
 		return nil, err
@@ -6962,7 +6996,9 @@ func (s *RDBConfigStore) GetModelConfigsPaginated(ctx context.Context, params Mo
 	if params.AppliesToMCP {
 		baseQuery = baseQuery.
 			Where("model_name = ? AND provider IS NULL", tables.ModelConfigAllModels).
-			Where("EXISTS (SELECT 1 FROM governance_budgets WHERE governance_budgets.model_config_id = governance_model_configs.id AND governance_budgets.scope <> ?)", tables.LimitScopeModel)
+			Where("(EXISTS (SELECT 1 FROM governance_budgets WHERE governance_budgets.model_config_id = governance_model_configs.id AND governance_budgets.scope <> ?)"+
+				" OR EXISTS (SELECT 1 FROM governance_rate_limits WHERE governance_rate_limits.model_config_id = governance_model_configs.id AND governance_rate_limits.scope <> ?))",
+				tables.LimitScopeModel, tables.LimitScopeModel)
 	}
 
 	var totalCount int64
@@ -6988,6 +7024,7 @@ func (s *RDBConfigStore) GetModelConfigsPaginated(ctx context.Context, params Mo
 		Preload("Budgets").
 		Preload("Budget").
 		Preload("RateLimit").
+		Preload("RequestLimits").
 		Order("created_at DESC, id DESC").
 		Offset(offset).
 		Limit(limit).
@@ -7012,7 +7049,7 @@ func (s *RDBConfigStore) GetModelConfig(ctx context.Context, scope string, scope
 	} else {
 		query = query.Where("provider IS NULL")
 	}
-	if err := query.Preload("Budgets").Preload("Budget").Preload("RateLimit").First(&modelConfig).Error; err != nil {
+	if err := query.Preload("Budgets").Preload("Budget").Preload("RateLimit").Preload("RequestLimits").First(&modelConfig).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrNotFound
 		}
@@ -7024,7 +7061,7 @@ func (s *RDBConfigStore) GetModelConfig(ctx context.Context, scope string, scope
 // GetModelConfigByID retrieves a specific model config from the database by ID.
 func (s *RDBConfigStore) GetModelConfigByID(ctx context.Context, id string) (*tables.TableModelConfig, error) {
 	var modelConfig tables.TableModelConfig
-	if err := s.DB().WithContext(ctx).Preload("Budgets").Preload("Budget").Preload("RateLimit").First(&modelConfig, "id = ?", id).Error; err != nil {
+	if err := s.DB().WithContext(ctx).Preload("Budgets").Preload("Budget").Preload("RateLimit").Preload("RequestLimits").First(&modelConfig, "id = ?", id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrNotFound
 		}
@@ -7085,6 +7122,10 @@ func (s *RDBConfigStore) deleteModelConfigsWhere(ctx context.Context, txDB *gorm
 		}
 	}
 
+	// Owned request limits carry no FK constraint, so they are deleted explicitly.
+	if err := txDB.WithContext(ctx).Where(queryscope.InStrings(txDB, "model_config_id", mcIDs)).Delete(&tables.TableRateLimit{}).Error; err != nil {
+		return err
+	}
 	if err := txDB.WithContext(ctx).Where(queryscope.InStrings(txDB, "id", mcIDs)).Delete(&tables.TableModelConfig{}).Error; err != nil {
 		return err
 	}
@@ -7126,7 +7167,7 @@ func (s *RDBConfigStore) GetModelConfigsForScope(ctx context.Context, txDB *gorm
 		return nil, fmt.Errorf("GetModelConfigsForScope requires the caller's transaction, got nil tx")
 	}
 	var modelConfigs []tables.TableModelConfig
-	if err := txDB.WithContext(ctx).Preload("Budgets").Preload("RateLimit").
+	if err := txDB.WithContext(ctx).Preload("Budgets").Preload("RateLimit").Preload("RequestLimits").
 		Where("scope = ? AND scope_id = ?", scope, scopeID).
 		Find(&modelConfigs).Error; err != nil {
 		return nil, err
@@ -7274,6 +7315,10 @@ func (s *RDBConfigStore) DeleteModelConfig(ctx context.Context, id string, tx ..
 		budgetIDs = append(budgetIDs, *modelConfig.BudgetID)
 	}
 	rateLimitID := modelConfig.RateLimitID
+	// Owned request limits carry no FK constraint, so they are deleted explicitly.
+	if err := txDB.WithContext(ctx).Where("model_config_id = ?", id).Delete(&tables.TableRateLimit{}).Error; err != nil {
+		return err
+	}
 	// Delete the model config first
 	if err := txDB.WithContext(ctx).Delete(&tables.TableModelConfig{}, "id = ?", id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {

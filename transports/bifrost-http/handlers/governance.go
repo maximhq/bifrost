@@ -4350,14 +4350,19 @@ func validateBudget(budget *configstoreTables.TableBudget) error {
 // Model Config CRUD Operations
 
 // modelConfigAppliesToMCP reports whether MCP tool executions are charged by a model config: it is
-// a holder-level row, and one of its budgets is shared or MCP-only. The in-memory counterpart of
-// ModelConfigsQueryParams.AppliesToMCP.
+// a holder-level row, and one of its budgets or request limits is shared or MCP-only. The in-memory
+// counterpart of ModelConfigsQueryParams.AppliesToMCP.
 func modelConfigAppliesToMCP(mc *configstoreTables.TableModelConfig) bool {
 	if !mc.IsHolderLevel() {
 		return false
 	}
 	for i := range mc.Budgets {
 		if mc.Budgets[i].Scope.AppliesTo(true) {
+			return true
+		}
+	}
+	for i := range mc.RequestLimits {
+		if mc.RequestLimits[i].Scope.AppliesTo(true) {
 			return true
 		}
 	}
@@ -4368,7 +4373,7 @@ func modelConfigAppliesToMCP(mc *configstoreTables.TableModelConfig) bool {
 func (h *GovernanceHandler) getModelConfigs(ctx *fasthttp.RequestCtx) {
 	fromMemory := string(ctx.QueryArgs().Peek("from_memory")) == "true"
 	// applies_to=mcp lists the rows MCP tool executions are charged by (the MCP Budgets & Limits
-	// page): holder-level rows (model "*", no provider) with a shared or mcp budget.
+	// page): holder-level rows (model "*", no provider) with a shared or mcp budget or request limit.
 	appliesTo := string(ctx.QueryArgs().Peek("applies_to"))
 	if appliesTo != "" && appliesTo != "mcp" {
 		SendError(ctx, 400, "Invalid applies_to parameter: must be mcp")
