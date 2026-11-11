@@ -43,6 +43,9 @@ func dbForUpdate(db *gorm.DB) *gorm.DB {
 // GovernanceManager is the interface for the governance manager
 type GovernanceManager interface {
 	GetGovernanceData(ctx context.Context) *governance.GovernanceData
+	// LoadRateLimit returns the governance store's live copy of one rate limit, or nil when the
+	// store does not hold it. Read only; it does not clone the store as GetGovernanceData does.
+	LoadRateLimit(ctx context.Context, id string) *configstoreTables.TableRateLimit
 	ReloadVirtualKey(ctx context.Context, id string) (*configstoreTables.TableVirtualKey, error)
 	// ResetBudgetUsageInMemory clears usage for the given budgets in the store that
 	// enforces spend, leaving each reset boundary untouched. Enterprise also
@@ -605,6 +608,304 @@ func duplicateBudgetPeriodError(b CreateBudgetRequest) error {
 	return &badRequestError{err: fmt.Errorf("duplicate reset_duration %s for scope %s in budgets", b.ResetDuration, b.Scope.Normalize())}
 }
 
+// RequestLimitRequest is one request limit: at most MaxLimit requests per ResetDuration, counted
+// for the traffic Scope selects. A holder may carry several, one per reset period and scope.
+type RequestLimitRequest struct {
+	ID            string                       `json:"id,omitempty"`
+	MaxLimit      int64                        `json:"max_limit"`
+	ResetDuration string                       `json:"reset_duration"`
+	Scope         configstoreTables.LimitScope `json:"scope,omitempty"` // "shared" (default), "model" or "mcp"
+}
+
+// validateRequestLimitScope is validateBudgetRequestScope for request limits: the scope must be known
+// and, on an owner MCP tool executions never reach, not "mcp".
+func validateRequestLimitScope(r RequestLimitRequest, mcpApplicable bool) error {
+	if !r.Scope.IsValid() {
+		return &badRequestError{err: fmt.Errorf("invalid request limit scope: %s (must be one of shared, model, mcp)", r.Scope)}
+	}
+	if !mcpApplicable && r.Scope.Normalize() == configstoreTables.LimitScopeMCP {
+		return &badRequestError{err: fmt.Errorf("request limit scope %s is only supported on request limits that apply to all models and providers", r.Scope)}
+	}
+	return nil
+}
+
+// splitLegacyRateLimitRequest separates the request fields of a rate_limit payload from its token fields,
+// since rate_limit now carries the token limit only and request limits live in request_limits.
+//
+// A client that predates request_limits keeps working: a rate_limit sent without request_limits is
+// read as the full combined state it used to be, so its request fields become one request limit of
+// the default scope and, when it names none, the holder's request limits are removed. Sending both
+// forms is refused, since they would disagree. The returned rate limit is nil when rl is nil, and
+// empty (a removal) when no token limit is left. requestLimits stays nil, leaving the holder's
+// request limits untouched, only when neither rate_limit nor request_limits is sent.
+func splitLegacyRateLimitRequest(rl *UpdateRateLimitRequest, requestLimits []RequestLimitRequest) (*UpdateRateLimitRequest, []RequestLimitRequest, error) {
+	if rl == nil {
+		return nil, requestLimits, nil
+	}
+	if requestLimits != nil && (rl.RequestMaxLimit != nil || rl.RequestResetDuration != nil) {
+		return nil, nil, &badRequestError{err: errors.New("rate_limit.request_max_limit and rate_limit.request_reset_duration cannot be combined with request_limits; send request limits in request_limits")}
+	}
+	tokens := &UpdateRateLimitRequest{}
+	if rl.TokenMaxLimit != nil {
+		tokens.TokenMaxLimit, tokens.TokenResetDuration = rl.TokenMaxLimit, rl.TokenResetDuration
+	}
+	switch {
+	case requestLimits != nil:
+	case rl.RequestMaxLimit != nil:
+		if rl.RequestResetDuration == nil {
+			return nil, nil, &badRequestError{err: errors.New("rate limit request reset duration is required")}
+		}
+		requestLimits = []RequestLimitRequest{{MaxLimit: *rl.RequestMaxLimit, ResetDuration: *rl.RequestResetDuration}}
+	default:
+		requestLimits = []RequestLimitRequest{}
+	}
+	return tokens, requestLimits, nil
+}
+
+// splitLegacyCreateRateLimitRequest is splitLegacyRateLimitRequest for a create payload, where a rate limit with
+// no token limit left is no rate limit at all.
+func splitLegacyCreateRateLimitRequest(rl *CreateRateLimitRequest, requestLimits []RequestLimitRequest) (*CreateRateLimitRequest, []RequestLimitRequest, error) {
+	tokens, requestLimits, err := splitLegacyRateLimitRequest((*UpdateRateLimitRequest)(rl), requestLimits)
+	if err != nil || tokens == nil || tokens.TokenMaxLimit == nil {
+		return nil, requestLimits, err
+	}
+	return (*CreateRateLimitRequest)(tokens), requestLimits, nil
+}
+
+// holderRateLimitUpdate is how updateHolderRateLimit left a holder's rate_limit_id.
+type holderRateLimitUpdate struct {
+	rateLimitID *string                           // the holder's rate_limit_id from now on
+	rateLimit   *configstoreTables.TableRateLimit // the row it names
+	deleteID    string                            // a row to delete once the holder no longer names it
+	carry       *configstoreTables.TableRateLimit // a combined row's request part; see reconcileRequestLimits
+	sharedID    string                            // a shared combined row the holder moved off; see restoreSharedRateLimit
+}
+
+// updateHolderRateLimit applies an update that sets a holder's rate limit or request limits to the
+// row its rate_limit_id names. tokens is the token-only rate_limit, or nil when only request_limits
+// were sent, which leaves the token limit as it is.
+//
+// A combined row, carrying a request limit an earlier release left on it (a row several holders
+// share, which the migration could not split, or one propagated so), stops speaking for this holder's
+// requests: the holder's request limits are exactly its request limits from now on. A row only this
+// holder names drops its request fields; a shared row is left as it is for its other holders, and
+// this holder moves to a token-only copy of it. Either way the row's request part is returned as
+// carry, so a new request limit of the same period takes over its counter, and its live usage is
+// written to the store first so the other holders reload it intact. A row left with no limit at all
+// is deleted, or for a shared row simply not copied.
+func (h *GovernanceHandler) updateHolderRateLimit(ctx context.Context, tx *gorm.DB, rateLimitID string, tokens *UpdateRateLimitRequest) (holderRateLimitUpdate, error) {
+	row := configstoreTables.TableRateLimit{}
+	if err := tx.First(&row, "id = ?", rateLimitID).Error; err != nil {
+		return holderRateLimitUpdate{}, err
+	}
+	combined := row.RequestMaxLimit != nil && !row.IsRequestLimit()
+	if !combined && tokens == nil {
+		return holderRateLimitUpdate{rateLimitID: &row.ID, rateLimit: &row}, nil
+	}
+	tokenMax, tokenDur := row.TokenMaxLimit, row.TokenResetDuration
+	if tokens != nil {
+		tokenMax, tokenDur = nil, nil
+		if tokens.TokenMaxLimit != nil {
+			tokenMax, tokenDur = tokens.TokenMaxLimit, tokens.TokenResetDuration
+		}
+	}
+	var update holderRateLimitUpdate
+	shared := false
+	if combined {
+		// Without a live copy the stored usage stands.
+		if live := h.governanceManager.LoadRateLimit(ctx, row.ID); live != nil {
+			row.TokenCurrentUsage, row.TokenLastReset = live.TokenCurrentUsage, live.TokenLastReset
+			row.RequestCurrentUsage, row.RequestLastReset = live.RequestCurrentUsage, live.RequestLastReset
+			if err := h.configStore.UpdateRateLimitUsage(ctx, row.ID, row.TokenCurrentUsage, row.RequestCurrentUsage, tx); err != nil {
+				return holderRateLimitUpdate{}, err
+			}
+		}
+		carry := row
+		update.carry = &carry
+		// Counted as the migration split_request_limits_from_rate_limits counts them: across every
+		// table with a rate_limit_id column, so a row any other table names is shared.
+		references, err := configstore.CountRateLimitReferences(tx, []string{row.ID})
+		if err != nil {
+			return holderRateLimitUpdate{}, fmt.Errorf("failed to count the holders of rate limit %s: %w", row.ID, err)
+		}
+		shared = references[row.ID] > 1
+	}
+	if shared {
+		update.sharedID = row.ID
+		if tokenMax == nil {
+			return update, nil
+		}
+		tokenCopy := configstoreTables.TableRateLimit{
+			ID:                 uuid.NewString(),
+			TokenMaxLimit:      tokenMax,
+			TokenResetDuration: tokenDur,
+			TokenCurrentUsage:  row.TokenCurrentUsage,
+			TokenLastReset:     row.TokenLastReset,
+			RequestLastReset:   time.Now(),
+		}
+		if err := validateRateLimit(&tokenCopy); err != nil {
+			return holderRateLimitUpdate{}, err
+		}
+		if err := h.configStore.CreateRateLimit(ctx, &tokenCopy, tx); err != nil {
+			return holderRateLimitUpdate{}, err
+		}
+		update.rateLimitID, update.rateLimit = &tokenCopy.ID, &tokenCopy
+		return update, nil
+	}
+	row.TokenMaxLimit, row.TokenResetDuration = tokenMax, tokenDur
+	row.RequestMaxLimit, row.RequestResetDuration = nil, nil
+	if tokenMax == nil {
+		update.deleteID = row.ID
+		return update, nil
+	}
+	if err := validateRateLimit(&row); err != nil {
+		return holderRateLimitUpdate{}, err
+	}
+	if err := h.configStore.UpdateRateLimit(ctx, &row, tx); err != nil {
+		return holderRateLimitUpdate{}, err
+	}
+	update.rateLimitID, update.rateLimit = &row.ID, &row
+	return update, nil
+}
+
+// restoreSharedRateLimit puts a shared rate limit back in the governance store after a holder moved
+// off it: reloading a team or customer evicts the row it no longer names, though the row's other
+// holders still name it. Each of them is reloaded, which reads the row (with the usage
+// updateHolderRateLimit stored) back in. A failed reload is logged; the row returns on the next reload.
+func (h *GovernanceHandler) restoreSharedRateLimit(ctx context.Context, rateLimitID string) {
+	ids := func(model any, column string) []string {
+		var out []string
+		if err := h.configStore.DB().WithContext(ctx).Model(model).Where("rate_limit_id = ?", rateLimitID).Pluck(column, &out).Error; err != nil {
+			logger.Error("failed to read the holders of shared rate limit %s: %v", rateLimitID, err)
+		}
+		return out
+	}
+	for _, id := range ids(&configstoreTables.TableTeam{}, "id") {
+		if _, err := h.governanceManager.ReloadTeam(ctx, id); err != nil {
+			logger.Error("failed to reload team %s sharing rate limit %s: %v", id, rateLimitID, err)
+		}
+	}
+	for _, id := range ids(&configstoreTables.TableCustomer{}, "id") {
+		if _, err := h.governanceManager.ReloadCustomer(ctx, id); err != nil {
+			logger.Error("failed to reload customer %s sharing rate limit %s: %v", id, rateLimitID, err)
+		}
+	}
+	for _, id := range ids(&configstoreTables.TableModelConfig{}, "id") {
+		if _, err := h.governanceManager.ReloadModelConfig(ctx, id); err != nil {
+			logger.Error("failed to reload model config %s sharing rate limit %s: %v", id, rateLimitID, err)
+		}
+	}
+	vkIDs := append(ids(&configstoreTables.TableVirtualKey{}, "id"), ids(&configstoreTables.TableVirtualKeyProviderConfig{}, "virtual_key_id")...)
+	for _, id := range vkIDs {
+		if _, err := h.governanceManager.ReloadVirtualKey(ctx, id); err != nil {
+			logger.Error("failed to reload virtual key %s sharing rate limit %s: %v", id, rateLimitID, err)
+		}
+	}
+	for _, name := range ids(&configstoreTables.TableProvider{}, "name") {
+		if _, err := h.governanceManager.ReloadProvider(ctx, schemas.ModelProvider(name), false); err != nil {
+			logger.Error("failed to reload provider %s sharing rate limit %s: %v", name, rateLimitID, err)
+		}
+	}
+}
+
+// reconcileRequestLimits makes a holder's request limits the requested set, the way the budget
+// reconcilers do for budgets: each request is validated and scoped (mcpApplicable says whether the holder's limits reach MCP traffic, see validateRequestLimitScope), two requests
+// sharing a reset period and scope are refused, and a request matches an existing rule by ID, else
+// by reset period and scope. A matched rule is updated in place, which keeps its counter; an
+// unmatched request creates a rule, owned through setOwner; an existing rule nothing matched is
+// deleted. A created rule of the same reset period as carry, the request part of a combined rate
+// limit the holder just left (see updateHolderRateLimit), and scope shared takes over its counter.
+// It returns the reconciled rules for the caller to set on the holder before saving it.
+func (h *GovernanceHandler) reconcileRequestLimits(ctx context.Context, tx *gorm.DB, existing []configstoreTables.TableRateLimit, requests []RequestLimitRequest, mcpApplicable bool, setOwner func(*configstoreTables.TableRateLimit), carry *configstoreTables.TableRateLimit) ([]configstoreTables.TableRateLimit, error) {
+	requests = append([]RequestLimitRequest(nil), requests...)
+	seen := make(map[string]bool, len(requests))
+	claimedIDs := make(map[string]bool, len(requests))
+	for i := range requests {
+		r := &requests[i]
+		if err := validateRequestLimitScope(*r, mcpApplicable); err != nil {
+			return nil, err
+		}
+		r.Scope = r.Scope.Normalize()
+		if r.MaxLimit <= 0 {
+			return nil, &badRequestError{err: fmt.Errorf("request limit max_limit must be greater than zero: %d", r.MaxLimit)}
+		}
+		if d, err := configstoreTables.ParseDuration(r.ResetDuration); err != nil || d <= 0 {
+			return nil, &badRequestError{err: fmt.Errorf("invalid request limit reset duration (must be a positive duration): %s", r.ResetDuration)}
+		}
+		key := configstoreTables.LimitPeriodKey(r.ResetDuration, r.Scope)
+		if seen[key] {
+			return nil, &badRequestError{err: fmt.Errorf("duplicate reset_duration %s for scope %s in request_limits", r.ResetDuration, r.Scope)}
+		}
+		seen[key] = true
+		if r.ID != "" {
+			claimedIDs[r.ID] = true
+		}
+	}
+	// As in buildBudgetLookup, a rule claimed by ID is never matched by period.
+	byID := make(map[string]configstoreTables.TableRateLimit, len(existing))
+	byPeriod := make(map[string]configstoreTables.TableRateLimit, len(existing))
+	for _, rl := range existing {
+		byID[rl.ID] = rl
+		if !claimedIDs[rl.ID] {
+			byPeriod[rl.RequestPeriodKey()] = rl
+		}
+	}
+	reconciled := make([]configstoreTables.TableRateLimit, 0, len(requests))
+	matched := make(map[string]bool, len(existing))
+	now := time.Now()
+	for _, r := range requests {
+		maxLimit, duration := r.MaxLimit, r.ResetDuration
+		var row configstoreTables.TableRateLimit
+		found := false
+		if r.ID != "" {
+			if row, found = byID[r.ID]; !found {
+				return nil, &badRequestError{err: fmt.Errorf("request limit %s does not belong to this entity", r.ID)}
+			}
+		} else {
+			row, found = byPeriod[configstoreTables.LimitPeriodKey(r.ResetDuration, r.Scope)]
+		}
+		if found {
+			delete(byID, row.ID)
+			delete(byPeriod, row.RequestPeriodKey())
+			row.RequestMaxLimit, row.RequestResetDuration, row.Scope = &maxLimit, &duration, r.Scope
+			if err := h.configStore.UpdateRateLimit(ctx, &row, tx); err != nil {
+				return nil, err
+			}
+			matched[row.ID] = true
+		} else {
+			row = configstoreTables.TableRateLimit{
+				ID:                   uuid.NewString(),
+				RequestMaxLimit:      &maxLimit,
+				RequestResetDuration: &duration,
+				Scope:                r.Scope,
+				TokenLastReset:       now,
+				RequestLastReset:     now,
+			}
+			setOwner(&row)
+			if carry != nil && carry.RequestResetDuration != nil && r.Scope == configstoreTables.LimitScopeShared && *carry.RequestResetDuration == r.ResetDuration {
+				row.RequestCurrentUsage, row.RequestLastReset = carry.RequestCurrentUsage, carry.RequestLastReset
+				// CreatedAt anchors the reset windows, so the rule keeps the combined row's.
+				if !carry.CreatedAt.IsZero() {
+					row.CreatedAt = carry.CreatedAt
+				}
+				carry = nil
+			}
+			if err := h.configStore.CreateRateLimit(ctx, &row, tx); err != nil {
+				return nil, err
+			}
+		}
+		reconciled = append(reconciled, row)
+	}
+	for _, rl := range existing {
+		if !matched[rl.ID] {
+			if err := h.configStore.DeleteRateLimit(ctx, rl.ID, tx); err != nil && !errors.Is(err, configstore.ErrNotFound) {
+				return nil, fmt.Errorf("failed to delete removed request limit: %w", err)
+			}
+		}
+	}
+	return reconciled, nil
+}
+
 // UpdateBudgetRequest represents the request body for updating a budget
 type UpdateBudgetRequest struct {
 	MaxLimit      *float64                             `json:"max_limit,omitempty"`
@@ -1013,6 +1314,19 @@ func (h *GovernanceHandler) reconcileModelConfigBudgets(ctx context.Context, tx 
 		}
 	}
 	mc.Budgets = reconciled
+	return nil
+}
+
+// reconcileModelConfigRequestLimits makes a model config's request limits the requested set, scoped
+// by the config's tier (any scope on the holder-level row, shared or model elsewhere). The model config row
+// must already exist. It mutates mc.RequestLimits to the reconciled set.
+func (h *GovernanceHandler) reconcileModelConfigRequestLimits(ctx context.Context, tx *gorm.DB, mc *configstoreTables.TableModelConfig, requests []RequestLimitRequest, carry *configstoreTables.TableRateLimit) error {
+	reconciled, err := h.reconcileRequestLimits(ctx, tx, mc.RequestLimits, requests, mc.IsHolderLevel(),
+		func(rl *configstoreTables.TableRateLimit) { rl.ModelConfigID = &mc.ID }, carry)
+	if err != nil {
+		return err
+	}
+	mc.RequestLimits = reconciled
 	return nil
 }
 
