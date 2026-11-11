@@ -1,3 +1,4 @@
+import BudgetScopeBadge from "@/components/ui/budgetScopeBadge";
 import { CalendarAlignmentNotice } from "@/components/calendarAlignmentNotice";
 import { calendarWindowDurations, isMultiUnitDuration } from "@/lib/constants/governance";
 import { CustomerSelector } from "@/components/entitySelectors/customerSelector";
@@ -621,7 +622,10 @@ export default function TeamSheet({ team, onSave, onCancel }: TeamSheetProps) {
 								<div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
 									{team?.budgets?.map((b) => (
 										<div key={b.id} className="space-y-1">
-											<p className="text-muted-foreground text-xs">{t("sheet.budgetDuration", { duration: b.reset_duration })}</p>
+											<p className="text-muted-foreground flex items-center gap-1.5 text-xs">
+												{t("sheet.budgetDuration", { duration: b.reset_duration })}
+												<BudgetScopeBadge scope={b.scope} />
+											</p>
 											<div className="flex items-center gap-2">
 												<span className="font-mono text-sm">
 													{formatCurrency(b.current_usage)} / {formatCurrency(b.max_limit)}

@@ -204,11 +204,13 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 				max_limit: b.max_limit,
 				reset_duration: b.reset_duration,
 				reset_config: b.reset_config,
+				scope: b.scope,
 			}));
 		const current = (modelConfig.budgets ?? []).map((b) => ({
 			max_limit: b.max_limit ?? undefined,
 			reset_duration: b.reset_duration,
 			reset_config: b.reset_config,
+			scope: b.scope,
 		}));
 		return budgetSignature(next) !== budgetSignature(current);
 	};
@@ -247,7 +249,8 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 					max_limit: b.max_limit as number,
 					reset_duration: b.reset_duration || "1M",
 					reset_config: b.reset_config,
-					scope: scopeApplies ? b.scope : undefined,
+					// An all-models limit keeps its scope; a narrower one is reached by model requests only, so it keeps "model" and drops "mcp".
+					scope: scopeApplies || b.scope !== "mcp" ? b.scope : undefined,
 				}));
 
 			if (isEditing && modelConfig) {

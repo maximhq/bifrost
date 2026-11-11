@@ -136,7 +136,7 @@ export default function MultiBudgetLines({
 				const isDuplicate = (usedPeriods.get(periodKeyOf(line)) || 0) > 1;
 				return (
 					<div key={index} className="space-y-1" data-testid={`${testId}-line-${index}`}>
-						<div className="flex items-end gap-2">
+						<div className={showScope ? "flex flex-col gap-2 sm:flex-row sm:items-end" : "flex items-end gap-2"}>
 							<div className="flex-1">
 								<NumberAndSelect
 									id={`${testId}-${index}`}
@@ -174,8 +174,9 @@ export default function MultiBudgetLines({
 						{isQuarterly(line.reset_duration) && (
 							// mr-10 (40px) = the remove button (w-8) + its gap-2, so the fiscal-year
 							// row shares its right edge with the Reset Period select above it; with the
-							// scope column (w-40 + gap-2) in between, that edge moves to mr-52 (208px).
-							<div className={showScope ? "mr-52" : "mr-10"}>
+							// scope column (w-40 + gap-2) in between, that edge moves to mr-52 (208px). Below the sm
+							// breakpoint the scope column stacks under the amount, so no offset is needed.
+							<div className={showScope ? "sm:mr-52" : "mr-10"}>
 								<QuarterStartSelect
 									data-testid={`${testId}-quarter-config-${index}`}
 									value={line.reset_config?.quarter_start_month}
