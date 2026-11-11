@@ -3020,3 +3020,58 @@ func TestProxyRequestHandlerDeferredAndClosedOperations(t *testing.T) {
 	require.ErrorIs(t, err, a2a.ErrPushNotificationNotSupported)
 	require.ErrorIs(t, handler.DeleteTaskPushConfig(context.Background(), &a2a.DeleteTaskPushConfigRequest{}), a2a.ErrPushNotificationNotSupported)
 }
+
+// TestHTTPJSONErrorResponseMediaTypes preserves protocol errors for both A2A
+// JSON media types while keeping non-JSON and other transports on the status path.
+func TestHTTPJSONErrorResponseMediaTypes(t *testing.T) {
+	for _, tc := range []struct {
+		contentType string
+		want        bool
+	}{
+		{"application/json", true},
+		{"application/a2a+json", true},
+		{"application/json; charset=utf-8", true},
+		{"application/a2a+json; charset=utf-8", true},
+		{"Application/A2A+JSON", true},
+		{"application/a2a+json; broken", false},
+		{"application/jsonp", false},
+		{"application/a2a+json-extra", false},
+		{"text/html", false},
+		{"", false},
+	} {
+		for _, transport := range []a2a.TransportProtocol{a2a.TransportProtocolHTTPJSON, a2a.TransportProtocolJSONRPC, a2a.TransportProtocolGRPC, ""} {
+			t.Run(string(transport)+"/"+tc.contentType, func(t *testing.T) {
+				req, err := http.NewRequest(http.MethodPost, "http://agent.example/tasks/missing:cancel", nil)
+				require.NoError(t, err)
+				req = req.WithContext(context.WithValue(req.Context(), schemas.BifrostContextKeyA2AUpstreamTransport, string(transport)))
+				resp := &http.Response{Header: http.Header{"Content-Type": []string{tc.contentType}}}
+				require.Equal(t, tc.want && transport == a2a.TransportProtocolHTTPJSON, isHTTPJSONErrorResponse(req, resp))
+			})
+		}
+	}
+}
+
+// BenchmarkHTTPJSONErrorResponse measures only non-200 response classification;
+// successful requests bypass this function in credentialTransport.RoundTrip.
+func BenchmarkHTTPJSONErrorResponse(b *testing.B) {
+	for _, tc := range []struct{ name, transport, contentType string }{
+		{"JSON", string(a2a.TransportProtocolHTTPJSON), "application/json"},
+		{"A2AJSON", string(a2a.TransportProtocolHTTPJSON), "application/a2a+json"},
+		{"A2AJSONParameters", string(a2a.TransportProtocolHTTPJSON), "application/a2a+json; charset=utf-8"},
+		{"OtherTransport", string(a2a.TransportProtocolJSONRPC), "application/json"},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			req, err := http.NewRequest(http.MethodPost, "http://agent.example/tasks/missing:cancel", nil)
+			if err != nil {
+				b.Fatal(err)
+			}
+			req = req.WithContext(context.WithValue(req.Context(), schemas.BifrostContextKeyA2AUpstreamTransport, tc.transport))
+			resp := &http.Response{Header: http.Header{"Content-Type": []string{tc.contentType}}}
+			b.ReportAllocs()
+			b.ResetTimer()
+			for b.Loop() {
+				isHTTPJSONErrorResponse(req, resp)
+			}
+		})
+	}
+}
