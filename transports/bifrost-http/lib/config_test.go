@@ -28136,6 +28136,53 @@ func TestSQLite_SourceOfTruthKeepsTierHoldingOnlyALegacyRequestLimit(t *testing.
 	assert.NoError(t, err, "the prune deleted the key's tier")
 }
 
+// TestSQLite_StaleLegacyKeyModelConfigRequestLimitIsRemoved: a virtual key's model config that declares a
+// legacy combined rate limit follows the file like any other owner's when nothing governs the key: once the
+// declared rate limit has no request fields, the request limit split from it goes, with the key's own
+// declaration unchanged.
+func TestSQLite_StaleLegacyKeyModelConfigRequestLimitIsRemoved(t *testing.T) {
+	ctx := context.Background()
+	initTestLogger()
+	limit := func(n int64) *int64 { return &n }
+	dir := createTempDir(t)
+	declare := func(rl configstoreTables.TableRateLimit) *ConfigData {
+		cd := makeConfigDataWithProvidersAndDir(nil, dir)
+		cd.Governance = &configstore.GovernanceConfig{
+			RateLimits: []configstoreTables.TableRateLimit{rl},
+			ModelConfigs: []configstoreTables.TableModelConfig{{
+				ID: "mc-1", ModelName: configstoreTables.ModelConfigAllModels, Scope: configstoreTables.ModelConfigScopeVirtualKey,
+				ScopeID: bifrost.Ptr("vk-1"), RateLimitID: bifrost.Ptr(rl.ID),
+			}},
+			VirtualKeys: []configstoreTables.TableVirtualKey{{ID: "vk-1", Name: "vk-1", Value: *schemas.NewSecretVar("sk-bf-vk-1"), IsActive: schemas.Ptr(true)}},
+		}
+		return cd
+	}
+	rules := func(c *Config) []string {
+		t.Helper()
+		var held []configstoreTables.TableRateLimit
+		require.NoError(t, c.ConfigStore.DB().Where("model_config_id = ?", "mc-1").Find(&held).Error)
+		ids := []string{}
+		for _, rl := range held {
+			ids = append(ids, rl.ID)
+		}
+		return ids
+	}
+
+	createConfigFile(t, dir, declare(configstoreTables.TableRateLimit{
+		ID: "mc-rl", TokenMaxLimit: limit(1000), TokenResetDuration: bifrost.Ptr("1h"), RequestMaxLimit: limit(10), RequestResetDuration: bifrost.Ptr("1m"),
+	}))
+	first, err := LoadConfig(ctx, dir)
+	require.NoError(t, err)
+	require.Equal(t, []string{"mc-rl-requests"}, rules(first))
+	first.Close(ctx)
+
+	createConfigFile(t, dir, declare(configstoreTables.TableRateLimit{ID: "mc-rl", TokenMaxLimit: limit(1000), TokenResetDuration: bifrost.Ptr("1h")}))
+	second, err := LoadConfig(ctx, dir)
+	require.NoError(t, err)
+	defer second.Close(ctx)
+	assert.Empty(t, rules(second), "the request limit outlived its declaration on an ungoverned key's model config")
+}
+
 // TestSQLite_StaleLegacyHolderRequestLimitIsRemoved pins that a team's request limit split from a
 // legacy rate limit follows the file: when the declared rate limit loses its request fields, or the
 // team is repointed to another rate limit, the derived rule goes, and a request limit the API added

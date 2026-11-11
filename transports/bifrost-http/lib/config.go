@@ -5102,14 +5102,37 @@ func removeStaleLegacyRequestLimits(ctx context.Context, config *Config, configD
 		return false
 	}
 	fileRateLimitIDs := declarationsInFile(configData.Governance).rateLimitIDs
-	keyModelConfigs := make(map[string]bool)
+	// A virtual key's model config is left alone when an access profile governs the key (or the lookup
+	// cannot say); one whose key nothing governs is cleaned up like any other owner's.
+	keyOfModelConfig := make(map[string]string)
 	for _, mc := range configData.Governance.ModelConfigs {
-		if mc.Scope == configstoreTables.ModelConfigScopeVirtualKey && !sourceOfTruth {
-			keyModelConfigs[mc.ID] = true
+		if mc.Scope == configstoreTables.ModelConfigScopeVirtualKey && mc.ScopeID != nil && !sourceOfTruth {
+			keyOfModelConfig[mc.ID] = *mc.ScopeID
 		}
 	}
+	keyGoverned := make(map[string]bool)
+	isKeyGoverned := func(vkID string) bool {
+		if answer, ok := keyGoverned[vkID]; ok {
+			return answer
+		}
+		answer := true // unknown stays protected
+		if vk, err := config.ConfigStore.GetVirtualKey(ctx, vkID); err == nil && vk != nil {
+			if kind, id := virtualKeyLegacyLimitHolder(vk); kind == "" {
+				answer = false
+			} else {
+				answer = governed(kind, id)
+			}
+		}
+		keyGoverned[vkID] = answer
+		return answer
+	}
 	skipOwner := func(rl configstoreTables.TableRateLimit) bool {
-		return (rl.ModelConfigID != nil && keyModelConfigs[*rl.ModelConfigID]) || skip(rl)
+		if rl.ModelConfigID != nil {
+			if vkID, ok := keyOfModelConfig[*rl.ModelConfigID]; ok && isKeyGoverned(vkID) {
+				return true
+			}
+		}
+		return skip(rl)
 	}
 	if err := config.ConfigStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
 		return deleteStaleLegacyRequestLimits(ctx, config.ConfigStore, tx, configData.Governance, fileRateLimitIDs, configData.legacyTierRequestLimits, skipOwner)

@@ -4450,6 +4450,9 @@ func migrationSplitRequestLimitsFromRateLimits(ctx context.Context, db *gorm.DB,
 		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
+			if err := setMigrationLockTimeout(tx); err != nil {
+				return err
+			}
 			for _, field := range []string{"Scope", "ModelConfigID", "TeamID", "CustomerID"} {
 				if err := addColumnIfNotExists(tx, logger, &tables.TableRateLimit{}, field); err != nil {
 					return fmt.Errorf("failed to add %s column to governance_rate_limits: %w", field, err)
