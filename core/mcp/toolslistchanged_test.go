@@ -276,7 +276,7 @@ func TestCleanupCancelsPendingMCPConnection(t *testing.T) {
 			go func() {
 				defer close(done)
 				if mode == "boot" {
-					m.ConnectConfiguredClients(requestCtx)
+					m.ConnectConfiguredClients(requestCtx, nil)
 					connected <- nil
 					return
 				}

@@ -564,7 +564,7 @@ func TestConnectConfiguredClientsAfterCleanupDoesNotRecover(t *testing.T) {
 	t.Cleanup(func() { _ = m.Cleanup() })
 	require.NoError(t, m.Cleanup())
 
-	m.ConnectConfiguredClients(context.Background())
+	m.ConnectConfiguredClients(context.Background(), nil)
 
 	_, exists := snapshotClientState(m, config.ID)
 	assert.False(t, exists, "boot recovery must not restore a client after cleanup")
@@ -578,7 +578,7 @@ func TestClientConnectionCheckerDoesNotStartAfterCleanup(t *testing.T) {
 		t.Run(mode, func(t *testing.T) {
 			m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
 			t.Cleanup(func() { _ = m.Cleanup() })
-			state, config := newSyncTestClientState("cleaned-up-checker", "matrix", schemas.MCPAuthTypeHeaders, nil)
+			state, config := newSyncTestClientState("cleaned-up-checker", "matrix", schemas.MCPAuthTypeHeaders)
 			m.clientMap[config.ID] = state
 			checker := NewClientConnectionChecker(m, config.ID, time.Hour, false, &MockLogger{})
 			t.Cleanup(checker.Stop)

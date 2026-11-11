@@ -1047,7 +1047,7 @@ func (m *MCPManager) addClient(requestCtx context.Context, config *schemas.MCPCl
 	m.mu.Lock()
 	if m.ctx != nil && m.ctx.Err() != nil {
 		m.mu.Unlock()
-		return m.ctx.Err()
+		return false, m.ctx.Err()
 	}
 
 	if _, ok := m.clientMap[config.ID]; ok {
@@ -1217,7 +1217,7 @@ func (m *MCPManager) addClient(requestCtx context.Context, config *schemas.MCPCl
 			}
 		}
 		if m.ctx != nil && m.ctx.Err() != nil {
-			return m.ctx.Err()
+			return false, m.ctx.Err()
 		}
 		// Start the connection checker so this client's tools stay current
 		// going forward. Released BEFORE this, mirroring connectToMCPClient's
