@@ -116,10 +116,10 @@ func (h *OAuth2ConsentHandler) flowDetail(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, metadataErr.httpStatus(), metadataErr.description)
 		return
 	}
-	if errors.Is(err, configstore.ErrNotFound) && req.ClientID == claudeCodeClientID {
-		// The orphaned-client sweep may remove the built-in Claude Code client
+	if gw := clientGatewayProfileByClientID(req.ClientID); gw != nil && errors.Is(err, configstore.ErrNotFound) {
+		// The orphaned-client sweep may remove a client gateway's built-in client
 		// while a sign-in is in flight; it needs no registration to be named.
-		client, err = &configtables.TableOAuth2Client{ClientID: claudeCodeClientID, ClientName: claudeCodeClientName}, nil
+		client, err = &configtables.TableOAuth2Client{ClientID: gw.ClientID(), ClientName: gw.DisplayName()}, nil
 	}
 	if err != nil || client == nil {
 		if errors.Is(err, configstore.ErrNotFound) {
@@ -226,7 +226,7 @@ func (h *OAuth2ConsentHandler) flowSubmit(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	// A device-grant flow (Claude Code gateway sign-in) has no redirect to carry
+	// A device-grant flow (client gateway sign-in) has no redirect to carry
 	// an authorization code: consent alone completes it, and the device's next
 	// token poll consumes the row. Every other flow mints a code.
 	isDeviceFlow := req.DeviceCodeHash != nil
@@ -268,7 +268,7 @@ func (h *OAuth2ConsentHandler) flowSubmit(ctx *fasthttp.RequestCtx) {
 
 	issuer := oauth2IssuerURL(ctx, h.store)
 	if isDeviceFlow {
-		SendJSON(ctx, consentFlowSubmitResponse{RedirectURL: claudeCodeDeviceApprovedURL(issuer)})
+		SendJSON(ctx, consentFlowSubmitResponse{RedirectURL: clientGatewayDeviceApprovedURL(issuer)})
 		return
 	}
 	redirectURL, err := buildRedirectURL(req.RedirectURI, map[string]string{
@@ -311,7 +311,7 @@ func (h *OAuth2ConsentHandler) loadPendingFlow(ctx *fasthttp.RequestCtx, flowID 
 		SendError(ctx, fasthttp.StatusGone, "authorization flow has expired")
 		return nil
 	}
-	// Device-grant rows (Claude Code gateway sign-in) carry no redirect_uri: consent
+	// Device-grant rows (client gateway sign-in) carry no redirect_uri: consent
 	// sends the browser to Bifrost's own /oauth/device page, so there is nothing to approve.
 	if req.DeviceCodeHash == nil && !oauth2RedirectAllowed(h.store, req.RedirectURI) {
 		SendError(ctx, fasthttp.StatusBadRequest, "redirect_uri is no longer approved")
