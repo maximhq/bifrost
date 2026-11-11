@@ -1,8 +1,11 @@
 package tables
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"time"
+	"unicode/utf8"
 
 	"gorm.io/gorm"
 )
@@ -67,11 +70,27 @@ func (rl *TableRateLimit) RequestPeriodKey() string {
 	return LimitPeriodKey(duration, rl.Scope)
 }
 
+// legacyRequestLimitSuffix ends every ID LegacyRequestLimitID returns.
+const legacyRequestLimitSuffix = "-requests"
+
+// maxRateLimitIDLength is the width of TableRateLimit.ID (varchar(255)).
+const maxRateLimitIDLength = 255
+
 // LegacyRequestLimitID is the ID of the request limit split out of the combined
 // rate limit rateLimitID. Deterministic so the migration and the config.json
-// loader produce identical rows.
+// loader produce identical rows. An ID too long to take the suffix within the column is cut
+// and carries a hash of the whole ID instead, so two long IDs sharing a prefix stay distinct.
 func LegacyRequestLimitID(rateLimitID string) string {
-	return rateLimitID + "-requests"
+	if len(rateLimitID)+len(legacyRequestLimitSuffix) <= maxRateLimitIDLength {
+		return rateLimitID + legacyRequestLimitSuffix
+	}
+	sum := sha256.Sum256([]byte(rateLimitID))
+	tag := "-" + hex.EncodeToString(sum[:8])
+	keep := maxRateLimitIDLength - len(legacyRequestLimitSuffix) - len(tag)
+	for keep > 0 && !utf8.RuneStart(rateLimitID[keep]) {
+		keep--
+	}
+	return rateLimitID[:keep] + tag + legacyRequestLimitSuffix
 }
 
 // BeforeSave hook for RateLimit to validate reset duration formats

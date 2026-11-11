@@ -593,6 +593,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_usage_estimation_tokenizers_json_column"}, run: migrationAddUsageEstimationTokenizersJSONColumn},
 	{IDs: []string{"add_budget_scope_column"}, run: migrationAddBudgetScopeColumn},
 	{IDs: []string{"split_request_limits_from_rate_limits"}, run: migrationSplitRequestLimitsFromRateLimits},
+	{IDs: []string{"add_rate_limit_owner_indexes"}, run: migrationAddRateLimitOwnerIndexes},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -4449,7 +4450,6 @@ func migrationSplitRequestLimitsFromRateLimits(ctx context.Context, db *gorm.DB,
 		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			mg := tx.Migrator()
 			for _, field := range []string{"Scope", "ModelConfigID", "TeamID", "CustomerID"} {
 				if err := addColumnIfNotExists(tx, logger, &tables.TableRateLimit{}, field); err != nil {
 					return fmt.Errorf("failed to add %s column to governance_rate_limits: %w", field, err)
@@ -4458,14 +4458,7 @@ func migrationSplitRequestLimitsFromRateLimits(ctx context.Context, db *gorm.DB,
 			if err := tx.Exec(`UPDATE governance_rate_limits SET scope = 'shared' WHERE scope IS NULL OR scope = ''`).Error; err != nil {
 				return fmt.Errorf("failed to backfill rate limit scope: %w", err)
 			}
-			// AddColumn does not create indexes from struct tags.
-			for _, field := range []string{"ModelConfigID", "TeamID", "CustomerID"} {
-				if !mg.HasIndex(&tables.TableRateLimit{}, field) {
-					if err := mg.CreateIndex(&tables.TableRateLimit{}, field); err != nil {
-						return fmt.Errorf("failed to create index on governance_rate_limits.%s: %w", field, err)
-					}
-				}
-			}
+			// The owner indexes are built by add_rate_limit_owner_indexes, outside this transaction.
 			return splitLegacyRequestLimits(tx, logger, migrationName)
 		},
 		Rollback: func(tx *gorm.DB) error {
@@ -4473,6 +4466,47 @@ func migrationSplitRequestLimitsFromRateLimits(ctx context.Context, db *gorm.DB,
 		},
 	}})
 	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// rateLimitOwnerIndexes are the owner indexes of governance_rate_limits, by index name and column.
+var rateLimitOwnerIndexes = [][2]string{
+	{"idx_governance_rate_limits_model_config_id", "model_config_id"},
+	{"idx_governance_rate_limits_team_id", "team_id"},
+	{"idx_governance_rate_limits_customer_id", "customer_id"},
+}
+
+// migrationAddRateLimitOwnerIndexes builds the owner indexes split_request_limits_from_rate_limits
+// leaves for it, concurrently on Postgres, which cannot run inside the migration's transaction.
+func migrationAddRateLimitOwnerIndexes(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_rate_limit_owner_indexes"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	noTxOpts := *migrator.DefaultOptions
+	noTxOpts.UseTransaction = false
+	if err := RunSingleMigration(ctx, &noTxOpts, db, logger, &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, index := range rateLimitOwnerIndexes {
+				if err := ensureIndexConcurrently(tx, "governance_rate_limits", index[0], index[1], false); err != nil {
+					return fmt.Errorf("failed to create index %s: %w", index[0], err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, index := range rateLimitOwnerIndexes {
+				if err := dropIndexConcurrently(tx, "governance_rate_limits", index[0]); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}); err != nil {
 		return fmt.Errorf("error running %s migration: %w", migrationName, err)
 	}
 	return nil
@@ -4514,6 +4548,13 @@ func CountRateLimitReferences(tx *gorm.DB, ids []string) (map[string]int, error)
 		}
 	}
 	return references, nil
+}
+
+// sameRateLimitOwner reports whether two rate limits name the same model config, team or customer
+// as owner, and that owner is set.
+func sameRateLimitOwner(a, b tables.TableRateLimit) bool {
+	same := func(x, y *string) bool { return x != nil && y != nil && *x == *y }
+	return same(a.ModelConfigID, b.ModelConfigID) || same(a.TeamID, b.TeamID) || same(a.CustomerID, b.CustomerID)
 }
 
 // splitLegacyRequestLimits performs the data move of migrationSplitRequestLimitsFromRateLimits
@@ -4576,7 +4617,7 @@ func splitLegacyRequestLimits(tx *gorm.DB, logger schemas.Logger, migrationName 
 		}
 	}
 	rateLimits := make(map[string]tables.TableRateLimit, len(splitIDs))
-	existingRules := make(map[string]bool)
+	existingRules := make(map[string]tables.TableRateLimit)
 	for chunk := range slices.Chunk(splitIDs, idBatchSize) {
 		var rows []tables.TableRateLimit
 		if err := tx.Where("id IN ?", chunk).Find(&rows).Error; err != nil {
@@ -4589,12 +4630,12 @@ func splitLegacyRequestLimits(tx *gorm.DB, logger schemas.Logger, migrationName 
 		for i, id := range chunk {
 			ruleIDs[i] = tables.LegacyRequestLimitID(id)
 		}
-		var existing []string
-		if err := tx.Model(&tables.TableRateLimit{}).Where("id IN ?", ruleIDs).Pluck("id", &existing).Error; err != nil {
+		var existing []tables.TableRateLimit
+		if err := tx.Select("id", "model_config_id", "team_id", "customer_id").Where("id IN ?", ruleIDs).Find(&existing).Error; err != nil {
 			return fmt.Errorf("failed to check existing request limits: %w", err)
 		}
-		for _, id := range existing {
-			existingRules[id] = true
+		for _, rl := range existing {
+			existingRules[rl.ID] = rl
 		}
 	}
 
@@ -4611,7 +4652,15 @@ func splitLegacyRequestLimits(tx *gorm.DB, logger schemas.Logger, migrationName 
 				continue
 			}
 			ruleID := tables.LegacyRequestLimitID(rl.ID)
-			if !existingRules[ruleID] {
+			if existing, taken := existingRules[ruleID]; taken {
+				// Only this holder's own request limit from an earlier run may stand under the derived id; any
+				// other row there is an unrelated rate limit, and treating it as the split would lose this one.
+				var probe tables.TableRateLimit
+				set.owner(&probe, c.HolderID)
+				if !sameRateLimitOwner(existing, probe) {
+					return fmt.Errorf("cannot split rate limit %s: the id %s for its request limit is already taken by an unrelated rate limit; rename one of them", rl.ID, ruleID)
+				}
+			} else {
 				rule := tables.TableRateLimit{
 					ID:                   ruleID,
 					RequestMaxLimit:      rl.RequestMaxLimit,

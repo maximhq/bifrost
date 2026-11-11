@@ -6026,6 +6026,40 @@ func assertSplitRequestLimits(t *testing.T, store *RDBConfigStore, db *gorm.DB) 
 	assert.Equal(t, before, after, "a second run changes nothing")
 }
 
+// TestMigrationSplitRequestLimitsFromRateLimits_RefusesADerivedIDCollision: an independent rate limit
+// already holds the id the split would give a request limit (rl-a and rl-a-requests). The migration
+// stops instead of treating that row as the split, so neither row is lost and the failure is
+// rolled back for the operator to fix.
+func TestMigrationSplitRequestLimitsFromRateLimits_RefusesADerivedIDCollision(t *testing.T) {
+	_, db := setupFullMigrationDB(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+	require.NoError(t, db.Create(&tables.TableRateLimit{
+		ID: "rl-a", RequestMaxLimit: schemas.Ptr(int64(10)), RequestResetDuration: schemas.Ptr("1h"),
+		RequestLastReset: now, TokenLastReset: now, CreatedAt: now, UpdatedAt: now,
+	}).Error)
+	require.NoError(t, db.Create(&tables.TableRateLimit{
+		ID: "rl-a-requests", TokenMaxLimit: schemas.Ptr(int64(500)), TokenResetDuration: schemas.Ptr("1h"),
+		RequestLastReset: now, TokenLastReset: now, CreatedAt: now, UpdatedAt: now,
+	}).Error)
+	require.NoError(t, db.Create(&tables.TableTeam{ID: "team-a", Name: "team a", RateLimitID: schemas.Ptr("rl-a"), CreatedAt: now, UpdatedAt: now}).Error)
+	require.NoError(t, db.Create(&tables.TableTeam{ID: "team-b", Name: "team b", RateLimitID: schemas.Ptr("rl-a-requests"), CreatedAt: now, UpdatedAt: now}).Error)
+
+	require.NoError(t, db.Exec("DELETE FROM migrations WHERE id = ?", "split_request_limits_from_rate_limits").Error)
+	err := migrationSplitRequestLimitsFromRateLimits(ctx, db, testMigrationLogger)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "already taken by an unrelated rate limit")
+
+	var original, other tables.TableRateLimit
+	require.NoError(t, db.First(&original, "id = ?", "rl-a").Error, "the request-limited row is still there")
+	require.NotNil(t, original.RequestMaxLimit, "and keeps its request limit")
+	require.NoError(t, db.First(&other, "id = ?", "rl-a-requests").Error, "the unrelated row is still there")
+	require.NotNil(t, other.TokenMaxLimit)
+	var team tables.TableTeam
+	require.NoError(t, db.First(&team, "id = ?", "team-a").Error)
+	require.NotNil(t, team.RateLimitID, "the holder still names its rate limit")
+}
+
 // TestMigrationSplitRequestLimitsFromRateLimits_ManyHolders verifies the batched data
 // move handles more holders of each kind than one statement binds, splitting every
 // singly-referenced row exactly as the single-holder case does.
