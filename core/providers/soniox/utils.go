@@ -9,10 +9,13 @@ import (
 const (
 	defaultBaseURL = "https://api.soniox.com"
 
-	// Soniox serves its REST API from api.<region> and text-to-speech from tts-rt.<region>.
-	apiHostPrefix    = "api."
-	ttsHostPrefix    = "tts-rt."
-	sonioxHostSuffix = ".soniox.com"
+	// Soniox serves its REST API from api.<region>, text-to-speech from tts-rt.<region> and real-time
+	// speech-to-text from stt-rt.<region>.
+	apiHostPrefix      = "api."
+	ttsHostPrefix      = "tts-rt."
+	realtimeHostPrefix = "stt-rt."
+	realtimePath       = "/transcribe-websocket"
+	sonioxHostSuffix   = ".soniox.com"
 
 	transcriptionPollInitial = 500 * time.Millisecond
 	transcriptionPollMax     = 3 * time.Second
@@ -49,8 +52,31 @@ func deriveTTSBaseURL(baseURL string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if strings.HasPrefix(parsed.Host, apiHostPrefix) && strings.HasSuffix(parsed.Hostname(), sonioxHostSuffix) {
-		parsed.Host = ttsHostPrefix + strings.TrimPrefix(parsed.Host, apiHostPrefix)
-	}
+	swapAPIHostPrefix(parsed, ttsHostPrefix)
 	return strings.TrimRight(parsed.String(), "/"), nil
+}
+
+// deriveRealtimeURL returns the real-time transcription WebSocket URL for a REST base URL, on the stt-rt.
+// host of the same region. Any other host, such as a proxy, is used as is.
+func deriveRealtimeURL(baseURL string) (string, error) {
+	parsed, err := url.Parse(baseURL)
+	if err != nil {
+		return "", err
+	}
+	swapAPIHostPrefix(parsed, realtimeHostPrefix)
+	switch parsed.Scheme {
+	case "https":
+		parsed.Scheme = "wss"
+	case "http":
+		parsed.Scheme = "ws"
+	}
+	return strings.TrimRight(parsed.String(), "/") + realtimePath, nil
+}
+
+// swapAPIHostPrefix replaces the leading api. host label of a Soniox host with prefix, leaving any other host
+// alone, so the key never goes to a host the operator did not configure.
+func swapAPIHostPrefix(parsed *url.URL, prefix string) {
+	if strings.HasPrefix(parsed.Host, apiHostPrefix) && strings.HasSuffix(parsed.Hostname(), sonioxHostSuffix) {
+		parsed.Host = prefix + strings.TrimPrefix(parsed.Host, apiHostPrefix)
+	}
 }

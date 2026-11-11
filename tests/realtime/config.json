@@ -79,6 +79,19 @@
       "network_config": {
         "default_request_timeout_in_seconds": 60
       }
+    },
+    "soniox": {
+      "keys": [
+        {
+          "name": "soniox",
+          "value": "env.SONIOX_API_KEY",
+          "weight": 1,
+          "models": ["*"]
+        }
+      ],
+      "network_config": {
+        "default_request_timeout_in_seconds": 60
+      }
     }
   },
   "config_store": {

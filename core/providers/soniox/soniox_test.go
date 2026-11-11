@@ -2,6 +2,8 @@ package soniox_test
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -13,11 +15,13 @@ import (
 	"testing"
 	"time"
 
+	ws "github.com/fasthttp/websocket"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/providers/soniox"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
 
 func newTestProvider(t *testing.T, baseURL string) *soniox.SonioxProvider {
@@ -867,5 +871,212 @@ func TestSoniox(t *testing.T) {
 		require.NotNil(t, bifrostErr)
 		require.NotNil(t, bifrostErr.StatusCode)
 		assert.Equal(t, http.StatusBadRequest, *bifrostErr.StatusCode)
+	})
+}
+
+// realtimeClient drives the provider's translator against a live Soniox socket the way the gateway's relay
+// does: one step at a time, under one lock, writing each provider frame as the type the translator marks.
+type realtimeClient struct {
+	t          *testing.T
+	conn       *ws.Conn
+	translator schemas.RealtimeTranslator
+	mu         sync.Mutex
+	events     chan gjson.Result
+	done       chan struct{}
+}
+
+func dialRealtime(t *testing.T, provider *soniox.SonioxProvider, key schemas.Key) *realtimeClient {
+	t.Helper()
+	ctx := newTestContext(t)
+	url, bifrostErr := provider.RealtimeWebSocketURL(ctx, key, "stt-rt-v5", "transcription")
+	require.Nil(t, bifrostErr, "%v", bifrostErr)
+	headers, bifrostErr := provider.RealtimeHeaders(ctx, key)
+	require.Nil(t, bifrostErr, "%v", bifrostErr)
+	header := http.Header{}
+	for name, value := range headers {
+		header.Set(name, value)
+	}
+	conn, _, err := ws.DefaultDialer.Dial(url, header)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = conn.Close() })
+	translator, bifrostErr := provider.NewRealtimeTranslator(key, "stt-rt-v5")
+	require.Nil(t, bifrostErr, "%v", bifrostErr)
+
+	c := &realtimeClient{t: t, conn: conn, translator: translator, events: make(chan gjson.Result, 512), done: make(chan struct{})}
+	c.write(translator.Open())
+	go c.read()
+	return c
+}
+
+func (c *realtimeClient) write(translation schemas.RealtimeTranslation) {
+	for i, frame := range translation.Provider {
+		messageType := ws.TextMessage
+		if translation.IsProviderBinary(i) {
+			messageType = ws.BinaryMessage
+		}
+		require.NoError(c.t, c.conn.WriteMessage(messageType, frame))
+	}
+	for _, frame := range translation.Client {
+		c.events <- gjson.ParseBytes(frame)
+	}
+}
+
+func (c *realtimeClient) send(raw string) {
+	c.t.Helper()
+	event, err := schemas.ParseRealtimeEvent([]byte(raw))
+	require.NoError(c.t, err)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	translation, err := c.translator.ToProvider(event)
+	require.NoError(c.t, err)
+	c.write(translation)
+}
+
+func (c *realtimeClient) read() {
+	defer close(c.done)
+	for {
+		_, data, err := c.conn.ReadMessage()
+		if err != nil {
+			return
+		}
+		c.mu.Lock()
+		translation, err := c.translator.ToClient(data)
+		if err == nil {
+			for _, frame := range translation.Client {
+				c.events <- gjson.ParseBytes(frame)
+			}
+		}
+		c.mu.Unlock()
+		if err != nil {
+			return
+		}
+	}
+}
+
+// stream sends audio as 100 ms append events, pausing between them.
+func (c *realtimeClient) stream(pcm []byte, rate int, pause time.Duration) {
+	c.t.Helper()
+	chunk := rate * 2 / 10
+	for start := 0; start < len(pcm); start += chunk {
+		c.send(`{"type":"input_audio_buffer.append","audio":"` + base64.StdEncoding.EncodeToString(pcm[start:min(start+chunk, len(pcm))]) + `"}`)
+		time.Sleep(pause)
+	}
+}
+
+// until returns every event received up to and including the first of the given type.
+func (c *realtimeClient) until(eventType string) []gjson.Result {
+	c.t.Helper()
+	var seen []gjson.Result
+	timeout := time.After(60 * time.Second)
+	for {
+		select {
+		case event := <-c.events:
+			seen = append(seen, event)
+			if event.Get("type").String() == eventType {
+				return seen
+			}
+			require.NotEqual(c.t, "error", event.Get("type").String(), "%s", event.Raw)
+		case <-c.done:
+			require.Failf(c.t, "socket closed", "before %s; saw %d events", eventType, len(seen))
+		case <-timeout:
+			require.Failf(c.t, "timeout", "waiting for %s; saw %d events", eventType, len(seen))
+		}
+	}
+}
+
+// pcmOf returns the samples of a 16-bit mono WAV file and their rate.
+func pcmOf(t *testing.T, path string) ([]byte, int) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	rate := int(binary.LittleEndian.Uint32(data[24:28]))
+	for offset := 12; offset+8 <= len(data); {
+		size := int(binary.LittleEndian.Uint32(data[offset+4 : offset+8]))
+		if string(data[offset:offset+4]) == "data" {
+			return data[offset+8 : min(offset+8+size, len(data))], rate
+		}
+		offset += 8 + size + size%2
+	}
+	require.Fail(t, "no data chunk in "+path)
+	return nil, 0
+}
+
+// TestSonioxRealtime runs a spoken question through the translator against live Soniox, both with
+// Soniox's endpoint detection ending the segment and with the client committing it. It is skipped without
+// SONIOX_API_KEY.
+func TestSonioxRealtime(t *testing.T) {
+	apiKey := strings.TrimSpace(os.Getenv("SONIOX_API_KEY"))
+	if apiKey == "" {
+		t.Skip("Skipping Soniox realtime test because SONIOX_API_KEY is not set")
+	}
+	provider, err := soniox.NewSonioxProvider(&schemas.ProviderConfig{}, bifrost.NewNoOpLogger())
+	require.NoError(t, err)
+	key := schemas.Key{ID: "live", Models: schemas.WhiteList{"*"}, Value: *schemas.NewSecretVar(apiKey)}
+	question, rate := pcmOf(t, "../../../tests/realtime/testdata/ask-weather.wav")
+
+	check := func(t *testing.T, frames []gjson.Result) {
+		t.Helper()
+		var deltas, items []string
+		var completed, committed gjson.Result
+		for _, frame := range frames {
+			switch frame.Get("type").String() {
+			case "conversation.item.input_audio_transcription.delta":
+				deltas = append(deltas, frame.Get("delta").String())
+				items = append(items, frame.Get("item_id").String())
+				assert.True(t, frame.Get("transcript").Exists(), "a delta event carries the whole partial: %s", frame.Raw)
+			case "conversation.item.input_audio_transcription.completed":
+				completed = frame
+			case "input_audio_buffer.committed":
+				committed = frame
+			}
+		}
+		assert.Contains(t, strings.ToLower(completed.Get("transcript").String()), "weather")
+		assert.Equal(t, "duration", completed.Get("usage.type").String())
+		assert.Positive(t, completed.Get("usage.seconds").Float(), "Soniox reports the audio it processed")
+		item := completed.Get("item_id").String()
+		assert.Equal(t, item, committed.Get("item_id").String())
+		require.NotEmpty(t, deltas, "the partial text reached the client before the segment ended")
+		for _, delta := range items {
+			assert.Equal(t, item, delta)
+		}
+		assert.True(t, strings.HasPrefix(completed.Get("transcript").String(), strings.Join(deltas, "")), "the deltas are the start of the final text")
+	}
+
+	t.Run("endpoint detection ends the segment", func(t *testing.T) {
+		c := dialRealtime(t, provider, key)
+		c.send(`{"type":"session.update","session":{"audio":{"input":{"transcription":{"model":"stt-rt-v5","language":"en"}}}}}`)
+		c.until("session.updated")
+		c.stream(question, rate, 40*time.Millisecond)
+		c.stream(make([]byte, rate*2*3), rate, 40*time.Millisecond) // three seconds of silence
+		check(t, c.until("conversation.item.input_audio_transcription.completed"))
+	})
+
+	t.Run("a commit ends the segment", func(t *testing.T) {
+		c := dialRealtime(t, provider, key)
+		c.send(`{"type":"session.update","session":{"audio":{"input":{"transcription":{"model":"stt-rt-v5","language":"en"},"turn_detection":null}}}}`)
+		c.until("session.updated")
+		c.stream(question, rate, 40*time.Millisecond)
+		c.send(`{"type":"input_audio_buffer.commit"}`)
+		check(t, c.until("conversation.item.input_audio_transcription.completed"))
+	})
+
+	t.Run("a refused start reaches the client as an error event", func(t *testing.T) {
+		bad := schemas.Key{ID: "bad", Models: schemas.WhiteList{"*"}, Value: *schemas.NewSecretVar("not-a-key")}
+		c := dialRealtime(t, provider, bad)
+		c.send(`{"type":"session.update","session":{"audio":{"input":{"transcription":{"model":"stt-rt-v5"}}}}}`)
+		select {
+		case <-time.After(30 * time.Second):
+			t.Fatal("no answer to a bad key")
+		case event := <-c.events:
+			for event.Get("type").String() != "error" {
+				select {
+				case event = <-c.events:
+				case <-time.After(30 * time.Second):
+					t.Fatal("no error event for a bad key")
+				}
+			}
+			assert.Equal(t, "authentication_error", event.Get("error.type").String())
+			assert.Equal(t, "unauthenticated", event.Get("error.code").String())
+		}
 	})
 }

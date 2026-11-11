@@ -25,6 +25,7 @@ type SonioxProvider struct {
 	streamingClient     *fasthttp.Client      // HTTP client for streaming API requests (no ReadTimeout; idle governed by NewIdleTimeoutReader)
 	networkConfig       schemas.NetworkConfig // Network configuration including extra headers
 	ttsBaseURL          string                // Text-to-speech host, derived from the REST base URL
+	realtimeURL         string                // Real-time transcription WebSocket URL, derived from the REST base URL
 	sendBackRawRequest  bool                  // Whether to include raw request in BifrostResponse
 	sendBackRawResponse bool                  // Whether to include raw response in BifrostResponse
 }
@@ -60,6 +61,10 @@ func NewSonioxProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*
 	if err != nil {
 		return nil, fmt.Errorf("invalid soniox base_url: %w", err)
 	}
+	realtimeURL, err := deriveRealtimeURL(config.NetworkConfig.BaseURL)
+	if err != nil {
+		return nil, fmt.Errorf("invalid soniox base_url: %w", err)
+	}
 
 	return &SonioxProvider{
 		logger:              logger,
@@ -67,6 +72,7 @@ func NewSonioxProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*
 		streamingClient:     streamingClient,
 		networkConfig:       config.NetworkConfig,
 		ttsBaseURL:          ttsBaseURL,
+		realtimeURL:         realtimeURL,
 		sendBackRawRequest:  config.SendBackRawRequest,
 		sendBackRawResponse: config.SendBackRawResponse,
 	}, nil

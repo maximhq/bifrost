@@ -1,6 +1,6 @@
 // Package realtime is the end-to-end suite for the Realtime API (/v1/realtime) through a running
 // Bifrost gateway, against the real providers: OpenAI's realtime models, the same models on Azure
-// OpenAI, Amazon Nova 2 Sonic on Bedrock, and ElevenLabs' Scribe and agents. Each test drives a session the way an app does and checks what the gateway relays,
+// OpenAI, Amazon Nova 2 Sonic on Bedrock, ElevenLabs' Scribe and agents, and Soniox's real-time transcription. Each test drives a session the way an app does and checks what the gateway relays,
 // refuses and logs. See README.md.
 package realtime
 

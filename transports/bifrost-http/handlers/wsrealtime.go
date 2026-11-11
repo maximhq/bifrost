@@ -883,7 +883,7 @@ func (h *WSRealtimeHandler) processRealtimeClientMessage(
 		if stop, replyErr := h.forwardTranslatedRealtimeFrames(clientConn, session, provider, bifrostCtx, providerKey, model, key, transcriptionSession, translation.Client, nil); stop {
 			return true, replyErr
 		}
-		writeErr = writeRealtimeProviderFrames(upstream, translation.Provider)
+		writeErr = writeRealtimeProviderFrames(upstream, translation)
 	} else {
 		writeErr = upstream.WriteMessage(messageType, providerEvent)
 	}
