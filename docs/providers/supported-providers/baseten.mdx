@@ -23,14 +23,14 @@ Both take your Baseten API key as a bearer token.
 | Responses API (stream) | ✅ | ✅ (through chat) | `/responses` (Model APIs), `/chat/completions` (deployments) |
 | Embeddings | ❌ | ✅ | `/embeddings` |
 | Transcriptions (STT) | ❌ | ✅ | `/audio/transcriptions` |
-| Image Generation | ❌ | ✅ | `/images/generations` |
+| Image Generation | ❌ | ✅ | `/images/generations`, or the deployment's `/predict` |
 | Decisions | ✅ | ❌ | `/systemone` |
 | List Models | ✅ | - | `/models` |
 | Text Completions | ❌ | ❌ | - |
 | Speech (TTS), Image Edit, Image Variation, Image streaming, Video | ❌ | ❌ | - |
 | Files, Batch, Count Tokens, Rerank | ❌ | ❌ | - |
 
-Model APIs has no embeddings, audio or image routes, so those operations need a dedicated deployment. A request without one fails with an error that names the missing `deployment_url`. Baseten's TTS, rerank and classification deployments, and image models packaged as a custom Truss, use their own `/predict` request shapes, which Bifrost doesn't translate. Baseten has no video generation models.
+Model APIs has no embeddings, audio or image routes, so those operations need a dedicated deployment. A request without one fails with an error that names the missing `deployment_url`. Baseten's TTS, rerank and classification deployments use their own `/predict` request shapes, which Bifrost doesn't translate. FLUX.1 image Trusses are the exception: see [image generation](#5-image-generation). Baseten has no video generation models.
 
 ## Setup and configuration
 
@@ -285,7 +285,18 @@ curl -X POST http://localhost:8080/v1/images/generations \
   }'
 ```
 
-Images come back as base64 in `data[].b64_json`. Streaming, edits and variations aren't supported, because the deployments don't serve those routes. A request for a model without a `deployment_url`, including any Model APIs model, fails before reaching Baseten.
+Images come back as base64 in `data[].b64_json`. The deployments can't return image URLs, so when a request sets no `response_format`, Bifrost sends `b64_json` instead of leaving OpenAI's `url` default in place. Streaming, edits and variations aren't supported, because the deployments don't serve those routes. A request for a model without a `deployment_url`, including any Model APIs model, fails before reaching Baseten.
+
+## Using the /predict URL from the dashboard
+
+The Baseten dashboard shows each deployment's `/predict` URL, for example `https://model-def456.api.baseten.co/environments/production/predict`. You can use it as `deployment_url` for image generation. Bifrost posts the same OpenAI image body to that URL as given, without appending `/images/generations`:
+
+- FLUX.2, Krea 2 Turbo and Qwen-Image map `/predict` to their `/v1/images/generations` route, so they behave as with the `/sync/v1` URL.
+- FLUX.1 dev and schnell are packaged as a Truss that only serves `/predict`. It reads `prompt`, `seed` and `num_inference_steps` from the body, ignores the other fields, and returns one base64 image. `size` has no effect, so pass `width` and `height` as extra params with `x-bf-passthrough-extra-params: true` for anything other than 1024x1024.
+
+Bifrost reads both reply shapes, the Truss's `{"data": "<base64>"}` and OpenAI's `data[].b64_json`, into `data[].b64_json`. A reply with no image fails rather than returning an empty list. A custom Truss with a different request or reply shape isn't supported.
+
+A `/predict` URL only works for image generation. Chat, embeddings and transcription against that alias fail before any call, with an error that asks for the deployment's `/sync/v1` URL.
 
 ---
 

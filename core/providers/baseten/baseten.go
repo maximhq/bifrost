@@ -92,6 +92,9 @@ func (provider *BasetenProvider) baseURL(ctx *schemas.BifrostContext) (string, b
 		return "", false, providerUtils.NewBifrostOperationError("baseten alias deployment_url resolved to an empty value", nil)
 	}
 	if u != "" {
+		if isPredictURL(u) {
+			return "", false, providerUtils.NewBifrostOperationError("baseten alias deployment_url ends in /predict, which only image generation reads; use the deployment's /sync/v1 URL for other operations", nil)
+		}
 		return u, true, nil
 	}
 	return provider.networkConfig.BaseURL, false, nil
@@ -328,25 +331,18 @@ func (provider *BasetenProvider) SpeechStream(ctx *schemas.BifrostContext, postH
 
 // ImageGeneration calls /images/generations on a dedicated deployment. Baseten's
 // image recipes (FLUX, Krea, Qwen-Image on the SGLang diffusion stack) serve the
-// OpenAI images shape; Model APIs has no image route.
+// OpenAI images shape; Model APIs has no image route. A deployment_url ending in
+// /predict, as the dashboard shows it, is called as given, which also reaches
+// FLUX.1-style Trusses that only serve /predict.
 func (provider *BasetenProvider) ImageGeneration(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostImageGenerationRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
+	if u, ok := deploymentURL(ctx); ok && isPredictURL(u) {
+		return provider.imageGeneration(ctx, key, u, request)
+	}
 	baseURL, bifrostErr := provider.dedicatedURLOrError(ctx, schemas.ImageGenerationRequest)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
-	return openai.HandleOpenAIImageGenerationRequest(
-		ctx,
-		provider.client,
-		baseURL+providerUtils.GetPathFromContext(ctx, "/images/generations"),
-		request,
-		key,
-		provider.networkConfig.ExtraHeaders,
-		nil,
-		provider.GetProviderKey(),
-		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
-		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
-		provider.logger,
-	)
+	return provider.imageGeneration(ctx, key, baseURL+providerUtils.GetPathFromContext(ctx, "/images/generations"), request)
 }
 
 // ImageGenerationStream is not supported by the Baseten provider.
