@@ -295,7 +295,8 @@ func (s *BifrostHTTPServer) loadBuiltinPlugins(ctx context.Context) error {
 			RequiredHeaders:       &s.Config.ClientConfig.RequiredHeaders,
 			DisableAutoToolInject: &s.Config.ClientConfig.MCPDisableAutoToolInject,
 
-			ObjectOwnershipEnforced: s.Config.ShouldEnforceVKObjectOwnership,
+			ObjectOwnershipEnforced:              s.Config.ShouldEnforceVKObjectOwnership,
+			MCPAllowFreeCallsWhenBudgetExhausted: s.Config.ShouldAllowFreeMCPCallsWhenBudgetExhausted,
 		}
 		s.registerPluginWithStatus(ctx, governance.PluginName, nil, config, false)
 	} else {
