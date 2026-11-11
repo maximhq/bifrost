@@ -1088,30 +1088,31 @@ func (p *GovernancePlugin) modelMatcher() grant.ModelMatcher {
 // settled for it the same way. A context carrying no grant is a wiring fault evaluation has
 // already refused by the time this runs; it settles nothing.
 //
-// What the list holds is the store's to assemble (see GovernanceStore.GatherLimits): a store that
+// What the list holds is the store's to assemble (see GovernanceStore.GatherLimitsForRequestKind): a store that
 // composes several possible payers settles there on who pays, and this only records the answer. An
 // error is a request whose payers cannot be settled at all; nothing is recorded for it, and the
 // funnel refuses it rather than serving it against half an answer.
 //
 // A budget's scope is applied here, once, so that what is checked, logged and charged agree: an
 // MCP tool execution answers only to "mcp" and "shared" budgets, every other request only to "model"
-// and "shared" ones. See budgetsForRequestKind.
+// and "shared" ones. See BudgetsForRequestKind.
 func resolveLimits(ctx *schemas.BifrostContext, store GovernanceStore, requestType schemas.RequestType, provider schemas.ModelProvider, model string) (schemas.Limits, error) {
 	g := ctx.Grant()
 	if g == nil {
 		return nil, nil
 	}
-	budgets, rateLimits, err := store.GatherLimits(ctx, g.Access(), provider, model)
+	isMCP := requestType == schemas.MCPToolExecutionRequest
+	budgets, rateLimits, err := store.GatherLimitsForRequestKind(ctx, g.Access(), provider, model, isMCP)
 	if err != nil {
 		return nil, err
 	}
-	budgets = budgetsForRequestKind(ctx, store, budgets, requestType == schemas.MCPToolExecutionRequest)
+	budgets = BudgetsForRequestKind(ctx, store, budgets, isMCP)
 	limits := grant.NewLimits(budgets, rateLimits)
 	g.SetLimits(limits)
 	return limits, nil
 }
 
-// budgetsForRequestKind drops the budgets whose scope does not cover a request of this kind: an
+// BudgetsForRequestKind drops the budgets whose scope does not cover a request of this kind: an
 // MCP tool execution when isMCP, a model request otherwise.
 //
 // Applied to what the store gathered rather than inside the store, so every holder a store composes
@@ -1119,27 +1120,34 @@ func resolveLimits(ctx *schemas.BifrostContext, store GovernanceStore, requestTy
 // the same rule without each needing to know about request kinds. Budgets are read by ID from the
 // store, the way enforcement reads them; one the store cannot load is kept, since enforcement skips
 // it anyway. The common case, where every budget applies, returns the input without allocating.
-func budgetsForRequestKind(ctx context.Context, store GovernanceStore, budgets []schemas.Limit, isMCP bool) []schemas.Limit {
+func BudgetsForRequestKind(ctx context.Context, store GovernanceStore, budgets []schemas.Limit, isMCP bool) []schemas.Limit {
+	return filterLimits(budgets, func(id string) bool {
+		budget := store.LoadBudget(ctx, id)
+		return budget == nil || budget.Scope.AppliesTo(isMCP)
+	})
+}
+
+// filterLimits keeps the limits whose ID applies. Nothing is allocated when all do; on the first
+// drop it copies what was kept so far rather than filtering in place, since the gathered slice may
+// share a backing array with the store's.
+func filterLimits(limits []schemas.Limit, applies func(id string) bool) []schemas.Limit {
 	var kept []schemas.Limit
-	for i, limit := range budgets {
-		budget := store.LoadBudget(ctx, limit.ID)
-		applies := budget == nil || budget.Scope.AppliesTo(isMCP)
+	for i, limit := range limits {
+		ok := applies(limit.ID)
 		if kept == nil {
-			if applies {
+			if ok {
 				continue
 			}
-			// First budget to drop: copy what was kept so far rather than filtering in place, since
-			// the gathered slice may share a backing array with the store's.
-			kept = make([]schemas.Limit, i, len(budgets)-1)
-			copy(kept, budgets[:i])
+			kept = make([]schemas.Limit, i, len(limits)-1)
+			copy(kept, limits[:i])
 			continue
 		}
-		if applies {
+		if ok {
 			kept = append(kept, limit)
 		}
 	}
 	if kept == nil {
-		return budgets
+		return limits
 	}
 	return kept
 }

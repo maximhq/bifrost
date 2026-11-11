@@ -570,6 +570,134 @@ func TestBudgetScope_AppliesToEveryHolder(t *testing.T) {
 	}
 }
 
+// scopedBudgets builds one budget of each scope, named prefix-<scope>, owned by the model config ownerID
+// (or by nothing when ownerID is empty).
+func scopedBudgets(prefix, ownerID string, scopes ...configstoreTables.LimitScope) []configstoreTables.TableBudget {
+	budgets := make([]configstoreTables.TableBudget, 0, len(scopes))
+	for _, scope := range scopes {
+		b := buildBudget(prefix+"-"+string(scope), 10, "1d")
+		b.Scope = scope
+		if ownerID != "" {
+			b.ModelConfigID = &ownerID
+		}
+		budgets = append(budgets, *b)
+	}
+	return budgets
+}
+
+// holderLevelStore builds a store with every kind of holder an MCP tool execution can answer to:
+// the deployment's and a virtual key's holder-level model configs (model "*", no provider), each with
+// one budget of every scope and a rate limit, and the team and customer above the key, each with a
+// model and an mcp budget. Beside them sit narrower model configs (a model, and all models on one
+// provider) carrying shared budgets, which model traffic answers to and MCP traffic never reaches.
+func holderLevelStore(tb testing.TB) *LocalGovernanceStore {
+	tb.Helper()
+	all := []configstoreTables.LimitScope{configstoreTables.LimitScopeShared, configstoreTables.LimitScopeModel, configstoreTables.LimitScopeMCP}
+	split := []configstoreTables.LimitScope{configstoreTables.LimitScopeModel, configstoreTables.LimitScopeMCP}
+	openai := "openai"
+
+	globalRL := buildRateLimit("global-rl", 1_000_000, 1000)
+	globalMC := buildModelConfig("mc-global", "*", nil, nil, globalRL)
+	globalMC.Budgets = scopedBudgets("global", globalMC.ID, all...)
+	globalModelMC := buildModelConfig("mc-global-gpt-4o", "gpt-4o", nil, nil, nil)
+	globalModelMC.Budgets = scopedBudgets("global-gpt-4o", globalModelMC.ID, configstoreTables.LimitScopeShared)
+
+	vk := buildVirtualKeyWithProviders("vk1", "sk-bf-test", "Test VK", []configstoreTables.TableVirtualKeyProviderConfig{buildProviderConfig("openai", []string{"*"})})
+	vkRL := buildRateLimit("vk-rl", 1_000_000, 1000)
+	vkMC := buildVKScopedModelConfig("mc-vk", "*", nil, vk.ID, nil, vkRL)
+	vkMC.Budgets = scopedBudgets("vk", vkMC.ID, all...)
+	vkProviderMC := buildVKScopedModelConfig("mc-vk-openai", "*", &openai, vk.ID, nil, nil)
+	vkProviderMC.Budgets = scopedBudgets("vk-openai", vkProviderMC.ID, configstoreTables.LimitScopeShared)
+
+	customer := buildCustomer("customer1", "Customer 1", nil)
+	customer.Budgets = scopedBudgets("customer", "", split...)
+	for i := range customer.Budgets {
+		customer.Budgets[i].CustomerID = &customer.ID
+	}
+	team := buildTeam("team1", "Team 1", nil)
+	team.CustomerID = &customer.ID
+	team.Budgets = scopedBudgets("team", "", split...)
+	for i := range team.Budgets {
+		team.Budgets[i].TeamID = &team.ID
+	}
+	vk.TeamID = &team.ID
+	vk.Team = team
+
+	var budgets []configstoreTables.TableBudget
+	for _, set := range [][]configstoreTables.TableBudget{globalMC.Budgets, globalModelMC.Budgets, vkMC.Budgets, vkProviderMC.Budgets, team.Budgets, customer.Budgets} {
+		budgets = append(budgets, set...)
+	}
+	store, err := NewLocalGovernanceStore(context.Background(), NewMockLogger(), nil, &configstore.GovernanceConfig{
+		VirtualKeys:  []configstoreTables.TableVirtualKey{*vk},
+		Teams:        []configstoreTables.TableTeam{*team},
+		Customers:    []configstoreTables.TableCustomer{*customer},
+		ModelConfigs: []configstoreTables.TableModelConfig{*globalMC, *globalModelMC, *vkMC, *vkProviderMC},
+		Budgets:      budgets,
+		RateLimits:   []configstoreTables.TableRateLimit{*globalRL, *vkRL},
+	}, nil, nil)
+	require.NoError(tb, err)
+	return store
+}
+
+func settledRateLimitIDs(t *testing.T, limits schemas.Limits) []string {
+	t.Helper()
+	require.NotNil(t, limits)
+	ids := make([]string, 0)
+	for _, limit := range limits.RateLimits() {
+		ids = append(ids, limit.ID)
+	}
+	slices.Sort(ids)
+	return ids
+}
+
+// TestResolveLimits_MCPAnswersToHolderLevelLimits pins what an MCP tool execution answers to: the
+// deployment's and the key's holder-level model configs, read directly, and the key's team and
+// customer, each charged by its shared and mcp lines and never its model ones. The narrower model
+// configs are model traffic's alone, and a model request still answers to every tier it did before.
+func TestResolveLimits_MCPAnswersToHolderLevelLimits(t *testing.T) {
+	store := holderLevelStore(t)
+	ctx := resolverCtx(store, "sk-bf-test")
+
+	mcp, err := resolveLimits(ctx, store, schemas.MCPToolExecutionRequest, "", "")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"customer-mcp", "global-mcp", "global-shared", "team-mcp", "vk-mcp", "vk-shared"}, settledBudgetIDs(t, mcp))
+	assert.Equal(t, []string{"global-rl", "vk-rl"}, settledRateLimitIDs(t, mcp))
+
+	model, err := resolveLimits(ctx, store, schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4o")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"customer-model", "global-gpt-4o-shared", "global-model", "global-shared", "team-model", "vk-model", "vk-openai-shared", "vk-shared"}, settledBudgetIDs(t, model))
+	assert.Equal(t, []string{"global-rl", "vk-rl"}, settledRateLimitIDs(t, model))
+}
+
+// kindRecordingStore records the request kind resolveLimits tells its store.
+type kindRecordingStore struct {
+	*LocalGovernanceStore
+	sawMCP []bool
+}
+
+func (s *kindRecordingStore) GatherLimitsForRequestKind(ctx *schemas.BifrostContext, access schemas.Access, provider schemas.ModelProvider, model string, isMCP bool) ([]schemas.Limit, []schemas.Limit, error) {
+	s.sawMCP = append(s.sawMCP, isMCP)
+	return s.LocalGovernanceStore.GatherLimitsForRequestKind(ctx, access, provider, model, isMCP)
+}
+
+// TestResolveLimits_TellsKindAwareStoresTheRequestKind pins the hook: the store is asked with the
+// attempt's kind, and what it returns is still filtered
+// by scope, so a store that ignores the kind cannot leak an MCP-only budget onto model traffic.
+func TestResolveLimits_TellsKindAwareStoresTheRequestKind(t *testing.T) {
+	local, _ := scopedBudgetStore(t, nil)
+	store := &kindRecordingStore{LocalGovernanceStore: local}
+	ctx := resolverCtx(local, "sk-bf-test")
+
+	model, err := resolveLimits(ctx, store, schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4o")
+	require.NoError(t, err)
+	mcp, err := resolveLimits(ctx, store, schemas.MCPToolExecutionRequest, "", "")
+	require.NoError(t, err)
+
+	assert.Equal(t, []bool{false, true}, store.sawMCP)
+	assert.Equal(t, []string{"budget-model", "budget-shared"}, settledBudgetIDs(t, model))
+	assert.Equal(t, []string{"budget-mcp", "budget-shared"}, settledBudgetIDs(t, mcp))
+}
+
 // TestBudgetsForRequestKind_NoAllocationWhenEveryBudgetApplies pins the common-case cost: when no
 // budget is dropped the gathered slice is returned as is.
 func TestBudgetsForRequestKind_NoAllocationWhenEveryBudgetApplies(t *testing.T) {
@@ -577,10 +705,10 @@ func TestBudgetsForRequestKind_NoAllocationWhenEveryBudgetApplies(t *testing.T) 
 	ctx := context.Background()
 	budgets := []schemas.Limit{{ID: "budget-shared"}, {ID: "budget-model"}, {ID: "unknown"}}
 	allocs := testing.AllocsPerRun(100, func() {
-		_ = budgetsForRequestKind(ctx, store, budgets, false)
+		_ = BudgetsForRequestKind(ctx, store, budgets, false)
 	})
 	assert.Zero(t, allocs)
-	kept := budgetsForRequestKind(ctx, store, budgets, true)
+	kept := BudgetsForRequestKind(ctx, store, budgets, true)
 	assert.Equal(t, []schemas.Limit{{ID: "budget-shared"}, {ID: "unknown"}}, kept)
 	assert.Equal(t, "budget-model", budgets[1].ID, "the input slice is never filtered in place")
 }
@@ -605,11 +733,27 @@ func BenchmarkBudgetsForRequestKind(b *testing.B) {
 			_, _ = resolveLimits(ctx, store, schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4o")
 		}
 	})
+	// The whole hierarchy an MCP tool execution answers to: the deployment's and the key's
+	// holder-level lines, the key's team and customer, with narrower model configs beside them.
+	hierarchy := holderLevelStore(b)
+	hierarchyCtx := resolverCtx(hierarchy, "sk-bf-test")
+	b.Run("resolveLimits/hierarchy/model", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			_, _ = resolveLimits(hierarchyCtx, hierarchy, schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4o")
+		}
+	})
+	b.Run("resolveLimits/hierarchy/mcp", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			_, _ = resolveLimits(hierarchyCtx, hierarchy, schemas.MCPToolExecutionRequest, "", "")
+		}
+	})
 	limits := []schemas.Limit{{ID: "b-day"}, {ID: "b-month"}}
 	b.Run("filter", func(b *testing.B) {
 		b.ReportAllocs()
 		for b.Loop() {
-			_ = budgetsForRequestKind(ctx, store, limits, false)
+			_ = BudgetsForRequestKind(ctx, store, limits, false)
 		}
 	})
 }
