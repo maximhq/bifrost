@@ -247,6 +247,7 @@ Network permission does not authorize runtime calls to another service. Set `age
 | `mcp_code_mode_binding_level` | string | - | Code mode binding level: `"server"` or `"tool"` |
 | `mcp_tool_sync_interval` | integer | `10` | Global tool sync interval in minutes (`0` = default of 10 minutes) |
 | `mcp_disable_auto_tool_inject` | boolean | `false` | When `true`, MCP tools are not automatically injected into requests |
+| `mcp_allow_free_calls_when_budget_exhausted` | boolean | `false` | When `true`, MCP tool calls that cost nothing still run when a budget is exhausted; rate limits still apply. See [MCP budgets](/features/governance/budget-and-limits#mcp-budgets) |
 
 ```json
 {

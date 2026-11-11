@@ -537,6 +537,58 @@ func TestUpdateConfig_EnforceVKObjectOwnershipPresence(t *testing.T) {
 	}
 }
 
+// TestUpdateConfig_MCPAllowFreeCallsWhenBudgetExhausted pins that the setting is saved and served by
+// the config API, applies to the live config governance reads, and is copied only when sent, so a
+// partial save can't silently let an exhausted budget refuse free MCP calls again.
+func TestUpdateConfig_MCPAllowFreeCallsWhenBudgetExhausted(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := newRealOAuth2Store(t)
+	cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false)
+	require.NoError(t, store.UpdateClientConfig(bgCtx(), cfg.ClientConfig))
+	h := &ConfigHandler{store: cfg, configManager: stubConfigManager{}}
+	stored := func() bool {
+		t.Helper()
+		persisted, err := store.GetClientConfig(bgCtx())
+		require.NoError(t, err)
+		return persisted.MCPAllowFreeCallsWhenBudgetExhausted
+	}
+	put := func(body string) {
+		t.Helper()
+		req := putConfigCtx(body)
+		h.updateConfig(req)
+		require.Equal(t, fasthttp.StatusOK, req.Response.StatusCode(), string(req.Response.Body()))
+	}
+	require.False(t, cfg.ShouldAllowFreeMCPCallsWhenBudgetExhausted(), "off by default")
+
+	put(`{"client_config":{"log_retention_days":8,"mcp_allow_free_calls_when_budget_exhausted":true}}`)
+	assert.True(t, stored())
+	assert.True(t, cfg.ShouldAllowFreeMCPCallsWhenBudgetExhausted(), "the live getter governance reads follows the save")
+
+	get := bgCtx()
+	h.getConfig(get)
+	require.Equal(t, fasthttp.StatusOK, get.Response.StatusCode(), string(get.Response.Body()))
+	var served struct {
+		ClientConfig struct {
+			MCPAllowFreeCallsWhenBudgetExhausted bool `json:"mcp_allow_free_calls_when_budget_exhausted"`
+		} `json:"client_config"`
+	}
+	require.NoError(t, json.Unmarshal(get.Response.Body(), &served))
+	assert.True(t, served.ClientConfig.MCPAllowFreeCallsWhenBudgetExhausted, "GET /api/config serves the saved value")
+
+	put(`{"client_config":{"log_retention_days":8}}`)
+	assert.True(t, stored(), "an omitted field keeps the stored value")
+	assert.True(t, cfg.ShouldAllowFreeMCPCallsWhenBudgetExhausted(), "an omitted field keeps the live value")
+
+	refused := putConfigCtx(`{"client_config":{"log_retention_days":8,"mcp_allow_free_calls_when_budget_exhausted":null}}`)
+	h.updateConfig(refused)
+	assert.Equal(t, fasthttp.StatusBadRequest, refused.Response.StatusCode(), string(refused.Response.Body()))
+	assert.True(t, stored(), "null leaves the stored value unchanged")
+
+	put(`{"client_config":{"log_retention_days":8,"mcp_allow_free_calls_when_budget_exhausted":false}}`)
+	assert.False(t, stored())
+	assert.False(t, cfg.ShouldAllowFreeMCPCallsWhenBudgetExhausted())
+}
+
 // TestUpdateConfig_SkipAccessProfileUserVirtualKeyLifecyclePresence pins that each access-profile
 // user-key setting is copied only when sent, so a partial save from an API client can't silently hand
 // user key lifecycle back to access profiles, and that the two move independently.

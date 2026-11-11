@@ -35,6 +35,9 @@ export class ConfigSettingsPage extends BasePage {
   readonly skipAccessProfileUserVirtualKeyCreationSwitch: Locator
   readonly skipAccessProfileUserVirtualKeyDeletionSwitch: Locator
   readonly requiredHeadersTextarea: Locator
+  // MCP Settings locators
+  readonly mcpSettingsSaveBtn: Locator
+  readonly mcpAllowFreeCallsWhenBudgetExhaustedSwitch: Locator
   readonly vkRotationCooldownInput: Locator
   readonly dashboardAuthSwitch: Locator
   readonly currentPasswordInput: Locator
@@ -96,6 +99,8 @@ export class ConfigSettingsPage extends BasePage {
     this.skipAccessProfileUserVirtualKeyCreationSwitch = page.getByTestId('security-skip-access-profile-user-virtual-key-creation-switch')
     this.skipAccessProfileUserVirtualKeyDeletionSwitch = page.getByTestId('security-skip-access-profile-user-virtual-key-deletion-switch')
     this.requiredHeadersTextarea = page.getByTestId('required-headers-textarea')
+    this.mcpSettingsSaveBtn = page.getByTestId('mcp-settings-save-btn')
+    this.mcpAllowFreeCallsWhenBudgetExhaustedSwitch = page.getByTestId('mcp-allow-free-calls-when-budget-exhausted-switch')
     this.vkRotationCooldownInput = page.getByTestId('security-vk-rotation-cooldown-input')
     this.dashboardAuthSwitch = page.locator('#auth-enabled')
     this.currentPasswordInput = page.getByTestId('security-current-password-input')

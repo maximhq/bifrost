@@ -4891,6 +4891,29 @@ func TestMigrationAddClientConfigDeleteExpiredVirtualKeysColumn(t *testing.T) {
 	require.NoError(t, migrationAddClientConfigDeleteExpiredVirtualKeysColumn(ctx, db, testMigrationLogger))
 }
 
+// TestMigrationAddClientConfigMCPAllowFreeCallsWhenBudgetExhaustedColumn pins that the migration adds
+// the column, that an existing row reads back as off so an upgrade keeps refusing every MCP call over an
+// exhausted budget, and that a re-run is harmless.
+func TestMigrationAddClientConfigMCPAllowFreeCallsWhenBudgetExhaustedColumn(t *testing.T) {
+	db := setupVKTestDBWithoutRotationColumns(t)
+	ctx := context.Background()
+	const column = "mcp_allow_free_calls_when_budget_exhausted"
+	require.NoError(t, db.AutoMigrate(&tables.TableClientConfig{}))
+	require.NoError(t, db.Create(&tables.TableClientConfig{}).Error)
+	mg := db.Migrator()
+	require.NoError(t, mg.DropColumn(&tables.TableClientConfig{}, column))
+	require.False(t, mg.HasColumn(&tables.TableClientConfig{}, column))
+
+	require.NoError(t, migrationAddClientConfigMCPAllowFreeCallsWhenBudgetExhaustedColumn(ctx, db, testMigrationLogger))
+	assert.True(t, mg.HasColumn(&tables.TableClientConfig{}, column))
+	var cfg tables.TableClientConfig
+	require.NoError(t, db.First(&cfg).Error)
+	assert.False(t, cfg.MCPAllowFreeCallsWhenBudgetExhausted)
+
+	require.NoError(t, db.Exec("DELETE FROM migrations WHERE id = ?", "add_client_config_mcp_allow_free_calls_when_budget_exhausted_column").Error)
+	require.NoError(t, migrationAddClientConfigMCPAllowFreeCallsWhenBudgetExhaustedColumn(ctx, db, testMigrationLogger))
+}
+
 // TestMigrationAddClientConfigSkipAccessProfileUserVirtualKeyLifecycleColumns pins that the migration
 // adds both access-profile user-key columns, that existing rows read back as off so an upgrade keeps
 // access profiles managing user keys, and that a re-run is harmless.
