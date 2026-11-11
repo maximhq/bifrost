@@ -318059,6 +318059,189 @@
       ]
     },
     {
+      "name": "339. Mistral reasoning effort follows the model's ladder (mistral-reasoning-effort) (#9731 / PR #9847)",
+      "description": "Bifrost used to rewrite every Mistral reasoning_effort other than none to high, so low and max never reached models that accept them (zai-glm-5-3 accepts low, high and max). Effort now follows the model's datasheet reasoning_effort_levels, with the legacy none/high clamp only for models that publish no ladder. Each case asserts the outbound body via x-bf-send-back-raw-request and that a completion came back. The streaming case pins the separate streaming handler, which builds its own request body, by reading raw_request off the stream's final chunk. Vertex-hosted Mistral shares applyMistralCompatibility and is pinned by the Go unit test only.",
+      "item": [
+        {
+          "name": "mistral/zai-glm-5-3 /v1/chat/completions reasoning_effort low reaches Mistral unchanged (mistral-reasoning-effort) - #9731",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text() || '';",
+                  "pm.test('request succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.equal(200);",
+                  "});",
+                  "pm.test('Mistral receives reasoning_effort low, not a rewrite to high', function () {",
+                  "  var raw = pm.response.json().extra_fields.raw_request;",
+                  "  var parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;",
+                  "  pm.expect(parsed.reasoning_effort, 'outbound body: ' + JSON.stringify(raw)).to.equal('low');",
+                  "});",
+                  "pm.test('Mistral returns a completion message', function () {",
+                  "  var choices = pm.response.json().choices;",
+                  "  pm.expect(choices, 'no choices: ' + body).to.be.an('array').that.is.not.empty;",
+                  "  pm.expect(choices[0].message, 'no message on choices[0]: ' + body).to.be.an('object');",
+                  "  pm.expect(choices[0].message.role, 'choices[0].message.role: ' + body).to.equal('assistant');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"mistral/zai-glm-5-3\",\"reasoning_effort\":\"low\",\"max_tokens\":256,\"messages\":[{\"role\":\"user\",\"content\":\"Say ok.\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "mistral/zai-glm-5-3 /v1/chat/completions reasoning_effort max reaches Mistral unchanged (mistral-reasoning-effort) - #9731",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text() || '';",
+                  "pm.test('request succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.equal(200);",
+                  "});",
+                  "pm.test('Mistral receives reasoning_effort max, not a rewrite to high', function () {",
+                  "  var raw = pm.response.json().extra_fields.raw_request;",
+                  "  var parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;",
+                  "  pm.expect(parsed.reasoning_effort, 'outbound body: ' + JSON.stringify(raw)).to.equal('max');",
+                  "});",
+                  "pm.test('Mistral returns a completion message', function () {",
+                  "  var choices = pm.response.json().choices;",
+                  "  pm.expect(choices, 'no choices: ' + body).to.be.an('array').that.is.not.empty;",
+                  "  pm.expect(choices[0].message, 'no message on choices[0]: ' + body).to.be.an('object');",
+                  "  pm.expect(choices[0].message.role, 'choices[0].message.role: ' + body).to.equal('assistant');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"mistral/zai-glm-5-3\",\"reasoning_effort\":\"max\",\"max_tokens\":256,\"messages\":[{\"role\":\"user\",\"content\":\"Say ok.\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "mistral/zai-glm-5-3 /v1/chat/completions streaming reasoning_effort max reaches Mistral unchanged (mistral-reasoning-effort) - #9731",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('stream succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'request failed: ' + txt.slice(0, 800)).to.equal(200);",
+                  "});",
+                  "var events = [];",
+                  "txt.split('\\n').forEach(function (l) {",
+                  "  if (l.indexOf('data:') !== 0) { return; }",
+                  "  var d = l.slice(5).trim();",
+                  "  if (!d || d === '[DONE]') { return; }",
+                  "  try { events.push(JSON.parse(d)); } catch (e) {}",
+                  "});",
+                  "pm.test('stream carries content and finishes', function () {",
+                  "  var finished = events.some(function (ev) { return ev.choices && ev.choices.some(function (c) { return !!c.finish_reason; }); });",
+                  "  pm.expect(events.length, 'no SSE chunks: ' + txt.slice(0, 800)).to.be.above(0);",
+                  "  pm.expect(finished, 'no chunk carried a finish_reason: ' + txt.slice(-800)).to.equal(true);",
+                  "});",
+                  "var raw = null;",
+                  "events.forEach(function (ev) { if (ev.extra_fields && ev.extra_fields.raw_request) { raw = ev.extra_fields.raw_request; } });",
+                  "if (typeof raw === 'string') { try { raw = JSON.parse(raw); } catch (e) { raw = null; } }",
+                  "pm.test('Mistral receives reasoning_effort max on the streaming path, not a rewrite to high', function () {",
+                  "  pm.expect(raw, 'raw_request missing - x-bf-send-back-raw-request not honored on the stream: ' + txt.slice(-800)).to.be.an('object');",
+                  "  pm.expect(raw.reasoning_effort, 'outbound body: ' + JSON.stringify(raw)).to.equal('max');",
+                  "  pm.expect(raw.stream, 'outbound body: ' + JSON.stringify(raw)).to.equal(true);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"mistral/zai-glm-5-3\",\"stream\":true,\"reasoning_effort\":\"max\",\"max_tokens\":256,\"messages\":[{\"role\":\"user\",\"content\":\"Say ok.\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
       "name": "340. Bedrock invoke keeps tool_reference inside a client tool_result (invoke tool reference) (#8976 / PR #9005)",
       "description": "Regression for #8976. Client-side tool search (Claude Code's ToolSearch) marks tools defer_loading and answers a search with an ordinary tool_result whose content is tool_reference blocks; Anthropic expands each reference into the tool's definition. On /bedrock/model/{id}/invoke and /invoke-with-response-stream, BedrockContentBlock.UnmarshalJSON had no tool_reference case (the block decoded empty) and the Converse-shaped ingress flattened the tool_result to a string, so InvokeModel received the result as content \"\" and the model searched again (issue: input_tokens 574 vs 664 direct). The fix carries the reference through as a tool_reference output block, which the InvokeModel egress already writes (#7813). The two native cases send the issue payload. The /v1/responses case sends the same conversation in neutral shape with no anthropic-beta and also pins, through the raw request, that it is served by InvokeModel with the tool_reference intact. Its defer_loading tool already routes it to InvokeModel, so this case pins the tool_reference passthrough, not the new tool_reference route scan; TestResponsesUsesAnthropicInvokePath_ToolReferenceResult covers that scan. All three pin that the model calls fetch_weather_report with the parameter only its definition names.",
       "item": [
