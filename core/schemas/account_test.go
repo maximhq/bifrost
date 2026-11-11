@@ -64,6 +64,7 @@ func TestAliasConfigRedactedPreservesShape(t *testing.T) {
 			VertexAliasCfg:    &VertexAliasCfg{ForceSingleRegion: Ptr(true)},
 			BedrockAliasCfg:   &BedrockAliasCfg{},
 			ReplicateAliasCfg: &ReplicateAliasCfg{UseDeploymentsEndpoint: Ptr(true)},
+			BasetenAliasCfg:   &BasetenAliasCfg{DeploymentURL: NewSecretVar("https://model-abc.api.baseten.co/environments/production/sync/v1")},
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -83,6 +84,45 @@ func TestAliasConfigRedactedPreservesShape(t *testing.T) {
 				t.Fatalf("redaction changed wire shape: got %s, want %s", after, before)
 			}
 		})
+	}
+}
+
+// TestBasetenAliasRoundTripAndRedaction pins the deployment_url wire key (distinct from
+// Azure's "endpoint", so the embedded sub-configs never share a JSON name) and that an
+// env-backed deployment URL is masked on read while a literal one stays readable.
+func TestBasetenAliasRoundTripAndRedaction(t *testing.T) {
+	raw := `{"dedicated":{"model_id":"not-required","deployment_url":"https://model-abc.api.baseten.co/environments/production/sync/v1"}}`
+	var ka KeyAliases
+	if err := json.Unmarshal([]byte(raw), &ka); err != nil {
+		t.Fatal(err)
+	}
+	ac := ka["dedicated"]
+	if ac.BasetenAliasCfg == nil || ac.BasetenAliasCfg.DeploymentURL.GetValue() != "https://model-abc.api.baseten.co/environments/production/sync/v1" {
+		t.Fatalf("deployment_url not decoded into BasetenAliasCfg: %+v", ac)
+	}
+	if ac.AzureAliasCfg != nil {
+		t.Fatalf("deployment_url must not populate the Azure sub-config: %+v", ac.AzureAliasCfg)
+	}
+	out, err := json.Marshal(ka)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var back KeyAliases
+	if err := json.Unmarshal(out, &back); err != nil {
+		t.Fatal(err)
+	}
+	if got := back["dedicated"].BasetenAliasCfg; got == nil || got.DeploymentURL.GetValue() != "https://model-abc.api.baseten.co/environments/production/sync/v1" {
+		t.Fatalf("deployment_url lost on round trip: %s", out)
+	}
+
+	t.Setenv("BASETEN_DEPLOYMENT_URL_REDACT_TEST", "https://model-secret.api.baseten.co/sync/v1")
+	fromEnv := AliasConfig{ModelID: "m", BasetenAliasCfg: &BasetenAliasCfg{DeploymentURL: NewSecretVar("env.BASETEN_DEPLOYMENT_URL_REDACT_TEST")}}
+	redacted := fromEnv.Redacted()
+	if got := redacted.BasetenAliasCfg.DeploymentURL.GetValue(); strings.Contains(got, "model-secret") {
+		t.Fatalf("an env-backed deployment_url must be masked, got %q", got)
+	}
+	if fromEnv.BasetenAliasCfg.DeploymentURL.GetValue() != "https://model-secret.api.baseten.co/sync/v1" {
+		t.Fatal("redaction mutated the live config")
 	}
 }
 
@@ -521,6 +561,40 @@ func TestKeyAliasesValidate(t *testing.T) {
 			ka:       KeyAliases{"k": {ModelID: "v", ReplicateAliasCfg: replicateCfg}},
 			wantErr:  "replicate sub-config is only valid on Replicate keys",
 		},
+		{
+			name:     "baseten deployment_url on baseten key — ok",
+			provider: Baseten,
+			ka:       KeyAliases{"k": {ModelID: "not-required", BasetenAliasCfg: &BasetenAliasCfg{DeploymentURL: NewSecretVar("https://model-abc.api.baseten.co/environments/production/sync/v1")}}},
+		},
+		{
+			name:     "baseten deployment_url from env — ok without resolving",
+			provider: Baseten,
+			ka:       KeyAliases{"k": {ModelID: "not-required", BasetenAliasCfg: &BasetenAliasCfg{DeploymentURL: NewSecretVar("env.BASETEN_DEPLOYMENT_URL_UNSET_IN_TEST")}}},
+		},
+		{
+			name:     "baseten deployment_url over http — error",
+			provider: Baseten,
+			ka:       KeyAliases{"k": {ModelID: "not-required", BasetenAliasCfg: &BasetenAliasCfg{DeploymentURL: NewSecretVar("http://model-abc.api.baseten.co/sync/v1")}}},
+			wantErr:  "baseten deployment_url must be an absolute https URL",
+		},
+		{
+			name:     "baseten deployment_url without host — error",
+			provider: Baseten,
+			ka:       KeyAliases{"k": {ModelID: "not-required", BasetenAliasCfg: &BasetenAliasCfg{DeploymentURL: NewSecretVar("model-abc/sync/v1")}}},
+			wantErr:  "baseten deployment_url must be an absolute https URL",
+		},
+		{
+			name:     "baseten deployment_url with a port but no hostname — error",
+			provider: Baseten,
+			ka:       KeyAliases{"k": {ModelID: "not-required", BasetenAliasCfg: &BasetenAliasCfg{DeploymentURL: NewSecretVar("https://:443/sync/v1")}}},
+			wantErr:  "baseten deployment_url must be an absolute https URL",
+		},
+		{
+			name:     "baseten sub-config on openai key — error",
+			provider: OpenAI,
+			ka:       KeyAliases{"k": {ModelID: "v", BasetenAliasCfg: &BasetenAliasCfg{DeploymentURL: NewSecretVar("https://model-abc.api.baseten.co/sync/v1")}}},
+			wantErr:  "baseten sub-config is only valid on Baseten keys",
+		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -883,4 +957,22 @@ func TestApplyRequestRouting(t *testing.T) {
 	var nilInfo *RoutingInfo
 	nilInfo.ApplyRequestRouting(ctx)
 	(&RoutingInfo{}).ApplyRequestRouting(nil)
+}
+
+// TestBasetenAliasValidateRejectsUserinfoQueryFragment pins that a literal deployment_url
+// carries no credential (it is read back in plain text) and no query or fragment (the
+// provider appends the endpoint path, which would land inside them).
+func TestBasetenAliasValidateRejectsUserinfoQueryFragment(t *testing.T) {
+	for _, raw := range []string{
+		"https://user:pass@model-abc.api.baseten.co/environments/production/sync/v1",
+		"https://model-abc.api.baseten.co/environments/production/sync/v1?x=1",
+		"https://model-abc.api.baseten.co/environments/production/sync/v1#frag",
+	} {
+		if err := (&BasetenAliasCfg{DeploymentURL: NewSecretVar(raw)}).Validate(); err == nil {
+			t.Errorf("Validate(%q) = nil, want an error", raw)
+		}
+	}
+	if err := (&BasetenAliasCfg{DeploymentURL: NewSecretVar("https://model-abc.api.baseten.co/environments/production/sync/v1")}).Validate(); err != nil {
+		t.Fatalf("valid deployment_url rejected: %v", err)
+	}
 }

@@ -168,7 +168,7 @@ func TestSupportsFastMode_OverrideHit(t *testing.T) {
 	model := "non-opus-test-model-fast-yes"
 	yes := true
 	setOverride(t, model, schemas.ModelCapabilities{SupportsFastMode: &yes})
-	assert.True(t, schemas.ResolveModelCaps(schemas.Anthropic, model).SupportsFastMode(DefaultSupportsFastMode(model)))
+	assert.True(t, schemas.ResolveModelCaps(schemas.Anthropic, model).SupportsFastMode(DefaultSupportsFastMode(schemas.Anthropic, model)))
 }
 
 func TestSupportsFastMode_OverrideExplicitFalse(t *testing.T) {
@@ -177,14 +177,14 @@ func TestSupportsFastMode_OverrideExplicitFalse(t *testing.T) {
 	model := "claude-opus-4-6-test-overridden"
 	no := false
 	setOverride(t, model, schemas.ModelCapabilities{SupportsFastMode: &no})
-	assert.False(t, schemas.ResolveModelCaps(schemas.Anthropic, model).SupportsFastMode(DefaultSupportsFastMode(model)))
+	assert.False(t, schemas.ResolveModelCaps(schemas.Anthropic, model).SupportsFastMode(DefaultSupportsFastMode(schemas.Anthropic, model)))
 }
 
 func TestSupportsFastMode_OverrideAbsent_FallbackTakesOver(t *testing.T) {
 	// Fast mode is supported on Opus 4.6 and every Opus 4.7+ generation.
-	assert.True(t, schemas.ResolveModelCaps(schemas.Anthropic, "claude-opus-4-6-20250514").SupportsFastMode(DefaultSupportsFastMode("claude-opus-4-6-20250514")))
-	assert.True(t, schemas.ResolveModelCaps(schemas.Anthropic, "claude-opus-4-7-20260401").SupportsFastMode(DefaultSupportsFastMode("claude-opus-4-7-20260401")))
-	assert.False(t, schemas.ResolveModelCaps(schemas.Anthropic, "claude-sonnet-4-5-20250929").SupportsFastMode(DefaultSupportsFastMode("claude-sonnet-4-5-20250929")))
+	assert.True(t, schemas.ResolveModelCaps(schemas.Anthropic, "claude-opus-4-6-20250514").SupportsFastMode(DefaultSupportsFastMode(schemas.Anthropic, "claude-opus-4-6-20250514")))
+	assert.True(t, schemas.ResolveModelCaps(schemas.Anthropic, "claude-opus-4-7-20260401").SupportsFastMode(DefaultSupportsFastMode(schemas.Anthropic, "claude-opus-4-7-20260401")))
+	assert.False(t, schemas.ResolveModelCaps(schemas.Anthropic, "claude-sonnet-4-5-20250929").SupportsFastMode(DefaultSupportsFastMode(schemas.Anthropic, "claude-sonnet-4-5-20250929")))
 }
 
 func TestSupportsSafeguards_OverrideHit(t *testing.T) {

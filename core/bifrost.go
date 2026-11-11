@@ -25,6 +25,7 @@ import (
 	"github.com/maximhq/bifrost/core/mcp/credstore"
 	"github.com/maximhq/bifrost/core/providers/anthropic"
 	"github.com/maximhq/bifrost/core/providers/azure"
+	"github.com/maximhq/bifrost/core/providers/baseten"
 	"github.com/maximhq/bifrost/core/providers/bedrock"
 	"github.com/maximhq/bifrost/core/providers/bedrockmantle"
 	"github.com/maximhq/bifrost/core/providers/byteplus"
@@ -5292,6 +5293,8 @@ func (bifrost *Bifrost) createBaseProvider(providerKey schemas.ModelProvider, co
 		return minimax.NewMiniMaxProvider(config, bifrost.logger)
 	case schemas.BytePlus:
 		return byteplus.NewBytePlusProvider(config, bifrost.logger)
+	case schemas.Baseten:
+		return baseten.NewBasetenProvider(config, bifrost.logger)
 	case schemas.Cloudflare:
 		return cloudflare.NewCloudflareProvider(config, bifrost.logger)
 	case schemas.Gemini:

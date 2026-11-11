@@ -239,6 +239,15 @@ func TestIsClefModel(t *testing.T) {
 	}
 }
 
+func TestIsBasetenDecisionModel(t *testing.T) {
+	for _, model := range []string{"decision-models/baseten-joey-2b-latest", "decision-models/baseten-elephant-9b-latest", "Decision-Models/baseten-mammoth-27b-latest"} {
+		assert.True(t, IsBasetenDecisionModel(model), model)
+	}
+	for _, model := range []string{"zai-org/GLM-5.3", "baseten/decision-models/baseten-joey-2b-latest", "decision-models", ""} {
+		assert.False(t, IsBasetenDecisionModel(model), model)
+	}
+}
+
 func TestIsPerplexityDeciderModel(t *testing.T) {
 	for _, model := range []string{"pplx-decider-v1-27b", "pplx-decider-v1.1-27b", "pplx-decider-v1.1-27b-20261006", "PPLX-Decider-v1.1-27b"} {
 		assert.True(t, IsPerplexityDeciderModel(model), model)
