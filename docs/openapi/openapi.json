@@ -55932,7 +55932,7 @@
                                           "mcp"
                                         ],
                                         "default": "shared",
-                                        "description": "Traffic the budget is charged by: `shared` (default, shared by model requests and MCP tool executions), `model` or `mcp`. Only the profile's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`. The legacy values `total` and `provider:<name>` are still accepted and read as `shared`."
+                                        "description": "Traffic the budget is charged by: `shared` (default, shared by model requests and MCP tool executions), `model` or `mcp`. Only the profile's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`."
                                       },
                                       "current_usage": {
                                         "type": "number",
@@ -56046,7 +56046,7 @@
                                     "mcp"
                                   ],
                                   "default": "shared",
-                                  "description": "Traffic the budget is charged by: `shared` (default, shared by model requests and MCP tool executions), `model` or `mcp`. Only the profile's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`. The legacy values `total` and `provider:<name>` are still accepted and read as `shared`."
+                                  "description": "Traffic the budget is charged by: `shared` (default, shared by model requests and MCP tool executions), `model` or `mcp`. Only the profile's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`."
                                 },
                                 "current_usage": {
                                   "type": "number",
@@ -56432,7 +56432,7 @@
                                   "mcp"
                                 ],
                                 "default": "shared",
-                                "description": "Traffic the budget is charged by: `shared` (default, shared by model requests and MCP tool executions), `model` or `mcp`. Only the profile's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`. The legacy values `total` and `provider:<name>` are still accepted and read as `shared`."
+                                "description": "Traffic the budget is charged by: `shared` (default, shared by model requests and MCP tool executions), `model` or `mcp`. Only the profile's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`."
                               },
                               "current_usage": {
                                 "type": "number",
@@ -56546,7 +56546,7 @@
                             "mcp"
                           ],
                           "default": "shared",
-                          "description": "Traffic the budget is charged by: `shared` (default, shared by model requests and MCP tool executions), `model` or `mcp`. Only the profile's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`. The legacy values `total` and `provider:<name>` are still accepted and read as `shared`."
+                          "description": "Traffic the budget is charged by: `shared` (default, shared by model requests and MCP tool executions), `model` or `mcp`. Only the profile's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`."
                         },
                         "current_usage": {
                           "type": "number",
@@ -56907,7 +56907,7 @@
                                         "mcp"
                                       ],
                                       "default": "shared",
-                                      "description": "Traffic the budget is charged by: `shared` (default, shared by model requests and MCP tool executions), `model` or `mcp`. Only the profile's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`. The legacy values `total` and `provider:<name>` are still accepted and read as `shared`."
+                                      "description": "Traffic the budget is charged by: `shared` (default, shared by model requests and MCP tool executions), `model` or `mcp`. Only the profile's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`."
                                     },
                                     "current_usage": {
                                       "type": "number",
@@ -57021,7 +57021,7 @@
                                   "mcp"
                                 ],
                                 "default": "shared",
-                                "description": "Traffic the budget is charged by: `shared` (default, shared by model requests and MCP tool executions), `model` or `mcp`. Only the profile's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`. The legacy values `total` and `provider:<name>` are still accepted and read as `shared`."
+                                "description": "Traffic the budget is charged by: `shared` (default, shared by model requests and MCP tool executions), `model` or `mcp`. Only the profile's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`."
                               },
                               "current_usage": {
                                 "type": "number",
@@ -57439,7 +57439,7 @@
                                         "mcp"
                                       ],
                                       "default": "shared",
-                                      "description": "Traffic the budget is charged by: `shared` (default, shared by model requests and MCP tool executions), `model` or `mcp`. Only the profile's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`. The legacy values `total` and `provider:<name>` are still accepted and read as `shared`."
+                                      "description": "Traffic the budget is charged by: `shared` (default, shared by model requests and MCP tool executions), `model` or `mcp`. Only the profile's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`."
                                     },
                                     "current_usage": {
                                       "type": "number",
@@ -57553,7 +57553,7 @@
                                   "mcp"
                                 ],
                                 "default": "shared",
-                                "description": "Traffic the budget is charged by: `shared` (default, shared by model requests and MCP tool executions), `model` or `mcp`. Only the profile's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`. The legacy values `total` and `provider:<name>` are still accepted and read as `shared`."
+                                "description": "Traffic the budget is charged by: `shared` (default, shared by model requests and MCP tool executions), `model` or `mcp`. Only the profile's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`."
                               },
                               "current_usage": {
                                 "type": "number",
@@ -57967,7 +57967,7 @@
                                   "mcp"
                                 ],
                                 "default": "shared",
-                                "description": "Traffic the budget is charged by: `shared` (default, shared by model requests and MCP tool executions), `model` or `mcp`. Only the profile's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`. The legacy values `total` and `provider:<name>` are still accepted and read as `shared`."
+                                "description": "Traffic the budget is charged by: `shared` (default, shared by model requests and MCP tool executions), `model` or `mcp`. Only the profile's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`."
                               },
                               "current_usage": {
                                 "type": "number",
@@ -58081,7 +58081,7 @@
                             "mcp"
                           ],
                           "default": "shared",
-                          "description": "Traffic the budget is charged by: `shared` (default, shared by model requests and MCP tool executions), `model` or `mcp`. Only the profile's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`. The legacy values `total` and `provider:<name>` are still accepted and read as `shared`."
+                          "description": "Traffic the budget is charged by: `shared` (default, shared by model requests and MCP tool executions), `model` or `mcp`. Only the profile's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`."
                         },
                         "current_usage": {
                           "type": "number",
@@ -58458,7 +58458,7 @@
                                         "mcp"
                                       ],
                                       "default": "shared",
-                                      "description": "Traffic the budget is charged by: `shared` (default, shared by model requests and MCP tool executions), `model` or `mcp`. Only the profile's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`. The legacy values `total` and `provider:<name>` are still accepted and read as `shared`."
+                                      "description": "Traffic the budget is charged by: `shared` (default, shared by model requests and MCP tool executions), `model` or `mcp`. Only the profile's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`."
                                     },
                                     "current_usage": {
                                       "type": "number",
@@ -58572,7 +58572,7 @@
                                   "mcp"
                                 ],
                                 "default": "shared",
-                                "description": "Traffic the budget is charged by: `shared` (default, shared by model requests and MCP tool executions), `model` or `mcp`. Only the profile's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`. The legacy values `total` and `provider:<name>` are still accepted and read as `shared`."
+                                "description": "Traffic the budget is charged by: `shared` (default, shared by model requests and MCP tool executions), `model` or `mcp`. Only the profile's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`."
                               },
                               "current_usage": {
                                 "type": "number",
@@ -59057,7 +59057,7 @@
                                         "mcp"
                                       ],
                                       "default": "shared",
-                                      "description": "Traffic the budget is charged by: `shared` (default, shared by model requests and MCP tool executions), `model` or `mcp`. Only the profile's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`. The legacy values `total` and `provider:<name>` are still accepted and read as `shared`."
+                                      "description": "Traffic the budget is charged by: `shared` (default, shared by model requests and MCP tool executions), `model` or `mcp`. Only the profile's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`."
                                     },
                                     "current_usage": {
                                       "type": "number",
@@ -59171,7 +59171,7 @@
                                   "mcp"
                                 ],
                                 "default": "shared",
-                                "description": "Traffic the budget is charged by: `shared` (default, shared by model requests and MCP tool executions), `model` or `mcp`. Only the profile's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`. The legacy values `total` and `provider:<name>` are still accepted and read as `shared`."
+                                "description": "Traffic the budget is charged by: `shared` (default, shared by model requests and MCP tool executions), `model` or `mcp`. Only the profile's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`."
                               },
                               "current_usage": {
                                 "type": "number",
@@ -59578,7 +59578,7 @@
                                         "mcp"
                                       ],
                                       "default": "shared",
-                                      "description": "Traffic the budget is charged by: `shared` (default, shared by model requests and MCP tool executions), `model` or `mcp`. Only the profile's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`. The legacy values `total` and `provider:<name>` are still accepted and read as `shared`."
+                                      "description": "Traffic the budget is charged by: `shared` (default, shared by model requests and MCP tool executions), `model` or `mcp`. Only the profile's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`."
                                     },
                                     "current_usage": {
                                       "type": "number",
@@ -59692,7 +59692,7 @@
                                   "mcp"
                                 ],
                                 "default": "shared",
-                                "description": "Traffic the budget is charged by: `shared` (default, shared by model requests and MCP tool executions), `model` or `mcp`. Only the profile's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`. The legacy values `total` and `provider:<name>` are still accepted and read as `shared`."
+                                "description": "Traffic the budget is charged by: `shared` (default, shared by model requests and MCP tool executions), `model` or `mcp`. Only the profile's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`."
                               },
                               "current_usage": {
                                 "type": "number",
@@ -60120,7 +60120,7 @@
                                         "mcp"
                                       ],
                                       "default": "shared",
-                                      "description": "Traffic the budget is charged by: `shared` (default, shared by model requests and MCP tool executions), `model` or `mcp`. Only the profile's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`. The legacy values `total` and `provider:<name>` are still accepted and read as `shared`."
+                                      "description": "Traffic the budget is charged by: `shared` (default, shared by model requests and MCP tool executions), `model` or `mcp`. Only the profile's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`."
                                     },
                                     "current_usage": {
                                       "type": "number",
@@ -60234,7 +60234,7 @@
                                   "mcp"
                                 ],
                                 "default": "shared",
-                                "description": "Traffic the budget is charged by: `shared` (default, shared by model requests and MCP tool executions), `model` or `mcp`. Only the profile's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`. The legacy values `total` and `provider:<name>` are still accepted and read as `shared`."
+                                "description": "Traffic the budget is charged by: `shared` (default, shared by model requests and MCP tool executions), `model` or `mcp`. Only the profile's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`."
                               },
                               "current_usage": {
                                 "type": "number",
@@ -74697,7 +74697,7 @@
                                           "mcp"
                                         ],
                                         "default": "shared",
-                                        "description": "Traffic the budget is charged by: `shared` (default, shared by model requests and MCP tool executions), `model` or `mcp`. Only the profile's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`. The legacy values `total` and `provider:<name>` are still accepted and read as `shared`."
+                                        "description": "Traffic the budget is charged by: `shared` (default, shared by model requests and MCP tool executions), `model` or `mcp`. Only the profile's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`."
                                       },
                                       "current_usage": {
                                         "type": "number",
@@ -74811,7 +74811,7 @@
                                     "mcp"
                                   ],
                                   "default": "shared",
-                                  "description": "Traffic the budget is charged by: `shared` (default, shared by model requests and MCP tool executions), `model` or `mcp`. Only the profile's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`. The legacy values `total` and `provider:<name>` are still accepted and read as `shared`."
+                                  "description": "Traffic the budget is charged by: `shared` (default, shared by model requests and MCP tool executions), `model` or `mcp`. Only the profile's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`."
                                 },
                                 "current_usage": {
                                   "type": "number",
@@ -75200,7 +75200,7 @@
                                   "mcp"
                                 ],
                                 "default": "shared",
-                                "description": "Traffic the budget is charged by: `shared` (default, shared by model requests and MCP tool executions), `model` or `mcp`. Only the profile's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`. The legacy values `total` and `provider:<name>` are still accepted and read as `shared`."
+                                "description": "Traffic the budget is charged by: `shared` (default, shared by model requests and MCP tool executions), `model` or `mcp`. Only the profile's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`."
                               },
                               "current_usage": {
                                 "type": "number",
@@ -75314,7 +75314,7 @@
                             "mcp"
                           ],
                           "default": "shared",
-                          "description": "Traffic the budget is charged by: `shared` (default, shared by model requests and MCP tool executions), `model` or `mcp`. Only the profile's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`. The legacy values `total` and `provider:<name>` are still accepted and read as `shared`."
+                          "description": "Traffic the budget is charged by: `shared` (default, shared by model requests and MCP tool executions), `model` or `mcp`. Only the profile's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`."
                         },
                         "current_usage": {
                           "type": "number",
@@ -75675,7 +75675,7 @@
                                         "mcp"
                                       ],
                                       "default": "shared",
-                                      "description": "Traffic the budget is charged by: `shared` (default, shared by model requests and MCP tool executions), `model` or `mcp`. Only the profile's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`. The legacy values `total` and `provider:<name>` are still accepted and read as `shared`."
+                                      "description": "Traffic the budget is charged by: `shared` (default, shared by model requests and MCP tool executions), `model` or `mcp`. Only the profile's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`."
                                     },
                                     "current_usage": {
                                       "type": "number",
@@ -75789,7 +75789,7 @@
                                   "mcp"
                                 ],
                                 "default": "shared",
-                                "description": "Traffic the budget is charged by: `shared` (default, shared by model requests and MCP tool executions), `model` or `mcp`. Only the profile's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`. The legacy values `total` and `provider:<name>` are still accepted and read as `shared`."
+                                "description": "Traffic the budget is charged by: `shared` (default, shared by model requests and MCP tool executions), `model` or `mcp`. Only the profile's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`."
                               },
                               "current_usage": {
                                 "type": "number",
@@ -76210,7 +76210,7 @@
                                         "mcp"
                                       ],
                                       "default": "shared",
-                                      "description": "Traffic the budget is charged by: `shared` (default, shared by model requests and MCP tool executions), `model` or `mcp`. Only the profile's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`. The legacy values `total` and `provider:<name>` are still accepted and read as `shared`."
+                                      "description": "Traffic the budget is charged by: `shared` (default, shared by model requests and MCP tool executions), `model` or `mcp`. Only the profile's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`."
                                     },
                                     "current_usage": {
                                       "type": "number",
@@ -76324,7 +76324,7 @@
                                   "mcp"
                                 ],
                                 "default": "shared",
-                                "description": "Traffic the budget is charged by: `shared` (default, shared by model requests and MCP tool executions), `model` or `mcp`. Only the profile's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`. The legacy values `total` and `provider:<name>` are still accepted and read as `shared`."
+                                "description": "Traffic the budget is charged by: `shared` (default, shared by model requests and MCP tool executions), `model` or `mcp`. Only the profile's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`."
                               },
                               "current_usage": {
                                 "type": "number",
@@ -76741,7 +76741,7 @@
                                   "mcp"
                                 ],
                                 "default": "shared",
-                                "description": "Traffic the budget is charged by: `shared` (default, shared by model requests and MCP tool executions), `model` or `mcp`. Only the profile's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`. The legacy values `total` and `provider:<name>` are still accepted and read as `shared`."
+                                "description": "Traffic the budget is charged by: `shared` (default, shared by model requests and MCP tool executions), `model` or `mcp`. Only the profile's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`."
                               },
                               "current_usage": {
                                 "type": "number",
@@ -76855,7 +76855,7 @@
                             "mcp"
                           ],
                           "default": "shared",
-                          "description": "Traffic the budget is charged by: `shared` (default, shared by model requests and MCP tool executions), `model` or `mcp`. Only the profile's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`. The legacy values `total` and `provider:<name>` are still accepted and read as `shared`."
+                          "description": "Traffic the budget is charged by: `shared` (default, shared by model requests and MCP tool executions), `model` or `mcp`. Only the profile's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`."
                         },
                         "current_usage": {
                           "type": "number",
@@ -77232,7 +77232,7 @@
                                         "mcp"
                                       ],
                                       "default": "shared",
-                                      "description": "Traffic the budget is charged by: `shared` (default, shared by model requests and MCP tool executions), `model` or `mcp`. Only the profile's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`. The legacy values `total` and `provider:<name>` are still accepted and read as `shared`."
+                                      "description": "Traffic the budget is charged by: `shared` (default, shared by model requests and MCP tool executions), `model` or `mcp`. Only the profile's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`."
                                     },
                                     "current_usage": {
                                       "type": "number",
@@ -77346,7 +77346,7 @@
                                   "mcp"
                                 ],
                                 "default": "shared",
-                                "description": "Traffic the budget is charged by: `shared` (default, shared by model requests and MCP tool executions), `model` or `mcp`. Only the profile's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`. The legacy values `total` and `provider:<name>` are still accepted and read as `shared`."
+                                "description": "Traffic the budget is charged by: `shared` (default, shared by model requests and MCP tool executions), `model` or `mcp`. Only the profile's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`."
                               },
                               "current_usage": {
                                 "type": "number",
@@ -77837,7 +77837,7 @@
                                         "mcp"
                                       ],
                                       "default": "shared",
-                                      "description": "Traffic the budget is charged by: `shared` (default, shared by model requests and MCP tool executions), `model` or `mcp`. Only the profile's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`. The legacy values `total` and `provider:<name>` are still accepted and read as `shared`."
+                                      "description": "Traffic the budget is charged by: `shared` (default, shared by model requests and MCP tool executions), `model` or `mcp`. Only the profile's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`."
                                     },
                                     "current_usage": {
                                       "type": "number",
@@ -77951,7 +77951,7 @@
                                   "mcp"
                                 ],
                                 "default": "shared",
-                                "description": "Traffic the budget is charged by: `shared` (default, shared by model requests and MCP tool executions), `model` or `mcp`. Only the profile's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`. The legacy values `total` and `provider:<name>` are still accepted and read as `shared`."
+                                "description": "Traffic the budget is charged by: `shared` (default, shared by model requests and MCP tool executions), `model` or `mcp`. Only the profile's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`."
                               },
                               "current_usage": {
                                 "type": "number",
@@ -78361,7 +78361,7 @@
                                         "mcp"
                                       ],
                                       "default": "shared",
-                                      "description": "Traffic the budget is charged by: `shared` (default, shared by model requests and MCP tool executions), `model` or `mcp`. Only the profile's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`. The legacy values `total` and `provider:<name>` are still accepted and read as `shared`."
+                                      "description": "Traffic the budget is charged by: `shared` (default, shared by model requests and MCP tool executions), `model` or `mcp`. Only the profile's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`."
                                     },
                                     "current_usage": {
                                       "type": "number",
@@ -78475,7 +78475,7 @@
                                   "mcp"
                                 ],
                                 "default": "shared",
-                                "description": "Traffic the budget is charged by: `shared` (default, shared by model requests and MCP tool executions), `model` or `mcp`. Only the profile's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`. The legacy values `total` and `provider:<name>` are still accepted and read as `shared`."
+                                "description": "Traffic the budget is charged by: `shared` (default, shared by model requests and MCP tool executions), `model` or `mcp`. Only the profile's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`."
                               },
                               "current_usage": {
                                 "type": "number",
@@ -78906,7 +78906,7 @@
                                         "mcp"
                                       ],
                                       "default": "shared",
-                                      "description": "Traffic the budget is charged by: `shared` (default, shared by model requests and MCP tool executions), `model` or `mcp`. Only the profile's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`. The legacy values `total` and `provider:<name>` are still accepted and read as `shared`."
+                                      "description": "Traffic the budget is charged by: `shared` (default, shared by model requests and MCP tool executions), `model` or `mcp`. Only the profile's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`."
                                     },
                                     "current_usage": {
                                       "type": "number",
@@ -79020,7 +79020,7 @@
                                   "mcp"
                                 ],
                                 "default": "shared",
-                                "description": "Traffic the budget is charged by: `shared` (default, shared by model requests and MCP tool executions), `model` or `mcp`. Only the profile's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`. The legacy values `total` and `provider:<name>` are still accepted and read as `shared`."
+                                "description": "Traffic the budget is charged by: `shared` (default, shared by model requests and MCP tool executions), `model` or `mcp`. Only the profile's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`."
                               },
                               "current_usage": {
                                 "type": "number",

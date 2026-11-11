@@ -143,7 +143,7 @@ Every budget created before scopes existed is `shared`, and a budget sent withou
 
 A reset period may be used **once per scope** on one owner: `1M` + `shared` beside `1M` + `mcp` is accepted, while two `mcp` budgets on `1M` are rejected with `400`.
 
-MCP tool executions name no provider and no model, so they are only charged by budgets that bind every request a holder makes: a **virtual key's own budgets**, **team** and **customer** budgets, and **model limits for all models (`*`) with no provider**. Those are the only places the `mcp` scope is accepted. Provider-config budgets, provider governance budgets and model limits for a specific model or provider are never reached by MCP traffic, so they take `shared` or `model` and the API rejects `mcp` there. On those owners `model` charges exactly what `shared` does, since only model requests reach them.
+MCP tool executions name no provider and no model, so they are only charged by budgets that bind every request a holder makes: a **virtual key's own budgets**, **team** and **customer** budgets, the own budgets of an **Enterprise project** or **access profile**, and **model limits for all models (`*`) with no provider**. Those are the only places the `mcp` scope is accepted. Provider-config budgets, provider governance budgets, the provider and model budgets inside a project or access profile, and model limits for a specific model or provider are never reached by MCP traffic, so they take `shared` or `model` and the API rejects `mcp` there. On those owners `model` charges exactly what `shared` does, since only model requests reach them.
 
 <Note>
 Scope applies to budgets only. Rate limits still count model requests and MCP tool executions together.
