@@ -1005,10 +1005,17 @@ func validateGovernanceBudgetScopes(configData *ConfigData, warn func(string, ..
 	// A provider-config budget declared at the top level and one declared inline on its virtual key
 	// belong to the same owner, so both resolve to the key and provider before duplicates are judged.
 	providerConfigOwners := make(map[uint]owner)
-	for _, vk := range gov.VirtualKeys {
+	// A key declared without an id is given one later; until then each declaration is its own owner.
+	virtualKeyName := func(i int) string {
+		if id := gov.VirtualKeys[i].ID; id != "" {
+			return "virtual_key " + id
+		}
+		return fmt.Sprintf("virtual_key #%d", i+1)
+	}
+	for i, vk := range gov.VirtualKeys {
 		for _, pc := range vk.ProviderConfigs {
 			if pc.ID != 0 {
-				providerConfigOwners[pc.ID] = owner{name: fmt.Sprintf("virtual_key %s provider_config %s", vk.ID, pc.Provider)}
+				providerConfigOwners[pc.ID] = owner{name: fmt.Sprintf("%s provider_config %s", virtualKeyName(i), pc.Provider)}
 			}
 		}
 	}
@@ -1052,10 +1059,10 @@ func validateGovernanceBudgetScopes(configData *ConfigData, warn func(string, ..
 			}
 		}
 	}
-	for _, vk := range gov.VirtualKeys {
-		add(owner{name: "virtual_key " + vk.ID, mcpApplicable: true}, vk.Budgets...)
+	for i, vk := range gov.VirtualKeys {
+		add(owner{name: virtualKeyName(i), mcpApplicable: true}, vk.Budgets...)
 		for _, pc := range vk.ProviderConfigs {
-			add(owner{name: fmt.Sprintf("virtual_key %s provider_config %s", vk.ID, pc.Provider)}, pc.Budgets...)
+			add(owner{name: fmt.Sprintf("%s provider_config %s", virtualKeyName(i), pc.Provider)}, pc.Budgets...)
 		}
 	}
 	for i, team := range gov.Teams {

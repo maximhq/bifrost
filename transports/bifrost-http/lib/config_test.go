@@ -27512,6 +27512,13 @@ func TestValidateGovernanceBudgetScopes(t *testing.T) {
 			wantErr: "duplicate reset_duration 1d for scope model",
 		},
 		{
+			name: "virtual keys declared without an id do not share their budgets",
+			gov: configstore.GovernanceConfig{VirtualKeys: []configstoreTables.TableVirtualKey{
+				{Budgets: []configstoreTables.TableBudget{budget("a", "1d", configstoreTables.LimitScopeMCP)}},
+				{Budgets: []configstoreTables.TableBudget{budget("b", "1d", configstoreTables.LimitScopeMCP)}},
+			}},
+		},
+		{
 			name: "teams declared without an id do not share their budgets",
 			gov: configstore.GovernanceConfig{Teams: []configstoreTables.TableTeam{
 				{Budgets: []configstoreTables.TableBudget{budget("a", "1d", configstoreTables.LimitScopeModel)}},
