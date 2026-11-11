@@ -9956,7 +9956,7 @@ func TestVirtualKeyConfigSyncOmittedIsActive(t *testing.T) {
 		require.NoError(t, err)
 		return cfg
 	}
-	check := func(cfg *Config, keyID, stage string, wantActive bool) *tables.TableVirtualKey {
+	check := func(cfg *Config, keyID, stage string, wantActive bool, storedNull ...bool) *tables.TableVirtualKey {
 		t.Helper()
 		vk := verifyVirtualKeyInDB(t, cfg.ConfigStore, keyID)
 		var row struct{ Active *bool }
@@ -9979,7 +9979,11 @@ func TestVirtualKeyConfigSyncOmittedIsActive(t *testing.T) {
 		t.Logf("%s: SQL NULL=%t, permit active=%t, JSON field present=%t, dashboard disabled=%t",
 			stage, row.Active == nil, permits[0].IsActive(), wire.IsActive != nil, wire.IsActive == nil || !*wire.IsActive)
 		assert.Equal(t, wantActive, permits[0].IsActive(), stage+": enforcement state")
-		assert.Equal(t, &wantActive, row.Active, stage+": stored is_active must be explicit")
+		if len(storedNull) > 0 && storedNull[0] {
+			assert.Nil(t, row.Active, stage+": simulate a NULL written after migration")
+		} else {
+			assert.Equal(t, &wantActive, row.Active, stage+": stored is_active must be explicit")
+		}
 		assert.Equal(t, &wantActive, wire.IsActive, stage+": dashboard must receive the effective state")
 		found := false
 		for _, memoryVK := range cfg.GovernanceConfig.VirtualKeys {
@@ -10046,6 +10050,16 @@ func TestVirtualKeyConfigSyncOmittedIsActive(t *testing.T) {
 	cfg = load()
 	check(cfg, newID, "repeated startup", true)
 	check(cfg, id, "repeated startup preserves disabled key", false)
+	// An older replica writes NULL after this migration is already recorded.
+	// The unchanged file must preserve its hash while reads expose active=true.
+	db = cfg.ConfigStore.(*configstore.RDBConfigStore).DB()
+	require.NoError(t, db.Exec("UPDATE governance_virtual_keys SET is_active = NULL WHERE id = ?", newID).Error)
+	cfg.Close(ctx)
+	cfg = load()
+	lateWrite := check(cfg, newID, "old replica writes NULL after migration", true, true)
+	assert.Equal(t, legacy.ConfigHash, lateWrite.ConfigHash)
+	assert.True(t, legacy.UpdatedAt.Equal(lateWrite.UpdatedAt))
+	check(cfg, id, "rolling upgrade preserves disabled key", false)
 	cfg.Close(ctx)
 }
 

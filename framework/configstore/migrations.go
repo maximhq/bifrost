@@ -17169,21 +17169,54 @@ func migrationNormalizeVirtualKeyIsActive(ctx context.Context, db *gorm.DB, logg
 	migrationName := "normalize_virtual_key_is_active"
 	logger.Info("[configstore] starting migration %s", migrationName)
 	defer logger.Info("[configstore] finished migration %s", migrationName)
-	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+	// Commit each repair independently. An outer transaction would retain all
+	// key locks and could deadlock with config sync updating keys in file order.
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = false
+	m := migrator.New(db.WithContext(ctx), &opts, []*migrator.Migration{{
 		ID: migrationName,
-		Migrate: func(tx *gorm.DB) error {
-			tx = tx.WithContext(ctx)
-			if err := setMigrationLockTimeout(tx); err != nil {
-				return err
+		Migrate: func(db *gorm.DB) error {
+			// Bound retained IDs and advance past each page even if an older
+			// replica writes NULL again. AfterFind supplies the effective default
+			// for writes that arrive after this one-time backfill.
+			const pageSize = 256
+			var after string
+			firstPage := true
+			for {
+				query := db.Table("governance_virtual_keys").Where("is_active IS NULL").Order("id").Limit(pageSize)
+				if !firstPage {
+					query = query.Where("id > ?", after)
+				}
+				var ids []string
+				if err := query.Pluck("id", &ids).Error; err != nil {
+					return err
+				}
+				if len(ids) == 0 {
+					return nil
+				}
+				for _, id := range ids {
+					if err := db.Transaction(func(tx *gorm.DB) error {
+						if err := setMigrationLockTimeout(tx); err != nil {
+							return err
+						}
+						// Recheck under the row lock so a concurrent disable wins.
+						return tx.Table("governance_virtual_keys").Where("id = ? AND is_active IS NULL", id).UpdateColumn("is_active", true).Error
+					}); err != nil {
+						return err
+					}
+				}
+				after = ids[len(ids)-1]
+				firstPage = false
 			}
-			return tx.Table("governance_virtual_keys").Where("is_active IS NULL").UpdateColumn("is_active", true).Error
 		},
-		// The old NULL rows cannot be distinguished from existing true rows.
-		// Leaving them true also preserves their pre-migration effective state.
-		Rollback: func(tx *gorm.DB) error { return nil },
+		Rollback: rollbackNormalizeVirtualKeyIsActive,
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running %s migration: %w", migrationName, err)
 	}
 	return nil
+}
+
+func rollbackNormalizeVirtualKeyIsActive(tx *gorm.DB) error {
+	return fmt.Errorf("normalize_virtual_key_is_active is non-rollbackable: repaired NULL values cannot be distinguished from explicitly active keys")
 }

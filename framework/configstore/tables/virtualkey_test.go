@@ -232,3 +232,53 @@ func TestValidateVirtualKeyMetadata(t *testing.T) {
 		})
 	}
 }
+
+func TestVirtualKeyAfterFindDefaultsIsActive(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		stored *bool
+		want   bool
+	}{
+		{"legacy NULL", nil, true}, {"active", schemas.Ptr(true), true}, {"disabled", schemas.Ptr(false), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+			require.NoError(t, err)
+			sqlDB, err := db.DB()
+			require.NoError(t, err)
+			defer sqlDB.Close()
+			require.NoError(t, db.Exec("CREATE TABLE governance_virtual_keys (id TEXT PRIMARY KEY, is_active BOOLEAN)").Error)
+			require.NoError(t, db.Exec("INSERT INTO governance_virtual_keys VALUES ('vk', ?)", tc.stored).Error)
+			var vk TableVirtualKey
+			require.NoError(t, db.First(&vk).Error)
+			require.Equal(t, &tc.want, vk.IsActive)
+			payload, err := json.Marshal(vk)
+			require.NoError(t, err)
+			var wire struct {
+				IsActive *bool `json:"is_active"`
+			}
+			require.NoError(t, json.Unmarshal(payload, &wire))
+			require.Equal(t, &tc.want, wire.IsActive)
+		})
+	}
+}
+
+func BenchmarkVirtualKeyAfterFindIsActive(b *testing.B) {
+	for _, tc := range []struct {
+		name   string
+		active *bool
+	}{
+		{"explicit", schemas.Ptr(true)}, {"legacy_null", nil},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			vk := TableVirtualKey{}
+			b.ReportAllocs()
+			for b.Loop() {
+				vk.IsActive = tc.active
+				if err := vk.AfterFind(nil); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}

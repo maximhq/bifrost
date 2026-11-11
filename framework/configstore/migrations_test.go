@@ -21,6 +21,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/encrypt"
+	"github.com/maximhq/bifrost/framework/migrator"
 	"github.com/maximhq/bifrost/framework/postgresconn"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -5852,4 +5853,98 @@ func TestMigrationAddDatasheetOverridesTable(t *testing.T) {
 	require.True(t, db.Migrator().HasTable(&tables.TableDatasheetOverride{}))
 	require.True(t, db.Migrator().HasIndex(&tables.TableDatasheetOverride{}, "idx_datasheet_override_target"))
 	require.NoError(t, migrationAddDatasheetOverridesTable(ctx, db, testMigrationLogger))
+}
+
+// A failed row must not roll back earlier repairs or mark the migration complete.
+func TestNormalizeVirtualKeyIsActiveResumesAfterFailure(t *testing.T) {
+	db := setupTestDB(t)
+	require.NoError(t, db.Exec(`CREATE TABLE governance_virtual_keys (id TEXT PRIMARY KEY, is_active BOOLEAN, config_hash TEXT, updated_at TEXT)`).Error)
+	require.NoError(t, db.Exec(`INSERT INTO governance_virtual_keys VALUES ('a', NULL, 'hash-a', 'original'), ('b', NULL, 'hash-b', 'original'), ('disabled', false, 'hash-disabled', 'original')`).Error)
+	require.NoError(t, db.Exec(`CREATE TRIGGER reject_second_key BEFORE UPDATE ON governance_virtual_keys WHEN NEW.id = 'b' BEGIN SELECT RAISE(ABORT, 'injected failure'); END`).Error)
+	err := migrationNormalizeVirtualKeyIsActive(context.Background(), db, testMigrationLogger)
+	require.ErrorContains(t, err, "injected failure")
+	var active *bool
+	require.NoError(t, db.Raw("SELECT is_active FROM governance_virtual_keys WHERE id = 'a'").Scan(&active).Error)
+	require.Equal(t, schemas.Ptr(true), active, "first key must already be committed")
+	var count int64
+	require.NoError(t, db.Table("migrations").Where("id = ?", "normalize_virtual_key_is_active").Count(&count).Error)
+	require.Zero(t, count, "failed backfill must remain pending")
+	require.NoError(t, db.Exec("DROP TRIGGER reject_second_key").Error)
+	// Cross the backfill's page boundary, including an empty ID.
+	for i := 0; i < 300; i++ {
+		require.NoError(t, db.Exec("INSERT INTO governance_virtual_keys VALUES (?, NULL, 'hash', 'original')", fmt.Sprintf("key-%03d", i)).Error)
+	}
+	require.NoError(t, db.Exec("INSERT INTO governance_virtual_keys VALUES ('', NULL, 'hash', 'original')").Error)
+	require.NoError(t, migrationNormalizeVirtualKeyIsActive(context.Background(), db, testMigrationLogger))
+	require.NoError(t, migrationNormalizeVirtualKeyIsActive(context.Background(), db, testMigrationLogger))
+	require.NoError(t, db.Table("governance_virtual_keys").Where("is_active IS NULL").Count(&count).Error)
+	require.Zero(t, count)
+	require.NoError(t, db.Table("governance_virtual_keys").Where("is_active = false").Count(&count).Error)
+	require.EqualValues(t, 1, count)
+	require.NoError(t, db.Table("governance_virtual_keys").Where("updated_at <> 'original' OR config_hash NOT LIKE 'hash%'").Count(&count).Error)
+	require.Zero(t, count)
+}
+
+func TestNormalizeVirtualKeyIsActiveConcurrentSync(t *testing.T) {
+	port := os.Getenv("BIFROST_REPRO_POSTGRES_PORT")
+	if port == "" {
+		t.Skip("set BIFROST_REPRO_POSTGRES_PORT to run PostgreSQL lock regression")
+	}
+	// A private schema isolates the two concurrent writers from other tests.
+	schema := fmt.Sprintf("vk_active_%d", time.Now().UnixNano())
+	dsn := "host=127.0.0.1 user=bifrost password=bifrost_password dbname=bifrost sslmode=disable port=" + port + " search_path=" + schema + " application_name=" + schema
+	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(t, err)
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	defer sqlDB.Close()
+	require.NoError(t, db.Exec("CREATE SCHEMA "+schema).Error)
+	defer db.Exec("DROP SCHEMA " + schema + " CASCADE")
+	require.NoError(t, db.Exec(`CREATE TABLE governance_virtual_keys (id TEXT PRIMARY KEY, is_active BOOLEAN)`).Error)
+	require.NoError(t, db.Exec(`INSERT INTO governance_virtual_keys VALUES ('a', NULL), ('b', NULL)`).Error)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	syncTx := db.WithContext(ctx).Begin()
+	require.NoError(t, syncTx.Error)
+	defer syncTx.Rollback()
+	require.NoError(t, syncTx.Exec("SET LOCAL lock_timeout = '1s'").Error)
+	require.NoError(t, syncTx.Exec("UPDATE governance_virtual_keys SET is_active = false WHERE id = 'b'").Error)
+	done := make(chan error, 1)
+	go func() { done <- migrationNormalizeVirtualKeyIsActive(ctx, db, testMigrationLogger) }()
+	// Wait for the migration to block on b, then sync a while still holding b.
+	// If the migration retains a's lock, the opposing lock order cannot progress.
+	require.Eventually(t, func() bool {
+		var blocked int64
+		err := db.Raw("SELECT count(*) FROM pg_stat_activity WHERE application_name = ? AND wait_event_type = 'Lock' AND query LIKE '%governance_virtual_keys%'", schema).Scan(&blocked).Error
+		return err == nil && blocked > 0
+	}, 4*time.Second, 10*time.Millisecond)
+	updateErr := syncTx.Exec("UPDATE governance_virtual_keys SET is_active = false WHERE id = 'a'").Error
+	if updateErr != nil {
+		syncTx.Rollback()
+	} else {
+		require.NoError(t, syncTx.Commit().Error)
+	}
+	require.NoError(t, <-done)
+	require.NoError(t, updateErr, "migration must release a before waiting for b")
+	var disabled int64
+	require.NoError(t, db.Table("governance_virtual_keys").Where("is_active = false").Count(&disabled).Error)
+	require.EqualValues(t, 2, disabled, "backfill must not overwrite concurrent disables")
+}
+
+func TestNormalizeVirtualKeyIsActiveRollbackRefuses(t *testing.T) {
+	db := setupTestDB(t)
+	require.NoError(t, db.Exec("CREATE TABLE governance_virtual_keys (id TEXT PRIMARY KEY, is_active BOOLEAN)").Error)
+	require.NoError(t, db.Exec("INSERT INTO governance_virtual_keys VALUES ('legacy', NULL), ('active', true), ('disabled', false)").Error)
+	require.NoError(t, migrationNormalizeVirtualKeyIsActive(context.Background(), db, testMigrationLogger))
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "normalize_virtual_key_is_active", Rollback: rollbackNormalizeVirtualKeyIsActive,
+	}})
+	require.ErrorContains(t, m.RollbackLast(), "non-rollbackable")
+	var count int64
+	require.NoError(t, db.Table("migrations").Where("id = ?", "normalize_virtual_key_is_active").Count(&count).Error)
+	require.EqualValues(t, 1, count, "refused rollback must retain the completion marker")
+	require.NoError(t, db.Table("governance_virtual_keys").Where("is_active = true").Count(&count).Error)
+	require.EqualValues(t, 2, count)
+	require.NoError(t, db.Table("governance_virtual_keys").Where("id = 'disabled' AND is_active = false").Count(&count).Error)
+	require.EqualValues(t, 1, count)
 }
