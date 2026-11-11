@@ -409,6 +409,85 @@ test.describe('Dashboard', () => {
     })
   })
 
+  // The dashboard reuses the logs filter sidebar, so every section it renders must also be
+  // carried by the dashboard's own URL state, or ticking it is silently dropped.
+  test.describe('Sidebar Complexity and Topic Filters', () => {
+    async function openSection(page: Page, toggleTestId: string): Promise<void> {
+      const toggle = page.getByTestId(toggleTestId)
+      await expect(toggle).toBeVisible()
+      if ((await toggle.getAttribute('data-state')) !== 'open') {
+        await toggle.click()
+      }
+      await expect(toggle).toHaveAttribute('data-state', 'open')
+    }
+
+    function histogramRequestWith(page: Page, param: string, value: string) {
+      return page.waitForRequest(
+        (req) => {
+          const url = new URL(req.url())
+          return url.pathname.includes('/logs/histogram') && url.searchParams.get(param) === value
+        },
+        { timeout: 15000 },
+      )
+    }
+
+    test('should apply a complexity tier filter to the URL and the chart queries', async ({ dashboardPage }) => {
+      const page = dashboardPage.page
+      await dashboardPage.waitForChartsToLoad()
+      await openSection(page, 'complexity-tier-filter-toggle')
+
+      const filteredRequest = histogramRequestWith(page, 'complexity_tiers', 'COMPLEX')
+      const row = page.getByTestId('complexity-tier-filter-checkbox-complex')
+      await row.click()
+
+      await expect(row.getByRole('checkbox')).toHaveAttribute('data-state', 'checked')
+      await expect(page).toHaveURL(/complexity_tiers=COMPLEX/)
+      await filteredRequest
+
+      await row.click()
+      await expect(row.getByRole('checkbox')).toHaveAttribute('data-state', 'unchecked')
+      await expect(page).not.toHaveURL(/complexity_tiers=/)
+    })
+
+    test('should apply a complexity mechanism filter to the URL and the chart queries', async ({ dashboardPage }) => {
+      const page = dashboardPage.page
+      await dashboardPage.waitForChartsToLoad()
+      await openSection(page, 'complexity-mechanism-filter-toggle')
+
+      const filteredRequest = histogramRequestWith(page, 'complexity_mechanisms', 'session')
+      const row = page.getByTestId('complexity-mechanism-filter-checkbox-session')
+      await row.click()
+
+      await expect(row.getByRole('checkbox')).toHaveAttribute('data-state', 'checked')
+      await expect(page).toHaveURL(/complexity_mechanisms=session/)
+      await filteredRequest
+    })
+
+    test('should restore complexity and topic filters from the URL', async ({ dashboardPage }) => {
+      const page = dashboardPage.page
+      const topicId = `e2e-topic-${Date.now()}`
+      const tierRequest = histogramRequestWith(page, 'complexity_tiers', 'SIMPLE')
+      const topicRequest = histogramRequestWith(page, 'topic_ids', topicId)
+
+      await page.goto(`/workspace/dashboard?complexity_tiers=SIMPLE&topic_ids=${topicId}`)
+      await Promise.all([tierRequest, topicRequest])
+
+      // An active filter opens its section, so the restored tier and topic show as ticked.
+      await expect(page.getByTestId('complexity-tier-filter-checkbox-simple').getByRole('checkbox')).toHaveAttribute(
+        'data-state',
+        'checked',
+      )
+      // The server does not list this topic, so its row is the one kept for the selected id.
+      const topicRow = page.getByTestId(`topics-filter-checkbox-${topicId}`)
+      await expect(topicRow.getByRole('checkbox')).toHaveAttribute('data-state', 'checked')
+
+      await topicRow.click()
+      await expect(topicRow).toHaveCount(0)
+      await expect(page).not.toHaveURL(/topic_ids=/)
+      await expect(page).toHaveURL(/complexity_tiers=SIMPLE/)
+    })
+  })
+
   test.describe('Topbar Warp Launcher', () => {
     let warpWasEnabled = false
 
