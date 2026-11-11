@@ -392,6 +392,12 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 			return
 		}
 	}
+	// mcp_allow_free_calls_when_budget_exhausted is false by default too: a JSON null would decode as
+	// false and silently turn it off. Refuse it; omit the field to keep the stored value.
+	if raw, present := clientConfigFields["mcp_allow_free_calls_when_budget_exhausted"]; present && bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		SendError(ctx, fasthttp.StatusBadRequest, "mcp_allow_free_calls_when_budget_exhausted must be true or false")
+		return
+	}
 
 	// vk_rotation_cooldown bounds: negative is meaningless, and anything past 30
 	// days keeps a retired credential alive long enough to defeat the rotation.
@@ -778,6 +784,11 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		updatedConfig.MCPToolSyncInterval = payload.ClientConfig.MCPToolSyncInterval
 	}
 	updatedConfig.MCPEnableTempTokenAuth = payload.ClientConfig.MCPEnableTempTokenAuth
+	// Copied only when sent, so a partial save doesn't silently let exhausted budgets refuse free MCP calls
+	// again. Governance reads the live value on the next call.
+	if _, present := clientConfigFields["mcp_allow_free_calls_when_budget_exhausted"]; present {
+		updatedConfig.MCPAllowFreeCallsWhenBudgetExhausted = payload.ClientConfig.MCPAllowFreeCallsWhenBudgetExhausted
+	}
 	if allowlistChanged {
 		updatedConfig.MCPOAuthPrivateAllowlist = payload.ClientConfig.MCPOAuthPrivateAllowlist
 	}

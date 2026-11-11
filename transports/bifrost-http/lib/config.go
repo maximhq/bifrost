@@ -9254,6 +9254,15 @@ func (c *Config) ShouldEnforceVKObjectOwnership() bool {
 	return c.ClientConfig == nil || c.ClientConfig.EnforceVKObjectOwnership
 }
 
+// ShouldAllowFreeMCPCallsWhenBudgetExhausted reports client.mcp_allow_free_calls_when_budget_exhausted.
+// It reads under Mu, the lock config saves and reloads hold while they copy the client config in;
+// unset means off.
+func (c *Config) ShouldAllowFreeMCPCallsWhenBudgetExhausted() bool {
+	c.Mu.RLock()
+	defer c.Mu.RUnlock()
+	return c.ClientConfig != nil && c.ClientConfig.MCPAllowFreeCallsWhenBudgetExhausted
+}
+
 // ShouldSendExtraFieldsInHeaders reports client.extra_fields_placement == "headers". It reads under
 // Mu, the lock config saves and reloads hold while they copy the client config in; unset means body.
 func (c *Config) ShouldSendExtraFieldsInHeaders() bool {

@@ -62,6 +62,7 @@ type TableClientConfig struct {
 	MCPMaxInstructionsPerClient             int                            `gorm:"default:0" json:"mcp_max_instructions_per_client"`                   // Byte bound on one server's forwarded instructions; 0 is the default
 	MCPMaxInstructionsTotal                 int                            `gorm:"default:0" json:"mcp_max_instructions_total"`                        // Byte bound on the whole aggregate; 0 is the default
 	MCPEnableTempTokenAuth                  bool                           `gorm:"default:false" json:"mcp_enable_temp_token_auth"`                    // When true, scoped temp tokens can authorize MCP per-user OAuth and per-user-headers auth pages. User-mode flows never mint regardless.
+	MCPAllowFreeCallsWhenBudgetExhausted    bool                           `gorm:"default:false" json:"mcp_allow_free_calls_when_budget_exhausted"`    // When true, MCP calls that cost nothing skip the budget check
 	AsyncJobResultTTL                       int                            `gorm:"default:3600" json:"async_job_result_ttl"`                           // Default TTL for async job results in seconds (default: 3600 = 1 hour)
 	RequiredHeadersJSON                     string                         `gorm:"type:text" json:"-"`                                                 // JSON serialized []string
 	LoggingHeadersJSON                      string                         `gorm:"type:text" json:"-"`                                                 // JSON serialized []string
