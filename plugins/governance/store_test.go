@@ -2521,6 +2521,74 @@ func BenchmarkStampVirtualKeyMetadata(b *testing.B) {
 	}
 }
 
+// TestGovernanceStore_LoadMergesEmbeddedAndLinkedRequestLimits: a holder's request limits come from its
+// own embedded list and from owner-linked rows in the config's rate limits, matched by id, so a rule
+// declared only one way still loads and a rule declared both ways counts once.
+func TestGovernanceStore_LoadMergesEmbeddedAndLinkedRequestLimits(t *testing.T) {
+	ctx := context.Background()
+	embedded := func() []configstoreTables.TableRateLimit {
+		return []configstoreTables.TableRateLimit{
+			buildRequestLimit("rule-both", 10, 0, "1h", configstoreTables.LimitScopeShared),
+			buildRequestLimit("rule-embedded", 5, 0, "1d", configstoreTables.LimitScopeModel),
+		}
+	}
+	linked := func(own func(*configstoreTables.TableRateLimit)) []configstoreTables.TableRateLimit {
+		rules := []configstoreTables.TableRateLimit{
+			buildRequestLimit("rule-both", 10, 0, "1h", configstoreTables.LimitScopeShared),
+			buildRequestLimit("rule-linked", 7, 0, "1w", configstoreTables.LimitScopeMCP),
+		}
+		for i := range rules {
+			own(&rules[i])
+		}
+		return rules
+	}
+	cases := map[string]struct {
+		config   func() *configstore.GovernanceConfig
+		snapshot func(*GovernanceData) []configstoreTables.TableRateLimit
+	}{
+		"team": {
+			config: func() *configstore.GovernanceConfig {
+				return &configstore.GovernanceConfig{
+					Teams:      []configstoreTables.TableTeam{{ID: "team1", Name: "Team", RequestLimits: embedded()}},
+					RateLimits: linked(func(r *configstoreTables.TableRateLimit) { r.TeamID = schemas.Ptr("team1") }),
+				}
+			},
+			snapshot: func(d *GovernanceData) []configstoreTables.TableRateLimit { return d.Teams["team1"].RequestLimits },
+		},
+		"customer": {
+			config: func() *configstore.GovernanceConfig {
+				return &configstore.GovernanceConfig{
+					Customers:  []configstoreTables.TableCustomer{{ID: "cust1", Name: "Customer", RequestLimits: embedded()}},
+					RateLimits: linked(func(r *configstoreTables.TableRateLimit) { r.CustomerID = schemas.Ptr("cust1") }),
+				}
+			},
+			snapshot: func(d *GovernanceData) []configstoreTables.TableRateLimit { return d.Customers["cust1"].RequestLimits },
+		},
+		"model config": {
+			config: func() *configstore.GovernanceConfig {
+				mc := *buildModelConfig("mc1", "*", nil, nil, nil)
+				mc.RequestLimits = embedded()
+				return &configstore.GovernanceConfig{
+					ModelConfigs: []configstoreTables.TableModelConfig{mc},
+					RateLimits:   linked(func(r *configstoreTables.TableRateLimit) { r.ModelConfigID = schemas.Ptr("mc1") }),
+				}
+			},
+			snapshot: func(d *GovernanceData) []configstoreTables.TableRateLimit { return d.ModelConfigs[0].RequestLimits },
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			store, err := NewLocalGovernanceStore(ctx, NewMockLogger(), nil, tc.config(), nil, nil)
+			require.NoError(t, err)
+			ids := make([]string, 0)
+			for _, rl := range tc.snapshot(store.GetGovernanceData(ctx)) {
+				ids = append(ids, rl.ID)
+			}
+			assert.ElementsMatch(t, []string{"rule-both", "rule-embedded", "rule-linked"}, ids)
+		})
+	}
+}
+
 // TestGovernanceStore_RequestLimits_InMemoryLifecycle pins how a holder's request limits live in
 // memory for every holder that owns them: loading stamps the holder's calendar alignment, an update
 // keeps an edited rule's usage and last reset while taking its new limit, drops a removed rule with

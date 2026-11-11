@@ -3464,6 +3464,27 @@ func requestLimitsByOwner(rateLimits []configstoreTables.TableRateLimit) (modelC
 	return modelConfigs, teams, customers
 }
 
+// mergeRequestLimits adds the owner-linked rows in linked to a holder's embedded request limits,
+// matching by id so a rule declared both ways counts once. Embedded rules come first and are kept
+// as they are, including ones with no linked row. The common case, nothing to add, returns embedded.
+func mergeRequestLimits(embedded, linked []configstoreTables.TableRateLimit) []configstoreTables.TableRateLimit {
+	if len(linked) == 0 {
+		return embedded
+	}
+	known := make(map[string]struct{}, len(embedded))
+	for i := range embedded {
+		known[embedded[i].ID] = struct{}{}
+	}
+	merged := embedded
+	for _, rl := range linked {
+		if _, dup := known[rl.ID]; dup {
+			continue
+		}
+		merged = append(merged[:len(merged):len(merged)], rl)
+	}
+	return merged
+}
+
 // loadFromConfigMemory loads all governance data from the config's memory into store's memory
 func (gs *LocalGovernanceStore) loadFromConfigMemory(ctx context.Context, config *configstore.GovernanceConfig) error {
 	if config == nil {
@@ -3522,16 +3543,12 @@ func (gs *LocalGovernanceStore) loadFromConfigMemory(ctx context.Context, config
 			}
 		}
 
-		if len(team.RequestLimits) == 0 {
-			team.RequestLimits = teamLimits[team.ID]
-		}
+		team.RequestLimits = mergeRequestLimits(team.RequestLimits, teamLimits[team.ID])
 	}
 
 	for i := range customers {
 		customer := &customers[i]
-		if len(customer.RequestLimits) == 0 {
-			customer.RequestLimits = customerLimits[customer.ID]
-		}
+		customer.RequestLimits = mergeRequestLimits(customer.RequestLimits, customerLimits[customer.ID])
 	}
 
 	// Populate model configs with their relationships (Budgets and RateLimit)
@@ -3567,9 +3584,7 @@ func (gs *LocalGovernanceStore) loadFromConfigMemory(ctx context.Context, config
 			}
 		}
 
-		if len(mc.RequestLimits) == 0 {
-			mc.RequestLimits = modelConfigLimits[mc.ID]
-		}
+		mc.RequestLimits = mergeRequestLimits(mc.RequestLimits, modelConfigLimits[mc.ID])
 
 		modelConfigs[i] = *mc
 	}
