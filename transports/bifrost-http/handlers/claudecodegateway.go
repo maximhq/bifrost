@@ -22,6 +22,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configtables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/grant"
 	"github.com/maximhq/bifrost/framework/temptoken"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/integrations"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
@@ -651,7 +652,11 @@ func (h *ClaudeCodeGatewayHandler) authenticate(ctx *fasthttp.RequestCtx) (int, 
 			}
 		}
 		stripGatewayCredentials(ctx)
+		// Attribute the request to the user and record the token it authenticated
+		// by, as injectJWTContext does for the same token on /mcp; SettleIdentity
+		// reads both when the request context is built.
 		ctx.SetUserValue(schemas.BifrostContextKeyUserID, claims.Subject)
+		ctx.SetUserValue(schemas.BifrostContextKeyAuthCredential, grant.NewCredential(grant.CredentialMCPToken, claims.Subject))
 	case schemas.MCPAuthModeSession:
 		h.store.Mu.RLock()
 		enforceAuth := h.store.ClientConfig.EnforceAuthOnInference

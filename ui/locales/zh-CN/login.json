@@ -69,5 +69,17 @@
 		"continue": "继续",
 		"whereToFind": "在哪里可以找到设置令牌？",
 		"notConfigured": "此服务器上未配置设置令牌，因此暂时无法继续设置。"
+	},
+	"device": {
+		"title": "登录 Claude Code",
+		"subtitle": "请确认终端中显示的代码与下方代码一致。",
+		"codeLabel": "设备代码",
+		"checking": "正在验证…",
+		"continue": "继续",
+		"signedInTitle": "你已登录",
+		"signedInBody": "返回 Claude Code 完成操作。你可以关闭此窗口。",
+		"verifyFailed": "无法验证此代码。请在 Claude Code 中重新运行 /login。",
+		"invalidLink": "登录链接不是有效的网址。请检查网关的颁发者 URL 设置。",
+		"unreachable": "无法连接到 Bifrost。请检查网络连接后重试。"
 	}
 }

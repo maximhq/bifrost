@@ -10,7 +10,10 @@ import ClaudeCodeDevicePage from "./page";
 // sends them back here with ?approved=1 once the sign-in is approved.
 //
 // Like /oauth/consent it renders outside the dashboard chrome and needs no
-// dashboard session, so it sets up its own providers.
+// dashboard session, so it sets up its own providers. publicShell keeps
+// ClientLayout from fetching the protected config for a signed-out visitor:
+// that fetch 401s and redirects to /login, which a developer signing in with
+// only a virtual key can never get past.
 function RouteComponent() {
 	return (
 		<ThemeProvider attribute="class" defaultTheme="system" enableSystem>
@@ -23,5 +26,6 @@ function RouteComponent() {
 }
 
 export const Route = createFileRoute("/oauth/device")({
+	staticData: { publicShell: true },
 	component: RouteComponent,
 });

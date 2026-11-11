@@ -1680,5 +1680,25 @@
 		"retry": "Повторить",
 		"externalClientUrl": "Внешний URL клиента",
 		"externalClientUrlHelp": "Публичный базовый URL Bifrost для каталогов Claude Code и Codex. Оставьте поле пустым, чтобы отключить публикацию каталогов и регистрацию. Управление Skills и скачивание останутся доступными. Поддерживаются ссылки на переменные окружения и vault. За префиксом URL (server.base_path) укажите префикс, например https://host/bifrost."
+	},
+	"claudeCode": {
+		"title": "Claude Code",
+		"description": "Разрешите разработчикам входить в Bifrost из Claude Code командой <code0>/login</code0>, а не настраивать виртуальный ключ вручную.",
+		"enableLabel": "Включить вход из Claude Code",
+		"enableDescription": "Разработчик выбирает <b0>Cloud gateway</b0> в <code1>/login</code1>, подтверждает код в браузере и выбирает удостоверение: виртуальный ключ, свою учётную запись или анонимный сеанс, если аутентификация для инференса не обязательна. Затем запросы выполняются от имени этого удостоверения с его бюджетами, ограничениями частоты и доступом к моделям. Входы отображаются в разделе разрешений OAuth, где их можно отозвать.",
+		"issuerLabel": "URL издателя",
+		"issuerDescription": "Постоянный публичный URL Bifrost. Claude Code входит по адресу <code0/>. Это тот же издатель, что использует сервер MCP OAuth, поэтому его изменение затронет и клиентов MCP, вошедших через OAuth. Поддерживается синтаксис переменных окружения (например, <code1>env.BIFROST_ISSUER_URL</code1>).",
+		"issuerPlaceholder": "https://bifrost.example.com или env.BIFROST_ISSUER_URL",
+		"gatewayURLTemplate": "<URL издателя>/claude-code",
+		"connectTitle": "Подключение Claude Code",
+		"gatewayURLLabel": "URL шлюза:",
+		"connectBody": "Claude Code берёт URL шлюза только из управляемых настроек уровня компьютера. Разверните эти ключи на каждом компьютере разработчика (через MDM или файл <code0>managed-settings.json</code0> Claude Code), после чего разработчики выполняют <code1>/login</code1> и нажимают Enter на экране <b2>Cloud gateway</b2>:",
+		"requirements": "Claude Code требует https (http только на localhost) и хост шлюза, который разрешается в адрес частной сети.",
+		"managedSettingsLabel": "Управляемые настройки (JSON)",
+		"managedSettingsDescription": "Необязательный файл <code0>managed-settings.json</code0> для Claude Code, который отправляется каждому вошедшему клиенту (разрешения, переменные окружения, список разрешённых моделей и т. д.). Клиенты обновляют его каждый час. Оставьте пустым, если управляемая политика не нужна.",
+		"issuerRequired": "Укажите URL издателя, прежде чем включать вход из Claude Code.",
+		"invalidJSON": "Управляемые настройки должны быть корректным JSON.",
+		"notObject": "Управляемые настройки должны быть объектом JSON.",
+		"updated": "Настройки Claude Code обновлены."
 	}
 }

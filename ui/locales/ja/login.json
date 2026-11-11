@@ -69,5 +69,17 @@
 		"continue": "続行",
 		"whereToFind": "セットアップトークンはどこで確認できますか？",
 		"notConfigured": "このサーバーにはセットアップトークンが構成されていないため、セットアップを続行できません。"
+	},
+	"device": {
+		"title": "Claude Code にサインイン",
+		"subtitle": "ターミナルに表示されたコードが下のコードと一致することを確認してください。",
+		"codeLabel": "デバイスコード",
+		"checking": "確認中…",
+		"continue": "続行",
+		"signedInTitle": "サインインしました",
+		"signedInBody": "Claude Code に戻って完了してください。このウィンドウは閉じてかまいません。",
+		"verifyFailed": "このコードを確認できませんでした。Claude Code で /login をもう一度実行してください。",
+		"invalidLink": "サインインリンクが有効な Web アドレスではありません。ゲートウェイの発行者 URL 設定を確認してください。",
+		"unreachable": "Bifrost に接続できませんでした。接続を確認してもう一度お試しください。"
 	}
 }

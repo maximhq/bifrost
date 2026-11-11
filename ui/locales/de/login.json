@@ -69,5 +69,17 @@
 		"continue": "Weiter",
 		"whereToFind": "Wo finde ich das Setup-Token?",
 		"notConfigured": "Auf diesem Server ist kein Setup-Token konfiguriert, daher kann die Einrichtung noch nicht fortgesetzt werden."
+	},
+	"device": {
+		"title": "Bei Claude Code anmelden",
+		"subtitle": "Prüfe, ob der Code in deinem Terminal mit dem unten angezeigten übereinstimmt.",
+		"codeLabel": "Gerätecode",
+		"checking": "Wird geprüft…",
+		"continue": "Weiter",
+		"signedInTitle": "Du bist angemeldet",
+		"signedInBody": "Kehre zu Claude Code zurück, um den Vorgang abzuschließen. Du kannst dieses Fenster schließen.",
+		"verifyFailed": "Dieser Code konnte nicht überprüft werden. Führe /login in Claude Code erneut aus.",
+		"invalidLink": "Der Anmeldelink ist keine gültige Webadresse. Prüfe die Issuer-URL-Einstellung des Gateways.",
+		"unreachable": "Bifrost ist nicht erreichbar. Prüfe deine Verbindung und versuche es erneut."
 	}
 }

@@ -9,6 +9,7 @@ import { DefaultCoreConfig } from "@/lib/types/config";
 import { SecretVar } from "@/lib/types/schemas";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { Trans, useTranslation } from "react-i18next";
 import { toast } from "sonner";
 
 // The managed-settings editor holds pretty-printed JSON; "" means no managed policy.
@@ -20,13 +21,15 @@ const secretVarEquals = (a?: SecretVar, b?: SecretVar) =>
 const isIssuerSet = (issuer?: SecretVar) => !!(issuer?.value?.trim() || issuer?.ref?.trim());
 
 // Claude Code is pointed at {issuer}/claude-code. Only a plain-text issuer can be
-// shown; env and vault references resolve on the server.
-const gatewayURL = (issuer?: SecretVar) => {
+// shown; env and vault references resolve on the server, so the caller shows the
+// translated "<issuer URL>/claude-code" template instead (fallback).
+const gatewayURL = (issuer: SecretVar | undefined, fallback: string) => {
 	const value = issuer?.type === "env" || issuer?.type === "vault" ? "" : (issuer?.value ?? "").trim();
-	return value ? `${value.replace(/\/+$/, "")}/claude-code` : "<issuer URL>/claude-code";
+	return value ? `${value.replace(/\/+$/, "")}/claude-code` : fallback;
 };
 
 export default function ClaudeCodeView() {
+	const { t } = useTranslation("config");
 	const hasSettingsUpdateAccess = useRbac(RbacResource.Settings, RbacOperation.Update);
 	const { data: bifrostConfig } = useGetCoreConfigQuery({ fromDB: true });
 	const config = bifrostConfig?.client_config;
@@ -53,16 +56,17 @@ export default function ClaudeCodeView() {
 		);
 	}, [config, enabled, issuerURL, managedSettings]);
 
-	const url = gatewayURL(issuerURL);
+	const urlTemplate = t("claudeCode.gatewayURLTemplate");
+	const url = gatewayURL(issuerURL, urlTemplate);
 	const mdmSnippet = JSON.stringify({ forceLoginMethod: "gateway", forceLoginGatewayUrl: url }, null, 2);
 
 	const handleSave = useCallback(async () => {
 		if (!bifrostConfig) {
-			toast.error("Configuration not loaded. Please refresh and try again.");
+			toast.error(t("configNotLoadedRefresh"));
 			return;
 		}
 		if (enabled && !isIssuerSet(issuerURL)) {
-			toast.error("Set the issuer URL before enabling Claude Code sign-in.");
+			toast.error(t("claudeCode.issuerRequired"));
 			return;
 		}
 		// Managed settings are edited as JSON text and parsed only here, so a
@@ -74,11 +78,11 @@ export default function ClaudeCodeView() {
 			try {
 				parsed = JSON.parse(text);
 			} catch {
-				toast.error("Managed settings must be valid JSON.");
+				toast.error(t("claudeCode.invalidJSON"));
 				return;
 			}
 			if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-				toast.error("Managed settings must be a JSON object.");
+				toast.error(t("claudeCode.notObject"));
 				return;
 			}
 			parsedSettings = parsed as Record<string, unknown>;
@@ -97,29 +101,26 @@ export default function ClaudeCodeView() {
 					},
 				},
 			}).unwrap();
-			toast.success("Claude Code settings updated successfully.");
+			toast.success(t("claudeCode.updated"));
 		} catch (error) {
 			toast.error(getErrorMessage(error));
 		}
-	}, [bifrostConfig, enabled, issuerURL, managedSettings, updateCoreConfig]);
+	}, [bifrostConfig, enabled, issuerURL, managedSettings, updateCoreConfig, t]);
 
 	return (
 		<div className="mx-auto w-full max-w-4xl space-y-6" data-testid="claude-code-view">
-			<PageTitle title="Claude Code">
-				Let developers sign in to Bifrost from Claude Code with <code className="text-xs">/login</code> instead of configuring a virtual key
-				by hand.
+			<PageTitle title={t("claudeCode.title")}>
+				<Trans t={t} i18nKey="claudeCode.description" components={{ code0: <code className="text-xs" /> }} />
 			</PageTitle>
 
 			<div className="space-y-4">
 				<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
 					<div className="space-y-0.5">
 						<label htmlFor="claude-code-gateway-enabled" className="text-sm font-medium">
-							Enable Claude Code sign-in
+							{t("claudeCode.enableLabel")}
 						</label>
 						<p className="text-muted-foreground text-sm">
-							Developers choose <b>Cloud gateway</b> in <code className="text-xs">/login</code>, confirm a code in the browser, and pick an
-							identity: a virtual key, their account, or an anonymous session when inference auth is not enforced. Requests then run under
-							that identity with its budgets, rate limits and model access. Sign-ins appear under OAuth grants, where they can be revoked.
+							<Trans t={t} i18nKey="claudeCode.enableDescription" components={{ b0: <b />, code1: <code className="text-xs" /> }} />
 						</p>
 					</div>
 					<Switch
@@ -134,17 +135,19 @@ export default function ClaudeCodeView() {
 
 				<div className="space-y-1.5 rounded-sm border p-4">
 					<label htmlFor="claude-code-issuer-url" className="text-sm font-medium">
-						Issuer URL
+						{t("claudeCode.issuerLabel")}
 					</label>
 					<p className="text-muted-foreground text-sm">
-						Bifrost's stable public URL. Claude Code signs in at <code className="text-xs">{"<issuer URL>/claude-code"}</code>. This is the
-						same issuer the MCP OAuth server uses, so changing it also affects MCP clients signed in with OAuth. Supports env var syntax
-						(e.g. <code className="text-xs">env.BIFROST_ISSUER_URL</code>).
+						<Trans
+							t={t}
+							i18nKey="claudeCode.issuerDescription"
+							components={{ code0: <code className="text-xs">{urlTemplate}</code>, code1: <code className="text-xs" /> }}
+						/>
 					</p>
 					<SecretVarInput
 						id="claude-code-issuer-url"
 						data-testid="claude-code-issuer-url-input"
-						placeholder="https://bifrost.example.com or env.BIFROST_ISSUER_URL"
+						placeholder={t("claudeCode.issuerPlaceholder")}
 						value={issuerURL}
 						onChange={setIssuerURL}
 						disabled={!hasSettingsUpdateAccess}
@@ -153,37 +156,37 @@ export default function ClaudeCodeView() {
 
 				{enabled && (
 					<div className="space-y-3 rounded-sm border p-4" data-testid="claude-code-connect-instructions">
-						<p className="text-sm font-medium">Connect Claude Code</p>
-						<p className="text-muted-foreground text-sm">Gateway URL:</p>
+						<p className="text-sm font-medium">{t("claudeCode.connectTitle")}</p>
+						<p className="text-muted-foreground text-sm">{t("claudeCode.gatewayURLLabel")}</p>
 						<code className="bg-muted block rounded-sm px-3 py-2 text-xs" data-testid="claude-code-gateway-url">
 							{url}
 						</code>
 						<p className="text-muted-foreground text-sm">
-							Claude Code reads the gateway URL only from machine-level managed settings. Deploy these keys to each developer machine (MDM
-							or Claude Code&apos;s <code className="text-xs">managed-settings.json</code>), then developers run{" "}
-							<code className="text-xs">/login</code> and press Enter on the <b>Cloud gateway</b> screen:
+							<Trans
+								t={t}
+								i18nKey="claudeCode.connectBody"
+								components={{ code0: <code className="text-xs" />, code1: <code className="text-xs" />, b2: <b /> }}
+							/>
 						</p>
 						<pre className="bg-muted overflow-x-auto rounded-sm px-3 py-2 text-xs">{mdmSnippet}</pre>
 						<Alert>
-							<AlertDescription>
-								Claude Code requires https (http only on localhost) and a gateway host that resolves to a private network address.
-							</AlertDescription>
+							<AlertDescription>{t("claudeCode.requirements")}</AlertDescription>
 						</Alert>
 					</div>
 				)}
 
 				<div className="space-y-1.5 rounded-sm border p-4">
 					<label htmlFor="claude-code-managed-settings" className="text-sm font-medium">
-						Managed settings (JSON)
+						{t("claudeCode.managedSettingsLabel")}
 					</label>
 					<p className="text-muted-foreground text-sm">
-						Optional Claude Code <code className="text-xs">managed-settings.json</code> pushed to every signed-in client (permissions, env,
-						model allowlist and so on). Clients refresh it hourly. Leave empty for no managed policy.
+						<Trans t={t} i18nKey="claudeCode.managedSettingsDescription" components={{ code0: <code className="text-xs" /> }} />
 					</p>
 					<Textarea
 						id="claude-code-managed-settings"
 						data-testid="claude-code-managed-settings-input"
 						className="min-h-40 font-mono text-xs"
+						// i18n-ignore: a JSON example, not prose
 						placeholder={'{\n  "env": { "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY": "1" }\n}'}
 						value={managedSettings}
 						onChange={(e) => setManagedSettings(e.target.value)}
@@ -194,7 +197,7 @@ export default function ClaudeCodeView() {
 
 			<div className="flex justify-end pt-2">
 				<Button onClick={handleSave} disabled={!hasChanges || isLoading || !hasSettingsUpdateAccess} data-testid="claude-code-save-btn">
-					{isLoading ? "Saving..." : "Save Changes"}
+					{isLoading ? t("saving") : t("saveChanges")}
 				</Button>
 			</div>
 		</div>

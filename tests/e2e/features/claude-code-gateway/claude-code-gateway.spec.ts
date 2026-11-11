@@ -99,6 +99,28 @@ test.describe('Claude Code device sign-in page', () => {
     expect(verifyCalls).toBe(1)
   })
 
+  test('stays on the code entry for a signed-out visitor while dashboard auth is on', async ({ page, claudeCodeGatewayPage }) => {
+    // A developer signing in with a virtual key has no dashboard session: every
+    // protected API call 401s, which the dashboard answers with a /login redirect.
+    await page.route('**/api/**', async route => {
+      const path = new URL(route.request().url()).pathname
+      if (path === '/api/session/is-auth-enabled') {
+        await route.fulfill({ json: { is_auth_enabled: true, has_valid_token: false, auth_type: 'password', inference_auth_enforced: true } })
+      } else if (path === '/api/version') {
+        await route.fulfill({ json: '1.0.0' })
+      } else {
+        await route.fulfill({ status: 401, json: { error: { message: 'Unauthorized' } } })
+      }
+    })
+    await claudeCodeGatewayPage.gotoDevicePage('?user_code=bcdfghjk')
+
+    await expect(claudeCodeGatewayPage.deviceCodeInput).toHaveValue('BCDF-GHJK')
+    // Let any 401 and its redirect play out before checking where the page is.
+    await page.waitForLoadState('networkidle')
+    await expect(page).toHaveURL(/\/oauth\/device\?user_code=bcdfghjk$/)
+    await expect(claudeCodeGatewayPage.deviceCodeInput).toBeVisible()
+  })
+
   test('confirms an approved sign-in', async ({ claudeCodeGatewayPage }) => {
     await claudeCodeGatewayPage.gotoDevicePage('?approved=1')
     await expect(claudeCodeGatewayPage.deviceApproved).toContainText("You're signed in")
