@@ -4950,8 +4950,7 @@ func isStrictCompatibleJSONSchema(node interface{}) bool {
 			}
 		}
 		properties, hasProperties := v["properties"].(map[string]interface{})
-		schemaType, _ := v["type"].(string)
-		if schemaType == "object" || hasProperties {
+		if schemaTypeIncludes(v["type"], "object") || hasProperties {
 			if additional, ok := v["additionalProperties"].(bool); !ok || additional {
 				return false
 			}
@@ -5000,6 +4999,41 @@ func isStrictCompatibleJSONSchema(node interface{}) bool {
 	default:
 		return true
 	}
+}
+
+// schemaTypeIncludes reports whether a JSON schema "type" value names want,
+// either as the type string or as a member of a type array such as
+// ["object", "null"].
+func schemaTypeIncludes(schemaType interface{}, want string) bool {
+	switch t := schemaType.(type) {
+	case string:
+		return t == want
+	case []interface{}:
+		for _, member := range t {
+			if name, ok := member.(string); ok && name == want {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// isStrictCompatibleRootSchema reports whether a decoded root schema can be
+// sent with strict=true. OpenAI's strict mode requires the root to be a plain
+// object schema (type "object", not a nullable union and not a root-level
+// anyOf); nested schemas are then checked by isStrictCompatibleJSONSchema.
+func isStrictCompatibleRootSchema(root interface{}) bool {
+	rootMap, ok := root.(map[string]interface{})
+	if !ok {
+		return false
+	}
+	if schemaType, ok := rootMap["type"].(string); !ok || schemaType != "object" {
+		return false
+	}
+	if _, hasAnyOf := rootMap["anyOf"]; hasAnyOf {
+		return false
+	}
+	return isStrictCompatibleJSONSchema(rootMap)
 }
 
 // convertAnthropicOutputFormatToResponsesTextConfig converts Anthropic's output_format structure
@@ -5066,7 +5100,7 @@ func convertAnthropicOutputFormatToResponsesTextConfig(outputFormat json.RawMess
 		format.Strict = schemas.Ptr(strict)
 	} else {
 		schemaValue := gjson.GetBytes(outputFormat, "schema")
-		format.Strict = schemas.Ptr(schemaValue.IsObject() && isStrictCompatibleJSONSchema(schemaValue.Value()))
+		format.Strict = schemas.Ptr(schemaValue.IsObject() && isStrictCompatibleRootSchema(schemaValue.Value()))
 	}
 
 	// Extract schema if present (an *OrderedMap after the ordered decode)

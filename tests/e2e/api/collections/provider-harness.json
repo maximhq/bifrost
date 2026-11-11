@@ -16577,16 +16577,19 @@
                     "type": "text/javascript",
                     "exec": [
                       "// #8159: the reply must be the requested JSON object, not just any text.",
-                      "if (pm.response.code >= 400) { return; }",
                       "pm.test('output_config format returns a JSON object matching the schema - #8159', function () {",
-                      "  var j = pm.response.json();",
-                      "  var block = (j.content || []).find(function (c) { return c.type === 'text'; });",
-                      "  pm.expect(block, 'expected a text content block').to.exist;",
-                      "  var obj = JSON.parse(block.text);",
-                      "  pm.expect(obj).to.be.an('object');",
-                      "  pm.expect(obj.city, 'required city must be a string').to.be.a('string');",
-                      "  if (obj.country !== undefined) { pm.expect(obj.country).to.be.a('string'); }",
-                      "  Object.keys(obj).forEach(function (k) { pm.expect(['city', 'country'], 'unexpected key ' + k).to.include(k); });",
+                      "  var ctx = '; response: ' + (pm.response.text() || '').slice(0, 500);",
+                      "  pm.expect(pm.response.code, 'expected HTTP 200, got ' + pm.response.code + ctx).to.equal(200);",
+                      "  var j;",
+                      "  try { j = pm.response.json(); } catch (e) { pm.expect.fail('response was not valid JSON: ' + e.message + ctx); return; }",
+                      "  var block = (j.content || []).filter(function (c) { return c.type === 'text'; })[0];",
+                      "  pm.expect(block, 'expected a text content block' + ctx).to.exist;",
+                      "  var obj;",
+                      "  try { obj = JSON.parse(block.text); } catch (e) { pm.expect.fail('text block was not valid JSON: ' + e.message + ctx); return; }",
+                      "  pm.expect(obj, 'expected a JSON object' + ctx).to.be.an('object');",
+                      "  pm.expect(obj.city, 'required city must be a string' + ctx).to.be.a('string');",
+                      "  if (obj.country !== undefined) { pm.expect(obj.country, 'optional country must be a string' + ctx).to.be.a('string'); }",
+                      "  Object.keys(obj).forEach(function (k) { pm.expect(['city', 'country'], 'unexpected key ' + k + ctx).to.include(k); });",
                       "});"
                     ]
                   }

@@ -6379,6 +6379,24 @@ func TestConvertAnthropicOutputFormatEnablesStrictForCompatibleSchema(t *testing
 	}
 }
 
+// OpenAI's strict mode rejects a root-level anyOf and needs an object root, so
+// a root union keeps strict off even when every branch is strict compatible.
+func TestConvertAnthropicOutputFormatRootUnionKeepsStrictOff(t *testing.T) {
+	cases := map[string]string{
+		"root anyOf":        `{"type":"json_schema","schema":{"anyOf":[{"type":"object","properties":{"a":{"type":"string"}},"required":["a"],"additionalProperties":false},{"type":"object","properties":{"b":{"type":"string"}},"required":["b"],"additionalProperties":false}]}}`,
+		"root without type": `{"type":"json_schema","schema":{"properties":{"a":{"type":"string"}},"required":["a"],"additionalProperties":false}}`,
+		"root nullable":     `{"type":"json_schema","schema":{"type":["object","null"],"properties":{"a":{"type":"string"}},"required":["a"],"additionalProperties":false}}`,
+	}
+	for name, raw := range cases {
+		t.Run(name, func(t *testing.T) {
+			cfg := convertAnthropicOutputFormatToResponsesTextConfig(json.RawMessage(raw))
+			if cfg == nil || cfg.Format == nil || cfg.Format.Strict == nil || *cfg.Format.Strict {
+				t.Fatalf("expected strict=false for %s, got %+v", name, cfg)
+			}
+		})
+	}
+}
+
 func TestIsStrictCompatibleJSONSchema(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -6394,6 +6412,9 @@ func TestIsStrictCompatibleJSONSchema(t *testing.T) {
 		{"anyOf ok", `{"type":"object","properties":{"v":{"anyOf":[{"type":"string"},{"type":"null"}]}},"required":["v"],"additionalProperties":false}`, true},
 		{"oneOf unsupported", `{"type":"object","properties":{"v":{"oneOf":[{"type":"string"},{"type":"integer"}]}},"required":["v"],"additionalProperties":false}`, false},
 		{"defs optional", `{"type":"object","properties":{"p":{"$ref":"#/$defs/P"}},"required":["p"],"additionalProperties":false,"$defs":{"P":{"type":"object","properties":{"x":{"type":"string"}},"additionalProperties":false}}}`, false},
+		{"nullable object without additionalProperties false", `{"type":"object","properties":{"o":{"type":["object","null"],"additionalProperties":true}},"required":["o"],"additionalProperties":false}`, false},
+		{"nullable object optional property", `{"type":"object","properties":{"o":{"type":["object","null"],"properties":{"x":{"type":"string"}},"additionalProperties":false}},"required":["o"],"additionalProperties":false}`, false},
+		{"nullable object ok", `{"type":"object","properties":{"o":{"type":["object","null"],"properties":{"x":{"type":"string"}},"required":["x"],"additionalProperties":false}},"required":["o"],"additionalProperties":false}`, true},
 		{"defs ok", `{"type":"object","properties":{"p":{"$ref":"#/$defs/P"}},"required":["p"],"additionalProperties":false,"$defs":{"P":{"type":"object","properties":{"x":{"type":"string"}},"required":["x"],"additionalProperties":false}}}`, true},
 	}
 	for _, tc := range cases {
