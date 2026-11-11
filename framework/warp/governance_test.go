@@ -199,6 +199,44 @@ func TestWarpDescribeVirtualKeySaysWhenNothingCapsTheKey(t *testing.T) {
 	vk.RateLimit = &tables.TableRateLimit{ID: "rl-1", RequestMaxLimit: int64Ptr(1000)}
 	out = directMap(t, mustRunTool(t, "describe_virtual_key", deps, map[string]any{"virtual_key_id": "vk-bare"}))
 	require.Contains(t, out["guidance"], "No budget is configured")
+
+	// Request limits are a rate limit too: a key capped only by request limits is not uncapped.
+	vk.RateLimit = nil
+	vk.RequestLimits = []tables.TableRateLimit{{ID: "rule-1", RequestMaxLimit: int64Ptr(50), RequestResetDuration: schemas.Ptr("1h"), Scope: tables.LimitScopeMCP}}
+	out = directMap(t, mustRunTool(t, "describe_virtual_key", deps, map[string]any{"virtual_key_id": "vk-bare"}))
+	require.Contains(t, out["guidance"], "No budget is configured")
+	require.NotContains(t, out["guidance"], "rate limit")
+}
+
+// A key's request limits are separate rules from its token rate limit, each with the traffic it
+// counts. Both the key and its provider configs report them with their scope.
+func TestWarpDescribeVirtualKeyReportsRequestLimits(t *testing.T) {
+	vk := &tables.TableVirtualKey{
+		ID:        "vk-1",
+		Name:      "prod",
+		RateLimit: &tables.TableRateLimit{ID: "rl-1", TokenMaxLimit: int64Ptr(1000)},
+		RequestLimits: []tables.TableRateLimit{
+			{ID: "rule-shared", RequestMaxLimit: int64Ptr(100), RequestCurrentUsage: 7, RequestResetDuration: schemas.Ptr("1m")},
+			{ID: "rule-mcp", RequestMaxLimit: int64Ptr(20), RequestResetDuration: schemas.Ptr("1h"), Scope: tables.LimitScopeMCP},
+		},
+		ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
+			{Provider: "openai", RequestLimits: []tables.TableRateLimit{{ID: "rule-pc", RequestMaxLimit: int64Ptr(5), RequestResetDuration: schemas.Ptr("1m"), Scope: tables.LimitScopeModel}}},
+			{Provider: "anthropic"},
+		},
+	}
+	deps := &ToolDeps{governance: &fakeGovernanceReader{byID: map[string]*tables.TableVirtualKey{"vk-1": vk}}}
+
+	out := directMap(t, mustRunTool(t, "describe_virtual_key", deps, map[string]any{"virtual_key_id": "vk-1"}))
+	require.Equal(t, []map[string]any{
+		{"request_max_limit": int64(100), "request_current_usage": int64(7), "request_reset_duration": "1m", "scope": "shared"},
+		{"request_max_limit": int64(20), "request_current_usage": int64(0), "request_reset_duration": "1h", "scope": "mcp"},
+	}, out["request_limits"])
+	require.NotContains(t, out["rate_limit"].(map[string]any), "request_max_limit")
+	providers := out["providers"].([]map[string]any)
+	require.Equal(t, []map[string]any{
+		{"request_max_limit": int64(5), "request_current_usage": int64(0), "request_reset_duration": "1m", "scope": "model"},
+	}, providers[0]["request_limits"])
+	require.NotContains(t, providers[1], "request_limits")
 }
 
 // The key row is not where a managed key's cap lives: on an enterprise

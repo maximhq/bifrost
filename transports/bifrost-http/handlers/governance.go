@@ -263,7 +263,8 @@ type ExternalQuotaBudgetResult struct {
 	// RateLimits lists every rate limit RateLimit was merged from, each tagged with
 	// its source, so a caller can see which one is actually binding instead of only
 	// the merged result. Empty when there's at most one source.
-	RateLimits []SourcedRateLimit
+	RateLimits    []SourcedRateLimit
+	RequestLimits []configstoreTables.TableRateLimit // Request limits that govern the key, each with its scope and live usage
 	// Managed reports that the VK is access-profile-managed. Set independently of
 	// Budgets/RateLimit so the flag reaches the response even when the profile has
 	// neither — it drives the managed-key UI (lock + notice).
@@ -382,6 +383,7 @@ type CreateVirtualKeyRequest struct {
 		BlacklistedModels schemas.BlackList       `json:"blacklisted_models,omitempty"` // ["*"] blocks all models; empty blocks none
 		Budgets           []CreateBudgetRequest   `json:"budgets,omitempty"`            // Multi-budget for provider config
 		RateLimit         *CreateRateLimitRequest `json:"rate_limit,omitempty"`         // Provider-level rate limit
+		RequestLimits     []RequestLimitRequest   `json:"request_limits,omitempty"`     // Provider-level request limits (scope shared or model)
 		ModelBudgets      []vkModelBudgetRequest  `json:"model_budgets,omitempty"`      // Per-model budgets/rate-limits under this provider
 		KeyIDs            schemas.WhiteList       `json:"key_ids,omitempty"`            // List of DBKey UUIDs to associate with this provider config
 	} `json:"provider_configs,omitempty"` // Empty means no providers allowed (deny-by-default)
@@ -396,6 +398,7 @@ type CreateVirtualKeyRequest struct {
 	BusinessUnitID    *string                 `json:"business_unit_id,omitempty"`
 	Budgets           []CreateBudgetRequest   `json:"budgets,omitempty"` // Multi-budget: each must have a unique reset_duration
 	RateLimit         *CreateRateLimitRequest `json:"rate_limit,omitempty"`
+	RequestLimits     []RequestLimitRequest   `json:"request_limits,omitempty"` // One per reset period and scope, on the key's holder-level model config
 	IsActive          *bool                   `json:"is_active,omitempty"`
 	CalendarAligned   bool                    `json:"calendar_aligned,omitempty"`    // When true, all budgets reset at clean calendar boundaries
 	AllowAllProviders bool                    `json:"allow_all_providers,omitempty"` // When true, all providers are allowed; provider_configs remain optional overrides
@@ -424,16 +427,18 @@ type relayGrantBody struct {
 // on VK create. model_name must be a concrete model (not the "*" wildcard, which is the
 // provider-level tier).
 type vkModelBudgetRequest struct {
-	ModelName string                  `json:"model_name" validate:"required"`
-	Budgets   []CreateBudgetRequest   `json:"budgets,omitempty"`
-	RateLimit *CreateRateLimitRequest `json:"rate_limit,omitempty"`
+	ModelName     string                  `json:"model_name" validate:"required"`
+	Budgets       []CreateBudgetRequest   `json:"budgets,omitempty"`
+	RateLimit     *CreateRateLimitRequest `json:"rate_limit,omitempty"`
+	RequestLimits []RequestLimitRequest   `json:"request_limits,omitempty"`
 }
 
 // vkModelBudgetUpdateRequest mirrors vkModelBudgetRequest for VK update (removable rate limit).
 type vkModelBudgetUpdateRequest struct {
-	ModelName string                  `json:"model_name" validate:"required"`
-	Budgets   []CreateBudgetRequest   `json:"budgets,omitempty"`
-	RateLimit *UpdateRateLimitRequest `json:"rate_limit,omitempty"`
+	ModelName     string                  `json:"model_name" validate:"required"`
+	Budgets       []CreateBudgetRequest   `json:"budgets,omitempty"`
+	RateLimit     *UpdateRateLimitRequest `json:"rate_limit,omitempty"`
+	RequestLimits []RequestLimitRequest   `json:"request_limits,omitempty"`
 }
 
 // UpdateVirtualKeyRequest represents the request body for updating a virtual key
@@ -448,6 +453,7 @@ type UpdateVirtualKeyRequest struct {
 		BlacklistedModels schemas.BlackList            `json:"blacklisted_models,omitempty"` // ["*"] blocks all models; empty blocks none
 		Budgets           []CreateBudgetRequest        `json:"budgets,omitempty"`            // Multi-budget for provider config
 		RateLimit         *UpdateRateLimitRequest      `json:"rate_limit,omitempty"`         // Provider-level rate limit
+		RequestLimits     []RequestLimitRequest        `json:"request_limits,omitempty"`     // Provider-level request limits; omitted leaves them unchanged unless rate_limit is sent
 		ModelBudgets      []vkModelBudgetUpdateRequest `json:"model_budgets,omitempty"`      // Per-model budgets/rate-limits under this provider (full desired set when provider_configs is supplied)
 		KeyIDs            schemas.WhiteList            `json:"key_ids,omitempty"`            // List of DBKey UUIDs to associate with this provider config
 	} `json:"provider_configs,omitempty"`
@@ -461,6 +467,7 @@ type UpdateVirtualKeyRequest struct {
 	BusinessUnitID    schemas.OptionalJSON[string] `json:"business_unit_id,omitempty"`
 	Budgets           []CreateBudgetRequest        `json:"budgets,omitempty"` // Multi-budget: replaces all VK-level budgets
 	RateLimit         *UpdateRateLimitRequest      `json:"rate_limit,omitempty"`
+	RequestLimits     []RequestLimitRequest        `json:"request_limits,omitempty"` // [] removes all; omitted leaves them unchanged unless rate_limit is sent
 	IsActive          *bool                        `json:"is_active,omitempty"`
 	CalendarAligned   *bool                        `json:"calendar_aligned,omitempty"`    // When true, all budgets reset at clean calendar boundaries
 	AllowAllProviders *bool                        `json:"allow_all_providers,omitempty"` // When true, all providers are allowed; nil means leave unchanged
@@ -1415,12 +1422,14 @@ type vkModelConfigDesired struct {
 	provider *string
 	// modelName is the model tier this config governs. Empty defaults to the "*" all-models
 	// tier (VK top-level / per-provider); a concrete model name targets a per-model budget.
-	modelName         string
-	budgetsProvided   bool
-	budgets           []CreateBudgetRequest
-	rateLimitProvided bool
-	rateLimitRemove   bool
-	rateLimit         *configstoreTables.TableRateLimit
+	modelName             string
+	budgetsProvided       bool
+	budgets               []CreateBudgetRequest
+	rateLimitProvided     bool
+	rateLimitRemove       bool
+	rateLimit             *configstoreTables.TableRateLimit
+	requestLimitsProvided bool // like budgetsProvided: false leaves the request limits unchanged
+	requestLimits         []RequestLimitRequest
 	// reconcileModelBudgets applies to a provider's "*" tier entry: when true the request's
 	// per-model budgets for this provider are authoritative and configs absent from them are
 	// pruned; when false (model_budgets omitted) existing per-model configs are left untouched.
@@ -1474,7 +1483,7 @@ func (h *GovernanceHandler) syncVKGovernanceToModelConfigs(ctx context.Context, 
 	// model_budgets set was supplied. Per-model configs of a still-configured provider whose
 	// model_budgets were omitted are left untouched (e.g. ones set via the model-config API).
 	var existing []configstoreTables.TableModelConfig
-	if err := tx.Preload("Budgets").
+	if err := tx.Preload("Budgets").Preload("RequestLimits").
 		Where("scope = ? AND scope_id = ? AND provider IS NOT NULL",
 			configstoreTables.ModelConfigScopeVirtualKey, vk.ID).
 		Find(&existing).Error; err != nil {
@@ -1499,7 +1508,7 @@ func (h *GovernanceHandler) syncVKGovernanceToModelConfigs(ctx context.Context, 
 // reconcileVKModelConfig reconciles a single VK-scoped model config to the desired state.
 func (h *GovernanceHandler) reconcileVKModelConfig(ctx context.Context, tx *gorm.DB, vk *configstoreTables.TableVirtualKey, d vkModelConfigDesired, usageReset *budgetUsageReset) error {
 	modelName := d.modelNameOrAll()
-	q := tx.Preload("Budgets").Where("scope = ? AND scope_id = ? AND model_name = ?",
+	q := tx.Preload("Budgets").Preload("RequestLimits").Where("scope = ? AND scope_id = ? AND model_name = ?",
 		configstoreTables.ModelConfigScopeVirtualKey, vk.ID, modelName)
 	if d.provider == nil {
 		q = q.Where("provider IS NULL")
@@ -1531,60 +1540,52 @@ func (h *GovernanceHandler) reconcileVKModelConfig(ctx context.Context, tx *gorm
 
 	// Rate limit (mc references it via RateLimitID, so resolve before persisting the mc).
 	var rateLimitIDToDelete string
-	if d.rateLimitProvided {
-		switch {
-		case d.rateLimitRemove:
-			if mc.RateLimitID != nil {
-				rateLimitIDToDelete = *mc.RateLimitID
-				mc.RateLimitID = nil
-				mc.RateLimit = nil
+	var requestLimitCarry *configstoreTables.TableRateLimit
+	if mc.RateLimitID != nil && (d.rateLimitProvided || d.requestLimitsProvided) {
+		// The token limit lands on the existing row; see updateHolderRateLimit.
+		var tokens *UpdateRateLimitRequest
+		if d.rateLimitProvided {
+			tokens = &UpdateRateLimitRequest{}
+			if !d.rateLimitRemove {
+				tokens.TokenMaxLimit, tokens.TokenResetDuration = d.rateLimit.TokenMaxLimit, d.rateLimit.TokenResetDuration
 			}
-		case mc.RateLimitID != nil:
+		}
+		update, err := h.updateHolderRateLimit(ctx, tx, *mc.RateLimitID, tokens)
+		if err != nil {
+			return err
+		}
+		mc.RateLimitID, mc.RateLimit = update.rateLimitID, update.rateLimit
+		rateLimitIDToDelete, requestLimitCarry = update.deleteID, update.carry
+	} else if d.rateLimitProvided && !d.rateLimitRemove {
+		// Adopt the VK's existing rate limit (config.json flow) instead of creating a duplicate.
+		if isNew && vk.RateLimitID != nil {
 			rl := configstoreTables.TableRateLimit{}
-			if err := tx.First(&rl, "id = ?", *mc.RateLimitID).Error; err != nil {
-				return err
-			}
-			rl.TokenMaxLimit = d.rateLimit.TokenMaxLimit
-			rl.TokenResetDuration = d.rateLimit.TokenResetDuration
-			rl.RequestMaxLimit = d.rateLimit.RequestMaxLimit
-			rl.RequestResetDuration = d.rateLimit.RequestResetDuration
-			if err := validateRateLimit(&rl); err != nil {
-				return err
-			}
-			if err := h.configStore.UpdateRateLimit(ctx, &rl, tx); err != nil {
-				return err
-			}
-			mc.RateLimit = &rl
-		default:
-			// Adopt the VK's existing rate limit (config.json flow) instead of creating a duplicate.
-			if isNew && vk.RateLimitID != nil {
-				rl := configstoreTables.TableRateLimit{}
-				if err := tx.First(&rl, "id = ?", *vk.RateLimitID).Error; err != nil {
-					if !errors.Is(err, gorm.ErrRecordNotFound) {
-						return err
-					}
-				} else {
-					rl.TokenMaxLimit = d.rateLimit.TokenMaxLimit
-					rl.TokenResetDuration = d.rateLimit.TokenResetDuration
-					rl.RequestMaxLimit = d.rateLimit.RequestMaxLimit
-					rl.RequestResetDuration = d.rateLimit.RequestResetDuration
-					if err := validateRateLimit(&rl); err != nil {
-						return err
-					}
-					if err := h.configStore.UpdateRateLimit(ctx, &rl, tx); err != nil {
-						return err
-					}
-					if err := tx.Model(&configstoreTables.TableVirtualKey{}).
-						Where("id = ?", vk.ID).
-						Update("rate_limit_id", nil).Error; err != nil {
-						return fmt.Errorf("failed to clear VK rate limit reference: %w", err)
-					}
-					vk.RateLimitID = nil
-					mc.RateLimitID = &rl.ID
-					mc.RateLimit = &rl
-					break
+			if err := tx.First(&rl, "id = ?", *vk.RateLimitID).Error; err != nil {
+				if !errors.Is(err, gorm.ErrRecordNotFound) {
+					return err
 				}
+			} else {
+				rl.TokenMaxLimit = d.rateLimit.TokenMaxLimit
+				rl.TokenResetDuration = d.rateLimit.TokenResetDuration
+				rl.RequestMaxLimit = d.rateLimit.RequestMaxLimit
+				rl.RequestResetDuration = d.rateLimit.RequestResetDuration
+				if err := validateRateLimit(&rl); err != nil {
+					return err
+				}
+				if err := h.configStore.UpdateRateLimit(ctx, &rl, tx); err != nil {
+					return err
+				}
+				if err := tx.Model(&configstoreTables.TableVirtualKey{}).
+					Where("id = ?", vk.ID).
+					Update("rate_limit_id", nil).Error; err != nil {
+					return fmt.Errorf("failed to clear VK rate limit reference: %w", err)
+				}
+				vk.RateLimitID = nil
+				mc.RateLimitID = &rl.ID
+				mc.RateLimit = &rl
 			}
+		}
+		if mc.RateLimitID == nil {
 			rl := configstoreTables.TableRateLimit{
 				ID:                   uuid.NewString(),
 				TokenMaxLimit:        d.rateLimit.TokenMaxLimit,
@@ -1610,13 +1611,22 @@ func (h *GovernanceHandler) reconcileVKModelConfig(ctx context.Context, tx *gorm
 	if d.budgetsProvided {
 		finalBudgetCount = len(d.budgets)
 	}
-	hasGovernance := mc.RateLimitID != nil || finalBudgetCount > 0
+	finalRequestLimitCount := len(mc.RequestLimits)
+	if d.requestLimitsProvided {
+		finalRequestLimitCount = len(d.requestLimits)
+	}
+	hasGovernance := mc.RateLimitID != nil || finalBudgetCount > 0 || finalRequestLimitCount > 0
 
 	if !hasGovernance {
-		// No governance left → drop the model config (and its budgets) if it existed.
+		// No governance left → drop the model config (and its budgets and request limits) if it existed.
 		if !isNew {
 			for i := range mc.Budgets {
 				if err := h.configStore.DeleteBudget(ctx, mc.Budgets[i].ID, tx); err != nil {
+					return err
+				}
+			}
+			for i := range mc.RequestLimits {
+				if err := h.configStore.DeleteRateLimit(ctx, mc.RequestLimits[i].ID, tx); err != nil {
 					return err
 				}
 			}
@@ -1667,6 +1677,11 @@ func (h *GovernanceHandler) reconcileVKModelConfig(ctx context.Context, tx *gorm
 			return err
 		}
 	}
+	if d.requestLimitsProvided {
+		if err := h.reconcileModelConfigRequestLimits(ctx, tx, &mc, d.requestLimits, requestLimitCarry); err != nil {
+			return err
+		}
+	}
 
 	if rateLimitIDToDelete != "" {
 		if err := tx.Delete(&configstoreTables.TableRateLimit{}, "id = ?", rateLimitIDToDelete).Error; err != nil {
@@ -1684,6 +1699,11 @@ func (h *GovernanceHandler) deleteVKModelConfig(ctx context.Context, tx *gorm.DB
 			return err
 		}
 	}
+	for i := range mc.RequestLimits {
+		if err := h.configStore.DeleteRateLimit(ctx, mc.RequestLimits[i].ID, tx); err != nil {
+			return err
+		}
+	}
 	rlID := mc.RateLimitID
 	if err := tx.Delete(&configstoreTables.TableModelConfig{}, "id = ?", mc.ID).Error; err != nil {
 		return err
@@ -1696,14 +1716,12 @@ func (h *GovernanceHandler) deleteVKModelConfig(ctx context.Context, tx *gorm.DB
 	return nil
 }
 
-// rateLimitFromRequestFields builds a transient TableRateLimit (limit/duration fields only)
-// for the VK governance sync, from the shared rate-limit request field shape.
-func rateLimitFromRequestFields(tokenMax *int64, tokenDur *string, reqMax *int64, reqDur *string) *configstoreTables.TableRateLimit {
+// tokenRateLimit builds a transient TableRateLimit carrying a token limit only (limit and duration
+// fields only), for the VK governance sync: request limits live in request_limits, not on the rate limit.
+func tokenRateLimit(tokenMax *int64, tokenDur *string) *configstoreTables.TableRateLimit {
 	return &configstoreTables.TableRateLimit{
-		TokenMaxLimit:        tokenMax,
-		TokenResetDuration:   tokenDur,
-		RequestMaxLimit:      reqMax,
-		RequestResetDuration: reqDur,
+		TokenMaxLimit:      tokenMax,
+		TokenResetDuration: tokenDur,
 	}
 }
 
@@ -1746,17 +1764,23 @@ func buildVKCreateModelBudgets(provider *string, providerName string, mbs []vkMo
 	}
 	out := make([]vkModelConfigDesired, 0, len(mbs))
 	for _, mb := range mbs {
+		tokenLimit, requestLimits, err := splitLegacyCreateRateLimitRequest(mb.RateLimit, mb.RequestLimits)
+		if err != nil {
+			return nil, err
+		}
 		var rl *configstoreTables.TableRateLimit
-		if mb.RateLimit != nil {
-			rl = rateLimitFromRequestFields(mb.RateLimit.TokenMaxLimit, mb.RateLimit.TokenResetDuration, mb.RateLimit.RequestMaxLimit, mb.RateLimit.RequestResetDuration)
+		if tokenLimit != nil {
+			rl = tokenRateLimit(tokenLimit.TokenMaxLimit, tokenLimit.TokenResetDuration)
 		}
 		out = append(out, vkModelConfigDesired{
-			provider:          provider,
-			modelName:         strings.TrimSpace(mb.ModelName),
-			budgetsProvided:   true,
-			budgets:           mb.Budgets,
-			rateLimitProvided: mb.RateLimit != nil,
-			rateLimit:         rl,
+			provider:              provider,
+			modelName:             strings.TrimSpace(mb.ModelName),
+			budgetsProvided:       true,
+			budgets:               mb.Budgets,
+			rateLimitProvided:     tokenLimit != nil,
+			rateLimit:             rl,
+			requestLimitsProvided: true,
+			requestLimits:         requestLimits,
 		})
 	}
 	return out, nil
@@ -1775,23 +1799,33 @@ func buildVKUpdateModelBudgets(provider *string, providerName string, mbs []vkMo
 	}
 	out := make([]vkModelConfigDesired, 0, len(mbs))
 	for _, mb := range mbs {
+		tokenLimit, requestLimits, err := splitLegacyRateLimitRequest(mb.RateLimit, mb.RequestLimits)
+		if err != nil {
+			return nil, err
+		}
 		rlRemove := false
 		var rl *configstoreTables.TableRateLimit
-		if mb.RateLimit != nil {
-			if isRateLimitRemovalRequest(mb.RateLimit) {
+		if tokenLimit != nil {
+			if isRateLimitRemovalRequest(tokenLimit) {
 				rlRemove = true
 			} else {
-				rl = rateLimitFromRequestFields(mb.RateLimit.TokenMaxLimit, mb.RateLimit.TokenResetDuration, mb.RateLimit.RequestMaxLimit, mb.RateLimit.RequestResetDuration)
+				rl = tokenRateLimit(tokenLimit.TokenMaxLimit, tokenLimit.TokenResetDuration)
 			}
 		}
+		// The supplied entry is the model's full desired state, as its budgets are.
+		if requestLimits == nil {
+			requestLimits = []RequestLimitRequest{}
+		}
 		out = append(out, vkModelConfigDesired{
-			provider:          provider,
-			modelName:         strings.TrimSpace(mb.ModelName),
-			budgetsProvided:   true,
-			budgets:           mb.Budgets,
-			rateLimitProvided: mb.RateLimit != nil,
-			rateLimitRemove:   rlRemove,
-			rateLimit:         rl,
+			provider:              provider,
+			modelName:             strings.TrimSpace(mb.ModelName),
+			budgetsProvided:       true,
+			budgets:               mb.Budgets,
+			rateLimitProvided:     tokenLimit != nil,
+			rateLimitRemove:       rlRemove,
+			rateLimit:             rl,
+			requestLimitsProvided: true,
+			requestLimits:         requestLimits,
 		})
 	}
 	return out, nil
@@ -1815,6 +1849,7 @@ func applyVKGovernanceFromModelConfigs(vk *configstoreTables.TableVirtualKey, by
 		vk.Budgets = mc.Budgets
 		vk.RateLimit = mc.RateLimit
 		vk.RateLimitID = mc.RateLimitID
+		vk.RequestLimits = mc.RequestLimits
 	}
 	for i := range vk.ProviderConfigs {
 		pc := &vk.ProviderConfigs[i]
@@ -1822,6 +1857,7 @@ func applyVKGovernanceFromModelConfigs(vk *configstoreTables.TableVirtualKey, by
 			pc.Budgets = mc.Budgets
 			pc.RateLimit = mc.RateLimit
 			pc.RateLimitID = mc.RateLimitID
+			pc.RequestLimits = mc.RequestLimits
 		}
 		pc.ModelBudgets = perModelByKey[vkModelConfigIndexKey(vk.ID, &pc.Provider)]
 	}
@@ -1840,9 +1876,10 @@ func buildVKModelBudgetsIndex(mcs []*configstoreTables.TableModelConfig) map[str
 		}
 		key := vkModelConfigIndexKey(*mc.ScopeID, mc.Provider)
 		byKey[key] = append(byKey[key], configstoreTables.VKProviderModelBudget{
-			ModelName: mc.ModelName,
-			Budgets:   mc.Budgets,
-			RateLimit: mc.RateLimit,
+			ModelName:     mc.ModelName,
+			Budgets:       mc.Budgets,
+			RateLimit:     mc.RateLimit,
+			RequestLimits: mc.RequestLimits,
 		})
 	}
 	for key := range byKey {
@@ -1992,6 +2029,8 @@ func applyExternalQuotaBudgets(ctx context.Context, resolver ExternalQuotaBudget
 	}
 	vk.Budgets = budgets
 	vk.RateLimit = ext.RateLimit
+	// The key's own request limits are mirrors too; the resolver's request limits are what govern it.
+	vk.RequestLimits = ext.RequestLimits
 	return ext, nil
 }
 
@@ -2533,6 +2572,11 @@ func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 400, "Invalid JSON")
 		return
 	}
+	var err error
+	if req.RateLimit, req.RequestLimits, err = splitLegacyCreateRateLimitRequest(req.RateLimit, req.RequestLimits); err != nil {
+		SendError(ctx, 400, err.Error())
+		return
+	}
 	// Validate required fields
 	if req.Name == "" {
 		SendError(ctx, 400, "Virtual key name is required")
@@ -2687,16 +2731,22 @@ func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 				// Provider-config budgets/rate-limit are stored in the VK-scoped model config
 				// for this provider (written by syncVKGovernanceToModelConfigs).
 				providerNameStr := string(providerName)
+				pcTokenLimit, pcRequestLimits, err := splitLegacyCreateRateLimitRequest(pc.RateLimit, pc.RequestLimits)
+				if err != nil {
+					return err
+				}
 				var pcRateLimit *configstoreTables.TableRateLimit
-				if pc.RateLimit != nil {
-					pcRateLimit = rateLimitFromRequestFields(pc.RateLimit.TokenMaxLimit, pc.RateLimit.TokenResetDuration, pc.RateLimit.RequestMaxLimit, pc.RateLimit.RequestResetDuration)
+				if pcTokenLimit != nil {
+					pcRateLimit = tokenRateLimit(pcTokenLimit.TokenMaxLimit, pcTokenLimit.TokenResetDuration)
 				}
 				vkGovProviders = append(vkGovProviders, vkModelConfigDesired{
 					provider:              &providerNameStr,
 					budgetsProvided:       true,
 					budgets:               pc.Budgets,
-					rateLimitProvided:     pc.RateLimit != nil,
+					rateLimitProvided:     pcTokenLimit != nil,
 					rateLimit:             pcRateLimit,
+					requestLimitsProvided: true,
+					requestLimits:         pcRequestLimits,
 					reconcileModelBudgets: true,
 				})
 				modelDesired, err := buildVKCreateModelBudgets(&providerNameStr, providerNameStr, pc.ModelBudgets)
@@ -2709,13 +2759,15 @@ func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 		// Fold VK top-level + per-provider governance into VK-scoped model configs.
 		var topRateLimit *configstoreTables.TableRateLimit
 		if req.RateLimit != nil {
-			topRateLimit = rateLimitFromRequestFields(req.RateLimit.TokenMaxLimit, req.RateLimit.TokenResetDuration, req.RateLimit.RequestMaxLimit, req.RateLimit.RequestResetDuration)
+			topRateLimit = tokenRateLimit(req.RateLimit.TokenMaxLimit, req.RateLimit.TokenResetDuration)
 		}
 		if err := h.syncVKGovernanceToModelConfigs(ctx, tx, &vk, vkModelConfigDesired{
-			budgetsProvided:   true,
-			budgets:           req.Budgets,
-			rateLimitProvided: req.RateLimit != nil,
-			rateLimit:         topRateLimit,
+			budgetsProvided:       true,
+			budgets:               req.Budgets,
+			rateLimitProvided:     req.RateLimit != nil,
+			rateLimit:             topRateLimit,
+			requestLimitsProvided: true,
+			requestLimits:         req.RequestLimits,
 		}, vkGovProviders, true, nil); err != nil {
 			return err
 		}
@@ -2989,6 +3041,12 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 400, "Invalid JSON")
 		return
 	}
+	tokenLimit, requestLimits, err := splitLegacyRateLimitRequest(req.RateLimit, req.RequestLimits)
+	if err != nil {
+		SendError(ctx, 400, err.Error())
+		return
+	}
+	req.RateLimit, req.RequestLimits = tokenLimit, requestLimits
 	// A key belongs to at most one of a team, a customer or a business unit. Checked before anything
 	// is read or written; applyVirtualKeyOwnershipUpdate enforces the same rule where it applies it.
 	if namedVirtualKeyOwners(&req) > 1 {
@@ -3192,16 +3250,22 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 					}
 					// Provider-config governance is stored in the VK-scoped model config for this provider.
 					pName := string(providerName)
+					pcTokenLimit, pcRequestLimits, err := splitLegacyRateLimitRequest(pc.RateLimit, pc.RequestLimits)
+					if err != nil {
+						return err
+					}
 					var pcRL *configstoreTables.TableRateLimit
-					if pc.RateLimit != nil {
-						pcRL = rateLimitFromRequestFields(pc.RateLimit.TokenMaxLimit, pc.RateLimit.TokenResetDuration, pc.RateLimit.RequestMaxLimit, pc.RateLimit.RequestResetDuration)
+					if pcTokenLimit != nil && !isRateLimitRemovalRequest(pcTokenLimit) {
+						pcRL = tokenRateLimit(pcTokenLimit.TokenMaxLimit, pcTokenLimit.TokenResetDuration)
 					}
 					vkGovProviders = append(vkGovProviders, vkModelConfigDesired{
 						provider:              &pName,
 						budgetsProvided:       true,
 						budgets:               pc.Budgets,
-						rateLimitProvided:     pc.RateLimit != nil,
+						rateLimitProvided:     pcRL != nil,
 						rateLimit:             pcRL,
+						requestLimitsProvided: true,
+						requestLimits:         pcRequestLimits,
 						reconcileModelBudgets: pc.ModelBudgets != nil,
 					})
 					modelDesired, err := buildVKUpdateModelBudgets(&pName, pName, pc.ModelBudgets)
@@ -3264,22 +3328,28 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 					// provider (written by syncVKGovernanceToModelConfigs). pc.Budgets == nil
 					// leaves existing budgets unchanged; an explicit set reconciles them.
 					pName := string(providerName)
+					pcTokenLimit, pcRequestLimits, err := splitLegacyRateLimitRequest(pc.RateLimit, pc.RequestLimits)
+					if err != nil {
+						return err
+					}
 					rlRemove := false
 					var pcRL *configstoreTables.TableRateLimit
-					if pc.RateLimit != nil {
-						if isRateLimitRemovalRequest(pc.RateLimit) {
+					if pcTokenLimit != nil {
+						if isRateLimitRemovalRequest(pcTokenLimit) {
 							rlRemove = true
 						} else {
-							pcRL = rateLimitFromRequestFields(pc.RateLimit.TokenMaxLimit, pc.RateLimit.TokenResetDuration, pc.RateLimit.RequestMaxLimit, pc.RateLimit.RequestResetDuration)
+							pcRL = tokenRateLimit(pcTokenLimit.TokenMaxLimit, pcTokenLimit.TokenResetDuration)
 						}
 					}
 					vkGovProviders = append(vkGovProviders, vkModelConfigDesired{
 						provider:              &pName,
 						budgetsProvided:       pc.Budgets != nil,
 						budgets:               pc.Budgets,
-						rateLimitProvided:     pc.RateLimit != nil,
+						rateLimitProvided:     pcTokenLimit != nil,
 						rateLimitRemove:       rlRemove,
 						rateLimit:             pcRL,
+						requestLimitsProvided: pcRequestLimits != nil,
+						requestLimits:         pcRequestLimits,
 						reconcileModelBudgets: pc.ModelBudgets != nil,
 					})
 					modelDesired, err := buildVKUpdateModelBudgets(&pName, pName, pc.ModelBudgets)
@@ -3315,15 +3385,17 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 		// (provided-aware); per-provider configs are reconciled only when the request supplied
 		// provider_configs (else they're left untouched).
 		top := vkModelConfigDesired{
-			budgetsProvided:   req.Budgets != nil,
-			budgets:           req.Budgets,
-			rateLimitProvided: req.RateLimit != nil,
+			budgetsProvided:       req.Budgets != nil,
+			budgets:               req.Budgets,
+			rateLimitProvided:     req.RateLimit != nil,
+			requestLimitsProvided: req.RequestLimits != nil,
+			requestLimits:         req.RequestLimits,
 		}
 		if req.RateLimit != nil {
 			if isRateLimitRemovalRequest(req.RateLimit) {
 				top.rateLimitRemove = true
 			} else {
-				top.rateLimit = rateLimitFromRequestFields(req.RateLimit.TokenMaxLimit, req.RateLimit.TokenResetDuration, req.RateLimit.RequestMaxLimit, req.RateLimit.RequestResetDuration)
+				top.rateLimit = tokenRateLimit(req.RateLimit.TokenMaxLimit, req.RateLimit.TokenResetDuration)
 			}
 		}
 		if err := h.syncVKGovernanceToModelConfigs(ctx, tx, vk, top, vkGovProviders, req.ProviderConfigs != nil, usageReset); err != nil {
@@ -6207,14 +6279,15 @@ func normalizeOptionalString(value *string) *string {
 	return &trimmed
 }
 
-// quotaModelUsage is one entry in the quota endpoint's per-model breakdown: the budgets
-// and rate limit (with their current usage) for a specific model governed under this VK.
-// Mirrors how provider_configs surface per-provider governance.
+// quotaModelUsage is one entry in the quota endpoint's per-model breakdown: the budgets,
+// token rate limit and request limits (with their current usage) for a specific model
+// governed under this VK. Mirrors how provider_configs surface per-provider governance.
 type quotaModelUsage struct {
-	ModelName string                            `json:"model_name"`
-	Provider  *string                           `json:"provider,omitempty"` // nil means all providers
-	Budgets   []configstoreTables.TableBudget   `json:"budgets,omitempty"`
-	RateLimit *configstoreTables.TableRateLimit `json:"rate_limit,omitempty"`
+	ModelName     string                             `json:"model_name"`
+	Provider      *string                            `json:"provider,omitempty"` // nil means all providers
+	Budgets       []configstoreTables.TableBudget    `json:"budgets,omitempty"`
+	RateLimit     *configstoreTables.TableRateLimit  `json:"rate_limit,omitempty"`
+	RequestLimits []configstoreTables.TableRateLimit `json:"request_limits,omitempty"`
 }
 
 // collectVKModelUsage loads the VK-scoped model configs for vk in a single query, then
@@ -6245,10 +6318,11 @@ func (h *GovernanceHandler) collectVKModelUsage(ctx context.Context, vk *configs
 			continue // wildcard configs are the VK-/provider-level governance handled above
 		}
 		models = append(models, quotaModelUsage{
-			ModelName: mc.ModelName,
-			Provider:  mc.Provider,
-			Budgets:   mc.Budgets,
-			RateLimit: mc.RateLimit,
+			ModelName:     mc.ModelName,
+			Provider:      mc.Provider,
+			Budgets:       mc.Budgets,
+			RateLimit:     mc.RateLimit,
+			RequestLimits: mc.RequestLimits,
 		})
 	}
 	return models, nil
@@ -6378,10 +6452,19 @@ func (h *GovernanceHandler) getVirtualKeyQuota(ctx *fasthttp.RequestCtx) {
 	for i := range vk.Budgets {
 		budgetRows[i] = SourcedBudget{TableBudget: vk.Budgets[i]}
 	}
+	// rate_limit carries the key's token limit only; its request limits are separate rules, so
+	// rate_limits lists both and request_limits lists the rules on their own.
 	rateLimit := vk.RateLimit
-	rateLimits := []SourcedRateLimit{}
+	rateLimits := make([]SourcedRateLimit, 0, 1+len(vk.RequestLimits))
 	if vk.RateLimit != nil {
-		rateLimits = []SourcedRateLimit{{TableRateLimit: *vk.RateLimit}}
+		rateLimits = append(rateLimits, SourcedRateLimit{TableRateLimit: *vk.RateLimit})
+	}
+	for _, rule := range vk.RequestLimits {
+		rateLimits = append(rateLimits, SourcedRateLimit{TableRateLimit: rule})
+	}
+	requestLimits := vk.RequestLimits
+	if requestLimits == nil {
+		requestLimits = []configstoreTables.TableRateLimit{}
 	}
 	usageUserID := ""
 	if resolve := h.externalQuotaBudgetResolver; resolve != nil {
@@ -6392,12 +6475,17 @@ func (h *GovernanceHandler) getVirtualKeyQuota(ctx *fasthttp.RequestCtx) {
 		}
 		if ext != nil {
 			// AP-managed VK: surface the AP's governance verbatim in place of the VK's own
-			// untracked mirror rows. Empty budgets / nil rate limit mean the AP has none.
+			// untracked mirror rows, request limits included. Empty budgets / nil rate limit
+			// mean the AP has none.
 			budgetRows = ext.Budgets
 			rateLimit = ext.RateLimit
 			rateLimits = ext.RateLimits
 			if rateLimits == nil {
 				rateLimits = []SourcedRateLimit{}
+			}
+			requestLimits = ext.RequestLimits
+			if requestLimits == nil {
+				requestLimits = []configstoreTables.TableRateLimit{}
 			}
 			usageUserID = ext.UsageUserID
 		}
@@ -6417,6 +6505,7 @@ func (h *GovernanceHandler) getVirtualKeyQuota(ctx *fasthttp.RequestCtx) {
 		"budgets":          budgets,
 		"rate_limit":       rateLimit,
 		"rate_limits":      rateLimits,
+		"request_limits":   requestLimits,
 		"provider_configs": vk.ProviderConfigs,
 		"model_configs":    models,
 	})
