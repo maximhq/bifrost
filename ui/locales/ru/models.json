@@ -263,7 +263,11 @@
 			"vertexEndpoint": "ID или URL эндпоинта Vertex",
 			"vertexEndpointHint": "Указанный выше Model ID — это имя модели, передаваемое в теле запроса. Используются учётные данные Google из этого ключа. Поддерживаются Chat Completions и преобразование Responses в Chat.",
 			"vertexEndpointPlaceholder": "2222222222 или https://us-west1-aiplatform.googleapis.com/v1/projects/…",
-			"vertexEndpointInvalid": "Укажите ID эндпоинта Vertex или вставьте URL поддерживаемого эндпоинта."
+			"vertexEndpointInvalid": "Укажите ID эндпоинта Vertex или вставьте URL поддерживаемого эндпоинта.",
+			"patternBadge": "Шаблон",
+			"patternHint": "Начните имя с regex:, чтобы охватить много моделей. В ID модели $1 подставляет первую группу захвата: regex:(claude-.*) с global.anthropic.$1 отправляет claude-opus-5 как global.anthropic.claude-opus-5. Разрешённые модели ключа тоже должны включать эти имена.",
+			"canonicalPatternPlaceholder": "например $1",
+			"canonicalModelNamePatternHint": "Каноническое имя для маршрутизации и расчёта стоимости. Можно использовать группы захвата, например $1. Если пусто, используется развёрнутый model ID."
 		},
 		"saveChanges": "Сохранить изменения",
 		"saving": "Сохранение…",

@@ -1,3 +1,4 @@
+import { validatePatternAlias } from "@/components/modelAccess/utils";
 import { KnownProvidersNames } from "@/lib/constants/logs";
 import { MCP_MAX_PROTOCOL_VERSIONS } from "@/lib/constants/mcp";
 import i18n from "@/lib/i18n";
@@ -841,7 +842,13 @@ export const modelProviderKeySchema = z
 			.pipe(
 				z.number().min(0, msg("validation.weightMustBeEqualToOrGreaterThan0")).max(1, msg("validation.weightMustBeEqualToOrLessThan1")),
 			),
-		aliases: z.record(z.string(), aliasConfigSchema).optional(),
+		aliases: z
+			.record(z.string(), aliasConfigSchema)
+			.optional()
+			.refine(
+				(value) => !value || Object.entries(value).every(([name, cfg]) => !validatePatternAlias(name, cfg.model_id, cfg.model_name)),
+				msg("validation.deploymentPatternInvalid"),
+			),
 		azure_key_config: azureKeyConfigSchema.optional(),
 		vertex_key_config: vertexKeyConfigSchema.optional(),
 		bedrock_key_config: bedrockKeyConfigSchema.optional(),

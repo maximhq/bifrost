@@ -255,7 +255,11 @@
 			"vertexEndpoint": "Vertex 端点 ID 或 URL",
 			"vertexEndpointHint": "上方的 Model ID 是在请求正文中发送的服务模型名称。使用此密钥中的 Google 凭据。支持聊天和 Responses 到聊天的转换。",
 			"vertexEndpointPlaceholder": "2222222222 或 https://us-west1-aiplatform.googleapis.com/v1/projects/…",
-			"vertexEndpointInvalid": "请输入 Vertex 端点 ID 或粘贴受支持的端点 URL。"
+			"vertexEndpointInvalid": "请输入 Vertex 端点 ID 或粘贴受支持的端点 URL。",
+			"patternBadge": "模式",
+			"patternHint": "名称以 regex: 开头即可覆盖多个模型。在模型 ID 中，$1 会替换为第一个捕获组：regex:(claude-.*) 配合 global.anthropic.$1 会把 claude-opus-5 发送为 global.anthropic.claude-opus-5。密钥的允许模型也必须包含这些名称。",
+			"canonicalPatternPlaceholder": "例如 $1",
+			"canonicalModelNamePatternHint": "用于路由和计价的规范名称。可使用 $1 等捕获组。留空时默认为展开后的模型 ID。"
 		},
 		"saveChanges": "保存更改",
 		"saving": "保存中…",

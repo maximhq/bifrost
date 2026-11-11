@@ -255,7 +255,11 @@
 			"azureUseSpeech": "Utiliser les points de terminaison Azure Speech",
 			"azureUseSpeechHint": "Envoyer les requêtes de synthèse et de transcription vocales de ce déploiement à Azure AI Speech plutôt qu’à Azure OpenAI.",
 			"azureUseVoiceLive": "Utiliser les points de terminaison Azure Voice Live",
-			"azureUseVoiceLiveHint": "Envoyer les sessions WebSocket temps réel de ce déploiement à Azure Voice Live plutôt qu’à Azure OpenAI."
+			"azureUseVoiceLiveHint": "Envoyer les sessions WebSocket temps réel de ce déploiement à Azure Voice Live plutôt qu’à Azure OpenAI.",
+			"patternBadge": "Motif",
+			"patternHint": "Commencez un nom par regex: pour couvrir plusieurs modèles. Dans l'ID du modèle, $1 insère le premier groupe de capture : regex:(claude-.*) avec global.anthropic.$1 envoie claude-opus-5 sous la forme global.anthropic.claude-opus-5. Les modèles autorisés de la clé doivent aussi inclure ces noms.",
+			"canonicalPatternPlaceholder": "p. ex. $1",
+			"canonicalModelNamePatternHint": "Le nom canonique utilisé pour le routage et la tarification. Peut utiliser des groupes de capture comme $1. Par défaut, l’ID de modèle développé si le champ est vide."
 		},
 		"saveChanges": "Enregistrer les modifications",
 		"saving": "Enregistrement…",

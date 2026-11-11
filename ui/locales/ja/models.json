@@ -255,7 +255,11 @@
 			"vertexEndpoint": "VertexエンドポイントIDまたはURL",
 			"vertexEndpointHint": "上記のModel IDは、リクエスト本文で送信されるサービングモデル名です。このキーのGoogle認証情報を使用します。チャットとResponsesからチャットへの変換に対応しています。",
 			"vertexEndpointPlaceholder": "2222222222 または https://us-west1-aiplatform.googleapis.com/v1/projects/…",
-			"vertexEndpointInvalid": "VertexエンドポイントIDを入力するか、対応するエンドポイントURLを貼り付けてください。"
+			"vertexEndpointInvalid": "VertexエンドポイントIDを入力するか、対応するエンドポイントURLを貼り付けてください。",
+			"patternBadge": "パターン",
+			"patternHint": "名前を regex: で始めると複数のモデルをまとめて扱えます。モデル ID では $1 が最初のキャプチャグループに置き換わります。regex:(claude-.*) と global.anthropic.$1 の場合、claude-opus-5 は global.anthropic.claude-opus-5 として送信されます。キーの許可モデルにもこれらの名前を含める必要があります。",
+			"canonicalPatternPlaceholder": "例：$1",
+			"canonicalModelNamePatternHint": "ルーティングと料金に使用される正規名です。$1 などのキャプチャグループを使用できます。空欄の場合は展開後のモデルIDになります。"
 		},
 		"saveChanges": "変更を保存",
 		"saving": "保存中…",

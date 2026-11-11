@@ -255,7 +255,11 @@
 			"vertexEndpoint": "Vertex 端點 ID 或 URL",
 			"vertexEndpointHint": "上方的模型 ID 是要求本文中傳送的服務模型名稱。使用此金鑰中的 Google 憑證。支援聊天，以及將 Responses 轉換為聊天格式。",
 			"vertexEndpointPlaceholder": "2222222222 或 https://us-west1-aiplatform.googleapis.com/v1/projects/…",
-			"vertexEndpointInvalid": "請輸入 Vertex 端點 ID，或貼上支援的端點 URL。"
+			"vertexEndpointInvalid": "請輸入 Vertex 端點 ID，或貼上支援的端點 URL。",
+			"patternBadge": "模式",
+			"patternHint": "名稱以 regex: 開頭即可涵蓋多個模型。在模型 ID 中，$1 會替換為第一個擷取群組：regex:(claude-.*) 搭配 global.anthropic.$1 會把 claude-opus-5 送出為 global.anthropic.claude-opus-5。金鑰的允許模型也必須包含這些名稱。",
+			"canonicalPatternPlaceholder": "例如 $1",
+			"canonicalModelNamePatternHint": "用於路由和計價的正式名稱。可使用 $1 等擷取群組。留空時預設為展開後的模型 ID。"
 		},
 		"saveChanges": "儲存更改",
 		"saving": "儲存中…",

@@ -255,7 +255,11 @@
 			"vertexEndpoint": "Vertex 엔드포인트 ID 또는 URL",
 			"vertexEndpointHint": "위의 모델 ID는 본문에 전송되는 제공 모델 이름입니다. 이 키의 Google 인증 정보를 사용합니다. 채팅 및 Responses-채팅 변환을 지원합니다.",
 			"vertexEndpointPlaceholder": "2222222222 또는 https://us-west1-aiplatform.googleapis.com/v1/projects/…",
-			"vertexEndpointInvalid": "Vertex 엔드포인트 ID를 입력하거나 지원되는 엔드포인트 URL을 붙여 넣으세요."
+			"vertexEndpointInvalid": "Vertex 엔드포인트 ID를 입력하거나 지원되는 엔드포인트 URL을 붙여 넣으세요.",
+			"patternBadge": "패턴",
+			"patternHint": "이름을 regex:로 시작하면 여러 모델을 한 번에 처리합니다. 모델 ID에서 $1은 첫 번째 캡처 그룹으로 바뀝니다. regex:(claude-.*)와 global.anthropic.$1을 쓰면 claude-opus-5가 global.anthropic.claude-opus-5로 전송됩니다. 키의 허용 모델에도 해당 이름이 포함되어야 합니다.",
+			"canonicalPatternPlaceholder": "예: $1",
+			"canonicalModelNamePatternHint": "라우팅과 가격 책정에 사용되는 정식 이름입니다. $1 같은 캡처 그룹을 사용할 수 있습니다. 비워 두면 확장된 모델 ID가 사용됩니다."
 		},
 		"saveChanges": "변경 사항 저장",
 		"saving": "저장 중...",
