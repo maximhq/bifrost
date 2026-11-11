@@ -1,2 +1,2 @@
 - chore: upgraded core to v1.15.2
-- feat: oauth2_server_config.claude_code_gateway setting and device-code columns on oauth2_authorize_requests for Claude Code gateway sign-in (#7963) [@jimseiwert](https://github.com/jimseiwert)
+- feat: oauth2_server_config.gateways.claude_code setting and device-code columns on oauth2_authorize_requests for Claude Code gateway sign-in (#7963) [@jimseiwert](https://github.com/jimseiwert)

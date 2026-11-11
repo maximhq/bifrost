@@ -797,11 +797,11 @@ export function useNavItems(): NavItem[] {
 						hasAccess: hasSettingsAccess,
 					},
 					{
-						id: "settings.claudeCode",
-						title: t("nav.claudeCode"),
-						url: "/workspace/config/claude-code",
+						id: "settings.gateways",
+						title: t("nav.gateways"),
+						url: "/workspace/config/gateways",
 						icon: SquareTerminal,
-						description: t("navDesc.claudeCode"),
+						description: t("navDesc.gateways"),
 						hasAccess: hasSettingsAccess,
 					},
 					{
