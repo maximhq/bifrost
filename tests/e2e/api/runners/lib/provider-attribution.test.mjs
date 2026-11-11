@@ -2,7 +2,7 @@
 // No test framework needed (the tests/e2e/api dir has no test runner configured), same shape as
 // chained-vars.test.mjs next door.
 import assert from "node:assert";
-import { makeMatchProvider, providerOfItem, providerOfLogLine } from "./provider-attribution.mjs";
+import { makeMatchProvider, providerOfFolder, providerOfItem, providerOfLogLine } from "./provider-attribution.mjs";
 
 let passed = 0;
 function test(name, fn) {
@@ -95,6 +95,22 @@ test("Nace SDK routes are attributed to Nace rather than their ingress provider"
   const row = { name: "nace drex-max", request: { url: "http://localhost:8080/openai/v1/decisions" } };
   assert.strictEqual(providerOfItem(row, [folder], matchNace), "nace");
   assert.strictEqual(providerOfLogLine("post http://localhost:8080/openai/v1/decisions [200 ok]", folder, matchNace), "nace");
+});
+
+// Baseten rows reach the gateway through /anthropic and name OpenAI-only fields; they belong to
+// the baseten partition filter-collection.mjs forks, while Hugging Face's Baseten-hosted rows stay
+// with huggingface.
+test("Baseten rows stay with baseten and Hugging Face Baseten rows with huggingface", () => {
+  const withBaseten = makeMatchProvider((p) => ["openai", "anthropic", "huggingface", "baseten"].includes(p));
+  const folder = "337. Baseten provider (baseten provider)";
+  const anthropicRoute = {
+    name: "/anthropic/v1/messages - Anthropic SDK shape routed to baseten/zai-org/GLM-5.3",
+    request: { url: { raw: "{{baseUrl}}/anthropic/v1/messages" } },
+  };
+  assert.strictEqual(providerOfItem(anthropicRoute, [folder], withBaseten), "baseten");
+  assert.strictEqual(providerOfLogLine("post http://localhost:8080/anthropic/v1/messages [200 ok]", folder, withBaseten), "baseten");
+  assert.strictEqual(withBaseten("/v1/chat/completions - openai-only fields are dropped - baseten/zai-org/glm-5.3"), "baseten");
+  assert.strictEqual(providerOfFolder("61. Hugging Face Baseten model discovery (#6631)", withBaseten), "huggingface");
 });
 
 console.log(`\n${passed} passed`);

@@ -28,6 +28,7 @@ Write models as `provider/model` to pick the provider explicitly. Switching prov
 | [OpenRouter](/providers/supported-providers/openrouter#decisions) | `openrouter/~typesafe/jev-latest` | `/v1/decisions` | Depends on the model |
 | [Cloudflare](/providers/supported-providers/cloudflare#4-decisions) | `cloudflare/clef`, `cloudflare/clef-flash`, `cloudflare/clef-omni` | `/v1/decisions` | Yes |
 | [Perplexity](/providers/supported-providers/perplexity#3-decisions) | `perplexity/pplx-decider-v1.1-27b`, `perplexity/pplx-decider-v1-27b` | `/v1/decisions` | Yes |
+| [Baseten](/providers/supported-providers/baseten#6-decisions) | `baseten/decision-models/baseten-joey-2b-latest`, `baseten/decision-models/baseten-elephant-9b-latest`, `baseten/decision-models/baseten-mammoth-27b-latest` | `/v1/decisions` | Yes, inline |
 | [Ollama](/providers/supported-providers/ollama#6-decisions) | `ollama/nimble`, `ollama/clef-flash`, `ollama/tev1:0.8b` | `/v1/decisions` | Yes, base64 only |
 | [Azure](/providers/supported-providers/azure#10-decisions) | `azure/Microsoft-Decision-1` (a key alias maps it to your deployment) | `/v1/decisions` | No |
 | [Databricks](/providers/supported-providers/databricks#decisions) | `databricks/ai_decide`, `databricks/system.ai.openjev-qwen35-4b`, `databricks/system.ai.typesafeai-jev-1-14-0` | `/v1/decisions` | System One models, by reference (see [Images by Reference](#images-by-reference)) |
@@ -153,7 +154,7 @@ curl http://localhost:8080/v1/decisions \
 
 A `name` in a JSON request, a `name` with no matching file part, and a file part no image part names are each rejected with `400`.
 
-**Structured data**: an object, sent to System One models (TypeSafe, Clef, Perplexity, Ollama, Azure, Databricks, vLLM, SGLang, Laya, Nimble) as is, and to OpenAI as JSON text.
+**Structured data**: an object, sent to System One models (TypeSafe, Clef, Perplexity, Baseten, Ollama, Azure, Databricks, vLLM, SGLang, Laya, Nimble) as is, and to OpenAI as JSON text.
 
 ```json
 "input": { "ticket_id": 4812, "message": "I was double charged.", "plan": "pro" }
@@ -247,7 +248,7 @@ Bifrost rejects these with a `400` before calling any provider:
 - A `choice` question with no `choices`
 - Two questions with the same `name`
 
-The number of score levels is checked by each provider (TypeSafe, Azure and Databricks accept 2-10, Perplexity 1-10).
+The number of score levels is checked by each provider (TypeSafe, Azure and Databricks accept 2-10, Perplexity and Baseten 1-10).
 
 An input part one model cannot read fails only that attempt, so a fallback can still serve it. If every attempt fails, you get the first attempt's error.
 

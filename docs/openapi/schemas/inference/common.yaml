@@ -41,6 +41,7 @@ ModelProvider:
     - nace
     - minimax
     - byteplus
+    - baseten
 
 Fallback:
   type: object

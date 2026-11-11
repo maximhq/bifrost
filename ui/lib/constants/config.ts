@@ -69,6 +69,7 @@ export const ModelPlaceholders = {
 	wafer: "e.g. glm-5.2, kimi-k2.6",
 	minimax: "e.g. MiniMax-M3, image-01, MiniMax-H3",
 	byteplus: "e.g. deepseek-v4-flash-260425, dola-seedream-5-0-pro-260628, dreamina-seedance-2-5-260628",
+	baseten: "e.g. zai-org/GLM-5.3, openai/gpt-oss-120b",
 	databricks: "e.g. databricks-claude-sonnet-4-5, system.ai.claude-sonnet-4-5",
 	cloudflare: "e.g. @cf/meta/llama-4-scout-17b-16e-instruct, @cf/baai/bge-large-en-v1.5",
 	"github-copilot": "e.g. gpt-5.5, claude-sonnet-4-6",
@@ -110,6 +111,7 @@ export const isKeyRequiredByProvider: Record<ProviderName, boolean> = {
 	wafer: true,
 	minimax: true,
 	byteplus: true,
+	baseten: true,
 	databricks: false,
 	cloudflare: true,
 	"github-copilot": true,
@@ -150,7 +152,8 @@ export const MCP_STATUS_COLORS: Record<string, string> = {
 	// pending_verification, deliberately distinct from needs_reauth's red
 	// ("action required").
 	unstable: "bg-yellow-100 text-yellow-800 border-yellow-200 dark:border-yellow-800/40 dark:bg-yellow-950/40 dark:text-yellow-300",
-	pending_verification: "bg-yellow-100 text-yellow-800 border-yellow-200 dark:border-yellow-800/40 dark:bg-yellow-950/40 dark:text-yellow-300",
+	pending_verification:
+		"bg-yellow-100 text-yellow-800 border-yellow-200 dark:border-yellow-800/40 dark:bg-yellow-950/40 dark:text-yellow-300",
 	disabled: "bg-orange-100 text-orange-800 border-orange-200 dark:border-orange-800/40 dark:bg-orange-950/40 dark:text-orange-300",
 	// Same red as `error`: the client's credential has died and it can't be
 	// used until a human reauthorizes it, mirroring the "destructive" treatment
