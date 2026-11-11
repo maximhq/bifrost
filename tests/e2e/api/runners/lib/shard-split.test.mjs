@@ -753,14 +753,27 @@ test("Baseten partition excludes Hugging Face rows and the anthropic partition e
             post("anthropic-native", "http://localhost:8080/anthropic/v1/messages", "claude-opus-4-7"),
             post("baseten-chat", "http://localhost:8080/v1/chat/completions", "baseten/zai-org/GLM-5.3"),
             post("huggingface-baseten-chat", "http://localhost:8080/v1/chat/completions", "huggingface/baseten/zai-org/GLM-5.3"),
+            // Prose in a prompt is not the row's identity: this row calls Baseten.
+            {
+              name: "baseten-chat-prompt-names-other-hub",
+              request: {
+                method: "POST",
+                url: "http://localhost:8080/v1/chat/completions",
+                body: { mode: "raw", raw: JSON.stringify({ model: "baseten/zai-org/GLM-5.3", messages: [{ role: "user", content: "Is this model on huggingface?" }] }) },
+              },
+            },
           ],
+        },
+        {
+          name: "61. Hugging Face Baseten model discovery",
+          item: [{ name: "list-models", request: { method: "GET", url: "http://localhost:8080/v1/models?provider=huggingface" } }],
         },
       ],
     }),
   );
   assert.deepEqual(runFilter(["--provider", "anthropic"], { source }), ["anthropic-native"]);
-  assert.deepEqual(runFilter(["--provider", "baseten"], { source }), ["baseten-anthropic-route", "baseten-chat"]);
-  assert.deepEqual(runFilter(["--provider", "huggingface"], { source }), ["huggingface-baseten-chat"]);
+  assert.deepEqual(runFilter(["--provider", "baseten"], { source }), ["baseten-anthropic-route", "baseten-chat", "baseten-chat-prompt-names-other-hub"]);
+  assert.deepEqual(runFilter(["--provider", "huggingface"], { source }), ["huggingface-baseten-chat", "list-models"]);
 });
 
 rmSync(WORK, { recursive: true, force: true });
