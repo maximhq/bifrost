@@ -51,9 +51,9 @@ test.describe('MCP Budgets & Limits', () => {
       { max_limit: 30, reset_duration: '1M', scope: 'model' },
       { max_limit: 3, reset_duration: '1d', scope: 'mcp' },
     ])
-    const modelLineID = (await virtualKeyBudgets(page.request, vkID)).find((b) => b.scope === 'model')?.id
-    expect(modelLineID).toBeTruthy()
     try {
+      const modelLineID = (await virtualKeyBudgets(page.request, vkID)).find((b) => b.scope === 'model')?.id
+      expect(modelLineID).toBeTruthy()
       await page.goto('/workspace/mcp-limits')
       const row = page.getByTestId(`mcp-limit-row-virtual-key-${vkID}`)
       await expect(row).toBeVisible()
@@ -139,6 +139,33 @@ test.describe('MCP Budgets & Limits', () => {
       if (current) {
         await page.request.delete(`/api/governance/model-configs/${current.id}`)
       }
+    })
+
+    test("an add onto the deployment's existing row asks whether to keep its spend", async ({ page }) => {
+      const created = await page.request.post('/api/governance/model-configs', {
+        data: { model_name: '*', scope: 'global', budgets: [{ max_limit: 5, reset_duration: '1M', scope: 'mcp' }] },
+      })
+      expect(created.status(), await created.text()).toBe(200)
+      const before = await globalHolderLevelRow(page.request)
+      const lineID = before?.budgets?.[0]?.id
+      expect(lineID).toBeTruthy()
+
+      await page.goto('/workspace/mcp-limits')
+      await page.getByTestId('mcp-limits-button-create').click()
+      const sheet = page.getByTestId('model-limit-sheet')
+      await expect(sheet).toBeVisible()
+      // The row's existing line is loaded into the form; changing it is a change to a stored budget.
+      const amount = sheet.getByTestId('model-limit-budget-lines-amount-0')
+      await expect(amount).toHaveValue('5')
+      await amount.fill('8')
+      await page.getByTestId('model-limit-button-submit').click()
+      await expect(page.getByTestId('model-limit-budget-reset-dialog')).toBeVisible()
+      await page.getByTestId('model-limit-budget-reset-dialog-preserve-btn').click()
+      await expect(sheet).not.toBeVisible({ timeout: 10000 })
+
+      const after = await globalHolderLevelRow(page.request)
+      expect(after?.budgets?.map((b) => `${b.scope}:${b.max_limit}`)).toEqual(['mcp:8'])
+      expect(after?.budgets?.[0]?.id, 'the line kept its row').toBe(lineID)
     })
 
     test('adds an MCP budget to the deployment\'s own limits', async ({ page }) => {

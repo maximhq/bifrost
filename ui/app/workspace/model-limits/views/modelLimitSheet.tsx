@@ -225,7 +225,14 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel, traffic
 	const watchedScopeId = form.watch("scopeId");
 	const addsHolderLevel = isMCPPage || isHolderLevelSelection(form.watch("modelName"), form.watch("provider"));
 	const lookupTarget = !isEditing && addsHolderLevel && (watchedScope === "global" || !!watchedScopeId);
-	const { data: targetRows, isFetching: isFetchingTarget } = useGetModelConfigsQuery(
+	// currentData belongs to the query now selected, so a lookup that failed or is still running for the
+	// chosen target never leaves the previous target's row to be saved onto.
+	const {
+		currentData: targetRows,
+		isFetching: isFetchingTarget,
+		isError: targetLookupFailed,
+		error: targetLookupError,
+	} = useGetModelConfigsQuery(
 		{ scope: watchedScope, scope_id: watchedScope === "global" ? undefined : watchedScopeId, search: "*", limit: 100 },
 		{ skip: !lookupTarget },
 	);
@@ -251,8 +258,10 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel, traffic
 	// so including them would report a change on every save. The shared signature
 	// folds in the fiscal quarter, which a limit-and-duration comparison misses -
 	// moving Q1 from April to July reschedules the reset without touching either.
+	// An Add onto the target's existing row changes that row, so it is compared the same way.
 	const budgetsChanged = (data: FormData) => {
-		if (!isEditing || !modelConfig) return false;
+		const existing = modelConfig ?? targetRow;
+		if (!existing) return false;
 		const next = (data.budgets ?? [])
 			.filter((b) => b.max_limit !== undefined && b.max_limit !== null)
 			.map((b) => ({
@@ -261,7 +270,7 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel, traffic
 				reset_config: b.reset_config,
 				scope: b.scope,
 			}));
-		const current = rowLines(modelConfig, traffic, true).map((b) => ({
+		const current = rowLines(existing, traffic, true).map((b) => ({
 			max_limit: b.max_limit ?? undefined,
 			reset_duration: b.reset_duration,
 			reset_config: b.reset_config,
@@ -814,6 +823,12 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel, traffic
 							)}
 						</div>
 
+						{lookupTarget && targetLookupFailed && (
+							<p className="text-destructive px-4 text-sm md:px-8" data-testid="model-limit-target-lookup-error">
+								{getErrorMessage(targetLookupError)}
+							</p>
+						)}
+
 						{/* Footer */}
 						<div className="bg-card sticky bottom-0 shrink-0 border-t px-4 py-4 md:px-8">
 							<div className="flex items-center justify-end gap-3">
@@ -824,7 +839,7 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel, traffic
 								<Button
 									type="submit"
 									data-testid="model-limit-button-submit"
-									disabled={isLoading || isFetchingTarget || !form.formState.isDirty || !canSubmit}
+									disabled={isLoading || isFetchingTarget || targetLookupFailed || !form.formState.isDirty || !canSubmit}
 								>
 									{isLoading ? t("modelLimits.saving") : isEditing ? t("modelLimits.saveChanges") : t("modelLimits.createLimit")}
 								</Button>

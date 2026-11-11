@@ -150,7 +150,7 @@ CreateBudgetRequest:
   properties:
     id:
       type: string
-      description: ID of an existing budget on the owner. Sending it on an update keeps that budget's usage; omit it for a new budget.
+      description: ID of an existing budget on the owner. On a model-config update, a budget sent without an ID matches the existing budget with the same reset_duration and scope (an empty scope is shared) unless another entry in the request claims that budget's ID; with no match a new budget is created. A matched budget keeps its usage unless reset_budget_usage is true.
     max_limit:
       type: number
     reset_duration:
