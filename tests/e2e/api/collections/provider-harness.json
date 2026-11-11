@@ -317413,6 +317413,141 @@
               }
             }
           ]
+        },
+        {
+          "name": "/v1/decisions - System One typed answers on Model APIs - baseten/decision-models/baseten-joey-2b-latest",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"baseten/decision-models/baseten-joey-2b-latest\",\n  \"input\": \"I was charged twice for my subscription and nobody answered my emails. Refund me today or I cancel.\",\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"wants_refund\",\n      \"instructions\": \"Is the customer asking for a refund?\"\n    },\n    {\n      \"type\": \"choice\",\n      \"name\": \"route\",\n      \"instructions\": \"Which team should handle this?\",\n      \"choices\": [\n        {\n          \"value\": \"billing\",\n          \"description\": \"Payments, charges and refunds\"\n        },\n        {\n          \"value\": \"technical_support\",\n          \"description\": \"Software defects and troubleshooting\"\n        }\n      ]\n    },\n    {\n      \"type\": \"score\",\n      \"name\": \"urgency\",\n      \"instructions\": \"How urgent is the request?\",\n      \"levels\": [\n        {\n          \"label\": \"0\",\n          \"description\": \"Routine\"\n        },\n        {\n          \"label\": \"1\",\n          \"description\": \"Needs attention today\"\n        },\n        {\n          \"label\": \"2\",\n          \"description\": \"Emergency\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('baseten /v1/systemone answers each question with its own type', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.extra_fields.provider).to.eql('baseten');",
+                  "  var a = j.answers;",
+                  "  pm.expect(a, 'answers: ' + pm.response.text()).to.be.an('array').with.lengthOf(3);",
+                  "  pm.expect(a[0].type).to.eql('predicate');",
+                  "  pm.expect(a[0].probability, 'refund request must read as yes: ' + pm.response.text()).to.be.above(0.5);",
+                  "  pm.expect(a[1].type).to.eql('choice');",
+                  "  pm.expect(a[1].choice, 'route: ' + pm.response.text()).to.eql('billing');",
+                  "  pm.expect(a[2].type).to.eql('score');",
+                  "  pm.expect(a[2].score, 'urgency: ' + pm.response.text()).to.be.within(0, 2);",
+                  "  pm.expect(j.usage && j.usage.prompt_tokens, 'usage: ' + pm.response.text()).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "/v1/decisions - a system message fails before reaching Baseten [EXPECT-400] - baseten/decision-models/baseten-joey-2b-latest",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"baseten/decision-models/baseten-joey-2b-latest\",\n  \"input\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"Be strict.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Refund me today.\"\n    }\n  ],\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"wants_refund\",\n      \"instructions\": \"Is the customer asking for a refund?\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('a system role is refused by Bifrost with a 400 naming the accepted roles', function () {",
+                  "  pm.expect(pm.response.code, 'expected 400: ' + pm.response.text()).to.eql(400);",
+                  "  var j = pm.response.json();",
+                  "  var msg = (j.error && j.error.message) || '';",
+                  "  pm.expect(msg, 'error: ' + pm.response.text()).to.include('user and assistant');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "/v1/decisions - conversation with an inline image is read as messages - baseten/decision-models/baseten-elephant-9b-latest",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"baseten/decision-models/baseten-elephant-9b-latest\",\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"My package arrived damaged.\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": [\n        {\n          \"type\": \"output_text\",\n          \"text\": \"Sorry about that. Can you share a photo?\"\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Here it is. I want a refund.\"\n        },\n        {\n          \"type\": \"input_image\",\n          \"image_url\": \"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAIAAABLbSncAAAAEklEQVR4nGP4z8CAFWEXHbQSACj/P8Fu7N9hAAAAAElFTkSuQmCC\"\n        }\n      ]\n    }\n  ],\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"is_red\",\n      \"instructions\": \"Is the attached image mostly red?\"\n    },\n    {\n      \"type\": \"predicate\",\n      \"name\": \"wants_refund\",\n      \"instructions\": \"Is the customer asking for a refund?\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('conversation goes as state.messages with the image inline, so both are read', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var a = pm.response.json().answers;",
+                  "  pm.expect(a, 'answers: ' + pm.response.text()).to.be.an('array').with.lengthOf(2);",
+                  "  pm.expect(a[0].probability, 'a red image must read as red (a conversation rendered as text cannot see it): ' + pm.response.text()).to.be.above(0.5);",
+                  "  pm.expect(a[1].probability, 'the refund request in the last turn must be read: ' + pm.response.text()).to.be.above(0.5);",
+                  "});"
+                ]
+              }
+            }
+          ]
         }
       ]
     },
@@ -317924,7 +318059,377 @@
       ]
     },
     {
-      "name": "339. OpenAI passthrough-encoding (#9764 / PR #9804)",
+      "name": "339. Mistral reasoning effort follows the model's ladder (mistral-reasoning-effort) (#9731 / PR #9847)",
+      "description": "Bifrost used to rewrite every Mistral reasoning_effort other than none to high, so low and max never reached models that accept them (zai-glm-5-3 accepts low, high and max). Effort now follows the model's datasheet reasoning_effort_levels, with the legacy none/high clamp only for models that publish no ladder. Each case asserts the outbound body via x-bf-send-back-raw-request and that a completion came back. The streaming case pins the separate streaming handler, which builds its own request body, by reading raw_request off the stream's final chunk. Vertex-hosted Mistral shares applyMistralCompatibility and is pinned by the Go unit test only.",
+      "item": [
+        {
+          "name": "mistral/zai-glm-5-3 /v1/chat/completions reasoning_effort low reaches Mistral unchanged (mistral-reasoning-effort) - #9731",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text() || '';",
+                  "pm.test('request succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.equal(200);",
+                  "});",
+                  "pm.test('Mistral receives reasoning_effort low, not a rewrite to high', function () {",
+                  "  var raw = pm.response.json().extra_fields.raw_request;",
+                  "  var parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;",
+                  "  pm.expect(parsed.reasoning_effort, 'outbound body: ' + JSON.stringify(raw)).to.equal('low');",
+                  "});",
+                  "pm.test('Mistral returns a completion message', function () {",
+                  "  var choices = pm.response.json().choices;",
+                  "  pm.expect(choices, 'no choices: ' + body).to.be.an('array').that.is.not.empty;",
+                  "  pm.expect(choices[0].message, 'no message on choices[0]: ' + body).to.be.an('object');",
+                  "  pm.expect(choices[0].message.role, 'choices[0].message.role: ' + body).to.equal('assistant');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"mistral/zai-glm-5-3\",\"reasoning_effort\":\"low\",\"max_tokens\":256,\"messages\":[{\"role\":\"user\",\"content\":\"Say ok.\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "mistral/zai-glm-5-3 /v1/chat/completions reasoning_effort max reaches Mistral unchanged (mistral-reasoning-effort) - #9731",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text() || '';",
+                  "pm.test('request succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.equal(200);",
+                  "});",
+                  "pm.test('Mistral receives reasoning_effort max, not a rewrite to high', function () {",
+                  "  var raw = pm.response.json().extra_fields.raw_request;",
+                  "  var parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;",
+                  "  pm.expect(parsed.reasoning_effort, 'outbound body: ' + JSON.stringify(raw)).to.equal('max');",
+                  "});",
+                  "pm.test('Mistral returns a completion message', function () {",
+                  "  var choices = pm.response.json().choices;",
+                  "  pm.expect(choices, 'no choices: ' + body).to.be.an('array').that.is.not.empty;",
+                  "  pm.expect(choices[0].message, 'no message on choices[0]: ' + body).to.be.an('object');",
+                  "  pm.expect(choices[0].message.role, 'choices[0].message.role: ' + body).to.equal('assistant');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"mistral/zai-glm-5-3\",\"reasoning_effort\":\"max\",\"max_tokens\":256,\"messages\":[{\"role\":\"user\",\"content\":\"Say ok.\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "mistral/zai-glm-5-3 /v1/chat/completions streaming reasoning_effort max reaches Mistral unchanged (mistral-reasoning-effort) - #9731",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('stream succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'request failed: ' + txt.slice(0, 800)).to.equal(200);",
+                  "});",
+                  "var events = [];",
+                  "txt.split('\\n').forEach(function (l) {",
+                  "  if (l.indexOf('data:') !== 0) { return; }",
+                  "  var d = l.slice(5).trim();",
+                  "  if (!d || d === '[DONE]') { return; }",
+                  "  try { events.push(JSON.parse(d)); } catch (e) {}",
+                  "});",
+                  "pm.test('stream carries content and finishes', function () {",
+                  "  var finished = events.some(function (ev) { return ev.choices && ev.choices.some(function (c) { return !!c.finish_reason; }); });",
+                  "  pm.expect(events.length, 'no SSE chunks: ' + txt.slice(0, 800)).to.be.above(0);",
+                  "  pm.expect(finished, 'no chunk carried a finish_reason: ' + txt.slice(-800)).to.equal(true);",
+                  "});",
+                  "var raw = null;",
+                  "events.forEach(function (ev) { if (ev.extra_fields && ev.extra_fields.raw_request) { raw = ev.extra_fields.raw_request; } });",
+                  "if (typeof raw === 'string') { try { raw = JSON.parse(raw); } catch (e) { raw = null; } }",
+                  "pm.test('Mistral receives reasoning_effort max on the streaming path, not a rewrite to high', function () {",
+                  "  pm.expect(raw, 'raw_request missing - x-bf-send-back-raw-request not honored on the stream: ' + txt.slice(-800)).to.be.an('object');",
+                  "  pm.expect(raw.reasoning_effort, 'outbound body: ' + JSON.stringify(raw)).to.equal('max');",
+                  "  pm.expect(raw.stream, 'outbound body: ' + JSON.stringify(raw)).to.equal(true);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"mistral/zai-glm-5-3\",\"stream\":true,\"reasoning_effort\":\"max\",\"max_tokens\":256,\"messages\":[{\"role\":\"user\",\"content\":\"Say ok.\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "340. Bedrock invoke keeps tool_reference inside a client tool_result (invoke tool reference) (#8976 / PR #9005)",
+      "description": "Regression for #8976. Client-side tool search (Claude Code's ToolSearch) marks tools defer_loading and answers a search with an ordinary tool_result whose content is tool_reference blocks; Anthropic expands each reference into the tool's definition. On /bedrock/model/{id}/invoke and /invoke-with-response-stream, BedrockContentBlock.UnmarshalJSON had no tool_reference case (the block decoded empty) and the Converse-shaped ingress flattened the tool_result to a string, so InvokeModel received the result as content \"\" and the model searched again (issue: input_tokens 574 vs 664 direct). The fix carries the reference through as a tool_reference output block, which the InvokeModel egress already writes (#7813). The two native cases send the issue payload. The /v1/responses case sends the same conversation in neutral shape with no anthropic-beta and also pins, through the raw request, that it is served by InvokeModel with the tool_reference intact. Its defer_loading tool already routes it to InvokeModel, so this case pins the tool_reference passthrough, not the new tool_reference route scan; TestResponsesUsesAnthropicInvokePath_ToolReferenceResult covers that scan. All three pin that the model calls fetch_weather_report with the parameter only its definition names.",
+      "item": [
+        {
+          "name": "Bedrock invoke: tool_reference in a client tool_result loads the deferred tool (Sonnet 5) - #8976",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "",
+                  "// #8976: the invoke ingress dropped a tool_reference nested in a tool_result, so the result",
+                  "// reached Bedrock as content \"\" and the model, never shown fetch_weather_report's schema,",
+                  "// called tool_search again. zq_city_code_v7 cannot be guessed, so a call that uses it proves",
+                  "// the definition was expanded. Red before the fix, green after.",
+                  "pm.test('Bedrock invoke tool_reference (Sonnet 5) - #8976: request succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "pm.test('Bedrock invoke tool_reference (Sonnet 5) - #8976: the loaded tool is called with its deferred parameter', function () {",
+                  "  var blocks = Array.isArray(body.content) ? body.content : [];",
+                  "  var call = blocks.filter(function (b) { return b && b.type === 'tool_use' && b.name === 'fetch_weather_report'; })[0];",
+                  "  pm.expect(call, 'fetch_weather_report was not called (tool_reference lost?): ' + JSON.stringify(blocks).slice(0, 600)).to.be.an('object');",
+                  "  pm.expect(Object.keys(call.input || {}), 'deferred parameter name missing: ' + JSON.stringify(call)).to.include('zq_city_code_v7');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"anthropic_version\": \"bedrock-2023-05-31\",\n  \"anthropic_beta\": [\n    \"tool-search-tool-2025-10-19\"\n  ],\n  \"max_tokens\": 400,\n  \"tools\": [\n    {\n      \"name\": \"tool_search\",\n      \"description\": \"Load deferred tool definitions by name.\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"query\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"query\"\n        ]\n      }\n    },\n    {\n      \"name\": \"fetch_weather_report\",\n      \"description\": \"Get weather.\",\n      \"defer_loading\": true,\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"zq_city_code_v7\": {\n            \"type\": \"string\",\n            \"description\": \"IATA city code\"\n          }\n        },\n        \"required\": [\n          \"zq_city_code_v7\"\n        ]\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Use fetch_weather_report for Tokyo. Load it first via tool_search. Then call it.\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": [\n        {\n          \"type\": \"tool_use\",\n          \"id\": \"toolu_01\",\n          \"name\": \"tool_search\",\n          \"input\": {\n            \"query\": \"select:fetch_weather_report\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"tool_result\",\n          \"tool_use_id\": \"toolu_01\",\n          \"content\": [\n            {\n              \"type\": \"tool_reference\",\n              \"tool_name\": \"fetch_weather_report\"\n            }\n          ]\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/global.anthropic.claude-sonnet-5/invoke",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "global.anthropic.claude-sonnet-5",
+                "invoke"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Bedrock invoke-with-response-stream: tool_reference in a client tool_result loads the deferred tool (Sonnet 5) - #8976",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var rawText = pm.response.text() || '';",
+                  "",
+                  "// #8976: the invoke ingress dropped a tool_reference nested in a tool_result, so the result",
+                  "// reached Bedrock as content \"\" and the model, never shown fetch_weather_report's schema,",
+                  "// called tool_search again. zq_city_code_v7 cannot be guessed, so a call that uses it proves",
+                  "// the definition was expanded. Red before the fix, green after.",
+                  "pm.test('Bedrock invoke-with-response-stream tool_reference (Sonnet 5) - #8976: request succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + rawText.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "pm.test('Bedrock invoke-with-response-stream tool_reference (Sonnet 5) - #8976: the loaded tool streams with its deferred parameter', function () {",
+                  "  var b64Matches = rawText.match(/\"bytes\":\"([A-Za-z0-9+\\/=]+)\"/g) || [];",
+                  "  pm.expect(b64Matches.length, 'expected at least one invoke-stream chunk event: ' + rawText.slice(0, 300)).to.be.above(0);",
+                  "  var events = b64Matches.map(function (m) {",
+                  "    var b64 = m.match(/\"bytes\":\"([A-Za-z0-9+\\/=]+)\"/)[1];",
+                  "    try { return JSON.parse(Buffer.from(b64, 'base64').toString('utf8')); } catch (e) { return null; }",
+                  "  }).filter(function (e) { return e; });",
+                  "  var start = events.filter(function (e) { return e.type === 'content_block_start' && e.content_block && e.content_block.type === 'tool_use' && e.content_block.name === 'fetch_weather_report'; })[0];",
+                  "  pm.expect(start, 'fetch_weather_report was not called (tool_reference lost?): ' + JSON.stringify(events).slice(0, 600)).to.be.an('object');",
+                  "  var args = events.filter(function (e) { return e.type === 'content_block_delta' && e.index === start.index && e.delta && e.delta.type === 'input_json_delta'; })",
+                  "    .map(function (e) { return e.delta.partial_json || ''; }).join('');",
+                  "  pm.expect(args, 'deferred parameter name missing from the streamed input: ' + args).to.include('zq_city_code_v7');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"anthropic_version\": \"bedrock-2023-05-31\",\n  \"anthropic_beta\": [\n    \"tool-search-tool-2025-10-19\"\n  ],\n  \"max_tokens\": 400,\n  \"tools\": [\n    {\n      \"name\": \"tool_search\",\n      \"description\": \"Load deferred tool definitions by name.\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"query\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"query\"\n        ]\n      }\n    },\n    {\n      \"name\": \"fetch_weather_report\",\n      \"description\": \"Get weather.\",\n      \"defer_loading\": true,\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"zq_city_code_v7\": {\n            \"type\": \"string\",\n            \"description\": \"IATA city code\"\n          }\n        },\n        \"required\": [\n          \"zq_city_code_v7\"\n        ]\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Use fetch_weather_report for Tokyo. Load it first via tool_search. Then call it.\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": [\n        {\n          \"type\": \"tool_use\",\n          \"id\": \"toolu_01\",\n          \"name\": \"tool_search\",\n          \"input\": {\n            \"query\": \"select:fetch_weather_report\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"tool_result\",\n          \"tool_use_id\": \"toolu_01\",\n          \"content\": [\n            {\n              \"type\": \"tool_reference\",\n              \"tool_name\": \"fetch_weather_report\"\n            }\n          ]\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/global.anthropic.claude-sonnet-5/invoke-with-response-stream",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "global.anthropic.claude-sonnet-5",
+                "invoke-with-response-stream"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock/global.anthropic.claude-sonnet-5 /v1/responses: tool_reference in a function_call_output loads the deferred tool - #8976",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "pm.test('bedrock/global.anthropic.claude-sonnet-5 /v1/responses tool_reference (invoke tool reference) - #8976: request succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "pm.test('bedrock/global.anthropic.claude-sonnet-5 /v1/responses tool_reference (invoke tool reference) - #8976: served by InvokeModel with the tool_reference inside the tool_result', function () {",
+                  "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "  pm.expect(rr.anthropic_version, 'not an InvokeModel body (Converse drops tool_reference): ' + wire.slice(0, 600)).to.be.a('string');",
+                  "  var results = [];",
+                  "  (Array.isArray(rr.messages) ? rr.messages : []).forEach(function (m) {",
+                  "    (Array.isArray(m.content) ? m.content : []).forEach(function (b) { if (b && b.type === 'tool_result') { results.push(b); } });",
+                  "  });",
+                  "  var refs = results.length ? (results[results.length - 1].content || []).filter(function (c) { return c && c.type === 'tool_reference'; }) : [];",
+                  "  pm.expect(refs.length, 'tool_reference lost on the way to Bedrock: ' + wire.slice(0, 800)).to.eql(1);",
+                  "  pm.expect(refs[0].tool_name, 'tool_reference names the wrong tool: ' + JSON.stringify(refs[0])).to.eql('fetch_weather_report');",
+                  "});",
+                  "pm.test('bedrock/global.anthropic.claude-sonnet-5 /v1/responses tool_reference (invoke tool reference) - #8976: the loaded tool is called with its deferred parameter', function () {",
+                  "  var items = Array.isArray(body.output) ? body.output : [];",
+                  "  var call = items.filter(function (o) { return o && o.type === 'function_call' && o.name === 'fetch_weather_report'; })[0];",
+                  "  pm.expect(call, 'fetch_weather_report was not called (tool_reference lost?): ' + JSON.stringify(items).slice(0, 600)).to.be.an('object');",
+                  "  pm.expect(String(call.arguments || ''), 'deferred parameter name missing: ' + JSON.stringify(call)).to.include('zq_city_code_v7');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-sonnet-5\",\n  \"max_output_tokens\": 400,\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"tool_search\",\n      \"description\": \"Load deferred tool definitions by name.\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"query\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"query\"\n        ]\n      }\n    },\n    {\n      \"type\": \"function\",\n      \"name\": \"fetch_weather_report\",\n      \"description\": \"Get weather.\",\n      \"defer_loading\": true,\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"zq_city_code_v7\": {\n            \"type\": \"string\",\n            \"description\": \"IATA city code\"\n          }\n        },\n        \"required\": [\n          \"zq_city_code_v7\"\n        ]\n      }\n    }\n  ],\n  \"input\": [\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": \"Use fetch_weather_report for Tokyo. Load it first via tool_search. Then call it.\"\n    },\n    {\n      \"type\": \"function_call\",\n      \"call_id\": \"toolu_01\",\n      \"name\": \"tool_search\",\n      \"arguments\": \"{\\\"query\\\":\\\"select:fetch_weather_report\\\"}\"\n    },\n    {\n      \"type\": \"function_call_output\",\n      \"call_id\": \"toolu_01\",\n      \"output\": [\n        {\n          \"type\": \"tool_reference\",\n          \"tool_name\": \"fetch_weather_report\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "341. OpenAI passthrough-encoding (#9764 / PR #9804)",
       "description": "Local gzip regression. Raw JSON and Responses bodies retain encoding metadata. Buffered JSON remains decoded and unlabeled. The delayed gzip Responses case detects plaintext heartbeat or failure injection. Newman decodes HTTP gzip, so these cases assert the exact decoded body and response header. Go transport tests also compare raw wire bytes. A truncated gzip response before its first body byte must produce an unlabeled JSON error. No paid provider calls. Start: node tests/e2e/api/runners/run-passthrough-encoding-fixture.mjs /tmp/bifrost-passthrough-encoding. Start a gateway from this checkout: make dev PORT=3024 APP_DIR=/tmp/bifrost-passthrough-encoding. Verify port 3024 is free first and wait for /health. Log in at POST /api/session/login using encoding-fixture / fixture-only-password and export its token cookie as BIFROST_E2E_AUTH_HEADER=\"Bearer <token>\". Run: make run-provider-harness-test PROVIDER=openai FEATURE=\"passthrough-encoding\" INCLUDE_PREVIEW=1 PARALLEL=0 COMPAT=off DB_VERIFY=0 SKIP_STREAM_CANCEL=1 BASE_URL=http://localhost:3024. Stop both servers and remove the temporary profile afterward. PREVIEW keeps these fixture cases out of paid sweeps.",
       "item": [
         {
