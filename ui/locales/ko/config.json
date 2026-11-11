@@ -1643,7 +1643,21 @@
 		"issuerRequired": "Claude Code 로그인을 사용하기 전에 발급자 URL을 설정하세요.",
 		"invalidJSON": "관리 설정은 올바른 JSON이어야 해요.",
 		"notObject": "관리 설정은 JSON 객체여야 해요.",
-		"updated": "Claude Code 설정을 업데이트했어요."
+		"updated": "Claude Code 설정을 업데이트했어요.",
+		"telemetryLabel": "텔레메트리 전달",
+		"telemetryDescription": "Claude Code는 OpenTelemetry 지표, 로그, 트레이스를 게이트웨이로 보내요. 이 옵션을 켜면 Bifrost가 각 내보내기에 개발자 ID(가상 키, 팀, 고객 또는 계정)를 붙여 OTLP/HTTP 수집기로 전달해요. 끄면 내보내기는 버려져요.",
+		"collectorsLabel": "수집기",
+		"collectorEndpointLabel": "수집기 엔드포인트",
+		"collectorHeadersLabel": "수집기 헤더",
+		"collectorHeadersHelp": "헤더는 한 줄에 하나씩 <code0>name: env.VARIABLE</code0> 형식으로 입력하세요. 자격 증명이 설정에 저장되지 않도록 헤더 값은 env. 또는 vault. 참조여야 해요.",
+		"addCollector": "수집기 추가",
+		"removeCollector": "수집기 제거",
+		"dropAttributesLabel": "제거할 속성",
+		"dropAttributesHelp": "전달하기 전에 모든 수준에서 제거할 속성 키를 쉼표로 구분해 입력하세요. 예: <code0>prompt</code0>",
+		"telemetryNoDestination": "텔레메트리를 전달하려면 수집기를 하나 이상 추가하세요.",
+		"telemetryEndpointInvalid": "각 수집기 엔드포인트는 http 또는 https URL이거나 env. 또는 vault. 참조여야 해요.",
+		"telemetryHeaderMalformed": "각 수집기 헤더는 name: value 형식으로 입력하세요.",
+		"telemetryHeaderNotReference": "{{name}} 헤더는 env. 또는 vault. 참조여야 해요."
 	},
 	"gateways": {
 		"title": "게이트웨이",

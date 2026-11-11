@@ -599,6 +599,10 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, "oauth2_server_config.issuer_url must be set to a non-empty value when a client gateway (oauth2_server_config.gateways) is enabled")
 		return
 	}
+	if err := effectiveOAuth2Config.ValidateClientGateways(); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
 
 	// Enabling discovery without a pinned issuer_url would leave every issuer
 	// reference (discovery documents, authorize redirect, JWT iss/aud) derived

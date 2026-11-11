@@ -22,6 +22,7 @@ import (
 	"github.com/maximhq/bifrost/framework/temptoken"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/integrations"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/valyala/fasthttp"
 )
 
@@ -72,6 +73,10 @@ type ClientGatewayProfile interface {
 	// WriteAuthError writes a bearer failure in the client's own error format.
 	// unauthorized is true when the client should prompt the user to sign in again.
 	WriteAuthError(ctx *fasthttp.RequestCtx, status int, unauthorized bool, message string)
+	// Telemetry returns the gateway's telemetry block, or nil when the client sends
+	// none or the operator configured none. Routes registered with
+	// ep.telemetryHandler use it.
+	Telemetry(cfg *configtables.OAuth2ServerConfig) *configtables.ClientGatewayTelemetryConfig
 	// RegisterExtraRoutes adds protocol endpoints beyond sign-in and inference,
 	// such as managed settings or a telemetry sink, using ep for the prefix, the
 	// store and the bearer check.
@@ -136,6 +141,7 @@ type ClientGatewayHandler struct {
 	verifyLimiter     *ipRateLimiter
 	polls             *devicePollTracker
 	tokens            *gatewayTokenCache
+	telemetry         *telemetryForwarder
 
 	endpoints []*clientGatewayEndpoint
 }
@@ -163,11 +169,23 @@ func NewClientGatewayHandler(store *lib.Config, tempTokens *temptoken.Service, i
 		verifyLimiter:     newIPRateLimiter(clientGatewayDeviceVerifyLimit, clientGatewayRateLimitWindow),
 		polls:             newDevicePollTracker(),
 		tokens:            newGatewayTokenCache(clientGatewayTokenCacheMaxEntries),
+		telemetry:         newTelemetryForwarder(telemetryHTTPClient(store.HTTPClientFactory)),
 	}
 	for _, p := range profiles {
 		h.endpoints = append(h.endpoints, &clientGatewayEndpoint{ClientGatewayHandler: h, profile: p})
 	}
 	return h
+}
+
+// Close stops forwarding telemetry and drains what is queued, until ctx ends.
+func (h *ClientGatewayHandler) Close(ctx context.Context) {
+	h.telemetry.Close(ctx)
+}
+
+// MetricsGatherer exposes the client gateway metrics (telemetry forwarding) for
+// the server's /metrics endpoint.
+func (h *ClientGatewayHandler) MetricsGatherer() prometheus.Gatherer {
+	return h.telemetry.metrics.registry
 }
 
 // endpoint returns the mounted profile named name, or nil.
@@ -709,6 +727,10 @@ func (ep *clientGatewayEndpoint) authenticate(ctx *fasthttp.RequestCtx) (int, st
 	default:
 		return fasthttp.StatusUnauthorized, "the gateway session is invalid; " + hint
 	}
+	// The verified claims (shared with the token cache, so no allocation) stay
+	// on the request for handlers that need the identity itself, such as
+	// telemetry stamping; the inference path never reads them.
+	ctx.SetUserValue(clientGatewayClaimsKey{}, claims)
 	return 0, ""
 }
 

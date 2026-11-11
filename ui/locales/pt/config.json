@@ -1619,7 +1619,21 @@
 		"issuerRequired": "Defina o URL do emissor antes de ativar o início de sessão do Claude Code.",
 		"invalidJSON": "As definições geridas têm de ser JSON válido.",
 		"notObject": "As definições geridas têm de ser um objeto JSON.",
-		"updated": "Definições do Claude Code atualizadas com sucesso."
+		"updated": "Definições do Claude Code atualizadas com sucesso.",
+		"telemetryLabel": "Reencaminhar telemetria",
+		"telemetryDescription": "O Claude Code envia as suas métricas, registos e rastreios OpenTelemetry para o gateway. Quando esta opção está ativa, o Bifrost marca cada exportação com a identidade do programador (chave virtual, equipa, cliente ou conta) e reencaminha-a para os seus coletores OTLP/HTTP. Quando está desativada, as exportações são descartadas.",
+		"collectorsLabel": "Coletores",
+		"collectorEndpointLabel": "Endpoint do coletor",
+		"collectorHeadersLabel": "Cabeçalhos do coletor",
+		"collectorHeadersHelp": "Um cabeçalho por linha no formato <code0>nome: env.VARIAVEL</code0>. Os valores têm de ser referências env. ou vault., para que nenhuma credencial fique guardada na configuração.",
+		"addCollector": "Adicionar coletor",
+		"removeCollector": "Remover coletor",
+		"dropAttributesLabel": "Remover atributos",
+		"dropAttributesHelp": "Chaves de atributo separadas por vírgulas, removidas em todos os níveis antes do reencaminhamento, por exemplo <code0>prompt</code0>.",
+		"telemetryNoDestination": "Adicione pelo menos um coletor para reencaminhar a telemetria.",
+		"telemetryEndpointInvalid": "Cada endpoint de coletor tem de ser um URL http ou https, ou uma referência env. ou vault.",
+		"telemetryHeaderMalformed": "Escreva cada cabeçalho do coletor no formato nome: valor.",
+		"telemetryHeaderNotReference": "O cabeçalho {{name}} tem de ser uma referência env. ou vault."
 	},
 	"gateways": {
 		"title": "Gateways",

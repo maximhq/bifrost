@@ -11,6 +11,14 @@ import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Trans, useTranslation } from "react-i18next";
 import { toast } from "sonner";
+import GatewayTelemetrySection from "./gatewayTelemetrySection";
+import {
+	telemetryDraftFromConfig,
+	telemetryDraftKey,
+	telemetryPayloadFromDraft,
+	type TelemetryDraft,
+	type TelemetryDraftError,
+} from "./gatewayTelemetrySection.utils";
 
 // The managed-settings editor holds pretty-printed JSON; "" means no managed policy.
 const formatManagedSettings = (settings?: Record<string, unknown>) => (settings ? JSON.stringify(settings, null, 2) : "");
@@ -40,12 +48,14 @@ export default function GatewaysView() {
 	const [enabled, setEnabled] = useState(false);
 	const [issuerURL, setIssuerURL] = useState<SecretVar | undefined>(undefined);
 	const [managedSettings, setManagedSettings] = useState("");
+	const [telemetry, setTelemetry] = useState<TelemetryDraft>(() => telemetryDraftFromConfig(undefined));
 
 	useEffect(() => {
 		if (!config) return;
 		setEnabled(config.oauth2_server_config?.gateways?.claude_code?.enabled ?? false);
 		setIssuerURL(config.oauth2_server_config?.issuer_url);
 		setManagedSettings(formatManagedSettings(config.oauth2_server_config?.gateways?.claude_code?.managed_settings));
+		setTelemetry(telemetryDraftFromConfig(config.oauth2_server_config?.gateways?.claude_code?.telemetry));
 	}, [config]);
 
 	const hasChanges = useMemo(() => {
@@ -54,13 +64,30 @@ export default function GatewaysView() {
 		return (
 			enabled !== (stored?.gateways?.claude_code?.enabled ?? false) ||
 			!secretVarEquals(issuerURL, stored?.issuer_url) ||
-			managedSettings !== formatManagedSettings(stored?.gateways?.claude_code?.managed_settings)
+			managedSettings !== formatManagedSettings(stored?.gateways?.claude_code?.managed_settings) ||
+			telemetryDraftKey(telemetry) !== telemetryDraftKey(telemetryDraftFromConfig(stored?.gateways?.claude_code?.telemetry))
 		);
-	}, [config, enabled, issuerURL, managedSettings]);
+	}, [config, enabled, issuerURL, managedSettings, telemetry]);
 
 	const urlTemplate = t("claudeCode.gatewayURLTemplate");
 	const url = gatewayURL(issuerURL, urlTemplate);
 	const mdmSnippet = JSON.stringify({ forceLoginMethod: "gateway", forceLoginGatewayUrl: url }, null, 2);
+
+	const telemetryErrorMessage = useCallback(
+		(error: TelemetryDraftError) => {
+			switch (error.kind) {
+				case "noDestination":
+					return t("claudeCode.telemetryNoDestination");
+				case "endpointInvalid":
+					return t("claudeCode.telemetryEndpointInvalid");
+				case "headerMalformed":
+					return t("claudeCode.telemetryHeaderMalformed");
+				case "headerNotReference":
+					return t("claudeCode.telemetryHeaderNotReference", { name: error.name });
+			}
+		},
+		[t],
+	);
 
 	const handleSave = useCallback(async () => {
 		if (!bifrostConfig) {
@@ -90,6 +117,12 @@ export default function GatewaysView() {
 			parsedSettings = parsed as Record<string, unknown>;
 		}
 
+		const { telemetry: telemetryPayload, error: telemetryError } = telemetryPayloadFromDraft(telemetry);
+		if (telemetryError) {
+			toast.error(telemetryErrorMessage(telemetryError));
+			return;
+		}
+
 		const clientConfig = bifrostConfig.client_config ?? DefaultCoreConfig;
 		try {
 			await updateCoreConfig({
@@ -101,7 +134,7 @@ export default function GatewaysView() {
 						issuer_url: issuerURL,
 						gateways: {
 							...clientConfig.oauth2_server_config?.gateways,
-							claude_code: { enabled, managed_settings: parsedSettings },
+							claude_code: { enabled, managed_settings: parsedSettings, ...(telemetryPayload ? { telemetry: telemetryPayload } : {}) },
 						},
 					},
 				},
@@ -110,7 +143,7 @@ export default function GatewaysView() {
 		} catch (error) {
 			toast.error(getErrorMessage(error));
 		}
-	}, [bifrostConfig, enabled, issuerURL, managedSettings, updateCoreConfig, t]);
+	}, [bifrostConfig, enabled, issuerURL, managedSettings, telemetry, telemetryErrorMessage, updateCoreConfig, t]);
 
 	return (
 		<div className="mx-auto w-full max-w-4xl space-y-6" data-testid="gateways-view">
@@ -205,6 +238,7 @@ export default function GatewaysView() {
 							disabled={!hasSettingsUpdateAccess}
 						/>
 					</div>
+					<GatewayTelemetrySection value={telemetry} onChange={setTelemetry} disabled={!hasSettingsUpdateAccess} />
 				</section>
 			</div>
 

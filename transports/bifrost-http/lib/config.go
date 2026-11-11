@@ -1623,6 +1623,9 @@ func validateClientConfig(cc *configstore.ClientConfig) error {
 	if oc := cc.OAuth2ServerConfig; oc.AnyClientGatewayEnabled() && (!oc.IssuerURL.IsSet() || oc.IssuerURL.GetValue() == "") {
 		return fmt.Errorf("oauth2_server_config.issuer_url must be set to a non-empty value when a client gateway (oauth2_server_config.gateways) is enabled")
 	}
+	if err := cc.OAuth2ServerConfig.ValidateClientGateways(); err != nil {
+		return err
+	}
 	if cc.IsMCPOAuthDiscoveryEnabled() {
 		oc := cc.OAuth2ServerConfig
 		// A reference ("env.X") counts as set even when it resolves to nothing,

@@ -1643,7 +1643,21 @@
 		"issuerRequired": "請先設定簽發者 URL，再啟用 Claude Code 登入。",
 		"invalidJSON": "受管理設定必須是有效的 JSON。",
 		"notObject": "受管理設定必須是 JSON 物件。",
-		"updated": "已更新 Claude Code 設定。"
+		"updated": "已更新 Claude Code 設定。",
+		"telemetryLabel": "轉送遙測資料",
+		"telemetryDescription": "Claude Code 會將其 OpenTelemetry 指標、記錄和追蹤傳送到閘道。開啟後，Bifrost 會為每次匯出標記開發者身分（虛擬金鑰、團隊、客戶或帳戶），並轉送到您的 OTLP/HTTP 收集器。關閉時，匯出資料會被捨棄。",
+		"collectorsLabel": "收集器",
+		"collectorEndpointLabel": "收集器端點",
+		"collectorHeadersLabel": "收集器標頭",
+		"collectorHeadersHelp": "每行一個標頭，格式為 <code0>name: env.VARIABLE</code0>。標頭值必須是 env. 或 vault. 參照，這樣設定中不會儲存任何憑證。",
+		"addCollector": "新增收集器",
+		"removeCollector": "移除收集器",
+		"dropAttributesLabel": "移除屬性",
+		"dropAttributesHelp": "以逗號分隔的屬性鍵，轉送前會在所有層級移除，例如 <code0>prompt</code0>。",
+		"telemetryNoDestination": "請至少新增一個收集器以轉送遙測資料。",
+		"telemetryEndpointInvalid": "每個收集器端點必須是 http 或 https URL，或是 env. 或 vault. 參照。",
+		"telemetryHeaderMalformed": "請以 name: value 格式填寫每個收集器標頭。",
+		"telemetryHeaderNotReference": "{{name}} 標頭必須是 env. 或 vault. 參照。"
 	},
 	"gateways": {
 		"title": "閘道",
