@@ -694,6 +694,279 @@ func TestResolveLimits_MCPKeepsTheDeploymentLimitsWithoutAnAccessGrant(t *testin
 	assert.True(t, isBudgetViolation(decision), "the exhausted global MCP budget refuses the call")
 }
 
+// rateLimitKindStore holds one rate limit of every shape RateLimitsForRequestKind tells apart.
+func rateLimitKindStore(t testing.TB) *LocalGovernanceStore {
+	t.Helper()
+	rows := []configstoreTables.TableRateLimit{
+		buildRequestLimit("rl-shared", 10, 0, "1h", configstoreTables.LimitScopeShared),
+		buildRequestLimit("rl-model", 10, 0, "1h", configstoreTables.LimitScopeModel),
+		buildRequestLimit("rl-mcp", 10, 0, "1h", configstoreTables.LimitScopeMCP),
+		*buildTokenLimit("rl-tokens", 1000, 0),
+		*buildRateLimit("rl-combined", 1000, 10),
+	}
+	store, err := NewLocalGovernanceStore(context.Background(), NewMockLogger(), nil, &configstore.GovernanceConfig{RateLimits: rows}, nil, nil)
+	require.NoError(t, err)
+	return store
+}
+
+// TestRateLimitsForRequestKind_AppliesRequestLimitScope pins the filter per request kind: a model
+// request answers to "shared" and "model" request limits and to Max Tokens; an MCP tool execution to
+// "shared" and "mcp" rules, never to a token-only limit. A legacy combined row
+// counts both kinds, and a row the store does not hold is kept for enforcement to skip.
+func TestRateLimitsForRequestKind_AppliesRequestLimitScope(t *testing.T) {
+	store := rateLimitKindStore(t)
+	ctx := context.Background()
+	vkMC := string(grant.LimitHolderVirtualKeyModelConfig)
+	limits := []schemas.Limit{
+		{ID: "rl-shared", HolderKind: vkMC},
+		{ID: "rl-model", HolderKind: vkMC},
+		{ID: "rl-mcp", HolderKind: vkMC},
+		{ID: "rl-tokens", HolderKind: vkMC},
+		{ID: "rl-combined", HolderKind: string(grant.LimitHolderTeam)},
+		{ID: "unknown", HolderKind: vkMC},
+	}
+	ids := func(limits []schemas.Limit) []string {
+		out := make([]string, 0, len(limits))
+		for _, limit := range limits {
+			out = append(out, limit.ID)
+		}
+		return out
+	}
+
+	assert.Equal(t, []string{"rl-shared", "rl-model", "rl-tokens", "rl-combined", "unknown"}, ids(RateLimitsForRequestKind(ctx, store, limits, false)))
+	assert.Equal(t, []string{"rl-shared", "rl-mcp", "rl-combined", "unknown"}, ids(RateLimitsForRequestKind(ctx, store, limits, true)))
+	assert.Equal(t, "rl-model", limits[1].ID, "the input slice is never filtered in place")
+}
+
+func TestRateLimitsForRequestKind_NoAllocationWhenNothingIsDropped(t *testing.T) {
+	store := rateLimitKindStore(t)
+	ctx := context.Background()
+	vkMC := string(grant.LimitHolderVirtualKeyModelConfig)
+	modelLimits := []schemas.Limit{{ID: "rl-shared", HolderKind: vkMC}, {ID: "rl-model", HolderKind: vkMC}, {ID: "rl-tokens", HolderKind: vkMC}, {ID: "unknown", HolderKind: vkMC}}
+	mcpLimits := []schemas.Limit{{ID: "rl-shared", HolderKind: vkMC}, {ID: "rl-mcp", HolderKind: vkMC}, {ID: "unknown", HolderKind: vkMC}}
+	assert.Zero(t, testing.AllocsPerRun(100, func() { _ = RateLimitsForRequestKind(ctx, store, modelLimits, false) }))
+	assert.Zero(t, testing.AllocsPerRun(100, func() { _ = RateLimitsForRequestKind(ctx, store, mcpLimits, true) }))
+}
+
+// requestLimitStore builds a store whose virtual key's all-models model config carries a Max Tokens
+// limit and request limits {1h shared 10, 1h MCP 2, 1d model 100}, the rules given only in the flat
+// rate-limit list with their owner FK, as config.json declares them.
+func requestLimitStore(t testing.TB, tokenUsage int64) (*LocalGovernanceStore, *GovernancePlugin) {
+	t.Helper()
+	logger := NewMockLogger()
+	vk := buildVirtualKeyWithProviders("vk1", "sk-bf-test", "Test VK", []configstoreTables.TableVirtualKeyProviderConfig{buildProviderConfig("openai", []string{"*"})})
+	tokens := buildTokenLimit("vk-tokens", 1000, tokenUsage)
+	mc := buildVKScopedModelConfig("mc-vk", "*", nil, vk.ID, nil, tokens)
+	rules := []configstoreTables.TableRateLimit{
+		buildRequestLimit("rule-shared", 10, 0, "1h", configstoreTables.LimitScopeShared),
+		buildRequestLimit("rule-mcp", 2, 0, "1h", configstoreTables.LimitScopeMCP),
+		buildRequestLimit("rule-model", 100, 0, "1d", configstoreTables.LimitScopeModel),
+	}
+	for i := range rules {
+		rules[i].ModelConfigID = &mc.ID
+	}
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys:  []configstoreTables.TableVirtualKey{*vk},
+		ModelConfigs: []configstoreTables.TableModelConfig{*mc},
+		RateLimits:   append([]configstoreTables.TableRateLimit{*tokens}, rules...),
+	}, nil, nil)
+	require.NoError(t, err)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = plugin.Cleanup() })
+	return store, plugin
+}
+
+func requestUsage(t *testing.T, store *LocalGovernanceStore, id string) int64 {
+	t.Helper()
+	rl := store.LoadRateLimit(context.Background(), id)
+	require.NotNil(t, rl, id)
+	return rl.RequestCurrentUsage
+}
+
+// executeTool runs one tool call through evaluation and the MCP post-hook, as the MCP path does.
+func executeTool(t *testing.T, store *LocalGovernanceStore, plugin *GovernancePlugin) *schemas.BifrostError {
+	t.Helper()
+	ctx := resolverCtx(store, "sk-bf-test")
+	if _, bifrostErr := plugin.Evaluate(ctx, &EvaluationRequest{RequestType: schemas.MCPToolExecutionRequest}); bifrostErr != nil {
+		return bifrostErr
+	}
+	_, _, err := plugin.PostMCPHook(ctx, &schemas.BifrostMCPResponse{
+		ExtraFields: schemas.BifrostMCPResponseExtraFields{MCPRequestType: schemas.MCPRequestTypeExecuteTool, ClientName: "client", ToolName: "tool"},
+	}, nil)
+	require.NoError(t, err)
+	plugin.wg.Wait()
+	return nil
+}
+
+// TestResolveLimits_AppliesRequestLimitScope pins which of a key's rate limits each kind of
+// request settles on: a model request its Max Tokens and its shared and model rules, a tool call
+// its shared and MCP rules only.
+func TestResolveLimits_AppliesRequestLimitScope(t *testing.T) {
+	store, _ := requestLimitStore(t, 0)
+	ctx := resolverCtx(store, "sk-bf-test")
+
+	model, err := resolveLimits(ctx, store, schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4o")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"rule-model", "rule-shared", "vk-tokens"}, settledRateLimitIDs(t, model))
+
+	mcp, err := resolveLimits(ctx, store, schemas.MCPToolExecutionRequest, "", "")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"rule-mcp", "rule-shared"}, settledRateLimitIDs(t, mcp))
+}
+
+// TestEvaluateMCP_RequestLimitsChargeAndRefuseByScope pins enforcement end to end: tool calls are
+// counted by the shared and MCP rules only and refused once the MCP rule is spent, while model
+// requests still pass; a model request is counted by the shared and model rules and by Max Tokens.
+func TestEvaluateMCP_RequestLimitsChargeAndRefuseByScope(t *testing.T) {
+	store, plugin := requestLimitStore(t, 0)
+
+	for i := 0; i < 2; i++ {
+		require.Nil(t, executeTool(t, store, plugin), "tool call %d is within the MCP rule", i+1)
+	}
+	assert.Equal(t, int64(2), requestUsage(t, store, "rule-shared"))
+	assert.Equal(t, int64(2), requestUsage(t, store, "rule-mcp"))
+	assert.Equal(t, int64(0), requestUsage(t, store, "rule-model"), "a tool call is never counted by a model rule")
+
+	bifrostErr := executeTool(t, store, plugin)
+	require.NotNil(t, bifrostErr, "the third tool call exceeds the MCP rule")
+	assert.Equal(t, int64(2), requestUsage(t, store, "rule-shared"), "a refused tool call is not counted")
+
+	ctx := resolverCtx(store, "sk-bf-test")
+	result, bifrostErr := plugin.Evaluate(ctx, &EvaluationRequest{RequestType: schemas.ChatCompletionRequest, Provider: schemas.OpenAI, Model: "gpt-4o"})
+	require.Nil(t, bifrostErr, "model traffic does not answer to the MCP rule: %+v", result)
+	require.NoError(t, store.ChargeRateLimits(ctx, ctx.Grant().Limits().RateLimits(), 50, true, true))
+	assert.Equal(t, int64(3), requestUsage(t, store, "rule-shared"))
+	assert.Equal(t, int64(1), requestUsage(t, store, "rule-model"))
+	assert.Equal(t, int64(2), requestUsage(t, store, "rule-mcp"))
+	assert.Equal(t, int64(50), store.LoadRateLimit(context.Background(), "vk-tokens").TokenCurrentUsage)
+}
+
+// TestEvaluateMCP_MaxTokensGovernsModelRequestsOnly pins that a spent Max Tokens limit still
+// refuses a model request but no longer refuses a tool call.
+func TestEvaluateMCP_MaxTokensGovernsModelRequestsOnly(t *testing.T) {
+	store, plugin := requestLimitStore(t, 1000)
+
+	require.Nil(t, executeTool(t, store, plugin), "Max Tokens does not count tool calls")
+
+	result, bifrostErr := plugin.Evaluate(resolverCtx(store, "sk-bf-test"), &EvaluationRequest{RequestType: schemas.ChatCompletionRequest, Provider: schemas.OpenAI, Model: "gpt-4o"})
+	require.NotNil(t, bifrostErr)
+	assert.Equal(t, DecisionTokenLimited, result.Decision)
+}
+
+// TestResolveLimits_GathersTeamAndCustomerRequestLimits pins that a key answers to its team's and
+// customer's request limits, by scope, and that two rules of one scope with different reset
+// periods each count every request and each refuse on their own.
+func TestResolveLimits_GathersTeamAndCustomerRequestLimits(t *testing.T) {
+	logger := NewMockLogger()
+	customer := buildCustomer("cust1", "Customer", nil)
+	team := buildTeam("team1", "Team", nil)
+	team.CustomerID = &customer.ID
+	vk := buildVirtualKey("vk1", "sk-bf-test", "Test VK", true)
+	vk.TeamID = &team.ID
+	vk.Team = team
+	rules := []configstoreTables.TableRateLimit{
+		buildRequestLimit("team-hour", 5, 0, "1h", configstoreTables.LimitScopeShared),
+		buildRequestLimit("team-day", 50, 0, "1d", configstoreTables.LimitScopeShared),
+		buildRequestLimit("customer-mcp", 3, 0, "1h", configstoreTables.LimitScopeMCP),
+	}
+	rules[0].TeamID = &team.ID
+	rules[1].TeamID = &team.ID
+	rules[2].CustomerID = &customer.ID
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+		Teams:       []configstoreTables.TableTeam{*team},
+		Customers:   []configstoreTables.TableCustomer{*customer},
+		RateLimits:  rules,
+	}, nil, nil)
+	require.NoError(t, err)
+	ctx := resolverCtx(store, "sk-bf-test")
+
+	model, err := resolveLimits(ctx, store, schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4o")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"team-day", "team-hour"}, settledRateLimitIDs(t, model))
+	mcp, err := resolveLimits(ctx, store, schemas.MCPToolExecutionRequest, "", "")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"customer-mcp", "team-day", "team-hour"}, settledRateLimitIDs(t, mcp))
+
+	require.NoError(t, store.ChargeRateLimits(ctx, model.RateLimits(), 0, false, true))
+	require.NoError(t, store.ChargeRateLimits(ctx, model.RateLimits(), 0, false, true))
+	assert.Equal(t, int64(2), requestUsage(t, store, "team-hour"))
+	assert.Equal(t, int64(2), requestUsage(t, store, "team-day"))
+	assert.Equal(t, int64(0), requestUsage(t, store, "customer-mcp"))
+
+	for _, id := range []string{"team-hour", "team-day"} {
+		t.Run(id+" spent", func(t *testing.T) {
+			live := *store.LoadRateLimit(context.Background(), id)
+			original := live
+			live.RequestCurrentUsage = *live.RequestMaxLimit
+			store.rateLimits.Store(id, &live)
+			t.Cleanup(func() { store.rateLimits.Store(id, &original) })
+			decision, err := store.CheckRateLimits(ctx, model.RateLimits(), nil, nil)
+			require.Error(t, err)
+			assert.Equal(t, DecisionRequestLimited, decision)
+		})
+	}
+	decision, err := store.CheckRateLimits(ctx, model.RateLimits(), nil, nil)
+	require.NoError(t, err)
+	assert.Equal(t, DecisionAllow, decision)
+
+	assert.Len(t, store.CollectTeamRateLimits(context.Background(), team.ID), 2)
+	assert.Len(t, store.CollectCustomerRateLimits(context.Background(), customer.ID), 1)
+}
+
+// TestGetBudgetAndRateLimitStatus_IgnoresMCPRequestLimits pins that status, which describes a model
+// request, is not steered by a spent MCP-only rule.
+func TestGetBudgetAndRateLimitStatus_IgnoresMCPRequestLimits(t *testing.T) {
+	store, _ := requestLimitStore(t, 0)
+	for id, usage := range map[string]int64{"rule-mcp": 2, "rule-model": 50} {
+		live := *store.LoadRateLimit(context.Background(), id)
+		live.RequestCurrentUsage = usage
+		store.rateLimits.Store(id, &live)
+	}
+	status := store.GetBudgetAndRateLimitStatus(resolverCtx(store, "sk-bf-test"), schemas.OpenAI, "gpt-4o", nil, nil, nil)
+	assert.InDelta(t, 50.0, status.RateLimitRequestPercentUsed, 0.001)
+}
+
+// BenchmarkRateLimitsForRequestKind measures settling a key's rate limits with and without request
+// limits, over the whole hierarchy an MCP tool execution answers to, and the filter alone when nothing
+// is dropped.
+func BenchmarkRateLimitsForRequestKind(b *testing.B) {
+	vk := buildVirtualKey("vk1", "sk-bf-test", "Test VK", true)
+	rl := buildRateLimit("rl", 1_000_000, 1000)
+	mc := buildVKScopedModelConfig("mc-vk", "*", nil, vk.ID, nil, rl)
+	plain, err := NewLocalGovernanceStore(context.Background(), NewMockLogger(), nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk}, ModelConfigs: []configstoreTables.TableModelConfig{*mc}, RateLimits: []configstoreTables.TableRateLimit{*rl},
+	}, nil, nil)
+	require.NoError(b, err)
+	withRules, _ := requestLimitStore(b, 0)
+	for _, s := range []struct {
+		name  string
+		store *LocalGovernanceStore
+	}{{"combined rate limit", plain}, {"tokens and request limits", withRules}, {"hierarchy", holderLevelStore(b)}} {
+		ctx := resolverCtx(s.store, "sk-bf-test")
+		b.Run(s.name+"/model", func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				_, _ = resolveLimits(ctx, s.store, schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4o")
+			}
+		})
+		b.Run(s.name+"/mcp", func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				_, _ = resolveLimits(ctx, s.store, schemas.MCPToolExecutionRequest, "", "")
+			}
+		})
+	}
+	limits := []schemas.Limit{{ID: "rule-shared"}, {ID: "rule-model"}, {ID: "vk-tokens"}}
+	b.Run("filter", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			_ = RateLimitsForRequestKind(context.Background(), withRules, limits, false)
+		}
+	})
+}
+
 // kindRecordingStore records the request kind resolveLimits tells its store.
 type kindRecordingStore struct {
 	*LocalGovernanceStore

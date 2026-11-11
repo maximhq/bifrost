@@ -2520,3 +2520,125 @@ func BenchmarkStampVirtualKeyMetadata(b *testing.B) {
 		})
 	}
 }
+
+// TestGovernanceStore_RequestLimits_InMemoryLifecycle pins how a holder's request limits live in
+// memory for every holder that owns them: loading stamps the holder's calendar alignment, an update
+// keeps an edited rule's usage and last reset while taking its new limit, drops a removed rule with
+// its DB baselines and adds a new one, the governance snapshot reports live usage, and deleting the
+// holder evicts its rules.
+func TestGovernanceStore_RequestLimits_InMemoryLifecycle(t *testing.T) {
+	type holder struct {
+		load     func(rules []configstoreTables.TableRateLimit) *configstore.GovernanceConfig
+		update   func(store *LocalGovernanceStore, rules []configstoreTables.TableRateLimit)
+		snapshot func(data *GovernanceData) []configstoreTables.TableRateLimit
+		delete   func(store *LocalGovernanceStore)
+	}
+	ctx := context.Background()
+	team := func() configstoreTables.TableTeam {
+		return configstoreTables.TableTeam{ID: "team1", Name: "Team", CalendarAligned: true}
+	}
+	customer := func() configstoreTables.TableCustomer {
+		return configstoreTables.TableCustomer{ID: "cust1", Name: "Customer", CalendarAligned: true}
+	}
+	modelConfig := func() configstoreTables.TableModelConfig {
+		mc := *buildModelConfig("mc1", "*", nil, nil, nil)
+		mc.CalendarAligned = true
+		return mc
+	}
+	holders := map[string]holder{
+		"team": {
+			load: func(rules []configstoreTables.TableRateLimit) *configstore.GovernanceConfig {
+				for i := range rules {
+					rules[i].TeamID = schemas.Ptr("team1")
+				}
+				return &configstore.GovernanceConfig{Teams: []configstoreTables.TableTeam{team()}, RateLimits: rules}
+			},
+			update: func(store *LocalGovernanceStore, rules []configstoreTables.TableRateLimit) {
+				updated := team()
+				updated.RequestLimits = rules
+				store.UpdateTeamInMemory(ctx, &updated, nil)
+			},
+			snapshot: func(data *GovernanceData) []configstoreTables.TableRateLimit {
+				return data.Teams["team1"].RequestLimits
+			},
+			delete: func(store *LocalGovernanceStore) { store.DeleteTeamInMemory(ctx, "team1") },
+		},
+		"customer": {
+			load: func(rules []configstoreTables.TableRateLimit) *configstore.GovernanceConfig {
+				for i := range rules {
+					rules[i].CustomerID = schemas.Ptr("cust1")
+				}
+				return &configstore.GovernanceConfig{Customers: []configstoreTables.TableCustomer{customer()}, RateLimits: rules}
+			},
+			update: func(store *LocalGovernanceStore, rules []configstoreTables.TableRateLimit) {
+				updated := customer()
+				updated.RequestLimits = rules
+				store.UpdateCustomerInMemory(ctx, &updated, nil)
+			},
+			snapshot: func(data *GovernanceData) []configstoreTables.TableRateLimit {
+				return data.Customers["cust1"].RequestLimits
+			},
+			delete: func(store *LocalGovernanceStore) { store.DeleteCustomerInMemory(ctx, "cust1") },
+		},
+		"model config": {
+			load: func(rules []configstoreTables.TableRateLimit) *configstore.GovernanceConfig {
+				for i := range rules {
+					rules[i].ModelConfigID = schemas.Ptr("mc1")
+				}
+				return &configstore.GovernanceConfig{ModelConfigs: []configstoreTables.TableModelConfig{modelConfig()}, RateLimits: rules}
+			},
+			update: func(store *LocalGovernanceStore, rules []configstoreTables.TableRateLimit) {
+				updated := modelConfig()
+				updated.RequestLimits = rules
+				store.UpdateModelConfigInMemory(ctx, &updated)
+			},
+			snapshot: func(data *GovernanceData) []configstoreTables.TableRateLimit {
+				require.Len(t, data.ModelConfigs, 1)
+				return data.ModelConfigs[0].RequestLimits
+			},
+			delete: func(store *LocalGovernanceStore) { store.DeleteModelConfigInMemory(ctx, "mc1") },
+		},
+	}
+	for name, h := range holders {
+		t.Run(name, func(t *testing.T) {
+			store, err := NewLocalGovernanceStore(ctx, NewMockLogger(), nil, h.load([]configstoreTables.TableRateLimit{
+				buildRequestLimit("rule-keep", 10, 0, "1h", configstoreTables.LimitScopeShared),
+				buildRequestLimit("rule-drop", 5, 0, "1d", configstoreTables.LimitScopeMCP),
+			}), nil, nil)
+			require.NoError(t, err)
+			require.True(t, store.LoadRateLimit(ctx, "rule-keep").IsCalendarAligned, "loading stamps the holder's calendar alignment")
+			for i := 0; i < 3; i++ {
+				require.NoError(t, store.BumpRateLimitUsage(ctx, "rule-keep", 0, false, true))
+			}
+			lastReset := store.LoadRateLimit(ctx, "rule-keep").RequestLastReset
+			store.SetRateLimitDBBaseline("rule-drop", 0, 4)
+
+			edited := buildRequestLimit("rule-keep", 20, 0, "1h", configstoreTables.LimitScopeShared)
+			edited.RequestLastReset = lastReset.Add(-time.Hour)
+			h.update(store, []configstoreTables.TableRateLimit{edited, buildRequestLimit("rule-new", 7, 0, "1h", configstoreTables.LimitScopeModel)})
+
+			kept := store.LoadRateLimit(ctx, "rule-keep")
+			require.NotNil(t, kept)
+			assert.Equal(t, int64(20), *kept.RequestMaxLimit, "the edit takes the new limit")
+			assert.Equal(t, int64(3), kept.RequestCurrentUsage, "the edit keeps the live usage")
+			assert.True(t, kept.RequestLastReset.Equal(lastReset), "the edit keeps the last reset")
+			assert.True(t, kept.IsCalendarAligned)
+			assert.Nil(t, store.LoadRateLimit(ctx, "rule-drop"), "a removed rule is evicted")
+			store.LastDBUsagesRateLimitsRequestsMu.RLock()
+			_, baselineLeft := store.LastDBUsagesRequestsRateLimits["rule-drop"]
+			store.LastDBUsagesRateLimitsRequestsMu.RUnlock()
+			assert.False(t, baselineLeft, "a removed rule's DB baseline is dropped")
+			require.NotNil(t, store.LoadRateLimit(ctx, "rule-new"))
+
+			snapshot := h.snapshot(store.GetGovernanceData(ctx))
+			require.Len(t, snapshot, 2)
+			assert.Equal(t, "rule-keep", snapshot[0].ID)
+			assert.Equal(t, int64(3), snapshot[0].RequestCurrentUsage, "the snapshot reports live usage")
+			assert.Equal(t, "rule-new", snapshot[1].ID)
+
+			h.delete(store)
+			assert.Nil(t, store.LoadRateLimit(ctx, "rule-keep"))
+			assert.Nil(t, store.LoadRateLimit(ctx, "rule-new"))
+		})
+	}
+}

@@ -573,6 +573,53 @@ func (gs *LocalGovernanceStore) DeleteRateLimit(ctx context.Context, rateLimitID
 	gs.LastDBUsagesRateLimitsRequestsMu.Unlock()
 }
 
+// storeRequestLimits publishes a holder's request limits in the flat rate-limit map, stamped with
+// the holder's calendar alignment so the reset path reads the right window.
+func (gs *LocalGovernanceStore) storeRequestLimits(calendarAligned bool, requestLimits []configstoreTables.TableRateLimit) {
+	configstoreTables.StampRequestLimitsCalendarAlignment(calendarAligned, requestLimits)
+	for i := range requestLimits {
+		gs.rateLimits.Store(requestLimits[i].ID, &requestLimits[i])
+	}
+}
+
+// reconcileRequestLimits applies an update to a holder's request limits the way its budgets are
+// reconciled: each rule in next is published keeping its live usage and last reset, and each rule
+// in previous that next no longer names is evicted with its DB baselines.
+func (gs *LocalGovernanceStore) reconcileRequestLimits(ctx context.Context, calendarAligned bool, next, previous []configstoreTables.TableRateLimit) {
+	configstoreTables.StampRequestLimitsCalendarAlignment(calendarAligned, next)
+	for i := range next {
+		gs.UpsertRateLimitConfig(ctx, next[i].ID, &next[i])
+	}
+	for i := range previous {
+		id := previous[i].ID
+		if !slices.ContainsFunc(next, func(rl configstoreTables.TableRateLimit) bool { return rl.ID == id }) {
+			gs.DeleteRateLimit(ctx, id)
+		}
+	}
+}
+
+// deleteRequestLimits evicts a holder's request limits from memory.
+func (gs *LocalGovernanceStore) deleteRequestLimits(ctx context.Context, requestLimits []configstoreTables.TableRateLimit) {
+	for i := range requestLimits {
+		gs.DeleteRateLimit(ctx, requestLimits[i].ID)
+	}
+}
+
+// liveRequestLimits returns a holder's request limits as they are in memory, with live usage. Rules
+// no longer in memory are dropped rather than reported stale, as budgets are.
+func (gs *LocalGovernanceStore) liveRequestLimits(ctx context.Context, requestLimits []configstoreTables.TableRateLimit) []configstoreTables.TableRateLimit {
+	if len(requestLimits) == 0 {
+		return requestLimits
+	}
+	live := make([]configstoreTables.TableRateLimit, 0, len(requestLimits))
+	for i := range requestLimits {
+		if rl := gs.LoadRateLimit(ctx, requestLimits[i].ID); rl != nil {
+			live = append(live, *rl)
+		}
+	}
+	return live
+}
+
 // SetRateLimitDBBaseline records the DB-authoritative usage for a rate limit so
 // that gossip delta calculations (TokenCurrentUsage - LastDBTokenUsage) start
 // from the correct base. Must be called whenever a rate limit with non-zero
@@ -1016,6 +1063,7 @@ func (gs *LocalGovernanceStore) GetGovernanceData(ctx context.Context) *Governan
 				}
 			}
 		}
+		team.RequestLimits = gs.liveRequestLimits(ctx, team.RequestLimits)
 	}
 	virtualKeys := make(map[string]*configstoreTables.TableVirtualKey)
 	gs.virtualKeys.Range(func(key, value interface{}) bool {
@@ -1070,6 +1118,7 @@ func (gs *LocalGovernanceStore) GetGovernanceData(ctx context.Context) *Governan
 				}
 			}
 		}
+		clone.RequestLimits = gs.liveRequestLimits(ctx, clone.RequestLimits)
 		customers[key.(string)] = &clone
 		return true // continue iteration
 	})
@@ -1171,6 +1220,7 @@ func (gs *LocalGovernanceStore) GetGovernanceData(ctx context.Context) *Governan
 				}
 			}
 		}
+		clone.RequestLimits = gs.liveRequestLimits(ctx, clone.RequestLimits)
 		modelConfigsList = append(modelConfigsList, &clone)
 		return true // continue iteration
 	})
@@ -1864,7 +1914,7 @@ func (gs *LocalGovernanceStore) PermitProviderLimits(ctx context.Context, permit
 		}
 		holderID := strconv.FormatUint(uint64(config.ID), 10)
 		budgets = append(budgets, grant.LimitsHeldBy(grant.LimitHolderVirtualKeyProviderConfig, holderID, vk.Name, config.Provider, "", budgetIDs(config.Budgets)...)...)
-		rateLimits = append(rateLimits, grant.LimitsHeldBy(grant.LimitHolderVirtualKeyProviderConfig, holderID, vk.Name, config.Provider, "", rateLimitIDs(config.RateLimitID)...)...)
+		rateLimits = append(rateLimits, grant.LimitsHeldBy(grant.LimitHolderVirtualKeyProviderConfig, holderID, vk.Name, config.Provider, "", idOrEmpty(config.RateLimitID)...)...)
 	}
 	return budgets, rateLimits
 }
@@ -1888,7 +1938,7 @@ func (gs *LocalGovernanceStore) HolderLimits(ctx context.Context, permit schemas
 	}
 
 	budgets = grant.LimitsHeldBy(grant.LimitHolderVirtualKey, vk.ID, vk.Name, "", "", budgetIDs(vk.Budgets)...)
-	rateLimits = grant.LimitsHeldBy(grant.LimitHolderVirtualKey, vk.ID, vk.Name, "", "", rateLimitIDs(vk.RateLimitID)...)
+	rateLimits = grant.LimitsHeldBy(grant.LimitHolderVirtualKey, vk.ID, vk.Name, "", "", idOrEmpty(vk.RateLimitID)...)
 
 	orgBudgets, orgRateLimits := gs.organizationLimitsForVirtualKey(ctx, vk)
 	return append(budgets, orgBudgets...), append(rateLimits, orgRateLimits...)
@@ -1948,10 +1998,10 @@ func (gs *LocalGovernanceStore) CollectTeamBudgets(ctx context.Context, teamID s
 	return list
 }
 
-// CollectTeamRateLimits returns the live rate-limit object configured for a team
-// (at most one), resolved by ID from the hot rate-limits map. Mirrors the read
-// pattern in CheckTeamRateLimit. Returns nil when the team is unknown or has no
-// rate limit. Exported for the enterprise user-hierarchy collector.
+// CollectTeamRateLimits returns the live rate limits configured for a team (its
+// rate limit and every request limit it owns), resolved by ID from the hot
+// rate-limits map. Returns nil when the team is unknown or has none. Exported
+// for the enterprise user-hierarchy collector.
 func (gs *LocalGovernanceStore) CollectTeamRateLimits(ctx context.Context, teamID string) []*configstoreTables.TableRateLimit {
 	if teamID == "" {
 		return nil
@@ -1961,14 +2011,22 @@ func (gs *LocalGovernanceStore) CollectTeamRateLimits(ctx context.Context, teamI
 		return nil
 	}
 	team, ok := teamValue.(*configstoreTables.TableTeam)
-	if !ok || team == nil || team.RateLimitID == nil {
+	if !ok || team == nil {
 		return nil
 	}
-	rl := gs.LoadRateLimit(ctx, *team.RateLimitID)
-	if rl == nil {
-		return nil
+	return gs.loadRateLimits(ctx, rateLimitIDs(team.RateLimitID, team.RequestLimits))
+}
+
+// loadRateLimits resolves rate-limit IDs to their live rows, skipping any not in memory, or nil
+// when none is.
+func (gs *LocalGovernanceStore) loadRateLimits(ctx context.Context, ids []string) []*configstoreTables.TableRateLimit {
+	var list []*configstoreTables.TableRateLimit
+	for _, id := range ids {
+		if rl := gs.LoadRateLimit(ctx, id); rl != nil {
+			list = append(list, rl)
+		}
 	}
-	return []*configstoreTables.TableRateLimit{rl}
+	return list
 }
 
 // CollectCustomerBudgets returns the customer's live budgets resolved from the hot budgets map, or nil if the customer is unknown or has none.
@@ -1993,7 +2051,7 @@ func (gs *LocalGovernanceStore) CollectCustomerBudgets(ctx context.Context, cust
 	return list
 }
 
-// CollectCustomerRateLimits returns the customer's live rate-limit (at most one) resolved from the hot rate-limits map, or nil if the customer is unknown or has none.
+// CollectCustomerRateLimits returns the customer's live rate limits (its rate limit and every request limit it owns) resolved from the hot rate-limits map, or nil if the customer is unknown or has none.
 func (gs *LocalGovernanceStore) CollectCustomerRateLimits(ctx context.Context, customerID string) []*configstoreTables.TableRateLimit {
 	if customerID == "" {
 		return nil
@@ -2003,14 +2061,10 @@ func (gs *LocalGovernanceStore) CollectCustomerRateLimits(ctx context.Context, c
 		return nil
 	}
 	customer, ok := customerValue.(*configstoreTables.TableCustomer)
-	if !ok || customer == nil || customer.RateLimitID == nil {
+	if !ok || customer == nil {
 		return nil
 	}
-	rl := gs.LoadRateLimit(ctx, *customer.RateLimitID)
-	if rl == nil {
-		return nil
-	}
-	return []*configstoreTables.TableRateLimit{rl}
+	return gs.loadRateLimits(ctx, rateLimitIDs(customer.RateLimitID, customer.RequestLimits))
 }
 
 // organizationLimitsForVirtualKey collects the limits a key answers to because of where it sits in
@@ -2029,7 +2083,7 @@ func (gs *LocalGovernanceStore) organizationLimitsForVirtualKey(ctx context.Cont
 		if teamValue, ok := gs.teams.Load(*vk.TeamID); ok && teamValue != nil {
 			if team, ok := teamValue.(*configstoreTables.TableTeam); ok && team != nil {
 				budgets = append(budgets, grant.LimitsHeldBy(grant.LimitHolderTeam, team.ID, team.Name, "", "", budgetIDs(team.Budgets)...)...)
-				rateLimits = append(rateLimits, grant.LimitsHeldBy(grant.LimitHolderTeam, team.ID, team.Name, "", "", rateLimitIDs(team.RateLimitID)...)...)
+				rateLimits = append(rateLimits, grant.LimitsHeldBy(grant.LimitHolderTeam, team.ID, team.Name, "", "", rateLimitIDs(team.RateLimitID, team.RequestLimits)...)...)
 			}
 		}
 	}
@@ -2058,7 +2112,7 @@ func (gs *LocalGovernanceStore) organizationLimitsForVirtualKey(ctx context.Cont
 		if customerValue, ok := gs.customers.Load(customerID); ok && customerValue != nil {
 			if customer, ok := customerValue.(*configstoreTables.TableCustomer); ok && customer != nil {
 				budgets = append(budgets, grant.LimitsHeldBy(grant.LimitHolderCustomer, customer.ID, customer.Name, "", "", budgetIDs(customer.Budgets)...)...)
-				rateLimits = append(rateLimits, grant.LimitsHeldBy(grant.LimitHolderCustomer, customer.ID, customer.Name, "", "", rateLimitIDs(customer.RateLimitID)...)...)
+				rateLimits = append(rateLimits, grant.LimitsHeldBy(grant.LimitHolderCustomer, customer.ID, customer.Name, "", "", rateLimitIDs(customer.RateLimitID, customer.RequestLimits)...)...)
 			}
 		}
 	}
@@ -2076,15 +2130,23 @@ func budgetIDs(rows []configstoreTables.TableBudget) []string {
 	return ids
 }
 
-// rateLimitIDs names a holder's single optional rate limit as the list a grant records. A key, a
-// provider config, a team and a customer each carry at most one, but how many limits a holder
-// answers to is the holder's business: a caller written against exactly one would have to be
-// rewritten for the first holder with two.
-func rateLimitIDs(rateLimitID *string) []string {
-	if rateLimitID == nil {
-		return nil
+// rateLimitIDs lists a holder's rate limit ID (Max Tokens, or a legacy combined row) followed by the IDs of
+// the request limits it owns.
+func rateLimitIDs(rateLimitID *string, requestLimits []configstoreTables.TableRateLimit) []string {
+	if len(requestLimits) == 0 {
+		if rateLimitID == nil {
+			return nil
+		}
+		return []string{*rateLimitID}
 	}
-	return []string{*rateLimitID}
+	ids := make([]string, 0, len(requestLimits)+1)
+	if rateLimitID != nil {
+		ids = append(ids, *rateLimitID)
+	}
+	for i := range requestLimits {
+		ids = append(ids, requestLimits[i].ID)
+	}
+	return ids
 }
 
 // storeVirtualKey writes vk into both the value-keyed primary map and the
@@ -3383,6 +3445,25 @@ func (gs *LocalGovernanceStore) loadFromDatabase(ctx context.Context) error {
 	return nil
 }
 
+// requestLimitsByOwner indexes the request limits among rateLimits by the model config, team or
+// customer that owns them, in their original order.
+func requestLimitsByOwner(rateLimits []configstoreTables.TableRateLimit) (modelConfigs, teams, customers map[string][]configstoreTables.TableRateLimit) {
+	modelConfigs = make(map[string][]configstoreTables.TableRateLimit)
+	teams = make(map[string][]configstoreTables.TableRateLimit)
+	customers = make(map[string][]configstoreTables.TableRateLimit)
+	for _, rl := range rateLimits {
+		switch {
+		case rl.ModelConfigID != nil:
+			modelConfigs[*rl.ModelConfigID] = append(modelConfigs[*rl.ModelConfigID], rl)
+		case rl.TeamID != nil:
+			teams[*rl.TeamID] = append(teams[*rl.TeamID], rl)
+		case rl.CustomerID != nil:
+			customers[*rl.CustomerID] = append(customers[*rl.CustomerID], rl)
+		}
+	}
+	return modelConfigs, teams, customers
+}
+
 // loadFromConfigMemory loads all governance data from the config's memory into store's memory
 func (gs *LocalGovernanceStore) loadFromConfigMemory(ctx context.Context, config *configstore.GovernanceConfig) error {
 	if config == nil {
@@ -3409,6 +3490,8 @@ func (gs *LocalGovernanceStore) loadFromConfigMemory(ctx context.Context, config
 
 	// Load providers
 	providers := config.Providers
+
+	modelConfigLimits, teamLimits, customerLimits := requestLimitsByOwner(rateLimits)
 
 	// Populate teams with their relationships
 	for i := range teams {
@@ -3437,6 +3520,17 @@ func (gs *LocalGovernanceStore) loadFromConfigMemory(ctx context.Context, config
 					break
 				}
 			}
+		}
+
+		if len(team.RequestLimits) == 0 {
+			team.RequestLimits = teamLimits[team.ID]
+		}
+	}
+
+	for i := range customers {
+		customer := &customers[i]
+		if len(customer.RequestLimits) == 0 {
+			customer.RequestLimits = customerLimits[customer.ID]
 		}
 	}
 
@@ -3471,6 +3565,10 @@ func (gs *LocalGovernanceStore) loadFromConfigMemory(ctx context.Context, config
 					break
 				}
 			}
+		}
+
+		if len(mc.RequestLimits) == 0 {
+			mc.RequestLimits = modelConfigLimits[mc.ID]
 		}
 
 		modelConfigs[i] = *mc
@@ -3606,6 +3704,7 @@ func (gs *LocalGovernanceStore) rebuildInMemoryStructures(ctx context.Context, c
 		if team.RateLimit != nil {
 			gs.rateLimits.Store(team.RateLimit.ID, team.RateLimit)
 		}
+		gs.storeRequestLimits(team.CalendarAligned, team.RequestLimits)
 	}
 
 	// Build model configs map.
@@ -3627,6 +3726,7 @@ func (gs *LocalGovernanceStore) rebuildInMemoryStructures(ctx context.Context, c
 			mc.RateLimit.IsCalendarAligned = mc.CalendarAligned
 			gs.rateLimits.Store(mc.RateLimit.ID, mc.RateLimit)
 		}
+		gs.storeRequestLimits(mc.CalendarAligned, mc.RequestLimits)
 		gs.storeModelConfig(mc)
 	}
 
@@ -3646,6 +3746,7 @@ func (gs *LocalGovernanceStore) rebuildInMemoryStructures(ctx context.Context, c
 				}
 			}
 		}
+		gs.storeRequestLimits(customer.CalendarAligned, customer.RequestLimits)
 	}
 
 	// Build providers map
@@ -3730,6 +3831,12 @@ func (gs *LocalGovernanceStore) CollectModelScopedGovernanceIDs(ctx context.Cont
 		if mc.RateLimitID != nil && !seenRateLimits[*mc.RateLimitID] {
 			rateLimitIDs = append(rateLimitIDs, *mc.RateLimitID)
 			seenRateLimits[*mc.RateLimitID] = true
+		}
+		for i := range mc.RequestLimits {
+			if id := mc.RequestLimits[i].ID; !seenRateLimits[id] {
+				rateLimitIDs = append(rateLimitIDs, id)
+				seenRateLimits[id] = true
+			}
 		}
 	}
 
@@ -4135,6 +4242,7 @@ func (gs *LocalGovernanceStore) DeleteModelConfigsForScopeInMemory(ctx context.C
 			if mc.RateLimitID != nil {
 				gs.DeleteRateLimit(ctx, *mc.RateLimitID)
 			}
+			gs.deleteRequestLimits(ctx, mc.RequestLimits)
 			gs.modelConfigs.Delete(key)
 		}
 		return true
@@ -4161,6 +4269,7 @@ func (gs *LocalGovernanceStore) CreateTeamInMemory(ctx context.Context, team *co
 		clone.RateLimit.IsCalendarAligned = clone.CalendarAligned
 		gs.rateLimits.Store(clone.RateLimit.ID, clone.RateLimit)
 	}
+	gs.storeRequestLimits(clone.CalendarAligned, clone.RequestLimits)
 
 	gs.teams.Store(clone.ID, &clone)
 }
@@ -4230,6 +4339,7 @@ func (gs *LocalGovernanceStore) UpdateTeamInMemory(ctx context.Context, team *co
 			// Rate limit was removed from the team, delete it from memory
 			gs.DeleteRateLimit(ctx, existingTeam.RateLimit.ID)
 		}
+		gs.reconcileRequestLimits(ctx, clone.CalendarAligned, clone.RequestLimits, existingTeam.RequestLimits)
 
 		gs.teams.Store(team.ID, &clone)
 	} else {
@@ -4254,6 +4364,7 @@ func (gs *LocalGovernanceStore) DeleteTeamInMemory(ctx context.Context, teamID s
 			if team.RateLimitID != nil {
 				gs.DeleteRateLimit(ctx, *team.RateLimitID)
 			}
+			gs.deleteRequestLimits(ctx, team.RequestLimits)
 		}
 	}
 
@@ -4290,6 +4401,7 @@ func (gs *LocalGovernanceStore) CreateCustomerInMemory(ctx context.Context, cust
 		clone.RateLimit.IsCalendarAligned = clone.CalendarAligned
 		gs.rateLimits.Store(clone.RateLimit.ID, clone.RateLimit)
 	}
+	gs.storeRequestLimits(clone.CalendarAligned, clone.RequestLimits)
 	gs.customers.Store(clone.ID, &clone)
 }
 
@@ -4349,6 +4461,7 @@ func (gs *LocalGovernanceStore) UpdateCustomerInMemory(ctx context.Context, cust
 			// Rate limit was removed from the customer, delete it from memory
 			gs.DeleteRateLimit(ctx, existingCustomer.RateLimit.ID)
 		}
+		gs.reconcileRequestLimits(ctx, clone.CalendarAligned, clone.RequestLimits, existingCustomer.RequestLimits)
 
 		gs.customers.Store(customer.ID, &clone)
 	} else {
@@ -4371,6 +4484,7 @@ func (gs *LocalGovernanceStore) DeleteCustomerInMemory(ctx context.Context, cust
 			if customer.RateLimitID != nil {
 				gs.DeleteRateLimit(ctx, *customer.RateLimitID)
 			}
+			gs.deleteRequestLimits(ctx, customer.RequestLimits)
 		}
 	}
 	// Set customer_id to null for all virtual keys associated with the customer
@@ -4473,6 +4587,17 @@ func (gs *LocalGovernanceStore) UpdateModelConfigInMemory(ctx context.Context, m
 		gs.rateLimits.Store(clone.RateLimit.ID, clone.RateLimit)
 	}
 
+	// Request limits are reconciled against the rules the config owned before the update.
+	var previousRequestLimits []configstoreTables.TableRateLimit
+	gs.modelConfigs.Range(func(_, value interface{}) bool {
+		if existing, ok := value.(*configstoreTables.TableModelConfig); ok && existing != nil && existing.ID == clone.ID {
+			previousRequestLimits = existing.RequestLimits
+			return false
+		}
+		return true
+	})
+	gs.reconcileRequestLimits(ctx, clone.CalendarAligned, clone.RequestLimits, previousRequestLimits)
+
 	// Index under the (scope-aware) canonical key. Scope/scope_id are part of a config's
 	// identity and do not change on update, so this matches the stored key.
 	gs.storeModelConfig(&clone)
@@ -4503,6 +4628,7 @@ func (gs *LocalGovernanceStore) DeleteModelConfigInMemory(ctx context.Context, m
 			if mc.RateLimitID != nil {
 				gs.DeleteRateLimit(ctx, *mc.RateLimitID)
 			}
+			gs.deleteRequestLimits(ctx, mc.RequestLimits)
 
 			gs.modelConfigs.Delete(key)
 			return false // stop iteration
@@ -4909,8 +5035,9 @@ func (gs *LocalGovernanceStore) GatherLimitsForRequestKind(ctx *schemas.BifrostC
 // limit among them. A request with no access still answers to the deployment's own limits.
 func (gs *LocalGovernanceStore) GetBudgetAndRateLimitStatus(ctx *schemas.BifrostContext, provider schemas.ModelProvider, model string, budgetBaselines map[string]float64, tokenBaselines map[string]int64, requestBaselines map[string]int64) *BudgetAndRateLimitStatus {
 	budgets, rateLimits, _ := gs.GatherLimitsForRequestKind(ctx, ctx.Grant().Access(), provider, model, false)
-	// Status describes a model request for the pair, so an MCP-only budget must not steer it.
+	// Status describes a model request for the pair, so MCP-only limits must not steer it.
 	budgets = BudgetsForRequestKind(ctx, gs, budgets, false)
+	rateLimits = RateLimitsForRequestKind(ctx, gs, rateLimits, false)
 	status := &BudgetAndRateLimitStatus{}
 
 	for _, limit := range budgets {
@@ -5016,7 +5143,7 @@ func (gs *LocalGovernanceStore) providerScopedModelLimitsInScopes(ctx context.Co
 				continue
 			}
 			budgets = append(budgets, grant.LimitsHeldBy(scope.kind, mc.ID, modelConfigDisplayName(mc), providerName, model, budgetIDsOf(mc.Budgets)...)...)
-			rateLimits = append(rateLimits, grant.LimitsHeldBy(scope.kind, mc.ID, modelConfigDisplayName(mc), providerName, model, idOrEmpty(mc.RateLimitID)...)...)
+			rateLimits = append(rateLimits, grant.LimitsHeldBy(scope.kind, mc.ID, modelConfigDisplayName(mc), providerName, model, rateLimitIDs(mc.RateLimitID, mc.RequestLimits)...)...)
 		}
 	}
 	return budgets, rateLimits
@@ -5042,7 +5169,7 @@ func (gs *LocalGovernanceStore) modelLimitsInScopes(ctx context.Context, scopes 
 				continue
 			}
 			budgets = append(budgets, grant.LimitsHeldBy(scope.kind, mc.ID, modelConfigDisplayName(mc), providerName, model, budgetIDsOf(mc.Budgets)...)...)
-			rateLimits = append(rateLimits, grant.LimitsHeldBy(scope.kind, mc.ID, modelConfigDisplayName(mc), providerName, model, idOrEmpty(mc.RateLimitID)...)...)
+			rateLimits = append(rateLimits, grant.LimitsHeldBy(scope.kind, mc.ID, modelConfigDisplayName(mc), providerName, model, rateLimitIDs(mc.RateLimitID, mc.RequestLimits)...)...)
 		}
 	}
 	return budgets, rateLimits
@@ -5098,7 +5225,7 @@ func (gs *LocalGovernanceStore) holderLevelLimits(scope limitScope) ([]schemas.L
 	}
 	name := modelConfigDisplayName(mc)
 	return grant.LimitsHeldBy(scope.kind, mc.ID, name, "", "", budgetIDsOf(mc.Budgets)...),
-		grant.LimitsHeldBy(scope.kind, mc.ID, name, "", "", idOrEmpty(mc.RateLimitID)...)
+		grant.LimitsHeldBy(scope.kind, mc.ID, name, "", "", rateLimitIDs(mc.RateLimitID, mc.RequestLimits)...)
 }
 
 // ScopedModelLimits reports the model-config limits covering the pair in one named scope, attributed
