@@ -71,14 +71,14 @@
 		"notConfigured": "Aucun jeton d’installation n’est configuré sur ce serveur, la configuration ne peut donc pas encore continuer."
 	},
 	"device": {
-		"title": "Se connecter à Claude Code",
+		"title": "Se connecter à Bifrost",
 		"subtitle": "Vérifiez que le code affiché dans votre terminal correspond à celui ci-dessous.",
 		"codeLabel": "Code de l’appareil",
 		"checking": "Vérification…",
 		"continue": "Continuer",
 		"signedInTitle": "Vous êtes connecté",
-		"signedInBody": "Revenez à Claude Code pour terminer. Vous pouvez fermer cette fenêtre.",
-		"verifyFailed": "Ce code n’a pas pu être vérifié. Relancez /login dans Claude Code.",
+		"signedInBody": "Revenez à votre terminal pour terminer. Vous pouvez fermer cette fenêtre.",
+		"verifyFailed": "Ce code n’a pas pu être vérifié. Relancez la connexion depuis votre terminal.",
 		"invalidLink": "Le lien de connexion n’est pas une adresse web valide. Vérifiez l’URL de l’émetteur configurée sur la passerelle.",
 		"unreachable": "Impossible de joindre Bifrost. Vérifiez votre connexion et réessayez."
 	}

@@ -71,14 +71,14 @@
 		"notConfigured": "No hay ningún token de configuración en este servidor, por lo que la configuración aún no puede continuar."
 	},
 	"device": {
-		"title": "Iniciar sesión en Claude Code",
+		"title": "Iniciar sesión en Bifrost",
 		"subtitle": "Confirma que el código que aparece en tu terminal coincide con el de abajo.",
 		"codeLabel": "Código del dispositivo",
 		"checking": "Comprobando…",
 		"continue": "Continuar",
 		"signedInTitle": "Has iniciado sesión",
-		"signedInBody": "Vuelve a Claude Code para terminar. Puedes cerrar esta ventana.",
-		"verifyFailed": "No se pudo verificar este código. Vuelve a ejecutar /login en Claude Code.",
+		"signedInBody": "Vuelve a tu terminal para terminar. Puedes cerrar esta ventana.",
+		"verifyFailed": "No se pudo verificar este código. Vuelve a iniciar la sesión desde tu terminal.",
 		"invalidLink": "El enlace de inicio de sesión no es una dirección web válida. Revisa la URL del emisor configurada en el gateway.",
 		"unreachable": "No se pudo conectar con Bifrost. Comprueba tu conexión e inténtalo de nuevo."
 	}

@@ -71,14 +71,14 @@
 		"notConfigured": "No setup token is configured on this server, so setup cannot continue yet."
 	},
 	"device": {
-		"title": "Sign in to Claude Code",
+		"title": "Sign in to Bifrost",
 		"subtitle": "Confirm the code shown in your terminal matches the one below.",
 		"codeLabel": "Device code",
 		"checking": "Checking…",
 		"continue": "Continue",
 		"signedInTitle": "You're signed in",
-		"signedInBody": "Return to Claude Code to finish. You can close this window.",
-		"verifyFailed": "This code could not be verified. Run /login in Claude Code again.",
+		"signedInBody": "Return to your terminal to finish. You can close this window.",
+		"verifyFailed": "This code could not be verified. Start the sign-in again from your terminal.",
 		"invalidLink": "The sign-in link is not a valid web address. Check the gateway's issuer URL setting.",
 		"unreachable": "Could not reach Bifrost. Check your connection and try again."
 	}

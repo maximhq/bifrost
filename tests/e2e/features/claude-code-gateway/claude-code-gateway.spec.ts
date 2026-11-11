@@ -84,7 +84,7 @@ test.describe('Claude Code device sign-in page', () => {
 
   test('pre-fills the code without submitting it', async ({ page, claudeCodeGatewayPage }) => {
     let verifyCalls = 0
-    await page.route('**/gateway/claude-code/device/verify', async route => {
+    await page.route('**/oauth2/device/verify', async route => {
       verifyCalls++
       expect(route.request().postDataJSON()).toEqual({ user_code: 'BCDF-GHJK' })
       await route.fulfill({ status: 404, json: { error: { message: 'this code is not valid or has expired; run /login in Claude Code again' } } })
