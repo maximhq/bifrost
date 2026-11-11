@@ -6415,6 +6415,9 @@ func TestIsStrictCompatibleJSONSchema(t *testing.T) {
 		{"nullable object without additionalProperties false", `{"type":"object","properties":{"o":{"type":["object","null"],"additionalProperties":true}},"required":["o"],"additionalProperties":false}`, false},
 		{"nullable object optional property", `{"type":"object","properties":{"o":{"type":["object","null"],"properties":{"x":{"type":"string"}},"additionalProperties":false}},"required":["o"],"additionalProperties":false}`, false},
 		{"nullable object ok", `{"type":"object","properties":{"o":{"type":["object","null"],"properties":{"x":{"type":"string"}},"required":["x"],"additionalProperties":false}},"required":["o"],"additionalProperties":false}`, true},
+		{"supported format", `{"type":"object","properties":{"d":{"type":"string","format":"date-time"}},"required":["d"],"additionalProperties":false}`, true},
+		{"unsupported format", `{"type":"object","properties":{"u":{"type":"string","format":"uri"}},"required":["u"],"additionalProperties":false}`, false},
+		{"unsupported format in array items", `{"type":"object","properties":{"l":{"type":"array","items":{"type":"string","format":"uri"}}},"required":["l"],"additionalProperties":false}`, false},
 		{"defs ok", `{"type":"object","properties":{"p":{"$ref":"#/$defs/P"}},"required":["p"],"additionalProperties":false,"$defs":{"P":{"type":"object","properties":{"x":{"type":"string"}},"required":["x"],"additionalProperties":false}}}`, true},
 	}
 	for _, tc := range cases {

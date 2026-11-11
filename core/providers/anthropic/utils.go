@@ -4936,16 +4936,30 @@ var strictModeUnsupportedSchemaKeywords = []string{
 	"patternProperties", "dependentRequired", "dependentSchemas",
 }
 
+// strictModeSupportedStringFormats are the string "format" values OpenAI's
+// strict structured outputs accept. Anthropic accepts more (uri, for one), so
+// a schema using any other format keeps strict off.
+var strictModeSupportedStringFormats = map[string]struct{}{
+	"date-time": {}, "time": {}, "date": {}, "duration": {}, "email": {},
+	"hostname": {}, "ipv4": {}, "ipv6": {}, "uuid": {},
+}
+
 // isStrictCompatibleJSONSchema reports whether a decoded JSON schema can be
 // sent with strict=true to OpenAI's Responses API: every object schema must
 // set additionalProperties to false and list all of its properties in
-// required, and no unsupported composition keyword may appear. Nested
+// required, no unsupported composition keyword may appear, and any string
+// format must be one OpenAI supports. Nested
 // properties, items, anyOf branches and $defs/definitions are checked too.
 func isStrictCompatibleJSONSchema(node interface{}) bool {
 	switch v := node.(type) {
 	case map[string]interface{}:
 		for _, keyword := range strictModeUnsupportedSchemaKeywords {
 			if _, ok := v[keyword]; ok {
+				return false
+			}
+		}
+		if format, ok := v["format"].(string); ok {
+			if _, supported := strictModeSupportedStringFormats[format]; !supported {
 				return false
 			}
 		}
