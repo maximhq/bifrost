@@ -1375,6 +1375,14 @@ type GeminiImageConfig struct {
 	// ImageSize controls the resolution of generated images.
 	// Valid values: "1k", "2k", "4k"
 	ImageSize string `json:"imageSize,omitempty"`
+	// ImageOutputOptions controls the encoding of generated images.
+	ImageOutputOptions *GeminiImageOutputOptions `json:"imageOutputOptions,omitempty"`
+}
+
+// GeminiImageOutputOptions controls the encoding of generated images (Vertex AI only).
+type GeminiImageOutputOptions struct {
+	MimeType           string `json:"mimeType,omitempty"`           // "image/png" or "image/jpeg"
+	CompressionQuality *int   `json:"compressionQuality,omitempty"` // 0-100, JPEG only
 }
 
 // ModelSelectionConfig represents configuration for model selection.
