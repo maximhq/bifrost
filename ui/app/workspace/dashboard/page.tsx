@@ -597,6 +597,8 @@ export default function DashboardPage() {
 									predefinedPeriod={urlState.period || undefined}
 									onPredefinedPeriodChange={handlePeriodChange}
 									triggerTestId="dashboard-filter-daterange"
+									className="flex-1 lg:flex-none"
+									buttonClassName="w-full lg:w-auto"
 									popupAlignment="end"
 									showTimezone
 									timezone={timezone}
