@@ -335,7 +335,29 @@ Claude Code never receives the virtual key itself. It gets a signed token bound 
   }
   ```
 
-- **Telemetry**: while signed in to a gateway, Claude Code sends its OpenTelemetry exports to the gateway. Bifrost accepts and discards them; request-level usage is already captured in Bifrost's own logs.
+- **Telemetry**: while signed in to a gateway, Claude Code sends its OpenTelemetry exports (metrics, logs and traces) to the gateway. By default Bifrost acknowledges and discards them. Turn on `telemetry` to forward them to your own OTLP/HTTP collectors instead:
+
+  ```json
+  "gateways": {
+    "claude_code": {
+      "enabled": true,
+      "telemetry": {
+        "enabled": true,
+        "destinations": [
+          { "endpoint": "https://otel-collector.example.com", "headers": { "authorization": "env.OTEL_COLLECTOR_TOKEN" } }
+        ],
+        "drop_attributes": ["prompt"]
+      }
+    }
+  }
+  ```
+
+  Each export is sent as OTLP/HTTP protobuf to `<endpoint>/v1/metrics`, `/v1/logs` or `/v1/traces`. Before forwarding, Bifrost:
+
+  - stamps the identity the developer signed in as on every resource: `bifrost.gateway.client`, `bifrost.auth.mode`, and `bifrost.virtual_key.id`, `bifrost.virtual_key.name`, `bifrost.team.id` and `bifrost.customer.id` for a virtual key, or `enduser.id` for an account. Any of these attributes the client sent itself are removed first, so one developer's telemetry cannot be made to look like another's;
+  - removes every attribute named in `drop_attributes`, at every level. Claude Code includes prompt text and tool details only when developers enable that in their own settings; list those keys here if they must not leave Bifrost.
+
+  Header values must be `env.` or `vault.` references, so no collector credential is stored in the config or shown in the dashboard. Forwarding is asynchronous: the client is answered as soon as an export is queued, and a slow or unavailable collector never slows a session. The queue holds at most 10,000 exports or 64 MB; past that, new exports are dropped and counted. Queue depth, drops and forwarding errors are exported on `/metrics` as `bifrost_client_gateway_telemetry_*`.
 
 | Endpoint (under `/gateway/claude-code`) | Purpose |
 | --- | --- |
@@ -343,7 +365,7 @@ Claude Code never receives the virtual key itself. It gets a signed token bound 
 | `POST /oauth/device_authorization`, `POST /oauth/token`, `POST /oauth/revoke` | Device sign-in, token refresh, sign-out |
 | `POST /v1/messages`, `POST /v1/messages/count_tokens`, `GET /v1/models` | Inference |
 | `GET /managed/settings` | Managed settings |
-| `POST /v1/metrics`, `/v1/logs`, `/v1/traces` | Telemetry (accepted) |
+| `POST /v1/metrics`, `/v1/logs`, `/v1/traces` | Telemetry (discarded, or forwarded when `telemetry` is on) |
 
 <Note>
 Gateway sign-in always runs the browser flow, so it does not suit unattended CI jobs. Use a virtual key with `ANTHROPIC_AUTH_TOKEN` there.

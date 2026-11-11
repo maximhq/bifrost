@@ -67,6 +67,36 @@ test.describe('Claude Code gateway settings', () => {
     })
   })
 
+  test('forwards telemetry to a collector with reference-only headers', async ({ page, claudeCodeGatewayPage }) => {
+    await mockConfig(page, 'https://bifrost.example.com')
+    await claudeCodeGatewayPage.goto()
+    await claudeCodeGatewayPage.enabledSwitch.click()
+    await claudeCodeGatewayPage.telemetrySwitch.click()
+    await claudeCodeGatewayPage.telemetryAddBtn.click()
+    await claudeCodeGatewayPage.telemetryEndpointInput.fill('https://otel-collector.example.com')
+
+    // A plain-text credential is refused before anything is sent.
+    let puts = 0
+    page.on('request', r => { if (new URL(r.url()).pathname === '/api/config' && r.method() === 'PUT') puts++ })
+    await claudeCodeGatewayPage.telemetryHeadersInput.fill('authorization: Bearer abc')
+    await claudeCodeGatewayPage.saveBtn.click()
+    const refusal = page.getByText('The authorization header must be an env. or vault. reference.')
+    await expect(refusal).toBeVisible()
+    expect(puts).toBe(0)
+    await expect(refusal).toBeHidden({ timeout: 15000 })
+
+    await claudeCodeGatewayPage.telemetryHeadersInput.fill('authorization: env.OTEL_COLLECTOR_TOKEN')
+    await claudeCodeGatewayPage.telemetryDropInput.fill('prompt, tool_input')
+    const submitted = page.waitForRequest(r => new URL(r.url()).pathname === '/api/config' && r.method() === 'PUT')
+    await claudeCodeGatewayPage.saveBtn.click()
+    const clientConfig = (await submitted).postDataJSON().client_config
+    expect(clientConfig.oauth2_server_config.gateways.claude_code.telemetry).toEqual({
+      enabled: true,
+      destinations: [{ endpoint: 'https://otel-collector.example.com', headers: { authorization: 'env.OTEL_COLLECTOR_TOKEN' } }],
+      drop_attributes: ['prompt', 'tool_input'],
+    })
+  })
+
   test('requires an issuer URL before enabling', async ({ page, claudeCodeGatewayPage }) => {
     await mockConfig(page)
     await claudeCodeGatewayPage.goto()
