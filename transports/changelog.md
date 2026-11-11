@@ -1,3 +1,5 @@
+[fix]: keep virtual key active defaults consistent during config sync [@Constantine3](https://github.com/Constantine3)
+
 ## 🐞 Fixed
 
 - **Empty Chat Messages** - A chat completion request with missing or empty `messages` returns a 400 instead of crashing the gateway
@@ -10,4 +12,4 @@
 
 ## 🗄️ Database Migrations
 
-- No new database migrations in this release.
+- `normalize_virtual_key_is_active` repairs NULL virtual key active states to `true`, preserving explicit `false`, configuration hashes, and update timestamps.

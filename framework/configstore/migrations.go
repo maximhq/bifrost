@@ -591,6 +591,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_cache_creation_above_12hr_pricing_columns"}, run: migrationAddCacheCreationAbove12hrPricingColumns},
 	{IDs: []string{"add_datasheet_overrides_table"}, run: migrationAddDatasheetOverridesTable},
 	{IDs: []string{"add_usage_estimation_tokenizers_json_column"}, run: migrationAddUsageEstimationTokenizersJSONColumn},
+	{IDs: []string{"normalize_virtual_key_is_active"}, run: migrationNormalizeVirtualKeyIsActive},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -17154,6 +17155,32 @@ func migrationAddUsageEstimationTokenizersJSONColumn(ctx context.Context, db *go
 			}
 			return nil
 		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// migrationNormalizeVirtualKeyIsActive repairs NULL values written by config
+// sync. NULL already means active for enforcement and hashing, so neither the
+// config hash nor updated_at should change. Explicitly disabled keys stay false.
+func migrationNormalizeVirtualKeyIsActive(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "normalize_virtual_key_is_active"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := setMigrationLockTimeout(tx); err != nil {
+				return err
+			}
+			return tx.Table("governance_virtual_keys").Where("is_active IS NULL").UpdateColumn("is_active", true).Error
+		},
+		// The old NULL rows cannot be distinguished from existing true rows.
+		// Leaving them true also preserves their pre-migration effective state.
+		Rollback: func(tx *gorm.DB) error { return nil },
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running %s migration: %w", migrationName, err)
