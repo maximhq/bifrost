@@ -16,6 +16,7 @@ import (
 	"testing"
 	"testing/synctest"
 	"time"
+	"unsafe"
 
 	"github.com/fasthttp/router"
 	bifrost "github.com/maximhq/bifrost/core"
@@ -2421,10 +2422,24 @@ func TestLoadBuiltinPluginGovernanceKeepsTheFreeMCPCallSetting(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	plugin, err := loadBuiltinPlugin(ctx, governance.PluginName, map[string]any{}, config)
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = plugin.Cleanup() })
+	// A map config (the plugins API) and a typed nil config both reach the plugin without callbacks.
+	for name, source := range map[string]any{"map config": map[string]any{}, "typed nil config": (*governance.Config)(nil)} {
+		t.Run(name, func(t *testing.T) {
+			config.ClientConfig.MCPAllowFreeCallsWhenBudgetExhausted = true
+			plugin, err := loadBuiltinPlugin(ctx, governance.PluginName, source, config)
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = plugin.Cleanup() })
 
-	field := reflect.ValueOf(plugin).Elem().FieldByName("mcpAllowFreeCallsWhenBudgetExhaustedFn")
-	require.False(t, field.IsNil(), "the reloaded plugin has no free MCP call callback")
+			// The callback is unexported; read it in place to call it.
+			field := reflect.ValueOf(plugin).Elem().FieldByName("mcpAllowFreeCallsWhenBudgetExhaustedFn")
+			require.False(t, field.IsNil(), "the reloaded plugin has no free MCP call callback")
+			allowFree := reflect.NewAt(field.Type(), unsafe.Pointer(field.UnsafeAddr())).Elem().Interface().(func() bool)
+
+			require.True(t, allowFree(), "the setting is on")
+			config.Mu.Lock()
+			config.ClientConfig.MCPAllowFreeCallsWhenBudgetExhausted = false
+			config.Mu.Unlock()
+			require.False(t, allowFree(), "the callback follows the live setting, not the value at reload")
+		})
+	}
 }
