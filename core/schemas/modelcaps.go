@@ -89,12 +89,14 @@ func (c ModelCaps) Model() string { return c.model }
 // Record returns the underlying datasheet record, or nil when none was found.
 func (c ModelCaps) Record() *ModelCapabilities { return c.record }
 
-// SupportsFastMode returns true if the model supports speed:"fast" (research
-// preview). Supported on Opus 4.6, Opus 4.7, Opus 4.8, and Opus 5; requests
-// carrying speed:"fast" to any other model are rejected with 400.
-// Beta header: fast-mode-2026-02-01.
+// SupportsFastMode returns true if the model supports speed:"fast". On the
+// Claude API that is Opus 4.6, 4.7, 4.8 and 5 (beta header fast-mode-2026-02-01);
+// on Vertex it is Claude Fable 5.2 with no beta header. Requests carrying
+// speed:"fast" to any other model are rejected with 400.
 //
-// Source: https://platform.claude.com/docs/en/build-with-claude/fast-mode
+// Sources:
+//   - https://platform.claude.com/docs/en/build-with-claude/fast-mode
+//   - https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/partner-models/claude/fast-mode
 //
 // Prefers the datasheet's supports_speed boolean when set, falling back to
 // name detection when no record is registered.

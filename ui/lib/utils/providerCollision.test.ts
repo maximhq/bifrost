@@ -30,6 +30,13 @@ describe("providerCollision", () => {
 		expect(findFirstPartyMatch("")).toBeUndefined();
 	});
 
+	it("flags a custom provider set up for Baseten before first-party support", () => {
+		expect(findCustomProviderCollisions([custom("baseten"), custom("Baseten"), custom("baseten-sidecar")])).toEqual([
+			{ customName: "baseten", knownProvider: "baseten" },
+			{ customName: "Baseten", knownProvider: "baseten" },
+		]);
+	});
+
 	it("only reports custom providers that collide with a first-party provider", () => {
 		const providers: ModelProvider[] = [
 			custom("Databricks"),
