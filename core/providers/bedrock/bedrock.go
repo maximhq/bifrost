@@ -4616,6 +4616,9 @@ func responsesParamsNeedAnthropicInvokePath(ctx *schemas.BifrostContext, model s
 		if toolNeedsAnthropicInvokePath(string(tool.Type), tool.DeferLoading) {
 			return true
 		}
+		if tool.Type == schemas.ResponsesToolTypeComputer || tool.Type == schemas.ResponsesToolTypeComputerUsePreview {
+			return true
+		}
 	}
 	return false
 }
