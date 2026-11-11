@@ -27519,6 +27519,13 @@ func TestValidateGovernanceBudgetScopes(t *testing.T) {
 			}},
 		},
 		{
+			name: "a key declared without an id is not the key whose id spells its position",
+			gov: configstore.GovernanceConfig{VirtualKeys: []configstoreTables.TableVirtualKey{
+				{Budgets: []configstoreTables.TableBudget{budget("a", "1d", configstoreTables.LimitScopeMCP)}},
+				{ID: "#1", Budgets: []configstoreTables.TableBudget{budget("b", "1d", configstoreTables.LimitScopeMCP)}},
+			}},
+		},
+		{
 			name: "teams declared without an id do not share their budgets",
 			gov: configstore.GovernanceConfig{Teams: []configstoreTables.TableTeam{
 				{Budgets: []configstoreTables.TableBudget{budget("a", "1d", configstoreTables.LimitScopeModel)}},

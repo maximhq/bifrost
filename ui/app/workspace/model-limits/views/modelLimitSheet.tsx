@@ -125,7 +125,7 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel, traffic
 
 	const hasCreateAccess = useRbac(RbacResource.Governance, RbacOperation.Create);
 	const hasUpdateAccess = useRbac(RbacResource.Governance, RbacOperation.Update);
-	const canSubmit = isEditing ? hasUpdateAccess : hasCreateAccess;
+	const hasDeleteAccess = useRbac(RbacResource.Governance, RbacOperation.Delete);
 
 	const handleClose = () => {
 		setIsOpen(false);
@@ -242,6 +242,14 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel, traffic
 	);
 	// The row being saved: the one edited, or the target's existing row when adding.
 	const baseConfig = modelConfig ?? targetRow;
+
+	// The permission a save needs is the one of the mutation it will run: an add onto the target's existing
+	// row is an update, and an MCP page save that leaves nothing on the row deletes it.
+	const remainingBudgets =
+		(watchedBudgets ?? []).filter((b) => b.max_limit !== undefined && b.max_limit !== null).length +
+		rowLines(baseConfig, traffic, false).length;
+	const deletesRow = isMCPPage && !!baseConfig && remainingBudgets === 0 && !baseConfig.rate_limit;
+	const canSubmit = deletesRow ? hasDeleteAccess : baseConfig ? hasUpdateAccess : hasCreateAccess;
 
 	// Show the target row's lines beside any typed so far; picking another target swaps them.
 	useEffect(() => {
