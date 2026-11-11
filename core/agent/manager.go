@@ -12,6 +12,7 @@ import (
 	"io"
 	"iter"
 	"maps"
+	"mime"
 	"net"
 	"net/http"
 	"net/url"
@@ -2267,9 +2268,20 @@ func (t *credentialTransport) RoundTrip(req *http.Request) (*http.Response, erro
 	return resp, err
 }
 
+// isHTTPJSONErrorResponse preserves native A2A errors for either supported JSON
+// media type so protocol failures cannot trigger endpoint refresh or replay.
 func isHTTPJSONErrorResponse(req *http.Request, resp *http.Response) bool {
 	transport, _ := req.Context().Value(schemas.BifrostContextKeyA2AUpstreamTransport).(string)
-	return transport == string(a2a.TransportProtocolHTTPJSON) && strings.HasPrefix(resp.Header.Get("Content-Type"), "application/json")
+	if transport != string(a2a.TransportProtocolHTTPJSON) {
+		return false
+	}
+	contentType := resp.Header.Get("Content-Type")
+	switch contentType {
+	case "application/json", "application/a2a+json":
+		return true
+	}
+	mediaType, _, err := mime.ParseMediaType(contentType)
+	return err == nil && (mediaType == "application/json" || mediaType == "application/a2a+json")
 }
 
 // maxWrappedStreamErrorBody bounds how much of an upstream JSON error reply is
