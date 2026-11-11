@@ -1664,7 +1664,8 @@ func collectGenAIGenerationTextPaths(paths *[]string, request gjson.Result, path
 	return collectErr
 }
 
-// collectGenAIContentTextPaths selects text parts and supported function-response JSON values from one Gemini content object.
+// collectGenAIContentTextPaths selects text parts, function-call argument string values, and supported function-response
+// JSON values from one Gemini content object.
 func collectGenAIContentTextPaths(paths *[]string, content gjson.Result, path string, includeFunctionResponses bool, replacements map[string]string) error {
 	if !content.Exists() || content.Type == gjson.Null {
 		return nil
@@ -1689,6 +1690,13 @@ func collectGenAIContentTextPaths(paths *[]string, content gjson.Result, path st
 		}
 		if !includeFunctionResponses {
 			return true
+		}
+		if collectErr = collectRawRequestArgumentStringPaths(
+			paths,
+			part.Get("functionCall.args"),
+			rawRequestObjectPath(rawRequestObjectPath(partPath, "functionCall"), "args"),
+		); collectErr != nil {
+			return false
 		}
 		functionResponse := part.Get("functionResponse")
 		if !functionResponse.Exists() || functionResponse.Type == gjson.Null {
@@ -1918,6 +1926,9 @@ func isTranscriptionRequest(req *gemini.GeminiGenerationRequest) bool {
 	// Check all contents for audio input
 	for _, content := range req.Contents {
 		for _, part := range content.Parts {
+			if part == nil {
+				continue
+			}
 			// Check for inline audio data
 			if part.InlineData != nil && isAudioMimeType(part.InlineData.MIMEType) {
 				return true

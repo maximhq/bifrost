@@ -4,7 +4,7 @@
 // The rows below are written out by hand from the documented contract rather than derived from
 // expectedOutcome, so a change to the rule has to change both places on purpose.
 import assert from "node:assert";
-import { allCases, callbackEndpoints, caseID, DEFAULT_LOG_RETENTION_DAYS, expectedOutcome, groupByConfig, headerValue, logRowFailures, normaliseRetentionDays, vkDisableValue } from "./content-logging-matrix.mjs";
+import { allCases, callbackEndpoints, caseID, DEFAULT_LOG_RETENTION_DAYS, expectedOutcome, groupByConfig, headerValue, logRowFailures, normaliseRetentionDays, relayRowFailures, vkDisableValue } from "./content-logging-matrix.mjs";
 
 let passed = 0;
 function test(name, fn) {
@@ -132,6 +132,22 @@ test("raw log row: stored content holds the marker in input_history and is not h
 	assert.deepStrictEqual(logRowFailures({ content_hidden: false, input_history: `[{"role":"user","content":"prompt-${m}"}]` }, m, true), []);
 	assert.ok(logRowFailures({ content_hidden: false, input_history: "" }, m, true).some((f) => /input_history/.test(f)));
 	assert.ok(logRowFailures({ content_hidden: true, input_history: `prompt-${m}` }, m, true).some((f) => /content_hidden/.test(f)));
+});
+
+test("raw relay row: stored content holds the marker in both bodies and is not hidden", () => {
+	const m = "m0123456789abcdef";
+	const stored = { content_hidden: 0, request_body: `{"prompt":"prompt-${m}"}`, response_body: `{"reply":"reply-${m}"}` };
+	assert.deepStrictEqual(relayRowFailures(stored, m, true), []);
+	assert.ok(relayRowFailures({ ...stored, response_body: null }, m, true).some((f) => /response_body/.test(f)));
+	assert.ok(relayRowFailures({ ...stored, content_hidden: 1 }, m, true).some((f) => /content_hidden/.test(f)));
+});
+
+test("raw relay row: dropped content leaves no marker in any column, including the path", () => {
+	const m = "m0123456789abcdef";
+	assert.deepStrictEqual(relayRowFailures({ content_hidden: true, request_body: null, path: "/x" }, m, false), []);
+	const leaked = relayRowFailures({ content_hidden: true, request_body: null, path: `/x?q=${m}` }, m, false);
+	assert.ok(leaked.some((f) => /path/.test(f)));
+	assert.ok(relayRowFailures({ content_hidden: false }, m, false).some((f) => /not content_hidden/.test(f)));
 });
 
 test("callback endpoints default to loopback for a colocated gateway", () => {

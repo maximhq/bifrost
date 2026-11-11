@@ -80,8 +80,8 @@ func (h *WebRTCLiveHandler) handleCreate(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	auth := captureAuthHeaders(ctx)
-	preReqCtx, preReqCancel := createBifrostContextFromAuth(h.gateway.handlerStore, auth)
+	setupHeaders := captureSessionHeaders(ctx)
+	preReqCtx, preReqCancel := createBifrostContextFromHeaders(h.gateway.handlerStore, setupHeaders)
 	defer preReqCancel()
 	preReqCtx.SetValue(schemas.BifrostContextKeyHTTPRequestType, schemas.LiveRequest)
 	if strings.HasPrefix(path, "/openai") {
@@ -103,7 +103,7 @@ func (h *WebRTCLiveHandler) handleCreate(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	sessionID := uuid.NewString()
-	admission, bifrostErr := h.gateway.admit(auth, preReqCtx, middlewareValues, path, target, sessionID)
+	admission, bifrostErr := h.gateway.admit(setupHeaders, preReqCtx, middlewareValues, path, target, sessionID)
 	if bifrostErr != nil {
 		SendBifrostError(ctx, bifrostErr)
 		return

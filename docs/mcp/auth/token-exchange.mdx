@@ -33,7 +33,7 @@ The `/mcp` gateway's own authentication mode is a separate, global setting from 
 
 If the upstream MCP server doesn't trust your SCIM identity provider's issuer — most third-party SaaS services — direct token exchange cannot work there. If the service supports Okta Cross App Access, use the [Cross App Access (`id_jag`) profile](./cross-app-access); otherwise use [Per-User OAuth](./per-user-oauth).
 
-This auth type is only valid for **HTTP** and **SSE** connections.
+This auth type is only valid for **HTTP** connections. It is refused on an SSE or STDIO client, because each call opens its own connection: the API answers 400, and a `config.json` client is skipped at boot with an error naming it.
 
 ---
 
@@ -97,7 +97,7 @@ Each MCP client scopes its own exchange: which resource (`audience`) the token i
 
 1. Navigate to **MCP Gateway** in the sidebar
 2. Click **New MCP Server**
-3. Pick **HTTP** or **SSE** as the connection type, fill in the **Connection URL**
+3. Pick **HTTP** as the connection type, fill in the **Connection URL**
 4. Set **Auth Type** to **Token Exchange (On-Behalf-Of)** — only shown when an identity provider is configured
 5. Fill in:
    - **Audience** — the resource identifier this server is registered as at your identity provider (e.g. `api://jira-mcp` for Okta/Auth0/Keycloak). **For Microsoft Entra ID**, this is the resource app's **Application (client) ID** — a bare GUID, not the `api://...` Application ID URI shown under "Expose an API"; see [Audience mismatch](#microsoft-entra-id-known-setup-gotchas) below for why
@@ -210,7 +210,7 @@ Verification requires an identity-authenticated session or request: an SSO dashb
 
 ### Admin discovery credential
 
-The token exchanged during verification is retained as a client-level **admin discovery credential**, used only for periodic tool-list refresh and never for end-user tool calls, which always exchange the caller's own token or Bifrost sign-in. It renews automatically via the refresh token your identity provider issues alongside the exchange, provided your configured `scopes` include `offline_access` (or your provider's equivalent).
+The token exchanged during verification is retained as a client-level **admin discovery credential**, used only for periodic tool-list refresh and never for end-user tool calls, which always exchange the caller's own token or Bifrost sign-in. A client with [Per-Caller Discovery](../per-caller-discovery) on retains nothing: verification only checks the exchange, each caller's tools are discovered with their own exchanged token, and **Re-verify as me** has nothing to repair (`verify-exchange` returns `400` once the client is verified). It renews automatically via the refresh token your identity provider issues alongside the exchange, provided your configured `scopes` include `offline_access` (or your provider's equivalent).
 
 Without a refresh token, the admin credential expires within its own lifetime and the client shows **`needs_reauth`** until an admin clicks **Re-verify as me**. End-user tool calls are unaffected either way — only the periodic tool-list refresh pauses.
 
@@ -234,6 +234,10 @@ A token on the request always wins: Bifrost uses your sign-in only when the requ
 The sign-in is your sign-in to Bifrost in the browser, the same one Bifrost Edge and Bifrost CLI sign-in go through. Bifrost exchanges its access token, never its ID token, and refreshes it when it has expired or is about to, using the refresh token from that sign-in (keep `offline_access`, the default, in your SSO login scopes). When none of your sign-ins can be refreshed any more (the refresh token expired or was revoked, or you signed out everywhere), tool calls fail saying your Bifrost sign-in has expired (see [How it works](#how-it-works) for the message). Signing in again in the browser fixes it. Signing out of one browser ends only that sign-in, and tokens Bifrost already exchanged for you keep working until they expire.
 
 Sending both an identity token and a virtual key is fine: [`dual_credential_conflict_behavior`](../gateway-auth) decides which one governance attributes the request to, while the identity token is used for the exchange either way.
+
+<Warning>
+Using a stored sign-in is the default. Before v2.4.0, calls from Bifrost Edge and Bifrost CLI sessions and `/mcp` user tokens with no identity-provider token failed with `subject_token_missing`. From v2.4.0 they succeed as long as the user is signed in, so make sure your processes account for this default. A dashboard session, a Bifrost Edge or Bifrost CLI session, or a Bifrost-issued `/mcp` user token, including a [Cross App Access](./cross-app-access) token, is enough on its own to reach `token_exchange` servers as that user, within their tool permissions. Treat a stolen one as access to those servers too. Because Bifrost refreshes the sign-in itself, this keeps working after the original token expires, until the identity provider rejects the refresh, that sign-in is signed out, or it reaches 30 days. To cut a user off, delete them in Bifrost or remove their access to the MCP client.
+</Warning>
 
 ---
 
@@ -275,5 +279,6 @@ Sending both an identity token and a virtual key is fine: [`dual_credential_conf
 ## Next Steps
 
 - [Per-User OAuth](./per-user-oauth) — when the upstream server runs its own OAuth and doesn't trust your IdP
+- [Per-Caller Discovery](../per-caller-discovery) — each caller sees the tools their own identity reaches
 - [MCP Authentication Overview](./overview) — compare all auth types
 - [Gateway Authentication](../gateway-auth) — identity modes and dual-credential behavior

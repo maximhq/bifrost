@@ -44,6 +44,9 @@ type PassthroughStreamParams struct {
 	// attached to the final chunk. Implementations populate usage directly from the event —
 	// no full response body is retained.
 	Observe func(event []byte) *schemas.BifrostPassthroughUsage
+	// Finalize, when set, completes the final response of a successful stream once it ends: it may
+	// name the model the stream reported running, or move the observed usage onto a provider job.
+	Finalize func(resp *schemas.BifrostPassthroughResponse)
 }
 
 // StreamPassthrough runs the shared passthrough streaming loop. It forwards each raw upstream
@@ -77,6 +80,7 @@ func StreamPassthroughHTTP(
 	return streamPassthrough(ctx, postHookRunner, postHookSpanFinalizer, func() { _ = body.Close() }, body, params)
 }
 
+// streamPassthrough is the loop behind StreamPassthrough and StreamPassthroughHTTP; release frees the upstream body.
 func streamPassthrough(
 	ctx *schemas.BifrostContext,
 	postHookRunner schemas.PostHookRunner,
@@ -106,12 +110,17 @@ func streamPassthrough(
 			}
 			CloseStream(ctx, ch)
 		}()
+		defer RecoverStreamPanic(ctx, postHookRunner, ch, params.Logger, postHookSpanFinalizer)
 		defer release()
 		defer stopIdleTimeout()
 		defer stopCancellation()
 
 		var pending bytes.Buffer
 		var usage *schemas.BifrostPassthroughUsage
+		// Each forwarded chunk is stamped like a typed stream chunk: accumulators fed by several
+		// plugins de-duplicate on ChunkIndex, and telemetry reads per-chunk latency.
+		chunkIndex := 0
+		lastChunkTime := params.StartTime
 
 		success := params.StatusCode >= 200 && params.StatusCode < 300
 
@@ -202,16 +211,19 @@ func streamPassthrough(
 
 		finalize := func() {
 			ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+			extraFields.ChunkIndex = chunkIndex
 			extraFields.Latency = time.Since(params.StartTime).Milliseconds()
 			extraFields.RawRequest = params.RawRequest
-			ProcessAndSendResponse(ctx, postHookRunner, &schemas.BifrostResponse{
-				PassthroughResponse: &schemas.BifrostPassthroughResponse{
-					StatusCode:       params.StatusCode,
-					Headers:          params.Headers,
-					ExtraFields:      extraFields,
-					PassthroughUsage: usage,
-				},
-			}, ch, postHookSpanFinalizer)
+			final := &schemas.BifrostPassthroughResponse{
+				StatusCode:       params.StatusCode,
+				Headers:          params.Headers,
+				ExtraFields:      extraFields,
+				PassthroughUsage: usage,
+			}
+			if params.Finalize != nil && success {
+				params.Finalize(final)
+			}
+			ProcessAndSendResponse(ctx, postHookRunner, &schemas.BifrostResponse{PassthroughResponse: final}, ch, postHookSpanFinalizer)
 		}
 
 		buf := make([]byte, 4096)
@@ -220,6 +232,10 @@ func streamPassthrough(
 			if n > 0 {
 				chunk := make([]byte, n)
 				copy(chunk, buf[:n])
+				extraFields.ChunkIndex = chunkIndex
+				extraFields.Latency = time.Since(lastChunkTime).Milliseconds()
+				lastChunkTime = time.Now()
+				chunkIndex++
 				// Forward the raw chunk to the client unchanged.
 				ProcessAndSendResponse(ctx, postHookRunner, &schemas.BifrostResponse{
 					PassthroughResponse: &schemas.BifrostPassthroughResponse{

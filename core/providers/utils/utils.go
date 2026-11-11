@@ -19,13 +19,13 @@ import (
 	"net/url"
 	"regexp"
 	"runtime"
+	"runtime/debug"
 	"slices"
 	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
-	"weak"
 
 	"github.com/bytedance/sonic"
 	"github.com/cespare/xxhash/v2"
@@ -721,24 +721,25 @@ func configureProxy(client *fasthttp.Client, proxyConfig *schemas.ProxyConfig, l
 		return client
 	}
 
-	// The proxy CA is trusted for TLS through the proxy and, for an https:// proxy
-	// URL, for the TLS session with the proxy itself.
+	// The proxy CA is trusted for TLS through the proxy (a TLS-inspecting proxy re-signs
+	// targets with it) and, for an https:// proxy URL, for the TLS session with the proxy
+	// itself. skip_tls_verify covers only that proxy session: targets are verified.
 	if proxyConfig.CACertPEM != nil && proxyConfig.CACertPEM.IsFromSecret() && proxyConfig.CACertPEM.GetValue() == "" {
 		errMsg := fmt.Sprintf("invalid proxy configuration: %s references %q but it resolved to an empty value", "proxy.ca_cert_pem", proxyConfig.CACertPEM.GetRawRef())
 		getLogger().Error(errMsg)
 		client.Dial = dialErrorFunc(errMsg)
 		return client
 	}
-	var proxyTLS *tls.Config
+	var caTLS *tls.Config
 	if proxyCACertPEM := proxyConfig.CACertPEM.GetValue(); proxyCACertPEM != "" {
 		tlsConfig, err := createTLSConfigWithCA(proxyCACertPEM)
 		if err != nil {
 			getLogger().Warn("Failed to configure custom CA certificate: %v", err)
 		} else {
-			proxyTLS = tlsConfig
+			caTLS = tlsConfig
 		}
 	}
-	proxyTLS = withProxySkipVerify(proxyTLS, proxyConfig.SkipTLSVerify)
+	proxyTLS := proxyHopTLS(caTLS, proxyConfig.SkipTLSVerify)
 
 	var dialFunc fasthttp.DialFunc
 	// Create the appropriate proxy based on type
@@ -755,6 +756,7 @@ func configureProxy(client *fasthttp.Client, proxyConfig *schemas.ProxyConfig, l
 			getLogger().Warn("Warning: HTTP proxy URL is required for setting up proxy")
 			return client
 		}
+		proxyURLValue = proxyURLWithScheme(proxyURLValue, "http")
 		proxyURL := proxyURLValue
 		proxyUsername := proxyConfig.Username.GetValue()
 		proxyPassword := proxyConfig.Password.GetValue()
@@ -781,6 +783,7 @@ func configureProxy(client *fasthttp.Client, proxyConfig *schemas.ProxyConfig, l
 			getLogger().Warn("Warning: SOCKS5 proxy URL is required for setting up proxy")
 			return client
 		}
+		proxyURLValue = proxyURLWithScheme(proxyURLValue, "socks5")
 		proxyURL := proxyURLValue
 		// Add authentication if provided
 		proxyUsername := proxyConfig.Username.GetValue()
@@ -819,10 +822,10 @@ func configureProxy(client *fasthttp.Client, proxyConfig *schemas.ProxyConfig, l
 		client.Dial = dialFunc
 	}
 
-	if proxyTLS != nil {
-		// The proxy dialers above keep proxyTLS for the hop to an https:// proxy; the
-		// client's TLS to its targets verifies no_proxy hosts even when the skip is on.
-		client.TLSConfig = scopeSkipVerify(proxyTLS, proxyConfig.NoProxy)
+	if caTLS != nil {
+		// The dialers above use proxyTLS for the hop to an https:// proxy; the client's
+		// TLS to its targets trusts the proxy CA and never skips verification.
+		client.TLSConfig = caTLS
 	}
 
 	return client
@@ -845,10 +848,9 @@ func NetHTTPProxy(proxyConfig *schemas.ProxyConfig) (func(*http.Request) (*url.U
 }
 
 // NetHTTPProxyWithHopTLS is NetHTTPProxy that also returns hopTLS, the TLS config for
-// the connection to an https:// proxy itself: its CA and skip_tls_verify, without the
-// no_proxy scope targetTLS carries. That scope cannot tell the proxy's handshake from a
-// target's, so it would verify the proxy when it is an IP literal or on no_proxy.
-// hopTLS == targetTLS when no scope applies.
+// the connection to an https:// proxy itself: its CA and skip_tls_verify. targetTLS
+// trusts the same CA (a TLS-inspecting proxy re-signs targets with it) and always
+// verifies, so the skip never reaches a target. hopTLS is a separate copy.
 func NetHTTPProxyWithHopTLS(proxyConfig *schemas.ProxyConfig) (proxy func(*http.Request) (*url.URL, error), targetTLS, hopTLS *tls.Config, err error) {
 	if proxyConfig == nil {
 		return nil, nil, nil, nil
@@ -866,7 +868,11 @@ func NetHTTPProxyWithHopTLS(proxyConfig *schemas.ProxyConfig) (proxy func(*http.
 			getLogger().Warn("Warning: proxy URL is required for setting up proxy")
 			return nil, nil, nil, nil
 		}
-		parsedURL, err := url.Parse(proxyURLValue)
+		defaultScheme := "http"
+		if proxyConfig.Type == schemas.Socks5Proxy {
+			defaultScheme = "socks5"
+		}
+		parsedURL, err := url.Parse(proxyURLWithScheme(proxyURLValue, defaultScheme))
 		if err != nil {
 			return nil, nil, nil, fmt.Errorf("invalid proxy configuration: invalid proxy URL: %w", err)
 		}
@@ -903,82 +909,20 @@ func NetHTTPProxyWithHopTLS(proxyConfig *schemas.ProxyConfig) (proxy func(*http.
 		}
 	}
 
-	hopTLS = withProxySkipVerify(tlsConfig, proxyConfig.SkipTLSVerify)
-	return proxy, scopeSkipVerify(hopTLS, proxyConfig.NoProxy), hopTLS, nil
+	// targetTLS trusts the proxy CA and never skips verification; skip_tls_verify covers
+	// only hopTLS, the https:// proxy's own certificate (see DialHTTPSProxyWithHopTLS).
+	return proxy, tlsConfig, proxyHopTLS(tlsConfig, proxyConfig.SkipTLSVerify), nil
 }
 
-// skipVerifyScopes records, for each TLS config scopeSkipVerify built, the no_proxy list
-// whose hosts it still verifies, so a later merge of network_config TLS settings
-// (RescopeProxySkipVerify) can rebuild the check with the merged root pool. Keys are
-// weak pointers and entries are dropped when their config is collected.
-var skipVerifyScopes sync.Map // weak.Pointer[tls.Config] -> string
-
-// scopeSkipVerify limits a proxy's skipped certificate checks to TLS through the proxy.
-// A host on noProxy is reached directly, where no TLS-inspecting proxy sits in between,
-// so its certificate is still verified (against the config's RootCAs, or the system
-// roots). A config that verifies anyway, or an empty noProxy, is returned unchanged.
-func scopeSkipVerify(tlsConfig *tls.Config, noProxy string) *tls.Config {
-	if tlsConfig == nil || !tlsConfig.InsecureSkipVerify || strings.TrimSpace(noProxy) == "" {
-		return tlsConfig
+// proxyHopTLS is the TLS config for the hop to an https:// proxy: a copy of caTLS (the
+// proxy CA on the system roots, or nil for the system roots), with verification off when
+// skip is set. nil when there is neither a CA nor a skip. caTLS is never modified.
+func proxyHopTLS(caTLS *tls.Config, skip bool) *tls.Config {
+	var hop *tls.Config
+	if caTLS != nil {
+		hop = caTLS.Clone()
 	}
-	scoped := tlsConfig.Clone()
-	roots := scoped.RootCAs
-	scoped.VerifyConnection = func(state tls.ConnectionState) error {
-		if state.ServerName == "" {
-			// An IP-literal target sends no SNI, so the handshake does not say which
-			// host this is, or whether it bypassed the proxy. Verify the chain, without
-			// the hostname check that needs the name: a direct no_proxy IP host keeps
-			// real verification, and only an IP target behind a TLS-inspecting proxy
-			// (whose chain the proxy signs) needs the proxy CA in ca_cert_pem.
-			return verifyPeerCertificate(state, roots)
-		}
-		if !network.MatchesNoProxy(state.ServerName, noProxy) {
-			return nil
-		}
-		return verifyPeerCertificate(state, roots)
-	}
-	key := weak.Make(scoped)
-	skipVerifyScopes.Store(key, noProxy)
-	runtime.AddCleanup(scoped, func(k weak.Pointer[tls.Config]) { skipVerifyScopes.Delete(k) }, key)
-	return scoped
-}
-
-// RescopeProxySkipVerify re-applies a proxy's no_proxy certificate scope (see
-// scopeSkipVerify) after network_config TLS settings were merged onto base: the
-// verifier is rebuilt with the merged root pool, so network_config.ca_cert_pem is
-// trusted for direct hosts, and dropped when the provider turned verification off
-// itself (providerSkipVerify). Every merge of a proxy TLS config must end here, or the
-// scope keeps the pre-merge roots.
-func RescopeProxySkipVerify(base, merged *tls.Config, providerSkipVerify bool) *tls.Config {
-	if base == nil || merged == nil {
-		return merged
-	}
-	noProxy, ok := skipVerifyScopes.Load(weak.Make(base))
-	if !ok {
-		return merged
-	}
-	if providerSkipVerify {
-		merged.VerifyConnection = nil
-		return merged
-	}
-	return scopeSkipVerify(merged, noProxy.(string))
-}
-
-// verifyPeerCertificate runs the verification InsecureSkipVerify turned off.
-func verifyPeerCertificate(state tls.ConnectionState, roots *x509.CertPool) error {
-	if len(state.PeerCertificates) == 0 {
-		return fmt.Errorf("tls: %s presented no certificate", state.ServerName)
-	}
-	intermediates := x509.NewCertPool()
-	for _, cert := range state.PeerCertificates[1:] {
-		intermediates.AddCert(cert)
-	}
-	_, err := state.PeerCertificates[0].Verify(x509.VerifyOptions{
-		DNSName:       state.ServerName,
-		Roots:         roots,
-		Intermediates: intermediates,
-	})
-	return err
+	return withProxySkipVerify(hop, skip)
 }
 
 // withProxySkipVerify turns certificate verification off on the proxy TLS config when
@@ -1066,50 +1010,9 @@ func ConfigureWebSocketProxy(dialer *ws.Dialer, proxyConfig *schemas.ProxyConfig
 }
 
 // DialHTTPSProxyWithHopTLS makes transport reach an https:// proxy with hopTLS (see
-// NetHTTPProxyWithHopTLS) instead of TLSClientConfig, which net/http otherwise uses for
-// the TLS session to the proxy as well as to the target. A request whose Proxy func
-// picks an https:// proxy is handed to DialContext as a direct one, and DialContext
-// reaches the target through network.DialViaProxyTLS; net/http then speaks TLS to the
-// target over that tunnel with TLSClientConfig, as it would after its own CONNECT. The
-// proxy picked for each target host:port is kept until a later request picks another.
+// NetHTTPProxyWithHopTLS) instead of TLSClientConfig; see network.DialHTTPSProxyWithHopTLS.
 func DialHTTPSProxyWithHopTLS(transport *http.Transport, hopTLS *tls.Config) {
-	proxy := transport.Proxy
-	if proxy == nil {
-		return
-	}
-	var viaHTTPSProxy sync.Map // target host:port -> *url.URL
-	transport.Proxy = func(req *http.Request) (*url.URL, error) {
-		proxyURL, err := proxy(req)
-		addr := canonicalTargetAddr(req.URL)
-		if err != nil || proxyURL == nil || proxyURL.Scheme != "https" {
-			viaHTTPSProxy.Delete(addr)
-			return proxyURL, err
-		}
-		viaHTTPSProxy.Store(addr, proxyURL)
-		return nil, nil
-	}
-	direct := transport.DialContext
-	if direct == nil {
-		direct = (&net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}).DialContext
-	}
-	transport.DialContext = func(ctx context.Context, netw, addr string) (net.Conn, error) {
-		if proxyURL, ok := viaHTTPSProxy.Load(addr); ok {
-			return network.DialViaProxyTLS(ctx, proxyURL.(*url.URL), addr, hopTLS)
-		}
-		return direct(ctx, netw, addr)
-	}
-}
-
-// canonicalTargetAddr is the host:port net/http dials for a direct request to u.
-func canonicalTargetAddr(u *url.URL) string {
-	port := u.Port()
-	if port == "" {
-		port = "80"
-		if u.Scheme == "https" || u.Scheme == "wss" {
-			port = "443"
-		}
-	}
-	return net.JoinHostPort(u.Hostname(), port)
+	network.DialHTTPSProxyWithHopTLS(transport, hopTLS)
 }
 
 // dialWebSocketUpstream opens the TCP stream to a WebSocket upstream: through the proxy
@@ -1170,6 +1073,13 @@ func NewProviderHTTPClient(proxyConfig *schemas.ProxyConfig, networkConfig schem
 	client.Dial = directForLocalTargets(client.Dial, timeout)
 	client.Transport = NewContextTransport()
 	return &http.Client{Transport: &fasthttpRoundTripper{client: client, schemes: schemes}, Timeout: timeout}
+}
+
+// NewHTTPClientOn returns an *http.Client that sends its requests on client, for a call that
+// must keep the inference client's ConfigureProxy, ConfigureDialer and ConfigureTLS setup but
+// goes through a library or helper that only takes an *http.Client.
+func NewHTTPClientOn(client *fasthttp.Client, timeout time.Duration) *http.Client {
+	return &http.Client{Transport: &fasthttpRoundTripper{client: client}, Timeout: timeout}
 }
 
 // namesProxy reports whether proxyConfig names a proxy. nil, an empty type and the
@@ -1394,7 +1304,7 @@ func networkTLSConfig(base *tls.Config, networkConfig schemas.NetworkConfig, log
 		}
 	}
 
-	return RescopeProxySkipVerify(base, tlsConfig, networkConfig.InsecureSkipVerify), nil
+	return tlsConfig, nil
 }
 
 // proxyDialFunc returns a fasthttp dialer that reaches each target through rawURL with
@@ -1404,10 +1314,7 @@ func networkTLSConfig(base *tls.Config, networkConfig schemas.NetworkConfig, log
 // that accepts connections and never answers used to hang every request. A URL without
 // a scheme takes defaultScheme. proxyTLS verifies an https:// proxy (nil: system roots).
 func proxyDialFunc(rawURL, defaultScheme string, proxyTLS *tls.Config) fasthttp.DialFunc {
-	if !strings.Contains(rawURL, "://") {
-		rawURL = defaultScheme + "://" + rawURL
-	}
-	proxyURL, err := url.Parse(rawURL)
+	proxyURL, err := url.Parse(proxyURLWithScheme(rawURL, defaultScheme))
 	if err != nil {
 		return dialErrorFunc("invalid proxy configuration: invalid proxy URL")
 	}
@@ -1416,6 +1323,17 @@ func proxyDialFunc(rawURL, defaultScheme string, proxyTLS *tls.Config) fasthttp.
 		defer cancel()
 		return network.DialViaProxyTLS(ctx, proxyURL, addr, proxyTLS)
 	}
+}
+
+// proxyURLWithScheme prefixes a proxy URL written without a scheme (host:port) with
+// defaultScheme, the scheme of its proxy type. It must run before url.Parse, which reads
+// "proxy.corp:3128" as scheme "proxy.corp" and refuses "127.0.0.1:3128", so every stack
+// (fasthttp, net/http, WebSocket) reads a bare proxy_config URL the same way.
+func proxyURLWithScheme(rawURL, defaultScheme string) string {
+	if strings.Contains(rawURL, "://") {
+		return rawURL
+	}
+	return defaultScheme + "://" + rawURL
 }
 
 // proxyHandshakeTimeout bounds the dial and handshake of provider proxy dialers. A
@@ -1941,8 +1859,6 @@ func CheckAndGetRawRequestBody(ctx context.Context, request RequestBodyGetter) (
 type RequestBodyWithExtraParams interface {
 	GetExtraParams() map[string]interface{}
 }
-
-type RequestBodyConverter func() (RequestBodyWithExtraParams, error)
 
 // IsLargePayloadPassthroughEnabled returns true when large payload mode has already
 // prepared an upstream body reader in context.
@@ -2695,69 +2611,115 @@ func StartScopedPhaseSpan(ctx *schemas.BifrostContext, name string) (schemas.Tra
 	return t, h, func() { ctx.SetValue(schemas.BifrostContextKeySpanID, prev) }
 }
 
-// CheckContextAndGetRequestBody checks if the raw request body should be used, and returns it if it exists.
-func CheckContextAndGetRequestBody(ctx context.Context, request RequestBodyGetter, requestConverter RequestBodyConverter) ([]byte, *schemas.BifrostError) {
+// CheckContextAndGetRequestBody returns the raw request body when the context asks for it,
+// and otherwise converts the request with requestConverter and marshals the result.
+//
+// The converter returns its concrete body pointer (P), not the RequestBodyWithExtraParams
+// interface. Converters return nil for a request they cannot build, and a nil pointer
+// returned as the interface is a non-nil interface value: it would pass a nil check and
+// then panic in MarshalJSON on the nil receiver. Keeping the pointer type makes the nil
+// check a plain pointer comparison, enforced at every call site by the compiler. Every
+// pointer type shares one GC shape, so this is a single instantiation, and passing the
+// pointer on as an interface does not allocate.
+func CheckContextAndGetRequestBody[B any, P interface {
+	*B
+	RequestBodyWithExtraParams
+}](ctx context.Context, request RequestBodyGetter, requestConverter func() (P, error)) ([]byte, *schemas.BifrostError) {
 	if IsLargePayloadPassthroughEnabled(ctx) {
 		return nil, nil
 	}
-
-	rawBody, ok := CheckAndGetRawRequestBody(ctx, request)
-	if !ok {
-		// The converting path splits into two non-overlapping overhead phases so their
-		// costs are attributed separately (and never double-counted): "convertor" for
-		// the Bifrost->provider format conversion, then "request-marshal" for the JSON
-		// encode. The raw-body passthrough branch does neither.
-		ct, chdl := startPhaseSpan(ctx, "convertor")
-		convertedBody, err := requestConverter()
-		if err != nil {
-			if ct != nil {
-				ct.EndSpan(chdl, schemas.SpanStatusError, err.Error())
-			}
-			// Caller-fault refusals carry their own 400; everything else is a conversion
-			// bug on our side and keeps the 500 default.
-			if badRequest, ok := AsBifrostBadRequestError(err); ok {
-				return nil, badRequest
-			}
-			return nil, NewBifrostOperationError(schemas.ErrRequestBodyConversion, err)
-		}
-		if ct != nil {
-			ct.EndSpan(chdl, schemas.SpanStatusOk, "")
-		}
-		if convertedBody == nil {
-			return nil, NewBifrostOperationError("request body is not provided", nil)
-		}
-
-		mt, mhdl := startPhaseSpan(ctx, "request-marshal")
-		// Indenting is removed to reduce data on wire
-		jsonBody, err := MarshalProviderRequest(convertedBody)
-		if err != nil {
-			if mt != nil {
-				mt.EndSpan(mhdl, schemas.SpanStatusError, err.Error())
-			}
-			return nil, NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
-		}
-		// Merge ExtraParams into the JSON if passthrough is enabled
-		if ctx.Value(schemas.BifrostContextKeyPassthroughExtraParams) != nil && ctx.Value(schemas.BifrostContextKeyPassthroughExtraParams) == true {
-			extraParams := convertedBody.GetExtraParams()
-			if len(extraParams) > 0 {
-				// Use order-preserving merge to avoid destroying key ordering in
-				// tool schemas and other order-sensitive JSON structures.
-				jsonBody, err = MergeExtraParamsIntoJSON(jsonBody, extraParams)
-				if err != nil {
-					if mt != nil {
-						mt.EndSpan(mhdl, schemas.SpanStatusError, err.Error())
-					}
-					return nil, NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
-				}
-			}
-		}
-		if mt != nil {
-			mt.EndSpan(mhdl, schemas.SpanStatusOk, "")
-		}
-		return jsonBody, nil
-	} else {
+	if rawBody, ok := CheckAndGetRawRequestBody(ctx, request); ok {
 		return rawBody, nil
 	}
+	// The converting path splits into two non-overlapping overhead phases so their costs are
+	// attributed separately (and never double-counted): "convertor" for the Bifrost->provider
+	// format conversion, then "request-marshal" for the JSON encode. The raw-body passthrough
+	// branch does neither.
+	ct, chdl := startPhaseSpan(ctx, "convertor")
+	convertedBody, err := requestConverter()
+	if bifrostErr := endConvertorPhase(ct, chdl, err); bifrostErr != nil {
+		return nil, bifrostErr
+	}
+	if convertedBody == nil {
+		return nil, NewBifrostOperationError("request body is not provided", nil)
+	}
+	return marshalConvertedRequestBody(ctx, convertedBody)
+}
+
+// CheckContextAndGetRequestBodyFromInterface is CheckContextAndGetRequestBody for a
+// converter that can return more than one concrete body type, such as the custom request
+// converters the OpenAI-compatible handlers accept, so its result can only be the
+// interface. Its nil check sees an untyped nil only: a converter used here must return a
+// literal nil, never a nil concrete pointer, when it has no body. Prefer the generic
+// CheckContextAndGetRequestBody wherever the converter has a single concrete type.
+func CheckContextAndGetRequestBodyFromInterface(ctx context.Context, request RequestBodyGetter, requestConverter func() (RequestBodyWithExtraParams, error)) ([]byte, *schemas.BifrostError) {
+	if IsLargePayloadPassthroughEnabled(ctx) {
+		return nil, nil
+	}
+	if rawBody, ok := CheckAndGetRawRequestBody(ctx, request); ok {
+		return rawBody, nil
+	}
+	ct, chdl := startPhaseSpan(ctx, "convertor")
+	convertedBody, err := requestConverter()
+	if bifrostErr := endConvertorPhase(ct, chdl, err); bifrostErr != nil {
+		return nil, bifrostErr
+	}
+	if convertedBody == nil {
+		return nil, NewBifrostOperationError("request body is not provided", nil)
+	}
+	return marshalConvertedRequestBody(ctx, convertedBody)
+}
+
+// endConvertorPhase closes the "convertor" phase span and maps a converter error to the
+// client error: caller-fault refusals carry their own 400, everything else is a
+// conversion bug on our side and keeps the 500 default.
+func endConvertorPhase(ct schemas.Tracer, chdl schemas.SpanHandle, err error) *schemas.BifrostError {
+	if err != nil {
+		if ct != nil {
+			ct.EndSpan(chdl, schemas.SpanStatusError, err.Error())
+		}
+		if badRequest, ok := AsBifrostBadRequestError(err); ok {
+			return badRequest
+		}
+		return NewBifrostOperationError(schemas.ErrRequestBodyConversion, err)
+	}
+	if ct != nil {
+		ct.EndSpan(chdl, schemas.SpanStatusOk, "")
+	}
+	return nil
+}
+
+// marshalConvertedRequestBody encodes a converted, non-nil body under the
+// "request-marshal" phase and merges its extra params when passthrough is enabled.
+func marshalConvertedRequestBody(ctx context.Context, convertedBody RequestBodyWithExtraParams) ([]byte, *schemas.BifrostError) {
+	mt, mhdl := startPhaseSpan(ctx, "request-marshal")
+	// Indenting is removed to reduce data on wire
+	jsonBody, err := MarshalProviderRequest(convertedBody)
+	if err != nil {
+		if mt != nil {
+			mt.EndSpan(mhdl, schemas.SpanStatusError, err.Error())
+		}
+		return nil, NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
+	}
+	// Merge ExtraParams into the JSON if passthrough is enabled
+	if ctx.Value(schemas.BifrostContextKeyPassthroughExtraParams) != nil && ctx.Value(schemas.BifrostContextKeyPassthroughExtraParams) == true {
+		extraParams := convertedBody.GetExtraParams()
+		if len(extraParams) > 0 {
+			// Use order-preserving merge to avoid destroying key ordering in
+			// tool schemas and other order-sensitive JSON structures.
+			jsonBody, err = MergeExtraParamsIntoJSON(jsonBody, extraParams)
+			if err != nil {
+				if mt != nil {
+					mt.EndSpan(mhdl, schemas.SpanStatusError, err.Error())
+				}
+				return nil, NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
+			}
+		}
+	}
+	if mt != nil {
+		mt.EndSpan(mhdl, schemas.SpanStatusOk, "")
+	}
+	return jsonBody, nil
 }
 
 // SetExtraHeadersHTTP sets additional headers from NetworkConfig to the standard HTTP request.
@@ -3546,6 +3508,18 @@ func ShouldSendBackRawResponse(ctx context.Context, defaultSendBackRawResponse b
 	return defaultSendBackRawResponse
 }
 
+// ResponsesStreamRawIndex picks the one response of a provider event's Responses expansion that carries the event's
+// raw payload: the response streaming the event's text or arguments (its delta), so the raw text travels with the
+// normalized text it backs and is never sent ahead of it, otherwise fallback.
+func ResponsesStreamRawIndex(responses []*schemas.BifrostResponsesStreamResponse, fallback int) int {
+	for i := len(responses) - 1; i >= 0; i-- {
+		if responses[i] != nil && responses[i].Delta != nil {
+			return i
+		}
+	}
+	return fallback
+}
+
 // SendCreatedEventResponsesChunk sends a ResponsesStreamResponseTypeCreated event.
 func SendCreatedEventResponsesChunk(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, startTime time.Time, responseChan chan *schemas.BifrostStreamChunk, postHookSpanFinalizer func(context.Context)) {
 	firstChunk := &schemas.BifrostResponsesStreamResponse{
@@ -3815,6 +3789,7 @@ func ProcessAndSendResponse(
 		// Even if skipping, complete the deferred span if this is the final chunk
 		if isFinalChunk := ctx.Value(schemas.BifrostContextKeyStreamEndIndicator); isFinalChunk != nil {
 			if final, ok := isFinalChunk.(bool); ok && final {
+				markStreamTerminalHandled(ctx)
 				completeDeferredSpan(ctx, processedResponse, processedError, postHookSpanFinalizer)
 			}
 		}
@@ -3833,6 +3808,7 @@ func ProcessAndSendResponse(
 	// Check if this is the final chunk and complete deferred span with post-processed data
 	if isFinalChunk := ctx.Value(schemas.BifrostContextKeyStreamEndIndicator); isFinalChunk != nil {
 		if final, ok := isFinalChunk.(bool); ok && final {
+			markStreamTerminalHandled(ctx)
 			completeDeferredSpan(ctx, processedResponse, processedError, postHookSpanFinalizer)
 		}
 	}
@@ -3858,6 +3834,7 @@ func ProcessAndSendBifrostError(
 		// Even if skipping, complete the deferred span if this is the final chunk
 		if isFinalChunk := ctx.Value(schemas.BifrostContextKeyStreamEndIndicator); isFinalChunk != nil {
 			if final, ok := isFinalChunk.(bool); ok && final {
+				markStreamTerminalHandled(ctx)
 				completeDeferredSpan(ctx, processedResponse, processedError, postHookSpanFinalizer)
 			}
 		}
@@ -3871,9 +3848,97 @@ func ProcessAndSendBifrostError(
 	// Check if this is the final chunk and complete deferred span with post-processed data
 	if isFinalChunk := ctx.Value(schemas.BifrostContextKeyStreamEndIndicator); isFinalChunk != nil {
 		if final, ok := isFinalChunk.(bool); ok && final {
+			markStreamTerminalHandled(ctx)
 			completeDeferredSpan(ctx, processedResponse, processedError, postHookSpanFinalizer)
 		}
 	}
+}
+
+// ErrStreamPanicMessage is the client-facing message of the terminal error chunk a
+// provider stream emits after RecoverStreamPanic catches a panic on its goroutine.
+const ErrStreamPanicMessage = "internal error while streaming the provider response"
+
+// streamTerminalHandledKey marks, on a provider stream's context, that its final chunk
+// went through a send helper: delivered to the client, or deliberately dropped by a
+// plugin's stream-control skip. StreamEndIndicator cannot carry this: providers set it
+// before the final chunk is traced and post-hooked, so a panic there would otherwise
+// look like a stream that already ended.
+type streamTerminalHandledKey struct{}
+
+// markStreamTerminalHandled records that the client's final chunk was handled. While a
+// provider-injected tool loop has another turn pending, this stream's final chunk is not
+// the client's (the loop sets the flag before handing the chunk back as a skip), so the
+// marker is left unset for the turn that really ends the client stream.
+func markStreamTerminalHandled(ctx *schemas.BifrostContext) {
+	if pending, _ := ctx.Value(schemas.BifrostContextKeyStreamTurnPending).(bool); pending {
+		return
+	}
+	ctx.SetValue(streamTerminalHandledKey{}, true)
+}
+
+func streamTerminalHandled(ctx *schemas.BifrostContext) bool {
+	handled, _ := ctx.Value(streamTerminalHandledKey{}).(bool)
+	return handled
+}
+
+// PanicSummary describes a recovered panic value without echoing arbitrary content.
+// Runtime errors keep their message (runtime-generated, no request data); any other
+// value is reduced to its type, since a panic value can wrap request content or secrets.
+func PanicSummary(r any) string {
+	if rerr, ok := r.(runtime.Error); ok {
+		return rerr.Error()
+	}
+	return fmt.Sprintf("%T", r)
+}
+
+// RecoverStreamPanic is deferred by every provider streaming goroutine, directly after
+// the defer that closes responseChan, so it runs first while the channel is still open.
+// Nothing above that goroutine can catch a panic in it (a chunk converter, a decoder, or
+// the post-hook runner), so without this a single bad chunk ends the whole process.
+//
+// It logs the panic and, unless the stream is already cancelled or its final chunk was
+// already handled by a send helper (see streamTerminalHandledKey), sends one terminal 500 error chunk through the post-hooks, the same path
+// HandleStreamCancellation uses, so logging and billing record the failure and the client
+// sees an error instead of a silently truncated stream. A second panic while sending is
+// logged and dropped; the close defer that runs next still ends the stream.
+func RecoverStreamPanic(
+	ctx *schemas.BifrostContext,
+	postHookRunner schemas.PostHookRunner,
+	responseChan chan *schemas.BifrostStreamChunk,
+	logger schemas.Logger,
+	postHookSpanFinalizer func(context.Context),
+) {
+	r := recover()
+	if r == nil {
+		return
+	}
+	if logger == nil {
+		logger = getLogger()
+	}
+	logger.Error("recovered from panic in provider stream goroutine: %s\n%s", PanicSummary(r), debug.Stack())
+	// A cancelled or timed-out stream gets its terminal chunk from the cancellation defer.
+	if ctx == nil || ctx.Err() != nil || postHookRunner == nil {
+		return
+	}
+	if streamTerminalHandled(ctx) {
+		return // the final chunk already went out
+	}
+	ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+	defer func() {
+		if r2 := recover(); r2 != nil {
+			logger.Error("recovered from panic while sending the stream panic error: %s", PanicSummary(r2))
+		}
+	}()
+	panicErr := &schemas.BifrostError{
+		IsBifrostError: true,
+		StatusCode:     schemas.Ptr(500),
+		Error: &schemas.ErrorField{
+			Message: ErrStreamPanicMessage,
+			Type:    schemas.Ptr("server_error"),
+		},
+	}
+	attachBilledUsageFromContext(ctx, panicErr)
+	ProcessAndSendBifrostError(ctx, postHookRunner, panicErr, responseChan, logger, postHookSpanFinalizer)
 }
 
 // EnsureStreamFinalizerCalled invokes the post-hook span finalizer registered
@@ -4411,6 +4476,9 @@ func ProcessAndSendError(
 	}
 
 	GateSendChunk(ctx, streamResponse, responseChan)
+	if final, _ := ctx.Value(schemas.BifrostContextKeyStreamEndIndicator).(bool); final {
+		markStreamTerminalHandled(ctx)
+	}
 }
 
 // SendStreamTruncatedError surfaces an upstream stream that ended without a

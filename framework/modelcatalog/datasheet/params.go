@@ -215,7 +215,7 @@ func (s *Store) applyModelParameters(paramsData map[string]json.RawMessage) int 
 		// even though supported_endpoints didn't mention /completions.
 		if !slices.Contains(outputs, "text_completion") {
 			if provider := gjson.GetBytes(rawData, "provider"); provider.Exists() {
-				key := makeKey(model, normalizeProvider(provider.String()), normalizeRequestType(schemas.TextCompletionRequest))
+				key := makeKeyNormalized(model, normalizeProvider(provider.String()), normalizeRequestType(schemas.TextCompletionRequest))
 				s.mu.RLock()
 				_, ok := s.pricingData[key]
 				s.mu.RUnlock()

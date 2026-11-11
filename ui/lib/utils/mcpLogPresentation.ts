@@ -1,32 +1,44 @@
 import { addMilliseconds } from "date-fns";
+import type { TFunction } from "i18next";
 
 import type { MCPToolLogEntry } from "@/lib/types/logs";
 
 // Policy approval confirms permission, never successful execution.
-export function getMCPLogPresentation(log: MCPToolLogEntry) {
+export function getMCPLogPresentation(log: MCPToolLogEntry, t?: TFunction<"observability">) {
 	const policy = log.metadata?.inspection_phase === "pre_execution";
 	const approved = policy && log.decision === "allow";
 	const blocked = policy && log.decision === "deny";
+	const retryLater = log.status === "input_required" && log.metadata?.retry_later === true;
 	const label = approved
-		? "Policy approved"
+		? (t?.("mcpLogs.presentation.policyApproved") ?? "Policy approved")
 		: blocked
-			? "Policy blocked"
+			? (t?.("mcpLogs.presentation.policyBlocked") ?? "Policy blocked")
 			: log.status === "unknown"
-				? "Observed"
+				? (t?.("mcpLogs.presentation.observed") ?? "Observed")
 				: log.status === "success"
-					? "Succeeded"
+					? (t?.("mcpLogs.presentation.succeeded") ?? "Succeeded")
 					: log.status === "error"
-						? "Failed"
-						: log.status === "cancelled"
-							? "Cancelled"
-							: "Processing";
+						? (t?.("mcpLogs.presentation.failed") ?? "Failed")
+						: retryLater
+							? (t?.("mcpLogs.presentation.retryLater") ?? "Retry later")
+							: log.status === "input_required"
+								? (t?.("mcpLogs.presentation.inputRequired") ?? "Needs input")
+								: log.status === "cancelled"
+									? (t?.("mcpLogs.presentation.cancelled") ?? "Cancelled")
+									: (t?.("mcpLogs.presentation.processing") ?? "Processing");
 	const description = approved
-		? "Allowed before execution. No execution result is recorded in this entry."
+		? (t?.("mcpLogs.presentation.approvedDescription") ?? "Allowed before execution. No execution result is recorded in this entry.")
 		: blocked
-			? "Blocked before execution."
+			? (t?.("mcpLogs.presentation.blockedDescription") ?? "Blocked before execution.")
 			: log.status === "unknown"
-				? "Tool activity was captured, but its execution outcome is not known."
-				: "Recorded tool execution outcome.";
+				? (t?.("mcpLogs.presentation.observedDescription") ?? "Tool activity was captured, but its execution outcome is not known.")
+				: retryLater
+					? (t?.("mcpLogs.presentation.retryLaterDescription") ??
+						"The MCP server asked the caller to retry later, without asking for input. The retry is a separate entry.")
+					: log.status === "input_required"
+						? (t?.("mcpLogs.presentation.inputRequiredDescription") ??
+							"The MCP server asked the caller for input before completing. The retry that answers it is a separate entry.")
+						: (t?.("mcpLogs.presentation.executionDescription") ?? "Recorded tool execution outcome.");
 	const rawDuration = log.metadata?.inspection_duration_ms;
 	const duration = rawDuration == null || (typeof rawDuration === "string" && rawDuration.trim() === "") ? undefined : Number(rawDuration);
 	const inspectionDuration = duration != null && Number.isFinite(duration) && duration >= 0 ? duration : undefined;
@@ -37,14 +49,14 @@ export function getMCPLogPresentation(log: MCPToolLogEntry) {
 			? observed
 			: undefined;
 	const durationLabel = policy
-		? "Policy check"
+		? (t?.("mcpLogs.policyCheck") ?? "Policy check")
 		: log.latency == null && observedDuration != null
-			? "Observed round trip"
-			: "Execution time";
+			? (t?.("mcpLogs.observedRoundTrip") ?? "Observed round trip")
+			: (t?.("mcpLogs.executionTime") ?? "Execution time");
 	return { policy, approved, label, description, inspectionDuration, observedDuration, durationLabel };
 }
 
-export type MCPLogPillTone = "success" | "error" | "processing" | "approved" | "neutral";
+export type MCPLogPillTone = "success" | "error" | "processing" | "approved" | "input" | "neutral";
 
 // Maps the presentation label (policy outcome or execution status) onto a pill tone.
 export function getMCPLogPillTone(log: MCPToolLogEntry, presentation: ReturnType<typeof getMCPLogPresentation>): MCPLogPillTone {
@@ -55,6 +67,7 @@ export function getMCPLogPillTone(log: MCPToolLogEntry, presentation: ReturnType
 	if (log.status === "success") return "success";
 	if (log.status === "error") return "error";
 	if (log.status === "processing") return "processing";
+	if (log.status === "input_required") return "input";
 	return "neutral";
 }
 

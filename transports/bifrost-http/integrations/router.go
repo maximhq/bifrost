@@ -67,6 +67,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
+	"github.com/maximhq/bifrost/framework/passthroughparse"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/tidwall/gjson"
 	"github.com/valyala/fasthttp"
@@ -564,9 +565,11 @@ type PassthroughConfig struct {
 	// AllowedRoutes, when non-empty, restricts the passthrough catch-all to exactly
 	// these method+path pairs instead of forwarding every request under StripPrefix.
 	AllowedRoutes []PassthroughRoute
-	StreamingPath func(method, path string) bool // optional: decides which requests stream, replacing the generic markers
-	ModelFreePath func(method, path string) bool // optional: requests that run no model, so model allowlists are skipped
-	PathModel     func(path string) string       // optional: the model a provider-shaped path addresses, used for key selection and governance
+	StreamingPath func(method, path string) bool   // optional: decides which requests stream, replacing the generic markers
+	ModelFreePath func(method, path string) bool   // optional: requests that run no model, so model allowlists are skipped
+	PathModel     func(path string) string         // optional: the model a provider-shaped path addresses, used for key selection and governance
+	BodyModelKey  func(method, path string) string // optional: a body key that names what the request runs in place of "model" (an agent id)
+	NoPathModel   func(method, path string) bool   // optional: paths that never name a model, so the model comes from the body alone
 }
 
 // streams reports whether a passthrough request is served by the streaming handler. When the provider
@@ -3024,7 +3027,7 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 			// The error path has its own release in ErrorConverter; this is the normal
 			// close, including a stream that ended without a terminal frame.
 			if config.StreamConfig != nil && config.StreamConfig.Cleanup != nil {
-				config.StreamConfig.Cleanup(bifrostCtx)
+				lib.RunRecovered("stream cleanup", func() { config.StreamConfig.Cleanup(bifrostCtx) })
 			}
 			// Must run before reader.Done(): closing eventCh while the heartbeat goroutine
 			// could still be mid-send on it panics ("send on closed channel"). See
@@ -3041,9 +3044,19 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 			// Complete the trace after streaming finishes
 			// This ensures all spans (including llm.call) are properly ended before the trace is sent to OTEL
 			if traceCompleter != nil {
-				traceCompleter(nil)
+				lib.RunRecovered("stream trace completer", func() { traceCompleter(nil) })
 			}
 		}()
+		// Registered after the teardown above so it runs first: a panic while converting a
+		// chunk is logged, an error frame in the route's format goes to the client, upstream
+		// is cancelled and drained, then the teardown closes the stream. sendPanicError is
+		// assigned once sendConvertedStreamError exists below.
+		var sendPanicError func()
+		defer lib.RecoverStreamProducer(cancel, streamChan, func() {
+			if sendPanicError != nil {
+				sendPanicError()
+			}
+		})
 
 		// sendConvertedStreamError converts a sanitized BifrostError through the
 		// integration's error converter and emits it in the route's native SSE
@@ -3115,6 +3128,8 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 				reader.SendEvent(streamErrorEventType(config, bifrostErr, streamRequestType), errorJSON)
 			}
 		}
+
+		sendPanicError = func() { sendConvertedStreamError(lib.StreamProducerPanicError()) }
 
 		shouldSendDoneMarker := true
 		if config.Type == RouteConfigTypeAnthropic || strings.Contains(config.Path, "/responses") || strings.Contains(config.Path, "/images/generations") {
@@ -3582,28 +3597,47 @@ func parsePassthroughBody(contentType string, body []byte) (model string, isStre
 // passthroughObjectModel reads the model a JSON object names, strictly: the key spelled "model",
 // once, with a string value. A missing key is no model, not an error.
 func passthroughObjectModel(object gjson.Result) (string, error) {
-	var modelKeys int
-	var modelValue gjson.Result
-	object.ForEach(func(key, value gjson.Result) bool {
-		if strings.EqualFold(key.Str, "model") {
-			modelKeys++
-			if key.Str == "model" {
-				modelValue = value
+	return passthroughObjectKey(object, "model")
+}
+
+// passthroughObjectKey reads a model-naming key from a JSON object with the same strictness as
+// "model": spelled exactly, present at most once, holding a string. A missing key is not an error.
+func passthroughObjectKey(object gjson.Result, name string) (string, error) {
+	var keys int
+	var value gjson.Result
+	object.ForEach(func(key, v gjson.Result) bool {
+		if strings.EqualFold(key.Str, name) {
+			keys++
+			if key.Str == name {
+				value = v
 			}
 		}
 		return true
 	})
 	switch {
-	case modelKeys > 1:
-		return "", errors.New("passthrough request body must carry the model key at most once")
-	case modelKeys == 1 && !modelValue.Exists():
-		return "", errors.New("passthrough request body model key must be spelled \"model\"")
-	case modelKeys == 1 && modelValue.Type != gjson.String:
-		return "", errors.New("passthrough request body model must be a string")
-	case modelKeys == 1:
-		return strings.TrimSpace(modelValue.Str), nil
+	case keys > 1:
+		return "", fmt.Errorf("passthrough request body must carry the %s key at most once", name)
+	case keys == 1 && !value.Exists():
+		return "", fmt.Errorf("passthrough request body %s key must be spelled %q", name, name)
+	case keys == 1 && value.Type != gjson.String:
+		return "", fmt.Errorf("passthrough request body %s must be a string", name)
+	case keys == 1:
+		return strings.TrimSpace(value.Str), nil
 	}
 	return "", nil
+}
+
+// passthroughBodyKeyModel reads the model a JSON object body names under key, for agent-style
+// endpoints whose body names an agent instead of a model. A body that is not a JSON object names none.
+func passthroughBodyKeyModel(body []byte, key string) (string, error) {
+	if len(body) == 0 || !gjson.ValidBytes(body) {
+		return "", nil
+	}
+	root := gjson.ParseBytes(body)
+	if !root.IsObject() {
+		return "", nil
+	}
+	return passthroughObjectKey(root, key)
 }
 
 // isJSONMediaType reports whether a parsed media type declares a JSON body.
@@ -3721,7 +3755,25 @@ func (g *GenericRouter) handlePassthrough(ctx *fasthttp.RequestCtx) {
 		g.sendError(ctx, nil, passthroughErr, newBifrostErrorWithCode(err, err.Error(), fasthttp.StatusBadRequest))
 		return
 	}
-	resolvedModel := extractPassthroughModel(path, bodyModel)
+	if cfg.BodyModelKey != nil {
+		if key := cfg.BodyModelKey(string(ctx.Method()), path); key != "" {
+			keyModel, err := passthroughBodyKeyModel(body, key)
+			if err != nil {
+				g.sendError(ctx, nil, passthroughErr, newBifrostErrorWithCode(err, err.Error(), fasthttp.StatusBadRequest))
+				return
+			}
+			if keyModel != "" {
+				bodyModel = keyModel
+			}
+		}
+	}
+	var resolvedModel string
+	if cfg.NoPathModel != nil && cfg.NoPathModel(string(ctx.Method()), path) {
+		// A segment such as a Vertex project id may read as "models/{x}" here, so the path is not parsed.
+		resolvedModel = normalizeResourceModel(bodyModel)
+	} else {
+		resolvedModel = extractPassthroughModel(path, bodyModel)
+	}
 	if cfg.PathModel != nil {
 		resolvedModel = cfg.PathModel(path)
 	}
@@ -3729,6 +3781,8 @@ func (g *GenericRouter) handlePassthrough(ctx *fasthttp.RequestCtx) {
 	if cfg.ProviderDetector != nil {
 		provider = cfg.ProviderDetector(ctx, bodyModel)
 	}
+	// The route's provider is the API its bodies speak: a custom provider is accepted below only when it is based on it.
+	baseProvider := provider
 	// Host-backed routes have a fixed upstream and route list, so only their own provider serves them.
 	provider, err = getPassthroughProvider(ctx, g.handlerStore, provider, cfg.UpstreamURL == "")
 	if err != nil {
@@ -3748,16 +3802,18 @@ func (g *GenericRouter) handlePassthrough(ctx *fasthttp.RequestCtx) {
 	isStreaming := cfg.streams(string(ctx.Method()), path, bodyStream || passthroughQueryStreams(string(ctx.Method()), string(ctx.URI().QueryString())))
 
 	passthroughReq := &schemas.BifrostPassthroughRequest{
-		Method:      string(ctx.Method()),
-		Path:        path,
-		APIVersion:  apiVersion,
-		RawQuery:    string(ctx.URI().QueryString()),
-		UpstreamURL: cfg.UpstreamURL,
-		Body:        body,
-		SafeHeaders: safeHeaders,
-		Provider:    provider,
-		Model:       resolvedModel,
+		Method:       string(ctx.Method()),
+		Path:         path,
+		APIVersion:   apiVersion,
+		RawQuery:     string(ctx.URI().QueryString()),
+		UpstreamURL:  cfg.UpstreamURL,
+		Body:         body,
+		SafeHeaders:  safeHeaders,
+		Provider:     provider,
+		BaseProvider: baseProvider,
+		Model:        resolvedModel,
 	}
+	registerPassthroughTextRewriters(bifrostCtx, passthroughparse.Classify(baseProvider, resolvedModel, passthroughReq.Method, path))
 
 	if isStreaming {
 		g.handlePassthroughStream(ctx, bifrostCtx, cancel, provider, passthroughReq)
@@ -4118,7 +4174,7 @@ func (g *GenericRouter) handlePassthroughStream(
 				lib.StopSSEHeartbeat(reader, heartbeatDone, heartbeatExited)
 			}
 			if traceCompleter != nil {
-				traceCompleter(nil)
+				lib.RunRecovered("passthrough stream trace completer", func() { traceCompleter(nil) })
 			}
 			reader.Done()
 			cancel()
@@ -4128,6 +4184,15 @@ func (g *GenericRouter) handlePassthroughStream(
 		if endsWithResponsesFailed {
 			frames = &responsesFrameRelay{}
 		}
+		// Runs before the teardown above. Raw passthrough bytes are not always SSE, so a
+		// terminal frame is written only on a Responses relay that has not ended yet.
+		defer lib.RecoverStreamProducer(cancel, stream, func() {
+			if frames != nil && !frames.sawTerminal {
+				if frame := frames.failedFrame(lib.StreamProducerPanicError()); frame != nil {
+					reader.Send(frame)
+				}
+			}
+		})
 		send := func(body []byte) bool {
 			if frames != nil {
 				body = frames.complete(body)

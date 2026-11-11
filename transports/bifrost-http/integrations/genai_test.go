@@ -16,7 +16,7 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
-// TestRewriteGenAIRawRequestBodyRedactsOnlyContentFields verifies Gemini redaction covers native text and function-result values without touching metadata or function-call arguments.
+// TestRewriteGenAIRawRequestBodyRedactsOnlyContentFields verifies Gemini redaction covers native text, function-call argument values, and function-result values without touching metadata.
 func TestRewriteGenAIRawRequestBodyRedactsOnlyContentFields(t *testing.T) {
 	rawBody := []byte(`{
 		"systemInstruction":{"parts":[{"text":"system alice@example.com"}]},
@@ -40,6 +40,7 @@ func TestRewriteGenAIRawRequestBodyRedactsOnlyContentFields(t *testing.T) {
 		"systemInstruction.parts.0.text",
 		"contents.0.parts.0.text",
 		"contents.1.parts.0.text",
+		"contents.1.parts.1.functionCall.args.email",
 		"contents.2.parts.0.functionResponse.response.output",
 		`contents.2.parts.0.functionResponse.response.nested\.value.contact:key`,
 		"instances.0.prompt",
@@ -52,7 +53,6 @@ func TestRewriteGenAIRawRequestBodyRedactsOnlyContentFields(t *testing.T) {
 
 	untouchedPaths := []string{
 		"contents.1.parts.0.thoughtSignature",
-		"contents.1.parts.1.functionCall.args.email",
 		"labels.owner",
 		"tools.0.functionDeclarations.0.description",
 	}
@@ -79,6 +79,20 @@ func TestRewriteGenAIRawRequestBodyRejectsUnmappedLiteral(t *testing.T) {
 		map[string]string{"alice@example.com": "[EMAIL]"},
 	)
 	require.Error(t, err)
+}
+
+// TestRewriteGenAIRawRequestBodyMatchesEscapedArgumentLiterals verifies a literal cut from escaped argument JSON text
+// redacts the decoded function-call argument value it stands for, keeping argument keys and other values.
+func TestRewriteGenAIRawRequestBodyMatchesEscapedArgumentLiterals(t *testing.T) {
+	got, err := rewriteGenAIRawRequestBody(
+		[]byte(`{"contents":[{"role":"model","parts":[{"functionCall":{"name":"write","args":{"path":"key.pem","content":"head\nkey line one\nkey line two\ntail","mode":420}}}]}]}`),
+		map[string]string{`key line one\nkey line two`: "[SECRET]"},
+	)
+	require.NoError(t, err)
+	args := gjson.GetBytes(got, "contents.0.parts.0.functionCall.args")
+	assert.Equal(t, "head\n[SECRET]\ntail", args.Get("content").String())
+	assert.Equal(t, "key.pem", args.Get("path").String())
+	assert.Equal(t, int64(420), args.Get("mode").Int())
 }
 
 // TestRewriteGenAIRawRequestBodyRejectsSensitiveObjectKeys verifies unsupported key mutation fails closed inside a function-result subtree.
@@ -616,5 +630,66 @@ func TestGenAIFlashLiteMinimalThinkingAfterRouting(t *testing.T) {
 				})
 			}
 		}
+	}
+}
+
+// TestGenAIGenerateContentNullEntriesDoNotPanic pins that a JSON null inside a
+// pointer slice of a generateContent body (parts, function declarations,
+// function-response parts) is skipped by request-type detection and by every
+// request converter: no panic, no error, the same request type the body would
+// get without the null, and the valid entries beside it reach the Bifrost request.
+func TestGenAIGenerateContentNullEntriesDoNotPanic(t *testing.T) {
+	route := findGenAIRouteForTest(t, CreateGenAIRouteConfigs("/genai"), "/genai/v1beta/models/{model:*}", "POST")
+	audio := `{"inlineData":{"mimeType":"audio/wav","data":"UklGRg=="}}`
+	image := `{"inlineData":{"mimeType":"image/png","data":"iVBORw0KGgo="}}`
+	cases := map[string]struct {
+		model, body string
+		wantType    schemas.RequestType
+		wantContent string // text from a valid entry that must survive conversion; empty when the body has none
+	}{
+		"null part":                   {"gemini-2.5-flash:generateContent", `{"contents":[{"role":"user","parts":[null]}]}`, schemas.ResponsesRequest, ""},
+		"null part before text":       {"gemini-2.5-flash:generateContent", `{"contents":[{"role":"user","parts":[null,{"text":"null-sibling-text"}]}]}`, schemas.ResponsesRequest, "null-sibling-text"},
+		"null part stream":            {"gemini-2.5-flash:streamGenerateContent", `{"contents":[{"role":"user","parts":[null,{"text":"null-sibling-text"}]}]}`, schemas.ResponsesRequest, "null-sibling-text"},
+		"null part count tokens":      {"gemini-2.5-flash:countTokens", `{"contents":[{"role":"user","parts":[null,{"text":"null-sibling-text"}]}]}`, schemas.CountTokensRequest, "null-sibling-text"},
+		"null system part":            {"gemini-2.5-flash:generateContent", `{"systemInstruction":{"parts":[null,{"text":"null-sibling-system"}]},"contents":[{"role":"user","parts":[{"text":"hi"}]}]}`, schemas.ResponsesRequest, "null-sibling-system"},
+		"null function declaration":   {"gemini-2.5-flash:generateContent", `{"contents":[{"role":"user","parts":[{"text":"hi"}]}],"tools":[{"functionDeclarations":[null,{"name":"null_sibling_tool"}]}]}`, schemas.ResponsesRequest, "null_sibling_tool"},
+		"null function response part": {"gemini-2.5-flash:generateContent", `{"contents":[{"role":"user","parts":[{"functionResponse":{"name":"null_sibling_fn","response":{},"parts":[null]}}]}]}`, schemas.ResponsesRequest, "null_sibling_fn"},
+		"null part speech":            {"gemini-2.5-flash-preview-tts:generateContent", `{"contents":[{"role":"user","parts":[null,{"text":"null-sibling-text"}]}],"generationConfig":{"responseModalities":["AUDIO"]}}`, schemas.SpeechRequest, "null-sibling-text"},
+		"null part transcription":     {"gemini-2.5-flash:generateContent", `{"contents":[{"role":"user","parts":[null,` + audio + `,{"text":"null-sibling-prompt"}]}]}`, schemas.TranscriptionRequest, "null-sibling-prompt"},
+		"null part image generation":  {"gemini-2.5-flash-image:generateContent", `{"contents":[{"role":"user","parts":[null,{"text":"null-sibling-prompt"}]}],"generationConfig":{"responseModalities":["IMAGE"]}}`, schemas.ImageGenerationRequest, "null-sibling-prompt"},
+		"null part image edit":        {"gemini-2.5-flash-image:generateContent", `{"contents":[{"role":"user","parts":[null,` + image + `,{"text":"null-sibling-prompt"}]}],"generationConfig":{"responseModalities":["IMAGE"]}}`, schemas.ImageEditRequest, "null-sibling-prompt"},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			rawBody := []byte(tc.body)
+			ctx := &fasthttp.RequestCtx{}
+			ctx.SetUserValue("model", tc.model)
+			ctx.Request.Header.SetMethod("POST")
+			ctx.Request.SetBody(rawBody)
+
+			var detected schemas.RequestType
+			require.NotPanics(t, func() { _, detected = extractModelAndRequestType(ctx) })
+			assert.Equal(t, tc.wantType, detected, "request type detected for a body with a null entry")
+
+			req := &gemini.GeminiGenerationRequest{}
+			require.NoError(t, sonic.Unmarshal(rawBody, req))
+			bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			var setupErr error
+			require.NotPanics(t, func() { setupErr = extractAndSetModelAndRequestType(ctx, bifrostCtx, req) })
+			require.NoError(t, setupErr)
+			assert.Equal(t, strings.HasSuffix(tc.model, ":streamGenerateContent"), req.Stream, "stream flag")
+
+			var bifrostReq *schemas.BifrostRequest
+			var convErr error
+			require.NotPanics(t, func() { bifrostReq, convErr = route.RequestConverter(bifrostCtx, req) })
+			require.NoError(t, convErr)
+			require.NotNil(t, bifrostReq)
+			if tc.wantContent != "" {
+				converted, err := sonic.Marshal(bifrostReq)
+				require.NoError(t, err)
+				assert.Contains(t, string(converted), tc.wantContent, "valid entry beside the null was dropped by conversion")
+			}
+		})
 	}
 }

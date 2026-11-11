@@ -514,6 +514,10 @@ helm install bifrost bifrost/bifrost -f clickhouse-logs-values.yaml
 With ClickHouse, the table **TTL** comes from `logs_store.retention_days`, which the chart does not expose yet. Set it in `config.json` directly if you need ClickHouse to expire rows on its own. Background log cleanup is controlled separately by `bifrost.client.logRetentionDays`. The PostgreSQL-only `matviewRefreshInterval` and `matviewRefreshTimeout` settings have no effect on ClickHouse.
 </Note>
 
+<Note>
+The ClickHouse user needs DDL rights and read access to a few `system` tables. See [Required privileges](/deployment-guides/config-json/storage#required-privileges) for the exact grants.
+</Note>
+
 ---
 
 ## Object Storage for Logs

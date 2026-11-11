@@ -1,0 +1,25 @@
+---
+title: "v1.0.2"
+description: "Edge v1.0.2 changelog - 2026-11-10"
+---
+
+<Update label="Bifrost Edge" description="v1.0.2">
+
+## Changelog
+
+v1.0.2 adds a Sync configuration tray item and fixes Claude Desktop gateway chats, Cursor mode instructions, and session handling. Gateway chats in Claude Desktop stay in the sidebar and can be renamed and deleted, Cursor requests no longer end with a system message, and a provider 401 no longer replaces the Edge session token.
+
+## ✨ Features
+
+- **Sync Configuration Tray Item** - A new "Sync configuration" item in the tray menu pulls the full managed configuration from the gateway right away and re-applies it, even when nothing changed. A native dialog reports the result ("Configuration synced and applied", "Configuration is up to date", or the error). It needs a signed-in session.
+
+## 🐞 Fixed
+
+- **Desktop Gateway Chats in the Sidebar** - Gateway chats created in Claude Desktop stay in the sidebar after a refresh, listed at the top with the native chats. Sidebar search matches them by title.
+- **Desktop Gateway Chat Rename and Delete** - Renaming a gateway chat saves the new title. Deleting one removes it, stops a response that is still streaming, and frees its stored data.
+- **Desktop Gateway Chat Titles** - A new gateway chat is named from the first line of its first message (up to 40 characters), or from the first attachment's file name when the message has no text.
+- **Cursor Mode Instruction Placement** - The Cursor mode instruction (Agent, Plan, Debug) is placed before the latest user message instead of at the end of the request, including after conversation compaction. Models that only start a reply after a user message, such as DeepSeek V4, no longer leak `</think>` text into answers.
+- **Session Rotation on Provider 401** - A 401 from the provider's own credential check no longer replaces the Edge session token. A rejection of a token issued less than 30 seconds ago is returned to the app as is, so in-flight requests keep working.
+- **Tray Overhead Average** - The time spent waiting for a session refresh is no longer counted in the overhead shown in the tray.
+
+</Update>

@@ -15,19 +15,19 @@ require (
 	github.com/google/pprof v0.0.0-20260802141513-ef3492d7dac3
 	github.com/google/uuid v1.6.0
 	github.com/klauspost/compress v1.20.0
-	github.com/mark3labs/mcp-go v1.3.0
-	github.com/maximhq/bifrost/core v1.14.1
-	github.com/maximhq/bifrost/framework v1.11.1
-	github.com/maximhq/bifrost/plugins/compat v0.5.3
-	github.com/maximhq/bifrost/plugins/governance v1.11.1
-	github.com/maximhq/bifrost/plugins/logging v1.11.1
-	github.com/maximhq/bifrost/plugins/maxim v1.7.14
-	github.com/maximhq/bifrost/plugins/modelcatalogresolver v1.1.14
-	github.com/maximhq/bifrost/plugins/otel v1.6.4
-	github.com/maximhq/bifrost/plugins/prompts v1.1.14
-	github.com/maximhq/bifrost/plugins/routing v1.2.4
-	github.com/maximhq/bifrost/plugins/semanticcache v1.7.4
-	github.com/maximhq/bifrost/plugins/telemetry v1.9.4
+	github.com/mark3labs/mcp-go v1.5.0
+	github.com/maximhq/bifrost/core v1.15.2
+	github.com/maximhq/bifrost/framework v1.12.2
+	github.com/maximhq/bifrost/plugins/compat v0.5.6
+	github.com/maximhq/bifrost/plugins/governance v1.12.2
+	github.com/maximhq/bifrost/plugins/logging v1.12.2
+	github.com/maximhq/bifrost/plugins/maxim v1.7.17
+	github.com/maximhq/bifrost/plugins/modelcatalogresolver v1.1.17
+	github.com/maximhq/bifrost/plugins/otel v1.6.7
+	github.com/maximhq/bifrost/plugins/prompts v1.1.17
+	github.com/maximhq/bifrost/plugins/routing v1.3.2
+	github.com/maximhq/bifrost/plugins/semanticcache v1.7.7
+	github.com/maximhq/bifrost/plugins/telemetry v1.9.7
 	github.com/pion/ice/v4 v4.4.4
 	github.com/pion/logging v0.2.4
 	github.com/pion/rtcp v1.2.18
@@ -157,7 +157,7 @@ require (
 	github.com/mattn/go-colorable v0.1.14 // indirect
 	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/mattn/go-sqlite3 v1.14.32 // indirect
-	github.com/maximhq/bifrost/plugins/mocker v1.6.14 // indirect
+	github.com/maximhq/bifrost/plugins/mocker v1.6.17 // indirect
 	github.com/maximhq/maxim-go v0.2.1 // indirect
 	github.com/molecule-man/go-brrr v1.0.1 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
@@ -239,3 +239,5 @@ require (
 	gorm.io/driver/clickhouse v0.7.0 // indirect
 	gorm.io/driver/postgres v1.6.0 // indirect
 )
+
+replace github.com/mark3labs/mcp-go => github.com/maximhq/mcp-go v0.0.0-20261102181017-b7da3bc145a1
