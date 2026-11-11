@@ -1168,11 +1168,11 @@
                 },
                 "claudeCodeGateway": {
                   "type": "object",
-                  "description": "Claude Code gateway sign-in (/login -> Cloud gateway) at <issuerUrl>/claude-code. Independent of mcpServerAuthMode; requires issuerUrl (the chart fails to render without it). Maps to client.oauth2_server_config.claude_code_gateway.",
+                  "description": "Claude Code gateway sign-in (/login -> Cloud gateway) at <issuerUrl>/gateway/claude-code. Independent of mcpServerAuthMode; requires issuerUrl (the chart fails to render without it). Maps to client.oauth2_server_config.claude_code_gateway.",
                   "properties": {
                     "enabled": {
                       "type": "boolean",
-                      "description": "Serve the Claude Code gateway protocol under /claude-code.",
+                      "description": "Serve the Claude Code gateway protocol under /gateway/claude-code.",
                       "default": false
                     },
                     "managedSettings": {

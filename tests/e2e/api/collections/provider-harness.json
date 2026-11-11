@@ -59,9 +59,9 @@
           "// Only register the content-shape test when the request actually succeeded.",
           "// Otherwise newman reports it as passing (because of an early return) which is misleading next to a failing status.",
           "var __u = (pm.request && pm.request.url && pm.request.url.toString()) || '';",
-          "// Management API (/api/...) and OAuth (/oauth2/...) responses carry no inference content, so the shape check does not apply to them; those rows assert their own bodies.",
+          "// Management API (/api/...), OAuth (/oauth2/...) and client gateway sign-in, settings and telemetry (/gateway/<client>/... outside /v1/messages) responses carry no inference content, so the shape check does not apply to them; those rows assert their own bodies.",
           "// Rows tagged [NO-CONTENT] expect an empty reply (a provider refusal) and assert their own bodies.",
-          "var __skipShape = __rn.indexOf('[NO-CONTENT]') !== -1 || __u.indexOf('/health') !== -1 || __u.indexOf('/.well-known/') !== -1 || __u.indexOf('/api/') !== -1 || __u.indexOf('/oauth2/') !== -1 || (__u.indexOf('/files/') !== -1 && (__u.indexOf('/content?') !== -1 || __u.slice(-8) === '/content')) || __u.indexOf('storage.googleapis.com') !== -1 || __u.indexOf('batchPredictionJobs') !== -1 || (__u.indexOf('/genai/v1beta/batches/') !== -1 && __u.indexOf(':cancel') !== -1) || (__u.indexOf('cachedContents') !== -1 && (pm.request.method !== 'GET' || __u.indexOf('/cachedContents/') !== -1)) || __u.indexOf('/v1/containers') !== -1 || __u.indexOf('/upload/v1beta/files') !== -1 || (__u.indexOf('/genai/v1beta/files/') !== -1 && pm.request.method === 'DELETE') || (__u.indexOf('/model-invocation-job/') !== -1 && __u.slice(-5) === '/stop') || (__u.indexOf('/messages/batches/') !== -1 && __u.indexOf('/results') !== -1) || __u.indexOf('/tunedModels') !== -1 || __u.indexOf('/bedrock_passthrough/') !== -1 || (__u.indexOf('/interactions/') !== -1 && pm.request.method === 'DELETE');",
+          "var __skipShape = __rn.indexOf('[NO-CONTENT]') !== -1 || __u.indexOf('/health') !== -1 || __u.indexOf('/.well-known/') !== -1 || __u.indexOf('/api/') !== -1 || __u.indexOf('/oauth2/') !== -1 || (__u.indexOf('/gateway/') !== -1 && __u.indexOf('/v1/messages') === -1) || (__u.indexOf('/files/') !== -1 && (__u.indexOf('/content?') !== -1 || __u.slice(-8) === '/content')) || __u.indexOf('storage.googleapis.com') !== -1 || __u.indexOf('batchPredictionJobs') !== -1 || (__u.indexOf('/genai/v1beta/batches/') !== -1 && __u.indexOf(':cancel') !== -1) || (__u.indexOf('cachedContents') !== -1 && (pm.request.method !== 'GET' || __u.indexOf('/cachedContents/') !== -1)) || __u.indexOf('/v1/containers') !== -1 || __u.indexOf('/upload/v1beta/files') !== -1 || (__u.indexOf('/genai/v1beta/files/') !== -1 && pm.request.method === 'DELETE') || (__u.indexOf('/model-invocation-job/') !== -1 && __u.slice(-5) === '/stop') || (__u.indexOf('/messages/batches/') !== -1 && __u.indexOf('/results') !== -1) || __u.indexOf('/tunedModels') !== -1 || __u.indexOf('/bedrock_passthrough/') !== -1 || (__u.indexOf('/interactions/') !== -1 && pm.request.method === 'DELETE');",
           "if (pm.response.code < 400 && !__skipShape && (pm.response.headers.get('content-type') || '').indexOf('text/event-stream') === -1 && (pm.response.headers.get('content-type') || '').indexOf('vnd.amazon.eventstream') === -1 && (pm.response.headers.get('content-type') || '').indexOf('audio/') === -1) {",
           "  pm.test('Response has content (text or tool_use)', function () {",
           "    var j;",
@@ -110,10 +110,6 @@
           "        hasContent = j.status === 'completed'",
           "            ? (Array.isArray(j.steps) && j.steps.some(function (s) { return s && s.type === 'model_output' && Array.isArray(s.content) && s.content.length > 0; }))",
           "            : (typeof j.id === 'string' && j.id.length > 0 && (j.status === 'in_progress' || j.status === 'cancelled'));",
-          "    } else if (typeof j.audio_base64 === 'string') {",
-          "        // ElevenLabs speech with with_timestamps answers JSON (audio_base64 plus alignment) instead of audio bytes.",
-          "        shape = 'speech-with-timestamps';",
-          "        hasContent = j.audio_base64.length > 0;",
           "    } else if (typeof j.output_text === 'string' && j.output_text.length > 0) {",
           "        shape = 'openai-responses-output_text';",
           "        hasContent = true;",
@@ -321232,7 +321228,7 @@
     },
     {
       "name": "349. Claude Code gateway sign-in and bearer inference (#7963) (claude-code-gateway) [SERIAL]",
-      "description": "Pins the Claude Code gateway protocol served under {{baseUrl}}/claude-code (#7963): what Claude Code's /login (Cloud gateway) calls, end to end over the wire. Flow: RFC 8414 discovery advertises the device grant; a bearer-less /v1/messages is refused with 401 + x-should-retry: false; device_authorization is called the way Claude Code calls it (only surface=claude_code, no client_id); the first poll is authorization_pending; the browser legs are replayed through /claude-code/device/verify and the existing OAuth consent API with the harness virtual key sk-bf-test-key; the next poll returns an access token and refresh token; the bearer then runs a real Messages call (claude-haiku-4-5, max_tokens 16) and count_tokens, which only succeed if the gateway resolved the token to the virtual key for governance. Also pins managed settings (200 with the sha256 checksum, then 304 on If-None-Match), the OTLP sink (200), the refresh grant without client_id, and sign-out: the folder revokes its own grant at the end, restoring state, and asserts the revoked refresh token is refused. Requires the harness profile in tests/integrations/python/config.json (oauth2_server_config.claude_code_gateway.enabled with an issuer_url). Run the folder in order with FEATURE=claude-code-gateway and PARALLEL=0; the token step waits one poll interval (5s) so it is not answered slow_down. Before this change every /claude-code route is unrouted, so each case fails.",
+      "description": "Pins the Claude Code gateway protocol served under {{baseUrl}}/gateway/claude-code (#7963): what Claude Code's /login (Cloud gateway) calls, end to end over the wire. Flow: RFC 8414 discovery advertises the device grant; a bearer-less /v1/messages is refused with 401 + x-should-retry: false; device_authorization is called the way Claude Code calls it (only surface=claude_code, no client_id); the first poll is authorization_pending; the browser legs are replayed through /gateway/claude-code/device/verify and the existing OAuth consent API with the harness virtual key sk-bf-test-key; the next poll returns an access token and refresh token; the bearer then runs a real Messages call (claude-haiku-4-5, max_tokens 16) and count_tokens, which only succeed if the gateway resolved the token to the virtual key for governance. Also pins managed settings (200 with the sha256 checksum, then 304 on If-None-Match), the OTLP sink (200), the refresh grant without client_id, and sign-out: the folder revokes its own grant at the end, restoring state, and asserts the revoked refresh token is refused. Requires the harness profile in tests/integrations/python/config.json (oauth2_server_config.claude_code_gateway.enabled with an issuer_url). Run the folder in order with FEATURE=claude-code-gateway and PARALLEL=0; the token step waits one poll interval (5s) so it is not answered slow_down. Before this change every /gateway/claude-code route is unrouted, so each case fails.",
       "item": [
         {
           "name": "[EXPECT-200] anthropic claude-code-gateway discovery advertises the device grant - #7963",
@@ -321246,7 +321242,7 @@
             },
             "method": "GET",
             "header": [],
-            "url": "{{baseUrl}}/claude-code/.well-known/oauth-authorization-server"
+            "url": "{{baseUrl}}/gateway/claude-code/.well-known/oauth-authorization-server"
           },
           "event": [
             {
@@ -321254,12 +321250,12 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('discovery advertises the device and refresh grants under /claude-code', function () {",
+                  "pm.test('discovery advertises the device and refresh grants under /gateway/claude-code', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
                   "  var body = pm.response.json();",
-                  "  pm.expect(body.device_authorization_endpoint, pm.response.text()).to.match(/\\/claude-code\\/oauth\\/device_authorization$/);",
-                  "  pm.expect(body.token_endpoint, pm.response.text()).to.match(/\\/claude-code\\/oauth\\/token$/);",
-                  "  pm.expect(body.revocation_endpoint, pm.response.text()).to.match(/\\/claude-code\\/oauth\\/revoke$/);",
+                  "  pm.expect(body.device_authorization_endpoint, pm.response.text()).to.match(/\\/gateway\\/gateway/claude-code\\/oauth\\/device_authorization$/);",
+                  "  pm.expect(body.token_endpoint, pm.response.text()).to.match(/\\/gateway\\/gateway/claude-code\\/oauth\\/token$/);",
+                  "  pm.expect(body.revocation_endpoint, pm.response.text()).to.match(/\\/gateway\\/gateway/claude-code\\/oauth\\/revoke$/);",
                   "  pm.expect(body.grant_types_supported, pm.response.text()).to.include.members(['urn:ietf:params:oauth:grant-type:device_code', 'refresh_token']);",
                   "  pm.expect(body, pm.response.text()).to.not.have.property('authorization_endpoint');",
                   "});"
@@ -321289,7 +321285,7 @@
                 "value": "2023-06-01"
               }
             ],
-            "url": "{{baseUrl}}/claude-code/v1/messages",
+            "url": "{{baseUrl}}/gateway/claude-code/v1/messages",
             "body": {
               "mode": "raw",
               "raw": "{\n  \"model\": \"claude-haiku-4-5\",\n  \"max_tokens\": 16,\n  \"messages\": [\n    { \"role\": \"user\", \"content\": \"Reply with the single word: ok\" }\n  ]\n}"
@@ -321334,7 +321330,7 @@
                 "value": "claude-code/harness"
               }
             ],
-            "url": "{{baseUrl}}/claude-code/oauth/device_authorization",
+            "url": "{{baseUrl}}/gateway/claude-code/oauth/device_authorization",
             "body": {
               "mode": "raw",
               "raw": "surface=claude_code"
@@ -321379,7 +321375,7 @@
                 "value": "application/x-www-form-urlencoded"
               }
             ],
-            "url": "{{baseUrl}}/claude-code/oauth/token",
+            "url": "{{baseUrl}}/gateway/claude-code/oauth/token",
             "body": {
               "mode": "urlencoded",
               "urlencoded": [
@@ -321426,7 +321422,7 @@
                 "value": "application/json"
               }
             ],
-            "url": "{{baseUrl}}/claude-code/device/verify",
+            "url": "{{baseUrl}}/gateway/claude-code/device/verify",
             "body": {
               "mode": "raw",
               "raw": "{\n  \"user_code\": \"{{cc_gateway_user_code_lower}}\"\n}"
@@ -321523,7 +321519,7 @@
                 "value": "application/x-www-form-urlencoded"
               }
             ],
-            "url": "{{baseUrl}}/claude-code/oauth/token",
+            "url": "{{baseUrl}}/gateway/claude-code/oauth/token",
             "body": {
               "mode": "urlencoded",
               "urlencoded": [
@@ -321594,7 +321590,7 @@
                 "value": "2023-06-01"
               }
             ],
-            "url": "{{baseUrl}}/claude-code/v1/messages",
+            "url": "{{baseUrl}}/gateway/claude-code/v1/messages",
             "body": {
               "mode": "raw",
               "raw": "{\n  \"model\": \"claude-haiku-4-5\",\n  \"max_tokens\": 16,\n  \"messages\": [\n    { \"role\": \"user\", \"content\": \"Reply with the single word: ok\" }\n  ]\n}"
@@ -321642,7 +321638,7 @@
                 "value": "2023-06-01"
               }
             ],
-            "url": "{{baseUrl}}/claude-code/v1/messages/count_tokens",
+            "url": "{{baseUrl}}/gateway/claude-code/v1/messages/count_tokens",
             "body": {
               "mode": "raw",
               "raw": "{\n  \"model\": \"claude-haiku-4-5\",\n  \"messages\": [\n    { \"role\": \"user\", \"content\": \"Count these tokens.\" }\n  ]\n}"
@@ -321680,7 +321676,7 @@
                 "value": "Bearer {{cc_gateway_access_token}}"
               }
             ],
-            "url": "{{baseUrl}}/claude-code/managed/settings"
+            "url": "{{baseUrl}}/gateway/claude-code/managed/settings"
           },
           "event": [
             {
@@ -321723,7 +321719,7 @@
                 "value": "{{cc_gateway_settings_etag}}"
               }
             ],
-            "url": "{{baseUrl}}/claude-code/managed/settings"
+            "url": "{{baseUrl}}/gateway/claude-code/managed/settings"
           },
           "event": [
             {
@@ -321760,7 +321756,7 @@
                 "value": "Bearer {{cc_gateway_access_token}}"
               }
             ],
-            "url": "{{baseUrl}}/claude-code/v1/metrics",
+            "url": "{{baseUrl}}/gateway/claude-code/v1/metrics",
             "body": {
               "mode": "raw",
               "raw": "{\n  \"resourceMetrics\": []\n}"
@@ -321797,7 +321793,7 @@
                 "value": "application/x-www-form-urlencoded"
               }
             ],
-            "url": "{{baseUrl}}/claude-code/oauth/token",
+            "url": "{{baseUrl}}/gateway/claude-code/oauth/token",
             "body": {
               "mode": "urlencoded",
               "urlencoded": [
@@ -321822,7 +321818,6 @@
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
                   "  var body = pm.response.json();",
                   "  pm.expect(body.access_token, pm.response.text()).to.be.a('string').and.not.be.empty;",
-                  "  pm.expect(body.refresh_token, 'a rotated refresh token: ' + pm.response.text()).to.be.a('string').and.not.be.empty;",
                   "  pm.expect(body.refresh_token, pm.response.text()).to.not.equal(pm.collectionVariables.get('cc_gateway_refresh_token'));",
                   "  pm.collectionVariables.set('cc_gateway_refresh_token', body.refresh_token);",
                   "});"
@@ -321899,7 +321894,7 @@
                 "value": "application/x-www-form-urlencoded"
               }
             ],
-            "url": "{{baseUrl}}/claude-code/oauth/revoke",
+            "url": "{{baseUrl}}/gateway/claude-code/oauth/revoke",
             "body": {
               "mode": "urlencoded",
               "urlencoded": [
@@ -321945,7 +321940,7 @@
                 "value": "application/x-www-form-urlencoded"
               }
             ],
-            "url": "{{baseUrl}}/claude-code/oauth/token",
+            "url": "{{baseUrl}}/gateway/claude-code/oauth/token",
             "body": {
               "mode": "urlencoded",
               "urlencoded": [

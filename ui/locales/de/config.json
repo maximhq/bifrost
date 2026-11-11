@@ -1641,7 +1641,7 @@
 		"issuerLabel": "Issuer-URL",
 		"issuerDescription": "Die stabile öffentliche URL von Bifrost. Claude Code meldet sich unter <code0/> an. Es ist derselbe Issuer, den der MCP-OAuth-Server nutzt; eine Änderung betrifft also auch per OAuth angemeldete MCP-Clients. Unterstützt Umgebungsvariablen-Syntax (z. B. <code1>env.BIFROST_ISSUER_URL</code1>).",
 		"issuerPlaceholder": "https://bifrost.example.com oder env.BIFROST_ISSUER_URL",
-		"gatewayURLTemplate": "<Issuer-URL>/claude-code",
+		"gatewayURLTemplate": "<Issuer-URL>/gateway/claude-code",
 		"connectTitle": "Claude Code verbinden",
 		"gatewayURLLabel": "Gateway-URL:",
 		"connectBody": "Claude Code liest die Gateway-URL nur aus verwalteten Einstellungen auf Geräteebene. Verteile diese Schlüssel auf jeden Entwicklerrechner (per MDM oder über die <code0>managed-settings.json</code0> von Claude Code). Danach führen Entwickler <code1>/login</code1> aus und drücken auf dem Bildschirm <b2>Cloud gateway</b2> die Eingabetaste:",

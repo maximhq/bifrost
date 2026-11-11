@@ -987,7 +987,7 @@ export interface CoreConfig {
 		disable_vk_identity?: boolean;
 		claude_code_gateway?: {
 			enabled?: boolean;
-			// Claude Code managed-settings.json served at /claude-code/managed/settings; absent = no managed policy.
+			// Claude Code managed-settings.json served at /gateway/claude-code/managed/settings; absent = no managed policy.
 			managed_settings?: Record<string, unknown>;
 		};
 	};

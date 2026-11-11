@@ -135973,11 +135973,11 @@
                       "enabled": {
                         "type": "boolean",
                         "default": false,
-                        "description": "Serve the Claude Code gateway protocol under /claude-code so developers sign in with Claude Code's /login (Cloud gateway) at <issuer_url>/claude-code. Independent of mcp_server_auth_mode; requires issuer_url (a config.json or PUT /api/config that enables it without one is refused)."
+                        "description": "Serve the Claude Code gateway protocol under /gateway/claude-code so developers sign in with Claude Code's /login (Cloud gateway) at <issuer_url>/gateway/claude-code. Independent of mcp_server_auth_mode; requires issuer_url (a config.json or PUT /api/config that enables it without one is refused)."
                       },
                       "managed_settings": {
                         "type": "object",
-                        "description": "Claude Code managed-settings.json served at /claude-code/managed/settings to every signed-in client. Omit for no managed policy; an empty object is an empty policy."
+                        "description": "Claude Code managed-settings.json served at /gateway/claude-code/managed/settings to every signed-in client. Omit for no managed policy; an empty object is an empty policy."
                       }
                     },
                     "additionalProperties": false
@@ -136530,11 +136530,11 @@
                       "enabled": {
                         "type": "boolean",
                         "default": false,
-                        "description": "Serve the Claude Code gateway protocol under /claude-code so developers sign in with Claude Code's /login (Cloud gateway) at <issuer_url>/claude-code. Independent of mcp_server_auth_mode; requires issuer_url (a config.json or PUT /api/config that enables it without one is refused)."
+                        "description": "Serve the Claude Code gateway protocol under /gateway/claude-code so developers sign in with Claude Code's /login (Cloud gateway) at <issuer_url>/gateway/claude-code. Independent of mcp_server_auth_mode; requires issuer_url (a config.json or PUT /api/config that enables it without one is refused)."
                       },
                       "managed_settings": {
                         "type": "object",
-                        "description": "Claude Code managed-settings.json served at /claude-code/managed/settings to every signed-in client. Omit for no managed policy; an empty object is an empty policy."
+                        "description": "Claude Code managed-settings.json served at /gateway/claude-code/managed/settings to every signed-in client. Omit for no managed policy; an empty object is an empty policy."
                       }
                     },
                     "additionalProperties": false

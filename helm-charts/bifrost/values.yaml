@@ -488,7 +488,7 @@ bifrost:
     #   accessTokenTtl: 600       # Issued JWT lifetime in seconds (default 600)
     #   disableVkIdentity: false  # Only valid when mcpServerAuthMode is "oauth"
     #   allowedRedirectUris: []   # Exact remote OAuth client callback URIs to allow (loopback and Cursor callbacks need no entry); "*" allows any https callback
-    #   claudeCodeGateway:        # Claude Code /login (Cloud gateway) at <issuerUrl>/claude-code; needs issuerUrl, any mcpServerAuthMode
+    #   claudeCodeGateway:        # Claude Code /login (Cloud gateway) at <issuerUrl>/gateway/claude-code; needs issuerUrl, any mcpServerAuthMode
     #     enabled: false
     #     managedSettings: {}     # Optional Claude Code managed-settings.json pushed to signed-in clients
 

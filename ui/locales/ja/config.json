@@ -1631,7 +1631,7 @@
 		"issuerLabel": "発行者 URL",
 		"issuerDescription": "Bifrost の固定の公開 URL です。Claude Code は <code0/> でサインインします。MCP OAuth サーバーと同じ発行者を使うため、変更すると OAuth でサインインした MCP クライアントにも影響します。環境変数構文に対応しています（例: <code1>env.BIFROST_ISSUER_URL</code1>）。",
 		"issuerPlaceholder": "https://bifrost.example.com または env.BIFROST_ISSUER_URL",
-		"gatewayURLTemplate": "<発行者 URL>/claude-code",
+		"gatewayURLTemplate": "<発行者 URL>/gateway/claude-code",
 		"connectTitle": "Claude Code を接続",
 		"gatewayURLLabel": "ゲートウェイ URL:",
 		"connectBody": "Claude Code はゲートウェイ URL をマシンレベルの管理設定からのみ読み取ります。これらのキーを各開発者のマシンに配布してください（MDM、または Claude Code の <code0>managed-settings.json</code0>）。その後、開発者が <code1>/login</code1> を実行し、<b2>Cloud gateway</b2> 画面で Enter キーを押します:",
