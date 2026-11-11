@@ -1002,6 +1002,16 @@ func validateGovernanceBudgetScopes(configData *ConfigData, warn func(string, ..
 			budgetOwnerByID[*customer.BudgetID] = owner{name: "customer " + customer.ID, mcpApplicable: true}
 		}
 	}
+	// A provider-config budget declared at the top level and one declared inline on its virtual key
+	// belong to the same owner, so both resolve to the key and provider before duplicates are judged.
+	providerConfigOwners := make(map[uint]owner)
+	for _, vk := range gov.VirtualKeys {
+		for _, pc := range vk.ProviderConfigs {
+			if pc.ID != 0 {
+				providerConfigOwners[pc.ID] = owner{name: fmt.Sprintf("virtual_key %s provider_config %s", vk.ID, pc.Provider)}
+			}
+		}
+	}
 	byOwner := make(map[owner][]configstoreTables.TableBudget)
 	order := make([]owner, 0)
 	add := func(o owner, budgets ...configstoreTables.TableBudget) {
@@ -1022,7 +1032,11 @@ func validateGovernanceBudgetScopes(configData *ConfigData, warn func(string, ..
 		case b.CustomerID != nil:
 			add(owner{name: "customer " + *b.CustomerID, mcpApplicable: true}, b)
 		case b.ProviderConfigID != nil:
-			add(owner{name: fmt.Sprintf("provider_config %d", *b.ProviderConfigID)}, b)
+			o, ok := providerConfigOwners[*b.ProviderConfigID]
+			if !ok {
+				o = owner{name: fmt.Sprintf("provider_config %d", *b.ProviderConfigID)}
+			}
+			add(o, b)
 		case b.ModelConfigID != nil:
 			if mc := modelConfigsByID[*b.ModelConfigID]; mc != nil {
 				add(modelConfigOwner(mc), b)
@@ -1044,8 +1058,13 @@ func validateGovernanceBudgetScopes(configData *ConfigData, warn func(string, ..
 			add(owner{name: fmt.Sprintf("virtual_key %s provider_config %s", vk.ID, pc.Provider)}, pc.Budgets...)
 		}
 	}
-	for _, team := range gov.Teams {
-		add(owner{name: "team " + team.ID, mcpApplicable: true}, team.Budgets...)
+	for i, team := range gov.Teams {
+		// A team declared without an id is given one later; until then each declaration is its own owner.
+		name := "team " + team.ID
+		if team.ID == "" {
+			name = fmt.Sprintf("team #%d", i+1)
+		}
+		add(owner{name: name, mcpApplicable: true}, team.Budgets...)
 	}
 	for _, customer := range gov.Customers {
 		add(owner{name: "customer " + customer.ID, mcpApplicable: true}, customer.Budgets...)

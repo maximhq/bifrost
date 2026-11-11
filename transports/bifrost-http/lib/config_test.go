@@ -27496,6 +27496,29 @@ func TestValidateGovernanceBudgetScopes(t *testing.T) {
 			wantErr: "duplicate reset_duration 1d for scope mcp",
 		},
 		{
+			name: "a top-level provider-config budget counts with the inline budgets of that provider config",
+			gov: configstore.GovernanceConfig{
+				Budgets: []configstoreTables.TableBudget{
+					func() configstoreTables.TableBudget {
+						b := budget("a", "1d", configstoreTables.LimitScopeModel)
+						b.ProviderConfigID = &pcID
+						return b
+					}(),
+				},
+				VirtualKeys: []configstoreTables.TableVirtualKey{{ID: vk, ProviderConfigs: []configstoreTables.TableVirtualKeyProviderConfig{{
+					ID: pcID, Provider: provider, Budgets: []configstoreTables.TableBudget{budget("b", "1d", configstoreTables.LimitScopeModel)},
+				}}}},
+			},
+			wantErr: "duplicate reset_duration 1d for scope model",
+		},
+		{
+			name: "teams declared without an id do not share their budgets",
+			gov: configstore.GovernanceConfig{Teams: []configstoreTables.TableTeam{
+				{Budgets: []configstoreTables.TableBudget{budget("a", "1d", configstoreTables.LimitScopeModel)}},
+				{Budgets: []configstoreTables.TableBudget{budget("b", "1d", configstoreTables.LimitScopeModel)}},
+			}},
+		},
+		{
 			name: "mcp scope on the all-models model config is allowed",
 			gov: configstore.GovernanceConfig{
 				Budgets:      []configstoreTables.TableBudget{budget("a", "1d", configstoreTables.LimitScopeMCP)},

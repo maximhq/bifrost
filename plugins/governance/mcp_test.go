@@ -10,6 +10,7 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/grant"
+	"github.com/maximhq/bifrost/framework/mcpcatalog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -508,8 +509,14 @@ func TestBudgetScope_AppliesToEveryHolder(t *testing.T) {
 
 		t.Run(holder+" tool execution is charged to the shared and mcp budgets only", func(t *testing.T) {
 			store, plugin := holderScopedBudgetStore(t, holder, nil)
+			// A priced tool, so the charge itself is visible and not only the budgets it reaches.
+			catalog, err := mcpcatalog.Init(context.Background(), &mcpcatalog.Config{PricingData: mcpcatalog.MCPPricingData{
+				"client/tool": {Server: "client", ToolName: "tool", CostPerExecution: 0.25},
+			}}, NewMockLogger())
+			require.NoError(t, err)
+			plugin.mcpCatalog = catalog
 			ctx := resolverCtx(store, "sk-bf-test")
-			_, err := resolveLimits(ctx, store, schemas.MCPToolExecutionRequest, "", "")
+			_, err = resolveLimits(ctx, store, schemas.MCPToolExecutionRequest, "", "")
 			require.NoError(t, err)
 			_, _, err = plugin.PostMCPHook(ctx, &schemas.BifrostMCPResponse{
 				ExtraFields: schemas.BifrostMCPResponseExtraFields{MCPRequestType: schemas.MCPRequestTypeExecuteTool, ClientName: "client", ToolName: "tool"},
@@ -519,6 +526,14 @@ func TestBudgetScope_AppliesToEveryHolder(t *testing.T) {
 			budgetIDs, _ := ctx.Value(schemas.BifrostContextKeyGovernanceBudgetIDs).([]string)
 			slices.Sort(budgetIDs)
 			assert.Equal(t, []string{mcpBudget, sharedBudget}, budgetIDs)
+			usageOf := func(id string) float64 {
+				raw, ok := store.budgets.Load(id)
+				require.True(t, ok, id)
+				return raw.(*configstoreTables.TableBudget).CurrentUsage
+			}
+			assert.InDelta(t, 0.25, usageOf(mcpBudget), 1e-9)
+			assert.InDelta(t, 0.25, usageOf(sharedBudget), 1e-9)
+			assert.Zero(t, usageOf(modelBudget))
 		})
 
 		checks := []struct {
