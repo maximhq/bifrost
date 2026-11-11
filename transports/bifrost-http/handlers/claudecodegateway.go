@@ -87,6 +87,7 @@ type ClaudeCodeGatewayHandler struct {
 	deviceAuthLimiter *ipRateLimiter
 	verifyLimiter     *ipRateLimiter
 	polls             *devicePollTracker
+	tokens            *gatewayTokenCache
 }
 
 // NewClaudeCodeGatewayHandler creates the Claude Code gateway handler.
@@ -101,6 +102,7 @@ func NewClaudeCodeGatewayHandler(store *lib.Config, tempTokens *temptoken.Servic
 		deviceAuthLimiter: newIPRateLimiter(claudeCodeDeviceAuthorizationLimit, claudeCodeRateLimitWindow),
 		verifyLimiter:     newIPRateLimiter(claudeCodeDeviceVerifyLimit, claudeCodeRateLimitWindow),
 		polls:             newDevicePollTracker(),
+		tokens:            newGatewayTokenCache(claudeCodeTokenCacheMaxEntries),
 	}
 }
 
@@ -610,18 +612,28 @@ func (h *ClaudeCodeGatewayHandler) authenticate(ctx *fasthttp.RequestCtx) (int, 
 	if rawJWT == "" {
 		return fasthttp.StatusUnauthorized, "sign in to this gateway with /login"
 	}
-	signingKey, err := h.store.GetOAuth2SigningKey(ctx)
-	if err != nil {
-		logger.Error("claude code gateway: failed to load oauth2 signing key: %v", err)
-		return fasthttp.StatusServiceUnavailable, "signing key unavailable"
-	}
-	claims, err := verifyBifrostJWT(ctx, rawJWT, h.store, signingKey, claudeCodeResourceURL(ctx, h.store))
-	if err != nil {
-		if errors.Is(err, errOAuth2TokenRejected) {
-			return fasthttp.StatusUnauthorized, "the gateway session is invalid or expired; sign in again with /login"
+	// A token already verified for this audience is not verified again until it
+	// expires: RS256 verification is most of this middleware's cost, and every
+	// request a session makes carries the same token. The identity it names is
+	// still re-checked below on every request.
+	resource := claudeCodeResourceURL(ctx, h.store)
+	now := time.Now()
+	claims := h.tokens.get(rawJWT, resource, now)
+	if claims == nil {
+		signingKey, err := h.store.GetOAuth2SigningKey(ctx)
+		if err != nil {
+			logger.Error("claude code gateway: failed to load oauth2 signing key: %v", err)
+			return fasthttp.StatusServiceUnavailable, "signing key unavailable"
 		}
-		logger.Error("claude code gateway: token verification failed: %v", err)
-		return fasthttp.StatusServiceUnavailable, "token verification unavailable"
+		claims, err = verifyBifrostJWT(ctx, rawJWT, h.store, signingKey, resource)
+		if err != nil {
+			if errors.Is(err, errOAuth2TokenRejected) {
+				return fasthttp.StatusUnauthorized, "the gateway session is invalid or expired; sign in again with /login"
+			}
+			logger.Error("claude code gateway: token verification failed: %v", err)
+			return fasthttp.StatusServiceUnavailable, "token verification unavailable"
+		}
+		h.tokens.put(rawJWT, resource, claims, now)
 	}
 	if claims.Subject == "" {
 		return fasthttp.StatusUnauthorized, "the gateway session is invalid; sign in again with /login"
@@ -745,7 +757,85 @@ func normalizeClaudeCodeUserCode(code string) string {
 	return b.String()
 }
 
+// --- Verified token cache ---
+
+// claudeCodeTokenCacheMaxEntries caps the verified-token cache. An entry is the
+// token string (under 1 KB) plus its resource and parsed claims, so the cap
+// bounds the cache at a few MB. One signed-in Claude Code session holds one
+// access token at a time, so the cap is the number of concurrently active
+// sessions per process that skip re-verification; beyond it tokens are simply
+// verified on every request, as without the cache.
+const claudeCodeTokenCacheMaxEntries = 4096
+
+// gatewayTokenCache remembers gateway access tokens whose signature, issuer,
+// lifetime and audience were verified, keyed by the raw token, until each one
+// expires. An entry only answers for the resource it was verified against, so
+// an issuer_url change (which moves the resource) sends every token back
+// through full verification, which then refuses it. Access tokens have no
+// revocation of their own (refresh tokens do); the identity a token names is
+// re-checked by the caller on every request, cached or not.
+type gatewayTokenCache struct {
+	mu        sync.RWMutex
+	max       int
+	lastSweep time.Time
+	entries   map[string]gatewayTokenEntry
+}
+
+type gatewayTokenEntry struct {
+	resource string
+	expires  time.Time
+	claims   *jwtMCPClaims
+}
+
+// newGatewayTokenCache creates a cache holding at most max tokens.
+func newGatewayTokenCache(max int) *gatewayTokenCache {
+	return &gatewayTokenCache{max: max, entries: make(map[string]gatewayTokenEntry)}
+}
+
+// get returns the verified claims for rawToken if it was verified for resource
+// and has not expired, otherwise nil.
+func (c *gatewayTokenCache) get(rawToken, resource string, now time.Time) *jwtMCPClaims {
+	c.mu.RLock()
+	e, ok := c.entries[rawToken]
+	c.mu.RUnlock()
+	if !ok || e.resource != resource || !now.Before(e.expires) {
+		return nil
+	}
+	return e.claims
+}
+
+// put records claims verified for rawToken against resource. A token without an
+// expiry is never cached. When the cache is full, expired entries are swept (at
+// most once a minute); if it is still full the token is not cached.
+func (c *gatewayTokenCache) put(rawToken, resource string, claims *jwtMCPClaims, now time.Time) {
+	if claims == nil || claims.ExpiresAt == nil {
+		return
+	}
+	expires := claims.ExpiresAt.Time
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if _, ok := c.entries[rawToken]; !ok && len(c.entries) >= c.max {
+		if now.Sub(c.lastSweep) >= time.Minute {
+			c.lastSweep = now
+			for k, e := range c.entries {
+				if !now.Before(e.expires) {
+					delete(c.entries, k)
+				}
+			}
+		}
+		if len(c.entries) >= c.max {
+			return
+		}
+	}
+	c.entries[rawToken] = gatewayTokenEntry{resource: resource, expires: expires, claims: claims}
+}
+
 // --- Rate limiting and poll pacing ---
+
+// claudeCodeRateLimiterMaxKeys caps how many addresses one limiter tracks. Each
+// entry is a key string plus a small window struct (well under 200 bytes), so
+// the cap bounds a limiter at roughly 2 MB however many addresses call.
+const claudeCodeRateLimiterMaxKeys = 10000
 
 // ipRateLimiter is a fixed-window per-key counter for the unauthenticated
 // sign-in endpoints. It is per process: behind several replicas the effective
@@ -753,11 +843,19 @@ func normalizeClaudeCodeUserCode(code string) string {
 // key it by ctx.RemoteIP(), never by X-Forwarded-For: Bifrost has no
 // trusted-proxy setting, and a caller-controlled header would let anyone pick a
 // fresh bucket per request.
+//
+// Memory is bounded: expired windows are swept at most once per window (so a
+// request never pays for a full scan more often than that), and once maxKeys
+// live windows are tracked a new address is refused until a sweep frees room.
+// Refusing beats evicting here: eviction would hand a fresh budget to whichever
+// address was dropped, which is exactly what an address-rotating caller wants.
 type ipRateLimiter struct {
-	mu      sync.Mutex
-	limit   int
-	window  time.Duration
-	windows map[string]*rateWindow
+	mu        sync.Mutex
+	limit     int
+	window    time.Duration
+	maxKeys   int
+	lastSweep time.Time
+	windows   map[string]*rateWindow
 }
 
 type rateWindow struct {
@@ -767,35 +865,51 @@ type rateWindow struct {
 
 // newIPRateLimiter allows limit hits per key within each window.
 func newIPRateLimiter(limit int, window time.Duration) *ipRateLimiter {
-	return &ipRateLimiter{limit: limit, window: window, windows: make(map[string]*rateWindow)}
+	return &ipRateLimiter{limit: limit, window: window, maxKeys: claudeCodeRateLimiterMaxKeys, windows: make(map[string]*rateWindow)}
 }
 
 // allow records a hit for key and reports whether it is within the limit.
 func (l *ipRateLimiter) allow(key string, now time.Time) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if len(l.windows) > 4096 {
-		for k, w := range l.windows {
-			if now.Sub(w.start) >= l.window {
-				delete(l.windows, k)
-			}
+	w, ok := l.windows[key]
+	if ok && now.Sub(w.start) < l.window {
+		w.count++
+		return w.count <= l.limit
+	}
+	if !ok && len(l.windows) >= l.maxKeys {
+		l.sweepLocked(now)
+		if len(l.windows) >= l.maxKeys {
+			return false
 		}
 	}
-	w, ok := l.windows[key]
-	if !ok || now.Sub(w.start) >= l.window {
-		l.windows[key] = &rateWindow{start: now, count: 1}
-		return true
+	l.windows[key] = &rateWindow{start: now, count: 1}
+	return true
+}
+
+// sweepLocked drops expired windows, at most once per window.
+func (l *ipRateLimiter) sweepLocked(now time.Time) {
+	if now.Sub(l.lastSweep) < l.window {
+		return
 	}
-	w.count++
-	return w.count <= l.limit
+	l.lastSweep = now
+	for k, w := range l.windows {
+		if now.Sub(w.start) >= l.window {
+			delete(l.windows, k)
+		}
+	}
 }
 
 // devicePollTracker remembers when each pending device code last polled, so a
 // client polling faster than the advertised interval gets slow_down
-// (RFC 8628 §3.5).
+// (RFC 8628 §3.5). It is only consulted for a device code that matched a
+// pending row, so its size is bounded by the pending sign-ins the
+// device-authorization limiter lets through; stale entries (finished elsewhere,
+// or abandoned) are swept at most once per device-code lifetime.
 type devicePollTracker struct {
-	mu   sync.Mutex
-	last map[string]time.Time
+	mu        sync.Mutex
+	lastSweep time.Time
+	last      map[string]time.Time
 }
 
 // newDevicePollTracker creates an empty poll tracker.
@@ -808,7 +922,8 @@ func newDevicePollTracker() *devicePollTracker {
 func (t *devicePollTracker) tooSoon(deviceCodeHash string, now time.Time, interval time.Duration) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if len(t.last) > 4096 {
+	if now.Sub(t.lastSweep) >= claudeCodeDeviceCodeTTL {
+		t.lastSweep = now
 		for k, at := range t.last {
 			if now.Sub(at) > claudeCodeDeviceCodeTTL {
 				delete(t.last, k)
