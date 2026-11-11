@@ -135,8 +135,8 @@ func TestExecuteRequestWithRetries_StripsEncryptedContentAndRetries(t *testing.T
 	if len(reasoning.Summary) != 1 || reasoning.Summary[0].Text != "planning the run" {
 		t.Errorf("expected the summary to be preserved, got %+v", reasoning.Summary)
 	}
-	if secondAttemptInput[1].ID == nil || *secondAttemptInput[1].ID != "rs_067d4968" {
-		t.Errorf("expected the item id to be preserved, got %+v", secondAttemptInput[1].ID)
+	if secondAttemptInput[1].ID != nil {
+		t.Errorf("expected the reasoning item id to be cleared with its ciphertext, got %q", *secondAttemptInput[1].ID)
 	}
 }
 
@@ -628,13 +628,12 @@ func TestStripResponsesEncryptedContent(t *testing.T) {
 		if !strings.Contains(body, `"summary_text"`) {
 			t.Errorf("expected the summary to survive alongside the dropped id, got %s", body)
 		}
-		if !strings.Contains(body, `"msg_1"`) {
-			t.Errorf("expected items the strip did not touch to keep their ids, got %s", body)
+		if strings.Contains(body, `"msg_1"`) {
+			t.Errorf("expected message ids to be cleared with the reasoning they pair with, got %s", body)
 		}
 	})
 
-	// The Responses shape keeps its ids; only compaction sheds them.
-	t.Run("keeps the item id on a surviving raw responses reasoning item", func(t *testing.T) {
+	t.Run("drops the item id from a surviving raw responses reasoning item", func(t *testing.T) {
 		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 		ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
 
@@ -646,8 +645,167 @@ func TestStripResponsesEncryptedContent(t *testing.T) {
 		if !stripResponsesEncryptedContent(ctx, req) {
 			t.Fatal("expected the raw body to be rewritten")
 		}
-		if body := string(req.ResponsesRequest.RawRequestBody); !strings.Contains(body, `"rs_1"`) {
-			t.Errorf("expected the item id to be preserved on the responses shape, got %s", body)
+		if body := string(req.ResponsesRequest.RawRequestBody); strings.Contains(body, `"rs_1"`) {
+			t.Errorf("expected the item id to be dropped on the responses shape, got %s", body)
+		}
+	})
+
+	// Kept ids earn 400 "without its required 'reasoning' item" or 404 "Item with id 'rs_..' not found".
+	t.Run("clears the item ids paired with stripped reasoning and keeps call ids", func(t *testing.T) {
+		input := []schemas.ResponsesMessage{
+			{Role: new(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: new("order status?")}},
+			{ID: new("rs_A"), Type: new(schemas.ResponsesMessageTypeReasoning), ResponsesReasoning: &schemas.ResponsesReasoning{Summary: []schemas.ResponsesReasoningSummary{}, EncryptedContent: new("cipher-a")}},
+			{ID: new("fc_A"), Type: new(schemas.ResponsesMessageTypeFunctionCall), ResponsesToolMessage: &schemas.ResponsesToolMessage{CallID: new("call_A"), Name: new("lookup"), Arguments: new("{}")}},
+			{Type: new(schemas.ResponsesMessageTypeFunctionCallOutput), ResponsesToolMessage: &schemas.ResponsesToolMessage{CallID: new("call_A"), Output: &schemas.ResponsesToolMessageOutputStruct{ResponsesToolCallOutputStr: new("shipped")}}},
+			{ID: new("rs_B"), Type: new(schemas.ResponsesMessageTypeReasoning), ResponsesReasoning: &schemas.ResponsesReasoning{Summary: []schemas.ResponsesReasoningSummary{{Type: schemas.ResponsesReasoningContentBlockTypeSummaryText, Text: "answer from the lookup"}}, EncryptedContent: new("cipher-b")}},
+			{ID: new("msg_B"), Type: new(schemas.ResponsesMessageTypeMessage), Role: new(schemas.ResponsesInputMessageRoleAssistant), Content: &schemas.ResponsesMessageContent{ContentStr: new("it shipped")}},
+			{ID: new("fs_B"), Type: new(schemas.ResponsesMessageTypeFileSearchCall)},
+			{ID: new("rs_ref"), Type: new(schemas.ResponsesMessageTypeItemReference)},
+			{ID: new("rs_C"), Type: new(schemas.ResponsesMessageTypeReasoning), ResponsesReasoning: &schemas.ResponsesReasoning{Summary: []schemas.ResponsesReasoningSummary{}}},
+			{ID: new("rs_D"), Type: new(schemas.ResponsesMessageTypeReasoning)},
+		}
+		req := &schemas.BifrostRequest{RequestType: schemas.ResponsesRequest, ResponsesRequest: &schemas.BifrostResponsesRequest{Provider: schemas.Azure, Model: "gpt-6-luna", Input: input}}
+
+		if !stripResponsesEncryptedContent(nil, req) {
+			t.Fatal("expected the strip to report a change")
+		}
+		got := req.ResponsesRequest.Input
+		if len(got) != 9 {
+			t.Fatalf("expected only the summary-less reasoning item to be dropped, got %d items", len(got))
+		}
+		for i, wantID := range []string{"", "", "", "", "", "fs_B", "rs_ref", "rs_C", "rs_D"} {
+			gotID := ""
+			if got[i].ID != nil {
+				gotID = *got[i].ID
+			}
+			if gotID != wantID {
+				t.Errorf("item %d (%s): id = %q, want %q", i, responsesItemType(&got[i]), gotID, wantID)
+			}
+		}
+		if *got[1].ResponsesToolMessage.CallID != "call_A" || *got[2].ResponsesToolMessage.CallID != "call_A" {
+			t.Error("expected the call and its output to keep their shared call_id")
+		}
+		if got[3].ResponsesReasoning == nil || len(got[3].ResponsesReasoning.Summary) != 1 || got[3].ResponsesReasoning.EncryptedContent != nil {
+			t.Errorf("expected the summarised reasoning to survive without ciphertext, got %+v", got[3].ResponsesReasoning)
+		}
+		if *input[2].ID != "fc_A" || *input[5].ID != "msg_B" {
+			t.Error("the caller's input was mutated in place")
+		}
+	})
+
+	t.Run("clears the paired item ids on the raw passthrough body", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+
+		req := newEncryptedReasoningRequest("ciphertext")
+		req.ResponsesRequest.RawRequestBody = []byte(`{"model":"gpt-6-luna","input":[` +
+			`{"role":"user","content":"order status?"},` +
+			`{"type":"reasoning","id":"rs_A","summary":[],"encrypted_content":"cipher-a"},` +
+			`{"type":"function_call","id":"fc_A","call_id":"call_A","name":"lookup","arguments":"{}"},` +
+			`{"type":"function_call_output","call_id":"call_A","output":"shipped"},` +
+			`{"type":"reasoning","id":"rs_B","summary":[{"type":"summary_text","text":"answer"}],"encrypted_content":"cipher-b"},` +
+			`{"type":"message","id":"msg_B","role":"assistant","content":"it shipped"},` +
+			`{"type":"file_search_call","id":"fs_B","status":"completed","queries":["x"]},` +
+			`{"type":"item_reference","id":"rs_ref"},` +
+			`{"type":"reasoning","id":"rs_C","summary":[]},` +
+			`{"type":"reasoning","id":"rs_D"}` +
+			`],"store":false}`)
+
+		if !stripResponsesEncryptedContent(ctx, req) {
+			t.Fatal("expected the raw body to be rewritten")
+		}
+		body := string(req.ResponsesRequest.RawRequestBody)
+		for _, gone := range []string{"rs_A", "fc_A", "rs_B", "msg_B", "encrypted_content"} {
+			if strings.Contains(body, gone) {
+				t.Errorf("expected %s to be gone, got %s", gone, body)
+			}
+		}
+		for _, kept := range []string{`"id":"fs_B"`, `"id":"rs_ref"`, `"id":"rs_C"`, `"id":"rs_D"`, `"summary_text"`} {
+			if !strings.Contains(body, kept) {
+				t.Errorf("expected %s to survive, got %s", kept, body)
+			}
+		}
+		if strings.Count(body, `"call_id":"call_A"`) != 2 {
+			t.Errorf("expected the call and its output to keep their shared call_id, got %s", body)
+		}
+	})
+
+	// Only OpenAI's Responses API pairs item ids with reasoning; Anthropic builds server_tool_use and mcp_tool_use ids from them.
+	t.Run("clears item ids only on a retry to the OpenAI Responses API", func(t *testing.T) {
+		targets := []struct {
+			name     string
+			provider schemas.ModelProvider
+			base     schemas.ModelProvider
+			model    string
+			clears   bool
+		}{
+			{name: "openai", provider: schemas.OpenAI, model: "gpt-5.6-sol", clears: true},
+			{name: "azure openai model", provider: schemas.Azure, model: "gpt-6-luna", clears: true},
+			{name: "custom provider on openai", provider: "my-openai", base: schemas.OpenAI, model: "gpt-5.6-sol", clears: true},
+			{name: "anthropic", provider: schemas.Anthropic, model: "claude-haiku-4-5", clears: false},
+			{name: "azure claude model", provider: schemas.Azure, model: "claude-opus-4-7", clears: false},
+			{name: "vertex claude model", provider: schemas.Vertex, model: "claude-sonnet-4-6", clears: false},
+			{name: "bedrock mantle", provider: schemas.BedrockMantle, model: "openai.gpt-6-luna", clears: false},
+			{name: "gemini", provider: schemas.Gemini, model: "gemini-3.7-flash", clears: false},
+		}
+		for _, target := range targets {
+			t.Run(target.name, func(t *testing.T) {
+				ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+				if target.base != "" {
+					ctx.SetValue(schemas.BifrostContextKeyBaseProviderType, target.base)
+				}
+				input := []schemas.ResponsesMessage{
+					{Role: new(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: new("search the order")}},
+					{ID: new("rs_A"), Type: new(schemas.ResponsesMessageTypeReasoning), ResponsesReasoning: &schemas.ResponsesReasoning{Summary: []schemas.ResponsesReasoningSummary{}, EncryptedContent: new("cipher-a")}},
+					{ID: new("ws_A"), Type: new(schemas.ResponsesMessageTypeWebSearchCall)},
+					{ID: new("mcp_A"), Type: new(schemas.ResponsesMessageTypeMCPCall), ResponsesToolMessage: &schemas.ResponsesToolMessage{Name: new("lookup"), Arguments: new("{}")}},
+					{ID: new("msg_A"), Type: new(schemas.ResponsesMessageTypeMessage), Role: new(schemas.ResponsesInputMessageRoleAssistant), Content: &schemas.ResponsesMessageContent{ContentStr: new("found it")}},
+				}
+				req := &schemas.BifrostRequest{RequestType: schemas.ResponsesRequest, ResponsesRequest: &schemas.BifrostResponsesRequest{Provider: target.provider, Model: target.model, Input: input}}
+
+				if !stripResponsesEncryptedContent(ctx, req) {
+					t.Fatal("expected the strip to report a change")
+				}
+				got := req.ResponsesRequest.Input
+				if len(got) != 4 {
+					t.Fatalf("expected only the summary-less reasoning item to be dropped, got %d items", len(got))
+				}
+				for i, id := range []string{"ws_A", "mcp_A", "msg_A"} {
+					item := got[i+1]
+					if kept := item.ID != nil && *item.ID == id; kept == target.clears {
+						t.Errorf("%s: id kept = %v, want %v", id, kept, !target.clears)
+					}
+				}
+			})
+		}
+	})
+
+	t.Run("keeps item ids on a raw passthrough retry to a provider outside the OpenAI Responses API", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+
+		req := newEncryptedReasoningRequest("ciphertext")
+		req.ResponsesRequest.Provider = schemas.Anthropic
+		req.ResponsesRequest.Model = "claude-haiku-4-5"
+		req.ResponsesRequest.RawRequestBody = []byte(`{"model":"claude-haiku-4-5","input":[` +
+			`{"role":"user","content":"search the order"},` +
+			`{"type":"reasoning","id":"rs_A","summary":[],"encrypted_content":"cipher-a"},` +
+			`{"type":"web_search_call","id":"ws_A","status":"completed"},` +
+			`{"type":"mcp_call","id":"mcp_A","name":"lookup","arguments":"{}"},` +
+			`{"type":"message","id":"msg_A","role":"assistant","content":"found it"}` +
+			`]}`)
+
+		if !stripResponsesEncryptedContent(ctx, req) {
+			t.Fatal("expected the raw body to be rewritten")
+		}
+		body := string(req.ResponsesRequest.RawRequestBody)
+		if strings.Contains(body, "rs_A") || strings.Contains(body, "encrypted_content") {
+			t.Errorf("expected the reasoning item to be dropped, got %s", body)
+		}
+		for _, kept := range []string{`"id":"ws_A"`, `"id":"mcp_A"`, `"id":"msg_A"`} {
+			if !strings.Contains(body, kept) {
+				t.Errorf("expected %s to survive, got %s", kept, body)
+			}
 		}
 	})
 
@@ -1755,8 +1913,8 @@ func TestResponsesFallbackHealsEncryptedContentRefusal(t *testing.T) {
 			if !strings.Contains(bodies[1], "planning the run") {
 				t.Errorf("stripped retry dropped the reasoning summary: %s", bodies[1])
 			}
-			if !strings.Contains(bodies[1], "rs_067d4968") {
-				t.Errorf("stripped retry dropped the reasoning item id: %s", bodies[1])
+			if strings.Contains(bodies[1], "rs_067d4968") {
+				t.Errorf("stripped retry kept the reasoning item id: %s", bodies[1])
 			}
 
 			// 5. The strip is auditable. The logged payload's routing_engine_logs is
@@ -2176,6 +2334,197 @@ func TestStripUnverifiableReasoning_RawContentBlockCarriers(t *testing.T) {
 		}
 		if body := string(req.ResponsesRequest.RawRequestBody); body != before {
 			t.Errorf("expected the body to be untouched, got %s", body)
+		}
+	})
+}
+
+// codexSubagentTask is the task text of a Codex multi_agent v1 agent_message, as recorded
+// in a subagent's rollout.
+const codexSubagentTask = "Message Type: NEW_TASK\nTask: count the primes below 3000 with a python one-liner."
+
+// newCodexSubagentRequest replays a Codex multi_agent v1 subagent thread: a reasoning item
+// minted elsewhere plus the parent's agent_message, whose content[1] is a block of type
+// "encrypted_content" that holds nothing but that field. This is the shape behind the
+// customer's "Missing required parameter: 'input[N].content[1].encrypted_content'".
+func newCodexSubagentRequest() *schemas.BifrostRequest {
+	req := newEncryptedReasoningRequest("gAAAAABqc9R3ciphertext")
+	req.ResponsesRequest.Provider = schemas.Azure
+	req.ResponsesRequest.Model = "gpt-6.1-sol"
+	req.ResponsesRequest.Input = append(req.ResponsesRequest.Input, schemas.ResponsesMessage{
+		ID:        new("amsg_01a1b1cb-5066-7ae0-84b2-c089317668d9"),
+		Type:      new(schemas.ResponsesMessageType("agent_message")),
+		Author:    []byte(`"/root"`),
+		Recipient: []byte(`"/root/count_primes"`),
+		Content: &schemas.ResponsesMessageContent{
+			ContentBlocks: []schemas.ResponsesMessageContentBlock{
+				{Type: schemas.ResponsesInputMessageContentBlockTypeText, Text: new(codexSubagentTask)},
+				{Type: schemas.ResponsesMessageContentBlockType("encrypted_content"), EncryptedContent: new("gAAAAABq7gb9jLud3Rg2")},
+			},
+		},
+	})
+	return req
+}
+
+func missingBlockEncryptedContentError(itemIdx, blockIdx int) *schemas.BifrostError {
+	param := "input[" + strconv.Itoa(itemIdx) + "].content[" + strconv.Itoa(blockIdx) + "].encrypted_content"
+	return &schemas.BifrostError{
+		StatusCode: new(400),
+		Error: &schemas.ErrorField{
+			Type:    new("invalid_request_error"),
+			Code:    new("missing_required_parameter"),
+			Message: "Missing required parameter: '" + param + "'.",
+			Param:   param,
+		},
+	}
+}
+
+// TestExecuteRequestWithRetries_CodexSubagentEncryptedContentBlock reproduces ticket 11340
+// end to end. Turn N ran on Azure East and turn N+1 on Azure West, so West refuses East's
+// ciphertext and the fail-soft strip retries. The strip used to blank encrypted_content on
+// the agent_message's "encrypted_content" block, which is nothing but that field, and Azure
+// answered the retry with missing_required_parameter -- the error the client saw. The block
+// must be dropped whole instead; it carries no text, so nothing visible is lost.
+func TestExecuteRequestWithRetries_CodexSubagentEncryptedContentBlock(t *testing.T) {
+	config := createTestConfig(0, time.Millisecond, time.Millisecond)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyTracer, &schemas.NoOpTracer{})
+	logger := NewDefaultLogger(schemas.LogLevelError)
+
+	req := newCodexSubagentRequest()
+
+	callCount := 0
+	var retryInput []schemas.ResponsesMessage
+	handler := func(_ schemas.Key) (string, *schemas.BifrostError) {
+		callCount++
+		if callCount == 1 {
+			return "", encryptedContentError()
+		}
+		retryInput = req.ResponsesRequest.Input
+		// Mirror Azure's validation: an "encrypted_content" block must carry the field.
+		for i, item := range retryInput {
+			if item.Content == nil {
+				continue
+			}
+			for j, block := range item.Content.ContentBlocks {
+				if block.Type == "encrypted_content" && block.EncryptedContent == nil {
+					return "", missingBlockEncryptedContentError(i, j)
+				}
+			}
+		}
+		return "success", nil
+	}
+
+	result, err := executeRequestWithRetries(ctx, config, handler, nil,
+		schemas.ResponsesRequest, schemas.Azure, "gpt-6.1-sol", req, logger)
+
+	if err != nil {
+		t.Fatalf("expected the stripped retry to succeed, got %q", err.Error.Message)
+	}
+	if result != "success" || callCount != 2 {
+		t.Fatalf("expected success on attempt 2, got %q after %d attempts", result, callCount)
+	}
+	if len(retryInput) != 3 {
+		t.Fatalf("expected the user, reasoning and agent_message items to survive, got %d", len(retryInput))
+	}
+	agent := retryInput[2]
+	blocks := agent.Content.ContentBlocks
+	if len(blocks) != 1 || blocks[0].Text == nil || *blocks[0].Text != codexSubagentTask {
+		t.Fatalf("expected only the task text block to survive, got %+v", blocks)
+	}
+	if string(agent.Author) != `"/root"` || string(agent.Recipient) != `"/root/count_primes"` {
+		t.Errorf("expected author and recipient to survive, got %s / %s", agent.Author, agent.Recipient)
+	}
+}
+
+// TestStripUnverifiableReasoning_EncryptedContentBlockOnly pins the scope of the drop: only a
+// block of type "encrypted_content" goes whole. Any other block keeps its text and loses the
+// field, as before, so no visible history is removed.
+func TestStripUnverifiableReasoning_EncryptedContentBlockOnly(t *testing.T) {
+	t.Run("drops the encrypted_content block and keeps its sibling", func(t *testing.T) {
+		req := newCodexSubagentRequest()
+		if !stripUnverifiableReasoning(nil, req) {
+			t.Fatal("expected the strip to report a change")
+		}
+		blocks := req.ResponsesRequest.Input[2].Content.ContentBlocks
+		if len(blocks) != 1 || blocks[0].Type != schemas.ResponsesInputMessageContentBlockTypeText {
+			t.Fatalf("expected only the input_text block to survive, got %+v", blocks)
+		}
+	})
+
+	t.Run("drops an item left with no blocks", func(t *testing.T) {
+		req := newCodexSubagentRequest()
+		item := &req.ResponsesRequest.Input[2]
+		item.Content.ContentBlocks = item.Content.ContentBlocks[1:]
+		if !stripUnverifiableReasoning(nil, req) {
+			t.Fatal("expected the strip to report a change")
+		}
+		if got := len(req.ResponsesRequest.Input); got != 2 {
+			t.Fatalf("expected the emptied agent_message to be dropped, got %d items", got)
+		}
+	})
+
+	t.Run("keeps a text block that carries encrypted_content", func(t *testing.T) {
+		req := newCodexSubagentRequest()
+		blocks := req.ResponsesRequest.Input[2].Content.ContentBlocks
+		blocks[0].EncryptedContent = new("gAAAAABtextblock")
+		if !stripUnverifiableReasoning(nil, req) {
+			t.Fatal("expected the strip to report a change")
+		}
+		got := req.ResponsesRequest.Input[2].Content.ContentBlocks
+		if len(got) != 1 || got[0].Text == nil || *got[0].Text != codexSubagentTask {
+			t.Fatalf("expected the text block to survive, got %+v", got)
+		}
+		if got[0].EncryptedContent != nil {
+			t.Errorf("expected encrypted_content to be cleared from the text block, got %q", *got[0].EncryptedContent)
+		}
+	})
+}
+
+// TestStripUnverifiableReasoning_RawEncryptedContentBlock is the passthrough half (Codex on
+// /openai/v1/responses with the raw body forwarded).
+func TestStripUnverifiableReasoning_RawEncryptedContentBlock(t *testing.T) {
+	rawCtx := func() *schemas.BifrostContext {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+		return ctx
+	}
+	agentMessage := func(content string) string {
+		return `{"type":"agent_message","id":"amsg_1","author":"/root","recipient":"/root/count_primes",` +
+			`"content":[` + content + `],"internal_chat_message_metadata_passthrough":{"turn_id":"t1"}}`
+	}
+	taskBlock := `{"type":"input_text","text":"count the primes"}`
+	cipherBlock := `{"type":"encrypted_content","encrypted_content":"gAAAAABq7gb9"}`
+
+	t.Run("drops the block and keeps its sibling and unmodeled fields", func(t *testing.T) {
+		req := newCodexSubagentRequest()
+		req.ResponsesRequest.RawRequestBody = []byte(`{"model":"gpt-6.1-sol","input":[` +
+			`{"type":"message","role":"user","content":"run the tests"},` + agentMessage(taskBlock+","+cipherBlock) +
+			`],"store":false}`)
+
+		if !stripResponsesEncryptedContent(rawCtx(), req) {
+			t.Fatal("expected the raw strip to report a change")
+		}
+		body := req.ResponsesRequest.RawRequestBody
+		content := gjson.GetBytes(body, "input.1.content")
+		if len(content.Array()) != 1 || content.Get("0.type").Str != "input_text" {
+			t.Errorf("expected only the input_text block to survive, got %s", content.Raw)
+		}
+		if gjson.GetBytes(body, "input.1.author").Str != "/root" || !gjson.GetBytes(body, "input.1.internal_chat_message_metadata_passthrough").Exists() {
+			t.Errorf("expected author and unmodeled fields to survive, got %s", body)
+		}
+	})
+
+	t.Run("drops an item left with no blocks", func(t *testing.T) {
+		req := newCodexSubagentRequest()
+		req.ResponsesRequest.RawRequestBody = []byte(`{"model":"gpt-6.1-sol","input":[` +
+			`{"type":"message","role":"user","content":"run the tests"},` + agentMessage(cipherBlock) +
+			`],"store":false}`)
+
+		if !stripResponsesEncryptedContent(rawCtx(), req) {
+			t.Fatal("expected the raw strip to report a change")
+		}
+		if n := len(gjson.GetBytes(req.ResponsesRequest.RawRequestBody, "input").Array()); n != 1 {
+			t.Errorf("expected the emptied agent_message to be dropped, got %d items: %s", n, req.ResponsesRequest.RawRequestBody)
 		}
 	})
 }
@@ -2822,7 +3171,7 @@ func TestStripRawResponsesEncryptedContent_AllocationScaling(t *testing.T) {
 		return b.Bytes()
 	}, func(body []byte) {
 		scratch := append([]byte(nil), body...)
-		stripRawResponsesEncryptedContent(&scratch, false)
+		stripRawResponsesEncryptedContent(&scratch, false, true)
 	})
 }
 

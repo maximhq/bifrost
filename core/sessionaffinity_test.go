@@ -2,6 +2,11 @@ package bifrost
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"math/rand/v2"
+	"net/http"
+	"net/http/httptest"
 	"slices"
 	"strings"
 	"sync"
@@ -10,6 +15,300 @@ import (
 
 	"github.com/maximhq/bifrost/core/schemas"
 )
+
+// A session's key the provider rejects outright does not fail the request beside a healthy
+// sibling: the request is served by the sibling, as one without a session would be, and the
+// session is bound to the sibling afterwards.
+func TestSessionKeyRejectedOutrightMovesToItsSibling(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Header.Get("Authorization") == "Bearer sk-a" {
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"error":{"message":"Incorrect API key provided","type":"invalid_request_error","code":"invalid_api_key"}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"id":"c1","object":"chat.completion","created":1,"model":"gpt-4","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+	}))
+	defer upstream.Close()
+
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL(schemas.OpenAI, 5, 1000, upstream.URL)
+	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
+		{ID: "key-a", Name: "Key A", Value: *schemas.NewSecretVar("sk-a"), Models: schemas.WhiteList{"*"}, Weight: 1},
+		{ID: "key-b", Name: "Key B", Value: *schemas.NewSecretVar("sk-b"), Models: schemas.WhiteList{"*"}, Weight: 1},
+	})
+	kv := newMockKVStore()
+	client, err := Init(context.Background(), schemas.BifrostConfig{Account: account, Logger: NewDefaultLogger(schemas.LogLevelError), KVStore: kv})
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	t.Cleanup(client.Shutdown)
+
+	// An earlier request served by key-a bound the session to it.
+	bind := sessionCtx("s")
+	bind.SetValue(schemas.BifrostContextKeySelectedKeyID, "key-a")
+	route := schemas.Route{Provider: schemas.OpenAI, Model: "gpt-4"}
+	client.observeSessionOutcome(bind, route, &route, false, false, nil)
+
+	ctx := sessionCtx("s")
+	resp, bifrostErr := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4",
+		Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}}},
+	})
+	if bifrostErr != nil {
+		t.Fatalf("the sibling should have served the request, got %v", bifrostErr.Error.Message)
+	}
+	if key := resp.ExtraFields.RoutingInfo.Key; key != "Key B" {
+		t.Fatalf("served by %q, want Key B", key)
+	}
+	if bound, _ := SessionStateString(kv, SessionStateKey(ctx, SessionStateKindKey, string(schemas.OpenAI), "gpt-4")); bound != "key-b" {
+		t.Fatalf("session bound to %q after the request, want key-b", bound)
+	}
+}
+
+// threeKeySessionClient serves a session bound to key-a over keys a, b and c, each answering
+// its calls with the statuses given for it in turn, the last one repeating (200 when absent),
+// through a selector that picks the first key it is offered, and returns the client and the keys
+// the upstream saw, in order.
+func threeKeySessionClient(t *testing.T, status map[string][]int, filter schemas.KeyPoolFilter) (*Bifrost, *[]string) {
+	t.Helper()
+	var mu sync.Mutex
+	var hits []string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		key := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer sk-")
+		mu.Lock()
+		calls := 0
+		for _, hit := range hits {
+			if hit == key {
+				calls++
+			}
+		}
+		hits = append(hits, key)
+		mu.Unlock()
+		code := http.StatusOK
+		if seq := status[key]; len(seq) > 0 {
+			code = seq[min(calls, len(seq)-1)]
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch code {
+		case http.StatusUnauthorized:
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"error":{"message":"Incorrect API key provided","type":"invalid_request_error","code":"invalid_api_key"}}`))
+		case http.StatusTooManyRequests:
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte(`{"error":{"message":"Rate limit reached","type":"requests","code":"rate_limit_exceeded"}}`))
+		default:
+			_, _ = w.Write([]byte(`{"id":"c1","object":"chat.completion","created":1,"model":"gpt-4","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+		}
+	}))
+	t.Cleanup(upstream.Close)
+
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL(schemas.OpenAI, 5, 1000, upstream.URL)
+	account.configs[schemas.OpenAI].NetworkConfig.RetryBackoffInitial = time.Millisecond
+	account.configs[schemas.OpenAI].NetworkConfig.RetryBackoffMax = time.Millisecond
+	var keys []schemas.Key
+	for _, id := range []string{"a", "b", "c"} {
+		keys = append(keys, schemas.Key{ID: "key-" + id, Name: "Key " + strings.ToUpper(id), Value: *schemas.NewSecretVar("sk-" + id), Models: schemas.WhiteList{"*"}, Weight: 1})
+	}
+	account.SetKeysForProvider(schemas.OpenAI, keys)
+	client, err := Init(context.Background(), schemas.BifrostConfig{
+		Account:       account,
+		Logger:        NewDefaultLogger(schemas.LogLevelError),
+		KVStore:       newMockKVStore(),
+		KeyPoolFilter: filter,
+		KeySelector: func(_ *schemas.BifrostContext, keys []schemas.Key, _ schemas.ModelProvider, _ string) (schemas.Key, error) {
+			return keys[0], nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	t.Cleanup(client.Shutdown)
+
+	bind := sessionCtx("s")
+	bind.SetValue(schemas.BifrostContextKeySelectedKeyID, "key-a")
+	route := schemas.Route{Provider: schemas.OpenAI, Model: "gpt-4"}
+	client.observeSessionOutcome(bind, route, &route, false, false, nil)
+	return client, &hits
+}
+
+// sessionChat sends one chat request for the session "s" and returns the key that served it.
+func sessionChat(t *testing.T, client *Bifrost) string {
+	t.Helper()
+	resp, bifrostErr := client.ChatCompletionRequest(sessionCtx("s"), &schemas.BifrostChatRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4",
+		Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}}},
+	})
+	if bifrostErr != nil {
+		t.Fatalf("request failed: %v", bifrostErr.Error.Message)
+	}
+	return resp.ExtraFields.RoutingInfo.Key
+}
+
+// Once the session's key is rejected, a sibling already rate-limited by this request is passed
+// over for one that has not been tried, as a request without a session would.
+// TestFixedKeyRetriesTheSameKeyAfterATransientFailure pins that a key the request is held to, by a
+// caller's pin or by its session's binding, is retried after a rate limit or a server error rather
+// than swapped for a sibling. Only a key the provider refuses outright moves a fixed request to
+// another key (TestSessionKeyRejectedOutrightMovesToItsSibling).
+func TestFixedKeyRetriesTheSameKeyAfterATransientFailure(t *testing.T) {
+	for _, failure := range []struct {
+		name   string
+		status int
+		body   string
+	}{
+		{"a rate limit", http.StatusTooManyRequests, `{"error":{"message":"Rate limit reached","type":"requests","code":"rate_limit_exceeded"}}`},
+		{"a server error", http.StatusInternalServerError, `{"error":{"message":"The server had an error","type":"server_error"}}`},
+	} {
+		for _, hold := range []string{"caller pin", "session binding"} {
+			t.Run(failure.name+" on a "+hold, func(t *testing.T) {
+				var mu sync.Mutex
+				var used []string
+				upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					mu.Lock()
+					used = append(used, r.Header.Get("Authorization"))
+					first := len(used) == 1
+					mu.Unlock()
+					w.Header().Set("Content-Type", "application/json")
+					if first {
+						w.WriteHeader(failure.status)
+						_, _ = w.Write([]byte(failure.body))
+						return
+					}
+					_, _ = w.Write([]byte(`{"id":"c1","object":"chat.completion","created":1,"model":"gpt-4","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+				}))
+				defer upstream.Close()
+
+				account := NewMockAccount()
+				account.AddProviderWithBaseURL(schemas.OpenAI, 5, 1000, upstream.URL)
+				account.configs[schemas.OpenAI].NetworkConfig.MaxRetries = 1
+				account.configs[schemas.OpenAI].NetworkConfig.RetryBackoffInitial = time.Millisecond
+				account.configs[schemas.OpenAI].NetworkConfig.RetryBackoffMax = time.Millisecond
+				account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
+					{ID: "key-a", Name: "Key A", Value: *schemas.NewSecretVar("sk-a"), Models: schemas.WhiteList{"*"}, Weight: 1},
+					{ID: "key-b", Name: "Key B", Value: *schemas.NewSecretVar("sk-b"), Models: schemas.WhiteList{"*"}, Weight: 1},
+				})
+				client, err := Init(context.Background(), schemas.BifrostConfig{Account: account, Logger: NewDefaultLogger(schemas.LogLevelError), KVStore: newMockKVStore()})
+				if err != nil {
+					t.Fatalf("Init: %v", err)
+				}
+				t.Cleanup(client.Shutdown)
+
+				ctx := sessionCtx("s")
+				route := schemas.Route{Provider: schemas.OpenAI, Model: "gpt-4"}
+				if hold == "caller pin" {
+					ctx.SetValue(schemas.BifrostContextKeyAPIKeyID, "key-a")
+				} else {
+					bind := sessionCtx("s")
+					bind.SetValue(schemas.BifrostContextKeySelectedKeyID, "key-a")
+					client.observeSessionOutcome(bind, route, &route, false, false, nil)
+				}
+				resp, bifrostErr := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+					Provider: schemas.OpenAI,
+					Model:    "gpt-4",
+					Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}}},
+				})
+				if bifrostErr != nil {
+					t.Fatalf("the retry should have served, got %v", bifrostErr.Error.Message)
+				}
+				if key := resp.ExtraFields.RoutingInfo.Key; key != "Key A" {
+					t.Fatalf("served by %q, want Key A", key)
+				}
+				mu.Lock()
+				defer mu.Unlock()
+				if want := []string{"Bearer sk-a", "Bearer sk-a"}; !slices.Equal(used, want) {
+					t.Fatalf("upstream saw %v, want the held key twice: %v", used, want)
+				}
+			})
+		}
+	}
+}
+
+func TestSessionKeyRejectedSkipsARateLimitedSibling(t *testing.T) {
+	client, hits := threeKeySessionClient(t, map[string][]int{"a": {http.StatusUnauthorized}, "b": {http.StatusTooManyRequests}}, nil)
+	if served := sessionChat(t, client); served != "Key C" {
+		t.Fatalf("served by %q, want Key C", served)
+	}
+	if got := strings.Join(*hits, ","); got != "a,b,c" {
+		t.Fatalf("upstream saw keys %s, want a,b,c", got)
+	}
+}
+
+// The key pool filter, such as the circuit breaker's, still applies to the key a rejected
+// session's request moves to.
+func TestSessionKeyRejectedHonoursTheKeyPoolFilter(t *testing.T) {
+	withoutB := func(_ *schemas.BifrostContext, _ schemas.ModelProvider, _ string, keys []schemas.Key) ([]schemas.Key, error) {
+		kept := make([]schemas.Key, 0, len(keys))
+		for _, k := range keys {
+			if k.ID != "key-b" {
+				kept = append(kept, k)
+			}
+		}
+		return kept, nil
+	}
+	client, hits := threeKeySessionClient(t, map[string][]int{"a": {http.StatusUnauthorized}}, withoutB)
+	if served := sessionChat(t, client); served != "Key C" {
+		t.Fatalf("served by %q, want Key C", served)
+	}
+	if got := strings.Join(*hits, ","); got != "a,c" {
+		t.Fatalf("upstream saw keys %s, want a,c", got)
+	}
+}
+
+// When the key pool filter vetoes every sibling not yet tried, a rejected session's request goes
+// back to a sibling it already tried that the filter admits, as a request without a session does,
+// rather than failing with retries left.
+func TestSessionKeyRejectedRetriesATriedSiblingTheFilterAdmits(t *testing.T) {
+	withoutC := func(_ *schemas.BifrostContext, _ schemas.ModelProvider, _ string, keys []schemas.Key) ([]schemas.Key, error) {
+		kept := make([]schemas.Key, 0, len(keys))
+		for _, k := range keys {
+			if k.ID != "key-c" {
+				kept = append(kept, k)
+			}
+		}
+		return kept, nil
+	}
+	client, hits := threeKeySessionClient(t, map[string][]int{"a": {http.StatusUnauthorized}, "b": {http.StatusTooManyRequests, http.StatusOK}}, withoutC)
+	if served := sessionChat(t, client); served != "Key B" {
+		t.Fatalf("served by %q, want Key B", served)
+	}
+	if got := strings.Join(*hits, ","); got != "a,b,b" {
+		t.Fatalf("upstream saw keys %s, want a,b,b", got)
+	}
+}
+
+// Once every sibling of a rejected session's key has been tried, the next attempt starts a new
+// round over all of them, as a request without a session does, instead of returning to the same
+// rate-limited sibling every time.
+func TestSessionKeyRejectedStartsANewRoundOnceEverySiblingWasTried(t *testing.T) {
+	client, hits := threeKeySessionClient(t, map[string][]int{
+		"a": {http.StatusUnauthorized},
+		"b": {http.StatusTooManyRequests},
+		"c": {http.StatusTooManyRequests, http.StatusOK},
+	}, nil)
+	if served := sessionChat(t, client); served != "Key C" {
+		t.Fatalf("served by %q, want Key C", served)
+	}
+	if got := strings.Join(*hits, ","); got != "a,b,c,b,c" {
+		t.Fatalf("upstream saw keys %s, want a,b,c,b,c", got)
+	}
+}
+
+// A realtime or WebSocket connection asks for one key up front. A session bound to a key gets
+// that key, not the selector's pick from the rest of the pool behind it.
+func TestSelectKeyForProviderRequestTypeKeepsTheSessionKey(t *testing.T) {
+	client, _ := threeKeySessionClient(t, nil, nil)
+	client.keySelector = func(_ *schemas.BifrostContext, keys []schemas.Key, _ schemas.ModelProvider, _ string) (schemas.Key, error) {
+		return keys[len(keys)-1], nil // anything but the session's key-a, were the pool handed to it
+	}
+	key, err := client.SelectKeyForProviderRequestType(sessionCtx("s"), schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4")
+	if err != nil || key.ID != "key-a" {
+		t.Fatalf("got %q (err %v), want the session's key-a", key.ID, err)
+	}
+}
 
 func sessionCtx(sessionID string) *schemas.BifrostContext {
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
@@ -577,6 +876,54 @@ func TestSessionAffinityObserveRoute(t *testing.T) {
 			t.Fatalf("a served route without a key should bind only the route: %v", kv.data)
 		}
 	})
+
+	// Only the first route is tried with the caller's direct key, so a fallback that served such a
+	// request served on the gateway's keys and says nothing about where the caller's key works.
+	directKeyServedBy := func(route schemas.Route, keyID string, fallback bool) schemas.RouteOutcome {
+		outcome := servedBy(route, keyID, fallback)
+		outcome.DirectKey = true
+		return outcome
+	}
+
+	t.Run("a fallback that served a direct-key request binds no route", func(t *testing.T) {
+		kv := newMockKVStore()
+		ctx := sessionCtx("session-1")
+		testAffinity(kv).Observe(ctx, requested, directKeyServedBy(routeOf(schemas.Azure, "gpt-4o"), "az-1", true))
+		if entry, bound := kv.data[routeKeyOf(ctx)]; bound {
+			t.Fatalf("the session was bound to a fallback that served without the caller's key: %+v", entry)
+		}
+		// The key the fallback served with is still bound on its own provider.
+		if entry := kv.data[SessionStateKey(ctx, SessionStateKindKey, string(schemas.Azure), "gpt-4o")]; entry.value != "az-1" {
+			t.Fatalf("key binding on the fallback provider: %+v, want az-1", entry)
+		}
+		if !trailMentions(ctx, "without the caller's own key") {
+			t.Fatalf("the trail does not say why the session stayed unbound: %v", ctx.GetRoutingEngineLogs())
+		}
+		if !slices.Contains(enginesUsed(ctx), schemas.RoutingEngineSessionAffinity) {
+			t.Fatalf("the trail entry is attributed to an engine the request does not list: %v", enginesUsed(ctx))
+		}
+	})
+
+	t.Run("a fallback that served a direct-key request drops the route it followed", func(t *testing.T) {
+		kv := newMockKVStore()
+		a := testAffinity(kv)
+		ctx := sessionCtx("session-1")
+		_ = kv.SetWithTTL(routeKeyOf(ctx), "azure/gpt-4o", time.Minute)
+		a.ResolveRoute(ctx, requested, chain)
+		a.Observe(ctx, requested, directKeyServedBy(routeOf(schemas.OpenAI, "gpt-4o"), "oa-1", true))
+		if entry, bound := kv.data[routeKeyOf(ctx)]; bound {
+			t.Fatalf("route binding after a fallback served without the caller's key: %+v, want none", entry)
+		}
+	})
+
+	t.Run("a direct-key request served by its first route binds it", func(t *testing.T) {
+		kv := newMockKVStore()
+		ctx := sessionCtx("session-1")
+		testAffinity(kv).Observe(ctx, requested, directKeyServedBy(routeOf(schemas.OpenAI, "gpt-4o"), "", false))
+		if entry := kv.data[routeKeyOf(ctx)]; entry.value != "openai/gpt-4o" {
+			t.Fatalf("route binding after the caller's key served: %+v", entry)
+		}
+	})
 }
 
 // A binding the request followed into a failure is dropped, at both levels, so the next request
@@ -652,10 +999,10 @@ func TestSessionAffinityFailureDropsWhatTheRequestFollowed(t *testing.T) {
 		_ = kv.SetWithTTL(route, "openai/gpt-4o", time.Minute)
 		_ = kv.SetWithTTL(openaiKey, "key-b", time.Minute)
 		// The caller named its provider, so the route binding was never consulted, and the key
-		// pool had one key, so neither was the key binding.
+		// pool had one key, the bound one, so the key binding was not followed either.
 		named := routeOf(schemas.OpenAI, "gpt-4o")
 		a.ResolveRoute(ctx, named, chain[:1])
-		a.ResolveKey(ctx, schemas.OpenAI, "gpt-4o", sessionTestPool[:1])
+		a.ResolveKey(ctx, schemas.OpenAI, "gpt-4o", sessionTestPool[1:2])
 		a.Observe(ctx, named, failed)
 		if entry := kv.data[route]; entry.value != "openai/gpt-4o" {
 			t.Fatalf("route binding touched by a request that never followed it: %+v", entry)
@@ -827,6 +1174,18 @@ func TestResolveSessionRouteAppliesTheAnswer(t *testing.T) {
 		}
 		if fake.routeCalls != 1 {
 			t.Fatalf("ResolveRoute called %d times, want 1", fake.routeCalls)
+		}
+	})
+
+	t.Run("a reordered inferred chain stays inferred", func(t *testing.T) {
+		client, _ := setup(t, reverse)
+		req := newRequest(schemas.OpenAI)
+		req.SetFallbacks([]schemas.Fallback{{Provider: schemas.Azure, Model: "gpt-4o", Inferred: true}, {Provider: schemas.Groq, Model: "openai/gpt-4o", Inferred: true}})
+		client.resolveSessionRoute(sessionCtx("s"), routeOf("", "gpt-4o"), req)
+		_, _, fallbacks := req.GetRequestFields()
+		want := []schemas.Fallback{{Provider: schemas.Azure, Model: "gpt-4o", Inferred: true}, {Provider: schemas.OpenAI, Model: "gpt-4o", Inferred: true}}
+		if !slices.Equal(fallbacks, want) {
+			t.Fatalf("fallbacks = %v, want %v", fallbacks, want)
 		}
 	})
 
@@ -1012,20 +1371,102 @@ func TestResolveSessionRouteMovesKeyPinsWithTheirRoutes(t *testing.T) {
 		}
 	})
 
-	t.Run("a caller's own pins are left alone", func(t *testing.T) {
+	// A key the caller pinned belongs to one provider. When that provider heads the chain, the
+	// request names it as firmly as a provider-prefixed model does, so the session does not reorder
+	// the chain away from it. Moving it used to leave the pin on a provider that has no such key, so
+	// that attempt failed at key selection and the fallback ran without the pin.
+	withCallerKeys := func(t *testing.T, client *Bifrost) {
+		t.Helper()
+		account := client.account.(*MockAccount)
+		account.SetKeysForProvider(schemas.Vertex, []schemas.Key{{ID: "caller-key", Name: "caller-name", Value: *schemas.NewSecretVar("sk-vertex"), Weight: 1}})
+		account.SetKeysForProvider(schemas.Anthropic, []schemas.Key{{ID: "anthropic-caller-key", Name: "anthropic-caller-name", Value: *schemas.NewSecretVar("sk-anthropic"), Weight: 1}})
+	}
+	for _, tc := range []struct {
+		name  string
+		key   schemas.BifrostContextKey
+		value string
+	}{
+		{"a caller's key id on the head provider", schemas.BifrostContextKeyAPIKeyID, "caller-key"},
+		{"a caller's key name on the head provider", schemas.BifrostContextKeyAPIKeyName, "caller-name"},
+	} {
+		t.Run(tc.name+" keeps the chain where it is", func(t *testing.T) {
+			client := setup(t, reverse)
+			withCallerKeys(t, client)
+			ctx := sessionCtx("s")
+			ctx.SetValue(tc.key, tc.value)
+			req := newRequest("")
+			client.resolveSessionRoute(ctx, routeOf("", "claude-opus-5"), req)
+			if provider, _, _ := req.GetRequestFields(); provider != schemas.Vertex {
+				t.Fatalf("primary = %s, want vertex: the session must not move a request the caller pinned to a vertex key", provider)
+			}
+			want := []schemas.Fallback{{Provider: schemas.Anthropic, Model: "claude-opus-5"}}
+			if got := fallbacksOf(req); !slices.Equal(got, want) {
+				t.Fatalf("fallbacks = %+v, want %+v untouched", got, want)
+			}
+			if v, _ := ctx.Value(tc.key).(string); v != tc.value {
+				t.Fatalf("the caller's own pin became %q, want %q", v, tc.value)
+			}
+			if !trailMentions(ctx, "caller") {
+				t.Fatalf("the trail does not say why the session left the chain alone: %v", ctx.GetRoutingEngineLogs())
+			}
+		})
+	}
+
+	// A pin on a key the head provider does not hold says nothing about the head, and the session
+	// may well be moving the request to the provider that holds it. A direct key names no provider
+	// at all, so it leaves the session to decide too.
+	for _, tc := range []struct {
+		name string
+		pin  func(ctx *schemas.BifrostContext)
+	}{
+		{"a caller's key id on the promoted provider", func(ctx *schemas.BifrostContext) {
+			ctx.SetValue(schemas.BifrostContextKeyAPIKeyID, "anthropic-caller-key")
+		}},
+		{"a caller's key name on the promoted provider", func(ctx *schemas.BifrostContext) {
+			ctx.SetValue(schemas.BifrostContextKeyAPIKeyName, "anthropic-caller-name")
+		}},
+		{"a caller's key id no provider holds", func(ctx *schemas.BifrostContext) {
+			ctx.SetValue(schemas.BifrostContextKeyAPIKeyID, "unknown-key")
+		}},
+		{"a caller's direct key", func(ctx *schemas.BifrostContext) {
+			ctx.SetValue(schemas.BifrostContextKeyDirectKey, schemas.Key{ID: "header-provided", Value: *schemas.NewSecretVar("sk-caller")})
+		}},
+	} {
+		t.Run(tc.name+" leaves the session to decide", func(t *testing.T) {
+			client := setup(t, reverse)
+			withCallerKeys(t, client)
+			ctx := sessionCtx("s")
+			tc.pin(ctx)
+			req := newRequest("")
+			client.resolveSessionRoute(ctx, routeOf("", "claude-opus-5"), req)
+			if provider, _, _ := req.GetRequestFields(); provider != schemas.Anthropic {
+				t.Fatalf("primary = %s, want anthropic: the session must still move a request whose pin is not on the head provider", provider)
+			}
+			want := []schemas.Fallback{{Provider: schemas.Vertex, Model: "claude-opus-5"}}
+			if got := fallbacksOf(req); !slices.Equal(got, want) {
+				t.Fatalf("fallbacks = %+v, want %+v", got, want)
+			}
+			if trailMentions(ctx, "caller") {
+				t.Fatalf("the trail claims the caller pinned the head provider: %v", ctx.GetRoutingEngineLogs())
+			}
+		})
+	}
+
+	// A rule's pin takes the primary attempt over: it is committed into the api-key-id key selection
+	// reads, so the caller's pins say nothing about the primary and the rule's pin moves with its route.
+	t.Run("a rule's pin still moves with its route when the caller also named a head key", func(t *testing.T) {
 		client := setup(t, reverse)
-		ctx := sessionCtx("s")
-		ctx.SetValue(schemas.BifrostContextKeyAPIKeyID, "caller-key")
+		withCallerKeys(t, client)
+		ctx := pinned()
 		ctx.SetValue(schemas.BifrostContextKeyAPIKeyName, "caller-name")
-		client.resolveSessionRoute(ctx, routeOf("", "claude-opus-5"), newRequest(""))
-		if got, _ := ctx.Value(schemas.BifrostContextKeyAPIKeyID).(string); got != "caller-key" {
-			t.Fatalf("api-key-id = %q after a session move, want the caller's own pin kept", got)
+		req := newRequest("")
+		client.resolveSessionRoute(ctx, routeOf("", "claude-opus-5"), req)
+		if provider, _, _ := req.GetRequestFields(); provider != schemas.Anthropic {
+			t.Fatalf("primary = %s, want anthropic", provider)
 		}
-		if got, _ := ctx.Value(schemas.BifrostContextKeyAPIKeyName).(string); got != "caller-name" {
-			t.Fatalf("api-key name = %q after a session move, want the caller's own pin kept", got)
-		}
-		if trailMentions(ctx, "pinned") {
-			t.Fatalf("the trail mentions a routing pin the request never had: %v", ctx.GetRoutingEngineLogs())
+		want := []schemas.Fallback{{Provider: schemas.Vertex, Model: "claude-opus-5", KeyID: vertexPin}}
+		if got := fallbacksOf(req); !slices.Equal(got, want) {
+			t.Fatalf("fallbacks = %+v, want the demoted vertex route carrying the rule pin %+v", got, want)
 		}
 	})
 }
@@ -1045,28 +1486,236 @@ func TestObserveSessionOutcomeReportsServedRouteAndKey(t *testing.T) {
 	ctx := sessionCtx("s")
 	ctx.SetValue(schemas.BifrostContextKeySelectedKeyID, "key-a")
 	requested := routeOf("", "gpt-4o")
-	client.observeSessionOutcome(ctx, requested, &schemas.Route{Provider: schemas.Azure, Model: "gpt-4o"}, true, nil)
-	client.observeSessionOutcome(ctx, requested, nil, false, &schemas.BifrostError{})
+	client.observeSessionOutcome(ctx, requested, &schemas.Route{Provider: schemas.Azure, Model: "gpt-4o"}, true, true, nil)
+	client.observeSessionOutcome(ctx, requested, nil, false, false, &schemas.BifrostError{})
 
 	if len(fake.outcomes) != 2 || fake.requested[0] != requested {
 		t.Fatalf("outcomes recorded: %+v for %v", fake.outcomes, fake.requested)
 	}
 	served := fake.outcomes[0]
-	if served.Served == nil || served.Served.Provider != schemas.Azure || served.KeyID != "key-a" || !served.Fallback || served.Err != nil {
+	if served.Served == nil || served.Served.Provider != schemas.Azure || served.KeyID != "key-a" || !served.Fallback || !served.DirectKey || served.Err != nil {
 		t.Fatalf("served outcome: %+v", served)
 	}
 	failed := fake.outcomes[1]
-	if failed.Served != nil || failed.KeyID != "" || failed.Err == nil {
+	if failed.Served != nil || failed.KeyID != "" || failed.DirectKey || failed.Err == nil {
 		t.Fatalf("failed outcome: %+v", failed)
+	}
+
+	// A direct key that served is the caller's own, not one of the pool's, so no key is reported
+	// for it: a key binding naming it could never be followed.
+	direct := sessionCtx("s")
+	direct.SetValue(schemas.BifrostContextKeySelectedKeyID, "header-provided")
+	client.observeSessionOutcome(direct, requested, &schemas.Route{Provider: schemas.OpenAI, Model: "gpt-4o"}, false, true, nil)
+	if got := fake.outcomes[2]; got.Served == nil || got.KeyID != "" || !got.DirectKey || got.Fallback {
+		t.Fatalf("direct key outcome: %+v, want the route served and no key", got)
 	}
 
 	// A request that takes no part is not reported.
 	off := sessionCtx("s")
 	off.SetValue(schemas.BifrostContextKeySessionAffinity, false)
-	client.observeSessionOutcome(off, requested, &schemas.Route{Provider: schemas.Azure, Model: "gpt-4o"}, false, nil)
-	client.observeSessionOutcome(sessionCtx(""), requested, &schemas.Route{Provider: schemas.Azure, Model: "gpt-4o"}, false, nil)
-	if len(fake.outcomes) != 2 {
+	client.observeSessionOutcome(off, requested, &schemas.Route{Provider: schemas.Azure, Model: "gpt-4o"}, false, false, nil)
+	client.observeSessionOutcome(sessionCtx(""), requested, &schemas.Route{Provider: schemas.Azure, Model: "gpt-4o"}, false, false, nil)
+	if len(fake.outcomes) != 3 {
 		t.Fatalf("a request that takes no part was reported: %d outcomes", len(fake.outcomes))
+	}
+}
+
+// bareModelRouter routes a request for a bare model to a fixed chain in PreRequestHook, the way a
+// routing rule or the model catalog resolver does on the gateway.
+type bareModelRouter struct {
+	primary   schemas.ModelProvider
+	fallbacks []schemas.Fallback
+}
+
+func (r *bareModelRouter) GetName() string { return "bare-model-router" }
+func (r *bareModelRouter) Cleanup() error  { return nil }
+func (r *bareModelRouter) PreRequestHook(_ *schemas.BifrostContext, req *schemas.BifrostRequest) error {
+	if provider, _, _ := req.GetRequestFields(); provider == "" {
+		req.SetProvider(r.primary)
+		req.SetFallbacks(r.fallbacks)
+	}
+	return nil
+}
+func (r *bareModelRouter) PreLLMHook(_ *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	return req, nil, nil
+}
+func (r *bareModelRouter) PostLLMHook(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	return resp, bifrostErr, nil
+}
+
+// TestSessionAffinityKeepsADirectKeyOffTheFallbackThatServed pins the bug where a fallback that
+// served a request carrying a direct key became the session's provider. Only the first route is
+// tried with the caller's key, so the fallback had served on the gateway's keys, and the next
+// request of the session was moved there first, sending the caller's key to a provider it was
+// never meant for.
+func TestSessionAffinityKeepsADirectKeyOffTheFallbackThatServed(t *testing.T) {
+	const callerKey, openaiKey, anthropicKey = "sk-caller", "sk-gateway-openai", "sk-gateway-anthropic"
+	for _, stream := range []bool{false, true} {
+		t.Run(fmt.Sprintf("stream=%v", stream), func(t *testing.T) {
+			var mu sync.Mutex
+			var openaiSaw, anthropicSaw []string
+			// The caller's key is for neither upstream here, so both refuse it and serve on their own.
+			openaiChunks := sseHandler(
+				`{"id":"c1","object":"chat.completion.chunk","created":1,"model":"gpt-4o-mini","choices":[{"index":0,"delta":{"role":"assistant","content":"ok"},"finish_reason":null}]}`,
+				`{"id":"c1","object":"chat.completion.chunk","created":1,"model":"gpt-4o-mini","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`)
+			openai := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				auth := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+				mu.Lock()
+				openaiSaw = append(openaiSaw, auth)
+				mu.Unlock()
+				if auth != openaiKey {
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusUnauthorized)
+					_, _ = w.Write([]byte(`{"error":{"message":"Incorrect API key provided","type":"invalid_request_error","code":"invalid_api_key"}}`))
+					return
+				}
+				if stream {
+					openaiChunks(w, r)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"id":"c1","object":"chat.completion","created":1,"model":"gpt-4o-mini","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+			}))
+			defer openai.Close()
+			anthropic := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				key := r.Header.Get("x-api-key")
+				mu.Lock()
+				anthropicSaw = append(anthropicSaw, key)
+				mu.Unlock()
+				if key != anthropicKey {
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusUnauthorized)
+					_, _ = w.Write([]byte(`{"type":"error","error":{"type":"authentication_error","message":"invalid x-api-key"}}`))
+					return
+				}
+				if stream {
+					anthropicMessagesHandler()(w, r)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"id":"msg_1","type":"message","role":"assistant","model":"claude-3-5-haiku-20241022","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`))
+			}))
+			defer anthropic.Close()
+
+			account := NewMockAccount()
+			account.AddProviderWithBaseURL(schemas.OpenAI, 1, 1, openai.URL)
+			account.AddProviderWithBaseURL(schemas.Anthropic, 1, 1, anthropic.URL)
+			account.configs[schemas.OpenAI].NetworkConfig.MaxRetries = 0
+			account.configs[schemas.Anthropic].NetworkConfig.MaxRetries = 0
+			account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{{ID: "openai-key", Value: *schemas.NewSecretVar(openaiKey), Models: schemas.WhiteList{"*"}, Weight: 1}})
+			account.SetKeysForProvider(schemas.Anthropic, []schemas.Key{{ID: "anthropic-key", Value: *schemas.NewSecretVar(anthropicKey), Models: schemas.WhiteList{"*"}, Weight: 1}})
+			kv := newMockKVStore()
+			client, err := Init(context.Background(), schemas.BifrostConfig{
+				Account: account,
+				Logger:  NewDefaultLogger(schemas.LogLevelError),
+				KVStore: kv,
+				LLMPlugins: []schemas.LLMPlugin{&bareModelRouter{
+					primary:   schemas.OpenAI,
+					fallbacks: []schemas.Fallback{{Provider: schemas.Anthropic, Model: "claude-3-5-haiku-20241022"}},
+				}},
+			})
+			if err != nil {
+				t.Fatalf("Init: %v", err)
+			}
+			t.Cleanup(client.Shutdown)
+
+			send := func(turn int) {
+				t.Helper()
+				ctx := sessionCtx("s")
+				ctx.SetValue(schemas.BifrostContextKeyDirectKey, schemas.Key{ID: "header-provided", Name: "header-provided", Value: *schemas.NewSecretVar(callerKey), Weight: 1})
+				req := &schemas.BifrostChatRequest{
+					Model: "gpt-4o-mini",
+					Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}}},
+				}
+				var bifrostErr *schemas.BifrostError
+				if stream {
+					var ch chan *schemas.BifrostStreamChunk
+					if ch, bifrostErr = client.ChatCompletionStreamRequest(ctx, req); bifrostErr == nil {
+						drainChatStream(ch)
+					}
+				} else {
+					_, bifrostErr = client.ChatCompletionRequest(ctx, req)
+				}
+				if bifrostErr != nil {
+					t.Fatalf("turn %d: the gateway's fallback should have served, got %v", turn, bifrostErr.Error.Message)
+				}
+			}
+			// Turn 1: openai refuses the caller's key and the anthropic fallback serves on the gateway's key.
+			send(1)
+			if entry, bound := kv.data[SessionStateKey(sessionCtx("s"), SessionStateKindRoute, "", "gpt-4o-mini")]; bound {
+				t.Fatalf("the session was bound to %s, which served without the caller's key", entry.value)
+			}
+			// Turn 2 starts on the routing decision again, so the caller's key reaches only openai.
+			send(2)
+			mu.Lock()
+			defer mu.Unlock()
+			if slices.Contains(anthropicSaw, callerKey) {
+				t.Fatalf("the caller's key was sent to anthropic, a provider it was never meant for: anthropic saw %v, openai saw %v", anthropicSaw, openaiSaw)
+			}
+			if want := []string{callerKey, callerKey}; !slices.Equal(openaiSaw, want) {
+				t.Fatalf("openai saw %v, want the caller's key on each turn's first attempt %v", openaiSaw, want)
+			}
+		})
+	}
+}
+
+// TestSessionAffinityBindsNoKeyForADirectKeyThatServed pins the bug where a direct key that served
+// bound the session's key to its id. The key is the caller's own and never in the pool, so the next
+// request of the session that picked from the pool found the binding ineligible, deleted it and
+// said in its trail that the key the session last used was no longer eligible.
+func TestSessionAffinityBindsNoKeyForADirectKeyThatServed(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"c1","object":"chat.completion","created":1,"model":"gpt-4o-mini","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+	}))
+	defer upstream.Close()
+
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL(schemas.OpenAI, 1, 1, upstream.URL)
+	account.configs[schemas.OpenAI].NetworkConfig.MaxRetries = 0
+	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
+		{ID: "key-a", Value: *schemas.NewSecretVar("sk-a"), Models: schemas.WhiteList{"*"}, Weight: 1},
+		{ID: "key-b", Value: *schemas.NewSecretVar("sk-b"), Models: schemas.WhiteList{"*"}, Weight: 1},
+	})
+	kv := newMockKVStore()
+	client, err := Init(context.Background(), schemas.BifrostConfig{
+		Account:    account,
+		Logger:     NewDefaultLogger(schemas.LogLevelError),
+		KVStore:    kv,
+		LLMPlugins: []schemas.LLMPlugin{&bareModelRouter{primary: schemas.OpenAI}},
+	})
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	t.Cleanup(client.Shutdown)
+
+	send := func(ctx *schemas.BifrostContext) {
+		t.Helper()
+		_, bifrostErr := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+			Model: "gpt-4o-mini",
+			Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}}},
+		})
+		if bifrostErr != nil {
+			t.Fatalf("request failed: %v", bifrostErr.Error.Message)
+		}
+	}
+
+	// The caller's own key serves the session's first request.
+	withDirectKey := sessionCtx("s")
+	withDirectKey.SetValue(schemas.BifrostContextKeyDirectKey, schemas.Key{ID: "header-provided", Name: "header-provided", Value: *schemas.NewSecretVar("sk-caller"), Weight: 1})
+	send(withDirectKey)
+	if entry := kv.data[SessionStateKey(sessionCtx("s"), SessionStateKindRoute, "", "gpt-4o-mini")]; entry.value != "openai/gpt-4o-mini" {
+		t.Fatalf("route binding after the direct key served: %+v, want openai/gpt-4o-mini", entry)
+	}
+	if entry, bound := kv.data[SessionStateKey(sessionCtx("s"), SessionStateKindKey, string(schemas.OpenAI), "gpt-4o-mini")]; bound {
+		t.Fatalf("the session's key was bound to %q, the caller's own key, which the pool never holds", entry.value)
+	}
+
+	// The next request picks from the pool with nothing stale to clear.
+	pooled := sessionCtx("s")
+	send(pooled)
+	if trailMentions(pooled, "no longer eligible") {
+		t.Fatalf("the pooled request found a key binding it could not follow: %v", pooled.GetRoutingEngineLogs())
 	}
 }
 
@@ -1156,25 +1805,85 @@ func TestKeyPoolIgnoresAnAffinityKeyOutsideThePool(t *testing.T) {
 
 func TestSessionAffinityForgetsWhatAnEarlierRequestFollowed(t *testing.T) {
 	kv := newMockKVStore()
-	a := testAffinity(kv)
+	client, err := Init(context.Background(), schemas.BifrostConfig{Account: NewMockAccount(), Logger: NewDefaultLogger(schemas.LogLevelError), KVStore: kv})
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	t.Cleanup(client.Shutdown)
 	requested := routeOf("", "gpt-4o")
-	chain := []schemas.Route{routeOf(schemas.OpenAI, "gpt-4o"), routeOf(schemas.Azure, "gpt-4o")}
+	newRequest := func() *schemas.BifrostRequest {
+		req := &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: "gpt-4o"}}
+		req.SetFallbacks([]schemas.Fallback{{Provider: schemas.Azure, Model: "gpt-4o"}})
+		return req
+	}
 	ctx := sessionCtx("session-1")
 	routeKey := SessionStateKey(ctx, SessionStateKindRoute, "", "gpt-4o")
 
 	// An earlier request on this context followed a binding to azure.
 	_ = kv.SetWithTTL(routeKey, "azure/gpt-4o", time.Minute)
-	a.ResolveRoute(ctx, requested, chain)
+	client.resolveSessionRoute(ctx, requested, newRequest())
 
 	// The binding expires. The next request on the same context finds none, and while it is
 	// in flight another request of the session binds openai first.
 	_, _ = kv.Delete(routeKey)
-	a.ResolveRoute(ctx, requested, chain)
+	client.resolveSessionRoute(ctx, requested, newRequest())
 	_ = kv.SetWithTTL(routeKey, "openai/gpt-4o", time.Minute)
 
-	a.Observe(ctx, requested, servedBy(routeOf(schemas.Azure, "gpt-4o"), "az-1", false))
+	client.sessionAffinity.Observe(ctx, requested, servedBy(routeOf(schemas.Azure, "gpt-4o"), "az-1", false))
 	if entry := kv.data[routeKey]; entry.value != "openai/gpt-4o" {
 		t.Fatalf("a request that followed nothing overwrote another request's binding: %+v", entry)
+	}
+}
+
+// A context can carry what an earlier request on it followed. A later request on the same context
+// that pins the caller's key to the head provider follows no binding, so how it ends must leave the
+// session's bindings as they were: the earlier request's choices are not this one's.
+func TestCallerPinOnAReusedContextLeavesTheSessionsBindings(t *testing.T) {
+	account := NewMockAccount()
+	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
+		{ID: "key-a", Name: "Key A", Value: *schemas.NewSecretVar("sk-a"), Models: schemas.WhiteList{"*"}, Weight: 1},
+		{ID: "key-b", Name: "Key B", Value: *schemas.NewSecretVar("sk-b"), Models: schemas.WhiteList{"*"}, Weight: 1},
+	})
+	account.SetKeysForProvider(schemas.Azure, []schemas.Key{{ID: "az-caller", Name: "Azure caller", Value: *schemas.NewSecretVar("sk-az"), Models: schemas.WhiteList{"*"}, Weight: 1}})
+	kv := newMockKVStore()
+	client, err := Init(context.Background(), schemas.BifrostConfig{Account: account, Logger: NewDefaultLogger(schemas.LogLevelError), KVStore: kv})
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	t.Cleanup(client.Shutdown)
+
+	ctx := sessionCtx("s")
+	requested := routeOf("", "gpt-4o")
+	routeKey := SessionStateKey(ctx, SessionStateKindRoute, "", "gpt-4o")
+	keyKey := SessionStateKey(ctx, SessionStateKindKey, string(schemas.OpenAI), "gpt-4o")
+	_ = kv.SetWithTTL(routeKey, "openai/gpt-4o", time.Minute)
+	_ = kv.SetWithTTL(keyKey, "key-a", time.Minute)
+	chat := func(provider, fallback schemas.ModelProvider) *schemas.BifrostRequest {
+		req := &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{Provider: provider, Model: "gpt-4o"}}
+		req.SetFallbacks([]schemas.Fallback{{Provider: fallback, Model: "gpt-4o"}})
+		return req
+	}
+
+	// An earlier request on this context followed both bindings.
+	client.resolveSessionRoute(ctx, requested, chat(schemas.OpenAI, schemas.Azure))
+	openaiKeys, _ := account.GetKeysForProvider(ctx, schemas.OpenAI)
+	if key, ok := client.sessionAffinity.ResolveKey(ctx, schemas.OpenAI, "gpt-4o", openaiKeys); !ok || key.ID != "key-a" {
+		t.Fatalf("the earlier request should have followed the key binding to key-a, got %q (%v)", key.ID, ok)
+	}
+
+	// The next request on the context pins the caller's own Azure key, with Azure heading the chain,
+	// and is served there.
+	ctx.SetValue(schemas.BifrostContextKeyAPIKeyID, "az-caller")
+	client.resolveSessionRoute(ctx, requested, chat(schemas.Azure, schemas.OpenAI))
+	ctx.SetValue(schemas.BifrostContextKeySelectedKeyID, "az-caller")
+	served := routeOf(schemas.Azure, "gpt-4o")
+	client.observeSessionOutcome(ctx, requested, &served, false, false, nil)
+
+	if entry := kv.data[keyKey]; entry.value != "key-a" {
+		t.Fatalf("the pinned request dropped openai's key binding it never followed: %+v", entry)
+	}
+	if entry := kv.data[routeKey]; entry.value != "openai/gpt-4o" {
+		t.Fatalf("the pinned request rebound the session it never followed: %+v", entry)
 	}
 }
 
@@ -1205,4 +1914,633 @@ func TestSessionAffinityLeavesAnExplicitProviderAlone(t *testing.T) {
 	if slices.Contains(enginesUsed(ctx), schemas.RoutingEngineSessionAffinity) {
 		t.Fatal("the session was recorded as deciding a route the caller named")
 	}
+}
+
+// TestCallerKeyPinIsTriedOnTheFirstAttemptOnly runs a caller's pin on a key of the provider routing
+// put second through a whole request. A pin is tried on the first attempt only, on whatever provider
+// the configuration put first, and Bifrost never moves a provider forward for it: the first attempt
+// finds no such key on the provider routing chose, so it fails key selection without calling that
+// provider, and the key's provider then runs as a fallback, which never carries the caller's pin and
+// picks a key of its own.
+func TestCallerKeyPinIsTriedOnTheFirstAttemptOnly(t *testing.T) {
+	const anthropicKey, pinnedKey = "sk-gateway-anthropic", "sk-pinned-anthropic"
+	for _, stream := range []bool{false, true} {
+		t.Run(fmt.Sprintf("stream=%v", stream), func(t *testing.T) {
+			var mu sync.Mutex
+			var openaiCalls int
+			var anthropicSaw []string
+			openai := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				mu.Lock()
+				openaiCalls++
+				mu.Unlock()
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"id":"c1","object":"chat.completion","created":1,"model":"gpt-4o-mini","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+			}))
+			defer openai.Close()
+			anthropic := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				mu.Lock()
+				anthropicSaw = append(anthropicSaw, r.Header.Get("x-api-key"))
+				mu.Unlock()
+				if stream {
+					anthropicMessagesHandler()(w, r)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"id":"msg_1","type":"message","role":"assistant","model":"claude-3-5-haiku-20241022","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`))
+			}))
+			defer anthropic.Close()
+
+			account := NewMockAccount()
+			account.AddProviderWithBaseURL(schemas.OpenAI, 1, 1, openai.URL)
+			account.AddProviderWithBaseURL(schemas.Anthropic, 1, 1, anthropic.URL)
+			account.configs[schemas.OpenAI].NetworkConfig.MaxRetries = 0
+			account.configs[schemas.Anthropic].NetworkConfig.MaxRetries = 0
+			account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{{ID: "openai-key", Value: *schemas.NewSecretVar("sk-gateway-openai"), Models: schemas.WhiteList{"*"}, Weight: 1}})
+			account.SetKeysForProvider(schemas.Anthropic, []schemas.Key{
+				{ID: "anthropic-key", Value: *schemas.NewSecretVar(anthropicKey), Models: schemas.WhiteList{"*"}, Weight: 1},
+				// Weight 0: a free pick never lands on it, so only the pin can send a request there.
+				{ID: "anthropic-pinned", Value: *schemas.NewSecretVar(pinnedKey), Models: schemas.WhiteList{"*"}, Weight: 0},
+			})
+			client, err := Init(context.Background(), schemas.BifrostConfig{
+				Account: account,
+				Logger:  NewDefaultLogger(schemas.LogLevelError),
+				LLMPlugins: []schemas.LLMPlugin{&bareModelRouter{
+					primary:   schemas.OpenAI,
+					fallbacks: []schemas.Fallback{{Provider: schemas.Anthropic, Model: "claude-3-5-haiku-20241022"}},
+				}},
+			})
+			if err != nil {
+				t.Fatalf("Init: %v", err)
+			}
+			t.Cleanup(client.Shutdown)
+
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			ctx.SetValue(schemas.BifrostContextKeyAPIKeyID, "anthropic-pinned")
+			req := &schemas.BifrostChatRequest{
+				Model: "gpt-4o-mini",
+				Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}}},
+			}
+			var bifrostErr *schemas.BifrostError
+			if stream {
+				var ch chan *schemas.BifrostStreamChunk
+				if ch, bifrostErr = client.ChatCompletionStreamRequest(ctx, req); bifrostErr == nil {
+					drainChatStream(ch)
+				}
+			} else {
+				_, bifrostErr = client.ChatCompletionRequest(ctx, req)
+			}
+			if bifrostErr != nil {
+				t.Fatalf("the fallback should have served, got %v", bifrostErr.Error.Message)
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if openaiCalls != 0 {
+				t.Errorf("openai, which has no such key, was called %d times; the attempt should fail key selection first", openaiCalls)
+			}
+			if want := []string{anthropicKey}; !slices.Equal(anthropicSaw, want) {
+				t.Errorf("anthropic saw %v, want only its gateway key %v: a fallback never carries the caller's pin", anthropicSaw, want)
+			}
+			for _, entry := range ctx.GetRoutingEngineLogs() {
+				if strings.Contains(entry.Message, "is tried first") {
+					t.Errorf("the trail says a provider was moved forward for the pin: %q", entry.Message)
+				}
+			}
+		})
+	}
+}
+
+// A single-key provider's key binding is not read, and a request it serves as the primary leaves
+// the binding as it is, but a request it serves as a fallback rewrites it with a fresh TTL, as a
+// fallback does on any provider. Once a second key exists, each request that follows the binding
+// and is served on it restarts the TTL, so the binding lasts until the session goes quiet.
+func TestSessionAffinitySingleKeyBindingIsRefreshedOnlyByAFallback(t *testing.T) {
+	const seedTTL = time.Second // distinct from the session TTL, so a rewrite shows
+	route := routeOf(schemas.OpenAI, "gpt-4o")
+	single := []schemas.Key{{ID: "key-a", Name: "Key A"}}
+	for _, tc := range []struct {
+		name        string
+		fallback    bool
+		wantRefresh bool
+	}{
+		{"served as the primary", false, false},
+		{"served as a fallback", true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			kv := newMockKVStore()
+			a := testAffinity(kv)
+			ctx := sessionCtx("session-1")
+			key := SessionStateKey(ctx, SessionStateKindKey, "openai", "gpt-4o")
+			_ = kv.SetWithTTL(key, "key-a", seedTTL)
+			if tc.fallback {
+				ctx.SetValue(schemas.BifrostContextKeyFallbackIndex, 1)
+			}
+			if _, ok := a.ResolveKey(ctx, schemas.OpenAI, "gpt-4o", single); ok {
+				t.Fatal("a single-key pool read its binding")
+			}
+			a.Observe(ctx, route, servedBy(route, "key-a", tc.fallback))
+			if refreshed := kv.data[key].ttl != seedTTL; refreshed != tc.wantRefresh {
+				t.Fatalf("the binding was refreshed: %v, want %v (ttl %v)", refreshed, tc.wantRefresh, kv.data[key].ttl)
+			}
+		})
+	}
+
+	t.Run("a second key makes a followed binding refresh", func(t *testing.T) {
+		kv := newMockKVStore()
+		a := testAffinity(kv)
+		ctx := sessionCtx("session-1")
+		key := SessionStateKey(ctx, SessionStateKindKey, "openai", "gpt-4o")
+		_ = kv.SetWithTTL(key, "key-a", seedTTL)
+		pool := []schemas.Key{{ID: "key-a", Name: "Key A"}, {ID: "key-b", Name: "Key B"}}
+		if got, ok := a.ResolveKey(ctx, schemas.OpenAI, "gpt-4o", pool); !ok || got.ID != "key-a" {
+			t.Fatalf("the session did not follow its binding: %q %v", got.ID, ok)
+		}
+		a.Observe(ctx, route, servedBy(route, "key-a", false))
+		if kv.data[key].ttl == seedTTL {
+			t.Fatal("a followed binding was not refreshed")
+		}
+	})
+}
+
+// Provider-level session scenarios and live configuration changes from the routing test plan: what
+// a session does when every provider fails, when its binding expires or is refreshed, when the bound
+// provider leaves the chain or Bifrost, when the caller cancels or the provider times out, when a
+// new session's first turns race, and when max_retries or the affinity switch change between turns.
+// They run on the routing scenarios' upstream, account and router in bifrost_test.go.
+
+// clockKVStore is a session store whose entries expire on a clock the test moves, so a TTL can be
+// crossed without waiting for it.
+type clockKVStore struct {
+	mu   sync.Mutex
+	now  time.Time
+	data map[string]clockKVEntry
+}
+
+// clockKVEntry is one stored value and the moment it expires.
+type clockKVEntry struct {
+	value   any
+	expires time.Time
+}
+
+// newClockKVStore returns an empty store whose clock starts now.
+func newClockKVStore() *clockKVStore {
+	return &clockKVStore{now: time.Now(), data: map[string]clockKVEntry{}}
+}
+
+// advance moves the store's clock forward.
+func (s *clockKVStore) advance(d time.Duration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.now = s.now.Add(d)
+}
+
+// live reports whether key holds an entry that has not expired. The caller holds mu.
+func (s *clockKVStore) live(key string) (clockKVEntry, bool) {
+	entry, ok := s.data[key]
+	return entry, ok && s.now.Before(entry.expires)
+}
+
+// Get implements schemas.KVStore.
+func (s *clockKVStore) Get(key string) (any, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if entry, ok := s.live(key); ok {
+		return entry.value, nil
+	}
+	return nil, errors.New("key not found")
+}
+
+// SetWithTTL implements schemas.KVStore.
+func (s *clockKVStore) SetWithTTL(key string, value any, ttl time.Duration) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.data[key] = clockKVEntry{value: value, expires: s.now.Add(ttl)}
+	return nil
+}
+
+// SetNXWithTTL implements schemas.KVStore: an expired entry counts as absent.
+func (s *clockKVStore) SetNXWithTTL(key string, value any, ttl time.Duration) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.live(key); ok {
+		return false, nil
+	}
+	s.data[key] = clockKVEntry{value: value, expires: s.now.Add(ttl)}
+	return true, nil
+}
+
+// Delete implements schemas.KVStore.
+func (s *clockKVStore) Delete(key string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, ok := s.live(key)
+	delete(s.data, key)
+	return ok, nil
+}
+
+// deleteScenarioProvider deletes a provider from Bifrost as the gateway does: from the account that
+// configures it and from the running client.
+func deleteScenarioProvider(t *testing.T, client *Bifrost, account *MockAccount, provider schemas.ModelProvider) {
+	t.Helper()
+	account.mu.Lock()
+	delete(account.configs, provider)
+	delete(account.keys, provider)
+	account.mu.Unlock()
+	if err := client.RemoveProvider(provider); err != nil {
+		t.Fatalf("removing %s: %v", provider, err)
+	}
+}
+
+// chainOf routes every request to the providers in order, the first as the primary and the rest as
+// its fallbacks, all on model m.
+func chainOf(providers ...schemas.ModelProvider) func() (schemas.Fallback, []schemas.Fallback) {
+	routes := make([]schemas.Fallback, len(providers))
+	for i, provider := range providers {
+		routes[i] = schemas.Fallback{Provider: provider, Model: "m"}
+	}
+	return fixedRoute(routes[0], routes[1:]...)
+}
+
+// shuffledChainOf routes every request to the providers in a random order, as a virtual key with
+// equal weights does: one picked as the primary, the others attached as its fallbacks.
+func shuffledChainOf(providers ...schemas.ModelProvider) func() (schemas.Fallback, []schemas.Fallback) {
+	return func() (schemas.Fallback, []schemas.Fallback) {
+		order := append([]schemas.ModelProvider(nil), providers...)
+		rand.Shuffle(len(order), func(i, j int) { order[i], order[j] = order[j], order[i] })
+		return chainOf(order...)()
+	}
+}
+
+// threeProviders is the keys every provider-level scenario uses: two keys on A, one on B and on C.
+func threeProviders() map[schemas.ModelProvider][]schemas.Key {
+	return map[schemas.ModelProvider][]schemas.Key{
+		provA: {scenarioKey("a1", 1), scenarioKey("a2", 1)},
+		provB: {scenarioKey("b1", 1)},
+		provC: {scenarioKey("c1", 1)},
+	}
+}
+
+// A fresh session whose first turn fails on every provider writes nothing, so the next turn follows
+// the rule's order with no session at work in it (plan row PS-06).
+func TestScenarioEveryProviderFailsBeforeABinding(t *testing.T) {
+	u := newScenarioUpstream(t)
+	kv := newMockKVStore()
+	client := scenarioClient(t, scenarioAccount(u, threeProviders()), &scenarioRouter{route: chainOf(provA, provB)}, kv)
+	for _, token := range []string{"sk-a1", "sk-a2", "sk-b1"} {
+		u.answer(token, http.StatusInternalServerError)
+	}
+	if _, err := scenarioChat(client, sessionCtx("s"), "", "m"); err == nil {
+		t.Fatal("a turn whose every provider failed was served")
+	}
+	if n := len(kv.data); n != 0 {
+		t.Fatalf("a failed first turn wrote %d session entries", n)
+	}
+
+	for _, token := range []string{"sk-a1", "sk-a2", "sk-b1"} {
+		u.heal(token)
+	}
+	ctx := sessionCtx("s")
+	served, err := scenarioChat(client, ctx, "", "m")
+	requireServed(t, served, err, provA)
+	if logs := routingLogs(ctx); strings.Contains(logs, schemas.RoutingEngineSessionAffinity+":") {
+		t.Fatalf("the session had nothing to say on the turn after a failed first turn:\n%s", logs)
+	}
+}
+
+// A session bound to A, the rule's primary, whose every provider then fails: the turn retries A's
+// bound key and then B three times each, returns A's error, the primary's, and drops the binding it
+// followed with a trail line saying so. With both healed the next turn follows the rule to A and
+// binds it again (plan row PS-05).
+func TestScenarioEveryProviderFailsAfterFollowingABinding(t *testing.T) {
+	u := newScenarioUpstream(t)
+	kv := newMockKVStore()
+	client := scenarioClient(t, scenarioAccount(u, threeProviders()), &scenarioRouter{route: chainOf(provA, provB)}, kv)
+	served, err := scenarioChat(client, sessionCtx("s"), "", "m")
+	requireServed(t, served, err, provA)
+	requireSessionState(t, kv, "s", SessionStateKindRoute, "", "m", "prov-a/m")
+	boundKey, _ := sessionState(kv, "s", SessionStateKindKey, provA, "m")
+
+	for _, token := range []string{"sk-a1", "sk-a2", "sk-b1"} {
+		u.answer(token, http.StatusInternalServerError)
+	}
+	u.clearHits()
+	ctx := sessionCtx("s")
+	info, err := scenarioChatInfo(client, ctx, "", "m")
+	requireStatus(t, err, http.StatusInternalServerError, "")
+	if info.Provider != provA {
+		t.Fatalf("the turn should return A's error, the primary's, routing info %+v", info)
+	}
+	requireHits(t, u, map[string]int{"sk-" + boundKey: 3, "sk-b1": 3, "sk-c1": 0})
+	if got := u.count("sk-a1") + u.count("sk-a2"); got != 3 {
+		t.Fatalf("A's keys reached the upstream %d times, want 3", got)
+	}
+	requireSessionState(t, kv, "s", SessionStateKindRoute, "", "m", "")
+	if logs := routingLogs(ctx); !strings.Contains(logs, "The provider this session followed for m failed") {
+		t.Fatalf("the turn should report dropping the binding it followed:\n%s", logs)
+	}
+
+	for _, token := range []string{"sk-a1", "sk-a2", "sk-b1"} {
+		u.heal(token)
+	}
+	u.clearHits()
+	served, err = scenarioChat(client, sessionCtx("s"), "", "m")
+	requireServed(t, served, err, provA)
+	requireHits(t, u, map[string]int{"sk-b1": 0})
+	requireSessionState(t, kv, "s", SessionStateKindRoute, "", "m", "prov-a/m")
+}
+
+// A ten-second binding: (a) a session idle for fifteen seconds has lost it, so its next turn follows
+// routing with no "Session stays" line; (b) a session turned every five seconds for forty never lets
+// go of it, since each served turn refreshes the TTL (plan row PS-07; one session per case, on one
+// clock). Routing is fixed rather than rolled, so following routing is told apart from the binding.
+func TestScenarioSessionTTLExpiresAndRefreshes(t *testing.T) {
+	u := newScenarioUpstream(t)
+	kv := newClockKVStore()
+	router := &scenarioRouter{route: chainOf(provA, provB, provC)}
+	client := scenarioClient(t, scenarioAccount(u, threeProviders()), router, kv)
+	turn := func(session string) (*schemas.BifrostContext, schemas.ModelProvider, *schemas.BifrostError) {
+		ctx := sessionCtx(session)
+		ctx.SetValue(schemas.BifrostContextKeySessionTTL, 10*time.Second)
+		served, err := scenarioChat(client, ctx, "", "m")
+		return ctx, served, err
+	}
+	for _, session := range []string{"idle", "busy"} {
+		_, served, err := turn(session)
+		requireServed(t, served, err, provA)
+	}
+	// From here routing puts B first, so only a live binding keeps a session on A.
+	router.setRoute(chainOf(provB, provA, provC))
+
+	for step := 1; step <= 8; step++ {
+		kv.advance(5 * time.Second)
+		_, served, err := turn("busy")
+		requireServed(t, served, err, provA)
+		if step == 3 {
+			// (a) Fifteen seconds after its only turn, the idle session's binding has expired.
+			ctx, served, err := turn("idle")
+			requireServed(t, served, err, provB)
+			if logs := routingLogs(ctx); strings.Contains(logs, "Session stays") {
+				t.Fatalf("an expired binding still moved the turn:\n%s", logs)
+			}
+		}
+	}
+}
+
+// A bound provider that routing no longer offers, because it was removed from the virtual key, is
+// dropped on the next turn with a trail line saying so; whatever serves becomes the binding and the
+// turn after it stays there (plan row PS-09).
+func TestScenarioBoundProviderLeavesTheChain(t *testing.T) {
+	u := newScenarioUpstream(t)
+	kv := newMockKVStore()
+	router := &scenarioRouter{route: chainOf(provA, provB, provC)}
+	client := scenarioClient(t, scenarioAccount(u, threeProviders()), router, kv)
+	served, err := scenarioChat(client, sessionCtx("s"), "", "m")
+	requireServed(t, served, err, provA)
+
+	router.setRoute(shuffledChainOf(provB, provC))
+	ctx := sessionCtx("s")
+	first, err := scenarioChat(client, ctx, "", "m")
+	if err != nil || first == provA {
+		t.Fatalf("the turn after A left the chain was served by %q (err %v)", first, err)
+	}
+	if !strings.Contains(routingLogs(ctx), "which this request cannot use") {
+		t.Fatalf("dropping the binding should be on the trail:\n%s", routingLogs(ctx))
+	}
+	requireSessionState(t, kv, "s", SessionStateKindRoute, "", "m", string(first)+"/m")
+	for range 5 {
+		served, err := scenarioChat(client, sessionCtx("s"), "", "m")
+		requireServed(t, served, err, first)
+	}
+}
+
+// A bound provider deleted from Bifrost causes no error: when routing stops offering it the binding
+// is dropped and rebound, and when routing still offers it (a stale chain) the attempt on it fails,
+// a fallback serves, and the session moves there (plan row PS-10).
+func TestScenarioBoundProviderDeleted(t *testing.T) {
+	t.Run("routing stops offering it", func(t *testing.T) {
+		u := newScenarioUpstream(t)
+		kv := newMockKVStore()
+		account := scenarioAccount(u, threeProviders())
+		router := &scenarioRouter{route: chainOf(provA, provB, provC)}
+		client := scenarioClient(t, account, router, kv)
+		served, err := scenarioChat(client, sessionCtx("s"), "", "m")
+		requireServed(t, served, err, provA)
+
+		deleteScenarioProvider(t, client, account, provA)
+		router.setRoute(shuffledChainOf(provB, provC))
+		for turn := range 2 {
+			ctx := sessionCtx("s")
+			served, err = scenarioChat(client, ctx, "", "m")
+			if err != nil || served == provA {
+				t.Fatalf("served by %q after A was deleted (err %v)", served, err)
+			}
+			if turn == 0 && !strings.Contains(routingLogs(ctx), "which this request cannot use") {
+				t.Fatalf("dropping the binding to the deleted provider should be on the trail:\n%s", routingLogs(ctx))
+			}
+		}
+		requireSessionState(t, kv, "s", SessionStateKindRoute, "", "m", string(served)+"/m")
+	})
+	t.Run("a stale chain still offers it", func(t *testing.T) {
+		u := newScenarioUpstream(t)
+		kv := newMockKVStore()
+		account := scenarioAccount(u, threeProviders())
+		router := &scenarioRouter{route: chainOf(provA, provB, provC)}
+		client := scenarioClient(t, account, router, kv)
+		served, err := scenarioChat(client, sessionCtx("s"), "", "m")
+		requireServed(t, served, err, provA)
+
+		deleteScenarioProvider(t, client, account, provA)
+		router.setRoute(chainOf(provB, provA, provC))
+		served, err = scenarioChat(client, sessionCtx("s"), "", "m")
+		requireServed(t, served, err, provB)
+		requireSessionState(t, kv, "s", SessionStateKindRoute, "", "m", "prov-b/m")
+	})
+}
+
+// A caller that abandons a turn after a second says nothing about the provider, so the binding stays
+// and the next turn is back on it; a provider that times out has failed the session, so the timeout
+// is not retried, the fallback serves at once, and the binding moves to it (plan row PS-17; one
+// subtest per case).
+func TestScenarioCancelKeepsTheBindingATimeoutMovesIt(t *testing.T) {
+	t.Run("(a) caller cancel", func(t *testing.T) {
+		u := newScenarioUpstream(t)
+		kv := newMockKVStore()
+		client := scenarioClient(t, scenarioAccount(u, threeProviders()), &scenarioRouter{route: chainOf(provA, provB)}, kv)
+		served, err := scenarioChat(client, sessionCtx("s"), "", "m")
+		requireServed(t, served, err, provA)
+		bound, _ := sessionState(kv, "s", SessionStateKindKey, provA, "m")
+
+		u.reply("sk-"+bound, scenarioReply{stall: 3 * time.Second})
+		parent, cancel := context.WithCancel(context.Background())
+		ctx := schemas.NewBifrostContext(parent, schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeySessionID, "s")
+		time.AfterFunc(time.Second, cancel)
+		_, err = scenarioChat(client, ctx, "", "m")
+		requireStatus(t, err, 499, schemas.RequestCancelled)
+		requireHits(t, u, map[string]int{"sk-b1": 0})
+		requireSessionState(t, kv, "s", SessionStateKindRoute, "", "m", "prov-a/m")
+		requireSessionState(t, kv, "s", SessionStateKindKey, provA, "m", bound)
+
+		u.heal("sk-" + bound)
+		u.clearHits()
+		served, err = scenarioChat(client, sessionCtx("s"), "", "m")
+		requireServed(t, served, err, provA)
+		requireHits(t, u, map[string]int{"sk-" + bound: 1})
+	})
+	t.Run("(b) provider timeout", func(t *testing.T) {
+		u := newScenarioUpstream(t)
+		kv := newMockKVStore()
+		account := scenarioAccount(u, threeProviders())
+		account.configs[provA].NetworkConfig.DefaultRequestTimeoutInSeconds = 1
+		client := scenarioClient(t, account, &scenarioRouter{route: chainOf(provA, provB)}, kv)
+		served, err := scenarioChat(client, sessionCtx("s"), "", "m")
+		requireServed(t, served, err, provA)
+		bound, _ := sessionState(kv, "s", SessionStateKindKey, provA, "m")
+
+		u.reply("sk-"+bound, scenarioReply{stall: 3 * time.Second})
+		u.clearHits()
+		served, err = scenarioChat(client, sessionCtx("s"), "", "m")
+		requireServed(t, served, err, provB)
+		requireHits(t, u, map[string]int{"sk-" + bound: 1, "sk-b1": 1})
+		requireSessionState(t, kv, "s", SessionStateKindRoute, "", "m", "prov-b/m")
+		requireSessionState(t, kv, "s", SessionStateKindKey, provA, "m", "")
+	})
+}
+
+// Ten first turns of a new session in flight together may land on different providers; the first to
+// be served binds the session, the others do not overwrite it, and every later turn follows that one
+// binding. Each provider answers after a different delay, so the first to be served is the fastest
+// provider the burst reached (plan row PS-18).
+func TestScenarioParallelFirstTurnsConverge(t *testing.T) {
+	u := newScenarioUpstream(t)
+	kv := newMockKVStore()
+	client := scenarioClient(t, scenarioAccount(u, threeProviders()), &scenarioRouter{route: shuffledChainOf(provA, provB, provC)}, kv)
+	stall := map[schemas.ModelProvider]time.Duration{provA: 20 * time.Millisecond, provB: 150 * time.Millisecond, provC: 280 * time.Millisecond}
+	for token, provider := range map[string]schemas.ModelProvider{"sk-a1": provA, "sk-a2": provA, "sk-b1": provB, "sk-c1": provC} {
+		u.reply(token, scenarioReply{stall: stall[provider]})
+	}
+	var wg sync.WaitGroup
+	burst := make([]schemas.ModelProvider, 10)
+	errs := make([]*schemas.BifrostError, 10)
+	for i := range burst {
+		wg.Go(func() { burst[i], errs[i] = scenarioChat(client, sessionCtx("burst"), "", "m") })
+	}
+	wg.Wait()
+	first := provC
+	for i, served := range burst {
+		if errs[i] != nil {
+			t.Fatalf("burst request %d failed: %s", i, errs[i].GetErrorString())
+		}
+		if stall[served] < stall[first] {
+			first = served
+		}
+	}
+	requireSessionState(t, kv, "burst", SessionStateKindRoute, "", "m", string(first)+"/m")
+	for range 10 {
+		served, err := scenarioChat(client, sessionCtx("burst"), "", "m")
+		requireServed(t, served, err, first)
+	}
+}
+
+// A max_retries change reaches the next request: three attempts on a failing key before the change,
+// one after (plan row DC-13).
+func TestScenarioMaxRetriesChangedLive(t *testing.T) {
+	u := newScenarioUpstream(t)
+	account := scenarioAccount(u, map[schemas.ModelProvider][]schemas.Key{provA: {scenarioKey("a1", 1)}})
+	client := scenarioClient(t, account, nil, nil)
+	u.answer("sk-a1", http.StatusInternalServerError)
+
+	_, err := scenarioChat(client, sessionCtx(""), provA, "m")
+	requireStatus(t, err, 500, "")
+	requireHits(t, u, map[string]int{"sk-a1": 3})
+
+	setMaxRetries(account, provA, 0)
+	if err := client.UpdateProvider(provA); err != nil {
+		t.Fatalf("UpdateProvider: %v", err)
+	}
+	u.clearHits()
+	_, err = scenarioChat(client, sessionCtx(""), provA, "m")
+	requireStatus(t, err, 500, "")
+	requireHits(t, u, map[string]int{"sk-a1": 1})
+}
+
+// A provider deleted and added back under the same name: the session returns to it if no turn ran in
+// between, since its binding was never dropped; once a turn ran without it, the binding moved to what
+// served, and adding it back does not move the session (plan row DC-15).
+func TestScenarioDeletedProviderAddedBack(t *testing.T) {
+	setup := func(t *testing.T) (*scenarioUpstream, *mockKVStore, *MockAccount, *scenarioRouter, *Bifrost) {
+		u := newScenarioUpstream(t)
+		kv := newMockKVStore()
+		account := scenarioAccount(u, threeProviders())
+		router := &scenarioRouter{route: chainOf(provA, provB)}
+		client := scenarioClient(t, account, router, kv)
+		served, err := scenarioChat(client, sessionCtx("s"), "", "m")
+		requireServed(t, served, err, provA)
+		deleteScenarioProvider(t, client, account, provA)
+		return u, kv, account, router, client
+	}
+	t.Run("added back before any turn", func(t *testing.T) {
+		u, _, account, router, client := setup(t)
+		addScenarioProvider(account, u, provA, threeProviders()[provA])
+		router.setRoute(chainOf(provB, provA))
+		served, err := scenarioChat(client, sessionCtx("s"), "", "m")
+		requireServed(t, served, err, provA)
+	})
+	t.Run("added back after a turn ran without it", func(t *testing.T) {
+		u, kv, account, router, client := setup(t)
+		router.setRoute(chainOf(provB))
+		served, err := scenarioChat(client, sessionCtx("s"), "", "m")
+		requireServed(t, served, err, provB)
+		requireSessionState(t, kv, "s", SessionStateKindRoute, "", "m", "prov-b/m")
+
+		addScenarioProvider(account, u, provA, threeProviders()[provA])
+		router.setRoute(chainOf(provA, provB))
+		served, err = scenarioChat(client, sessionCtx("s"), "", "m")
+		requireServed(t, served, err, provB)
+	})
+}
+
+// Turns with affinity switched off are routed as if they had no session and never touch its
+// bindings, so the turns with it on keep following the binding (plan row DC-17).
+func TestScenarioAffinityOffTurnsLeaveTheSession(t *testing.T) {
+	u := newScenarioUpstream(t)
+	kv := newMockKVStore()
+	router := &scenarioRouter{route: chainOf(provA, provB, provC)}
+	client := scenarioClient(t, scenarioAccount(u, map[schemas.ModelProvider][]schemas.Key{
+		provA: {scenarioKey("a1", 1), scenarioKey("a2", 1)},
+		provB: {scenarioKey("b1", 1), scenarioKey("b2", 1)},
+		provC: {scenarioKey("c1", 1)},
+	}), router, kv)
+	turn := func(session string, on bool) (schemas.ModelProvider, *schemas.BifrostError) {
+		ctx := sessionCtx(session)
+		if !on {
+			ctx.SetValue(schemas.BifrostContextKeySessionAffinity, false)
+		}
+		return scenarioChat(client, ctx, "", "m")
+	}
+	served, err := turn("s", true)
+	requireServed(t, served, err, provA)
+	aKey, _ := sessionState(kv, "s", SessionStateKindKey, provA, "m")
+	// From here routing puts B first, so only the binding keeps a turn on A.
+	router.setRoute(chainOf(provB, provA, provC))
+
+	for i := range 10 {
+		on := i%2 == 0
+		served, err := turn("s", on)
+		want := provB
+		if on {
+			want = provA
+		}
+		requireServed(t, served, err, want)
+		requireSessionState(t, kv, "s", SessionStateKindRoute, "", "m", "prov-a/m")
+		requireSessionState(t, kv, "s", SessionStateKindKey, provA, "m", aKey)
+		requireSessionState(t, kv, "s", SessionStateKindKey, provB, "m", "")
+	}
+
+	// A session whose every turn has affinity off is never bound at all.
+	for range 3 {
+		served, err := turn("off", false)
+		requireServed(t, served, err, provB)
+	}
+	requireSessionState(t, kv, "off", SessionStateKindRoute, "", "m", "")
+	requireSessionState(t, kv, "off", SessionStateKindKey, provB, "m", "")
 }

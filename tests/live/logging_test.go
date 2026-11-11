@@ -103,3 +103,28 @@ func TestLogging_SetupFailureIsAnErrorRow(t *testing.T) {
 		})
 	}
 }
+
+// A session the provider answers with an error instead of session.started never ran: the client
+// gets that error and no other, and the row is an error row that bills nothing.
+func TestLogging_StartupErrorIsAnErrorRow(t *testing.T) {
+	requireFake(t)
+	t.Parallel()
+	vk := createVirtualKey(t, virtualKeySpec{})
+	session := sessionFor(t, voiceModel, backendModel, nil)
+	session["instructions"] = session["instructions"].(string) + startupErrorMarker
+	c := openSession(t, clientOptions{headers: vkHeaders(vk), session: session})
+	assert.Equal(t, startupErrorMessage, errorMessage(c.WaitFor("error")))
+	c.WaitGone()
+	assert.Len(t, c.Frames("error"), 1, "the provider's error is the only one: %s", c.errorMessages())
+
+	var rows []gjson.Result
+	deadline := time.Now().Add(rowWaitTimeout)
+	for len(rows) == 0 && time.Now().Before(deadline) {
+		rows = liveLogRowsForVirtualKey(t, vk.ID)
+		time.Sleep(300 * time.Millisecond)
+	}
+	require.Len(t, rows, 1)
+	assert.Equal(t, "error", rows[0].Get("status").Str)
+	assert.Equal(t, startupErrorMessage, rows[0].Get("error_details.error.message").Str)
+	assert.Equal(t, 0.0, rows[0].Get("cost").Float())
+}

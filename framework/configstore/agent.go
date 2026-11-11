@@ -47,7 +47,7 @@ func cloneUpstreamAuth(auth *schemas.UpstreamAuth) *schemas.UpstreamAuth {
 }
 
 func registrationToTable(r *schemas.AgentRegistration) tables.TableAgentRegistration {
-	return tables.TableAgentRegistration{Name: r.Name, AgentCardURL: r.AgentCardURL, Tenant: r.Tenant, Enabled: r.Enabled, AllowByDefault: r.AllowByDefault, ForwardAcceptedCredential: r.ForwardAcceptedCredential, ForwardAcceptedCredentialOverridesAuth: r.ForwardAcceptedCredentialOverridesAuth, DiscoveryAuth: cloneUpstreamAuth(r.DiscoveryAuth), ExtensionURIs: slices.Clone(r.ExtensionURIs), RuntimeAuth: cloneUpstreamAuth(r.RuntimeAuth), ConfigHash: r.ConfigHash, CreatedAt: r.CreatedAt, UpdatedAt: r.UpdatedAt}
+	return tables.TableAgentRegistration{Name: r.Name, AgentCardURL: r.AgentCardURL, Enabled: r.Enabled, AllowByDefault: r.AllowByDefault, ForwardAcceptedCredential: r.ForwardAcceptedCredential, ForwardAcceptedCredentialOverridesAuth: r.ForwardAcceptedCredentialOverridesAuth, DiscoveryAuth: cloneUpstreamAuth(r.DiscoveryAuth), CredentialOrigins: slices.Clone(r.CredentialOrigins), RequirePublicTarget: r.RequirePublicTarget, RuntimeAuth: cloneUpstreamAuth(r.RuntimeAuth), ConfigHash: r.ConfigHash, CreatedAt: r.CreatedAt, UpdatedAt: r.UpdatedAt}
 }
 
 // tableToRegistration rebuilds the domain registration from its row and its grant
@@ -56,7 +56,7 @@ func registrationToTable(r *schemas.AgentRegistration) tables.TableAgentRegistra
 // exists.
 func tableToRegistration(r tables.TableAgentRegistration, grants []string) schemas.AgentRegistration {
 	sort.Strings(grants)
-	return schemas.AgentRegistration{Name: r.Name, AgentCardURL: r.AgentCardURL, Tenant: r.Tenant, Enabled: r.Enabled, AllowByDefault: r.AllowByDefault, ForwardAcceptedCredential: r.ForwardAcceptedCredential, ForwardAcceptedCredentialOverridesAuth: r.ForwardAcceptedCredentialOverridesAuth, DiscoveryAuth: r.DiscoveryAuth, RuntimeAuth: r.RuntimeAuth, ExtensionURIs: slices.Clone(r.ExtensionURIs), VirtualKeyIDs: grants, ConfigHash: r.ConfigHash, CreatedAt: r.CreatedAt, UpdatedAt: r.UpdatedAt}
+	return schemas.AgentRegistration{Name: r.Name, AgentCardURL: r.AgentCardURL, Enabled: r.Enabled, AllowByDefault: r.AllowByDefault, ForwardAcceptedCredential: r.ForwardAcceptedCredential, ForwardAcceptedCredentialOverridesAuth: r.ForwardAcceptedCredentialOverridesAuth, DiscoveryAuth: r.DiscoveryAuth, RuntimeAuth: r.RuntimeAuth, CredentialOrigins: slices.Clone(r.CredentialOrigins), RequirePublicTarget: r.RequirePublicTarget, VirtualKeyIDs: grants, ConfigHash: r.ConfigHash, CreatedAt: r.CreatedAt, UpdatedAt: r.UpdatedAt}
 }
 
 // missingFrom returns the requested items that are absent from found, preserving
@@ -153,7 +153,7 @@ func (s *RDBConfigStore) UpdateAgentRegistration(ctx context.Context, registrati
 		// sync). API updates carry an empty hash and must not clear the stored
 		// checkpoint: leaving it stale is what lets split-mode reconciliation keep
 		// UI/API edits when the file itself has not changed.
-		fields := []string{"agent_card_url", "tenant", "enabled", "allow_by_default", "forward_accepted_credential", "forward_accepted_credential_overrides_auth", "discovery_auth", "extension_uris", "runtime_auth", "encryption_status", "updated_at"}
+		fields := []string{"agent_card_url", "enabled", "allow_by_default", "forward_accepted_credential", "forward_accepted_credential_overrides_auth", "discovery_auth", "credential_origins", "require_public_target", "runtime_auth", "encryption_status", "updated_at"}
 		if registration.ConfigHash != "" {
 			fields = append(fields, "config_hash")
 		}

@@ -14,6 +14,8 @@ const (
 	maxMCPToolInputPreviewRunes = 200
 	maxA2APayloadPreviewRunes   = 2048
 	a2aObjectSchemaVersion      = 1
+	maxRelayBodyPreviewRunes    = 2048
+	relayObjectSchemaVersion    = 1
 )
 
 // payloadFields lists the DB column names of large TEXT fields that are
@@ -126,6 +128,8 @@ func ExtractPayload(l *Log) map[string]string {
 	putIfPresent(m, "virtual_key_name", l.VirtualKeyName)
 	putIfPresent(m, "user_id", l.UserID)
 	putIfPresent(m, "user_name", l.UserName)
+	putIfPresent(m, "user_email", l.UserEmail)
+	putIfPresent(m, "client_ip", l.ClientIP)
 	putIfPresent(m, "team_id", l.TeamID)
 	putIfPresent(m, "team_name", l.TeamName)
 	putIfPresent(m, "team_ids", l.TeamIDs)
@@ -467,6 +471,8 @@ func MarshalPayload(payload map[string]string) ([]byte, error) {
 }
 
 type a2aPayloadV1 struct {
+	RawRequest    *string `json:"raw_request,omitempty"`
+	RawResponse   *string `json:"raw_response,omitempty"`
 	SchemaVersion int     `json:"schema_version"`
 	RequestBody   *string `json:"request_body,omitempty"`
 	ResponseBody  *string `json:"response_body,omitempty"`
@@ -476,9 +482,10 @@ type a2aPayloadV1 struct {
 func MarshalAgentLogPayload(l *AgentLog) ([]byte, error) {
 	return sonic.Marshal(a2aPayloadV1{
 		SchemaVersion: a2aObjectSchemaVersion,
-		RequestBody:   l.RequestBody,
-		ResponseBody:  l.ResponseBody,
-		EventBody:     l.EventBody,
+		RawRequest:    l.RawRequest, RawResponse: l.RawResponse,
+		RequestBody:  l.RequestBody,
+		ResponseBody: l.ResponseBody,
+		EventBody:    l.EventBody,
 	})
 }
 
@@ -490,6 +497,7 @@ func MergeAgentLogPayloadFromJSON(l *AgentLog, data []byte) error {
 	if payload.SchemaVersion != a2aObjectSchemaVersion {
 		return fmt.Errorf("logstore: unsupported A2A object schema version %d", payload.SchemaVersion)
 	}
+	l.RawRequest, l.RawResponse = payload.RawRequest, payload.RawResponse
 	l.RequestBody = payload.RequestBody
 	l.ResponseBody = payload.ResponseBody
 	l.EventBody = payload.EventBody
@@ -497,6 +505,7 @@ func MergeAgentLogPayloadFromJSON(l *AgentLog, data []byte) error {
 }
 
 func PrepareAgentLogDBEntry(l *AgentLog, objectKey string) {
+	l.RawRequest, l.RawResponse = nil, nil
 	if l.ContentHidden {
 		l.RequestBody = nil
 		l.ResponseBody = nil
@@ -518,7 +527,121 @@ func truncateStringPointer(value *string, maxRunes int) *string {
 }
 
 func AgentLogHasPayload(l *AgentLog) bool {
-	return l != nil && (l.RequestBody != nil || l.ResponseBody != nil || l.EventBody != nil)
+	return l != nil && (l.RequestBody != nil || l.ResponseBody != nil || l.EventBody != nil || l.RawRequest != nil || l.RawResponse != nil)
+}
+
+type relayPayloadV1 struct {
+	SchemaVersion int     `json:"schema_version"`
+	RequestBody   *string `json:"request_body,omitempty"`
+	ResponseBody  *string `json:"response_body,omitempty"`
+	// Set only for a hidden row: content with no body column, kept in the object alone.
+	Path         *string               `json:"path,omitempty"`
+	ErrorDetails *schemas.BifrostError `json:"error_details,omitempty"`
+}
+
+// relayMergePayloadV1 is what a relay reconcile queues: the bodies it carries, each with a flag
+// saying whether it was carried at all (a nil body with its flag set clears the stored one).
+type relayMergePayloadV1 struct {
+	SchemaVersion   int     `json:"schema_version"`
+	RequestBody     *string `json:"request_body,omitempty"`
+	SetRequestBody  bool    `json:"set_request_body,omitempty"`
+	ResponseBody    *string `json:"response_body,omitempty"`
+	SetResponseBody bool    `json:"set_response_body,omitempty"`
+	// Hidden content with no body column (see relayPayloadV1), replacing the stored copy when set.
+	Path         *string               `json:"path,omitempty"`
+	ErrorDetails *schemas.BifrostError `json:"error_details,omitempty"`
+}
+
+// Reserved keys of a relay row update (UpdateRelayLog) carrying hidden content that has no body
+// column: the full path with its query, and the error with its raw payloads. The hybrid store moves
+// them into the row's object; every store strips them before writing the row.
+const (
+	RelayRetainedPathUpdate         = "__retained_path"
+	RelayRetainedErrorDetailsUpdate = "__retained_error_details"
+)
+
+// takeRelayRetainedUpdates splits the reserved hidden-content keys off a relay row update. The
+// update map is returned as is when it holds neither, so the common reconcile copies nothing.
+func takeRelayRetainedUpdates(updates map[string]any) (*string, *schemas.BifrostError, map[string]any) {
+	pathValue, hasPath := updates[RelayRetainedPathUpdate]
+	errValue, hasErr := updates[RelayRetainedErrorDetailsUpdate]
+	if !hasPath && !hasErr {
+		return nil, nil, updates
+	}
+	rest := make(map[string]any, len(updates))
+	for k, v := range updates {
+		if k != RelayRetainedPathUpdate && k != RelayRetainedErrorDetailsUpdate {
+			rest[k] = v
+		}
+	}
+	path, _ := pathValue.(*string)
+	errDetails, _ := errValue.(*schemas.BifrostError)
+	return path, errDetails, rest
+}
+
+// MarshalRelayLogPayload serializes a Relay Logs row's full bodies for object storage.
+func MarshalRelayLogPayload(l *RelayLog) ([]byte, error) {
+	return sonic.Marshal(relayPayloadV1{
+		SchemaVersion: relayObjectSchemaVersion,
+		RequestBody:   l.RequestBody,
+		ResponseBody:  l.ResponseBody,
+		Path:          l.RetainedPath,
+		ErrorDetails:  relayObjectErrorDetails(l),
+	})
+}
+
+// relayObjectErrorDetails is the error a hidden row keeps in its object, since its database row
+// keeps none (PrepareRelayLogDBEntry), as an LLM row offloads error_details: the full error retained
+// with its raw payloads, else the sanitized one.
+func relayObjectErrorDetails(l *RelayLog) *schemas.BifrostError {
+	if l.RetainedErrorDetails != nil {
+		return l.RetainedErrorDetails
+	}
+	if l.ContentHidden {
+		return l.ErrorDetailsParsed
+	}
+	return nil
+}
+
+// MergeRelayLogPayloadFromJSON restores the full bodies read back from object storage.
+func MergeRelayLogPayloadFromJSON(l *RelayLog, data []byte) error {
+	var payload relayPayloadV1
+	if err := sonic.Unmarshal(data, &payload); err != nil {
+		return fmt.Errorf("logstore: unmarshal relay log payload: %w", err)
+	}
+	if payload.SchemaVersion != relayObjectSchemaVersion {
+		return fmt.Errorf("logstore: unsupported relay object schema version %d", payload.SchemaVersion)
+	}
+	l.RequestBody = payload.RequestBody
+	l.ResponseBody = payload.ResponseBody
+	// Kept so a reconcile merged over the object does not drop them; reads never surface them.
+	l.RetainedPath = payload.Path
+	l.RetainedErrorDetails = payload.ErrorDetails
+	return nil
+}
+
+// PrepareRelayLogDBEntry turns a Relay Logs row into its database form in hybrid mode: the
+// bodies shrink to a preview (or nothing, when content is hidden) and the row points at the
+// object holding them in full.
+func PrepareRelayLogDBEntry(l *RelayLog, objectKey string) {
+	if l.ContentHidden {
+		// A hidden row carries no content in the database, as an LLM row's ClearPayload leaves none:
+		// the error goes to the object with the bodies (relayObjectErrorDetails).
+		l.RequestBody = nil
+		l.ResponseBody = nil
+		l.ErrorDetails = ""
+		l.ErrorDetailsParsed = nil
+	} else {
+		l.RequestBody = truncateStringPointer(l.RequestBody, maxRelayBodyPreviewRunes)
+		l.ResponseBody = truncateStringPointer(l.ResponseBody, maxRelayBodyPreviewRunes)
+	}
+	l.PayloadReference = &objectKey
+}
+
+// RelayLogHasPayload reports whether a Relay Logs row carries content to offload: a body, or
+// hidden content retained without a body column (the query string, a raw error).
+func RelayLogHasPayload(l *RelayLog) bool {
+	return l != nil && (l.RequestBody != nil || l.ResponseBody != nil || l.RetainedPath != nil || l.RetainedErrorDetails != nil || (l.ContentHidden && l.ErrorDetailsParsed != nil))
 }
 
 // MarshalMCPToolLogPayload serializes a full MCP tool log for object storage.
@@ -867,33 +990,63 @@ func BuildAgentLogTags(l *AgentLog) map[string]string {
 	return tags
 }
 
-// ObjectKey constructs the S3 object key for a log entry.
+func BuildRelayLogTags(l *RelayLog) map[string]string {
+	tags := make(map[string]string, 6)
+	if l.RelayName != "" {
+		tags["relay_name"] = truncateTag(l.RelayName, 256)
+	}
+	if l.Kind != "" {
+		tags["kind"] = truncateTag(l.Kind, 256)
+	}
+	if l.Status != "" {
+		tags["status"] = truncateTag(l.Status, 256)
+	}
+	if l.VirtualKeyID != nil && *l.VirtualKeyID != "" {
+		tags["virtual_key_id"] = truncateTag(*l.VirtualKeyID, 256)
+	}
+	tags["has_error"] = "false"
+	if l.Status == "error" {
+		tags["has_error"] = "true"
+	}
+	tags["date"] = l.Timestamp.UTC().Format("2006-01-02")
+	return tags
+}
+
+// Object key suffixes. The suffix records how the object is encoded, so a
+// bucket can hold objects written before and after a format change.
+const (
+	jsonObjectExt    = ".json.gz"
+	parquetObjectExt = ".parquet"
+)
+
+// objectKey builds {prefix}/{dir}/YYYY/MM/DD/HH/{id}{ext}.
+func objectKey(prefix, dir string, timestamp time.Time, logID, ext string) string {
+	ts := timestamp.UTC()
+	return fmt.Sprintf("%s/%s/%04d/%02d/%02d/%02d/%s%s",
+		prefix, dir,
+		ts.Year(), ts.Month(), ts.Day(), ts.Hour(),
+		logID, ext,
+	)
+}
+
+// ObjectKey constructs the S3 object key for a JSON log entry.
 func ObjectKey(prefix string, timestamp time.Time, logID string) string {
-	ts := timestamp.UTC()
-	return fmt.Sprintf("%s/logs/%04d/%02d/%02d/%02d/%s.json.gz",
-		prefix,
-		ts.Year(), ts.Month(), ts.Day(), ts.Hour(),
-		logID,
-	)
+	return objectKey(prefix, "logs", timestamp, logID, jsonObjectExt)
 }
 
-// MCPToolObjectKey constructs the S3 object key for an MCP tool log entry.
+// MCPToolObjectKey constructs the S3 object key for a JSON MCP tool log entry.
 func MCPToolObjectKey(prefix string, timestamp time.Time, logID string) string {
-	ts := timestamp.UTC()
-	return fmt.Sprintf("%s/mcp-logs/%04d/%02d/%02d/%02d/%s.json.gz",
-		prefix,
-		ts.Year(), ts.Month(), ts.Day(), ts.Hour(),
-		logID,
-	)
+	return objectKey(prefix, "mcp-logs", timestamp, logID, jsonObjectExt)
 }
 
+// RelayLogObjectKey constructs the S3 object key for a JSON Relay Logs entry.
+func RelayLogObjectKey(prefix string, timestamp time.Time, logID string) string {
+	return objectKey(prefix, "relay-logs", timestamp, logID, jsonObjectExt)
+}
+
+// AgentLogObjectKey constructs the S3 object key for a JSON A2A log entry.
 func AgentLogObjectKey(prefix string, timestamp time.Time, logID string) string {
-	ts := timestamp.UTC()
-	return fmt.Sprintf("%s/agent-logs/%04d/%02d/%02d/%02d/%s.json.gz",
-		prefix,
-		ts.Year(), ts.Month(), ts.Day(), ts.Hour(),
-		logID,
-	)
+	return objectKey(prefix, "agent-logs", timestamp, logID, jsonObjectExt)
 }
 
 // PayloadFieldNames returns the list of DB column names that are payload fields.

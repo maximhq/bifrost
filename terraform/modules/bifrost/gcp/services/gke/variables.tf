@@ -25,6 +25,12 @@ variable "health_check_path" {
   type        = string
 }
 
+variable "ingress_path" {
+  description = "Path prefix the ingress routes to Bifrost; \"/\" owns the whole host. Match server.base_path when serving under a prefix."
+  type        = string
+  default     = "/"
+}
+
 # --- GCP ---
 variable "project_id" {
   description = "GCP project ID."

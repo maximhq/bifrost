@@ -45,6 +45,14 @@ const (
 	// FailureClassUnknown: a failure carrying no signal Bifrost recognises. Neither
 	// retried nor rotated away from.
 	FailureClassUnknown FailureClass = "unknown"
+	// FailureClassTimeout: the attempt ran out of time before it was answered: the provider's
+	// own timeout, the request's deadline, or a stream that produced no first token in time.
+	// Bifrost ended the attempt, so it is neither retried nor rotated away from, and the next
+	// fallback runs unless the request's own deadline has passed.
+	FailureClassTimeout FailureClass = "timeout"
+	// FailureClassCancelled: the caller abandoned the request while the attempt was in flight.
+	// It says nothing about the key or the route, so its attempt carries no FailReason.
+	FailureClassCancelled FailureClass = "cancelled"
 )
 
 // IsPerKey reports whether the failure is bound to the key that made the attempt, so a

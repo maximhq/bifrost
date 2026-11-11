@@ -215,9 +215,23 @@ func IsRateLimitErrorMessage(errorMessage string) bool {
 // invalid_request_error, OpenAI and Gemini report one as a 429. A failure the rules do
 // not recognise is FailureClassUnknown, which keeps the existing behaviour: no retry, no
 // rotation.
+//
+// An attempt Bifrost itself ended is classed by its error type before anything else: a
+// timeout (the provider's, the request's deadline or a TTFT miss) is FailureClassTimeout and a
+// caller's cancellation is FailureClassCancelled, whether the error was built by Bifrost or is
+// the context.Canceled a provider call returned. The retry loop stops on both before it
+// classifies, so this serves the consumers that classify a finished request.
 func ClassifyFailure(err *schemas.BifrostError) schemas.FailureClass {
 	if err == nil {
 		return ""
+	}
+	if err.Error != nil && err.Error.Type != nil {
+		switch *err.Error.Type {
+		case schemas.RequestTimedOut:
+			return schemas.FailureClassTimeout
+		case schemas.RequestCancelled:
+			return schemas.FailureClassCancelled
+		}
 	}
 	if err.IsBifrostError {
 		return schemas.FailureClassUnknown

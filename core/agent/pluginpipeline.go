@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/google/uuid"
+	"github.com/maximhq/bifrost/core/network"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -77,11 +78,20 @@ func (m *Manager) RunWithPluginPipeline(
 	req *schemas.BifrostA2ARequest,
 	op A2AOpFunc,
 ) (finalResponse *schemas.BifrostA2AResponse, finalError *schemas.BifrostError) {
-	// Ensure a request ID exists so plugin hooks have something to correlate on.
-	// Card and background operations often arrive without one.
+	// Card and background operations may arrive without a request ID.
 	if ctx != nil {
-		if _, ok := ctx.Value(schemas.BifrostContextKeyRequestID).(string); !ok {
-			ctx.SetValue(schemas.BifrostContextKeyRequestID, uuid.New().String())
+		requestID, _ := ctx.Value(schemas.BifrostContextKeyRequestID).(string)
+		if requestID == "" {
+			requestID = uuid.New().String()
+			ctx.SetValue(schemas.BifrostContextKeyRequestID, requestID)
+		}
+		if m.rawCaptureFn != nil && m.rawCaptureFn() {
+			captureID := uuid.New().String()
+			ctx.SetValue(schemas.A2ARawCaptureContextKey, m.rawCaptures.Start(captureID))
+			// Registered before recovery and post-hooks so cleanup runs last.
+			defer m.rawCaptures.Delete(captureID)
+		} else {
+			ctx.SetValue(schemas.A2ARawCaptureContextKey, nil)
 		}
 	}
 
@@ -115,6 +125,7 @@ func (m *Manager) RunWithPluginPipeline(
 	// deferred end is a no-op). startOpSpan threads the new span id onto ctx (no
 	// restore) so PostHook spans nest under it.
 	var opSpanHandle schemas.SpanHandle
+	var observation *a2aTraceObservation
 	startOpSpan := func(r *schemas.BifrostA2ARequest) {
 		if tracer == nil || r == nil {
 			return
@@ -148,6 +159,9 @@ func (m *Manager) RunWithPluginPipeline(
 		case schemas.A2ARequestTypeSendMessage, schemas.A2ARequestTypeSendStreamingMessage:
 			tracer.SetAttribute(handle, schemas.AttrOperationName, schemas.OTelOperationNameInvokeAgent)
 			if r.BifrostA2ASendMessageRequest != nil {
+				if r.MessageID != "" {
+					tracer.SetAttribute(handle, schemas.AttrA2AMessageID, r.MessageID)
+				}
 				if r.ContextID != "" {
 					tracer.SetAttribute(handle, schemas.AttrConversationID, r.ContextID)
 				}
@@ -160,6 +174,7 @@ func (m *Manager) RunWithPluginPipeline(
 				tracer.SetAttribute(handle, schemas.AttrA2ATaskID, r.BifrostA2ATaskRequest.TaskID)
 			}
 		}
+		observation = startA2AObservation(tracer, handle, ctx, r)
 	}
 	// Runs after the recover defers below (LIFO), so finalResponse/finalError
 	// already reflect any recovered panic when the span is ended.
@@ -167,6 +182,7 @@ func (m *Manager) RunWithPluginPipeline(
 		if tracer == nil || opSpanHandle == nil {
 			return
 		}
+		observation.finish(ctx, finalResponse)
 		if finalResponse != nil && finalResponse.ExtraFields.Latency > 0 {
 			tracer.SetAttribute(opSpanHandle, schemas.AttrBifrostA2AOperationDurationMs, finalResponse.ExtraFields.Latency)
 		}
@@ -183,6 +199,8 @@ func (m *Manager) RunWithPluginPipeline(
 			}
 			tracer.SetAttribute(opSpanHandle, schemas.AttrErrorTypeSpec, a2aErrorType(finalError))
 			tracer.EndSpan(opSpanHandle, schemas.SpanStatusError, msg)
+		} else if observation != nil && observation.failed {
+			tracer.EndSpan(opSpanHandle, schemas.SpanStatusError, "Agent task failed")
 		} else {
 			tracer.EndSpan(opSpanHandle, schemas.SpanStatusOk, "")
 		}
@@ -198,7 +216,11 @@ func (m *Manager) RunWithPluginPipeline(
 			}
 		}()
 		startOpSpan(req)
-		resp, opErr := op(req, nil)
+		var observe func(*schemas.BifrostA2AEvent)
+		if observation != nil {
+			observe = observation.observe
+		}
+		resp, opErr := op(req, observe)
 		if opErr != nil {
 			return resp, wrapA2AOpError(opErr, reqType, agentName)
 		}
@@ -283,12 +305,14 @@ func (m *Manager) RunWithPluginPipeline(
 		return runPost(nil, bErr)
 	}
 
+	startOpSpan(preReq)
+	activeObservation := observation
 	observe := func(event *schemas.BifrostA2AEvent) {
 		if event != nil {
+			activeObservation.observe(event)
 			pipeline.ObserveA2AEvent(ctx, event, preCount)
 		}
 	}
-	startOpSpan(preReq)
 	resp, opErr := op(preReq, observe)
 	if resp != nil {
 		resp.PopulateExtraFields(reqType, agentName)
@@ -343,8 +367,11 @@ func setA2AGovernanceSpanAttrs(tracer schemas.Tracer, handle schemas.SpanHandle,
 // post-hooks expect, keeping the original on ErrorField.Error (json:"-") so
 // callers can still classify it with errors.Is/As.
 func wrapA2AOpError(opErr error, reqType schemas.A2ARequestType, agentName string) *schemas.BifrostError {
+	var blocked *network.PrivateTargetNotAllowedError
+	var policyError gatewayPolicyError
+	isBifrostError := errors.As(opErr, &blocked) || errors.As(opErr, &policyError)
 	return &schemas.BifrostError{
-		IsBifrostError: false,
+		IsBifrostError: isBifrostError,
 		Error:          &schemas.ErrorField{Message: opErr.Error(), Error: opErr},
 		ExtraFields:    schemas.BifrostErrorExtraFields{A2ARequestType: reqType, A2AAgentName: agentName},
 	}

@@ -81,7 +81,7 @@ func effectiveUsageBudgets(summary agentapi.UsageSummaryResponse) []agentapi.Usa
 	return []agentapi.UsageBudget{}
 }
 
-// printUsageSummary renders a terminal-oriented equivalent of the Edge tray usage panel.
+// printUsageSummary renders the signed-in user's usage in a terminal-oriented format.
 func printUsageSummary(writer io.Writer, summary agentapi.UsageSummaryResponse) error {
 	if _, err := fmt.Fprintln(writer, "Budgets"); err != nil {
 		return err

@@ -120,6 +120,60 @@ func TestToBifrostChatResponse_InlineDataWithPrecedingText(t *testing.T) {
 	assert.Equal(t, schemas.ChatContentBlockTypeImage, message.Content.ContentBlocks[1].Type)
 }
 
+// TestToBifrostChatResponse_NilPartBeforeText pins that a nil candidate part (a JSON
+// null) is skipped and the text after it still becomes the message content.
+func TestToBifrostChatResponse_NilPartBeforeText(t *testing.T) {
+	response := &gemini.GenerateContentResponse{
+		ResponseID:   "nil-part-test",
+		ModelVersion: "gemini-2.5-flash",
+		Candidates: []*gemini.Candidate{{
+			FinishReason: gemini.FinishReasonStop,
+			Content:      &gemini.Content{Role: string(gemini.RoleModel), Parts: []*gemini.Part{nil, {Text: "after the nil part"}}},
+		}},
+	}
+
+	var bifrostResp *schemas.BifrostChatResponse
+	require.NotPanics(t, func() { bifrostResp = response.ToBifrostChatResponse() })
+	require.Len(t, bifrostResp.Choices, 1)
+	message := bifrostResp.Choices[0].ChatNonStreamResponseChoice.Message
+	require.NotNil(t, message.Content)
+	require.NotNil(t, message.Content.ContentStr)
+	assert.Equal(t, "after the nil part", *message.Content.ContentStr)
+}
+
+// TestToBifrostChatCompletionStream_NilPartBeforeText pins that a streamed final chunk
+// (finishReason plus usage) whose parts open with a nil entry still streams the text
+// after it and ends the stream.
+func TestToBifrostChatCompletionStream_NilPartBeforeText(t *testing.T) {
+	response := &gemini.GenerateContentResponse{
+		ResponseID:   "nil-part-stream-test",
+		ModelVersion: "gemini-2.5-flash",
+		Candidates: []*gemini.Candidate{{
+			FinishReason: gemini.FinishReasonStop,
+			Content:      &gemini.Content{Role: string(gemini.RoleModel), Parts: []*gemini.Part{nil, {Text: "after the nil part"}}},
+		}},
+		UsageMetadata: &gemini.GenerateContentResponseUsageMetadata{PromptTokenCount: 3, CandidatesTokenCount: 4, TotalTokenCount: 7},
+	}
+
+	var chunks []*schemas.BifrostChatResponse
+	var bifrostErr *schemas.BifrostError
+	var isLast bool
+	require.NotPanics(t, func() {
+		chunks, bifrostErr, isLast = response.ToBifrostChatCompletionStream(gemini.NewGeminiStreamState())
+	})
+	require.Nil(t, bifrostErr)
+	assert.True(t, isLast, "a STOP chunk must end the stream")
+	var text string
+	for _, c := range chunks {
+		for _, choice := range c.Choices {
+			if choice.ChatStreamResponseChoice != nil && choice.ChatStreamResponseChoice.Delta != nil && choice.ChatStreamResponseChoice.Delta.Content != nil {
+				text += *choice.ChatStreamResponseChoice.Delta.Content
+			}
+		}
+	}
+	assert.Equal(t, "after the nil part", text, "text after the nil part must be streamed")
+}
+
 // TestToBifrostChatCompletionStream_InlineDataImage pins that a streamed chunk whose
 // only part is an image InlineData blob converts to exactly one delta whose Content
 // carries the image as a data URL, instead of being silently skipped.
@@ -544,4 +598,29 @@ func TestToGeminiChatCompletionRequest_ToolResultRefKeyStaysOpaque(t *testing.T)
 		resp := functionResponse(t, build(&schemas.ChatMessageContent{ContentStr: schemas.Ptr(plainOutput)}))
 		assert.JSONEq(t, plainOutput, string(resp), "plain JSON tool output must still be forwarded as a structured object")
 	})
+}
+
+// Gemini's function response is text: media a tool returned is named, not silently dropped.
+func TestToGeminiChatCompletionRequest_ToolResultNamesMedia(t *testing.T) {
+	out, err := gemini.ToGeminiChatCompletionRequest(nil, &schemas.BifrostChatRequest{
+		Provider: schemas.Gemini,
+		Model:    "gemini-flash-latest",
+		Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("plot it")}},
+			{Role: schemas.ChatMessageRoleAssistant, ChatAssistantMessage: &schemas.ChatAssistantMessage{ToolCalls: []schemas.ChatAssistantMessageToolCall{{
+				ID: schemas.Ptr("c1"), Type: schemas.Ptr("function"),
+				Function: schemas.ChatAssistantMessageToolCallFunction{Name: schemas.Ptr("plot"), Arguments: `{}`},
+			}}}},
+			{Role: schemas.ChatMessageRoleTool, ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: schemas.Ptr("c1")}, Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{
+		{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr("chart below")},
+		{Type: schemas.ChatContentBlockTypeImage, ImageURLStruct: &schemas.ChatInputImage{URL: "data:image/png;base64,iVBORw0KGgo="}},
+		{Type: schemas.ChatContentBlockTypeInputAudio, InputAudio: &schemas.ChatInputAudio{Data: "SUQz", Format: schemas.Ptr("mp3")}},
+	}}},
+		},
+	})
+	require.NoError(t, err)
+	response := gjson.GetBytes(out.Contents[2].Parts[0].FunctionResponse.Response, "content").String()
+	assert.Contains(t, response, "chart below")
+	assert.Contains(t, response, "[image/png")
+	assert.Contains(t, response, "[audio/mp3")
 }

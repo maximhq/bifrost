@@ -90,6 +90,13 @@ func (d *LLMSpanData) appendFamily(attrs map[string]any) {
 		setIfNotNil(attrs, AttrFrequencyPenalty, p.FrequencyPenalty)
 		setIfNotNil(attrs, AttrParallelToolCall, p.ParallelToolCalls)
 		setIfNotNil(attrs, AttrRequestUser, p.User)
+		// Chat carried every other request parameter but never its tools, so a chat
+		// request with tools exported no gen_ai.request.tools while Responses did.
+		if len(p.Tools) > 0 {
+			if data, err := MarshalString(chatToolSummaries(p.Tools)); err == nil {
+				attrs[AttrTools] = data
+			}
+		}
 	}
 }
 
@@ -225,6 +232,25 @@ func (d *LLMSpanData) appendTranscriptionRequest(attrs map[string]any) {
 
 // responsesToolSummaries projects tool definitions to the name/description pairs
 // the span has always exported.
+// chatToolSummaries renders chat tool definitions for export. Mirrors
+// responsesToolSummaries: a tool with no function name falls back to its type, so a
+// built-in or custom tool still appears instead of being dropped.
+func chatToolSummaries(tools []ChatTool) []ToolSummary {
+	out := make([]ToolSummary, 0, len(tools))
+	for _, tool := range tools {
+		if tool.Function == nil || tool.Function.Name == "" {
+			out = append(out, ToolSummary{Name: string(tool.Type)})
+			continue
+		}
+		info := ToolSummary{Name: tool.Function.Name}
+		if tool.Function.Description != nil {
+			info.Description = *tool.Function.Description
+		}
+		out = append(out, info)
+	}
+	return out
+}
+
 func responsesToolSummaries(tools []ResponsesTool) []ToolSummary {
 	out := make([]ToolSummary, 0, len(tools))
 	for _, tool := range tools {
@@ -258,6 +284,9 @@ func (d *LLMSpanData) appendResponseEnvelope(attrs map[string]any) {
 		setIfNotEmpty(attrs, AttrServiceTier, d.ServiceTier)
 		d.appendOutputMessagesJSON(attrs, AttrOutputMessages)
 		d.appendResponsesEcho(attrs)
+		if len(d.FinishReasons) > 0 {
+			attrs[AttrFinishReasons] = d.FinishReasons
+		}
 
 	case TextCompletionRequest, TextCompletionStreamRequest:
 		attrs[AttrResponseID] = d.ResponseID
@@ -430,7 +459,11 @@ func (d *LLMSpanData) appendUsage(attrs map[string]any) {
 }
 
 func (d *LLMSpanData) appendError(attrs map[string]any) {
-	e := d.Error
+	AppendSpanErrorAttributes(attrs, d.Error)
+}
+
+// AppendSpanErrorAttributes writes the failure identity both spans render.
+func AppendSpanErrorAttributes(attrs map[string]any, e *SpanError) {
 	if e == nil {
 		return
 	}
@@ -443,6 +476,22 @@ func (d *LLMSpanData) appendError(attrs map[string]any) {
 	if e.Type != "" {
 		attrs[AttrBifrostErrorType] = e.Type
 	}
+}
+
+// RootSpanErrorAttributes lets a trace-level dashboard classify a failure without
+// opening the llm.call span, which a request rejected before dispatch never has.
+// errorType is caller-supplied so both spans report it identically.
+func RootSpanErrorAttributes(err *BifrostError, errorType ErrorType) map[string]any {
+	if err == nil {
+		return nil
+	}
+	attrs := make(map[string]any, 5)
+	AppendSpanErrorAttributes(attrs, &SpanError{
+		Detail:     err.Error,
+		StatusCode: Ptr(err.EffectiveHTTPStatus()),
+		Type:       string(errorType),
+	})
+	return attrs
 }
 
 // usesInputTokenDetailsNamespace reports which of the two token-detail key

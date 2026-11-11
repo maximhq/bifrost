@@ -230,6 +230,8 @@ func handleAuthServerMetadata(w http.ResponseWriter, r *http.Request) {
 		"code_challenge_methods_supported":      []string{"S256"},
 		"token_endpoint_auth_methods_supported": []string{"none"},
 		"scopes_supported":                      []string{"mcp:read", "mcp:write"},
+
+		"authorization_response_iss_parameter_supported": true,
 	})
 }
 
@@ -303,8 +305,8 @@ code{background:#f4f4f4;padding:1px 4px;border-radius:3px;font-size:12px}
 <form method="GET" action="/authorize">
 	{{range $k, $v := .Hidden}}<input type="hidden" name="{{$k}}" value="{{$v}}">{{end}}
 	<label for="user">Username</label>
-	<input type="text" id="user" name="user" value="demo-user" autofocus>
-	<button type="submit">Sign in &amp; approve</button>
+	<input type="text" id="user" name="user" value="demo-user" data-testid="oauth-demo-user-input" autofocus>
+	<button type="submit" data-testid="oauth-demo-signin-btn">Sign in &amp; approve</button>
 </form>
 </body></html>`))
 
@@ -397,6 +399,7 @@ func handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	}
 	rq := redirect.Query()
 	rq.Set("code", code)
+	rq.Set("iss", issuer) // RFC 9207
 	if state != "" {
 		rq.Set("state", state)
 	}

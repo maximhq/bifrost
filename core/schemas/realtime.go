@@ -1,6 +1,11 @@
 package schemas
 
-import "encoding/json"
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"maps"
+)
 
 // RealtimeEventType represents the type of a Bifrost unified Realtime event.
 type RealtimeEventType string
@@ -114,7 +119,7 @@ type RealtimeSession struct {
 	Model            string                     `json:"model,omitempty"`
 	Modalities       []string                   `json:"modalities,omitempty"`
 	Instructions     string                     `json:"instructions,omitempty"`
-	Voice            string                     `json:"voice,omitempty"`
+	Voice            *RealtimeVoice             `json:"voice,omitempty"`
 	Temperature      *float64                   `json:"temperature,omitempty"`
 	MaxOutputTokens  json.RawMessage            `json:"max_output_tokens,omitempty"`
 	TurnDetection    json.RawMessage            `json:"turn_detection,omitempty"`
@@ -122,6 +127,132 @@ type RealtimeSession struct {
 	OutputAudioType  string                     `json:"output_audio_type,omitempty"`
 	Tools            json.RawMessage            `json:"tools,omitempty"`
 	ExtraParams      map[string]json.RawMessage `json:"extra_params,omitempty"`
+}
+
+// RealtimeVoice is a session voice: a name such as "alloy", or an object such as OpenAI's custom
+// {"id": ...} or Azure Voice Live's {"name": ..., "type": ...}.
+type RealtimeVoice struct {
+	VoiceStr    *string
+	VoiceObject *RealtimeVoiceObject
+}
+
+// RealtimeVoiceObject is the object form of a session voice. Fields other than id, name and type,
+// such as Azure's temperature or endpoint_id, are kept in ExtraParams and sent back as is.
+type RealtimeVoiceObject struct {
+	ID          string
+	Name        string
+	Type        string
+	ExtraParams map[string]json.RawMessage
+}
+
+// MarshalJSON writes the string form or the object form, whichever is set.
+func (v RealtimeVoice) MarshalJSON() ([]byte, error) {
+	if v.VoiceStr != nil && v.VoiceObject != nil {
+		return nil, fmt.Errorf("both voice string and voice object are set; only one should be non-nil")
+	}
+	if v.VoiceStr != nil {
+		return MarshalSorted(*v.VoiceStr)
+	}
+	if v.VoiceObject != nil {
+		return MarshalSorted(v.VoiceObject)
+	}
+	return MarshalSorted(nil)
+}
+
+// UnmarshalJSON reads a voice that is either a JSON string or a JSON object.
+func (v *RealtimeVoice) UnmarshalJSON(data []byte) error {
+	trimmed := bytes.TrimSpace(data)
+	v.VoiceStr, v.VoiceObject = nil, nil
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return nil
+	}
+	if trimmed[0] == '"' {
+		// A name without escapes, the usual case, is copied without a decoder round trip.
+		if len(trimmed) >= 2 && trimmed[len(trimmed)-1] == '"' && bytes.IndexByte(trimmed, '\\') < 0 {
+			name := string(trimmed[1 : len(trimmed)-1])
+			v.VoiceStr = &name
+			return nil
+		}
+		var name string
+		if err := Unmarshal(trimmed, &name); err != nil {
+			return err
+		}
+		v.VoiceStr = &name
+		return nil
+	}
+	var object RealtimeVoiceObject
+	if err := Unmarshal(trimmed, &object); err != nil {
+		return err
+	}
+	v.VoiceObject = &object
+	return nil
+}
+
+// GetName returns the voice name, or the custom voice ID when the object has no name.
+func (v *RealtimeVoice) GetName() string {
+	switch {
+	case v == nil:
+		return ""
+	case v.VoiceStr != nil:
+		return *v.VoiceStr
+	case v.VoiceObject != nil && v.VoiceObject.Name != "":
+		return v.VoiceObject.Name
+	case v.VoiceObject != nil:
+		return v.VoiceObject.ID
+	}
+	return ""
+}
+
+// GetType returns the object voice's type, such as Azure Voice Live's "azure-standard", or empty.
+func (v *RealtimeVoice) GetType() string {
+	if v == nil || v.VoiceObject == nil {
+		return ""
+	}
+	return v.VoiceObject.Type
+}
+
+// MarshalJSON writes id, name and type next to the preserved fields.
+func (o RealtimeVoiceObject) MarshalJSON() ([]byte, error) {
+	out := make(map[string]json.RawMessage, len(o.ExtraParams)+3)
+	maps.Copy(out, o.ExtraParams)
+	for _, field := range [...]struct{ key, value string }{{"id", o.ID}, {"name", o.Name}, {"type", o.Type}} {
+		if field.value == "" {
+			continue
+		}
+		encoded, err := MarshalSorted(field.value)
+		if err != nil {
+			return nil, err
+		}
+		out[field.key] = encoded
+	}
+	return MarshalSorted(out)
+}
+
+// UnmarshalJSON lifts string id, name and type into fields and keeps everything else, including a
+// null or non-string id, name or type, in ExtraParams.
+func (o *RealtimeVoiceObject) UnmarshalJSON(data []byte) error {
+	var fields map[string]json.RawMessage
+	if err := Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	*o = RealtimeVoiceObject{}
+	for _, field := range [...]struct {
+		key    string
+		target *string
+	}{{"id", &o.ID}, {"name", &o.Name}, {"type", &o.Type}} {
+		raw, ok := fields[field.key]
+		if !ok || !bytes.HasPrefix(bytes.TrimSpace(raw), []byte(`"`)) {
+			continue
+		}
+		if err := Unmarshal(raw, field.target); err != nil {
+			return fmt.Errorf("voice %s: %w", field.key, err)
+		}
+		delete(fields, field.key)
+	}
+	if len(fields) > 0 {
+		o.ExtraParams = fields
+	}
+	return nil
 }
 
 // RealtimeItem represents a conversation item in the Realtime protocol.
@@ -170,7 +301,7 @@ type RealtimeSessionRoute struct {
 // Checked via type assertion: provider.(RealtimeProvider).
 type RealtimeProvider interface {
 	SupportsRealtimeAPI() bool
-	RealtimeWebSocketURL(key Key, model, intent string) (string, *BifrostError)
+	RealtimeWebSocketURL(ctx *BifrostContext, key Key, model, intent string) (string, *BifrostError)
 	RealtimeHeaders(ctx *BifrostContext, key Key) (map[string]string, *BifrostError)
 	// SupportsRealtimeWebRTC reports whether the provider supports WebRTC SDP exchange.
 	SupportsRealtimeWebRTC() bool
@@ -193,6 +324,19 @@ type RealtimeProvider interface {
 	ShouldAccumulateRealtimeOutput(eventType RealtimeEventType) bool
 }
 
+// RealtimeUpstream is an open provider realtime connection exchanging WebSocket-style frames (1 = text).
+type RealtimeUpstream interface {
+	ReadMessage() (messageType int, data []byte, err error)
+	WriteMessage(messageType int, data []byte) error
+	Close() error
+}
+
+// RealtimeConnector is optional: providers whose realtime transport is not a WebSocket dial
+// (Bedrock's HTTP/2 event stream) are connected through it instead of RealtimeWebSocketURL.
+type RealtimeConnector interface {
+	ConnectRealtime(ctx *BifrostContext, key Key, model, intent string) (RealtimeUpstream, *BifrostError)
+}
+
 // RealtimeLegacyWebRTCProvider is an optional interface for providers that
 // support the beta WebRTC handshake (e.g., OpenAI's /v1/realtime).
 // Only checked for legacy integration routes via type assertion.
@@ -209,11 +353,69 @@ type RealtimeUsageExtractor interface {
 	ExtractRealtimeTurnOutput(terminalEventRaw []byte) *ChatMessage
 }
 
+// RealtimeInterimUsageExtractor is optional: a provider whose turn can pass through several generations
+// reports here the usage of one that did not end the turn, and the relay adds it to the turn's total.
+type RealtimeInterimUsageExtractor interface {
+	ExtractRealtimeInterimUsage(event *BifrostRealtimeEvent) *BifrostLLMUsage
+}
+
 // RealtimeSessionProvider is an optional interface for providers that can mint
 // short-lived client secrets for browser/client-side Realtime connections.
 // Checked via type assertion: provider.(RealtimeSessionProvider).
 type RealtimeSessionProvider interface {
 	CreateRealtimeClientSecret(ctx *BifrostContext, key Key, rawRequest json.RawMessage) (*BifrostPassthroughResponse, *BifrostError)
+}
+
+// RealtimeTranslation is the output of one RealtimeTranslator step: the frames to write, in order.
+type RealtimeTranslation struct {
+	Provider []json.RawMessage // frames for the provider, in its native protocol
+	Client   []json.RawMessage // events for the client, in the OpenAI Realtime protocol
+}
+
+// RealtimeTranslator translates one realtime connection between the OpenAI Realtime protocol the
+// client speaks and a provider's native protocol, for providers whose frames cannot be mapped
+// event by event (a one-shot setup frame, one frame carrying several events, state that spans
+// frames). Each connection has its own translator, so it may hold per-connection state.
+//
+// The relay calls a translator one step at a time across both directions and writes each step's
+// frames before the next step, so an implementation needs no locking and its frames keep the order
+// it produced them in.
+type RealtimeTranslator interface {
+	// Open runs once before either side speaks, for events the client expects first, such as session.created.
+	Open() RealtimeTranslation
+	// ToProvider translates a client event. An error is reported to the client; the connection stays open.
+	ToProvider(event *BifrostRealtimeEvent) (RealtimeTranslation, error)
+	// ToClient translates one provider frame, text or binary. An error ends the session.
+	ToClient(frame json.RawMessage) (RealtimeTranslation, error)
+	// Close runs when the provider closes the connection with a close frame, before the close is relayed,
+	// for protocols that report errors only through the close reason. Its Client events reach the client
+	// first, such as an error event; its Provider frames are dropped, the connection being closed.
+	Close(code int, reason string) RealtimeTranslation
+}
+
+// RealtimeTranslatorProvider is an optional interface for providers whose realtime protocol needs a
+// RealtimeTranslator. Checked via type assertion: provider.(RealtimeTranslatorProvider).
+//
+// The relay then applies the OpenAI Realtime rules (turn start, forwarding, usage) to the translated
+// stream instead of the provider's own, and does not call the provider's ToBifrostRealtimeEvent or
+// ToProviderRealtimeEvent for WebSocket connections. Translation is WebSocket only, so the provider
+// must report SupportsRealtimeWebRTC as false. model is the resolved model, after aliasing.
+type RealtimeTranslatorProvider interface {
+	NewRealtimeTranslator(key Key, model string) (RealtimeTranslator, *BifrostError)
+}
+
+// RealtimeTranslationSelector is optional for a RealtimeTranslatorProvider that serves some sessions
+// as they are and translates others, such as a provider with an agent protocol and a transcription
+// protocol. Without it, every session of a translator provider is translated.
+type RealtimeTranslationSelector interface {
+	TranslatesRealtime(model, intent string) bool
+}
+
+// RealtimeBootstrapDialer is optional for providers whose upstream URL depends on the settings the client
+// sends first, which a transcription session does when the provider fixes them at connect. frames are the
+// text frames the client sent before the session was admitted, in order.
+type RealtimeBootstrapDialer interface {
+	RealtimeWebSocketURLForBootstrap(ctx *BifrostContext, key Key, model, intent string, frames [][]byte) (string, *BifrostError)
 }
 
 // ParseRealtimeEvent decodes a client/provider realtime event while preserving
@@ -235,6 +437,7 @@ func ParseRealtimeEvent(raw []byte) (*BifrostRealtimeEvent, error) {
 	}
 
 	event := &BifrostRealtimeEvent{
+		RawData: append(json.RawMessage(nil), raw...),
 		Type:    alias.Type,
 		EventID: alias.EventID,
 		Session: alias.Session,

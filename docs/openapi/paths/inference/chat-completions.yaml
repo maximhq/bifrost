@@ -15,6 +15,8 @@ chat-completions:
     responses:
       '200':
         description: Successful response
+        headers:
+          $ref: '../../schemas/inference/responseheaders.yaml#/InferenceSuccessHeaders'
         content:
           application/json:
             schema:
@@ -23,9 +25,9 @@ chat-completions:
             schema:
               $ref: '../../schemas/inference/chat.yaml#/ChatCompletionStreamResponse'
       '400':
-        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+        $ref: '../../openapi.yaml#/components/responses/InferenceBadRequest'
       '500':
-        $ref: '../../openapi.yaml#/components/responses/InternalError'
+        $ref: '../../openapi.yaml#/components/responses/InferenceInternalError'
     security:
     - BearerAuth: []
     - VirtualKeyAuth: []

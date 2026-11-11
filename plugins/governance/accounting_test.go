@@ -187,6 +187,62 @@ func TestAccounting_FailedAttemptThenSuccessfulRetry(t *testing.T) {
 	assert.Equal(t, int64(250), f.tokens(), "tokens from both attempts accumulate")
 }
 
+// TestAccounting_FailedPrimaryThenSuccessfulFallbackBothBilled pins the bug where a fallback's
+// usage was dropped as already billed. Each provider in the chain restarts the retry counter at 0
+// and keeps the request id, so a primary attempt that failed after the provider reported usage
+// (a stream that timed out or died after its first events) claimed the billing key the fallback's
+// first attempt then settled under, and the fallback that served the request was never charged.
+func TestAccounting_FailedPrimaryThenSuccessfulFallbackBothBilled(t *testing.T) {
+	logger := NewMockLogger()
+	rl := buildRateLimitWithUsage("rl-fallback", 1_000_000, 0, 1_000_000, 0)
+	vk := buildVirtualKeyWithRateLimit("vk1", "sk-bf-fallback", "Fallback VK", rl)
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+		RateLimits:  []configstoreTables.TableRateLimit{*rl},
+	}, nil, nil)
+	require.NoError(t, err)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
+
+	ctx := resolverCtx(store, "sk-bf-fallback")
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-fallback")
+	ctx.SetValue(schemas.BifrostContextKeyBillingNonce, "nonce-fallback")
+
+	// attempt runs one attempt through the funnel and settles its outcome, as the pipeline does for
+	// every provider in the chain, each starting its retries at 0.
+	attempt := func(fallbackIndex int, result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) {
+		t.Helper()
+		ctx.SetValue(schemas.BifrostContextKeyFallbackIndex, fallbackIndex)
+		ctx.SetValue(schemas.BifrostContextKeyNumberOfRetries, 0)
+		_, shortCircuit, err := plugin.PreLLMHook(ctx, newChatRequest())
+		require.NoError(t, err)
+		require.Nil(t, shortCircuit)
+		_, _, err = plugin.PostLLMHook(ctx, result, bifrostErr)
+		require.NoError(t, err)
+		plugin.wg.Wait()
+	}
+
+	// The primary's stream died after the provider had reported 40 tokens.
+	attempt(0, nil, &schemas.BifrostError{
+		StatusCode: schemas.Ptr(504),
+		Error:      &schemas.ErrorField{Message: "stream timed out"},
+		ExtraFields: schemas.BifrostErrorExtraFields{
+			RequestType:            schemas.ChatCompletionRequest,
+			Provider:               schemas.OpenAI,
+			OriginalModelRequested: "gpt-4o",
+			BilledUsage:            &schemas.BifrostLLMUsage{PromptTokens: 40, TotalTokens: 40},
+		},
+	})
+	// The first fallback serves the request on its first attempt.
+	attempt(1, countableResponse(), nil)
+
+	counted := store.GetGovernanceData(context.Background()).RateLimits["rl-fallback"]
+	require.NotNil(t, counted)
+	assert.Equal(t, int64(1040), counted.TokenCurrentUsage, "the failed primary's tokens and the fallback's are both counted")
+	assert.Equal(t, int64(1), counted.RequestCurrentUsage, "the fallback that served counts as the request")
+}
+
 // TestAccounting_NoDoubleBillSuccessVsCancelTerminal: when both a success
 // terminal and a cancellation terminal fire for the SAME physical call
 // (RequestID+attempt), the budget is charged exactly once.
@@ -603,6 +659,8 @@ func TestAccounting_RequestsThatSpendNothingAreNotCharged(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			plugin, store := governedPassthroughFixture(t)
+			// A virtual-key file list is checked against recorded object owners, which needs a config store.
+			plugin.configStore = newProviderObjectConfigStore(t)
 
 			// Through the request hook first, so the key's limits are settled onto the grant exactly
 			// as a real call's are. Without that the assertion below is worth nothing: a post hook
@@ -624,6 +682,137 @@ func TestAccounting_RequestsThatSpendNothingAreNotCharged(t *testing.T) {
 				"a call that spent nothing must not consume the key's request allowance")
 			assert.Equal(t, int64(0), rateLimit.TokenCurrentUsage)
 		})
+	}
+}
+
+// A stored Gemini Interactions run is charged once over its whole life. The create names the
+// agent, so it is a request; the provider reports the run on ProviderJob rather than as usage, so
+// neither the create nor a later poll (which repeats the run's full usage) spends tokens; the run's
+// tokens arrive once, from the settlement report. A run is one request, however many reads it took.
+func TestAccounting_InteractionRunIsChargedOnce(t *testing.T) {
+	plugin, store := governedPassthroughFixture(t)
+	run := &schemas.BifrostPassthroughJob{
+		ID: "int_gov", Status: "completed", Terminal: true, PollPath: "/interactions/int_gov",
+		Usage: &schemas.BifrostPassthroughUsage{LLMUsage: &schemas.BifrostLLMUsage{PromptTokens: 5000, CompletionTokens: 500, TotalTokens: 5500}},
+	}
+	read := func(method, path, model string, created bool) []string {
+		ctx := presentCtx("sk-bf-pt")
+		_, shortCircuit, err := plugin.PreLLMHook(ctx, &schemas.BifrostRequest{
+			RequestType: schemas.PassthroughRequest,
+			PassthroughRequest: &schemas.BifrostPassthroughRequest{
+				Provider: schemas.Vertex, Model: model, Method: method, Path: path,
+			},
+		})
+		require.NoError(t, err)
+		require.Nil(t, shortCircuit)
+		job := *run
+		job.Created = created
+		_, _, err = plugin.PostLLMHook(ctx, &schemas.BifrostResponse{
+			PassthroughResponse: &schemas.BifrostPassthroughResponse{
+				StatusCode:  200,
+				ServedModel: "deep-research-preview-04-2026",
+				ProviderJob: &job,
+				ExtraFields: schemas.BifrostResponseExtraFields{
+					RequestType:            schemas.PassthroughRequest,
+					Provider:               schemas.Vertex,
+					OriginalModelRequested: model,
+					ResolvedModelUsed:      model,
+				},
+			},
+		}, nil)
+		require.NoError(t, err)
+		// The limits the attempt answers to, read from its grant. No skip-tracking flag is set here,
+		// so these are exactly the limits governance bills.
+		require.NotNil(t, ctx.Grant())
+		require.NotNil(t, ctx.Grant().Limits())
+		return limitIDsOf(ctx.Grant().Limits().RateLimits())
+	}
+
+	createLimits := read("POST", "/projects/p/locations/global/interactions", "deep-research-preview-04-2026", true)
+	read("GET", "/projects/p/locations/global/interactions/int_gov", "", false)
+	read("GET", "/projects/p/locations/global/interactions/int_gov", "", false)
+	require.Contains(t, createLimits, "rl-vk", "the create records the limits the settlement bills")
+
+	// The settlement the logging plugin writes once the run is finished, against the create's limits.
+	report := jobaccounting.UsageReport{
+		RequestID:    "interaction-settlement-int_gov",
+		Provider:     schemas.Vertex,
+		Model:        "deep-research-preview-04-2026",
+		Cost:         0.5,
+		TokensUsed:   5500,
+		RateLimitIDs: createLimits,
+		// What the interaction settler sets: the create already counted as the run's request.
+		SkipRequestCount: true,
+	}
+	require.NoError(t, plugin.ReportUsage(context.Background(), report))
+	require.NoError(t, plugin.ReportUsage(context.Background(), report))
+	settleAccounting(t, plugin)
+
+	rateLimit := store.GetGovernanceData(context.Background()).RateLimits["rl-vk"]
+	assert.Equal(t, int64(5500), rateLimit.TokenCurrentUsage, "the run's tokens are charged once, at settlement, not on any read")
+	assert.Equal(t, int64(1), rateLimit.RequestCurrentUsage, "a run is one request: its create, not its polls or its settlement")
+}
+
+// A passthrough call relays the upstream's status as a response, not an error, so a call the
+// provider refused reached the post hook looking like a success and counted against the key's
+// request allowance. A refused inference request does not count, and neither may a refused
+// passthrough one. Seen live as an Interactions create Google rejected with 400 ("'input' must be a
+// Content[] ...") consuming one of a rate-limited key's requests, so a later run on that key read
+// two requests where it had made one.
+func TestAccounting_RefusedPassthroughIsNotARequest(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		status       int
+		wantRequests int64
+	}{
+		{"upstream 400", 400, 0},
+		{"upstream 429", 429, 0},
+		{"upstream 500", 500, 0},
+		{"upstream 200", 200, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			plugin, store := governedPassthroughFixture(t)
+			ctx := presentCtx("sk-bf-pt")
+			const model = "deep-research-preview-04-2026"
+			_, shortCircuit, err := plugin.PreLLMHook(ctx, &schemas.BifrostRequest{
+				RequestType: schemas.PassthroughRequest,
+				PassthroughRequest: &schemas.BifrostPassthroughRequest{
+					Provider: schemas.Vertex, Model: model, Method: "POST", Path: "/projects/p/locations/global/interactions",
+				},
+			})
+			require.NoError(t, err)
+			require.Nil(t, shortCircuit)
+			_, _, err = plugin.PostLLMHook(ctx, &schemas.BifrostResponse{
+				PassthroughResponse: &schemas.BifrostPassthroughResponse{
+					StatusCode: tc.status,
+					Body:       []byte(`{"error":{"message":"'input' must be a Content[], string, Turn[], Step[], or Content","code":"invalid_request"}}`),
+					ExtraFields: schemas.BifrostResponseExtraFields{
+						RequestType:            schemas.PassthroughRequest,
+						Provider:               schemas.Vertex,
+						OriginalModelRequested: model,
+						ResolvedModelUsed:      model,
+					},
+				},
+			}, nil)
+			require.NoError(t, err)
+			settleAccounting(t, plugin)
+
+			rateLimit := store.GetGovernanceData(context.Background()).RateLimits["rl-vk"]
+			assert.Equal(t, tc.wantRequests, rateLimit.RequestCurrentUsage, "upstream status %d", tc.status)
+		})
+	}
+}
+
+// BenchmarkResponseSucceeded measures the success check the async accounting worker runs once per
+// settled request: a passthrough response with an upstream error status and a chat response.
+func BenchmarkResponseSucceeded(b *testing.B) {
+	refused := &schemas.BifrostResponse{PassthroughResponse: &schemas.BifrostPassthroughResponse{StatusCode: 400}}
+	chat := &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{}}
+	b.ReportAllocs()
+	for b.Loop() {
+		if responseSucceeded(refused) || !responseSucceeded(chat) {
+			b.Fatal("wrong verdict")
+		}
 	}
 }
 
@@ -681,4 +870,32 @@ func TestAccounting_SessionContinuationSkipsRequestLimits(t *testing.T) {
 	updated := store.GetGovernanceData(context.Background()).RateLimits["rl-vk"]
 	assert.Equal(t, int64(1), updated.RequestCurrentUsage, "the continuation is not counted as a request")
 	assert.Equal(t, int64(1000), updated.TokenCurrentUsage, "the continuation's tokens are still charged")
+}
+
+// TestPostHookWorkerBillsEstimatedCancelledStream: a cancelled stream whose usage
+// core estimated is billed like provider-reported partial usage, at catalog rates.
+func TestPostHookWorkerBillsEstimatedCancelledStream(t *testing.T) {
+	fixture := newAccountingFixture(t)
+	plugin := &GovernancePlugin{
+		ctx:          context.Background(),
+		tracker:      fixture.tracker,
+		modelCatalog: newOfflinePricingCatalog(t),
+	}
+	cancelled := &schemas.BifrostError{
+		Error: &schemas.ErrorField{Type: new(schemas.RequestCancelled), Message: "request cancelled"},
+		ExtraFields: schemas.BifrostErrorExtraFields{BilledUsage: &schemas.BifrostLLMUsage{
+			PromptTokens: 120, CompletionTokens: 40, TotalTokens: 160,
+			Estimation: &schemas.TokenUsageEstimation{Prompt: true, Completion: true, Tokenizer: "o200k_base"},
+		}},
+	}
+
+	settled := settleLimits(fixture.store, "sk-bf-acct", schemas.OpenAI, "gpt-4o", &UsageUpdate{})
+	plugin.postHookWorker(nil, cancelled, schemas.OpenAI, "gpt-4o", schemas.ChatCompletionStreamRequest, "estimated-cancel", "", true, 0, 0, false, nil, settled.Budgets, settled.RateLimits, nil)
+
+	// gpt-4o testdata: 2.5e-6 input, 1e-5 output.
+	want := float64(120)*2.5e-6 + float64(40)*1e-5
+	assert.EventuallyWithT(t, func(c *assert.CollectT) {
+		assert.InDelta(c, want, fixture.cost(), 1e-12)
+		assert.Equal(c, int64(160), fixture.tokens())
+	}, time.Second, 10*time.Millisecond)
 }

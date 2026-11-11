@@ -10,7 +10,8 @@ func ToPerplexityChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) *
 		return nil
 	}
 
-	messages := bifrostReq.Input
+	// Perplexity takes text only in a tool message.
+	messages := schemas.FlattenToolMessagesMedia(bifrostReq.Input)
 	perplexityReq := &PerplexityChatRequest{
 		Model:    bifrostReq.Model,
 		Messages: messages,

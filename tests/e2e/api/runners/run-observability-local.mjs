@@ -536,18 +536,24 @@ async function abortMidFlight(id) {
 	await pending.catch(() => {});
 }
 
-// assertOtelAbandonedTrace is the end-to-end guard for the abandoned-request path: the
-// worker writes cost and model after the handler has already returned, so a trace
-// flushed at handler return reaches every connector without them.
+// assertOtelAbandonedTrace is the end-to-end guard for the abandoned-request path: a
+// request whose client left mid-flight must still export its trace, with the
+// cancellation recorded, rather than being dropped or flushed half-written.
 async function assertOtelAbandonedTrace(id) {
 	const entry = await poll("OTEL abandoned trace receiver", 20000, () =>
 		state.otelTraceRequests.find((item) => item.body.includes(Buffer.from(id))),
 	);
+	// The client disconnect watcher (#7106) cancels the request context once it sees
+	// the close, which aborts the upstream call: the attempt ends as a 499 with no
+	// usage. What must survive is the export itself, carrying the request id, the
+	// model and the cancellation. The late-writer path, where the provider answers
+	// after the caller left, is pinned in Go by TestRequestWorkerCompletesEveryAbandonedTrace.
 	assertBufferContainsAll("OTEL abandoned trace export", entry.body, [
 		id,
 		"gen_ai.request.model",
-		"gen_ai.usage.input_tokens",
-		"gen_ai.usage.output_tokens",
+		"error.type",
+		"request_cancelled",
+		"http.response.status_code",
 	]);
 }
 

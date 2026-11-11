@@ -1,0 +1,75 @@
+{
+  "swagger": "2.0",
+  "info": {"title": "Petstore (Swagger 2)", "version": "2.0.0"},
+  "host": "petstore.example.com",
+  "basePath": "/v2",
+  "schemes": ["http", "https"],
+  "consumes": ["application/json"],
+  "securityDefinitions": {
+    "ApiKeyAuth": {"type": "apiKey", "in": "header", "name": "X-API-Key"},
+    "BasicAuth": {"type": "basic"},
+    "Petstore_OAuth": {"type": "oauth2", "flow": "implicit", "authorizationUrl": "https://auth.example.com", "scopes": {}}
+  },
+  "security": [{"ApiKeyAuth": []}],
+  "definitions": {
+    "Pet": {
+      "type": "object",
+      "required": ["name"],
+      "properties": {
+        "id": {"type": "integer", "format": "int64", "readOnly": true},
+        "name": {"type": "string"},
+        "tag": {"type": "string", "x-nullable": true}
+      }
+    }
+  },
+  "parameters": {
+    "PetId": {"name": "petId", "in": "path", "required": true, "type": "string"}
+  },
+  "paths": {
+    "/pets": {
+      "get": {
+        "operationId": "listPets",
+        "summary": "List all pets",
+        "parameters": [
+          {"name": "limit", "in": "query", "type": "integer", "maximum": 100},
+          {"name": "tags", "in": "query", "type": "array", "items": {"type": "string"}, "collectionFormat": "csv"},
+          {"name": "ids", "in": "query", "type": "array", "items": {"type": "integer"}, "collectionFormat": "multi"}
+        ],
+        "responses": {"200": {"description": "ok"}}
+      },
+      "post": {
+        "operationId": "createPet",
+        "parameters": [
+          {"name": "body", "in": "body", "required": true, "schema": {"$ref": "#/definitions/Pet"}}
+        ],
+        "responses": {"201": {"description": "created"}}
+      }
+    },
+    "/pets/{petId}": {
+      "parameters": [{"$ref": "#/parameters/PetId"}],
+      "get": {"operationId": "getPetById", "responses": {"200": {"description": "ok"}}}
+    },
+    "/pets/{petId}/photo": {
+      "post": {
+        "operationId": "uploadPetPhoto",
+        "consumes": ["multipart/form-data"],
+        "parameters": [
+          {"name": "petId", "in": "path", "required": true, "type": "string"},
+          {"name": "file", "in": "formData", "type": "file"}
+        ],
+        "responses": {"200": {"description": "ok"}}
+      }
+    },
+    "/login": {
+      "post": {
+        "operationId": "login",
+        "consumes": ["application/x-www-form-urlencoded"],
+        "parameters": [
+          {"name": "username", "in": "formData", "type": "string", "required": true},
+          {"name": "password", "in": "formData", "type": "string", "required": true}
+        ],
+        "responses": {"200": {"description": "ok"}}
+      }
+    }
+  }
+}

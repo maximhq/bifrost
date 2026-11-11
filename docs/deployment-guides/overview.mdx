@@ -85,6 +85,8 @@ The installation sequence is the same on every platform:
 
 ```bash
 curl --fail --show-error "https://<BIFROST_HOST>/health"
+# Under a path prefix (server.base_path) both spellings work through Bifrost itself; through a
+# proxy that routes only the prefix, use https://<BIFROST_HOST>/<prefix>/health.
 ```
 
 Before serving production traffic, complete the [deployment verification checklist](/deployment-guides/runtime-contract#verify-the-deployment). For Enterprise deployments with several replicas, continue with [Cluster Mode and HA](/deployment-guides/helm/cluster). For deployments spanning clusters or regions, see [Enterprise clustering](/enterprise/clustering).

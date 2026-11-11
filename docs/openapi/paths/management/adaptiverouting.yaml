@@ -1,0 +1,261 @@
+# Paths for Adaptive Routing management (Enterprise).
+#
+# /api/load-balancer-config is a deprecated alias for /api/adaptive-routing/config, kept so
+# existing integrations keep working.
+
+adaptive-routing-config:
+  get:
+    operationId: getAdaptiveRoutingConfig
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `AdaptiveRouter:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Get adaptive routing settings
+    description: |
+      Returns the adaptive routing settings in effect on this node. Before adaptive routing has
+      started, returns the defaults.
+    tags:
+      - Adaptive Routing
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/adaptiverouting.yaml#/AdaptiveRoutingConfig'
+      '403':
+        $ref: '../../openapi.yaml#/components/responses/Forbidden'
+
+  put:
+    operationId: updateAdaptiveRoutingConfig
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `AdaptiveRouter:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Update adaptive routing settings
+    description: |
+      Replaces every adaptive routing setting and applies the change on every node in the cluster.
+      A switch left out of the body is turned off, so read the settings first and send them all
+      back with your change. `history_retention_days` applies from the next restart; every other
+      setting applies at once.
+
+      Returns `400` when the body is not valid JSON, when `snapshot_persist_interval_seconds` is
+      missing or outside 5 to 86400, when `history_retention_days` is missing or outside 1 to 30,
+      or when `reroute_target` is any value other than `pool` or `fallbacks`; an omitted or empty
+      `reroute_target` is stored as `pool`.
+    tags:
+      - Adaptive Routing
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/adaptiverouting.yaml#/AdaptiveRoutingConfig'
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: Settings saved and applied. Returns the saved settings, with an omitted `reroute_target` stored as `pool`.
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/adaptiverouting.yaml#/AdaptiveRoutingConfig'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '403':
+        $ref: '../../openapi.yaml#/components/responses/Forbidden'
+      '500':
+        description: The settings could not be saved, or were saved but could not be applied.
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+
+adaptive-routing-config-legacy:
+  get:
+    operationId: getAdaptiveRoutingConfigLegacy
+    deprecated: true
+    x-bifrost-successor: '/api/adaptive-routing/config'
+    x-bifrost-removal: following-major-release
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `AdaptiveRouter:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Get adaptive routing settings (deprecated path)
+    description: |
+      Returns the adaptive routing settings in effect on this node. Before adaptive routing has
+      started, returns the defaults.
+
+      Deprecated: use `GET /api/adaptive-routing/config`. Every response from this alias, errors
+      included, carries `Link: </api/adaptive-routing/config>; rel="successor-version"` and a
+      `Warning: 299` header naming the replacement.
+    tags:
+      - Adaptive Routing
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: Successful response
+        headers:
+          Link:
+            $ref: '#/_adaptive-routing-legacy-headers/Link'
+          Warning:
+            $ref: '#/_adaptive-routing-legacy-headers/Warning'
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/adaptiverouting.yaml#/AdaptiveRoutingConfig'
+      '403':
+        description: Forbidden. Authenticated, but not permitted to perform this action.
+        headers:
+          Link:
+            $ref: '#/_adaptive-routing-legacy-headers/Link'
+          Warning:
+            $ref: '#/_adaptive-routing-legacy-headers/Warning'
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+
+  put:
+    operationId: updateAdaptiveRoutingConfigLegacy
+    deprecated: true
+    x-bifrost-successor: '/api/adaptive-routing/config'
+    x-bifrost-removal: following-major-release
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `AdaptiveRouter:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Update adaptive routing settings (deprecated path)
+    description: |
+      Replaces every adaptive routing setting and applies the change on every node in the cluster.
+      A switch left out of the body is turned off. `history_retention_days` applies from the next
+      restart; every other setting applies at once.
+
+      Returns `400` when the body is not valid JSON, when `snapshot_persist_interval_seconds` is
+      missing or outside 5 to 86400, when `history_retention_days` is missing or outside 1 to 30,
+      or when `reroute_target` is any value other than `pool` or `fallbacks`; an omitted or empty
+      `reroute_target` is stored as `pool`.
+
+      Deprecated: use `PUT /api/adaptive-routing/config`. Every response from this alias, errors
+      included, carries `Link: </api/adaptive-routing/config>; rel="successor-version"` and a
+      `Warning: 299` header naming the replacement.
+    tags:
+      - Adaptive Routing
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/adaptiverouting.yaml#/AdaptiveRoutingConfig'
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: Settings saved and applied. Returns the saved settings, with an omitted `reroute_target` stored as `pool`.
+        headers:
+          Link:
+            $ref: '#/_adaptive-routing-legacy-headers/Link'
+          Warning:
+            $ref: '#/_adaptive-routing-legacy-headers/Warning'
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/adaptiverouting.yaml#/AdaptiveRoutingConfig'
+      '400':
+        description: Bad request
+        headers:
+          Link:
+            $ref: '#/_adaptive-routing-legacy-headers/Link'
+          Warning:
+            $ref: '#/_adaptive-routing-legacy-headers/Warning'
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+      '403':
+        description: Forbidden. Authenticated, but not permitted to perform this action.
+        headers:
+          Link:
+            $ref: '#/_adaptive-routing-legacy-headers/Link'
+          Warning:
+            $ref: '#/_adaptive-routing-legacy-headers/Warning'
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+      '500':
+        description: The settings could not be saved, or were saved but could not be applied.
+        headers:
+          Link:
+            $ref: '#/_adaptive-routing-legacy-headers/Link'
+          Warning:
+            $ref: '#/_adaptive-routing-legacy-headers/Warning'
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+
+# ---------------------------------------------------------------------------
+# Routing history
+# ---------------------------------------------------------------------------
+
+_adaptive-routing-legacy-headers:
+  Link:
+    description: '`</api/adaptive-routing/config>; rel="successor-version"`'
+    schema:
+      type: string
+  Warning:
+    description: '`299 - "The /api/load-balancer-config API is deprecated; use /api/adaptive-routing/config"`'
+    schema:
+      type: string

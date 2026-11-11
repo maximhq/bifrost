@@ -11,6 +11,12 @@ import (
 const (
 	ProviderJobKindBatch = "batch"
 	ProviderJobKindVideo = "video"
+	// ProviderJobKindRelay is an async job a relay route started. Its
+	// Provider column holds the endpoint name.
+	ProviderJobKindRelay = "relay"
+	// ProviderJobKindInteraction is a stored run the provider reports on every read, such as a
+	// Gemini Interaction reached through passthrough.
+	ProviderJobKindInteraction = "interaction"
 )
 
 // Accounting lifecycle states for a TableProviderJob.
@@ -57,9 +63,9 @@ type TableProviderJob struct {
 	Params *string `gorm:"type:text" json:"params,omitempty"`
 
 	ProviderStatus string  `gorm:"type:varchar(50)" json:"provider_status,omitempty"`
-	InputFileID    string  `gorm:"type:varchar(255)" json:"input_file_id,omitempty"`
-	OutputFileID   *string `gorm:"type:varchar(255)" json:"output_file_id,omitempty"`
-	ErrorFileID    *string `gorm:"type:varchar(255)" json:"error_file_id,omitempty"`
+	InputFileID    string  `gorm:"type:varchar(255);index:idx_batch_jobs_input_file_id" json:"input_file_id,omitempty"`
+	OutputFileID   *string `gorm:"type:varchar(255);index:idx_batch_jobs_output_file_id" json:"output_file_id,omitempty"`
+	ErrorFileID    *string `gorm:"type:varchar(255);index:idx_batch_jobs_error_file_id" json:"error_file_id,omitempty"`
 	ResultsURL     *string `gorm:"type:text" json:"results_url,omitempty"`
 
 	NextCheckAt      *time.Time `gorm:"index:idx_batch_jobs_sweeper_v2,priority:4;index:idx_batch_jobs_due,priority:2,where:next_check_at IS NOT NULL" json:"next_check_at,omitempty"`

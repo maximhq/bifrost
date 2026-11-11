@@ -1,47 +1,72 @@
+import i18n from "@/lib/i18n";
 import type { MCPCodeModeLimits } from "@/lib/types/config";
 
 // Server-side bounds, mirrored from core/schemas MCPCodeModeLimits.Validate.
 const MIN_VALUE_BYTES = 1024;
 const MAX_NESTING_DEPTH = 1000;
 
-export const CODE_MODE_LIMIT_FIELDS: { key: keyof MCPCodeModeLimits; label: string; description: string; defaultValue: number }[] = [
-	{
-		key: "max_source_bytes",
-		label: "Max Source Size (bytes)",
-		description: "Largest code a single execution may submit.",
-		defaultValue: 65536,
+type CodeModeLimitField = { key: keyof MCPCodeModeLimits; label: string; description: string; defaultValue: number };
+
+// label and description resolve on access, so they follow the active language each time a component renders them.
+const limitField = (
+	key: keyof MCPCodeModeLimits,
+	defaultValue: number,
+	label: () => string,
+	description: () => string,
+): CodeModeLimitField => ({
+	key,
+	defaultValue,
+	get label() {
+		return label();
 	},
-	{
-		key: "max_steps",
-		label: "Max Computation Steps",
-		description: "Interpreter steps per execution, including work inside builtins.",
-		defaultValue: 1000000,
+	get description() {
+		return description();
 	},
-	{
-		key: "max_memory_bytes",
-		label: "Max Memory (bytes)",
-		description: "Estimated allocation budget per execution. Every concurrent execution gets its own budget.",
-		defaultValue: 67108864,
-	},
-	{
-		key: "max_log_bytes",
-		label: "Max Log Output (bytes)",
-		description: "Print and tool log output per execution, including newlines.",
-		defaultValue: 65536,
-	},
-	{ key: "max_tool_calls", label: "Max Tool Calls", description: "Nested MCP tool calls per execution.", defaultValue: 64 },
-	{
-		key: "max_value_bytes",
-		label: "Max Value Size (bytes)",
-		description: `Size budget for each tool payload and converted result. Must be at least ${MIN_VALUE_BYTES}.`,
-		defaultValue: 1048576,
-	},
-	{
-		key: "max_nesting_depth",
-		label: "Max Nesting Depth",
-		description: `Nesting depth of values crossing the tool boundary. At most ${MAX_NESTING_DEPTH}.`,
-		defaultValue: 64,
-	},
+});
+
+export const CODE_MODE_LIMIT_FIELDS: CodeModeLimitField[] = [
+	limitField(
+		"max_source_bytes",
+		65536,
+		() => i18n.t("mcpSettings.limitMaxSourceBytes", { ns: "config" }),
+		() => i18n.t("mcpSettings.limitMaxSourceBytesDesc", { ns: "config" }),
+	),
+	limitField(
+		"max_steps",
+		1000000,
+		() => i18n.t("mcpSettings.limitMaxSteps", { ns: "config" }),
+		() => i18n.t("mcpSettings.limitMaxStepsDesc", { ns: "config" }),
+	),
+	limitField(
+		"max_memory_bytes",
+		67108864,
+		() => i18n.t("mcpSettings.limitMaxMemoryBytes", { ns: "config" }),
+		() => i18n.t("mcpSettings.limitMaxMemoryBytesDesc", { ns: "config" }),
+	),
+	limitField(
+		"max_log_bytes",
+		65536,
+		() => i18n.t("mcpSettings.limitMaxLogBytes", { ns: "config" }),
+		() => i18n.t("mcpSettings.limitMaxLogBytesDesc", { ns: "config" }),
+	),
+	limitField(
+		"max_tool_calls",
+		64,
+		() => i18n.t("mcpSettings.limitMaxToolCalls", { ns: "config" }),
+		() => i18n.t("mcpSettings.limitMaxToolCallsDesc", { ns: "config" }),
+	),
+	limitField(
+		"max_value_bytes",
+		1048576,
+		() => i18n.t("mcpSettings.limitMaxValueBytes", { ns: "config" }),
+		() => i18n.t("mcpSettings.limitMaxValueBytesDesc", { ns: "config", min: MIN_VALUE_BYTES }),
+	),
+	limitField(
+		"max_nesting_depth",
+		64,
+		() => i18n.t("mcpSettings.limitMaxNestingDepth", { ns: "config" }),
+		() => i18n.t("mcpSettings.limitMaxNestingDepthDesc", { ns: "config", max: MAX_NESTING_DEPTH }),
+	),
 ];
 
 // Missing, undefined and 0 all mean "use the default", so they compare equal.
@@ -60,10 +85,12 @@ export function parseCodeModeLimitInput(value: string): number | undefined {
 export function validateCodeModeLimits(limits: MCPCodeModeLimits | undefined): string | null {
 	if (!limits) return null;
 	for (const { key, label } of CODE_MODE_LIMIT_FIELDS) {
-		if ((limits[key] ?? 0) < 0) return `${label} must not be negative.`;
+		if ((limits[key] ?? 0) < 0) return i18n.t("mcpSettings.limitNegative", { ns: "config", label });
 	}
 	const valueBytes = limits.max_value_bytes ?? 0;
-	if (valueBytes !== 0 && valueBytes < MIN_VALUE_BYTES) return `Max value size must be at least ${MIN_VALUE_BYTES} bytes.`;
-	if ((limits.max_nesting_depth ?? 0) > MAX_NESTING_DEPTH) return `Max nesting depth must be at most ${MAX_NESTING_DEPTH}.`;
+	if (valueBytes !== 0 && valueBytes < MIN_VALUE_BYTES)
+		return i18n.t("mcpSettings.limitValueBytesMin", { ns: "config", min: MIN_VALUE_BYTES });
+	if ((limits.max_nesting_depth ?? 0) > MAX_NESTING_DEPTH)
+		return i18n.t("mcpSettings.limitNestingMax", { ns: "config", max: MAX_NESTING_DEPTH });
 	return null;
 }

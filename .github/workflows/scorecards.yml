@@ -20,7 +20,7 @@ permissions: read-all
 jobs:
   analysis:
     name: Scorecard analysis
-    runs-on: ubuntu-latest
+    runs-on: builder-8-32
     permissions:
       # Needed to upload the results to code-scanning dashboard.
       security-events: write
@@ -59,7 +59,8 @@ jobs:
           persist-credentials: false
 
       - name: "Run analysis"
-        uses: ossf/scorecard-action@62b2cac7ed8198b15735ed49ab1e5cf35480ba46 # v2.4.0
+        # v2.4.4 pulls its image from ghcr.io; v2.4.0's gcr.io image is refused (billing disabled upstream).
+        uses: ossf/scorecard-action@2d1146689b8cda280b9bc96326124645441f03bc # v2.4.4
         with:
           results_file: results.sarif
           results_format: sarif

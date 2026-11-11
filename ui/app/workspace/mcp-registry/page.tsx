@@ -1,9 +1,12 @@
 import FullPageLoader from "@/components/fullPageLoader";
+import { LoadErrorView } from "@/components/loadErrorView";
 import { useToast } from "@/hooks/use-toast";
 import { useDebouncedValue } from "@/hooks/useDebounce";
 import { getErrorMessage, useGetMCPClientsQuery } from "@/lib/store";
+import { showLoadError } from "@/lib/utils/loadError";
 import { parseAsArrayOf, parseAsBoolean, parseAsInteger, parseAsString, useQueryStates } from "nuqs";
 import { useCallback, useEffect, useMemo } from "react";
+import { useTranslation } from "react-i18next";
 import { MCPClientsFilterSidebar, type MCPClientFilters } from "./views/mcpClientsFilterSidebar";
 import MCPClientsTable from "./views/mcpClientsTable";
 
@@ -17,7 +20,14 @@ function resolveBooleanFacet(selected: string[]): boolean | undefined {
 	return selected[0] === "true";
 }
 
+// An instance without MCP answers the list with this error. The page treats it
+// as an empty registry, not as a failed load.
+function isMCPNotConfigured(error: unknown): boolean {
+	return getErrorMessage(error).toLowerCase().includes("mcp is not configured in this bifrost instance");
+}
+
 export default function MCPServersPage() {
+	const { t: tCommon } = useTranslation("common");
 	const [urlState, setUrlState] = useQueryStates(
 		{
 			search: parseAsString.withDefault(""),
@@ -83,6 +93,7 @@ export default function MCPServersPage() {
 
 	const {
 		data: mcpClientsData,
+		currentData: currentMCPClientsData,
 		error,
 		isLoading,
 		refetch,
@@ -118,18 +129,23 @@ export default function MCPServersPage() {
 
 	useEffect(() => {
 		if (error) {
-			const message = getErrorMessage(error);
-			if (message.toLowerCase().includes("mcp is not configured in this bifrost instance")) return;
+			if (isMCPNotConfigured(error)) return;
 			toast({
-				title: "Error",
-				description: message,
+				title: tCommon("error"),
+				description: getErrorMessage(error),
 				variant: "destructive",
 			});
 		}
-	}, [error, toast]);
+	}, [error, toast, tCommon]);
 
 	if (isLoading) {
 		return <FullPageLoader />;
+	}
+
+	if (showLoadError(isMCPNotConfigured(error) ? undefined : error, mcpClientsData)) {
+		return (
+			<LoadErrorView entity={tCommon("entities.mcpServers")} error={error} onRetry={() => void refetch()} testId="mcp-servers-load-error" />
+		);
 	}
 
 	const handleSearchChange = (value: string) => void setUrlState({ search: value, offset: 0 });
@@ -138,6 +154,7 @@ export default function MCPServersPage() {
 
 	const table = (
 		<MCPClientsTable
+			pageLoading={!currentMCPClientsData}
 			mcpClients={mcpClients}
 			totalCount={totalCount}
 			refetch={refetch}

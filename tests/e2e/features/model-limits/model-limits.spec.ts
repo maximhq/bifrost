@@ -1,5 +1,6 @@
 import { expect, test } from '../../core/fixtures/base.fixture'
 import { createModelLimitData } from './model-limits.data'
+import { expectListLoadError } from '../../core/utils/test-helpers'
 
 const createdLimits: { modelName: string; provider: string }[] = []
 
@@ -26,6 +27,10 @@ test.describe('Model Limits', () => {
   test('should display create button or empty state', async ({ modelLimitsPage }) => {
     const createVisible = await modelLimitsPage.createBtn.isVisible().catch(() => false)
     expect(createVisible).toBe(true)
+  })
+
+  test('should show the load error instead of the empty state when model limits fail to load', async ({ page }) => {
+    await expectListLoadError(page, '/api/governance/model-configs', 'model-limits-load-error', 'model-limits-button-read-more')
   })
 
   test('should create a model limit with budget and rate limit', async ({ modelLimitsPage }) => {

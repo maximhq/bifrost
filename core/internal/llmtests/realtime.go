@@ -2,9 +2,12 @@ package llmtests
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -48,7 +51,12 @@ func RunRealtimeTest(t *testing.T, client *bifrost.Bifrost, ctx context.Context,
 			t.Fatalf("failed to select key for provider %s: %v", testConfig.Provider, err)
 		}
 
-		wsURL, urlErr := rtProvider.RealtimeWebSocketURL(key, testConfig.RealtimeModel, "")
+		if connector, ok := provider.(schemas.RealtimeConnector); ok {
+			runConnectorRealtimeTest(t, bfCtx, connector, key, testConfig)
+			return
+		}
+
+		wsURL, urlErr := rtProvider.RealtimeWebSocketURL(bfCtx, key, testConfig.RealtimeModel, "")
 		if urlErr != nil {
 			t.Fatalf("failed to build realtime URL for provider %s: %v", testConfig.Provider, urlErr)
 		}
@@ -81,12 +89,118 @@ func RunRealtimeTest(t *testing.T, client *bifrost.Bifrost, ctx context.Context,
 
 		t.Logf("connected to Realtime endpoint: %s", wsURL)
 
-		if testConfig.Provider == schemas.Elevenlabs {
+		translating, translated := provider.(schemas.RealtimeTranslatorProvider)
+		switch {
+		case testConfig.Provider == schemas.Elevenlabs:
 			runElevenLabsRealtimeTest(t, conn, testConfig)
-		} else {
+		case translated:
+			translator, bifrostErr := translating.NewRealtimeTranslator(key, testConfig.RealtimeModel)
+			if bifrostErr != nil {
+				t.Fatalf("failed to create the realtime translator for provider %s: %v", testConfig.Provider, bifrostErr)
+			}
+			runTranslatedRealtimeTest(t, conn, translator)
+		default:
 			runOpenAIRealtimeTest(t, conn, testConfig)
 		}
 	})
+}
+
+// runTranslatedRealtimeTest drives a session of a provider whose protocol is translated. It speaks
+// OpenAI Realtime to the translator, as a gateway client does, and the translator speaks the
+// provider's protocol on the socket.
+func runTranslatedRealtimeTest(t *testing.T, conn *ws.Conn, translator schemas.RealtimeTranslator) {
+	var events []string
+	var done []byte
+	var text strings.Builder
+
+	// forward writes what a translation asks of the provider and records what it tells the client.
+	forward := func(translation schemas.RealtimeTranslation) {
+		t.Helper()
+		for _, frame := range translation.Provider {
+			if err := conn.WriteMessage(ws.TextMessage, frame); err != nil {
+				t.Fatalf("failed to write a frame to the provider: %v", err)
+			}
+		}
+		for _, frame := range translation.Client {
+			eventType := extractEventType(frame)
+			events = append(events, eventType)
+			switch eventType {
+			case "response.output_text.delta":
+				var delta struct {
+					Delta string `json:"delta"`
+				}
+				_ = json.Unmarshal(frame, &delta)
+				text.WriteString(delta.Delta)
+			case "response.done":
+				done = frame
+			case "error":
+				t.Fatalf("the translator reported an error: %s", frame)
+			}
+		}
+	}
+	send := func(event string) {
+		t.Helper()
+		parsed, err := schemas.ParseRealtimeEvent([]byte(event))
+		if err != nil {
+			t.Fatalf("invalid client event %s: %v", event, err)
+		}
+		translation, err := translator.ToProvider(parsed)
+		if err != nil {
+			t.Fatalf("the translator refused %s: %v", event, err)
+		}
+		forward(translation)
+	}
+	readUntil := func(eventType string) {
+		t.Helper()
+		conn.SetReadDeadline(time.Now().Add(30 * time.Second))
+		for !slices.Contains(events, eventType) {
+			_, frame, err := conn.ReadMessage()
+			if err != nil {
+				var closeErr *ws.CloseError
+				if errors.As(err, &closeErr) {
+					forward(translator.Close(closeErr.Code, closeErr.Text))
+				}
+				t.Fatalf("the provider ended the session before %s (events so far: %v): %v", eventType, events, err)
+			}
+			translation, err := translator.ToClient(frame)
+			if err != nil {
+				t.Fatalf("the translator could not read a provider frame: %v", err)
+			}
+			forward(translation)
+		}
+	}
+
+	forward(translator.Open())
+	if !slices.Contains(events, "session.created") {
+		t.Fatalf("expected session.created from Open, got %v", events)
+	}
+	send(`{"type":"session.update","session":{"type":"realtime","output_modalities":["text"]}}`)
+	readUntil("session.updated")
+	send(`{"type":"conversation.item.create","item":{"type":"message","role":"user","content":[{"type":"input_text","text":"Say hello in exactly two words."}]}}`)
+	send(`{"type":"response.create"}`)
+	readUntil("response.done")
+
+	if strings.TrimSpace(text.String()) == "" {
+		t.Errorf("expected response.output_text.delta events with text, got %v", events)
+	}
+	var result struct {
+		Response struct {
+			Status string `json:"status"`
+			Usage  struct {
+				InputTokens int `json:"input_tokens"`
+			} `json:"usage"`
+		} `json:"response"`
+	}
+	if err := json.Unmarshal(done, &result); err != nil {
+		t.Fatalf("invalid response.done: %v", err)
+	}
+	if result.Response.Status != "completed" {
+		t.Errorf("expected a completed response, got %q", result.Response.Status)
+	}
+	if result.Response.Usage.InputTokens == 0 {
+		t.Errorf("expected response.done to carry the turn's usage, got %s", done)
+	}
+	t.Logf("translated Realtime test passed (%d events, reply %q)", len(events), strings.TrimSpace(text.String()))
 }
 
 // runOpenAIRealtimeTest drives an OpenAI Realtime session using text modality only.
@@ -197,6 +311,139 @@ func runOpenAIRealtimeTest(t *testing.T, conn *ws.Conn, testConfig Comprehensive
 		t.Error("expected a response.done event")
 	}
 	t.Logf("OpenAI Realtime test passed (%d events)", eventCount)
+}
+
+// runConnectorRealtimeTest drives a provider-owned connection with a text turn while streaming silence.
+func runConnectorRealtimeTest(t *testing.T, ctx *schemas.BifrostContext, connector schemas.RealtimeConnector, key schemas.Key, testConfig ComprehensiveTestConfig) {
+	upstream, bifrostErr := connector.ConnectRealtime(ctx, key, testConfig.RealtimeModel, "")
+	if bifrostErr != nil {
+		t.Fatalf("failed to connect realtime for provider %s: %s", testConfig.Provider, GetErrorMessage(bifrostErr))
+	}
+	defer upstream.Close()
+
+	type frame struct {
+		data []byte
+		err  error
+	}
+	frames := make(chan frame, 64)
+	readerDone := make(chan struct{})
+	defer close(readerDone) // runs before upstream.Close, so a reader blocked on frames exits
+	go func() {
+		for {
+			_, data, err := upstream.ReadMessage()
+			select {
+			case frames <- frame{data, err}:
+			case <-readerDone:
+				return
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+	waitFor := func(want string, timeout time.Duration, onEvent func([]byte)) {
+		t.Helper()
+		deadline := time.After(timeout)
+		for {
+			select {
+			case f := <-frames:
+				if f.err != nil {
+					t.Fatalf("realtime stream ended before %s: %v", want, f.err)
+				}
+				eventType := extractEventType(f.data)
+				if eventType == "error" {
+					t.Fatalf("received error event: %s", string(f.data))
+				}
+				if onEvent != nil {
+					onEvent(f.data)
+				}
+				if eventType == want {
+					return
+				}
+			case <-deadline:
+				t.Fatalf("timed out waiting for %s", want)
+			}
+		}
+	}
+	write := func(v interface{}) {
+		t.Helper()
+		data, err := json.Marshal(v)
+		if err != nil {
+			t.Fatalf("marshal realtime event: %v", err)
+		}
+		if err := upstream.WriteMessage(ws.TextMessage, data); err != nil {
+			t.Fatalf("write realtime event: %v", err)
+		}
+	}
+
+	waitFor("session.created", 10*time.Second, nil)
+	write(map[string]interface{}{"type": "session.update", "session": map[string]interface{}{
+		"type":         "realtime",
+		"instructions": "You are a concise assistant. Answer in one short sentence.",
+	}})
+	waitFor("session.updated", 10*time.Second, nil)
+	write(map[string]interface{}{"type": "conversation.item.create", "item": map[string]interface{}{
+		"type": "message", "role": "user",
+		"content": []map[string]interface{}{{"type": "input_text", "text": "Say hello in exactly two words."}},
+	}})
+	write(map[string]interface{}{"type": "response.create"})
+
+	// 32ms of 24kHz 16-bit mono silence per frame, the cadence Nova Sonic expects from a microphone.
+	silence := base64.StdEncoding.EncodeToString(make([]byte, 1536))
+	stopAudio := make(chan struct{})
+	audioDone := make(chan struct{})
+	go func() {
+		defer close(audioDone)
+		ticker := time.NewTicker(32 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stopAudio:
+				return
+			case <-ticker.C:
+				data, _ := json.Marshal(map[string]string{"type": "input_audio_buffer.append", "audio": silence})
+				if upstream.WriteMessage(ws.TextMessage, data) != nil {
+					return
+				}
+			}
+		}
+	}()
+	defer func() {
+		close(stopAudio)
+		<-audioDone
+	}()
+
+	var gotAudio bool
+	var transcript string
+	var usage struct {
+		Response struct {
+			Usage struct {
+				TotalTokens int `json:"total_tokens"`
+			} `json:"usage"`
+		} `json:"response"`
+	}
+	waitFor("response.done", 60*time.Second, func(data []byte) {
+		switch extractEventType(data) {
+		case "response.output_audio.delta":
+			gotAudio = true
+		case "response.output_audio_transcript.done":
+			var done struct {
+				Transcript string `json:"transcript"`
+			}
+			if json.Unmarshal(data, &done) == nil {
+				transcript = done.Transcript
+			}
+		case "response.done":
+			_ = json.Unmarshal(data, &usage)
+		}
+	})
+	if !gotAudio {
+		t.Error("expected at least one response.output_audio.delta event")
+	}
+	if strings.TrimSpace(transcript) == "" {
+		t.Error("expected a non-empty assistant transcript")
+	}
+	t.Logf("%s realtime test passed: transcript=%q total_tokens=%d", testConfig.Provider, transcript, usage.Response.Usage.TotalTokens)
 }
 
 // runElevenLabsRealtimeTest drives an ElevenLabs Conversational AI session.

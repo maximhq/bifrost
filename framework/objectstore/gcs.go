@@ -65,7 +65,7 @@ func NewGCSObjectStore(ctx context.Context, cfg *Config, logger schemas.Logger) 
 	return &GCSObjectStore{
 		client:   client,
 		bucket:   bucket,
-		compress: cfg.Compress,
+		compress: cfg.gzipObjects(),
 		logger:   logger,
 	}, nil
 }
@@ -73,8 +73,19 @@ func NewGCSObjectStore(ctx context.Context, cfg *Config, logger schemas.Logger) 
 // Put uploads data with optional custom metadata. When compression is enabled,
 // data is gzip-compressed before upload.
 func (g *GCSObjectStore) Put(ctx context.Context, key string, data []byte, tags map[string]string) error {
+	return g.PutWithOptions(ctx, key, data, tags, PutOptions{})
+}
+
+// PutWithOptions uploads data with a caller-chosen content type, optionally
+// bypassing the store's gzip.
+func (g *GCSObjectStore) PutWithOptions(ctx context.Context, key string, data []byte, tags map[string]string, opts PutOptions) error {
+	gzipBody := g.compress && !opts.SkipCompression
+	contentType := opts.ContentType
+	if contentType == "" {
+		contentType = ContentTypeJSON
+	}
 	body := data
-	if g.compress {
+	if gzipBody {
 		compressed, err := gzipCompress(data)
 		if err != nil {
 			return fmt.Errorf("objectstore: gzip compress: %w", err)
@@ -84,8 +95,8 @@ func (g *GCSObjectStore) Put(ctx context.Context, key string, data []byte, tags 
 
 	obj := g.client.Bucket(g.bucket).Object(key)
 	w := obj.NewWriter(ctx)
-	w.ContentType = "application/json"
-	if g.compress {
+	w.ContentType = contentType
+	if gzipBody {
 		w.ContentEncoding = "gzip"
 	}
 	if len(tags) > 0 {
@@ -106,6 +117,9 @@ func (g *GCSObjectStore) Put(ctx context.Context, key string, data []byte, tags 
 func (g *GCSObjectStore) Get(ctx context.Context, key string) ([]byte, error) {
 	r, err := g.client.Bucket(g.bucket).Object(key).NewReader(ctx)
 	if err != nil {
+		if errors.Is(err, storage.ErrObjectNotExist) {
+			return nil, fmt.Errorf("objectstore: gcs read %s: %w", key, ErrNotFound)
+		}
 		return nil, fmt.Errorf("objectstore: gcs read %s: %w", key, err)
 	}
 	defer r.Close()

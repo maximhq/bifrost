@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n";
 import type { WarpBackfillJob, WarpConfig } from "@/lib/types/warp";
 /**
  * Validation helpers for the Warp settings form.
@@ -43,9 +44,23 @@ export function isFiniteNumber(value: unknown): value is number {
  * how long a transcript stays readable is a policy choice with no ceiling.
  */
 export function validateWarpRetentionDays(value: unknown): true | string {
-	if (typeof value !== "number" || !Number.isFinite(value)) return "A value is required";
-	if (!Number.isInteger(value)) return "Must be a whole number of days";
-	if (value < 0) return "Must be 0 or more days (0 keeps the default)";
+	if (typeof value !== "number" || !Number.isFinite(value)) return i18n.t("warp.validation.retentionRequired", { ns: "config" });
+	if (!Number.isInteger(value)) return i18n.t("warp.validation.retentionWhole", { ns: "config" });
+	if (value < 0) return i18n.t("warp.validation.retentionMin", { ns: "config" });
+	return true;
+}
+
+/**
+ * Tool-call rounds per answer, mirroring the server's 2..20 range.
+ *
+ * One is refused because the agent loop reserves its last step for answering:
+ * a budget of one is spent on a tool call and the run ends with no answer, so
+ * the server rejects it (`WarpMinMaxIterations`). Checking `< 1` here let the
+ * form submit 1 and surface that as a failed save instead of an inline error.
+ */
+export function validateWarpMaxIterations(value: unknown): true | string {
+	if (!isFiniteNumber(value) || !Number.isInteger(value) || value < 2 || value > 20)
+		return i18n.t("warp.iterationsError", { ns: "config" });
 	return true;
 }
 

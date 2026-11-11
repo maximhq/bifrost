@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode"
 
@@ -128,6 +129,13 @@ type Config struct {
 	// default). It ends a session left idle inside an open transaction, which
 	// otherwise holds row locks and blocks vacuum for as long as it stays open.
 	IdleInTransactionSessionTimeout string `json:"idle_in_transaction_session_timeout,omitempty"`
+	// MigrationLockRetryBudget is how long a schema migration step keeps
+	// retrying after lock timeouts before the process gives up and exits (Go
+	// duration string, default 10m). On a rolling upgrade a step that needs a
+	// table lock retries while older replicas' long queries hold the table; raise
+	// this on large deployments so the budget outlasts those queries, and keep
+	// the startup probe at least as long.
+	MigrationLockRetryBudget string `json:"migration_lock_retry_budget,omitempty"`
 }
 
 const (
@@ -194,6 +202,46 @@ func Validate(config *Config, requireStaticPassword bool) error {
 	return nil
 }
 
+// applicationNameBase is the process-wide application_name prefix set by
+// SetApplicationName; empty leaves DSNs without one.
+var applicationNameBase atomic.Value
+
+// maxApplicationNameLen is Postgres's NAMEDATALEN-1 limit; longer names are
+// truncated server-side, so they are cut here to keep the role suffix.
+const maxApplicationNameLen = 63
+
+// SetApplicationName sets the application_name prefix every store pool opened
+// after this call reports to Postgres, e.g. "bifrost-ip-10-0-1-13". Each store
+// appends its role ("-config", "-logs") so pg_stat_activity can attribute a
+// session to a node and a store. Empty disables it, which is the default.
+func SetApplicationName(base string) {
+	applicationNameBase.Store(base)
+}
+
+// WithApplicationName appends application_name=<base>-<role> to a libpq DSN
+// when SetApplicationName has set a base. The base is trimmed so the role
+// suffix survives the 63-byte limit. Postgres hex-escapes anything outside
+// printable ASCII, which would lengthen the name past that limit and cut the
+// role off server-side, so such characters become '_' before the byte cut;
+// that also means the cut can never split a multibyte rune.
+func WithApplicationName(dsn, role string) string {
+	base, _ := applicationNameBase.Load().(string)
+	if base == "" {
+		return dsn
+	}
+	base = strings.Map(func(r rune) rune {
+		if r < 0x20 || r > 0x7e {
+			return '_'
+		}
+		return r
+	}, base)
+	suffix := "-" + role
+	if len(base)+len(suffix) > maxApplicationNameLen {
+		base = base[:max(0, maxApplicationNameLen-len(suffix))]
+	}
+	return dsn + " application_name=" + quoteLibpqValue(base+suffix)
+}
+
 // BuildDSN assembles a libpq-style DSN from the validated config.
 func BuildDSN(config *Config) string {
 	password := ""
@@ -252,8 +300,44 @@ func Open(dsn string, config *Config, logger gormlogger.Interface) (*gorm.DB, er
 			return nil
 		}))
 	}
-	sqlDB := stdlib.OpenDB(*pgxConfig, options...)
+	connector := stdlib.GetConnector(*pgxConfig, options...)
+	sqlDB := sql.OpenDB(poolConnector{connector})
 	return openGormFromSQLDB(sqlDB, logger)
+}
+
+// poolConnector opens a pool's connections. The driver it reports carries it,
+// so ConnectUnpooled can reach it from the pool.
+type poolConnector struct{ driver.Connector }
+
+func (c poolConnector) Driver() driver.Driver {
+	return poolDriver{Driver: c.Connector.Driver(), connector: c.Connector}
+}
+
+type poolDriver struct {
+	driver.Driver
+	connector driver.Connector
+}
+
+// ConnectUnpooled opens a connection that sqlDB does not manage, the same way
+// sqlDB opens its own: the password command runs again and the session
+// settings apply. The caller closes it. ok is false when sqlDB was not opened
+// that way; its connections then need nothing beyond the settings an existing
+// one was opened with.
+func ConnectUnpooled(ctx context.Context, sqlDB *sql.DB) (conn *pgx.Conn, ok bool, err error) {
+	d, ok := sqlDB.Driver().(poolDriver)
+	if !ok {
+		return nil, false, nil
+	}
+	dc, err := d.connector.Connect(ctx)
+	if err != nil {
+		return nil, true, err
+	}
+	sc, isPgx := dc.(*stdlib.Conn)
+	if !isPgx {
+		_ = dc.Close()
+		return nil, true, fmt.Errorf("postgres driver connection %T", dc)
+	}
+	return sc.Conn(), true, nil
 }
 
 // runtimeSessionSettingsSQL returns the statement that applies the runtime
@@ -373,7 +457,10 @@ const (
 
 	// Migration pools run strictly serial DDL, so they need almost nothing. Left
 	// untuned they inherit database/sql's defaults, where MaxOpenConns is unlimited.
-	migrationMaxOpenConns = 2
+	// Three covers the dedicated migration-lock connection, the dedicated
+	// connection that pauses matview refreshes for the run (see
+	// logstore.PauseMatViewMaintenance), and the one the DDL itself runs on.
+	migrationMaxOpenConns = 3
 	migrationMaxIdleConns = 1
 )
 

@@ -99,15 +99,16 @@ func (a *UpstreamAuth) Redacted() *UpstreamAuth {
 type AgentRegistration struct {
 	Name                                   string        `json:"name"`
 	AgentCardURL                           string        `json:"agent_card_url"`
-	Tenant                                 string        `json:"tenant,omitempty"`
 	Enabled                                bool          `json:"enabled"`
 	AllowByDefault                         bool          `json:"allow_by_default"`
 	ForwardAcceptedCredential              bool          `json:"forward_accepted_credential"`
 	ForwardAcceptedCredentialOverridesAuth bool          `json:"forward_accepted_credential_overrides_auth"`
 	DiscoveryAuth                          *UpstreamAuth `json:"discovery_auth,omitempty"`
 	RuntimeAuth                            *UpstreamAuth `json:"runtime_auth,omitempty"`
-	ExtensionURIs                          []string      `json:"extension_uris,omitempty"`
+	CredentialOrigins                      []string      `json:"credential_origins,omitempty"`
 	VirtualKeyIDs                          []string      `json:"virtual_key_ids,omitempty"`
+	// RequirePublicTarget is server-owned and keeps auth-bypassed registrations public-only.
+	RequirePublicTarget bool `json:"require_public_target,omitempty"`
 	// ConfigHash checkpoints the last config.json-driven write so startup
 	// reconciliation can detect file edits. It is set only by the file sync,
 	// never by API writes, and is excluded from all API responses.
@@ -121,14 +122,13 @@ type AgentRegistration struct {
 type AgentRegistrationView struct {
 	Name                                   string        `json:"name"`
 	AgentCardURL                           string        `json:"agent_card_url"`
-	Tenant                                 string        `json:"tenant,omitempty"`
 	Enabled                                bool          `json:"enabled"`
 	AllowByDefault                         bool          `json:"allow_by_default"`
 	ForwardAcceptedCredential              bool          `json:"forward_accepted_credential"`
 	ForwardAcceptedCredentialOverridesAuth bool          `json:"forward_accepted_credential_overrides_auth"`
 	DiscoveryAuth                          *UpstreamAuth `json:"discovery_auth,omitempty"`
 	RuntimeAuth                            *UpstreamAuth `json:"runtime_auth,omitempty"`
-	ExtensionURIs                          []string      `json:"extension_uris,omitempty"`
+	CredentialOrigins                      []string      `json:"credential_origins,omitempty"`
 	VirtualKeyIDs                          []string      `json:"virtual_key_ids,omitempty"`
 	CreatedAt                              time.Time     `json:"created_at"`
 	UpdatedAt                              time.Time     `json:"updated_at"`
@@ -141,14 +141,13 @@ func (r AgentRegistration) Redacted() AgentRegistrationView {
 	return AgentRegistrationView{
 		Name:                                   r.Name,
 		AgentCardURL:                           r.AgentCardURL,
-		Tenant:                                 r.Tenant,
 		Enabled:                                r.Enabled,
 		AllowByDefault:                         r.AllowByDefault,
 		ForwardAcceptedCredential:              r.ForwardAcceptedCredential,
 		ForwardAcceptedCredentialOverridesAuth: r.ForwardAcceptedCredentialOverridesAuth,
 		DiscoveryAuth:                          r.DiscoveryAuth.Redacted(),
 		RuntimeAuth:                            r.RuntimeAuth.Redacted(),
-		ExtensionURIs:                          slices.Clone(r.ExtensionURIs),
+		CredentialOrigins:                      slices.Clone(r.CredentialOrigins),
 		VirtualKeyIDs:                          slices.Clone(r.VirtualKeyIDs),
 		CreatedAt:                              r.CreatedAt,
 		UpdatedAt:                              r.UpdatedAt,
@@ -164,6 +163,10 @@ type AgentPushConfig struct {
 	AgentName string `json:"agent_name"`
 	TaskID    string `json:"task_id"`
 	ConfigID  string `json:"config_id"`
+	// Tenant is the downstream client's logical Agent-interface tenant. It is
+	// preserved for local reads; the selected upstream SDK transport supplies its
+	// own interface tenant independently.
+	Tenant string `json:"tenant,omitempty"`
 	// URL is the downstream client's callback endpoint.
 	URL string `json:"url"`
 	// Token is the downstream client's own notification token, replayed verbatim
@@ -184,6 +187,7 @@ type AgentPushConfigView struct {
 	AgentName string    `json:"agent_name"`
 	TaskID    string    `json:"task_id"`
 	ConfigID  string    `json:"config_id"`
+	Tenant    string    `json:"tenant,omitempty"`
 	URL       string    `json:"url"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
@@ -203,6 +207,7 @@ func (c AgentPushConfig) Redacted() AgentPushConfigView {
 		AgentName: c.AgentName,
 		TaskID:    c.TaskID,
 		ConfigID:  c.ConfigID,
+		Tenant:    c.Tenant,
 		URL:       c.URL,
 		CreatedAt: c.CreatedAt,
 		UpdatedAt: c.UpdatedAt,

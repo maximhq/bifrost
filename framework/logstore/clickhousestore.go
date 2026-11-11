@@ -8,10 +8,13 @@ import (
 	"fmt"
 	"hash/fnv"
 	"reflect"
+	"slices"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/ClickHouse/clickhouse-go/v2"
 	"gorm.io/gorm"
 	"gorm.io/gorm/schema"
 )
@@ -49,10 +52,14 @@ type ClickHouseLogStore struct {
 	// Cross-pod races are not covered, but a given request id is only mutated
 	// by the pod that processed it.
 	rmwLocks [chRMWShards]sync.Mutex
-	// warpLocker serializes Warp history writes across instances; rmwLocks only
-	// covers this process. Nil means single-instance behaviour. Set once at
-	// startup, before any Warp write, so it is read without synchronization.
-	warpLocker DistributedLocker
+	// locker serializes Warp history and user agent mapping writes across
+	// instances; rmwLocks only covers this process. Nil means single-instance
+	// behaviour. Set once at startup, before any such write, so it is read
+	// without synchronization.
+	locker                 DistributedLocker
+	idLookupIgnoredIndexes string   // non-id skip indexes on the id-read tables; see idLookupContext
+	idLookupSkipIndexes    bool     // false when that list could not be read, so id reads never use skip indexes under FINAL
+	retentionCutoffs       sync.Map // table -> cutoff of its last retention delete; see chRetentionDelete
 }
 
 // warpHistoryLockKey is the shared lock for one owner's Warp history. Hashed
@@ -63,10 +70,27 @@ func warpHistoryLockKey(ownerID string) string {
 	return "warp_history:" + hex.EncodeToString(sum[:])
 }
 
-// SetDistributedLocker gives the Warp history writes a lock every instance
-// sharing this ClickHouse honours.
+// userAgentMappingLockKey is the shared lock for one user agent mapping, hashed
+// because the id comes from the request path and the lock table caps keys at
+// 255 characters.
+func userAgentMappingLockKey(id string) string {
+	sum := sha256.Sum256([]byte(id))
+	return "user_agent_mapping:" + hex.EncodeToString(sum[:])
+}
+
+// SetDistributedLocker gives the Warp history and user agent mapping writes a
+// lock every instance sharing this ClickHouse honours.
 func (s *ClickHouseLogStore) SetDistributedLocker(locker DistributedLocker) {
-	s.warpLocker = locker
+	s.locker = locker
+}
+
+// lockShared takes the shared lock for key, or does nothing without a locker.
+// The returned context is cancelled if the lock is lost mid-write.
+func (s *ClickHouseLogStore) lockShared(ctx context.Context, key string) (context.Context, func(), error) {
+	if s.locker == nil {
+		return ctx, func() {}, nil
+	}
+	return s.locker.Acquire(ctx, key)
 }
 
 // lockWarpOwner takes the owner's shared Warp history lock, or does nothing
@@ -78,10 +102,7 @@ func (s *ClickHouseLogStore) SetDistributedLocker(locker DistributedLocker) {
 // The returned context is the one to write on: it is cancelled if the lock is
 // lost mid-write, so the write stops rather than finishing unprotected.
 func (s *ClickHouseLogStore) lockWarpOwner(ctx context.Context, ownerID string) (context.Context, func(), error) {
-	if s.warpLocker == nil {
-		return ctx, func() {}, nil
-	}
-	held, release, err := s.warpLocker.Acquire(ctx, warpHistoryLockKey(ownerID))
+	held, release, err := s.lockShared(ctx, warpHistoryLockKey(ownerID))
 	if err != nil {
 		return nil, nil, fmt.Errorf("acquire warp history lock: %w", err)
 	}
@@ -409,6 +430,9 @@ func (s *ClickHouseLogStore) BatchCreateAgentLogsIfNotExists(ctx context.Context
 // ReconcileAgentCorrelation uses ClickHouse's existing read-modify-reinsert update
 // model. Reinserted rows keep their immutable key and receive a newer version.
 func (s *ClickHouseLogStore) ReconcileAgentCorrelation(ctx context.Context, entries []*AgentLog) error {
+	// Correlation scans must not load payload columns. A stream can have many
+	// large event bodies, while only rows missing identifiers need rewriting.
+	const correlationColumns = "id, timestamp, task_id, context_id"
 	type correlationKey struct {
 		agent string
 		id    string
@@ -429,15 +453,25 @@ func (s *ClickHouseLogStore) ReconcileAgentCorrelation(ctx context.Context, entr
 
 	for key := range requestKeys {
 		var rows []AgentLog
-		if err := s.db.WithContext(ctx).Where("agent_name = ? AND request_id = ?", key.agent, key.id).Order("timestamp, id").Find(&rows).Error; err != nil {
+		if err := s.db.WithContext(ctx).Select(correlationColumns).Where("agent_name = ? AND request_id = ?", key.agent, key.id).Order("timestamp, id").Find(&rows).Error; err != nil {
 			return err
 		}
 		ids := make([]string, 0, len(rows))
+		complete := true
 		for i := range rows {
 			ids = append(ids, rows[i].ID)
+			if rows[i].TaskID == nil || *rows[i].TaskID == "" || rows[i].ContextID == nil || *rows[i].ContextID == "" {
+				complete = false
+			}
+			if rows[i].TaskID != nil && *rows[i].TaskID != "" {
+				taskKeys[correlationKey{agent: key.agent, id: *rows[i].TaskID}] = struct{}{}
+			}
+		}
+		if complete {
+			continue
 		}
 		unlock := s.lockRMWBatch("agent_logs", ids)
-		if err := s.db.WithContext(ctx).Where("agent_name = ? AND request_id = ?", key.agent, key.id).Order("timestamp, id").Find(&rows).Error; err != nil {
+		if err := s.db.WithContext(ctx).Select(correlationColumns).Where("agent_name = ? AND request_id = ?", key.agent, key.id).Order("timestamp, id").Find(&rows).Error; err != nil {
 			unlock()
 			return err
 		}
@@ -461,9 +495,27 @@ func (s *ClickHouseLogStore) ReconcileAgentCorrelation(ctx context.Context, entr
 				changed = true
 			}
 			if changed {
-				if err := s.chReinsert(ctx, &rows[i]); err != nil {
+				// Reinsert the current full row, not the metadata projection, so
+				// serialized content and concurrent object-storage updates survive.
+				var full AgentLog
+				if err := s.db.WithContext(ctx).Where("id = ? AND timestamp = fromUnixTimestamp64Milli(?)", rows[i].ID, rows[i].Timestamp.UnixMilli()).First(&full).Error; err != nil {
 					unlock()
 					return err
+				}
+				changed = false
+				if (full.TaskID == nil || *full.TaskID == "") && rows[i].TaskID != nil && *rows[i].TaskID != "" {
+					full.TaskID = rows[i].TaskID
+					changed = true
+				}
+				if (full.ContextID == nil || *full.ContextID == "") && rows[i].ContextID != nil && *rows[i].ContextID != "" {
+					full.ContextID = rows[i].ContextID
+					changed = true
+				}
+				if changed {
+					if err := s.chReinsert(ctx, &full); err != nil {
+						unlock()
+						return err
+					}
 				}
 			}
 			if rows[i].TaskID != nil && *rows[i].TaskID != "" {
@@ -475,15 +527,22 @@ func (s *ClickHouseLogStore) ReconcileAgentCorrelation(ctx context.Context, entr
 
 	for key := range taskKeys {
 		var rows []AgentLog
-		if err := s.db.WithContext(ctx).Where("agent_name = ? AND task_id = ?", key.agent, key.id).Find(&rows).Error; err != nil {
+		if err := s.db.WithContext(ctx).Select(correlationColumns).Where("agent_name = ? AND task_id = ?", key.agent, key.id).Find(&rows).Error; err != nil {
 			return err
 		}
 		ids := make([]string, 0, len(rows))
+		complete := true
 		for i := range rows {
 			ids = append(ids, rows[i].ID)
+			if rows[i].ContextID == nil || *rows[i].ContextID == "" {
+				complete = false
+			}
+		}
+		if complete {
+			continue
 		}
 		unlock := s.lockRMWBatch("agent_logs", ids)
-		if err := s.db.WithContext(ctx).Where("agent_name = ? AND task_id = ?", key.agent, key.id).Find(&rows).Error; err != nil {
+		if err := s.db.WithContext(ctx).Select(correlationColumns).Where("agent_name = ? AND task_id = ?", key.agent, key.id).Find(&rows).Error; err != nil {
 			unlock()
 			return err
 		}
@@ -497,8 +556,16 @@ func (s *ClickHouseLogStore) ReconcileAgentCorrelation(ctx context.Context, entr
 		if contextID != nil {
 			for i := range rows {
 				if rows[i].ContextID == nil || *rows[i].ContextID == "" {
-					rows[i].ContextID = contextID
-					if err := s.chReinsert(ctx, &rows[i]); err != nil {
+					var full AgentLog
+					if err := s.db.WithContext(ctx).Where("id = ? AND timestamp = fromUnixTimestamp64Milli(?)", rows[i].ID, rows[i].Timestamp.UnixMilli()).First(&full).Error; err != nil {
+						unlock()
+						return err
+					}
+					if full.ContextID != nil && *full.ContextID != "" {
+						continue
+					}
+					full.ContextID = contextID
+					if err := s.chReinsert(ctx, &full); err != nil {
 						unlock()
 						return err
 					}
@@ -548,6 +615,142 @@ func (s *ClickHouseLogStore) BatchCreateMCPToolLogsIfNotExists(ctx context.Conte
 	})
 }
 
+// --- Point lookups by id ---
+
+// chLogTimestampWindow is how far either side of a FindByID timestamp hint the
+// lookup searches. The hint is a JSON round trip of the row's DateTime64(3), so
+// it is normally exact; the slack absorbs a client that rounded it to seconds.
+const chLogTimestampWindow = time.Second
+
+// chIDLookupTables are the tables whose rows are read back by id under FINAL.
+var chIDLookupTables = []string{"logs", "agent_logs", "relay_logs", "mcp_tool_logs"}
+
+// chMutableSkipIndexes lists, as an ignore_data_skipping_indices value, every
+// skip index on chIDLookupTables except those on id. Names that do not exist on
+// the queried table are ignored by ClickHouse, so one list serves all of them.
+func chMutableSkipIndexes(ctx context.Context, db *gorm.DB) (string, error) {
+	var names []string
+	if err := db.WithContext(ctx).
+		Raw("SELECT DISTINCT name FROM system.data_skipping_indices WHERE database = currentDatabase() AND table IN ? AND expr != 'id' ORDER BY name", chIDLookupTables).
+		Scan(&names).Error; err != nil {
+		return "", fmt.Errorf("clickhouse: read skip indexes: %w", err)
+	}
+	quoted := make([]string, len(names))
+	for i, n := range names {
+		quoted[i] = "`" + chEscapeIdentifier(n) + "`"
+	}
+	return strings.Join(quoted, ","), nil
+}
+
+// idLookupContext lets a read whose selective predicate is the row id use the
+// id bloom filters under the connection-level FINAL. Before 25.x ClickHouse
+// ignores skip indexes under FINAL, because an index on a mutable column can
+// prune the granule holding a row's newest version while keeping an older one.
+// id is in every versioned table's dedup key and never rewritten
+// (chImmutableColumns), so all versions of a row match its id together. Every
+// other index stays off: the access scope and hidden-type predicates on these
+// reads filter on columns an update can change (user_id, team_id, ...).
+//
+// WithSettings replaces any settings already on ctx rather than merging them,
+// and the driver writes max_execution_time into the map, so it is built per call.
+func (s *ClickHouseLogStore) idLookupContext(ctx context.Context) context.Context {
+	if !s.idLookupSkipIndexes {
+		return ctx
+	}
+	settings := clickhouse.Settings{"use_skip_indexes_if_final": 1}
+	if s.idLookupIgnoredIndexes != "" {
+		settings["ignore_data_skipping_indices"] = s.idLookupIgnoredIndexes
+	}
+	return clickhouse.Context(ctx, clickhouse.WithSettings(settings))
+}
+
+// FindByID overrides the RDB lookup. A bare `WHERE id = ?` cannot use the
+// monthly partitions or the (timestamp, id) sort key, so without help
+// ClickHouse reads every granule of logs under FINAL. A timestamp hint on ctx
+// (LogTimestampContextKey) bounds the lookup to the granules around it; with no
+// hint, or one that matches nothing, the id bloom filter does the pruning.
+func (s *ClickHouseLogStore) FindByID(ctx context.Context, id string) (*Log, error) {
+	idCtx := s.idLookupContext(ctx)
+	var log Log
+	if ts, ok := logTimestampFromContext(ctx); ok {
+		err := s.scopedLogsDB(idCtx).
+			Where("id = ?", id).
+			// Epoch millis, not time.Time: the driver binds time args at second precision (see chFilterMissing).
+			Where("timestamp BETWEEN fromUnixTimestamp64Milli(?) AND fromUnixTimestamp64Milli(?)",
+				ts.Add(-chLogTimestampWindow).UnixMilli(), ts.Add(chLogTimestampWindow).UnixMilli()).
+			First(&log).Error
+		if err == nil {
+			return s.withChildAggregates(ctx, log), nil
+		}
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, err
+		}
+	}
+	if err := s.scopedLogsDB(idCtx).Where("id = ?", id).First(&log).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	return s.withChildAggregates(ctx, log), nil
+}
+
+// chChildCandidateLimit caps how many child rows withChildAggregates binds
+// back into its FINAL rollup; a parent with more (a long realtime session)
+// gets the unbounded rollup instead.
+const chChildCandidateLimit = 10000
+
+// withChildAggregates bounds the RDB child rollup. `parent_request_id IN ?`
+// cannot use the sort key, and its bloom filter is unsafe under FINAL because
+// the column can change between versions, so on 24.x the rollup read all of
+// logs. Without FINAL that index can only over-match: every version that ever
+// named this parent, including each child's newest, is found. Those rows' ids
+// and timestamp range then bound the FINAL rollup, which still filters on
+// parent_request_id after dedup; id and timestamp are immutable, so pruning on
+// them cannot hide a newest version.
+func (s *ClickHouseLogStore) withChildAggregates(ctx context.Context, log Log) *Log {
+	var candidates []struct {
+		ID        string
+		Timestamp time.Time
+	}
+	noFinal := clickhouse.Context(ctx, clickhouse.WithSettings(clickhouse.Settings{"final": 0}))
+	if err := s.db.WithContext(noFinal).Model(&Log{}).
+		Select("id, timestamp").
+		Where("parent_request_id = ? AND id <> parent_request_id", log.ID).
+		Limit(chChildCandidateLimit + 1).
+		Scan(&candidates).Error; err != nil {
+		s.logger.Warn(fmt.Sprintf("logstore: child aggregates unavailable for log %s, returning it without them: %s", log.ID, err))
+		return &log
+	}
+	if len(candidates) == 0 {
+		return &log
+	}
+	if len(candidates) > chChildCandidateLimit {
+		return s.RDBLogStore.withChildAggregates(ctx, log)
+	}
+	ids := make([]string, 0, len(candidates))
+	lo, hi := candidates[0].Timestamp, candidates[0].Timestamp
+	for _, c := range candidates {
+		ids = append(ids, c.ID)
+		if c.Timestamp.Before(lo) {
+			lo = c.Timestamp
+		}
+		if c.Timestamp.After(hi) {
+			hi = c.Timestamp
+		}
+	}
+	narrow := func(db *gorm.DB) *gorm.DB {
+		return db.Where("id IN ?", ids).
+			Where("timestamp BETWEEN fromUnixTimestamp64Milli(?) AND fromUnixTimestamp64Milli(?)", lo.UnixMilli(), hi.UnixMilli())
+	}
+	rows := []Log{log}
+	if err := s.attachChildAggregatesWhere(s.idLookupContext(ctx), rows, SearchFilters{}, narrow); err != nil {
+		s.logger.Warn(fmt.Sprintf("logstore: child aggregates unavailable for log %s, returning it without them: %s", log.ID, err))
+		return &log
+	}
+	return &rows[0]
+}
+
 // --- Updates (read-modify-write + re-insert) ---
 
 // Update applies an update (a column->value map, or a *Log/Log whose non-zero
@@ -559,7 +762,7 @@ func (s *ClickHouseLogStore) Update(ctx context.Context, id string, entry any) e
 	}
 	defer s.lockRMW("logs", id)()
 	var existing Log
-	if err := s.db.WithContext(ctx).Where("id = ?", id).First(&existing).Error; err != nil {
+	if err := s.db.WithContext(s.idLookupContext(ctx)).Where("id = ?", id).First(&existing).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return ErrNotFound
 		}
@@ -614,7 +817,7 @@ func (s *ClickHouseLogStore) BulkUpdateCost(ctx context.Context, updates map[str
 		if err := func() error {
 			defer s.lockRMWBatch("logs", chunk)()
 			var rows []*Log
-			if err := s.db.WithContext(ctx).Where("id IN ?", chunk).Find(&rows).Error; err != nil {
+			if err := s.db.WithContext(s.idLookupContext(ctx)).Where("id IN ?", chunk).Find(&rows).Error; err != nil {
 				return err
 			}
 			if len(rows) == 0 {
@@ -636,6 +839,61 @@ func (s *ClickHouseLogStore) BulkUpdateCost(ctx context.Context, updates map[str
 	return nil
 }
 
+// BatchUpdate overlays each entry's non-zero fields onto its existing row via
+// read-modify-write and re-insert, one chunk at a time under the RMW locks.
+// It overrides the embedded RDB implementation, whose GORM UPDATE would be a
+// heavyweight mutation here and would bypass rmwLocks. Several entries for one
+// id are applied in batch order, as the RDB store applies them. Missing ids are
+// skipped, matching the RDB semantics. content_summary is left as the row has
+// it: the entry's own serialization would regenerate it from output only.
+func (s *ClickHouseLogStore) BatchUpdate(ctx context.Context, entries []*Log) error {
+	byID := make(map[string][]*Log, len(entries))
+	ids := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if entry == nil || entry.ID == "" {
+			continue
+		}
+		if _, seen := byID[entry.ID]; !seen {
+			ids = append(ids, entry.ID)
+		}
+		byID[entry.ID] = append(byID[entry.ID], entry)
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	st, err := chParseSchema(s.db, &Log{})
+	if err != nil {
+		return err
+	}
+	return forEachRMWChunk(ids, func(chunk []string) error {
+		defer s.lockRMWBatch("logs", chunk)()
+		var rows []*Log
+		if err := s.db.WithContext(s.idLookupContext(ctx)).Where("id IN ?", chunk).Find(&rows).Error; err != nil {
+			return err
+		}
+		if len(rows) == 0 {
+			return nil
+		}
+		for _, r := range rows {
+			for _, src := range byID[r.ID] {
+				if err := src.SerializeFields(); err != nil {
+					return err
+				}
+				src.ContentSummary = ""
+				if err := chApplyStructUpdate(ctx, st, reflect.ValueOf(r).Elem(), reflect.ValueOf(src).Elem()); err != nil {
+					return err
+				}
+				// The overlay skips zero values; the final visibility is always written.
+				r.ContentHidden = src.ContentHidden
+				if src.RealtimeInputCorrection != nil {
+					r.ContentSummary = src.RealtimeInputCorrection.Summary
+				}
+			}
+		}
+		return s.chReinsert(ctx, &rows)
+	})
+}
+
 // UpdateAgentLog applies an update to an Agent log row via read-modify-write.
 func (s *ClickHouseLogStore) UpdateAgentLog(ctx context.Context, id string, entry any) error {
 	st, err := chParseSchema(s.db, &AgentLog{})
@@ -644,7 +902,7 @@ func (s *ClickHouseLogStore) UpdateAgentLog(ctx context.Context, id string, entr
 	}
 	defer s.lockRMW("agent_logs", id)()
 	var existing AgentLog
-	if err := s.db.WithContext(ctx).Where("id = ?", id).First(&existing).Error; err != nil {
+	if err := s.db.WithContext(s.idLookupContext(ctx)).Where("id = ?", id).First(&existing).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return ErrNotFound
 		}
@@ -662,6 +920,27 @@ func (s *ClickHouseLogStore) UpdateAgentLog(ctx context.Context, id string, entr
 	return s.chReinsert(ctx, &existing)
 }
 
+// UpdateRelayLog applies an update to a Relay Logs row via read-modify-write.
+func (s *ClickHouseLogStore) UpdateRelayLog(ctx context.Context, id string, updates map[string]any) error {
+	_, _, updates = takeRelayRetainedUpdates(updates)
+	st, err := chParseSchema(s.db, &RelayLog{})
+	if err != nil {
+		return err
+	}
+	defer s.lockRMW("relay_logs", id)()
+	var existing RelayLog
+	if err := s.db.WithContext(s.idLookupContext(ctx)).Where("id = ?", id).First(&existing).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrNotFound
+		}
+		return err
+	}
+	if err := chApplyUpdateMap(ctx, st, reflect.ValueOf(&existing).Elem(), updates); err != nil {
+		return err
+	}
+	return s.chReinsert(ctx, &existing)
+}
+
 // UpdateMCPToolLog applies an update to an MCP tool log row via read-modify-write.
 func (s *ClickHouseLogStore) UpdateMCPToolLog(ctx context.Context, id string, entry any) error {
 	st, err := chParseSchema(s.db, &MCPToolLog{})
@@ -670,7 +949,7 @@ func (s *ClickHouseLogStore) UpdateMCPToolLog(ctx context.Context, id string, en
 	}
 	defer s.lockRMW("mcp_tool_logs", id)()
 	var existing MCPToolLog
-	if err := s.db.WithContext(ctx).Where("id = ?", id).First(&existing).Error; err != nil {
+	if err := s.db.WithContext(s.idLookupContext(ctx)).Where("id = ?", id).First(&existing).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return ErrNotFound
 		}
@@ -776,29 +1055,131 @@ func (s *ClickHouseLogStore) chFlushProcessing(ctx context.Context, table string
 	return s.chLightweightDelete(ctx, table, where, since)
 }
 
+// UpdateUserAgentMapping re-inserts a patched copy of the mapping, since
+// ReplacingMergeTree has no in-place UPDATE. The shared lock keeps a delete on
+// another instance from landing between the read and the re-insert, which
+// would bring the deleted mapping back.
+func (s *ClickHouseLogStore) UpdateUserAgentMapping(ctx context.Context, id string, mapping *UserAgentMapping) error {
+	ctx, release, err := s.lockShared(ctx, userAgentMappingLockKey(id))
+	if err != nil {
+		return fmt.Errorf("failed to acquire user agent mapping lock: %w", err)
+	}
+	defer release()
+	defer s.lockRMW("user_agent_mappings", id)()
+	var existing UserAgentMapping
+	if err := s.db.WithContext(ctx).Where("id = ?", id).First(&existing).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return gorm.ErrRecordNotFound
+		}
+		return fmt.Errorf("failed to update user agent mapping: %w", err)
+	}
+	existing.Pattern = mapping.Pattern
+	existing.MatchType = mapping.MatchType
+	existing.App = mapping.App
+	existing.Logo = mapping.Logo
+	existing.LogoMime = mapping.LogoMime
+	existing.IsActive = mapping.IsActive
+	existing.UpdatedAt = time.Now().UTC()
+	if err := s.chReinsert(ctx, &existing); err != nil {
+		return fmt.Errorf("failed to update user agent mapping: %w", err)
+	}
+	return nil
+}
+
+// DeleteUserAgentMapping deletes a mapping with a lightweight delete. Mutations
+// never report rows affected, so existence is checked first.
+func (s *ClickHouseLogStore) DeleteUserAgentMapping(ctx context.Context, id string) error {
+	ctx, release, err := s.lockShared(ctx, userAgentMappingLockKey(id))
+	if err != nil {
+		return fmt.Errorf("failed to acquire user agent mapping lock: %w", err)
+	}
+	defer release()
+	defer s.lockRMW("user_agent_mappings", id)()
+	exists, err := s.chExistsWhere(ctx, "user_agent_mappings", "id = ?", id)
+	if err != nil {
+		return fmt.Errorf("failed to delete user agent mapping: %w", err)
+	}
+	if !exists {
+		return gorm.ErrRecordNotFound
+	}
+	if err := s.chLightweightDelete(ctx, "user_agent_mappings", "id = ?", id); err != nil {
+		return fmt.Errorf("failed to delete user agent mapping: %w", err)
+	}
+	return nil
+}
+
 // DeleteLogsBatch deletes every log older than cutoff with one lightweight
 // delete per call. batchSize is ignored: a ClickHouse mutation costs the same
 // per affected part whether it matches 100 rows or all of them, so batching
 // by id would rewrite the same part once per batch (#7098). The returned
 // count is selected before the delete because mutations never report rows
-// affected. The LogsCleaner loop stops after this call because the count
-// differs from batchSize; when it happens to equal batchSize the next call
-// finds nothing and returns 0 without issuing a mutation.
+// affected. The LogsCleaner loop stops on a count above batchSize; otherwise
+// it calls again, and chRetentionDelete answers that call with 0.
 func (s *ClickHouseLogStore) DeleteLogsBatch(ctx context.Context, cutoff time.Time, _ int) (int64, error) {
-	return s.chDeleteWhere(ctx, "logs", "created_at < ?", cutoff)
+	return s.chRetentionDelete(ctx, "logs", "created_at", cutoff)
 }
 
-// DeleteLog deletes a log entry by id with a lightweight delete.
+// chRetentionDelete runs one retention delete per table and cutoff. The
+// cleaner keeps calling until a batch deletes nothing, but one lightweight
+// delete already removes every row before cutoff. lightweight_deletes_sync = 1
+// only waits for the replica that ran it, so on a cluster a repeat count could
+// reach a replica that has not applied it yet and issue the same mutation
+// again. A pass uses one cutoff per table, so a repeat call for the cutoff
+// already deleted returns 0 without a query. retentionCutoffs holds one
+// time.Time per retention table.
+func (s *ClickHouseLogStore) chRetentionDelete(ctx context.Context, table, column string, cutoff time.Time) (int64, error) {
+	if last, ok := s.retentionCutoffs.Load(table); ok && last.(time.Time).Equal(cutoff) {
+		return 0, nil
+	}
+	deleted, err := s.chDeleteWhere(ctx, table, column+" < ?", cutoff)
+	if err != nil {
+		return 0, err
+	}
+	s.retentionCutoffs.Store(table, cutoff)
+	return deleted, nil
+}
+
+// DeleteLog deletes a log entry by id with a lightweight delete, and with it
+// what Warp's topic tables hold about it. There is no transaction to undo the
+// log delete with, so a topic cleanup failure after it is ErrPartialLogDelete.
 func (s *ClickHouseLogStore) DeleteLog(ctx context.Context, id string) error {
-	return s.chLightweightDelete(ctx, "logs", "id = ?", id)
+	if err := s.chLightweightDelete(ctx, "logs", "id = ?", id); err != nil {
+		return err
+	}
+	if err := s.deleteWarpTopicRowsForLogs(ctx, []string{id}); err != nil {
+		return fmt.Errorf("%w: %w", ErrPartialLogDelete, err)
+	}
+	return nil
 }
 
-// DeleteLogs deletes multiple log entries by id with one lightweight delete.
+// DeleteLogs deletes multiple log entries by id with one lightweight delete,
+// and with them what Warp's topic tables hold about them. See DeleteLog for
+// ErrPartialLogDelete.
 func (s *ClickHouseLogStore) DeleteLogs(ctx context.Context, ids []string) error {
 	if len(ids) == 0 {
 		return nil
 	}
-	return s.chLightweightDelete(ctx, "logs", "id IN ?", ids)
+	if err := s.chLightweightDelete(ctx, "logs", "id IN ?", ids); err != nil {
+		return err
+	}
+	if err := s.deleteWarpTopicRowsForLogs(ctx, ids); err != nil {
+		return fmt.Errorf("%w: %w", ErrPartialLogDelete, err)
+	}
+	return nil
+}
+
+// deleteWarpTopicRowsForLogs is the lightweight-delete form of the RDB
+// stores' package-level function of the same name.
+func (s *ClickHouseLogStore) deleteWarpTopicRowsForLogs(ctx context.Context, ids []string) error {
+	for chunk := range slices.Chunk(ids, chWarpTopicDeleteChunk) {
+		if err := s.chLightweightDelete(ctx, "warp_topic_assignments", "log_id IN ?", chunk); err != nil {
+			return err
+		}
+		if err := s.chLightweightDelete(ctx, "warp_topic_unmatched", "log_id IN ?", chunk); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // DeleteMCPToolLogs deletes multiple MCP tool log entries by id with one
@@ -861,6 +1242,22 @@ func (s *ClickHouseLogStore) Flush(ctx context.Context, since time.Time) error {
 func (s *ClickHouseLogStore) FlushMCPToolLogs(ctx context.Context, since time.Time) error {
 	if err := s.chFlushProcessing(ctx, "mcp_tool_logs", since); err != nil {
 		return fmt.Errorf("failed to cleanup old processing MCP tool logs: %w", err)
+	}
+	return nil
+}
+
+// FlushAgentLogs removes stale processing A2A log rows. See Flush.
+func (s *ClickHouseLogStore) FlushAgentLogs(ctx context.Context, since time.Time) error {
+	if err := s.chFlushProcessing(ctx, "agent_logs", since); err != nil {
+		return fmt.Errorf("failed to cleanup old processing A2A logs: %w", err)
+	}
+	return nil
+}
+
+// FlushRelayLogs removes stale processing relay log rows. See Flush.
+func (s *ClickHouseLogStore) FlushRelayLogs(ctx context.Context, since time.Time) error {
+	if err := s.chFlushProcessing(ctx, "relay_logs", since); err != nil {
+		return fmt.Errorf("failed to cleanup old processing relay logs: %w", err)
 	}
 	return nil
 }
@@ -1178,4 +1575,211 @@ func (s *ClickHouseLogStore) deleteStrandedWarpMessages(ctx context.Context, ids
 		return nil
 	}
 	return s.chLightweightDelete(ctx, "warp_messages", "conversation_id IN ?", removed)
+}
+
+// --- Warp topics ---
+//
+// The reads are inherited: plain SELECTs that the connection-level final = 1
+// collapses to each row's newest version. The writes are overridden because
+// the SQL forms upsert with ON CONFLICT, which ClickHouse does not have. Here
+// a plain insert is the upsert: each table is ordered by its identity, so
+// ReplacingMergeTree keeps only the newest row written for it. The deletes are
+// overridden for the same reason every delete in this file is.
+
+// chWarpTopicDeleteChunk bounds the ids one delete names, which bounds the
+// statement's text below max_query_size (256 KiB by default).
+const chWarpTopicDeleteChunk = 1000
+
+// UpsertWarpTopics writes topics whole, replacing any row with the same ID.
+func (s *ClickHouseLogStore) UpsertWarpTopics(ctx context.Context, topics []WarpTopic) error {
+	if len(topics) == 0 {
+		return nil
+	}
+	if err := prepareWarpTopics(topics, time.Now().UTC()); err != nil {
+		return err
+	}
+	return s.db.WithContext(ctx).Create(&topics).Error
+}
+
+// UpsertWarpTopicAssignments writes one row per request. A request written
+// again replaces its earlier row because (timestamp, log_id) is unchanged.
+func (s *ClickHouseLogStore) UpsertWarpTopicAssignments(ctx context.Context, assignments []WarpTopicAssignment) error {
+	if len(assignments) == 0 {
+		return nil
+	}
+	if err := prepareWarpTopicAssignments(assignments, time.Now().UTC()); err != nil {
+		return err
+	}
+	return s.db.WithContext(ctx).Create(&assignments).Error
+}
+
+// DeleteWarpTopicAssignments removes the given requests' assignments with
+// lightweight deletes.
+func (s *ClickHouseLogStore) DeleteWarpTopicAssignments(ctx context.Context, logIDs []string) error {
+	for chunk := range slices.Chunk(logIDs, chWarpTopicDeleteChunk) {
+		if err := s.chLightweightDelete(ctx, "warp_topic_assignments", "log_id IN ?", chunk); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// DeleteWarpTopicAssignmentsUnmatchedSince removes the rows filed under no
+// topic at or after since, with one lightweight delete.
+func (s *ClickHouseLogStore) DeleteWarpTopicAssignmentsUnmatchedSince(ctx context.Context, since time.Time) error {
+	placeholder, arg := warpTopicTimeArg(s.db, since)
+	return s.chLightweightDelete(ctx, "warp_topic_assignments", "topic_id = ? AND assigned_at >= "+placeholder, "", arg)
+}
+
+// DeleteWarpTopicAssignmentsBatch deletes every assignment whose log was
+// created before cutoff with one lightweight delete; see DeleteLogsBatch for
+// why batchSize is ignored.
+func (s *ClickHouseLogStore) DeleteWarpTopicAssignmentsBatch(ctx context.Context, cutoff time.Time, _ int) (int64, error) {
+	return s.chRetentionDelete(ctx, "warp_topic_assignments", "created_at", cutoff)
+}
+
+// AddWarpTopicUnmatched puts requests in the unmatched pool.
+func (s *ClickHouseLogStore) AddWarpTopicUnmatched(ctx context.Context, rows []WarpTopicUnmatched) error {
+	if len(rows) == 0 {
+		return nil
+	}
+	if err := prepareWarpTopicUnmatched(rows); err != nil {
+		return err
+	}
+	return s.db.WithContext(ctx).Create(&rows).Error
+}
+
+// DeleteWarpTopicUnmatched removes requests from the pool.
+func (s *ClickHouseLogStore) DeleteWarpTopicUnmatched(ctx context.Context, logIDs []string) error {
+	for chunk := range slices.Chunk(logIDs, chWarpTopicDeleteChunk) {
+		if err := s.chLightweightDelete(ctx, "warp_topic_unmatched", "log_id IN ?", chunk); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// AddWarpVectorDeletes records deleted logs whose vector delete failed. A log
+// recorded twice is one row once the table merges, and listed twice until
+// then, which costs a retry one more vector delete.
+func (s *ClickHouseLogStore) AddWarpVectorDeletes(ctx context.Context, rows []WarpVectorDelete) error {
+	if len(rows) == 0 {
+		return nil
+	}
+	if err := prepareWarpVectorDeletes(rows, time.Now()); err != nil {
+		return err
+	}
+	return s.db.WithContext(ctx).Create(&rows).Error
+}
+
+// DeleteWarpVectorDeletes removes the rows of logs whose vector is gone.
+func (s *ClickHouseLogStore) DeleteWarpVectorDeletes(ctx context.Context, logIDs []string) error {
+	for chunk := range slices.Chunk(logIDs, chWarpTopicDeleteChunk) {
+		if err := s.chLightweightDelete(ctx, "warp_vector_deletes", "log_id IN ?", chunk); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// PruneWarpTopicUnmatched bounds the pool by age and by count, with one
+// lightweight delete for both.
+func (s *ClickHouseLogStore) PruneWarpTopicUnmatched(ctx context.Context, olderThan time.Time, keep int) (int64, error) {
+	where, args, err := warpTopicUnmatchedPruneWhere(ctx, s.db, olderThan, keep)
+	if err != nil || where == "" {
+		return 0, err
+	}
+	return s.chDeleteWhere(ctx, "warp_topic_unmatched", where, args...)
+}
+
+// DeleteWarpTopicUnmatchedExcept drops the pool rows of every other embedding
+// model with one lightweight delete.
+func (s *ClickHouseLogStore) DeleteWarpTopicUnmatchedExcept(ctx context.Context, embeddingSignature string) (int64, error) {
+	return s.chDeleteWhere(ctx, "warp_topic_unmatched", "embedding_signature <> ?", embeddingSignature)
+}
+
+// DeleteWarpTopics removes topic and theme rows with lightweight deletes.
+func (s *ClickHouseLogStore) DeleteWarpTopics(ctx context.Context, ids []string) error {
+	for chunk := range slices.Chunk(ids, chWarpTopicDeleteChunk) {
+		if err := s.chLightweightDelete(ctx, "warp_topics", "id IN ?", chunk); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// DeleteWarpTopicUnmatchedBatch deletes every pool row whose log was created
+// before cutoff with one lightweight delete.
+func (s *ClickHouseLogStore) DeleteWarpTopicUnmatchedBatch(ctx context.Context, cutoff time.Time, _ int) (int64, error) {
+	return s.chRetentionDelete(ctx, "warp_topic_unmatched", "created_at", cutoff)
+}
+
+// BatchCreateRelayLogsIfNotExists inserts Relay Logs rows whose IDs are absent and
+// returns the inserted IDs; ClickHouse has no ON CONFLICT, so absent IDs are found first.
+func (s *ClickHouseLogStore) BatchCreateRelayLogsIfNotExists(ctx context.Context, entries []*RelayLog) ([]string, error) {
+	if len(entries) == 0 {
+		return nil, nil
+	}
+	seen := make(map[string]struct{}, len(entries))
+	inserted := make([]string, 0, len(entries))
+	err := forEachRMWChunk(entries, func(chunk []*RelayLog) error {
+		fresh := make([]*RelayLog, 0, len(chunk))
+		ids := make([]string, 0, len(chunk))
+		for _, entry := range chunk {
+			if entry == nil {
+				continue
+			}
+			if _, ok := seen[entry.ID]; ok {
+				continue
+			}
+			seen[entry.ID] = struct{}{}
+			fresh = append(fresh, entry)
+			ids = append(ids, entry.ID)
+		}
+		if len(fresh) == 0 {
+			return nil
+		}
+		defer s.lockRMWBatch("relay_logs", ids)()
+		missing, err := chFilterMissing(ctx, s.db, "relay_logs", fresh, func(l *RelayLog) string { return l.ID }, func(l *RelayLog) time.Time { return l.Timestamp })
+		if err != nil {
+			return err
+		}
+		if len(missing) == 0 {
+			return nil
+		}
+		if err := s.db.WithContext(ctx).Create(&missing).Error; err != nil {
+			return err
+		}
+		for _, entry := range missing {
+			inserted = append(inserted, entry.ID)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return inserted, nil
+}
+
+// DeleteRelayLogs deletes the identified rows with a lightweight delete.
+// DeleteRelayLogsBatch removes Relay Logs rows older than cutoff, as DeleteLogsBatch does for the
+// request logs, so the retention cleaner prunes relay rows on ClickHouse too.
+func (s *ClickHouseLogStore) DeleteRelayLogsBatch(ctx context.Context, cutoff time.Time, _ int) (int64, error) {
+	return s.chRetentionDelete(ctx, "relay_logs", "timestamp", cutoff)
+}
+
+func (s *ClickHouseLogStore) DeleteRelayLogs(ctx context.Context, ids []string) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	// Raw SQL would skip the caller's scope, so the rows they may see are selected first, as
+	// DeleteAgentLogs does, and only those are deleted.
+	var entryIDs []string
+	if err := s.ScopedDB(ctx).Model(&RelayLog{}).Where("id IN ? OR parent_log_id IN ?", ids, ids).Pluck("id", &entryIDs).Error; err != nil {
+		return err
+	}
+	if len(entryIDs) == 0 {
+		return nil
+	}
+	return s.chLightweightDelete(ctx, "relay_logs", "id IN ?", entryIDs)
 }

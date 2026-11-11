@@ -8,7 +8,6 @@ import (
 	"io"
 	"strconv"
 	"strings"
-	"unicode"
 
 	"github.com/bytedance/sonic"
 	bifrost "github.com/maximhq/bifrost/core"
@@ -17,7 +16,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/tidwall/gjson"
 
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/tidwall/sjson"
 	"github.com/valyala/fasthttp"
 )
@@ -48,7 +47,7 @@ func createAnthropicCompleteRouteConfig(pathPrefix string) RouteConfig {
 			return nil, errors.New("invalid request type")
 		},
 		TextResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostTextCompletionResponse) (interface{}, error) {
-			if shouldUsePassthrough(ctx, resp.ExtraFields.Provider, resp.ExtraFields.OriginalModelRequested, resp.ExtraFields.ResolvedModelUsed) {
+			if responsePassthroughActive(ctx, resp.ExtraFields.Provider, resp.ExtraFields.OriginalModelRequested, resp.ExtraFields.ResolvedModelUsed) {
 				if resp.ExtraFields.RawResponse != nil {
 					return resp.ExtraFields.RawResponse, nil
 				}
@@ -192,7 +191,7 @@ func createAnthropicMessagesRouteConfig(pathPrefix string, logger schemas.Logger
 			StreamConfig: &StreamConfig{
 				ResponsesStreamResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostResponsesStreamResponse) (string, interface{}, error) {
 					soToolName, _ := ctx.Value(schemas.BifrostContextKeyStructuredOutputToolName).(string)
-					if soToolName == "" && shouldUsePassthrough(ctx, resp.ExtraFields.Provider, resp.ExtraFields.OriginalModelRequested, resp.ExtraFields.ResolvedModelUsed) {
+					if soToolName == "" && responsePassthroughActive(ctx, resp.ExtraFields.Provider, resp.ExtraFields.OriginalModelRequested, resp.ExtraFields.ResolvedModelUsed) {
 						anthropic.SetResponsesStreamPassthrough(ctx)
 						// Skip passthrough for ContentPartAdded: it's a synthetic bifrost event whose
 						// RawResponse carries the parent content_block_start already emitted by OutputItemAdded.
@@ -238,8 +237,19 @@ func createAnthropicMessagesRouteConfig(pathPrefix string, logger schemas.Logger
 					return string(anthropicResponse[0].Type), anthropicResponse[0], nil
 				},
 				ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
+					// A stream that errors never renders a terminal frame, so this is
+					// where its prompt-usage readings are released: handleStreaming
+					// converts chunks in order and returns after this callback, so
+					// every queued message_delta has already been converted. Kept out
+					// of ToAnthropicResponsesStreamError so that converter stays pure.
+					anthropic.ReleaseStreamPromptUsage(ctx)
 					return anthropic.ToAnthropicResponsesStreamError(err)
 				},
+				// The error path above covers a stream that failed. A stream that
+				// simply ends -- including one whose upstream closed without a
+				// message_stop -- releases here instead, rather than waiting for the
+				// next stream to sweep it.
+				Cleanup: anthropic.ReleaseStreamPromptUsage,
 			},
 			PreCallback:  checkAnthropicPassthrough,
 			ShortCircuit: anthropicRefuseThreadContinue,
@@ -388,7 +398,6 @@ func checkAnthropicPassthrough(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.Bif
 
 	var provider schemas.ModelProvider
 	var model string
-	isMessagesRequest := false
 
 	switch r := req.(type) {
 	case *anthropic.AnthropicTextRequest:
@@ -396,7 +405,6 @@ func checkAnthropicPassthrough(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.Bif
 
 	case *anthropic.AnthropicMessageRequest:
 		provider, model = schemas.ParseModelString(r.Model, "")
-		isMessagesRequest = true
 	}
 
 	headers := extractHeadersFromRequest(ctx)
@@ -425,24 +433,11 @@ func checkAnthropicPassthrough(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.Bif
 			}
 		}
 		// These providers convert output_config.format through Bifrost, including
-		// their client-facing response events, so raw request and response text
-		// rewriters do not apply.
+		// their client-facing response events, so the raw request text rewriter
+		// does not apply.
 		if anthropic.ProviderRequiresSyntheticStructuredOutput(provider) && hasOutputConfigFormat(req) {
 			bifrostCtx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, false)
 			return nil
-		}
-		if isMessagesRequest {
-			// Native Messages response forwarding is independent of raw request
-			// serialization. Vertex beta modes serialize the normalized request but
-			// still return Anthropic SSE that Guardrails must synchronize.
-			bifrostCtx.SetValue(
-				schemas.BifrostContextKeyRawStreamTextCodec,
-				schemas.RawStreamTextCodec(anthropicRawStreamTextCodec{}),
-			)
-			bifrostCtx.SetValue(
-				schemas.BifrostContextKeyRawResponseTextTransformer,
-				schemas.RawResponseTextTransformer(rewriteAnthropicRawResponseTransforms),
-			)
 		}
 		if provider == schemas.Vertex && (hasPromptCachingScopeBetaHeader(headers) || hasFastModeBetaHeader(headers)) {
 			bifrostCtx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, false)
@@ -454,97 +449,14 @@ func checkAnthropicPassthrough(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.Bif
 			schemas.BifrostContextKeyRawRequestBodyTextRewriter,
 			schemas.RawRequestBodyTextRewriter(rewriteAnthropicRawRequestBody),
 		)
-		if isMessagesRequest {
-			bifrostCtx.SetValue(
-				schemas.BifrostContextKeyRawRequestBodyTextTransformer,
-				schemas.RawRequestBodyTextTransformer(rewriteAnthropicRawRequestBodyTransforms),
-			)
-		}
 	}
 	return nil
-}
-
-// anthropicRawStreamTextCodec owns Anthropic's native text-delta JSON shape.
-type anthropicRawStreamTextCodec struct{}
-
-// Inspect exposes assistant text and tool-argument deltas while keeping reasoning and lifecycle events opaque.
-func (anthropicRawStreamTextCodec) Inspect(rawResponse string) (schemas.RawStreamTextEvent, bool, error) {
-	if !gjson.Valid(rawResponse) {
-		return schemas.RawStreamTextEvent{}, false, fmt.Errorf("anthropic raw stream event is not valid JSON")
-	}
-	deltaType := gjson.Get(rawResponse, "delta.type").String()
-	if gjson.Get(rawResponse, "type").String() != "content_block_delta" ||
-		(deltaType != "text_delta" && deltaType != "input_json_delta") {
-		return schemas.RawStreamTextEvent{}, false, nil
-	}
-	index := gjson.Get(rawResponse, "index")
-	if !index.Exists() || index.Type != gjson.Number || index.Int() < 0 {
-		return schemas.RawStreamTextEvent{}, false, fmt.Errorf("anthropic text_delta event has invalid index")
-	}
-	path := "delta.text"
-	if deltaType == "input_json_delta" {
-		path = "delta.partial_json"
-	}
-	text := gjson.Get(rawResponse, path)
-	if !text.Exists() || text.Type != gjson.String {
-		return schemas.RawStreamTextEvent{}, false, fmt.Errorf("anthropic text_delta event has invalid delta.text")
-	}
-	return schemas.RawStreamTextEvent{
-		TargetID: strconv.FormatInt(index.Int(), 10),
-		Text:     text.String(),
-	}, true, nil
-}
-
-// Rewrite changes only the inspected text or argument fragment, preserving native event identity.
-func (codec anthropicRawStreamTextCodec) Rewrite(rawResponse string, text string) (string, error) {
-	if _, eligible, err := codec.Inspect(rawResponse); err != nil {
-		return "", err
-	} else if !eligible {
-		return "", fmt.Errorf("anthropic raw stream event is not an eligible text_delta")
-	}
-	path := "delta.text"
-	if gjson.Get(rawResponse, "delta.type").String() == "input_json_delta" {
-		path = "delta.partial_json"
-	}
-	rewritten, err := sjson.Set(rawResponse, path, text)
-	if err != nil {
-		return "", fmt.Errorf("rewrite anthropic text_delta: %w", err)
-	}
-	return rewritten, nil
 }
 
 // rewriteAnthropicRawRequestBody applies runtime replacements only to Anthropic fields mirrored as mutable normalized text.
 // Keeping the allowlist here preserves native metadata and other fields Guardrails did not inspect.
 func rewriteAnthropicRawRequestBody(rawBody []byte, replacements map[string]string) ([]byte, error) {
 	return rewriteRawRequestTextFields(rawBody, replacements, collectAnthropicRawRequestTextPaths)
-}
-
-// rewriteAnthropicRawRequestBodyTransforms applies provider-managed transformations to exact mutable Anthropic fields.
-func rewriteAnthropicRawRequestBodyTransforms(rawBody []byte, rewrites []schemas.TextRewrite) ([]byte, error) {
-	return rewriteRawJSONTextTargets(rawBody, rewrites, collectAnthropicRawRequestTextTargets)
-}
-
-// rewriteAnthropicRawResponseTransforms applies provider-managed transformations to an Anthropic native response.
-func rewriteAnthropicRawResponseTransforms(rawResponse any, rewrites []schemas.TextRewrite) (any, error) {
-	var rawJSON []byte
-	wrap := func(rewritten []byte) any { return rewritten }
-	switch value := rawResponse.(type) {
-	case json.RawMessage:
-		rawJSON = append([]byte(nil), value...)
-		wrap = func(rewritten []byte) any { return json.RawMessage(rewritten) }
-	case []byte:
-		rawJSON = append([]byte(nil), value...)
-	case string:
-		rawJSON = []byte(value)
-		wrap = func(rewritten []byte) any { return string(rewritten) }
-	default:
-		return nil, fmt.Errorf("Anthropic raw response has unsupported type %T", rawResponse)
-	}
-	rewritten, err := rewriteRawJSONTextTargets(rawJSON, rewrites, collectAnthropicRawResponseTextTargets)
-	if err != nil {
-		return nil, err
-	}
-	return wrap(rewritten), nil
 }
 
 // anthropicRawContentScope controls which native content-block text fields are guardrail-visible.
@@ -554,9 +466,6 @@ const (
 	anthropicRawContentScopeSystem anthropicRawContentScope = iota
 	anthropicRawContentScopeMessage
 	anthropicRawContentScopeToolResult
-	anthropicRawContentScopeUserMessage
-	anthropicRawContentScopeFirstSystemMessage
-	anthropicRawContentScopeAssistantMessage
 )
 
 // collectAnthropicRawRequestTextPaths enumerates Anthropic fields mirrored into mutable Bifrost request text.
@@ -588,250 +497,6 @@ func collectAnthropicRawRequestTextPaths(root gjson.Result, replacements map[str
 		return collectErr == nil
 	})
 	return paths, collectErr
-}
-
-// anthropicRawTransformTargets tracks normalized ordinals separately from writable
-// native fields: ingress-generated user placeholders consume an ordinal but have
-// no raw text destination. sawNormalizedItem mirrors billing extraction's first-item scope.
-type anthropicRawTransformTargets struct {
-	targets           []rawJSONTextTarget
-	nextIndex         int
-	sawNormalizedItem bool
-}
-
-// collectAnthropicRawRequestTextTargets maps native text for provider-managed guardrail redaction.
-// It mirrors ingress normalization without changing billing metadata or the request.
-// Generated placeholders reserve ordinals without writable destinations; reasoning
-// and tool arguments retain their separate guardrail handling.
-func collectAnthropicRawRequestTextTargets(root gjson.Result) ([]rawJSONTextTarget, error) {
-	state := &anthropicRawTransformTargets{}
-	if err := collectAnthropicRawTransformContentTargets(state, root.Get("system"), "system", anthropicRawContentScopeSystem); err != nil {
-		return nil, err
-	}
-	messages := root.Get("messages")
-	if !messages.Exists() || messages.Type == gjson.Null {
-		return state.targets, nil
-	}
-	if !messages.IsArray() {
-		return nil, fmt.Errorf("raw Anthropic request messages must be an array")
-	}
-	var collectErr error
-	messages.ForEach(func(index, message gjson.Result) bool {
-		scope := anthropicRawContentScopeMessage
-		switch message.Get("role").String() {
-		case "assistant":
-			scope = anthropicRawContentScopeAssistantMessage
-		case "user":
-			scope = anthropicRawContentScopeUserMessage
-		case "system":
-			if !state.sawNormalizedItem {
-				scope = anthropicRawContentScopeFirstSystemMessage
-			}
-		}
-		content := message.Get("content")
-		// Ungrouped ingress prepends reasoning items, making them the first item
-		// even when a system text block precedes reasoning in the native array.
-		if scope == anthropicRawContentScopeFirstSystemMessage && content.IsArray() {
-			content.ForEach(func(_, block gjson.Result) bool {
-				if (block.Get("type").String() == "thinking" && block.Get("thinking").Type == gjson.String) ||
-					(block.Get("type").String() == "redacted_thinking" && block.Get("data").Type == gjson.String) {
-					state.sawNormalizedItem = true
-				}
-				return true
-			})
-		}
-		messagePath := rawRequestArrayPath("messages", int(index.Int()))
-		collectErr = collectAnthropicRawTransformContentTargets(state, content, rawRequestObjectPath(messagePath, "content"), scope)
-		return collectErr == nil
-	})
-	return state.targets, collectErr
-}
-
-// collectAnthropicRawResponseTextTargets enumerates writable native response text.
-func collectAnthropicRawResponseTextTargets(root gjson.Result) ([]rawJSONTextTarget, error) {
-	state := &anthropicRawTransformTargets{}
-	content := root.Get("content")
-	if !content.Exists() || content.Type == gjson.Null {
-		return nil, nil
-	}
-	if !content.IsArray() {
-		return nil, fmt.Errorf("raw Anthropic response content must be an array")
-	}
-	var collectErr error
-	content.ForEach(func(index, block gjson.Result) bool {
-		collectErr = collectAnthropicRawTransformContentBlockTarget(state, block, rawRequestArrayPath("content", int(index.Int())), anthropicRawContentScopeAssistantMessage)
-		return collectErr == nil
-	})
-	return state.targets, collectErr
-}
-
-// collectAnthropicRawTransformContentTargets walks the native content union while
-// preserving the distinction between message text, system metadata, and tool data.
-func collectAnthropicRawTransformContentTargets(state *anthropicRawTransformTargets, content gjson.Result, path string, scope anthropicRawContentScope) error {
-	if !content.Exists() || content.Type == gjson.Null {
-		return nil
-	}
-	if content.Type == gjson.String {
-		// An empty top-level system string produces no normalized system item.
-		if scope == anthropicRawContentScopeSystem && content.String() == "" {
-			return nil
-		}
-		return appendAnthropicRawTransformTextTarget(state, content, path, scope)
-	}
-	if content.IsObject() {
-		return collectAnthropicRawTransformContentBlockTarget(state, content, path, scope)
-	}
-	if !content.IsArray() {
-		return fmt.Errorf("raw Anthropic content path %q must be a string, object, or array", path)
-	}
-	var collectErr error
-	content.ForEach(func(index, block gjson.Result) bool {
-		collectErr = collectAnthropicRawTransformContentBlockTarget(state, block, rawRequestArrayPath(path, int(index.Int())), scope)
-		return collectErr == nil
-	})
-	return collectErr
-}
-
-// collectAnthropicRawTransformContentBlockTarget mirrors ingress text targets and first-item state.
-// Non-text items affect whether a later system header was removed at ingress;
-// generated user placeholders reserve ordinals without writable native fields.
-func collectAnthropicRawTransformContentBlockTarget(state *anthropicRawTransformTargets, block gjson.Result, path string, scope anthropicRawContentScope) error {
-	if !block.IsObject() {
-		return fmt.Errorf("raw Anthropic content block at %q must be an object", path)
-	}
-	blockType := block.Get("type")
-	if !blockType.Exists() || blockType.Type == gjson.Null {
-		return nil
-	}
-	if blockType.Type != gjson.String {
-		return fmt.Errorf("raw Anthropic content block type at %q must be a string", path)
-	}
-	if scope == anthropicRawContentScopeSystem || scope == anthropicRawContentScopeToolResult {
-		if blockType.String() == string(anthropic.AnthropicContentBlockTypeText) {
-			return appendAnthropicRawTransformTextTarget(state, block.Get("text"), rawRequestObjectPath(path, "text"), scope)
-		}
-		return nil
-	}
-	switch anthropic.AnthropicContentBlockType(blockType.String()) {
-	case anthropic.AnthropicContentBlockTypeText:
-		return appendAnthropicRawTransformTextTarget(state, block.Get("text"), rawRequestObjectPath(path, "text"), scope)
-	case anthropic.AnthropicContentBlockTypeToolResult:
-		if block.Get("tool_use_id").Type != gjson.String {
-			return nil
-		}
-		state.sawNormalizedItem = true
-		return collectAnthropicRawTransformContentTargets(state, block.Get("content"), rawRequestObjectPath(path, "content"), anthropicRawContentScopeToolResult)
-	case anthropic.AnthropicContentBlockTypeMCPToolResult:
-		// LLM guardrails omit native MCP outputs; count their normalized item
-		// for billing's first-item scope, but reserve no ordinary text target.
-		if block.Get("tool_use_id").Type == gjson.String {
-			state.sawNormalizedItem = true
-		}
-	case anthropic.AnthropicContentBlockTypeFallback:
-		state.sawNormalizedItem = true
-		if scope == anthropicRawContentScopeUserMessage {
-			state.nextIndex++
-		}
-	case anthropic.AnthropicContentBlockTypeCompaction:
-		if block.Get("content").Exists() && block.Get("content").Type != gjson.Null {
-			state.sawNormalizedItem = true
-		}
-	case anthropic.AnthropicContentBlockTypeImage, anthropic.AnthropicContentBlockTypeDocument:
-		if block.Get("source").IsObject() {
-			state.sawNormalizedItem = true
-		}
-	case anthropic.AnthropicContentBlockTypeContainerUpload:
-		if block.Get("file_id").Type == gjson.String {
-			state.sawNormalizedItem = true
-		}
-	case anthropic.AnthropicContentBlockTypeToolUse, anthropic.AnthropicContentBlockTypeMCPToolUse:
-		if block.Get("id").Type == gjson.String && block.Get("name").Type == gjson.String {
-			state.sawNormalizedItem = true
-		}
-	case anthropic.AnthropicContentBlockTypeServerToolUse:
-		if anthropicRawServerToolUseEmitsItem(block, scope == anthropicRawContentScopeAssistantMessage) {
-			state.sawNormalizedItem = true
-		}
-	case anthropic.AnthropicContentBlockTypeThinking:
-		if block.Get("thinking").Type == gjson.String {
-			state.sawNormalizedItem = true
-		}
-	case anthropic.AnthropicContentBlockTypeRedactedThinking:
-		if block.Get("data").Type == gjson.String {
-			state.sawNormalizedItem = true
-		}
-	}
-	return nil
-}
-
-// anthropicRawServerToolUseEmitsItem mirrors ungrouped ingress's name and role
-// rules so ignored server-tool blocks cannot suppress first-item billing filtering.
-// Recognized names do not require an ID because ingress also permits a missing ID.
-func anthropicRawServerToolUseEmitsItem(block gjson.Result, isOutputMessage bool) bool {
-	name := block.Get("name")
-	if name.Type != gjson.String {
-		return false
-	}
-	switch anthropic.AnthropicToolName(name.String()) {
-	case anthropic.AnthropicToolNameToolSearchBM25, anthropic.AnthropicToolNameToolSearchRegex:
-		return true
-	case anthropic.AnthropicToolNameWebSearch, anthropic.AnthropicToolNameWebFetch,
-		anthropic.AnthropicToolNameAdvisor, anthropic.AnthropicToolNameCodeExecution,
-		anthropic.AnthropicToolNameBashCodeExecution, anthropic.AnthropicToolNameTextEditorCodeExecution:
-		return isOutputMessage
-	default:
-		return false
-	}
-}
-
-// appendAnthropicRawTransformTextTarget appends a writable native field at its normalized ordinal.
-// Placeholder rows reserve IDs without destinations. Standalone billing metadata
-// is excluded only where ExtractAnthropicBillingHeader already removes it from ingress.
-func appendAnthropicRawTransformTextTarget(state *anthropicRawTransformTargets, field gjson.Result, path string, scope anthropicRawContentScope) error {
-	if !field.Exists() || field.Type == gjson.Null {
-		return nil
-	}
-	if field.Type != gjson.String {
-		return fmt.Errorf("raw Anthropic text path %q must be a string", path)
-	}
-	firstSystem := scope == anthropicRawContentScopeSystem || (scope == anthropicRawContentScopeFirstSystemMessage && !state.sawNormalizedItem)
-	state.sawNormalizedItem = true
-	if scope == anthropicRawContentScopeUserMessage && strings.TrimSpace(field.String()) == "" {
-		state.nextIndex++ // normalizeBifrostInputContentBlocks replaces this item with "...".
-		return nil
-	}
-	if field.String() == "" {
-		return nil
-	}
-	if firstSystem && isAnthropicRawBillingHeaderText(field.String()) {
-		return nil
-	}
-	state.targets = append(state.targets, rawJSONTextTarget{ID: schemas.TextTargetIDForIndex(state.nextIndex), Path: path})
-	state.nextIndex++
-	return nil
-}
-
-// isAnthropicRawBillingHeaderText mirrors the standalone metadata check used by
-// schemas.BifrostResponsesRequest.ExtractAnthropicBillingHeader so raw transform
-// IDs exclude only system text omitted from normalized guardrail evaluation.
-func isAnthropicRawBillingHeaderText(text string) bool {
-	metadata, ok := strings.CutPrefix(strings.TrimSpace(text), "x-anthropic-billing-header:")
-	if !ok || strings.ContainsAny(metadata, "\r\n") {
-		return false
-	}
-	found := false
-	for field := range strings.SplitSeq(metadata, ";") {
-		field = strings.TrimSpace(field)
-		if field == "" {
-			continue
-		}
-		key, value, ok := strings.Cut(field, "=")
-		if !ok || key == "" || value == "" || strings.IndexFunc(field, unicode.IsSpace) >= 0 {
-			return false
-		}
-		found = true
-	}
-	return found
 }
 
 // collectAnthropicRawContentPaths handles the string, block-array, and single-block Anthropic content union.
@@ -882,7 +547,7 @@ func collectAnthropicRawContentBlockPaths(paths *[]string, block gjson.Result, p
 		case anthropic.AnthropicContentBlockTypeText:
 			return appendRawRequestStringPath(paths, block.Get("text"), rawRequestObjectPath(path, "text"))
 		case anthropic.AnthropicContentBlockTypeToolUse:
-			return collectAnthropicArgumentStringPaths(paths, block.Get("input"), rawRequestObjectPath(path, "input"))
+			return collectRawRequestArgumentStringPaths(paths, block.Get("input"), rawRequestObjectPath(path, "input"))
 		case anthropic.AnthropicContentBlockTypeToolResult, anthropic.AnthropicContentBlockTypeMCPToolResult:
 			return collectAnthropicRawContentPaths(
 				paths,
@@ -898,6 +563,20 @@ func collectAnthropicRawContentBlockPaths(paths *[]string, block gjson.Result, p
 // shouldUsePassthrough checks if the request should be sent to the passthrough endpoint.
 func shouldUsePassthrough(ctx *schemas.BifrostContext, provider schemas.ModelProvider, model string, alias string) bool {
 	return anthropic.IsClaudeCodeRequest(ctx) && isClaudeModel(ctx, model, alias, string(provider))
+}
+
+// responsePassthroughActive decides whether a reply is converted as raw Anthropic
+// passthrough. It follows shouldUsePassthrough, except that core may take an attempt off
+// raw-body passthrough after ingress chose it (provider-injected tools, structured output
+// on a provider without native support). That attempt was sent through the typed path,
+// so its reply must be re-encoded from Bifrost events: forwarding raw frames would show
+// the client turns it never asked for, and passthrough mode skips events the typed
+// stream relies on.
+func responsePassthroughActive(ctx *schemas.BifrostContext, provider schemas.ModelProvider, model string, alias string) bool {
+	if useRaw, ok := ctx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); ok && !useRaw {
+		return false
+	}
+	return shouldUsePassthrough(ctx, provider, model, alias)
 }
 
 // serverToolSynthesizesResultBlock reports whether an item's output_item.done
@@ -1724,23 +1403,4 @@ func NewAnthropicRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, 
 	return &AnthropicRouter{
 		GenericRouter: NewGenericRouter(client, handlerStore, accessResolver, routes, nil, logger),
 	}
-}
-
-// collectAnthropicArgumentStringPaths mirrors JSON argument values without changing tool metadata or object keys.
-func collectAnthropicArgumentStringPaths(paths *[]string, value gjson.Result, path string) error {
-	if value.Type == gjson.String {
-		return appendRawRequestStringPath(paths, value, path)
-	}
-	var err error
-	if value.IsObject() || value.IsArray() {
-		value.ForEach(func(key, child gjson.Result) bool {
-			childPath := rawRequestObjectPath(path, key.String())
-			if value.IsArray() {
-				childPath = rawRequestArrayPath(path, int(key.Int()))
-			}
-			err = collectAnthropicArgumentStringPaths(paths, child, childPath)
-			return err == nil
-		})
-	}
-	return err
 }

@@ -1,0 +1,48 @@
+{
+  "openapi": "3.1.0",
+  "info": {"title": "Petstore 3.1", "version": "3.1.0"},
+  "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema",
+  "servers": [{"url": "https://petstore.example.com/v3"}],
+  "webhooks": {
+    "petAdopted": {"post": {"operationId": "petAdoptedHook", "responses": {"200": {"description": "ok"}}}}
+  },
+  "components": {
+    "securitySchemes": {
+      "Bearer": {"type": "http", "scheme": "bearer"}
+    },
+    "schemas": {
+      "Pet": {
+        "type": "object",
+        "required": ["name", "id"],
+        "$defs": {
+          "Tag": {"type": ["string", "null"], "maxLength": 20}
+        },
+        "properties": {
+          "id": {"type": "integer", "readOnly": true},
+          "name": {"type": "string", "const": "rex"},
+          "tag": {"$ref": "#/components/schemas/Pet/$defs/Tag"},
+          "weight": {"type": "number", "exclusiveMinimum": 0},
+          "status": {"type": ["string", "integer"]}
+        }
+      }
+    }
+  },
+  "security": [{"Bearer": []}],
+  "paths": {
+    "/pets": {
+      "get": {"operationId": "listPets", "responses": {"200": {"description": "ok"}}},
+      "post": {
+        "operationId": "createPet",
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Pet"}}}},
+        "responses": {"201": {"description": "created"}}
+      }
+    },
+    "/pets/{petId}": {
+      "get": {
+        "operationId": "getPetById",
+        "parameters": [{"name": "petId", "in": "path", "required": true, "schema": {"type": "string"}}],
+        "responses": {"200": {"description": "ok"}}
+      }
+    }
+  }
+}
