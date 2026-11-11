@@ -8406,7 +8406,8 @@ func deleteStaleLegacyTierRequestLimits(ctx context.Context, store configstore.C
 	}
 	for _, rule := range held {
 		source, derived := strings.CutSuffix(rule.ID, configstoreTables.LegacyRequestLimitID(""))
-		if !derived || carried[rule.ID] || !fileRateLimitIDs[source] {
+		// A rule whose own id the file still declares (a model config's split, say) is not stale.
+		if !derived || carried[rule.ID] || fileRateLimitIDs[rule.ID] || !fileRateLimitIDs[source] {
 			continue
 		}
 		if err := store.DeleteRateLimit(ctx, rule.ID, tx); err != nil && !errors.Is(err, configstore.ErrNotFound) {
@@ -11875,12 +11876,19 @@ func governedEntitiesInConfig(
 	for _, modelConfig := range slices.Concat(modelConfigsToAdd, modelConfigsToUpdate) {
 		writingModelConfig[modelConfig.ID] = true
 	}
+	// A request limit written for a model config is a limit of its own, even when the model config is kept.
+	writingModelConfigRequestLimit := map[string]bool{}
+	for _, rateLimit := range slices.Concat(rateLimitsToAdd, rateLimitsToUpdate) {
+		if rateLimit.ModelConfigID != nil {
+			writingModelConfigRequestLimit[*rateLimit.ModelConfigID] = true
+		}
+	}
 	for i := range modelConfigsInConfigJSON {
 		modelConfig := &modelConfigsInConfigJSON[i]
 		if modelConfig.Scope != configstoreTables.ModelConfigScopeVirtualKey || modelConfig.ScopeID == nil {
 			continue
 		}
-		linked := writingModelConfig[modelConfig.ID] || writingModelConfigBudget[modelConfig.ID] ||
+		linked := writingModelConfig[modelConfig.ID] || writingModelConfigBudget[modelConfig.ID] || writingModelConfigRequestLimit[modelConfig.ID] ||
 			(modelConfig.RateLimitID != nil && writing[*modelConfig.RateLimitID])
 		for _, id := range modelConfig.BudgetIDs {
 			linked = linked || writingBudget[id]

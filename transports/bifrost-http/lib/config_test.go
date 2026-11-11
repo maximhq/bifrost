@@ -28013,6 +28013,40 @@ func TestSQLite_StaleLegacyTierRequestLimitIsRemoved(t *testing.T) {
 	}
 }
 
+// TestSQLite_TierRequestLimitDeclaredThroughItsModelConfigIsKept pins that the request limit split from
+// a rate limit a key's own model config declares stays on the tier when the key declares a rate limit
+// too: it is no stale split of the key's, since the file still declares its id.
+func TestSQLite_TierRequestLimitDeclaredThroughItsModelConfigIsKept(t *testing.T) {
+	ctx := context.Background()
+	initTestLogger()
+	limit := func(n int64) *int64 { return &n }
+	dir := createTempDir(t)
+	cd := makeConfigDataWithProvidersAndDir(nil, dir)
+	cd.Governance = &configstore.GovernanceConfig{
+		RateLimits: []configstoreTables.TableRateLimit{
+			{ID: "key-rl", TokenMaxLimit: limit(1000), TokenResetDuration: bifrost.Ptr("1h")},
+			{ID: "mc-rl", TokenMaxLimit: limit(500), TokenResetDuration: bifrost.Ptr("1h"), RequestMaxLimit: limit(10), RequestResetDuration: bifrost.Ptr("1m")},
+		},
+		ModelConfigs: []configstoreTables.TableModelConfig{{
+			ID: "mc-1", ModelName: configstoreTables.ModelConfigAllModels, Scope: configstoreTables.ModelConfigScopeVirtualKey,
+			ScopeID: bifrost.Ptr("vk-1"), RateLimitID: bifrost.Ptr("mc-rl"),
+		}},
+		VirtualKeys: []configstoreTables.TableVirtualKey{{
+			ID: "vk-1", Name: "vk-1", Value: *schemas.NewSecretVar("sk-bf-vk-1"), IsActive: schemas.Ptr(true), RateLimitID: bifrost.Ptr("key-rl"),
+		}},
+	}
+	createConfigFile(t, dir, cd)
+	config, err := LoadConfig(ctx, dir)
+	require.NoError(t, err)
+	defer config.Close(ctx)
+
+	var rules []configstoreTables.TableRateLimit
+	require.NoError(t, config.ConfigStore.DB().Where("id = ?", "mc-rl-requests").Find(&rules).Error)
+	require.Len(t, rules, 1, "the model config's request limit was removed as a stale split of the key's rate limit")
+	require.NotNil(t, rules[0].ModelConfigID)
+	assert.Equal(t, int64(10), *rules[0].RequestMaxLimit)
+}
+
 // TestLegacyVirtualKeyRequestLimitsStayCombinedWithoutConfigStore pins that, with no config store,
 // a virtual key's legacy rate limits keep their request limit: governance then runs from the file as
 // loaded, which reads a key's request limit from the row its rate_limit_id names, and there is no
