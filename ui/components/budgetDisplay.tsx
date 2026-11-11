@@ -53,6 +53,11 @@ export function BudgetDisplay({ budgets, calendarAligned, maxVisible }: BudgetDi
 									<span className="text-xs font-medium">
 										{formatCurrency(effectiveMaxLimit)}
 										{b.label ? <span className="text-muted-foreground ml-1 text-xs font-normal">{b.label}</span> : null}
+										{b.scope && b.scope !== "shared" ? (
+											<span className="text-muted-foreground ml-1 text-[10px]" data-testid="budget-display-scope">
+												{t(`budgetScope.${b.scope}`)}
+											</span>
+										) : null}
 										{hasOverride ? <span className="text-muted-foreground ml-1 text-[10px]">{t("budgetDisplay.override")}</span> : null}
 									</span>
 									<span className="text-muted-foreground text-xs">

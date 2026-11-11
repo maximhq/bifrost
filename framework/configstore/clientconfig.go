@@ -1763,6 +1763,11 @@ func GenerateBudgetHash(b tables.TableBudget) (string, error) {
 		hash.Write([]byte(strconv.Itoa(int(b.QuarterStartMonth()))))
 	}
 
+	// Only a non-default scope is hashed, so budgets written before scopes existed keep their digest.
+	if scope := b.Scope.Normalize(); scope != tables.LimitScopeShared {
+		hash.Write([]byte("scope:" + string(scope)))
+	}
+
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 

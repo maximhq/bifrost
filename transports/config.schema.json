@@ -800,6 +800,12 @@
                 "type": "string",
                 "description": "Budget reset duration (e.g., '30s', '5m', '1h', '1d', '1w', '1M', '1Q', '1Y')"
               },
+              "scope": {
+                "type": "string",
+                "enum": ["shared", "model", "mcp"],
+                "default": "shared",
+                "description": "Traffic the budget is charged by: 'shared' (default), 'model' or 'mcp'. 'mcp' is only valid on budgets that apply to all models and providers; reset durations are unique per owner and scope."
+              },
               "reset_config": {
                 "type": "object",
                 "description": "Window settings the reset duration cannot express. Only valid when reset_duration is quarterly ('1Q').",
@@ -1079,7 +1085,7 @@
               },
               "budgets": {
                 "type": "array",
-                "description": "Inline budget configurations for this customer. Each entry must have a unique reset_duration. Mutually exclusive with budget_id.",
+                "description": "Inline budget configurations for this customer. Each entry must have a unique reset_duration and scope pair. Mutually exclusive with budget_id.",
                 "items": {
                   "$ref": "#/$defs/budget_line"
                 }
@@ -12777,6 +12783,12 @@
           "type": "string",
           "description": "Reset window, e.g. \"1M\", \"1h\", \"1Q\""
         },
+        "scope": {
+          "type": "string",
+          "enum": ["shared", "model", "mcp"],
+          "default": "shared",
+          "description": "Traffic the budget is charged by: \"shared\" (default), \"model\" (model requests only) or \"mcp\" (MCP tool executions only). Reset durations must be unique per owner and scope."
+        },
         "reset_config": {
           "type": "object",
           "description": "Window settings the reset duration cannot express. Only valid when reset_duration is quarterly (\"1Q\").",
@@ -13168,7 +13180,7 @@
         },
         "budgets": {
           "type": "array",
-          "description": "Project-level spend caps. Declared without ids: on a change, a budget is matched to its stored row by reset_duration so its accumulated spend and window carry over.",
+          "description": "Project-level spend caps. Declared without ids: on a change, a budget is matched to its stored row by reset_duration and scope so its accumulated spend and window carry over.",
           "items": {
             "$ref": "#/$defs/project_budget"
           }
@@ -13262,7 +13274,13 @@
         },
         "reset_duration": {
           "type": "string",
-          "description": "Reset window, e.g. \"1M\", \"1h\", \"1Q\". Also what pairs a declared budget with its stored row on a change."
+          "description": "Reset window, e.g. \"1M\", \"1h\", \"1Q\". With scope, what pairs a declared budget with its stored row on a change."
+        },
+        "scope": {
+          "type": "string",
+          "enum": ["shared", "model", "mcp"],
+          "default": "shared",
+          "description": "Traffic the budget is charged by: \"shared\" (default), \"model\" or \"mcp\". Only a project's own budgets may use \"model\" or \"mcp\"; provider and model budgets inside it are always shared."
         },
         "reset_config": {
           "type": "object",

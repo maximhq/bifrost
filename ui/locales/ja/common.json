@@ -206,6 +206,15 @@
 		"resetPeriod": "リセット期間",
 		"noLimit": "制限なし"
 	},
+	"budgetScope": {
+		"label": "適用範囲",
+		"shared": "両方",
+		"model": "モデル",
+		"mcp": "MCP",
+		"sharedHint": "モデルリクエストと MCP ツール実行の両方で消費されます",
+		"modelHint": "モデルリクエストのみで消費されます",
+		"mcpHint": "MCP ツール実行のみで消費されます"
+	},
 	"secretVar": {
 		"resolvedAfterSave": "解決後の値は保存後に表示されます"
 	},

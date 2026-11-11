@@ -1407,6 +1407,7 @@
 		"requests": "Anfragen",
 		"currentUsage": "Aktuelle Nutzung",
 		"atLeastOneRequired": "Mindestens ein Budget- oder Ratenlimit ist erforderlich",
+		"mcpBudgetNeedsAllModels": "Ein MCP-Budget gilt nur für alle Modelle bei allen Anbietern. Ändere seinen Geltungsbereich oder entferne es, bevor du ein engeres Limit speicherst.",
 		"vkRequiredForScope": "Virtueller Schlüssel ist für den Bereich „Virtueller Schlüssel“ erforderlich",
 		"clearFilters": "Filter zurücksetzen",
 		"noPermission": "Du hast keine Berechtigung, diese Aktion auszuführen",

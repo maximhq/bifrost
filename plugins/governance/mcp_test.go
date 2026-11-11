@@ -10,6 +10,7 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/grant"
+	"github.com/maximhq/bifrost/framework/mcpcatalog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -323,7 +324,7 @@ func TestPostMCPHook_RecordsAccountedLimitIDs(t *testing.T) {
 	defer plugin.Cleanup()
 
 	ctx := resolverCtx(store, "sk-bf-test")
-	settled, settleErr := resolveLimits(ctx, store, "", "")
+	settled, settleErr := resolveLimits(ctx, store, schemas.MCPToolExecutionRequest, "", "")
 	require.NoError(t, settleErr)
 	require.NotNil(t, settled)
 
@@ -358,7 +359,7 @@ func TestPostMCPHook_AccountsPromptAndResourceReads(t *testing.T) {
 			defer plugin.Cleanup()
 
 			ctx := resolverCtx(store, "sk-bf-test")
-			_, settleErr := resolveLimits(ctx, store, "", "")
+			_, settleErr := resolveLimits(ctx, store, schemas.MCPToolExecutionRequest, "", "")
 			require.NoError(t, settleErr)
 			_, _, err = plugin.PostMCPHook(ctx, &schemas.BifrostMCPResponse{
 				ExtraFields: schemas.BifrostMCPResponseExtraFields{MCPRequestType: requestType, ClientName: "client"},
@@ -370,4 +371,245 @@ func TestPostMCPHook_AccountsPromptAndResourceReads(t *testing.T) {
 			assert.Contains(t, rateLimitIDs, "vk-rl")
 		})
 	}
+}
+
+// scopedBudgetStore builds a store whose virtual key carries one budget of each scope on its
+// all-models model config, which is where a key's own budgets live. usage sets each budget's
+// current spend against a limit of 10.
+func scopedBudgetStore(t *testing.T, usage map[configstoreTables.LimitScope]float64) (*LocalGovernanceStore, *GovernancePlugin) {
+	t.Helper()
+	logger := NewMockLogger()
+	vk := buildVirtualKey("vk1", "sk-bf-test", "Test VK", true)
+	mc := buildVKScopedModelConfig("mc-vk", "*", nil, vk.ID, nil, nil)
+	var budgets []configstoreTables.TableBudget
+	for _, scope := range []configstoreTables.LimitScope{configstoreTables.LimitScopeShared, configstoreTables.LimitScopeModel, configstoreTables.LimitScopeMCP} {
+		b := buildBudgetWithUsage("budget-"+string(scope), 10, usage[scope], "1d")
+		b.Scope = scope
+		b.ModelConfigID = &mc.ID
+		budgets = append(budgets, *b)
+	}
+	mc.Budgets = budgets
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys:  []configstoreTables.TableVirtualKey{*vk},
+		ModelConfigs: []configstoreTables.TableModelConfig{*mc},
+		Budgets:      budgets,
+	}, nil, nil)
+	require.NoError(t, err)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = plugin.Cleanup() })
+	return store, plugin
+}
+
+func settledBudgetIDs(t *testing.T, limits schemas.Limits) []string {
+	t.Helper()
+	require.NotNil(t, limits)
+	ids := make([]string, 0)
+	for _, limit := range limits.Budgets() {
+		ids = append(ids, limit.ID)
+	}
+	slices.Sort(ids)
+	return ids
+}
+
+// TestResolveLimits_AppliesBudgetScope pins that the limits settled for an attempt follow budget
+// scope: an MCP tool execution answers to "shared" and "mcp" budgets, a model request to "shared" and
+// "model" ones. Settling a tool call between two model requests on one grant, as the agent loop
+// does, leaves the next model request with the model set again.
+func TestResolveLimits_AppliesBudgetScope(t *testing.T) {
+	store, _ := scopedBudgetStore(t, nil)
+	ctx := resolverCtx(store, "sk-bf-test")
+
+	model, err := resolveLimits(ctx, store, schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4o")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"budget-model", "budget-shared"}, settledBudgetIDs(t, model))
+
+	mcp, err := resolveLimits(ctx, store, schemas.MCPToolExecutionRequest, "", "")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"budget-mcp", "budget-shared"}, settledBudgetIDs(t, mcp))
+	assert.Equal(t, []string{"budget-mcp", "budget-shared"}, settledBudgetIDs(t, ctx.Grant().Limits()))
+
+	again, err := resolveLimits(ctx, store, schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4o")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"budget-model", "budget-shared"}, settledBudgetIDs(t, again))
+}
+
+// holderScopedBudgetStore builds a store whose virtual key answers to one holder carrying one budget
+// of each scope, each with a limit of 10 and the given current spend: the key itself ("virtual_key",
+// on its all-models model config, where a key's own budgets live), or the team or customer it belongs
+// to ("team", "customer"). The key allows every OpenAI model and has no other budgets.
+func holderScopedBudgetStore(t *testing.T, holder string, usage map[configstoreTables.LimitScope]float64) (*LocalGovernanceStore, *GovernancePlugin) {
+	t.Helper()
+	logger := NewMockLogger()
+	var budgets []configstoreTables.TableBudget
+	for _, scope := range []configstoreTables.LimitScope{configstoreTables.LimitScopeShared, configstoreTables.LimitScopeModel, configstoreTables.LimitScopeMCP} {
+		b := buildBudgetWithUsage(holder+"-budget-"+string(scope), 10, usage[scope], "1d")
+		b.Scope = scope
+		budgets = append(budgets, *b)
+	}
+	vk := buildVirtualKeyWithProviders("vk1", "sk-bf-test", "Test VK", []configstoreTables.TableVirtualKeyProviderConfig{buildProviderConfig("openai", []string{"*"})})
+	gov := &configstore.GovernanceConfig{Budgets: budgets}
+	switch holder {
+	case "virtual_key":
+		mc := buildVKScopedModelConfig("mc-vk", "*", nil, vk.ID, nil, nil)
+		for i := range budgets {
+			budgets[i].ModelConfigID = &mc.ID
+		}
+		mc.Budgets = budgets
+		gov.ModelConfigs = []configstoreTables.TableModelConfig{*mc}
+	case "team":
+		team := buildTeam("team1", "Team 1", nil)
+		for i := range budgets {
+			budgets[i].TeamID = &team.ID
+		}
+		team.Budgets = budgets
+		vk.TeamID = &team.ID
+		vk.Team = team
+		gov.Teams = []configstoreTables.TableTeam{*team}
+	case "customer":
+		customer := buildCustomer("customer1", "Customer 1", nil)
+		for i := range budgets {
+			budgets[i].CustomerID = &customer.ID
+		}
+		customer.Budgets = budgets
+		vk.CustomerID = &customer.ID
+		vk.Customer = customer
+		gov.Customers = []configstoreTables.TableCustomer{*customer}
+	default:
+		t.Fatalf("unknown holder %q", holder)
+	}
+	gov.VirtualKeys = []configstoreTables.TableVirtualKey{*vk}
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, gov, nil, nil)
+	require.NoError(t, err)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = plugin.Cleanup() })
+	return store, plugin
+}
+
+// TestBudgetScope_AppliesToEveryHolder pins that budget scope is honoured on every holder a key
+// answers to, its own budgets and those it inherits from its team or customer: a tool execution is
+// checked and charged against the holder's shared and "mcp" budgets and never its "model" one, and a
+// model request against its shared and "model" ones.
+func TestBudgetScope_AppliesToEveryHolder(t *testing.T) {
+	for _, holder := range []string{"virtual_key", "team", "customer"} {
+		budgetID := func(scope configstoreTables.LimitScope) string { return holder + "-budget-" + string(scope) }
+		sharedBudget, modelBudget, mcpBudget := budgetID(configstoreTables.LimitScopeShared), budgetID(configstoreTables.LimitScopeModel), budgetID(configstoreTables.LimitScopeMCP)
+
+		t.Run(holder+" settles by request kind", func(t *testing.T) {
+			store, _ := holderScopedBudgetStore(t, holder, nil)
+			ctx := resolverCtx(store, "sk-bf-test")
+			mcp, err := resolveLimits(ctx, store, schemas.MCPToolExecutionRequest, "", "")
+			require.NoError(t, err)
+			assert.Equal(t, []string{mcpBudget, sharedBudget}, settledBudgetIDs(t, mcp))
+			model, err := resolveLimits(ctx, store, schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4o")
+			require.NoError(t, err)
+			assert.Equal(t, []string{modelBudget, sharedBudget}, settledBudgetIDs(t, model))
+		})
+
+		t.Run(holder+" tool execution is charged to the shared and mcp budgets only", func(t *testing.T) {
+			store, plugin := holderScopedBudgetStore(t, holder, nil)
+			// A priced tool, so the charge itself is visible and not only the budgets it reaches.
+			catalog, err := mcpcatalog.Init(context.Background(), &mcpcatalog.Config{PricingData: mcpcatalog.MCPPricingData{
+				"client/tool": {Server: "client", ToolName: "tool", CostPerExecution: 0.25},
+			}}, NewMockLogger())
+			require.NoError(t, err)
+			plugin.mcpCatalog = catalog
+			ctx := resolverCtx(store, "sk-bf-test")
+			_, err = resolveLimits(ctx, store, schemas.MCPToolExecutionRequest, "", "")
+			require.NoError(t, err)
+			_, _, err = plugin.PostMCPHook(ctx, &schemas.BifrostMCPResponse{
+				ExtraFields: schemas.BifrostMCPResponseExtraFields{MCPRequestType: schemas.MCPRequestTypeExecuteTool, ClientName: "client", ToolName: "tool"},
+			}, nil)
+			require.NoError(t, err)
+			plugin.wg.Wait()
+			budgetIDs, _ := ctx.Value(schemas.BifrostContextKeyGovernanceBudgetIDs).([]string)
+			slices.Sort(budgetIDs)
+			assert.Equal(t, []string{mcpBudget, sharedBudget}, budgetIDs)
+			usageOf := func(id string) float64 {
+				raw, ok := store.budgets.Load(id)
+				require.True(t, ok, id)
+				return raw.(*configstoreTables.TableBudget).CurrentUsage
+			}
+			assert.InDelta(t, 0.25, usageOf(mcpBudget), 1e-9)
+			assert.InDelta(t, 0.25, usageOf(sharedBudget), 1e-9)
+			assert.Zero(t, usageOf(modelBudget))
+		})
+
+		checks := []struct {
+			name        string
+			exhausted   configstoreTables.LimitScope
+			requestType schemas.RequestType
+			allowed     bool
+		}{
+			{"exhausted model budget does not stop a tool execution", configstoreTables.LimitScopeModel, schemas.MCPToolExecutionRequest, true},
+			{"exhausted mcp budget stops a tool execution", configstoreTables.LimitScopeMCP, schemas.MCPToolExecutionRequest, false},
+			{"exhausted shared budget stops a tool execution", configstoreTables.LimitScopeShared, schemas.MCPToolExecutionRequest, false},
+			{"exhausted mcp budget does not stop a model request", configstoreTables.LimitScopeMCP, schemas.ChatCompletionRequest, true},
+			{"exhausted model budget stops a model request", configstoreTables.LimitScopeModel, schemas.ChatCompletionRequest, false},
+			{"exhausted shared budget stops a model request", configstoreTables.LimitScopeShared, schemas.ChatCompletionRequest, false},
+		}
+		for _, tc := range checks {
+			t.Run(holder+" "+tc.name, func(t *testing.T) {
+				store, plugin := holderScopedBudgetStore(t, holder, map[configstoreTables.LimitScope]float64{tc.exhausted: 10})
+				ctx := resolverCtx(store, "sk-bf-test")
+				request := &EvaluationRequest{RequestType: tc.requestType}
+				if tc.requestType != schemas.MCPToolExecutionRequest {
+					request.Provider = schemas.OpenAI
+					request.Model = "gpt-4o"
+				}
+				result, bifrostErr := plugin.Evaluate(ctx, request)
+				if tc.allowed {
+					require.Nil(t, bifrostErr, "result=%+v", result)
+					return
+				}
+				require.NotNil(t, bifrostErr)
+				assert.Equal(t, DecisionBudgetExceeded, result.Decision)
+			})
+		}
+	}
+}
+
+// TestBudgetsForRequestKind_NoAllocationWhenEveryBudgetApplies pins the common-case cost: when no
+// budget is dropped the gathered slice is returned as is.
+func TestBudgetsForRequestKind_NoAllocationWhenEveryBudgetApplies(t *testing.T) {
+	store, _ := scopedBudgetStore(t, nil)
+	ctx := context.Background()
+	budgets := []schemas.Limit{{ID: "budget-shared"}, {ID: "budget-model"}, {ID: "unknown"}}
+	allocs := testing.AllocsPerRun(100, func() {
+		_ = budgetsForRequestKind(ctx, store, budgets, false)
+	})
+	assert.Zero(t, allocs)
+	kept := budgetsForRequestKind(ctx, store, budgets, true)
+	assert.Equal(t, []schemas.Limit{{ID: "budget-shared"}, {ID: "unknown"}}, kept)
+	assert.Equal(t, "budget-model", budgets[1].ID, "the input slice is never filtered in place")
+}
+
+func BenchmarkBudgetsForRequestKind(b *testing.B) {
+	logger := NewMockLogger()
+	vk := buildVirtualKey("vk1", "sk-bf-test", "Test VK", true)
+	mc := buildVKScopedModelConfig("mc-vk", "*", nil, vk.ID, nil, nil)
+	budgets := []configstoreTables.TableBudget{*buildBudget("b-day", 10, "1d"), *buildBudget("b-month", 100, "1M")}
+	for i := range budgets {
+		budgets[i].ModelConfigID = &mc.ID
+	}
+	mc.Budgets = budgets
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk}, ModelConfigs: []configstoreTables.TableModelConfig{*mc}, Budgets: budgets,
+	}, nil, nil)
+	require.NoError(b, err)
+	ctx := resolverCtx(store, "sk-bf-test")
+	b.Run("resolveLimits", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			_, _ = resolveLimits(ctx, store, schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4o")
+		}
+	})
+	limits := []schemas.Limit{{ID: "b-day"}, {ID: "b-month"}}
+	b.Run("filter", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			_ = budgetsForRequestKind(ctx, store, limits, false)
+		}
+	})
 }

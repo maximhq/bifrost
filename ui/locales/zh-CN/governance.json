@@ -463,9 +463,8 @@
 		"budgetMaxLimit": "预算上限必须大于 $0.01",
 		"budgetNMaxLimit": "预算 #{{n}} 上限必须大于 $0.01",
 		"budgetNResetRequired": "预算 #{{n}} 重置周期为必填项",
-		"distinctResetDuration": "每项预算必须使用不同的重置周期",
-		"uniqueResetPeriod": "每项预算必须使用唯一的重置周期",
-		"budgetNLabel": "预算 #{{n}}：最高支出（USD）",
+		"distinctResetDuration": "同一范围内的每项预算必须使用不同的重置周期",
+		"uniqueResetPeriod": "同一范围内的每项预算必须使用唯一的重置周期",
 		"noBudgets": "暂无预算。点击「添加预算」以设置支出上限。",
 		"budgetDuration": "预算（{{duration}}）",
 		"noLimit": "无限制",
@@ -474,7 +473,8 @@
 		"maximumSpend": "最大支出（美元）",
 		"noBudgetLimits": "尚未配置预算上限。",
 		"removeBudgetAria": "移除预算 {{number}}",
-		"duplicateResetPeriod": "重置周期重复；每条预算必须使用不同的周期。"
+		"duplicateResetPeriod": "重置周期重复；每条预算必须使用不同的周期。",
+		"duplicateResetPeriodScope": "该范围内重置周期重复；同一范围的预算必须使用不同的周期。"
 	},
 	"filters": {
 		"filters": "筛选",

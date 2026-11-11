@@ -464,9 +464,8 @@
 		"budgetMaxLimit": "Das maximale Budget-Limit muss größer als 0,01 $ sein",
 		"budgetNMaxLimit": "Das maximale Limit für Budget #{{n}} muss größer als 0,01 $ sein",
 		"budgetNResetRequired": "Die Reset-Dauer für Budget #{{n}} ist erforderlich",
-		"distinctResetDuration": "Jedes Budget muss eine unterschiedliche Reset-Dauer haben",
-		"uniqueResetPeriod": "Jedes Budget muss einen eindeutigen Reset-Zeitraum haben",
-		"budgetNLabel": "Budget #{{n}}: Maximale Ausgaben (USD)",
+		"distinctResetDuration": "Jedes Budget muss innerhalb seines Geltungsbereichs eine unterschiedliche Reset-Dauer haben",
+		"uniqueResetPeriod": "Jedes Budget muss innerhalb seines Geltungsbereichs einen eindeutigen Reset-Zeitraum haben",
 		"noBudgets": "Keine Budgets. Klicke auf „Budget hinzufügen“, um ein Ausgabenlimit festzulegen.",
 		"budgetDuration": "Budget ({{duration}})",
 		"noLimit": "Kein Limit",
@@ -475,7 +474,8 @@
 		"maximumSpend": "Höchstausgaben (USD)",
 		"noBudgetLimits": "Keine Budgetgrenzen konfiguriert.",
 		"removeBudgetAria": "Budget {{number}} entfernen",
-		"duplicateResetPeriod": "Doppelter Reset-Zeitraum; jede Budgetzeile muss ein anderes Intervall verwenden."
+		"duplicateResetPeriod": "Doppelter Reset-Zeitraum; jede Budgetzeile muss ein anderes Intervall verwenden.",
+		"duplicateResetPeriodScope": "Doppelter Reset-Zeitraum für diesen Geltungsbereich; Budgetzeilen mit demselben Geltungsbereich müssen unterschiedliche Intervalle verwenden."
 	},
 	"filters": {
 		"filters": "Filter",

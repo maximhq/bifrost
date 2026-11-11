@@ -480,3 +480,29 @@ func TestBudgetQuarterStartMonthDefaultsToJanuary(t *testing.T) {
 	assert.Equal(t, time.January, (&TableBudget{ResetConfig: &BudgetResetConfig{}}).QuarterStartMonth())
 	assert.Equal(t, time.July, (&TableBudget{ResetConfig: &BudgetResetConfig{QuarterStartMonth: 7}}).QuarterStartMonth())
 }
+
+// TestBudgetScopeSemantics pins which request kind each scope is charged by, and that
+// the empty value reads as the shared default.
+func TestBudgetScopeSemantics(t *testing.T) {
+	cases := []struct {
+		scope        LimitScope
+		valid        bool
+		model, isMCP bool
+	}{
+		{"", true, true, true},
+		{LimitScopeShared, true, true, true},
+		{LimitScopeModel, true, true, false},
+		{LimitScopeMCP, true, false, true},
+		{"tools", false, true, true},
+	}
+	for _, tc := range cases {
+		assert.Equal(t, tc.valid, tc.scope.IsValid(), "IsValid(%q)", tc.scope)
+		if !tc.valid {
+			continue
+		}
+		assert.Equal(t, tc.model, tc.scope.AppliesTo(false), "%q applies to model requests", tc.scope)
+		assert.Equal(t, tc.isMCP, tc.scope.AppliesTo(true), "%q applies to MCP tool executions", tc.scope)
+	}
+	assert.Equal(t, LimitPeriodKey("1d", ""), LimitPeriodKey("1d", LimitScopeShared))
+	assert.NotEqual(t, LimitPeriodKey("1d", LimitScopeShared), LimitPeriodKey("1d", LimitScopeMCP))
+}

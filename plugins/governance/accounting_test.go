@@ -380,6 +380,43 @@ func TestReportUsage_ChargesPerModelBudgets(t *testing.T) {
 	assert.Equal(t, 30.0, f.budgetUsage("wildcard-budget"), "an already-charged budget must not be charged again per model")
 }
 
+// A batch is model traffic, so per-model settlement must skip an MCP-only budget on a tier it
+// collects, while still charging a model-scoped one there.
+func TestReportUsage_PerModelChargingSkipsMCPOnlyBudgets(t *testing.T) {
+	logger := NewMockLogger()
+	vkID := "vk-alice"
+	mc := buildModelConfig("mc-vk-all", configstoreTables.ModelConfigAllModels, nil, nil, nil)
+	mc.Scope = configstoreTables.ModelConfigScopeVirtualKey
+	mc.ScopeID = &vkID
+	mcpOnly := buildBudgetWithUsage("mcp-budget", 1_000_000.0, 0.0, "1M")
+	mcpOnly.Scope = configstoreTables.LimitScopeMCP
+	mcpOnly.ModelConfigID = &mc.ID
+	modelOnly := buildBudgetWithUsage("model-only-budget", 1_000_000.0, 0.0, "1M")
+	modelOnly.Scope = configstoreTables.LimitScopeModel
+	modelOnly.ModelConfigID = &mc.ID
+	mc.Budgets = []configstoreTables.TableBudget{*mcpOnly, *modelOnly}
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		ModelConfigs: []configstoreTables.TableModelConfig{*mc},
+		Budgets:      []configstoreTables.TableBudget{*mcpOnly, *modelOnly},
+	}, nil, nil)
+	require.NoError(t, err)
+	tracker := NewUsageTracker(context.Background(), store, NewBudgetResolver(store, nil, logger, nil), nil, logger)
+	t.Cleanup(func() { _ = tracker.Cleanup() })
+	plugin := &GovernancePlugin{store: store, tracker: tracker}
+
+	require.NoError(t, plugin.ReportUsage(context.Background(), jobaccounting.UsageReport{
+		RequestID:    "batch-cost:openai:batch-scoped",
+		Provider:     schemas.OpenAI,
+		Cost:         12.0,
+		VirtualKeyID: vkID,
+		ModelUsage:   []jobaccounting.ModelUsage{{Model: "gpt-4o", Cost: 12.0, TokensUsed: 100}},
+	}))
+
+	budgets := store.GetGovernanceData(context.Background()).Budgets
+	assert.Equal(t, 0.0, budgets["mcp-budget"].CurrentUsage, "a batch must not spend an MCP-only budget")
+	assert.Equal(t, 12.0, budgets["model-only-budget"].CurrentUsage)
+}
+
 // A batch whose models carry no per-model config must behave exactly as before.
 func TestReportUsage_PerModelChargingIsInertWithoutModelConfigs(t *testing.T) {
 	f := newModelScopedFixture(t)

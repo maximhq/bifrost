@@ -1407,6 +1407,7 @@
 		"requests": "リクエスト",
 		"currentUsage": "現在の使用量",
 		"atLeastOneRequired": "少なくとも1つの予算またはレート制限が必要です",
+		"mcpBudgetNeedsAllModels": "MCP の予算は、すべてのプロバイダーのすべてのモデルにのみ適用されます。より絞った制限を保存する前に、スコープを変更するか削除してください。",
 		"vkRequiredForScope": "仮想キーは、仮想キーのスコープに必要です",
 		"clearFilters": "フィルターをクリア",
 		"noPermission": "この操作を行う権限がありません",

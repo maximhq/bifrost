@@ -463,9 +463,8 @@
 		"budgetMaxLimit": "예산 최대 한도는 $0.01보다 커야 해요.",
 		"budgetNMaxLimit": "예산 #{{n}} 최대 한도는 0.01달러보다 커야 해요.",
 		"budgetNResetRequired": "예산 #{{n}} 재설정 기간이 필요해요.",
-		"distinctResetDuration": "각 예산에는 고유한 재설정 기간이 있어야 해요.",
-		"uniqueResetPeriod": "각 예산에는 고유한 재설정 기간이 있어야 해요.",
-		"budgetNLabel": "예산 #{{n}}: 최대 지출(USD)",
+		"distinctResetDuration": "각 예산에는 적용 범위별로 고유한 재설정 기간이 있어야 해요.",
+		"uniqueResetPeriod": "각 예산에는 적용 범위별로 고유한 재설정 주기가 있어야 해요.",
 		"noBudgets": "예산이 없어요. 지출 한도를 적용하려면 '예산 추가'를 클릭하세요.",
 		"budgetDuration": "예산({{duration}})",
 		"noLimit": "제한 없음",
@@ -474,7 +473,8 @@
 		"maximumSpend": "최대 지출(USD)",
 		"noBudgetLimits": "구성된 예산 한도가 없습니다.",
 		"removeBudgetAria": "예산 {{number}} 제거",
-		"duplicateResetPeriod": "재설정 기간이 중복되었어요. 각 예산 항목은 서로 다른 간격을 사용해야 해요."
+		"duplicateResetPeriod": "재설정 기간이 중복되었어요. 각 예산 항목은 서로 다른 간격을 사용해야 해요.",
+		"duplicateResetPeriodScope": "이 적용 범위에서 재설정 기간이 중복되었어요. 같은 적용 범위의 예산 항목은 서로 다른 간격을 사용해야 해요."
 	},
 	"filters": {
 		"filters": "필터",

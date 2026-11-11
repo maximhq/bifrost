@@ -1407,6 +1407,7 @@
 		"requests": "Richieste",
 		"currentUsage": "Utilizzo attuale",
 		"atLeastOneRequired": "Serve almeno un budget o un rate limit",
+		"mcpBudgetNeedsAllModels": "Un budget MCP può essere configurato solo selezionando tutti i modelli e tutti i provider. Cambia il suo ambito o rimuovilo prima di salvare un limite più specifico.",
 		"vkRequiredForScope": "La chiave virtuale è obbligatoria per lo scope Chiave virtuale",
 		"clearFilters": "Cancella filtri",
 		"noPermission": "Non hai l'autorizzazione per eseguire questa azione",

@@ -464,9 +464,8 @@
 		"budgetMaxLimit": "Il limite massimo del budget deve essere maggiore di $0,01",
 		"budgetNMaxLimit": "Il limite massimo del budget #{{n}} deve essere maggiore di $0,01",
 		"budgetNResetRequired": "La durata di ripristino del budget #{{n}} è obbligatoria",
-		"distinctResetDuration": "Ogni budget deve avere una durata di ripristino distinta",
-		"uniqueResetPeriod": "Ogni budget deve avere un periodo di ripristino univoco",
-		"budgetNLabel": "Budget #{{n}}: Spesa massima (USD)",
+		"distinctResetDuration": "Ogni budget deve avere una durata di ripristino distinta per il proprio ambito",
+		"uniqueResetPeriod": "Ogni budget deve avere un periodo di ripristino univoco per il proprio ambito",
 		"noBudgets": "Nessun budget. Clicca su \"Aggiungi budget\" per applicare un limite di spesa.",
 		"budgetDuration": "Budget ({{duration}})",
 		"noLimit": "Nessun limite",
@@ -475,7 +474,8 @@
 		"maximumSpend": "Spesa massima (USD)",
 		"noBudgetLimits": "Nessun limite di budget configurato.",
 		"removeBudgetAria": "Rimuovi budget {{number}}",
-		"duplicateResetPeriod": "Periodo di ripristino duplicato; ogni riga di budget deve usare un intervallo diverso."
+		"duplicateResetPeriod": "Periodo di ripristino duplicato; ogni riga di budget deve usare un intervallo diverso.",
+		"duplicateResetPeriodScope": "Periodo di ripristino duplicato per questo ambito; le righe di budget con lo stesso ambito devono usare intervalli diversi."
 	},
 	"filters": {
 		"filters": "Filtri",

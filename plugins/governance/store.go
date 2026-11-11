@@ -4885,6 +4885,8 @@ func (gs *LocalGovernanceStore) GatherLimits(ctx *schemas.BifrostContext, access
 
 func (gs *LocalGovernanceStore) GetBudgetAndRateLimitStatus(ctx *schemas.BifrostContext, provider schemas.ModelProvider, model string, budgetBaselines map[string]float64, tokenBaselines map[string]int64, requestBaselines map[string]int64) *BudgetAndRateLimitStatus {
 	budgets, rateLimits, _ := gs.GatherLimits(ctx, ctx.Grant().Access(), provider, model)
+	// Status describes a model request for the pair, so an MCP-only budget must not steer it.
+	budgets = budgetsForRequestKind(ctx, gs, budgets, false)
 	status := &BudgetAndRateLimitStatus{}
 
 	for _, limit := range budgets {

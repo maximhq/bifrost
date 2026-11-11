@@ -9,3 +9,16 @@ export function shouldClearModelOnProviderChange(currentModel: string, available
 	if (!currentModel || currentModel === "*") return false;
 	return !availableModelNames.includes(currentModel);
 }
+/**
+ * Whether a limit would be saved with an MCP budget it cannot keep: only a limit for all models on all
+ * providers is charged by MCP tool executions. Only the rows that are submitted count, those with an
+ * amount, so an empty line left in the editor does not block a narrower limit.
+ */
+export function hasMCPBudgetOnNarrowLimit(
+	modelName: string | undefined,
+	provider: string | undefined,
+	budgets: { scope?: string; max_limit?: number | null }[] | undefined,
+): boolean {
+	if (modelName === "*" && !provider) return false;
+	return (budgets ?? []).some((b) => b.scope === "mcp" && b.max_limit !== undefined && b.max_limit !== null);
+}

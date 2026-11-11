@@ -605,6 +605,15 @@
 		"resetPeriod": "Reset Period",
 		"noLimit": "No limit"
 	},
+	"budgetScope": {
+		"label": "Scope",
+		"shared": "Both",
+		"model": "Model",
+		"mcp": "MCP",
+		"sharedHint": "Charged by model requests and MCP tool executions",
+		"modelHint": "Charged by model requests only",
+		"mcpHint": "Charged by MCP tool executions only"
+	},
 	"secretVar": {
 		"resolvedAfterSave": "The resolved value will appear after saving"
 	},

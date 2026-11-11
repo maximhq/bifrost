@@ -464,9 +464,8 @@
 		"budgetMaxLimit": "La limite max. du budget doit être supérieure à $0.01",
 		"budgetNMaxLimit": "La limite max. du budget n°{{n}} doit être supérieure à $0.01",
 		"budgetNResetRequired": "La durée de réinitialisation du budget n°{{n}} est requise",
-		"distinctResetDuration": "Chaque budget doit avoir une durée de réinitialisation distincte",
-		"uniqueResetPeriod": "Chaque budget doit avoir une période de réinitialisation unique",
-		"budgetNLabel": "Budget n°{{n}} : dépense maximale (USD)",
+		"distinctResetDuration": "Chaque budget doit avoir une durée de réinitialisation distincte pour sa portée",
+		"uniqueResetPeriod": "Chaque budget doit avoir une période de réinitialisation unique pour sa portée",
 		"noBudgets": "Aucun budget. Cliquez sur « Ajouter un budget » pour imposer une limite de dépense.",
 		"budgetDuration": "Budget alloué ({{duration}})",
 		"noLimit": "Aucune limite",
@@ -475,7 +474,8 @@
 		"maximumSpend": "Dépense maximale (USD)",
 		"noBudgetLimits": "Aucune limite de budget configurée.",
 		"removeBudgetAria": "Supprimer le budget {{number}}",
-		"duplicateResetPeriod": "Période de réinitialisation en double ; chaque ligne de budget doit utiliser un intervalle différent."
+		"duplicateResetPeriod": "Période de réinitialisation en double ; chaque ligne de budget doit utiliser un intervalle différent.",
+		"duplicateResetPeriodScope": "Période de réinitialisation en double pour cette portée ; les lignes de budget de même portée doivent utiliser des intervalles différents."
 	},
 	"filters": {
 		"filters": "Filtres",

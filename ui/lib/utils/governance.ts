@@ -219,6 +219,7 @@ export interface BudgetComparisonEntry {
 	max_limit?: number;
 	reset_duration?: string;
 	reset_config?: { quarter_start_month?: number };
+	scope?: string;
 	current_usage?: number;
 }
 
@@ -231,14 +232,17 @@ export const quarterStartOf = (entry: Pick<BudgetComparisonEntry, "reset_config"
  * The fiscal quarter start belongs here for quarterly budgets: April and July
  * are the same limit on the same 1Q cadence and differ only in when the window
  * turns over, so a signature built from limit and duration alone reports "no
- * change" for precisely the edit that reschedules the reset.
+ * change" for precisely the edit that reschedules the reset. A non-default scope
+ * is included too, so moving a budget between model and MCP traffic is a change;
+ * the shared default adds nothing, keeping pre-scope signatures unchanged.
  */
 export const budgetSignature = (budgets?: BudgetComparisonEntry[]) =>
 	(budgets || [])
 		.filter((budget) => budget.max_limit !== undefined)
 		.map((budget) => {
 			const quarterStart = budget.reset_duration?.endsWith("Q") ? quarterStartOf(budget) : "";
-			return `${budget.id ?? ""}:${budget.max_limit}:${budget.reset_duration ?? ""}:${quarterStart}`;
+			const scope = budget.scope && budget.scope !== "shared" ? `:${budget.scope}` : "";
+			return `${budget.id ?? ""}:${budget.max_limit}:${budget.reset_duration ?? ""}:${quarterStart}${scope}`;
 		})
 		.sort()
 		.join("|");

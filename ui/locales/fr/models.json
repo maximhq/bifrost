@@ -1407,6 +1407,7 @@
 		"requests": "Requêtes",
 		"currentUsage": "Usage actuel",
 		"atLeastOneRequired": "Au moins un budget ou une limite de débit est requis",
+		"mcpBudgetNeedsAllModels": "Un budget MCP ne s'applique qu'à tous les modèles de tous les fournisseurs. Changez sa portée ou supprimez-le avant d'enregistrer une limite plus précise.",
 		"vkRequiredForScope": "Une clé virtuelle est requise pour la portée Clé virtuelle",
 		"clearFilters": "Effacer les filtres",
 		"noPermission": "Vous n’avez pas la permission d’effectuer cette action",

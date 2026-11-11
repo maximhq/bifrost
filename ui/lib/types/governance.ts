@@ -8,11 +8,15 @@ export interface BudgetResetConfig {
 	quarter_start_month?: number;
 }
 
+/** Traffic a budget is charged by: model requests, MCP tool executions, or both (shared, the default). */
+export type LimitScope = "shared" | "model" | "mcp";
+
 export interface Budget {
 	id: string;
 	max_limit: number; // In dollars
 	reset_duration: string; // e.g., "30s", "5m", "1h", "1d", "1w", "1M", "1Q"
 	reset_config?: BudgetResetConfig;
+	scope?: LimitScope;
 	current_usage: number; // In dollars
 	last_reset: string; // ISO timestamp
 	override_amount?: number;
@@ -340,6 +344,7 @@ export interface CreateBudgetRequest {
 	max_limit: number; // In dollars
 	reset_duration: string; // e.g., "30s", "5m", "1h", "1d", "1w", "1M", "1Q"
 	reset_config?: BudgetResetConfig;
+	scope?: LimitScope;
 }
 
 export interface UpdateBudgetRequest {

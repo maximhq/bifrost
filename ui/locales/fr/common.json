@@ -206,6 +206,15 @@
 		"resetPeriod": "Période de réinitialisation",
 		"noLimit": "Aucune limite"
 	},
+	"budgetScope": {
+		"label": "Portée",
+		"shared": "Les deux",
+		"model": "Modèle",
+		"mcp": "MCP",
+		"sharedHint": "Débité par les requêtes de modèles et les exécutions d'outils MCP",
+		"modelHint": "Débité uniquement par les requêtes de modèles",
+		"mcpHint": "Débité uniquement par les exécutions d'outils MCP"
+	},
 	"secretVar": {
 		"resolvedAfterSave": "La valeur résolue apparaîtra après l’enregistrement"
 	},

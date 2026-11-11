@@ -45,6 +45,7 @@ function escapeRegExp(string: string): string {
 export interface BudgetConfig {
   maxLimit: number;
   resetDuration?: string; // e.g. "1d", "1m", "1M" — see resetDurationOptions
+  scope?: "shared" | "model" | "mcp"; // omitted keeps the default ("shared")
 }
 
 /**
@@ -403,11 +404,13 @@ export class VirtualKeysPage extends BasePage {
       await this.page.getByTestId("vk-budget-lines-add-btn").click();
       const amountInput = this.page.getByTestId(`vk-budget-lines-amount-${i}`);
       await amountInput.fill(String(budget.maxLimit));
-      // Select reset period if specified
+      // Select reset period if specified. The line also holds the scope select,
+      // which comes after the reset period, so take the first combobox.
       if (budget.resetDuration) {
         await this.page
           .getByTestId(`vk-budget-lines-line-${i}`)
           .getByRole("combobox")
+          .first()
           .click();
         await this.page
           .getByRole("option", {
@@ -415,6 +418,10 @@ export class VirtualKeysPage extends BasePage {
             exact: true,
           })
           .click();
+      }
+      if (budget.scope) {
+        await this.page.getByTestId(`vk-budget-lines-scope-${i}-trigger`).click();
+        await this.page.getByTestId(`vk-budget-lines-scope-${i}-option-${budget.scope}`).click();
       }
     }
   }

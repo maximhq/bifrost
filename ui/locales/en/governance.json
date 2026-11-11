@@ -464,9 +464,8 @@
 		"budgetMaxLimit": "Budget max limit must be greater than $0.01",
 		"budgetNMaxLimit": "Budget #{{n}} max limit must be greater than $0.01",
 		"budgetNResetRequired": "Budget #{{n}} reset duration is required",
-		"distinctResetDuration": "Each budget must have a distinct reset duration",
-		"uniqueResetPeriod": "Each budget must have a unique reset period",
-		"budgetNLabel": "Budget #{{n}}: Maximum Spend (USD)",
+		"distinctResetDuration": "Each budget must have a distinct reset duration for its scope",
+		"uniqueResetPeriod": "Each budget must have a unique reset period for its scope",
 		"noBudgets": "No budgets. Click \"Add budget\" to enforce a spend limit.",
 		"budgetDuration": "Budget ({{duration}})",
 		"noLimit": "No limit",
@@ -475,7 +474,8 @@
 		"maximumSpend": "Maximum Spend (USD)",
 		"noBudgetLimits": "No budget limits configured.",
 		"removeBudgetAria": "Remove budget {{number}}",
-		"duplicateResetPeriod": "Duplicate reset period; each budget line must use a different interval."
+		"duplicateResetPeriod": "Duplicate reset period; each budget line must use a different interval.",
+		"duplicateResetPeriodScope": "Duplicate reset period for this scope; budget lines with the same scope must use different intervals."
 	},
 	"filters": {
 		"filters": "Filters",
