@@ -111,8 +111,10 @@ func clientGatewayDeviceApprovedURL(issuer string) string {
 //   - POST /oauth/device_authorization — RFC 8628 device authorization
 //   - POST /oauth/token — device-code and refresh-token grants
 //   - POST /oauth/revoke — RFC 7009 revocation on sign-out
-//   - POST /device/verify — exchanges a user code for the consent page
 //   - the profile's inference routes and extra routes, behind the bearer check
+//
+// and, once for every gateway, POST /oauth2/device/verify: the /oauth/device
+// page exchanges the typed user code for the consent page there.
 //
 // Sign-in reuses the MCP OAuth2 authorization server: a device grant is an
 // oauth2_authorize_requests row that the existing consent page approves (virtual
@@ -182,13 +184,13 @@ func (h *ClientGatewayHandler) endpoint(name string) *clientGatewayEndpoint {
 // registered without the API auth middleware: the sign-in endpoints are public
 // by protocol, and the rest authenticate the gateway bearer themselves.
 func (h *ClientGatewayHandler) RegisterRoutes(r *router.Router, _ ...schemas.BifrostHTTPMiddleware) {
+	r.POST("/oauth2/device/verify", h.handleDeviceVerify)
 	for _, ep := range h.endpoints {
 		prefix := ep.profile.PathPrefix()
 		r.GET(prefix+"/.well-known/oauth-authorization-server", ep.handleMetadata)
 		r.POST(prefix+"/oauth/device_authorization", ep.handleDeviceAuthorization)
 		r.POST(prefix+"/oauth/token", ep.handleToken)
 		r.POST(prefix+"/oauth/revoke", ep.handleRevoke)
-		r.POST(prefix+"/device/verify", ep.handleDeviceVerify)
 		ep.profile.RegisterExtraRoutes(r, ep)
 	}
 }
@@ -512,7 +514,7 @@ func (ep *clientGatewayEndpoint) handleRevoke(ctx *fasthttp.RequestCtx) {
 	ctx.SetStatusCode(fasthttp.StatusOK)
 }
 
-// --- POST {prefix}/device/verify ---
+// --- POST /oauth2/device/verify ---
 
 type clientGatewayDeviceVerifyRequest struct {
 	UserCode string `json:"user_code"`
@@ -523,19 +525,23 @@ type clientGatewayDeviceVerifyResponse struct {
 }
 
 // handleDeviceVerify is called by the /oauth/device dashboard page with the code
-// the user typed. It returns the consent page URL for the matching sign-in,
-// carrying the same consent-scoped temp token /oauth2/authorize mints, so the
-// user picks an identity exactly as an MCP client's user does.
-func (ep *clientGatewayEndpoint) handleDeviceVerify(ctx *fasthttp.RequestCtx) {
-	if !ep.enabled() {
-		SendError(ctx, fasthttp.StatusNotFound, ep.notEnabledMessage())
+// the user typed. It is shared by every client gateway: the code identifies the
+// pending sign-in, and the sign-in's built-in client identifies its gateway, so
+// the page needs no knowledge of which client the user is signing in from. It
+// returns the consent page URL for that sign-in, carrying the same
+// consent-scoped temp token /oauth2/authorize mints, so the user picks an
+// identity exactly as an MCP client's user does. A code whose gateway has been
+// switched off since the sign-in started is treated as unknown.
+func (h *ClientGatewayHandler) handleDeviceVerify(ctx *fasthttp.RequestCtx) {
+	if !h.anyEnabled() {
+		SendError(ctx, fasthttp.StatusNotFound, "no client gateway is enabled")
 		return
 	}
-	if ep.store.ConfigStore == nil {
+	if h.store.ConfigStore == nil {
 		SendError(ctx, fasthttp.StatusServiceUnavailable, "config store unavailable")
 		return
 	}
-	if !ep.verifyLimiter.allow(ctx.RemoteIP().String(), time.Now()) {
+	if !h.verifyLimiter.allow(ctx.RemoteIP().String(), time.Now()) {
 		ctx.Response.Header.Set("Retry-After", "60")
 		SendError(ctx, fasthttp.StatusTooManyRequests, "too many attempts from this address; wait a minute and try again")
 		return
@@ -550,28 +556,54 @@ func (ep *clientGatewayEndpoint) handleDeviceVerify(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, "enter the 8-character code shown in your terminal")
 		return
 	}
-	req, err := ep.store.ConfigStore.GetPendingOAuth2AuthorizeRequestByUserCodeHash(ctx, hashSHA256Hex(userCode))
-	if errors.Is(err, configstore.ErrNotFound) || (err == nil && req.ClientID != ep.profile.ClientID()) {
-		SendError(ctx, fasthttp.StatusNotFound, "this code is not valid or has expired; "+ep.profile.SignInHint())
+	const unknownCode = "this code is not valid or has expired; start the sign-in again from your terminal"
+	req, err := h.store.ConfigStore.GetPendingOAuth2AuthorizeRequestByUserCodeHash(ctx, hashSHA256Hex(userCode))
+	if errors.Is(err, configstore.ErrNotFound) {
+		SendError(ctx, fasthttp.StatusNotFound, unknownCode)
 		return
 	}
 	if err != nil {
-		logger.Error("%s gateway: failed to look up user code: %v", ep.profile.Name(), err)
+		logger.Error("client gateway: failed to look up user code: %v", err)
 		SendError(ctx, fasthttp.StatusInternalServerError, "failed to look up code")
 		return
 	}
+	if ep := h.endpointForClientID(req.ClientID); ep == nil || !ep.enabled() {
+		SendError(ctx, fasthttp.StatusNotFound, unknownCode)
+		return
+	}
 
-	consentURL := fmt.Sprintf("%s/oauth/consent?flow=%s", oauth2IssuerURL(ctx, ep.store), url.QueryEscape(req.ID))
-	if ep.tempTokens != nil {
-		tok, err := ep.tempTokens.Mint(ctx, temptoken.OAuth2ConsentScopeName, req.ID, time.Until(req.ExpiresAt))
+	consentURL := fmt.Sprintf("%s/oauth/consent?flow=%s", oauth2IssuerURL(ctx, h.store), url.QueryEscape(req.ID))
+	if h.tempTokens != nil {
+		tok, err := h.tempTokens.Mint(ctx, temptoken.OAuth2ConsentScopeName, req.ID, time.Until(req.ExpiresAt))
 		if err != nil {
-			logger.Error("%s gateway: failed to mint consent temp token: %v", ep.profile.Name(), err)
+			logger.Error("client gateway: failed to mint consent temp token: %v", err)
 			SendError(ctx, fasthttp.StatusInternalServerError, "failed to prepare consent flow")
 			return
 		}
 		consentURL += "#t=" + url.QueryEscape(tok)
 	}
 	SendJSON(ctx, clientGatewayDeviceVerifyResponse{ConsentURL: consentURL})
+}
+
+// anyEnabled reports whether at least one mounted gateway is switched on.
+func (h *ClientGatewayHandler) anyEnabled() bool {
+	for _, ep := range h.endpoints {
+		if ep.enabled() {
+			return true
+		}
+	}
+	return false
+}
+
+// endpointForClientID returns the mounted gateway whose built-in client is
+// clientID, or nil.
+func (h *ClientGatewayHandler) endpointForClientID(clientID string) *clientGatewayEndpoint {
+	for _, ep := range h.endpoints {
+		if ep.profile.ClientID() == clientID {
+			return ep
+		}
+	}
+	return nil
 }
 
 // --- Bearer authentication ---
