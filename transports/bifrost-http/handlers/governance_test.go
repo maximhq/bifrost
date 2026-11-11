@@ -2178,6 +2178,7 @@ type quotaResponse struct {
 	Budgets         []quotaBudget                                     `json:"budgets"`
 	RateLimit       *configstoreTables.TableRateLimit                 `json:"rate_limit"`
 	RateLimits      []SourcedRateLimit                                `json:"rate_limits"`
+	RequestLimits   []configstoreTables.TableRateLimit                `json:"request_limits"`
 	ProviderConfigs []configstoreTables.TableVirtualKeyProviderConfig `json:"provider_configs"`
 	Models          []quotaModelUsage                                 `json:"model_configs"`
 }
@@ -2218,6 +2219,10 @@ func TestGetVirtualKeyQuota_HydratesBudgetsFromModelConfigs(t *testing.T) {
 				},
 				RateLimitID: &rlID,
 				RateLimit:   &configstoreTables.TableRateLimit{ID: rlID, TokenMaxLimit: &tokenMax, TokenCurrentUsage: 250},
+				RequestLimits: []configstoreTables.TableRateLimit{
+					{ID: "rule-vk", RequestMaxLimit: schemas.Ptr(int64(60)), RequestResetDuration: schemas.Ptr("1m"), RequestCurrentUsage: 4, Scope: configstoreTables.LimitScopeShared},
+					{ID: "rule-vk-mcp", RequestMaxLimit: schemas.Ptr(int64(10)), RequestResetDuration: schemas.Ptr("1h"), Scope: configstoreTables.LimitScopeMCP},
+				},
 			},
 			// Per-provider governance (wildcard, provider == "openai").
 			{
@@ -2228,6 +2233,9 @@ func TestGetVirtualKeyQuota_HydratesBudgetsFromModelConfigs(t *testing.T) {
 				Provider:  schemas.Ptr("openai"),
 				Budgets: []configstoreTables.TableBudget{
 					{ID: "b-openai", MaxLimit: 50, CurrentUsage: 10, ResetDuration: "1d"},
+				},
+				RequestLimits: []configstoreTables.TableRateLimit{
+					{ID: "rule-openai", RequestMaxLimit: schemas.Ptr(int64(30)), RequestResetDuration: schemas.Ptr("1m"), Scope: configstoreTables.LimitScopeShared},
 				},
 			},
 			// Per-model governance (specific model) — surfaces as the per-model usage breakdown.
@@ -2242,6 +2250,9 @@ func TestGetVirtualKeyQuota_HydratesBudgetsFromModelConfigs(t *testing.T) {
 				},
 				RateLimitID: &modelRLID,
 				RateLimit:   &configstoreTables.TableRateLimit{ID: modelRLID, TokenMaxLimit: &modelTokenMax, TokenCurrentUsage: 120},
+				RequestLimits: []configstoreTables.TableRateLimit{
+					{ID: "rule-gpt4o", RequestMaxLimit: schemas.Ptr(int64(20)), RequestResetDuration: schemas.Ptr("1m"), RequestCurrentUsage: 2, Scope: configstoreTables.LimitScopeShared},
+				},
 			},
 		},
 	}
@@ -2279,12 +2290,28 @@ func TestGetVirtualKeyQuota_HydratesBudgetsFromModelConfigs(t *testing.T) {
 	if resp.RateLimit == nil || resp.RateLimit.ID != rlID || resp.RateLimit.TokenCurrentUsage != 250 {
 		t.Fatalf("expected hydrated VK rate limit %q, got %#v", rlID, resp.RateLimit)
 	}
+	// rate_limit carries tokens only; the key's request limits (its model config's and its MCP
+	// config's) are listed in rate_limits beside it and on their own in request_limits.
+	rateLimitIDs := make([]string, 0, len(resp.RateLimits))
+	for _, rl := range resp.RateLimits {
+		rateLimitIDs = append(rateLimitIDs, rl.ID)
+	}
+	if !reflect.DeepEqual(rateLimitIDs, []string{rlID, "rule-vk", "rule-vk-mcp"}) {
+		t.Fatalf("expected rate_limits [%s rule-vk rule-vk-mcp], got %v", rlID, rateLimitIDs)
+	}
+	if len(resp.RequestLimits) != 2 || resp.RequestLimits[0].ID != "rule-vk" || resp.RequestLimits[0].RequestCurrentUsage != 4 ||
+		resp.RequestLimits[1].ID != "rule-vk-mcp" || resp.RequestLimits[1].Scope != configstoreTables.LimitScopeMCP {
+		t.Fatalf("expected request_limits rule-vk (usage 4) and rule-vk-mcp (scope mcp), got %#v", resp.RequestLimits)
+	}
 	if len(resp.ProviderConfigs) != 1 {
 		t.Fatalf("expected one provider config, got %#v", resp.ProviderConfigs)
 	}
 	pcBudgets := resp.ProviderConfigs[0].Budgets
 	if len(pcBudgets) != 1 || pcBudgets[0].ID != "b-openai" || pcBudgets[0].CurrentUsage != 10 {
 		t.Fatalf("expected hydrated provider budget b-openai (usage 10), got %#v", pcBudgets)
+	}
+	if pcRules := resp.ProviderConfigs[0].RequestLimits; len(pcRules) != 1 || pcRules[0].ID != "rule-openai" {
+		t.Fatalf("expected hydrated provider request limit rule-openai, got %#v", pcRules)
 	}
 	// Per-model usage: only the specific-model config (gpt-4o) — wildcard configs feed the
 	// VK/provider governance above and must not leak into the per-model list.
@@ -2300,6 +2327,9 @@ func TestGetVirtualKeyQuota_HydratesBudgetsFromModelConfigs(t *testing.T) {
 	}
 	if m.RateLimit == nil || m.RateLimit.ID != "rl-gpt4o" || m.RateLimit.TokenCurrentUsage != 120 {
 		t.Fatalf("expected per-model rate limit rl-gpt4o (usage 120), got %#v", m.RateLimit)
+	}
+	if len(m.RequestLimits) != 1 || m.RequestLimits[0].ID != "rule-gpt4o" || m.RequestLimits[0].RequestCurrentUsage != 2 {
+		t.Fatalf("expected per-model request limit rule-gpt4o (usage 2), got %#v", m.RequestLimits)
 	}
 
 	// Actual per-model spend from logs is now embedded in each budget. The VK has a single
@@ -2563,6 +2593,56 @@ func TestApplyExternalBudgets_ManagedWithNoGovernanceFlagsAndClears(t *testing.T
 	}
 }
 
+// TestExternalResolverRequestLimits_ShownOnVKReadAndQuota verifies that request limits an
+// external resolver reports for a managed key replace the key's own mirror rules on both the
+// VK read path (applyExternalBudgets, behind getVirtualKey/getVirtualKeys) and the quota
+// endpoint, with scope and live usage kept.
+func TestExternalResolverRequestLimits_ShownOnVKReadAndQuota(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	reqMax := int64(10)
+	apRules := []configstoreTables.TableRateLimit{
+		{ID: "ap-rule", RequestMaxLimit: &reqMax, RequestCurrentUsage: 3, Scope: configstoreTables.LimitScopeShared},
+		{ID: "ap-rule-mcp", RequestMaxLimit: &reqMax, RequestCurrentUsage: 1, Scope: configstoreTables.LimitScopeMCP},
+	}
+	active := true
+	store := &mockQuotaConfigStore{
+		vk: &configstoreTables.TableVirtualKey{ID: "vk-1", Name: "AP Key", IsActive: &active},
+	}
+	h := &GovernanceHandler{
+		configStore: store,
+		externalQuotaBudgetResolver: func(_ context.Context, _ *configstoreTables.TableVirtualKey) (*ExternalQuotaBudgetResult, error) {
+			return &ExternalQuotaBudgetResult{RequestLimits: apRules, Managed: true}, nil
+		},
+	}
+	assertRules := func(where string, got []configstoreTables.TableRateLimit) {
+		t.Helper()
+		if len(got) != 2 || got[0].ID != "ap-rule" || got[0].RequestCurrentUsage != 3 ||
+			got[1].ID != "ap-rule-mcp" || got[1].Scope != configstoreTables.LimitScopeMCP {
+			t.Fatalf("%s: expected request_limits ap-rule (usage 3) and ap-rule-mcp (scope mcp), got %#v", where, got)
+		}
+	}
+
+	vk := &configstoreTables.TableVirtualKey{
+		ID:            "vk-1",
+		RequestLimits: []configstoreTables.TableRateLimit{{ID: "rule-vk-mirror", RequestMaxLimit: &reqMax}},
+	}
+	h.applyExternalBudgets(context.Background(), vk)
+	assertRules("vk read", vk.RequestLimits)
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.Set("x-bf-vk", "sk-bf-secret")
+	h.getVirtualKeyQuota(ctx)
+	if ctx.Response.StatusCode() != 200 {
+		t.Fatalf("expected status 200, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+	var resp quotaResponse
+	if err := json.Unmarshal(ctx.Response.Body(), &resp); err != nil {
+		t.Fatalf("failed to parse response: %v", err)
+	}
+	assertRules("quota", resp.RequestLimits)
+}
+
 // TestGetVirtualKeyQuota_ExternalResolverErrorFailsClosed verifies the endpoint returns
 // 500 (not a partial response) when the registered resolver errors — usage must not be
 // silently under-reported.
@@ -2642,6 +2722,9 @@ func TestGetVirtualKeyQuota_NoGovernanceReturnsEmpty(t *testing.T) {
 	}
 	if !bytes.Contains(ctx.Response.Body(), []byte(`"rate_limits":[]`)) {
 		t.Fatalf("expected raw response to contain \"rate_limits\":[], got %s", string(ctx.Response.Body()))
+	}
+	if !bytes.Contains(ctx.Response.Body(), []byte(`"request_limits":[]`)) {
+		t.Fatalf("expected raw response to contain \"request_limits\":[], got %s", string(ctx.Response.Body()))
 	}
 }
 
@@ -6117,4 +6200,549 @@ func TestFindExistingBudgetMatchesOnDurationAndScope(t *testing.T) {
 	weeklyModel := newBudgetFromRequest(CreateBudgetRequest{MaxLimit: 20, ResetDuration: "1w", Scope: configstoreTables.LimitScopeModel}, false)
 	inheritUsageFromClosestShorterBudget(&weeklyModel, existing, false)
 	assert.Equal(t, 7.0, weeklyModel.CurrentUsage)
+}
+
+// requestLimitTestGovernanceManager reloads teams, customers and model configs from the store, so a
+// handler answers with the holder as persisted.
+type requestLimitTestGovernanceManager struct {
+	pricingOverrideTestGovernanceManager
+	store configstore.ConfigStore
+	live  map[string]*configstoreTables.TableRateLimit // the governance store's live rows, by id
+}
+
+func (m requestLimitTestGovernanceManager) LoadRateLimit(_ context.Context, id string) *configstoreTables.TableRateLimit {
+	return m.live[id]
+}
+
+func (m requestLimitTestGovernanceManager) ReloadTeam(ctx context.Context, id string) (*configstoreTables.TableTeam, error) {
+	return m.store.GetTeam(ctx, id)
+}
+func (m requestLimitTestGovernanceManager) ReloadCustomer(ctx context.Context, id string) (*configstoreTables.TableCustomer, error) {
+	return m.store.GetCustomer(ctx, id)
+}
+func (m requestLimitTestGovernanceManager) ReloadModelConfig(ctx context.Context, id string) (*configstoreTables.TableModelConfig, error) {
+	return m.store.GetModelConfigByID(ctx, id)
+}
+func (m requestLimitTestGovernanceManager) ModelConfigIndexKey(model string, provider *string) string {
+	return governance.CanonicalModelConfigName(model, provider)
+}
+
+// requestLimitByKey indexes request limits by "<reset duration>|<scope>".
+func requestLimitByKey(t *testing.T, rules []configstoreTables.TableRateLimit) map[string]configstoreTables.TableRateLimit {
+	t.Helper()
+	out := make(map[string]configstoreTables.TableRateLimit, len(rules))
+	for _, rl := range rules {
+		require.NotNil(t, rl.RequestResetDuration, "request limit %s has no reset duration", rl.ID)
+		require.NotNil(t, rl.RequestMaxLimit, "request limit %s has no maximum", rl.ID)
+		require.Nil(t, rl.TokenMaxLimit, "request limit %s carries a token limit", rl.ID)
+		out[configstoreTables.LimitPeriodKey(*rl.RequestResetDuration, rl.Scope)] = rl
+	}
+	return out
+}
+
+// TestRequestLimitsReconcileLikeBudgets pins the reconcile every holder shares: a request matches an
+// existing request limit by ID, else by reset period and scope, keeps its usage when it does, creates
+// a new one owned by the holder when it does not, and an existing one nothing matches is deleted.
+func TestRequestLimitsReconcileLikeBudgets(t *testing.T) {
+	SetLogger(&mockLogger{})
+	ctx := context.Background()
+	store := setupPricingOverrideHandlerStore(t)
+	handler := &GovernanceHandler{configStore: store, governanceManager: requestLimitTestGovernanceManager{store: store}}
+
+	create := newTestRequestCtx(`{"name":"team-rl","request_limits":[{"max_limit":100,"reset_duration":"1h"},{"max_limit":5,"reset_duration":"1h","scope":"mcp"}]}`)
+	handler.createTeam(create)
+	require.Equal(t, fasthttp.StatusOK, create.Response.StatusCode(), "resp=%s", create.Response.Body())
+	var created struct {
+		Team struct {
+			ID string `json:"id"`
+		} `json:"team"`
+	}
+	require.NoError(t, json.Unmarshal(create.Response.Body(), &created))
+	teamID := created.Team.ID
+	team, err := store.GetTeam(ctx, teamID)
+	require.NoError(t, err)
+	byKey := requestLimitByKey(t, team.RequestLimits)
+	require.Len(t, byKey, 2)
+	shared := byKey["1h|shared"]
+	mcp := byKey["1h|mcp"]
+	require.NotNil(t, shared.TeamID)
+	assert.Equal(t, teamID, *shared.TeamID)
+	assert.Nil(t, team.RateLimitID, "request limits alone create no rate limit")
+	require.NoError(t, store.UpdateRateLimitUsage(ctx, shared.ID, 0, 42))
+
+	update := func(body string) {
+		t.Helper()
+		req := newTestRequestCtx(body)
+		req.SetUserValue("team_id", teamID)
+		handler.updateTeam(req)
+		require.Equal(t, fasthttp.StatusOK, req.Response.StatusCode(), "body=%s resp=%s", body, req.Response.Body())
+	}
+	// Matched by ID (and renamed to a new maximum), the mcp one dropped, a daily one added.
+	update(fmt.Sprintf(`{"request_limits":[{"id":%q,"max_limit":200,"reset_duration":"1h"},{"max_limit":10,"reset_duration":"1d"}]}`, shared.ID))
+	team, err = store.GetTeam(ctx, teamID)
+	require.NoError(t, err)
+	byKey = requestLimitByKey(t, team.RequestLimits)
+	require.Len(t, byKey, 2)
+	assert.Equal(t, shared.ID, byKey["1h|shared"].ID)
+	assert.Equal(t, int64(200), *byKey["1h|shared"].RequestMaxLimit)
+	assert.Equal(t, int64(42), byKey["1h|shared"].RequestCurrentUsage, "a matched request limit keeps its usage")
+	_, err = store.GetRateLimit(ctx, mcp.ID)
+	assert.ErrorIs(t, err, configstore.ErrNotFound, "a request limit the update no longer names is deleted")
+	daily := byKey["1d|shared"]
+
+	// Matched by period without an ID; the daily one is dropped.
+	update(`{"request_limits":[{"max_limit":300,"reset_duration":"1h"}]}`)
+	team, err = store.GetTeam(ctx, teamID)
+	require.NoError(t, err)
+	require.Len(t, team.RequestLimits, 1)
+	assert.Equal(t, shared.ID, team.RequestLimits[0].ID)
+	assert.Equal(t, int64(300), *team.RequestLimits[0].RequestMaxLimit)
+	assert.Equal(t, int64(42), team.RequestLimits[0].RequestCurrentUsage)
+	_, err = store.GetRateLimit(ctx, daily.ID)
+	assert.ErrorIs(t, err, configstore.ErrNotFound)
+
+	// Omitted leaves them alone; [] removes them.
+	update(`{"name":"team-rl-renamed"}`)
+	team, err = store.GetTeam(ctx, teamID)
+	require.NoError(t, err)
+	require.Len(t, team.RequestLimits, 1)
+	update(`{"request_limits":[]}`)
+	team, err = store.GetTeam(ctx, teamID)
+	require.NoError(t, err)
+	assert.Empty(t, team.RequestLimits)
+
+	// An ID belonging to another holder, a non-positive maximum, a bad period or scope, and two limits
+	// on one reset period and scope (an omitted scope is shared) are refused; the create above shows one
+	// period may repeat across scopes.
+	for _, body := range []string{
+		`{"request_limits":[{"id":"not-this-teams","max_limit":1,"reset_duration":"1h"}]}`,
+		`{"request_limits":[{"max_limit":0,"reset_duration":"1h"}]}`,
+		`{"request_limits":[{"max_limit":1,"reset_duration":"soon"}]}`,
+		`{"request_limits":[{"max_limit":1,"reset_duration":"1h","scope":"tools"}]}`,
+		`{"request_limits":[{"max_limit":5,"reset_duration":"1h"},{"max_limit":6,"reset_duration":"1h","scope":"shared"}]}`,
+	} {
+		req := newTestRequestCtx(body)
+		req.SetUserValue("team_id", teamID)
+		handler.updateTeam(req)
+		assert.Equal(t, fasthttp.StatusBadRequest, req.Response.StatusCode(), "body=%s resp=%s", body, req.Response.Body())
+	}
+}
+
+// TestRequestLimitScopesFollowWhatReachesTheHolder pins the scope classes, the same as budgets: MCP
+// tool executions name no provider or model, so "mcp" means something only where they can reach (a
+// team, a customer, a holder-level model config), and every narrower holder takes "shared" or "model".
+func TestRequestLimitScopesFollowWhatReachesTheHolder(t *testing.T) {
+	SetLogger(&mockLogger{})
+	ctx := context.Background()
+	store := setupPricingOverrideHandlerStore(t)
+	require.NoError(t, store.AddProvider(ctx, schemas.ModelProvider("openai"), configstore.ProviderConfig{}))
+	handler := &GovernanceHandler{configStore: store, governanceManager: requestLimitTestGovernanceManager{store: store}}
+
+	cases := []struct {
+		name   string
+		call   func(*fasthttp.RequestCtx)
+		body   string
+		status int
+	}{
+		{"all-models model config takes model and mcp", handler.createModelConfig, `{"model_name":"*","request_limits":[{"max_limit":1,"reset_duration":"1h","scope":"model"},{"max_limit":1,"reset_duration":"1h","scope":"mcp"}]}`, fasthttp.StatusOK},
+		{"model config refuses mcp", handler.createModelConfig, `{"model_name":"gpt-4o","request_limits":[{"max_limit":1,"reset_duration":"1h","scope":"mcp"}]}`, fasthttp.StatusBadRequest},
+		{"provider tier refuses mcp", handler.createModelConfig, `{"model_name":"*","provider":"openai","request_limits":[{"max_limit":1,"reset_duration":"1h","scope":"mcp"}]}`, fasthttp.StatusBadRequest},
+		{"provider tier takes model", handler.createModelConfig, `{"model_name":"*","provider":"anthropic","request_limits":[{"max_limit":1,"reset_duration":"1h","scope":"model"}]}`, fasthttp.StatusOK},
+		{"specific model takes model", handler.createModelConfig, `{"model_name":"gpt-4o","request_limits":[{"max_limit":1,"reset_duration":"1h","scope":"model"}]}`, fasthttp.StatusOK},
+		{"specific model and provider takes model", handler.createModelConfig, `{"model_name":"gpt-4o","provider":"openai","request_limits":[{"max_limit":1,"reset_duration":"1h","scope":"model"}]}`, fasthttp.StatusOK},
+		{"specific model and provider refuses mcp", handler.createModelConfig, `{"model_name":"gpt-4o-mini","provider":"openai","request_limits":[{"max_limit":1,"reset_duration":"1h","scope":"mcp"}]}`, fasthttp.StatusBadRequest},
+		{"specific model takes both", handler.createModelConfig, `{"model_name":"gpt-4o-mini","request_limits":[{"max_limit":1,"reset_duration":"1h"}]}`, fasthttp.StatusOK},
+		{"provider governance refuses mcp", func(c *fasthttp.RequestCtx) {
+			c.SetUserValue("provider_name", "openai")
+			handler.updateProviderGovernance(c)
+		}, `{"request_limits":[{"max_limit":1,"reset_duration":"1h","scope":"mcp"}]}`, fasthttp.StatusBadRequest},
+		{"team takes mcp", handler.createTeam, `{"name":"scoped-team","request_limits":[{"max_limit":1,"reset_duration":"1h","scope":"mcp"}]}`, fasthttp.StatusOK},
+	}
+	for _, tc := range cases {
+		req := newTestRequestCtx(tc.body)
+		tc.call(req)
+		assert.Equal(t, tc.status, req.Response.StatusCode(), "%s: resp=%s", tc.name, req.Response.Body())
+	}
+
+	// An omitted scope means shared.
+	providerTier := newTestRequestCtx(`{"model_name":"*","provider":"openai","request_limits":[{"max_limit":3,"reset_duration":"1m"}]}`)
+	handler.createModelConfig(providerTier)
+	require.Equal(t, fasthttp.StatusOK, providerTier.Response.StatusCode(), "resp=%s", providerTier.Response.Body())
+	var created struct {
+		ModelConfig configstoreTables.TableModelConfig `json:"model_config"`
+	}
+	require.NoError(t, json.Unmarshal(providerTier.Response.Body(), &created))
+	require.Len(t, created.ModelConfig.RequestLimits, 1, "the response carries the config's request limits")
+	assert.Equal(t, configstoreTables.LimitScopeShared, created.ModelConfig.RequestLimits[0].Scope)
+
+	// Provider governance takes the default scope, and reports its request limits.
+	providerReq := newGovernanceProviderNameCtx("openai", `{"request_limits":[{"max_limit":9,"reset_duration":"1h"}]}`)
+	handler.updateProviderGovernance(providerReq)
+	require.Equal(t, fasthttp.StatusOK, providerReq.Response.StatusCode(), "resp=%s", providerReq.Response.Body())
+	var provider struct {
+		Provider ProviderGovernanceResponse `json:"provider"`
+	}
+	require.NoError(t, json.Unmarshal(providerReq.Response.Body(), &provider))
+	require.Len(t, provider.Provider.RequestLimits, 1, "request limits alone are provider governance")
+	assert.Equal(t, int64(9), *provider.Provider.RequestLimits[0].RequestMaxLimit)
+
+	// It takes a model rule too, stored with that scope.
+	providerModel := newGovernanceProviderNameCtx("openai", `{"request_limits":[{"max_limit":7,"reset_duration":"1h","scope":"model"}]}`)
+	handler.updateProviderGovernance(providerModel)
+	require.Equal(t, fasthttp.StatusOK, providerModel.Response.StatusCode(), "resp=%s", providerModel.Response.Body())
+	require.NoError(t, json.Unmarshal(providerModel.Response.Body(), &provider))
+	require.Len(t, provider.Provider.RequestLimits, 1)
+	assert.Equal(t, configstoreTables.LimitScopeModel, provider.Provider.RequestLimits[0].Scope)
+}
+
+// TestVirtualKeyRequestLimitsLiveOnItsHolderLevelConfig pins that a key's own request limits follow
+// its budgets: every scope lives on the key's holder-level model config (all models, no provider),
+// the row MCP tool executions read for the key, and is listed on the key; a legacy rate_limit sets
+// them as it always set the key's request limit; a provider config refuses the mcp scope only.
+func TestVirtualKeyRequestLimitsLiveOnItsHolderLevelConfig(t *testing.T) {
+	SetLogger(&mockLogger{})
+	ctx := context.Background()
+	store := setupPricingOverrideHandlerStore(t)
+	handler := &GovernanceHandler{configStore: store, governanceManager: &budgetOverrideTestGovernanceManager{store: store}}
+
+	create := newTestRequestCtx(`{"name":"vk-rl-holder","request_limits":[{"max_limit":100,"reset_duration":"1h"},{"max_limit":5,"reset_duration":"1h","scope":"mcp"}]}`)
+	handler.createVirtualKey(create)
+	require.Equal(t, fasthttp.StatusOK, create.Response.StatusCode(), "resp=%s", create.Response.Body())
+	var created struct {
+		VirtualKey struct {
+			ID string `json:"id"`
+		} `json:"virtual_key"`
+	}
+	require.NoError(t, json.Unmarshal(create.Response.Body(), &created))
+	vkID := created.VirtualKey.ID
+
+	configs, err := store.GetModelConfigsByScopeAndScopeIDs(ctx, configstoreTables.ModelConfigScopeVirtualKey, []string{vkID})
+	require.NoError(t, err)
+	require.Len(t, configs, 1, "a key's own limits are one row")
+	assert.Equal(t, configstoreTables.ModelConfigAllModels, configs[0].ModelName)
+	assert.Nil(t, configs[0].Provider)
+	byKey := requestLimitByKey(t, configs[0].RequestLimits)
+	require.Len(t, byKey, 2)
+	assert.Equal(t, int64(5), *byKey["1h|mcp"].RequestMaxLimit)
+	assert.Equal(t, int64(100), *byKey["1h|shared"].RequestMaxLimit)
+
+	get := newTestRequestCtx("")
+	get.SetUserValue("vk_id", vkID)
+	handler.getVirtualKey(get)
+	require.Equal(t, fasthttp.StatusOK, get.Response.StatusCode(), "resp=%s", get.Response.Body())
+	var fetched struct {
+		VirtualKey configstoreTables.TableVirtualKey `json:"virtual_key"`
+	}
+	require.NoError(t, json.Unmarshal(get.Response.Body(), &fetched))
+	assert.Len(t, requestLimitByKey(t, fetched.VirtualKey.RequestLimits), 2, "the key lists its request limits")
+
+	// A legacy rate_limit is the key's full request-limit state, as it is for a team.
+	legacy := newTestRequestCtx(`{"rate_limit":{"request_max_limit":50,"request_reset_duration":"1h"}}`)
+	legacy.SetUserValue("vk_id", vkID)
+	handler.updateVirtualKey(legacy)
+	require.Equal(t, fasthttp.StatusOK, legacy.Response.StatusCode(), "resp=%s", legacy.Response.Body())
+	holder, err := store.GetModelConfigByID(ctx, configs[0].ID)
+	require.NoError(t, err)
+	require.Len(t, holder.RequestLimits, 1)
+	assert.Equal(t, int64(50), *holder.RequestLimits[0].RequestMaxLimit)
+	assert.Equal(t, configstoreTables.LimitScopeShared, holder.RequestLimits[0].Scope)
+
+	// A provider config is reached by model requests only, so it refuses the mcp scope and takes model.
+	require.NoError(t, store.AddProvider(ctx, schemas.ModelProvider("openai"), configstore.ProviderConfig{}))
+	scoped := newTestRequestCtx(`{"provider_configs":[{"provider":"openai","allowed_models":["*"],"request_limits":[{"max_limit":1,"reset_duration":"1h","scope":"mcp"}]}]}`)
+	scoped.SetUserValue("vk_id", vkID)
+	handler.updateVirtualKey(scoped)
+	require.Equal(t, fasthttp.StatusBadRequest, scoped.Response.StatusCode(), "resp=%s", scoped.Response.Body())
+	modelScoped := newTestRequestCtx(`{"provider_configs":[{"provider":"openai","allowed_models":["*"],"request_limits":[{"max_limit":1,"reset_duration":"1h","scope":"model"}]}]}`)
+	modelScoped.SetUserValue("vk_id", vkID)
+	handler.updateVirtualKey(modelScoped)
+	require.Equal(t, fasthttp.StatusOK, modelScoped.Response.StatusCode(), "resp=%s", modelScoped.Response.Body())
+	configs, err = store.GetModelConfigsByScopeAndScopeIDs(ctx, configstoreTables.ModelConfigScopeVirtualKey, []string{vkID})
+	require.NoError(t, err)
+	var providerRow *configstoreTables.TableModelConfig
+	for i := range configs {
+		if configs[i].Provider != nil && *configs[i].Provider == "openai" {
+			providerRow = &configs[i]
+		}
+	}
+	require.NotNil(t, providerRow, "the provider config's request limits live on its VK-scoped model config")
+	require.Len(t, providerRow.RequestLimits, 1)
+	assert.Equal(t, configstoreTables.LimitScopeModel, providerRow.RequestLimits[0].Scope)
+}
+
+// TestLegacyRateLimitRequestFieldsBecomeARequestLimit pins backward compatibility: a client sending
+// rate_limit.request_* without request_limits gets one request limit of the default scope, rate_limit
+// keeps only the token limit, and sending both forms is refused.
+func TestLegacyRateLimitRequestFieldsBecomeARequestLimit(t *testing.T) {
+	SetLogger(&mockLogger{})
+	ctx := context.Background()
+	store := setupPricingOverrideHandlerStore(t)
+	handler := &GovernanceHandler{configStore: store, governanceManager: requestLimitTestGovernanceManager{store: store}}
+
+	create := newTestRequestCtx(`{"name":"legacy-team","rate_limit":{"token_max_limit":1000,"token_reset_duration":"1h","request_max_limit":10,"request_reset_duration":"1m"}}`)
+	handler.createTeam(create)
+	require.Equal(t, fasthttp.StatusOK, create.Response.StatusCode(), "resp=%s", create.Response.Body())
+	var created struct {
+		Team struct {
+			ID string `json:"id"`
+		} `json:"team"`
+	}
+	require.NoError(t, json.Unmarshal(create.Response.Body(), &created))
+	teamID := created.Team.ID
+	team, err := store.GetTeam(ctx, teamID)
+	require.NoError(t, err)
+	require.NotNil(t, team.RateLimit)
+	assert.Equal(t, int64(1000), *team.RateLimit.TokenMaxLimit)
+	assert.Nil(t, team.RateLimit.RequestMaxLimit, "rate_limit keeps only the token limit")
+	require.Len(t, team.RequestLimits, 1)
+	rule := team.RequestLimits[0]
+	assert.Equal(t, int64(10), *rule.RequestMaxLimit)
+	assert.Equal(t, "1m", *rule.RequestResetDuration)
+	assert.Equal(t, configstoreTables.LimitScopeShared, rule.Scope)
+	tokenRowID := *team.RateLimitID
+
+	update := func(body string, status int) {
+		t.Helper()
+		req := newTestRequestCtx(body)
+		req.SetUserValue("team_id", teamID)
+		handler.updateTeam(req)
+		require.Equal(t, status, req.Response.StatusCode(), "body=%s resp=%s", body, req.Response.Body())
+	}
+	// Both forms at once disagree, so neither is applied.
+	update(`{"rate_limit":{"request_max_limit":20,"request_reset_duration":"1m"},"request_limits":[{"max_limit":30,"reset_duration":"1m"}]}`, fasthttp.StatusBadRequest)
+
+	// Only request fields left: the token limit goes, and the request limit is updated in place.
+	update(`{"rate_limit":{"request_max_limit":20,"request_reset_duration":"1m"}}`, fasthttp.StatusOK)
+	team, err = store.GetTeam(ctx, teamID)
+	require.NoError(t, err)
+	assert.Nil(t, team.RateLimitID, "a rate limit with no token limit left is removed")
+	_, err = store.GetRateLimit(ctx, tokenRowID)
+	assert.ErrorIs(t, err, configstore.ErrNotFound)
+	require.Len(t, team.RequestLimits, 1)
+	assert.Equal(t, rule.ID, team.RequestLimits[0].ID)
+	assert.Equal(t, int64(20), *team.RequestLimits[0].RequestMaxLimit)
+
+	// A rate limit naming no maximum removed the whole limit, request limits included.
+	update(`{"rate_limit":{}}`, fasthttp.StatusOK)
+	team, err = store.GetTeam(ctx, teamID)
+	require.NoError(t, err)
+	assert.Empty(t, team.RequestLimits)
+
+	// A rate_limit without request_limits is the old combined state: tokens alone remove request limits,
+	// and only a body naming neither leaves them untouched.
+	update(`{"request_limits":[{"max_limit":5,"reset_duration":"1h"}]}`, fasthttp.StatusOK)
+	update(`{"name":"legacy-team-renamed"}`, fasthttp.StatusOK)
+	team, err = store.GetTeam(ctx, teamID)
+	require.NoError(t, err)
+	require.Len(t, team.RequestLimits, 1, "a body naming neither rate_limit nor request_limits keeps them")
+	update(`{"rate_limit":{"token_max_limit":500,"token_reset_duration":"1h"}}`, fasthttp.StatusOK)
+	team, err = store.GetTeam(ctx, teamID)
+	require.NoError(t, err)
+	assert.Empty(t, team.RequestLimits, "a token-only rate_limit is the full legacy state, with no request limit")
+	require.NotNil(t, team.RateLimit)
+	assert.Equal(t, int64(500), *team.RateLimit.TokenMaxLimit)
+
+	// The same split applies to model configs, the VK tiers and provider governance.
+	mcHandler := &GovernanceHandler{configStore: store, governanceManager: requestLimitTestGovernanceManager{store: store}}
+	mcCreate := newTestRequestCtx(`{"model_name":"gpt-4o","rate_limit":{"request_max_limit":7,"request_reset_duration":"1h"}}`)
+	mcHandler.createModelConfig(mcCreate)
+	require.Equal(t, fasthttp.StatusOK, mcCreate.Response.StatusCode(), "resp=%s", mcCreate.Response.Body())
+	var mc struct {
+		ModelConfig configstoreTables.TableModelConfig `json:"model_config"`
+	}
+	require.NoError(t, json.Unmarshal(mcCreate.Response.Body(), &mc))
+	assert.Nil(t, mc.ModelConfig.RateLimitID, "a request-only rate limit creates no rate limit row")
+	require.Len(t, mc.ModelConfig.RequestLimits, 1)
+	assert.Equal(t, int64(7), *mc.ModelConfig.RequestLimits[0].RequestMaxLimit)
+}
+
+// TestSplitRateLimitRequest pins how a rate_limit payload divides between its token limit and request limits.
+func TestSplitRateLimitRequest(t *testing.T) {
+	tokens, dur := int64(100), "1h"
+	requests, reqDur := int64(5), "1m"
+	cases := []struct {
+		name          string
+		rl            *UpdateRateLimitRequest
+		requestLimits []RequestLimitRequest
+		wantTokens    *UpdateRateLimitRequest
+		wantLimits    []RequestLimitRequest
+		wantErr       bool
+	}{
+		{name: "nothing sent", rl: nil, wantTokens: nil, wantLimits: nil},
+		{name: "request_limits only", requestLimits: []RequestLimitRequest{{MaxLimit: 1, ResetDuration: "1h"}}, wantLimits: []RequestLimitRequest{{MaxLimit: 1, ResetDuration: "1h"}}},
+		// A rate_limit without request_limits is the old combined state: naming no request fields removes them.
+		{name: "tokens only remove request limits", rl: &UpdateRateLimitRequest{TokenMaxLimit: &tokens, TokenResetDuration: &dur}, wantTokens: &UpdateRateLimitRequest{TokenMaxLimit: &tokens, TokenResetDuration: &dur}, wantLimits: []RequestLimitRequest{}},
+		{name: "tokens with request_limits leave them as sent", rl: &UpdateRateLimitRequest{TokenMaxLimit: &tokens, TokenResetDuration: &dur}, requestLimits: []RequestLimitRequest{{MaxLimit: 1, ResetDuration: "1h"}}, wantTokens: &UpdateRateLimitRequest{TokenMaxLimit: &tokens, TokenResetDuration: &dur}, wantLimits: []RequestLimitRequest{{MaxLimit: 1, ResetDuration: "1h"}}},
+		{name: "legacy request fields", rl: &UpdateRateLimitRequest{TokenMaxLimit: &tokens, TokenResetDuration: &dur, RequestMaxLimit: &requests, RequestResetDuration: &reqDur}, wantTokens: &UpdateRateLimitRequest{TokenMaxLimit: &tokens, TokenResetDuration: &dur}, wantLimits: []RequestLimitRequest{{MaxLimit: 5, ResetDuration: "1m"}}},
+		{name: "request fields only", rl: &UpdateRateLimitRequest{RequestMaxLimit: &requests, RequestResetDuration: &reqDur}, wantTokens: &UpdateRateLimitRequest{}, wantLimits: []RequestLimitRequest{{MaxLimit: 5, ResetDuration: "1m"}}},
+		{name: "removal", rl: &UpdateRateLimitRequest{}, wantTokens: &UpdateRateLimitRequest{}, wantLimits: []RequestLimitRequest{}},
+		{name: "both forms", rl: &UpdateRateLimitRequest{RequestMaxLimit: &requests, RequestResetDuration: &reqDur}, requestLimits: []RequestLimitRequest{}, wantErr: true},
+		{name: "request max without duration", rl: &UpdateRateLimitRequest{RequestMaxLimit: &requests}, wantErr: true},
+	}
+	for _, tc := range cases {
+		gotTokens, gotLimits, err := splitLegacyRateLimitRequest(tc.rl, tc.requestLimits)
+		if tc.wantErr {
+			assert.Error(t, err, tc.name)
+			continue
+		}
+		require.NoError(t, err, tc.name)
+		assert.Equal(t, tc.wantTokens, gotTokens, tc.name)
+		assert.Equal(t, tc.wantLimits, gotLimits, tc.name)
+	}
+}
+
+// TestCombinedRateLimitGivesWayToRequestLimits pins how a holder whose rate_limit_id row an earlier
+// release left combined (token and request limit on one row) moves to request limits: a row only it
+// names drops its request fields, a shared row stays as it is for its other holders while the edited
+// holder moves to a token-only copy, and a new request limit of the row's period takes over its
+// counter. The holder then reads back exactly its request limits, so a save never trips the
+// duplicate check on a request limit the row still carries.
+func TestCombinedRateLimitGivesWayToRequestLimits(t *testing.T) {
+	SetLogger(&mockLogger{})
+	ctx := context.Background()
+	store := setupPricingOverrideHandlerStore(t)
+	handler := &GovernanceHandler{configStore: store, governanceManager: requestLimitTestGovernanceManager{store: store}}
+	createdAt := time.Now().UTC().Add(-49*time.Hour - 17*time.Minute).Truncate(time.Second)
+	combinedRow := func(id string, requestUsage int64) configstoreTables.TableRateLimit {
+		tokens, tokenDur, requests, requestDur := int64(1000), "1h", int64(40), "1h"
+		rl := configstoreTables.TableRateLimit{ID: id, TokenMaxLimit: &tokens, TokenResetDuration: &tokenDur, RequestMaxLimit: &requests, RequestResetDuration: &requestDur, CreatedAt: createdAt}
+		require.NoError(t, store.CreateRateLimit(ctx, &rl))
+		require.NoError(t, store.UpdateRateLimitUsage(ctx, id, 300, requestUsage))
+		return rl
+	}
+	updateTeam := func(teamID, body string) {
+		t.Helper()
+		req := newTestRequestCtx(body)
+		req.SetUserValue("team_id", teamID)
+		handler.updateTeam(req)
+		require.Equal(t, fasthttp.StatusOK, req.Response.StatusCode(), "body=%s resp=%s", body, req.Response.Body())
+	}
+	getTeam := func(teamID string) configstoreTables.TableTeam {
+		t.Helper()
+		req := newTestRequestCtx("")
+		req.SetUserValue("team_id", teamID)
+		handler.getTeam(req)
+		require.Equal(t, fasthttp.StatusOK, req.Response.StatusCode(), "resp=%s", req.Response.Body())
+		var resp struct {
+			Team configstoreTables.TableTeam `json:"team"`
+		}
+		require.NoError(t, json.Unmarshal(req.Response.Body(), &resp))
+		return resp.Team
+	}
+
+	t.Run("a row only this holder names drops its request fields", func(t *testing.T) {
+		row := combinedRow("single-combined", 12)
+		team := configstoreTables.TableTeam{ID: "team-single", Name: "team-single", RateLimitID: &row.ID}
+		require.NoError(t, store.CreateTeam(ctx, &team))
+
+		updateTeam(team.ID, `{"rate_limit":{"token_max_limit":2000,"token_reset_duration":"1h"},"request_limits":[{"max_limit":50,"reset_duration":"1h"}]}`)
+		stored, err := store.GetRateLimit(ctx, row.ID)
+		require.NoError(t, err)
+		assert.Equal(t, int64(2000), *stored.TokenMaxLimit)
+		assert.Nil(t, stored.RequestMaxLimit, "the combined row kept speaking for the team's requests")
+		assert.Equal(t, int64(300), stored.TokenCurrentUsage, "the token counter is kept")
+
+		got := getTeam(team.ID)
+		require.NotNil(t, got.RateLimit)
+		assert.Nil(t, got.RateLimit.RequestMaxLimit)
+		require.Len(t, got.RequestLimits, 1, "the team reads back exactly its request limits")
+		assert.Equal(t, int64(50), *got.RequestLimits[0].RequestMaxLimit)
+		assert.Equal(t, int64(12), got.RequestLimits[0].RequestCurrentUsage, "the new request limit takes over the row's counter")
+		assert.True(t, got.RequestLimits[0].CreatedAt.Equal(createdAt), "the new request limit keeps the row's reset-window anchor")
+
+		// Saving the same state again is not a duplicate.
+		updateTeam(team.ID, `{"rate_limit":{"token_max_limit":2000,"token_reset_duration":"1h"},"request_limits":[{"max_limit":50,"reset_duration":"1h"}]}`)
+		assert.Len(t, getTeam(team.ID).RequestLimits, 1)
+	})
+
+	t.Run("the live counters win over the stored ones", func(t *testing.T) {
+		row := combinedRow("live-combined", 3)
+		live := row
+		live.TokenCurrentUsage, live.RequestCurrentUsage = 450, 17
+		liveHandler := &GovernanceHandler{configStore: store, governanceManager: requestLimitTestGovernanceManager{store: store, live: map[string]*configstoreTables.TableRateLimit{row.ID: &live}}}
+		team := configstoreTables.TableTeam{ID: "team-live", Name: "team-live", RateLimitID: &row.ID}
+		require.NoError(t, store.CreateTeam(ctx, &team))
+
+		req := newTestRequestCtx(`{"request_limits":[{"max_limit":50,"reset_duration":"1h"}]}`)
+		req.SetUserValue("team_id", team.ID)
+		liveHandler.updateTeam(req)
+		require.Equal(t, fasthttp.StatusOK, req.Response.StatusCode(), "resp=%s", req.Response.Body())
+		stored, err := store.GetRateLimit(ctx, row.ID)
+		require.NoError(t, err)
+		assert.Equal(t, int64(450), stored.TokenCurrentUsage, "the row keeps the live token counter")
+		got := getTeam(team.ID)
+		require.Len(t, got.RequestLimits, 1)
+		assert.Equal(t, int64(17), got.RequestLimits[0].RequestCurrentUsage, "the new request limit takes over the live request counter")
+	})
+
+	t.Run("a model config carries the row's counter too", func(t *testing.T) {
+		row := combinedRow("mc-combined", 5)
+		mc := configstoreTables.TableModelConfig{ID: "mc-combined-holder", ModelName: "gpt-4o", Scope: configstoreTables.ModelConfigScopeGlobal, RateLimitID: &row.ID}
+		require.NoError(t, store.CreateModelConfig(ctx, &mc))
+		req := newTestRequestCtx(`{"request_limits":[{"max_limit":60,"reset_duration":"1h"}]}`)
+		req.SetUserValue("mc_id", mc.ID)
+		handler.updateModelConfig(req)
+		require.Equal(t, fasthttp.StatusOK, req.Response.StatusCode(), "resp=%s", req.Response.Body())
+		got, err := store.GetModelConfigByID(ctx, mc.ID)
+		require.NoError(t, err)
+		require.NotNil(t, got.RateLimit, "request_limits alone keep the token limit")
+		assert.Equal(t, int64(1000), *got.RateLimit.TokenMaxLimit)
+		assert.Nil(t, got.RateLimit.RequestMaxLimit)
+		require.Len(t, got.RequestLimits, 1)
+		assert.Equal(t, int64(5), got.RequestLimits[0].RequestCurrentUsage)
+	})
+
+	t.Run("a shared row is left for its other holders", func(t *testing.T) {
+		row := combinedRow("shared-combined", 9)
+		team := configstoreTables.TableTeam{ID: "team-shared", Name: "team-shared", RateLimitID: &row.ID}
+		require.NoError(t, store.CreateTeam(ctx, &team))
+		customer := configstoreTables.TableCustomer{ID: "customer-shared", Name: "customer-shared", RateLimitID: &row.ID}
+		require.NoError(t, store.CreateCustomer(ctx, &customer))
+
+		updateTeam(team.ID, `{"rate_limit":{"token_max_limit":500,"token_reset_duration":"1h"},"request_limits":[{"max_limit":20,"reset_duration":"1h"}]}`)
+		shared, err := store.GetRateLimit(ctx, row.ID)
+		require.NoError(t, err)
+		require.NotNil(t, shared.RequestMaxLimit, "the shared row lost its request limit")
+		assert.Equal(t, int64(40), *shared.RequestMaxLimit)
+		assert.Equal(t, int64(1000), *shared.TokenMaxLimit)
+		assert.Equal(t, int64(9), shared.RequestCurrentUsage)
+		other, err := store.GetCustomer(ctx, customer.ID)
+		require.NoError(t, err)
+		require.NotNil(t, other.RateLimitID)
+		assert.Equal(t, row.ID, *other.RateLimitID, "the other holder still names the shared row")
+
+		got := getTeam(team.ID)
+		require.NotNil(t, got.RateLimitID)
+		assert.NotEqual(t, row.ID, *got.RateLimitID, "the team moved to a copy")
+		require.NotNil(t, got.RateLimit)
+		assert.Equal(t, int64(500), *got.RateLimit.TokenMaxLimit)
+		assert.Nil(t, got.RateLimit.RequestMaxLimit, "the copy carries the token limit only")
+		assert.Equal(t, int64(300), got.RateLimit.TokenCurrentUsage, "the copy keeps the token counter")
+		require.Len(t, got.RequestLimits, 1)
+		assert.Equal(t, int64(9), got.RequestLimits[0].RequestCurrentUsage, "the new request limit takes over the row's counter")
+	})
+
+	t.Run("a row a table outside OSS names is shared too", func(t *testing.T) {
+		row := combinedRow("other-combined", 4)
+		team := configstoreTables.TableTeam{ID: "team-other", Name: "team-other", RateLimitID: &row.ID}
+		require.NoError(t, store.CreateTeam(ctx, &team))
+		require.NoError(t, store.DB().Exec(`CREATE TABLE other_holders (id VARCHAR(255) PRIMARY KEY, rate_limit_id VARCHAR(255) REFERENCES governance_rate_limits(id))`).Error)
+		require.NoError(t, store.DB().Exec(`INSERT INTO other_holders (id, rate_limit_id) VALUES (?, ?)`, "other-1", row.ID).Error)
+
+		updateTeam(team.ID, `{"rate_limit":{"token_max_limit":500,"token_reset_duration":"1h"},"request_limits":[{"max_limit":20,"reset_duration":"1h"}]}`)
+		shared, err := store.GetRateLimit(ctx, row.ID)
+		require.NoError(t, err)
+		require.NotNil(t, shared.RequestMaxLimit, "the row the other table names lost its request limit")
+		assert.Equal(t, int64(40), *shared.RequestMaxLimit)
+		assert.Equal(t, int64(1000), *shared.TokenMaxLimit)
+
+		got := getTeam(team.ID)
+		require.NotNil(t, got.RateLimitID)
+		assert.NotEqual(t, row.ID, *got.RateLimitID, "the team moved to a token-only copy")
+		require.NotNil(t, got.RateLimit)
+		assert.Equal(t, int64(500), *got.RateLimit.TokenMaxLimit)
+		assert.Nil(t, got.RateLimit.RequestMaxLimit)
+		require.Len(t, got.RequestLimits, 1)
+		assert.Equal(t, int64(4), got.RequestLimits[0].RequestCurrentUsage, "the new request limit takes over the row's counter")
+	})
 }
