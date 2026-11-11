@@ -1186,8 +1186,19 @@ func (s *legacyRequestLimitSplit) split(rateLimitID *string) (configstoreTables.
 	if rl.RequestMaxLimit == nil || rl.IsRequestLimit() {
 		return configstoreTables.TableRateLimit{}, false
 	}
+	// Only a legacy shared row splits into a shared limit. A model or MCP scope, or an invalid one,
+	// stays as declared so validation sees it instead of the split quietly rewriting it.
+	if rl.Scope.Normalize() != configstoreTables.LimitScopeShared {
+		return configstoreTables.TableRateLimit{}, false
+	}
+	// A row the file already declares under the derived id is another rate limit's: the migration's
+	// collision policy applies, and this one stays combined.
+	derivedID := configstoreTables.LegacyRequestLimitID(rl.ID)
+	if _, taken := s.indexOf[derivedID]; taken {
+		return configstoreTables.TableRateLimit{}, false
+	}
 	limit := configstoreTables.TableRateLimit{
-		ID:                   configstoreTables.LegacyRequestLimitID(rl.ID),
+		ID:                   derivedID,
 		RequestMaxLimit:      rl.RequestMaxLimit,
 		RequestResetDuration: rl.RequestResetDuration,
 		RequestCurrentUsage:  rl.RequestCurrentUsage,

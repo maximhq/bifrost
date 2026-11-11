@@ -28291,3 +28291,39 @@ func TestSQLite_StaleLegacyHolderRequestLimitIsRemoved(t *testing.T) {
 		})
 	}
 }
+
+// TestSplitLegacyGovernanceRequestLimitsKeepsCollidingAndNonSharedRows: a legacy row whose derived
+// request-limit id is already declared by another row, and a row declared with a non-shared scope,
+// stay combined as written instead of being split or overwritten.
+func TestSplitLegacyGovernanceRequestLimitsKeepsCollidingAndNonSharedRows(t *testing.T) {
+	initTestLogger()
+	limit := func(n int64) *int64 { return &n }
+	configData := &ConfigData{Governance: &configstore.GovernanceConfig{
+		RateLimits: []configstoreTables.TableRateLimit{
+			{ID: "r", TokenMaxLimit: limit(1000), TokenResetDuration: bifrost.Ptr("1h"), RequestMaxLimit: limit(10), RequestResetDuration: bifrost.Ptr("1m")},
+			{ID: "r-requests", TokenMaxLimit: limit(5), TokenResetDuration: bifrost.Ptr("1d")},
+			{ID: "mcp-rl", Scope: configstoreTables.LimitScopeMCP, RequestMaxLimit: limit(7), RequestResetDuration: bifrost.Ptr("1m")},
+			{ID: "bad-rl", Scope: "bogus", RequestMaxLimit: limit(8), RequestResetDuration: bifrost.Ptr("1m")},
+		},
+		Teams: []configstoreTables.TableTeam{
+			{ID: "team-r", Name: "r", RateLimitID: bifrost.Ptr("r")},
+			{ID: "team-mcp", Name: "mcp", RateLimitID: bifrost.Ptr("mcp-rl")},
+			{ID: "team-bad", Name: "bad", RateLimitID: bifrost.Ptr("bad-rl")},
+		},
+	}}
+	splitLegacyGovernanceRequestLimits(configData)
+
+	byID := map[string]configstoreTables.TableRateLimit{}
+	for _, rl := range configData.Governance.RateLimits {
+		byID[rl.ID] = rl
+	}
+	require.NotNil(t, byID["r"].RequestMaxLimit, "the row colliding with a declared derived id lost its request limit")
+	require.NotNil(t, byID["r-requests"].TokenMaxLimit, "the declared row was overwritten")
+	assert.Nil(t, byID["r-requests"].RequestMaxLimit)
+	require.Contains(t, byID, "mcp-rl", "an mcp-scoped row was dropped")
+	require.NotNil(t, byID["mcp-rl"].RequestMaxLimit)
+	assert.Equal(t, configstoreTables.LimitScopeMCP, byID["mcp-rl"].Scope)
+	require.Contains(t, byID, "bad-rl", "an invalid-scope row was dropped before validation")
+	assert.NotContains(t, byID, "mcp-rl-requests")
+	assert.NotContains(t, byID, "bad-rl-requests")
+}
