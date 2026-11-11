@@ -1061,6 +1061,28 @@
                 "type": "boolean",
                 "description": "Deprecated: set calendar_aligned on the owner (team / virtual key / access profile) instead. Kept for backward compatibility with older config.json files; ignored unless a reconciler promotes it to its owner.",
                 "default": false
+              },
+              "scope": {
+                "type": "string",
+                "enum": [
+                  "shared",
+                  "model",
+                  "mcp"
+                ],
+                "default": "shared",
+                "description": "Traffic a request limit counts: 'shared' (model requests and MCP tool executions), 'model' (model requests only) or 'mcp' (MCP tool executions only). Only valid on a request limit owned through model_config_id, team_id or customer_id; an unowned rate limit is always 'shared'. 'mcp' is only valid on request limits that apply to all models and providers (a team's, a customer's, or a model config for '*' with no provider); every other owner takes 'shared' or 'model'. Reset durations must be unique per owner and scope."
+              },
+              "model_config_id": {
+                "type": "string",
+                "description": "ID of the model config this request limit belongs to (mutually exclusive with team_id and customer_id). An owned rate limit is a request limit: it sets request_max_limit and request_reset_duration only, and an owner may hold several, one per reset duration and scope."
+              },
+              "team_id": {
+                "type": "string",
+                "description": "ID of the team this request limit belongs to (mutually exclusive with model_config_id and customer_id). See model_config_id."
+              },
+              "customer_id": {
+                "type": "string",
+                "description": "ID of the customer this request limit belongs to (mutually exclusive with model_config_id and team_id). See model_config_id."
               }
             },
             "required": [
