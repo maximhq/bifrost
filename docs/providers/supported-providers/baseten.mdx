@@ -23,14 +23,15 @@ Both take your Baseten API key as a bearer token.
 | Responses API (stream) | ✅ | ✅ (through chat) | `/responses` (Model APIs), `/chat/completions` (deployments) |
 | Embeddings | ❌ | ✅ | `/embeddings` |
 | Transcriptions (STT) | ❌ | ✅ | `/audio/transcriptions` |
+| Rerank | ❌ | ✅ | `/sync/rerank` |
 | Image Generation | ❌ | ✅ | `/images/generations`, or the deployment's `/predict` |
 | Decisions | ✅ | ❌ | `/systemone` |
 | List Models | ✅ | - | `/models` |
 | Text Completions | ❌ | ❌ | - |
 | Speech (TTS), Image Edit, Image Variation, Image streaming, Video | ❌ | ❌ | - |
-| Files, Batch, Count Tokens, Rerank | ❌ | ❌ | - |
+| Files, Batch, Count Tokens | ❌ | ❌ | - |
 
-Model APIs has no embeddings, audio or image routes, so those operations need a dedicated deployment. A request without one fails with an error that names the missing `deployment_url`. Baseten's TTS, rerank and classification deployments use their own `/predict` request shapes, which Bifrost doesn't translate. FLUX.1 image Trusses are the exception: see [image generation](#5-image-generation). Baseten has no video generation models.
+Model APIs has no embeddings, rerank, audio or image routes, so those operations need a dedicated deployment. A request without one fails with an error that names the missing `deployment_url`. Baseten's TTS and classification deployments, and rerankers served on `/predict`, use their own request shapes, which Bifrost doesn't translate. FLUX.1 image Trusses are the exception: see [image generation](#5-image-generation). Baseten has no video generation models.
 
 ## Setup and configuration
 
@@ -237,6 +238,34 @@ curl -X POST http://localhost:8080/v1/embeddings \
 ```
 
 `my-embedder` must be an alias with a `deployment_url`. A request for a model without one, including any Model APIs model, fails before reaching Baseten.
+
+## Rerank
+
+Cross-encoder rerankers deployed on BEI with the `/rerank` route, such as the ModernBERT reranker in Baseten's BEI examples, serve it under the deployment's `/sync` base. Set the alias `deployment_url` to the deployment's `/sync/v1` URL, as for embeddings, and Bifrost calls `/sync/rerank` beside it.
+
+```bash
+curl -X POST http://localhost:8080/v1/rerank \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "baseten/my-reranker",
+    "query": "What causes tides?",
+    "documents": ["The Moon pulls on the oceans.", "Clouds form from water vapor."],
+    "top_n": 1,
+    "return_documents": true
+  }'
+```
+
+| Parameter | BEI handling |
+|-----------|--------------|
+| `query` | `query` |
+| `documents` | `texts`, each document's `text` in order |
+| `top_n` | applied by Bifrost to the sorted results, since BEI scores every document |
+| `return_documents` | applied by Bifrost, attaching each request document by `index` |
+| `max_tokens_per_doc`, `priority` | dropped |
+
+Results come back highest `relevance_score` first, with each document's `index` and `id`. BEI fields such as `raw_scores`, `truncate` and `truncation_direction` pass through as extra params with `x-bf-passthrough-extra-params: true`.
+
+Baseten's Qwen3 Reranker and zerank recipes are deployed with `/predict` as their route and take model-specific prompts in `inputs`. Bifrost doesn't build those prompts, so use a `/rerank` cross-encoder for `/v1/rerank`.
 
 ---
 

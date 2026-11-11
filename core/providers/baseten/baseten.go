@@ -4,7 +4,7 @@
 // (https://inference.baseten.co/v1) with chat completions, responses and model
 // listing. A dedicated deployment has its own base URL
 // (https://model-<id>.api.baseten.co/environments/<env>/sync/v1) and adds
-// embeddings, transcription and image generation. A request goes to a dedicated deployment when its
+// embeddings, transcription, image generation and rerank. A request goes to a dedicated deployment when its
 // resolved alias carries a BasetenAliasCfg.DeploymentURL.
 package baseten
 
@@ -101,7 +101,7 @@ func (provider *BasetenProvider) baseURL(ctx *schemas.BifrostContext) (string, b
 }
 
 // dedicatedURLOrError resolves the base URL for operations that only dedicated
-// deployments serve (embeddings, transcription, image generation).
+// deployments serve (embeddings, transcription, image generation, rerank).
 func (provider *BasetenProvider) dedicatedURLOrError(ctx *schemas.BifrostContext, requestType schemas.RequestType) (string, *schemas.BifrostError) {
 	u, dedicated, bifrostErr := provider.baseURL(ctx)
 	if bifrostErr != nil {
@@ -312,11 +312,6 @@ func (provider *BasetenProvider) TranscriptionStream(_ *schemas.BifrostContext, 
 // Speech is not supported by the Baseten provider.
 func (provider *BasetenProvider) Speech(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostSpeechRequest) (*schemas.BifrostSpeechResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.SpeechRequest, provider.GetProviderKey())
-}
-
-// Rerank is not supported by the Baseten provider.
-func (provider *BasetenProvider) Rerank(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostRerankRequest) (*schemas.BifrostRerankResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.RerankRequest, provider.GetProviderKey())
 }
 
 // OCR is not supported by the Baseten provider.

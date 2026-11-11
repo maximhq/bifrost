@@ -520,6 +520,110 @@ func TestBasetenImageGenerationErrorDetail(t *testing.T) {
 	}
 }
 
+// TestBasetenRerankBEI pins BEI rerank: the alias /sync/v1 deployment_url is called
+// on /sync/rerank with the query and document texts, results come back highest score
+// first, top_n trims them and return_documents attaches the request documents.
+func TestBasetenRerankBEI(t *testing.T) {
+	t.Parallel()
+	server, seen := newStub(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `[{"index":1,"score":0.2},{"index":2,"score":0.9},{"index":0,"score":0.5}]`)
+	})
+	provider := newProvider(t, server.URL+"/v1")
+	req := &schemas.BifrostRerankRequest{
+		Provider:  schemas.Baseten,
+		Model:     "qwen3-reranker",
+		Query:     "what causes tides",
+		Documents: []schemas.RerankDocument{{Text: "a"}, {Text: "b"}, {Text: "c", ID: schemas.Ptr("doc-c")}},
+		Params:    &schemas.RerankParameters{TopN: schemas.Ptr(2), ReturnDocuments: schemas.Ptr(true)},
+	}
+
+	if _, err := provider.Rerank(contextWithDeployment(""), testKey, req); err == nil {
+		t.Fatal("expected rerank without a deployment_url to fail")
+	}
+	if n := len(seen()); n != 0 {
+		t.Fatalf("expected no upstream call without a deployment, got %d", n)
+	}
+
+	resp, err := provider.Rerank(contextWithDeployment(server.URL+"/environments/production/sync/v1"), testKey, req)
+	if err != nil {
+		t.Fatalf("Rerank: %v", llmtests.GetErrorMessage(err))
+	}
+	got := seen()
+	if len(got) != 1 || got[0].Path != "/environments/production/sync/rerank" || got[0].Auth != "Bearer bt-test-key" {
+		t.Fatalf("expected one Bearer call to /sync/rerank, got %+v", got)
+	}
+	if got[0].Body["query"] != "what causes tides" || fmt.Sprint(got[0].Body["texts"]) != "[a b c]" {
+		t.Fatalf("unexpected rerank body: %+v", got[0].Body)
+	}
+	for _, field := range []string{"model", "documents", "top_n", "return_documents"} {
+		if _, ok := got[0].Body[field]; ok {
+			t.Fatalf("expected %q to stay off the BEI body, got %+v", field, got[0].Body)
+		}
+	}
+	if len(resp.Results) != 2 || resp.Model != "qwen3-reranker" {
+		t.Fatalf("expected two results for qwen3-reranker, got %+v", resp)
+	}
+	first, second := resp.Results[0], resp.Results[1]
+	if first.Index != 2 || first.RelevanceScore != 0.9 || first.ID == nil || *first.ID != "doc-c" || first.Document == nil || first.Document.Text != "c" {
+		t.Fatalf("expected doc-c first with its document, got %+v", first)
+	}
+	if second.Index != 0 || second.RelevanceScore != 0.5 || second.Document == nil || second.Document.Text != "a" {
+		t.Fatalf("expected document 0 second, got %+v", second)
+	}
+}
+
+// TestBasetenRerankRejects pins that an empty query or document list fails as a 400
+// before any call, that an out-of-range index from BEI fails rather than panicking,
+// and that BEI's {"error": "..."} body reaches the client as the message.
+func TestBasetenRerankRejects(t *testing.T) {
+	t.Parallel()
+	reply := `[{"index":5,"score":0.9}]`
+	status := http.StatusOK
+	var mu sync.Mutex
+	server, seen := newStub(t, func(w http.ResponseWriter, _ *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_, _ = fmt.Fprint(w, reply)
+	})
+	provider := newProvider(t, server.URL+"/v1")
+	deployment := server.URL + "/environments/production/sync/v1"
+	request := func(query string, docs ...string) *schemas.BifrostRerankRequest {
+		documents := make([]schemas.RerankDocument, len(docs))
+		for i, d := range docs {
+			documents[i] = schemas.RerankDocument{Text: d}
+		}
+		return &schemas.BifrostRerankRequest{Provider: schemas.Baseten, Model: "reranker", Query: query, Documents: documents}
+	}
+
+	for name, req := range map[string]*schemas.BifrostRerankRequest{
+		"empty query":  request(" ", "a"),
+		"no documents": request("q"),
+	} {
+		_, err := provider.Rerank(contextWithDeployment(deployment), testKey, req)
+		if err == nil || err.StatusCode == nil || *err.StatusCode != http.StatusBadRequest {
+			t.Fatalf("%s: expected a 400, got %+v", name, err)
+		}
+	}
+	if n := len(seen()); n != 0 {
+		t.Fatalf("expected no upstream call for rejected requests, got %d", n)
+	}
+
+	if _, err := provider.Rerank(contextWithDeployment(deployment), testKey, request("q", "a")); err == nil || !strings.Contains(llmtests.GetErrorMessage(err), "outside the documents") {
+		t.Fatalf("expected an out-of-range index error, got %+v", err)
+	}
+
+	mu.Lock()
+	reply, status = `{"error":"input exceeds max batch size","error_type":"Validation"}`, http.StatusUnprocessableEntity
+	mu.Unlock()
+	_, err := provider.Rerank(contextWithDeployment(deployment), testKey, request("q", "a"))
+	if err == nil || err.StatusCode == nil || *err.StatusCode != http.StatusUnprocessableEntity || err.Error.Message != "input exceeds max batch size" {
+		t.Fatalf("expected BEI's 422 message, got %+v", err)
+	}
+}
+
 // basetenDecisionQuestions asks one question of each System One type.
 func basetenDecisionQuestions() []schemas.DecisionQuestion {
 	return []schemas.DecisionQuestion{

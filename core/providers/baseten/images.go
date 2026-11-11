@@ -75,10 +75,10 @@ func ToBasetenImageRequest(request *schemas.BifrostImageGenerationRequest) *open
 	return body
 }
 
-// parseBasetenImageError reads a deployment's error body. Besides OpenAI's
-// error.message and Baseten's string error, the image servers put the message in
-// error.detail or a top-level FastAPI detail.
-func parseBasetenImageError(resp *fasthttp.Response) *schemas.BifrostError {
+// parseBasetenDeploymentError reads a dedicated deployment's error body. Besides
+// OpenAI's error.message and the string error of BEI and System One, image servers
+// put the message in error.detail or a top-level FastAPI detail.
+func parseBasetenDeploymentError(resp *fasthttp.Response) *schemas.BifrostError {
 	bifrostErr := parseBasetenDecisionError(resp)
 	body, err := providerUtils.CheckAndDecodeBody(resp)
 	if err != nil || bifrostErr.Error == nil {
@@ -138,7 +138,7 @@ func (provider *BasetenProvider) imageGeneration(ctx *schemas.BifrostContext, ke
 	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerResponseHeaders)
 
 	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, providerUtils.EnrichError(ctx, parseBasetenImageError(resp), jsonData, nil, sendBackRawRequest, sendBackRawResponse, latency)
+		return nil, providerUtils.EnrichError(ctx, parseBasetenDeploymentError(resp), jsonData, nil, sendBackRawRequest, sendBackRawResponse, latency)
 	}
 
 	respBody, err := providerUtils.CheckAndDecodeBody(resp)
