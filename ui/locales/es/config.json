@@ -1627,7 +1627,21 @@
 		"issuerRequired": "Establece la URL del emisor antes de habilitar el inicio de sesión de Claude Code.",
 		"invalidJSON": "La configuración administrada debe ser JSON válido.",
 		"notObject": "La configuración administrada debe ser un objeto JSON.",
-		"updated": "La configuración de Claude Code se actualizó correctamente."
+		"updated": "La configuración de Claude Code se actualizó correctamente.",
+		"telemetryLabel": "Reenviar telemetría",
+		"telemetryDescription": "Claude Code envía sus métricas, registros y trazas de OpenTelemetry al gateway. Si esta opción está activada, Bifrost marca cada exportación con la identidad del desarrollador (clave virtual, equipo, cliente o cuenta) y la reenvía a tus recolectores OTLP/HTTP. Si está desactivada, las exportaciones se descartan.",
+		"collectorsLabel": "Recolectores",
+		"collectorEndpointLabel": "Endpoint del recolector",
+		"collectorHeadersLabel": "Encabezados del recolector",
+		"collectorHeadersHelp": "Un encabezado por línea con el formato <code0>nombre: env.VARIABLE</code0>. Los valores deben ser referencias env. o vault., para que no se guarde ninguna credencial en la configuración.",
+		"addCollector": "Añadir recolector",
+		"removeCollector": "Quitar recolector",
+		"dropAttributesLabel": "Descartar atributos",
+		"dropAttributesHelp": "Claves de atributo separadas por comas que se eliminan en todos los niveles antes de reenviar, por ejemplo <code0>prompt</code0>.",
+		"telemetryNoDestination": "Añade al menos un recolector para reenviar la telemetría.",
+		"telemetryEndpointInvalid": "Cada endpoint de recolector debe ser una URL http o https, o una referencia env. o vault.",
+		"telemetryHeaderMalformed": "Escribe cada encabezado del recolector como nombre: valor.",
+		"telemetryHeaderNotReference": "El encabezado {{name}} debe ser una referencia env. o vault."
 	},
 	"gateways": {
 		"title": "Gateways",

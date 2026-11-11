@@ -1641,7 +1641,21 @@
 		"issuerRequired": "Claude Code のサインインを有効にする前に発行者 URL を設定してください。",
 		"invalidJSON": "管理設定は有効な JSON である必要があります。",
 		"notObject": "管理設定は JSON オブジェクトである必要があります。",
-		"updated": "Claude Code の設定を更新しました。"
+		"updated": "Claude Code の設定を更新しました。",
+		"telemetryLabel": "テレメトリを転送",
+		"telemetryDescription": "Claude Code は OpenTelemetry のメトリクス、ログ、トレースをゲートウェイに送信します。オンにすると、Bifrost は各エクスポートに開発者の ID（仮想キー、チーム、顧客、またはアカウント）を付与し、OTLP/HTTP コレクターに転送します。オフの場合、エクスポートは破棄されます。",
+		"collectorsLabel": "コレクター",
+		"collectorEndpointLabel": "コレクターのエンドポイント",
+		"collectorHeadersLabel": "コレクターのヘッダー",
+		"collectorHeadersHelp": "1 行に 1 つのヘッダーを <code0>name: env.VARIABLE</code0> の形式で入力します。認証情報を設定に保存しないよう、ヘッダーの値は env. または vault. 参照にする必要があります。",
+		"addCollector": "コレクターを追加",
+		"removeCollector": "コレクターを削除",
+		"dropAttributesLabel": "削除する属性",
+		"dropAttributesHelp": "転送前にすべてのレベルから削除する属性キーをカンマ区切りで指定します（例: <code0>prompt</code0>）。",
+		"telemetryNoDestination": "テレメトリを転送するには、コレクターを 1 つ以上追加してください。",
+		"telemetryEndpointInvalid": "各コレクターのエンドポイントは、http または https の URL、もしくは env. または vault. 参照である必要があります。",
+		"telemetryHeaderMalformed": "各コレクターのヘッダーは name: value の形式で入力してください。",
+		"telemetryHeaderNotReference": "{{name}} ヘッダーは env. または vault. 参照である必要があります。"
 	},
 	"gateways": {
 		"title": "ゲートウェイ",

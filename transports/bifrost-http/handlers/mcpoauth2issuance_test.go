@@ -1040,6 +1040,45 @@ func TestUpdateConfig_ClaudeCodeGatewayRequiresIssuerURL(t *testing.T) {
 	}
 }
 
+// TestUpdateConfig_ClientGatewayTelemetryValidated pins that PUT /api/config
+// refuses a switched-on telemetry block that could not forward or would store a
+// collector credential in the config: no destination, a non-http endpoint, or a
+// plain-text header value. A valid block passes telemetry validation.
+func TestUpdateConfig_ClientGatewayTelemetryValidated(t *testing.T) {
+	SetLogger(&mockLogger{})
+	t.Setenv("BIFROST_TEST_OTEL_TOKEN", "secret")
+	gateway := func(telemetry string) string {
+		return `{"client_config":{"oauth2_server_config":{"issuer_url":"https://bifrost.example.com","gateways":{"claude_code":{"enabled":true,"telemetry":` + telemetry + `}}}}}`
+	}
+	for name, tc := range map[string]struct {
+		body    string
+		wantErr string
+	}{
+		"no destinations":   {gateway(`{"enabled":true}`), "destinations must list at least one collector"},
+		"non-http endpoint": {gateway(`{"enabled":true,"destinations":[{"endpoint":"ftp://otel.example.com"}]}`), "must be an http or https URL"},
+		"plain-text header": {gateway(`{"enabled":true,"destinations":[{"endpoint":"https://otel.example.com","headers":{"authorization":"Bearer abc"}}]}`), "must be an env. or vault. reference"},
+		"valid":             {gateway(`{"enabled":true,"destinations":[{"endpoint":"https://otel.example.com","headers":{"authorization":"env.BIFROST_TEST_OTEL_TOKEN"}}],"drop_attributes":["prompt"]}`), ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := &lib.Config{
+				ConfigStore:  newRealOAuth2Store(t),
+				ClientConfig: &configstore.ClientConfig{MCPServerAuthMode: configtables.MCPServerAuthModeHeaders},
+			}
+			h := &ConfigHandler{store: cfg}
+			ctx := putConfigCtx(tc.body)
+			h.updateConfig(ctx)
+			if tc.wantErr == "" {
+				// The partial body may still be refused for unrelated required fields;
+				// what matters here is that telemetry validation passed.
+				assert.NotContains(t, string(ctx.Response.Body()), "telemetry", string(ctx.Response.Body()))
+				return
+			}
+			require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+			assert.Contains(t, string(ctx.Response.Body()), tc.wantErr)
+		})
+	}
+}
+
 // TestHandleAuthorize_AuthCodeTTLResolution covers the issuance-layer resolution
 // of the configured auth_code_ttl into the authorization code's ExpiresAt:
 // over-cap is clamped to the max, zero falls back to the default, and an in-range

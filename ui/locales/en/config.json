@@ -1622,7 +1622,21 @@
 		"issuerRequired": "Set the issuer URL before enabling Claude Code sign-in.",
 		"invalidJSON": "Managed settings must be valid JSON.",
 		"notObject": "Managed settings must be a JSON object.",
-		"updated": "Claude Code settings updated successfully."
+		"updated": "Claude Code settings updated successfully.",
+		"telemetryLabel": "Forward telemetry",
+		"telemetryDescription": "Claude Code sends its OpenTelemetry metrics, logs and traces to the gateway. When this is on, Bifrost stamps each export with the developer's identity (virtual key, team, customer or account) and forwards it to your OTLP/HTTP collectors. When it is off, exports are discarded.",
+		"collectorsLabel": "Collectors",
+		"collectorEndpointLabel": "Collector endpoint",
+		"collectorHeadersLabel": "Collector headers",
+		"collectorHeadersHelp": "One header per line as <code0>name: env.VARIABLE</code0>. Header values must be env. or vault. references, so no credential is stored in the config.",
+		"addCollector": "Add collector",
+		"removeCollector": "Remove collector",
+		"dropAttributesLabel": "Drop attributes",
+		"dropAttributesHelp": "Comma-separated attribute keys removed at every level before forwarding, for example <code0>prompt</code0>.",
+		"telemetryNoDestination": "Add at least one collector to forward telemetry.",
+		"telemetryEndpointInvalid": "Each collector endpoint must be an http or https URL, or an env. or vault. reference.",
+		"telemetryHeaderMalformed": "Write each collector header as name: value.",
+		"telemetryHeaderNotReference": "The {{name}} header must be an env. or vault. reference."
 	},
 	"gateways": {
 		"title": "Gateways",

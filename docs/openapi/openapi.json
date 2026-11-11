@@ -136071,6 +136071,52 @@
                               "null"
                             ],
                             "description": "Claude Code managed-settings.json served at /gateway/claude-code/managed/settings to every signed-in client. null or omitted means no policy (the endpoint answers 404); {} is an empty policy."
+                          },
+                          "telemetry": {
+                            "type": "object",
+                            "description": "Keep the OTLP telemetry Claude Code sends while signed in to this gateway (metrics, logs and traces) instead of discarding it. Each export is stamped with the Bifrost identity the client signed in as (bifrost.virtual_key.id/name, bifrost.team.id, bifrost.customer.id, or enduser.id) and forwarded asynchronously to every destination as OTLP/HTTP protobuf. Client-sent bifrost.* and enduser.id attributes are removed first.",
+                            "properties": {
+                              "enabled": {
+                                "type": "boolean",
+                                "default": false,
+                                "description": "Forward telemetry. Off: exports are acknowledged and discarded."
+                              },
+                              "destinations": {
+                                "type": "array",
+                                "description": "OTLP/HTTP collectors. Required (at least one) when enabled.",
+                                "items": {
+                                  "type": "object",
+                                  "properties": {
+                                    "endpoint": {
+                                      "type": "string",
+                                      "description": "Collector base URL (http or https); each signal is posted to {endpoint}/v1/{metrics|logs|traces}. Supports env var syntax: \"env.MY_VAR\"."
+                                    },
+                                    "headers": {
+                                      "type": "object",
+                                      "additionalProperties": {
+                                        "type": "string",
+                                        "pattern": "^(env|vault)\\.",
+                                        "description": "An env. or vault. reference; plain-text values are refused so no collector credential is stored in the config."
+                                      },
+                                      "description": "Headers sent with every export, for example authorization. Values must be env. or vault. references."
+                                    }
+                                  },
+                                  "required": [
+                                    "endpoint"
+                                  ],
+                                  "additionalProperties": false
+                                }
+                              },
+                              "drop_attributes": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "description": "Attribute keys removed at every level (resource, scope, record, data point, span, event) before forwarding, for example \"prompt\"."
+                              }
+                            },
+                            "additionalProperties": false
                           }
                         },
                         "additionalProperties": false
@@ -136675,6 +136721,52 @@
                               "null"
                             ],
                             "description": "Claude Code managed-settings.json served at /gateway/claude-code/managed/settings to every signed-in client. null or omitted means no policy (the endpoint answers 404); {} is an empty policy."
+                          },
+                          "telemetry": {
+                            "type": "object",
+                            "description": "Keep the OTLP telemetry Claude Code sends while signed in to this gateway (metrics, logs and traces) instead of discarding it. Each export is stamped with the Bifrost identity the client signed in as (bifrost.virtual_key.id/name, bifrost.team.id, bifrost.customer.id, or enduser.id) and forwarded asynchronously to every destination as OTLP/HTTP protobuf. Client-sent bifrost.* and enduser.id attributes are removed first.",
+                            "properties": {
+                              "enabled": {
+                                "type": "boolean",
+                                "default": false,
+                                "description": "Forward telemetry. Off: exports are acknowledged and discarded."
+                              },
+                              "destinations": {
+                                "type": "array",
+                                "description": "OTLP/HTTP collectors. Required (at least one) when enabled.",
+                                "items": {
+                                  "type": "object",
+                                  "properties": {
+                                    "endpoint": {
+                                      "type": "string",
+                                      "description": "Collector base URL (http or https); each signal is posted to {endpoint}/v1/{metrics|logs|traces}. Supports env var syntax: \"env.MY_VAR\"."
+                                    },
+                                    "headers": {
+                                      "type": "object",
+                                      "additionalProperties": {
+                                        "type": "string",
+                                        "pattern": "^(env|vault)\\.",
+                                        "description": "An env. or vault. reference; plain-text values are refused so no collector credential is stored in the config."
+                                      },
+                                      "description": "Headers sent with every export, for example authorization. Values must be env. or vault. references."
+                                    }
+                                  },
+                                  "required": [
+                                    "endpoint"
+                                  ],
+                                  "additionalProperties": false
+                                }
+                              },
+                              "drop_attributes": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "description": "Attribute keys removed at every level (resource, scope, record, data point, span, event) before forwarding, for example \"prompt\"."
+                              }
+                            },
+                            "additionalProperties": false
                           }
                         },
                         "additionalProperties": false
