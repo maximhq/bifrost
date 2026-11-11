@@ -2289,7 +2289,7 @@ UpdateModelConfigRequest:
         Full desired set of request limits, one per reset duration and scope: `[]` removes them all, and
         omitting it leaves them unchanged unless `rate_limit` is sent (see UpdateRateLimitRequest). A limit matches an existing one by `id`, else by reset duration and scope, and
         keeps its usage when it does.
-        A config that covers every model on every provider (`model_name: "*"`, no provider) takes `shared`, `model` and `mcp`; a narrower config takes `shared` and `model`. The set holds every scope, so a client that edits only some scopes (the Models or the MCP Budgets & Limits page) sends back the others as returned.
+        A config that covers every model on every provider (`model_name: "*"`, no provider) takes `shared`, `model` and `mcp`; a narrower config takes `shared` and `model`. The set holds every scope, so a client that edits only some scopes (the Models or the MCP Budgets & Limits page) sends back the others, mapping each returned row's `request_max_limit` and `request_reset_duration` to `max_limit` and `reset_duration` (keep `id` and `scope`).
         Sending `rate_limit.request_max_limit` or `rate_limit.request_reset_duration` together with this field is rejected with 400.
       items:
         $ref: '#/RequestLimitRequest'

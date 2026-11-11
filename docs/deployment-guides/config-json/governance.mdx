@@ -182,6 +182,7 @@ A row with an owner (`model_config_id`, `team_id` or `customer_id`, at most one)
 ```json
 {
   "governance": {
+    "teams": [{ "id": "team-ml", "name": "ML Team" }],
     "model_configs": [
       {
         "id": "mc-vk-dev-toplevel",
@@ -216,7 +217,11 @@ A row with an owner (`model_config_id`, `team_id` or `customer_id`, at most one)
 }
 ```
 
-A rate limit with request fields and no owner, referenced by exactly one holder through `rate_limit_id`, still loads as before: its request limit becomes one Shared request limit of that holder, as on upgrade, and the row keeps its token limit. A row several holders reference stays combined.
+A rate limit with request fields and no owner, referenced by exactly one holder through `rate_limit_id`, still loads as before: its request limit becomes one Shared request limit of that holder, as on upgrade, and the row keeps its token limit. Some rows stay combined, with the request fields on the rate limit itself:
+
+- a row several holders reference;
+- a row referenced by a model config scoped to a project (only global and virtual-key model configs are split);
+- a virtual key's own or a provider config's row when no config store is configured. With a config store, its request limit moves onto the key's holder-level model config (or the provider's) as a Shared request limit.
 
 ---
 

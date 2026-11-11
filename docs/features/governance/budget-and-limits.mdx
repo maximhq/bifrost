@@ -177,7 +177,7 @@ curl "http://localhost:8080/api/governance/model-configs?scope=virtual_key&scope
 
 If the holder has no such row, create it with `POST /api/governance/model-configs` (`model_name` `*`, the `scope` and `scope_id` of the holder, and the lines to add); otherwise update the row you found.
 
-To change a holder's MCP lines, update its holder-level model config (`PUT /api/governance/model-configs/{id}`) with its full `budgets` and `request_limits` lists: send the lines you keep with their `id`, including its `model` lines, since a line left out is removed.
+To change a holder's MCP lines, update its holder-level model config (`PUT /api/governance/model-configs/{id}`) with its full `budgets` and `request_limits` lists: send the lines you keep with their `id`, including its `model` lines, since a line left out is removed. A request limit read back from the model config names its fields `request_max_limit` and `request_reset_duration`; send them as `max_limit` and `reset_duration`, with the `id` and `scope` kept.
 
 ## Rate Limiting
 
