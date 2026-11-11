@@ -998,9 +998,17 @@ func validateGovernanceBudgetScopes(configData *ConfigData, warn func(string, ..
 			budgetOwnerByID[*provider.BudgetID] = owner{name: "provider " + provider.Name}
 		}
 	}
-	for _, customer := range gov.Customers {
+	// A customer declared without an id is given one later; until then each declaration is its own owner,
+	// told apart from every customer with an id by its position.
+	customerOwner := func(i int) owner {
+		if id := gov.Customers[i].ID; id != "" {
+			return owner{name: "customer " + id, mcpApplicable: true}
+		}
+		return owner{name: fmt.Sprintf("customer #%d", i+1), declared: i + 1, mcpApplicable: true}
+	}
+	for i, customer := range gov.Customers {
 		if customer.BudgetID != nil {
-			budgetOwnerByID[*customer.BudgetID] = owner{name: "customer " + customer.ID, mcpApplicable: true}
+			budgetOwnerByID[*customer.BudgetID] = customerOwner(i)
 		}
 	}
 	// A provider-config budget declared at the top level and one declared inline on its virtual key
@@ -1075,8 +1083,8 @@ func validateGovernanceBudgetScopes(configData *ConfigData, warn func(string, ..
 		}
 		add(teamOwner, team.Budgets...)
 	}
-	for _, customer := range gov.Customers {
-		add(owner{name: "customer " + customer.ID, mcpApplicable: true}, customer.Budgets...)
+	for i, customer := range gov.Customers {
+		add(customerOwner(i), customer.Budgets...)
 	}
 	for _, o := range order {
 		seen := make(map[string]string, len(byOwner[o]))

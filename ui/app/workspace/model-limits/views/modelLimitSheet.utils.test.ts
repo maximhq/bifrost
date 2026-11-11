@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { hasMCPBudgetOnNarrowLimit, shouldClearModelOnProviderChange } from "./modelLimitSheet.utils";
+import { hasMCPBudgetOnNarrowLimit, saveHasNoLimit, shouldClearModelOnProviderChange } from "./modelLimitSheet.utils";
 
 describe("shouldClearModelOnProviderChange", () => {
 	it("keeps the all-models wildcard, which no catalog lookup can confirm", () => {
@@ -41,5 +41,19 @@ describe("hasMCPBudgetOnNarrowLimit", () => {
 		).toBe(false);
 		expect(hasMCPBudgetOnNarrowLimit("gpt-4o", undefined, [{ scope: "mcp", max_limit: null }])).toBe(false);
 		expect(hasMCPBudgetOnNarrowLimit("gpt-4o", undefined, undefined)).toBe(false);
+	});
+});
+describe("saveHasNoLimit", () => {
+	it("lets the last Models-page line go while the row keeps an MCP line for the other page", () => {
+		expect(saveHasNoLimit(false, true, false)).toBe(false);
+	});
+	it("still blocks a save with nothing on the form and nothing kept on the row", () => {
+		expect(saveHasNoLimit(false, false, false)).toBe(true);
+	});
+	it("allows emptying an existing MCP limit, which deletes it", () => {
+		expect(saveHasNoLimit(false, false, true)).toBe(false);
+	});
+	it("allows a save with a limit on the form", () => {
+		expect(saveHasNoLimit(true, false, false)).toBe(false);
 	});
 });

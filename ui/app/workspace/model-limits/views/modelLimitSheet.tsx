@@ -16,7 +16,7 @@ import { BUDGET_SCOPE_VALUES, resetDurationLabels, resetDurationOptions } from "
 import { ProviderLabels, ProviderName } from "@/lib/constants/logs";
 import { getModelLimitScope, getModelLimitScopes } from "@/lib/registries/modelLimitScopes";
 import { budgetSignature } from "@/lib/utils/governance";
-import { shouldClearModelOnProviderChange } from "./modelLimitSheet.utils";
+import { saveHasNoLimit, shouldClearModelOnProviderChange } from "./modelLimitSheet.utils";
 // Side-effect import: pulls in downstream scope registrations (e.g. enterprise
 // registers "user" + user picker). The OSS-build fallback is an empty module.
 import {
@@ -302,7 +302,9 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel, traffic
 
 	const saveModelLimit = async (data: FormData, resetBudgetUsage: boolean) => {
 		// Removing every line of an MCP limit removes the limit (see below), so only adding one needs a line.
-		if (!hasAnyLimit && !(isMCPPage && isEditing)) {
+		// Lines the other page owns stay on the row, so a row that keeps one is not left empty.
+		const keepsOtherPagesLines = rowLines(baseConfig, traffic, false).length > 0;
+		if (saveHasNoLimit(hasAnyLimit, keepsOtherPagesLines, isMCPPage && isEditing)) {
 			form.setError("root", { message: isMCPPage ? t("mcpLimits.atLeastOneBudget") : t("modelLimits.atLeastOneRequired") });
 			return;
 		}

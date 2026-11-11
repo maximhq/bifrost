@@ -27560,3 +27560,18 @@ func TestValidateGovernanceBudgetScopes(t *testing.T) {
 		})
 	}
 }
+
+// TestValidateGovernanceBudgetScopesKeepsCustomersWithoutAnIDApart: customers declared without an id are
+// each their own owner until they are given one, so their budgets of one period and scope do not collide.
+func TestValidateGovernanceBudgetScopesKeepsCustomersWithoutAnIDApart(t *testing.T) {
+	gov := configstore.GovernanceConfig{Customers: []configstoreTables.TableCustomer{
+		{Name: "a", Budgets: []configstoreTables.TableBudget{{ID: "b-a", MaxLimit: 10, ResetDuration: "1M", Scope: configstoreTables.LimitScopeModel}}},
+		{Name: "b", Budgets: []configstoreTables.TableBudget{{ID: "b-b", MaxLimit: 20, ResetDuration: "1M", Scope: configstoreTables.LimitScopeModel}}},
+	}}
+	require.NoError(t, validateGovernanceBudgetScopes(&ConfigData{Governance: &gov}, func(string, ...any) {}))
+
+	gov.Customers[1].ID = "cust-1"
+	gov.Customers[1].Budgets[0].ID = "b-a2"
+	gov.Customers[0].Budgets = append(gov.Customers[0].Budgets, configstoreTables.TableBudget{ID: "b-a-dup", MaxLimit: 5, ResetDuration: "1M", Scope: configstoreTables.LimitScopeModel})
+	require.Error(t, validateGovernanceBudgetScopes(&ConfigData{Governance: &gov}, func(string, ...any) {}), "one customer's own duplicate still fails")
+}
