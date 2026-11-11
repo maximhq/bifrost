@@ -2078,9 +2078,9 @@ func toolsetOnlyComputerUseProvider(provider schemas.ModelProvider) bool {
 //
 // Override-aware: the datasheet's supports_computer_toolset decides when set, so
 // a model gaining the toolset is a catalog change. The provider gate stays in
-// code because the toolset is GA on the Claude API and Google Cloud only.
+// code because only the Claude API, Google Cloud and Bedrock serve the toolset.
 func AcceptsComputerToolset(caps schemas.ModelCaps) bool {
-	if !toolsetOnlyComputerUseProvider(caps.Provider()) {
+	if !toolsetOnlyComputerUseProvider(caps.Provider()) && caps.Provider() != schemas.Bedrock {
 		return false
 	}
 	return caps.SupportsComputerToolset(DefaultSupportsComputerToolset(caps.Model()))

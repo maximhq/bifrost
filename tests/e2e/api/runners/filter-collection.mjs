@@ -329,12 +329,12 @@ const itemMatchesProvider = (item, ancestorNames, provider = PROVIDER) => {
   const isVertex = PROVIDER_KEYWORDS.vertex.some((k) => haystack.includes(k));
   if (provider === "vertex") return isVertex;
   if (isVertex && (provider === "gemini" || provider === "anthropic" || provider === "minimax")) return false;
-  // Rows that send a Gemini, OpenAI or Azure model through the Anthropic Messages ingress
-  // (POST /anthropic/v1/messages with model "gemini/...", "openai/..." or "azure/...") contain
+  // Rows that send a Gemini, OpenAI, Azure or Baseten model through the Anthropic Messages ingress
+  // (POST /anthropic/v1/messages with model "gemini/...", "openai/...", "azure/..." or "baseten/...") contain
   // "anthropic" only because of the route or folder name, yet the upstream call goes to the
   // model's own provider - same collision class as vertex above. Keep them out of the anthropic
   // partition; they still match their own provider's keywords through the model prefix.
-  if (provider === "anthropic" && /"model"\s*:\s*"(gemini|openai|azure)\//.test(item.request?.body?.raw || "")) return false;
+  if (provider === "anthropic" && /"model"\s*:\s*"(gemini|openai|azure|baseten)\//.test(item.request?.body?.raw || "")) return false;
   // Runware rows name the upstream vendor inside the AIR model id ("runware/anthropic:claude@...",
   // "runware/google:gemini@...", "runware/minimax:..."), so they'd otherwise be claimed by those
   // partitions too - same collision class as openrouter/bedrock_mantle/vertex above. Route them
@@ -342,6 +342,10 @@ const itemMatchesProvider = (item, ancestorNames, provider = PROVIDER) => {
   const isRunware = haystack.includes("runware");
   if (provider === "runware") return isRunware;
   if (isRunware) return false;
+  // Hugging Face's router reaches Baseten-hosted models ("huggingface/baseten/..."), so those rows
+  // contain "baseten" too. They call Hugging Face with a Hugging Face token, never the baseten
+  // provider, so keep them out of the baseten partition.
+  if (provider === "baseten" && haystack.includes("huggingface")) return false;
   // bedrock_openai rows (token-parity-matrix.mjs's "one more model per provider" addition -
   // gpt-oss-family models on Bedrock) contain "openai" in the backend key/model, so they'd
   // otherwise be claimed by the openai partition too - same collision class as above. Route

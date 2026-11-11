@@ -12,14 +12,62 @@ If your Allowed Headers are already set to `*`, you can skip this note. If not a
 
 ## How It Works
 
-The Claude Desktop App has two tabs with different routing behavior:
+Routing depends on how Desktop is deployed:
 
-| Tab | Traffic | Bifrost Integration |
-|-----|---------|-------------------|
-| **Code tab** | Uses the Anthropic Messages API (Claude Code under the hood) | Route inference through Bifrost's `/anthropic` endpoint |
-| **Chat tab** | Connects directly to claude.ai | Connect to Bifrost's `/mcp` endpoint for MCP tools |
+| Surface | Bifrost integration |
+| --- | --- |
+| Claude Desktop on 3P (Chat, Cowork, and Code inference) | Configure the Gateway provider and `inferenceCustomHeaders` in Desktop's third-party inference configuration |
+| Local Claude Code running outside Desktop's host-managed provider configuration | Configure Claude Code settings or launch through Bifrost CLI |
+| Standard claude.ai Chat without third-party inference | Bifrost MCP integration covers tool calls, not the chat model's inference |
 
-This guide covers configuring the **Code tab** for inference routing and the **Chat tab** for MCP tool access.
+Claude Code settings are not a substitute for Desktop on 3P configuration. The following project instructions target Desktop on 3P. The later settings-file setup is for local Code configurations that honor those settings.
+
+## Attribute inference to a Bifrost project
+
+**Claude Desktop on 3P supports project headers**, independently of Claude Code's `~/.claude/settings.json`. In **Developer → Configure Third-Party Inference**, configure your gateway and existing credential, then set **Custom inference headers** (`inferenceCustomHeaders`, available since Desktop 1.8089.0):
+
+```json
+{
+  "inferenceProvider": "gateway",
+  "inferenceGatewayBaseUrl": "https://bifrost.example.com/anthropic",
+  "inferenceCustomHeaders": {
+    "x-bf-project-id": "PROJECT_ID"
+  }
+}
+```
+
+This is a fragment of Desktop's third-party inference configuration, not `claude_desktop_config.json` or Claude Code settings. Keep your existing authentication fields. If Bifrost is mounted under a URL prefix, include it before `/anthropic`, for example `https://bifrost.example.com/bifrost/anthropic`. `x-bf-project-name` can replace the ID header. Send only one selector, and do not put credentials in `inferenceCustomHeaders`.
+
+The setting tags model requests through the configured Desktop inference connection; it is **not a per-chat or per-Claude-Project mapping**. Do not assume that changing a Claude Project in the UI changes the Bifrost project. For concurrent independently attributed work, use separate CLI sessions with `--project-id` or `--project-name`.
+
+### Use the CLI as Desktop's credential helper
+
+After creating a Bifrost CLI context and signing in with `bifrost auth login`, Desktop can obtain the user token and project header together:
+
+```json
+{
+  "inferenceProvider": "gateway",
+  "inferenceGatewayBaseUrl": "https://bifrost.example.com/anthropic",
+  "inferenceCredentialHelper": "/absolute/path/to/bifrost",
+  "inferenceCredentialHelperArgs": [
+    "--context", "production",
+    "auth", "print-token",
+    "--format", "claude-desktop",
+    "--project-id", "PROJECT_ID"
+  ]
+}
+```
+
+Select the helper-script credential option in Desktop and supply your actual executable path. Helper arguments require Desktop 2.110.0 or later. This emits the documented `{"token":"...","headers":{"x-bf-project-id":"..."}}` shape; ordinary Claude Code `apiKeyHelper` must continue to use the default token-only format. Existing assigned virtual-key selection is included as a separate header when configured.
+
+Keep project selection in **one** place. Remove project selectors from `inferenceCustomHeaders` when the helper supplies them: a helper name header cannot cancel a different static ID header, and Bifrost gives the ID precedence.
+
+Desktop caches helper results (default 3600 seconds). This is credential refresh, not a per-request project picker. A helper reading a mutable “current project” could change attribution when an existing session refreshes. Use fixed helper arguments for a configured project and restart/verify after configuration changes; do not use a global mutable project file for concurrent sessions. The CLI does not edit Desktop configuration or install an inference-interception plugin.
+
+Explicit project membership requires a resolved Bifrost user; the SSO helper retains that identity. Select `project_only` accounting if spend should not consume the caller's own budget. Verify both identity and project on a real inference log before rollout; model-discovery preflight alone is not proof of billed inference attribution.
+
+Sources: [Desktop configuration reference](https://claude.com/docs/third-party/claude-desktop/configuration#inferencecustomheaders), [credential-helper contract and caching](https://claude.com/docs/third-party/claude-desktop/credential-helper), and [Bifrost Projects](/enterprise/projects).
+
 
 ## Setup
 
