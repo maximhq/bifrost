@@ -379,6 +379,7 @@
               "enterprise/access-profiles",
               "enterprise/rbac",
               "enterprise/data-access-control",
+              "enterprise/view-as-user",
               {
                 "group": "Workload Identity",
                 "icon": "fingerprint",
