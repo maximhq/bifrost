@@ -6,7 +6,12 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-func cacheIdentityForTest(t *testing.T, plugin *Plugin, req *schemas.BifrostRequest) string {
+type cacheIdentity struct {
+	params  string
+	request string
+}
+
+func cacheIdentityForTest(t *testing.T, plugin *Plugin, req *schemas.BifrostRequest) cacheIdentity {
 	t.Helper()
 	metadata, err := plugin.buildRequestMetadataForCaching(plugin.createCacheState("req"), req)
 	if err != nil {
@@ -20,13 +25,13 @@ func cacheIdentityForTest(t *testing.T, plugin *Plugin, req *schemas.BifrostRequ
 	if err != nil {
 		t.Fatalf("generateRequestHash failed: %v", err)
 	}
-	return paramsHash + "/" + requestHash
+	return cacheIdentity{params: paramsHash, request: requestHash}
 }
 
 func TestChatParamsHashIncludesOutputShapingParams(t *testing.T) {
 	plugin := &Plugin{config: getDefaultTestConfig()}
 	prompt := "Write a one-line tagline for a coffee shop"
-	hashFor := func(params *schemas.ChatParameters) string {
+	hashFor := func(params *schemas.ChatParameters) cacheIdentity {
 		t.Helper()
 		return cacheIdentityForTest(t, plugin, &schemas.BifrostRequest{
 			RequestType: schemas.ChatCompletionRequest,
@@ -59,8 +64,12 @@ func TestChatParamsHashIncludesOutputShapingParams(t *testing.T) {
 		if hashFor(pair[0]) != hashFor(pair[0]) {
 			t.Fatalf("%s: identical params must hash the same", name)
 		}
-		if hashFor(pair[0]) == hashFor(pair[1]) {
-			t.Errorf("%s change must change the cache identity", name)
+		first, second := hashFor(pair[0]), hashFor(pair[1])
+		if first.params == second.params {
+			t.Errorf("%s change must change the params hash used by the semantic lookup", name)
+		}
+		if first.request == second.request {
+			t.Errorf("%s change must change the request hash used by the exact lookup", name)
 		}
 	}
 }
@@ -68,7 +77,7 @@ func TestChatParamsHashIncludesOutputShapingParams(t *testing.T) {
 func TestResponsesParamsHashIncludesTextFormatSchema(t *testing.T) {
 	plugin := &Plugin{config: getDefaultTestConfig()}
 	prompt := "Extract the fields from this invoice: ACME Corp, #4411, $120.00, due 2026-12-01"
-	hashFor := func(format *schemas.ResponsesTextConfigFormat) string {
+	hashFor := func(format *schemas.ResponsesTextConfigFormat) cacheIdentity {
 		t.Helper()
 		return cacheIdentityForTest(t, plugin, &schemas.BifrostRequest{
 			RequestType: schemas.ResponsesRequest,
@@ -96,15 +105,15 @@ func TestResponsesParamsHashIncludesTextFormatSchema(t *testing.T) {
 	if invoice != hashFor(jsonSchema("invoice", "vendor", "total")) {
 		t.Fatal("identical text.format must hash the same")
 	}
-	if invoice == hashFor(jsonSchema("invoice", "invoice_number", "due_date")) {
+	if changed := hashFor(jsonSchema("invoice", "invoice_number", "due_date")); invoice.params == changed.params || invoice.request == changed.request {
 		t.Error("text.format schema change must change the cache identity")
 	}
-	if invoice == hashFor(jsonSchema("due_date", "vendor", "total")) {
+	if changed := hashFor(jsonSchema("due_date", "vendor", "total")); invoice.params == changed.params || invoice.request == changed.request {
 		t.Error("text.format name change must change the cache identity")
 	}
 	nonStrict := jsonSchema("invoice", "vendor", "total")
 	nonStrict.Strict = schemas.Ptr(false)
-	if invoice == hashFor(nonStrict) {
+	if changed := hashFor(nonStrict); invoice.params == changed.params || invoice.request == changed.request {
 		t.Error("text.format strict change must change the cache identity")
 	}
 }
