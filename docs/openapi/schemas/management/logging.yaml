@@ -808,7 +808,9 @@ FilterDataResponse:
           type: string
       description: >-
         Metadata keys and suggested values matching the active log filters.
-        Each key excludes its own selection; other metadata keys still constrain it.
+        The first 16 active keys in alphabetical order exclude their own selections;
+        other metadata keys still constrain them. Remaining keys use the fully
+        filtered sample. Clients should retain selected values for removal.
         Results are bounded samples, not exhaustive inventories.
 
 DeleteLogsRequest:

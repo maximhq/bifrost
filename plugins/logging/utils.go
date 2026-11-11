@@ -445,6 +445,7 @@ func (p *PluginLogManager) GetDimensionLatencyHistogram(ctx context.Context, fil
 	return p.plugin.GetDimensionLatencyHistogram(ctx, *filters, bucketSizeSeconds, dimension)
 }
 
+// GetAvailableMetadataKeys returns metadata facets; nil scope uses the default recent window.
 func (p *PluginLogManager) GetAvailableMetadataKeys(ctx context.Context, limit int, query string, scope *logstore.SearchFilters) (map[string][]string, error) {
 	if p.plugin == nil || p.plugin.store == nil {
 		return map[string][]string{}, nil

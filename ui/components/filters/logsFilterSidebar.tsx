@@ -1620,6 +1620,7 @@ function LabelledMetadataFilter({
 // MetadataFilters – fetches metadata keys internally
 // ---------------------------------------------------------------------------
 
+/** Fetch scoped metadata suggestions and keep selected values available for removal. */
 function MetadataFilters({ filters, onFiltersChange, defaultOpen }: FilterComponentProps) {
 	const { t } = useTranslation("observability");
 	const labelled = labelledMetadataKeys();

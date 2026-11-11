@@ -2,6 +2,7 @@ package logstore
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"testing"
 	"time"
@@ -75,6 +76,7 @@ func TestGetDistinctMetadataKeysFacets(t *testing.T) {
 	})
 }
 
+// TestGetDistinctMetadataKeysFiltersBeforeLimit preserves sparse matches and access scopes.
 func TestGetDistinctMetadataKeysFiltersBeforeLimit(t *testing.T) {
 	store := newTestSQLiteStore(t)
 	defer store.Close(context.Background())
@@ -93,4 +95,44 @@ func TestGetDistinctMetadataKeysFiltersBeforeLimit(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, []string{"alice"}, got["user"])
 	require.Empty(t, got["tenant"])
+}
+
+// TestMetadataFacetRescanBudget pins a deterministic query budget even when many keys are selected.
+func TestMetadataFacetRescanBudget(t *testing.T) {
+	store := newTestSQLiteStore(t)
+	defer store.Close(context.Background())
+	selected := MetadataFilterMap{}
+	row := map[string]string{}
+	for i := 0; i < 18; i++ {
+		key := fmt.Sprintf("key%02d", i)
+		selected[key] = []string{"selected"}
+		row[key] = "selected"
+	}
+	raw, err := json.Marshal(row)
+	require.NoError(t, err)
+	insertLogWithMetadata(t, store, "base", string(raw), time.Now())
+	for key := range row {
+		row[key] = "alternative"
+		raw, err = json.Marshal(row)
+		require.NoError(t, err)
+		insertLogWithMetadata(t, store, key, string(raw), time.Now())
+		row[key] = "selected"
+	}
+	scans := 0
+	require.NoError(t, store.db.Callback().Query().After("gorm:query").Register("test:count_facets", func(db *gorm.DB) {
+		if db.Statement.Table == "logs" {
+			scans++
+		}
+	}))
+	got, err := store.GetDistinctMetadataKeys(context.Background(), 100, "", &SearchFilters{MetadataFilters: selected})
+	require.NoError(t, err)
+	require.Equal(t, 17, scans, "one base query plus at most sixteen facet rescans")
+	for i := 0; i < 18; i++ {
+		key := fmt.Sprintf("key%02d", i)
+		if i < 16 {
+			require.Equal(t, []string{"alternative", "selected"}, got[key])
+		} else {
+			require.Equal(t, []string{"selected"}, got[key])
+		}
+	}
 }

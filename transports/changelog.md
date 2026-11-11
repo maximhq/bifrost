@@ -1,3 +1,4 @@
+[test]: verify metadata HTTP scopes against seeded SQLite logs [@davidtema](https://github.com/davidtema)
 [feat]: scope log metadata options to active dashboard filters [@davidtema](https://github.com/davidtema)
 ## 🐞 Fixed
 
