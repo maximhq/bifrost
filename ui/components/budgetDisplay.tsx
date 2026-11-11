@@ -1,3 +1,4 @@
+import BudgetScopeBadge from "@/components/ui/budgetScopeBadge";
 import { Progress } from "@/components/ui/progress";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { fiscalQuarterNote, resetDurationLabels, supportsCalendarAlignment } from "@/lib/constants/governance";
@@ -14,6 +15,8 @@ interface BudgetDisplayProps {
 	calendarAligned?: boolean;
 	/** Draw at most this many lines; the rest collapse into a "+x more" line whose tooltip names them. */
 	maxVisible?: number;
+	/** Mark every line with the traffic it is charged by; only for owners whose budgets carry a scope. */
+	showScope?: boolean;
 }
 
 const formatResetDuration = (t: TFunction<"common">, duration?: string | null, calendarAligned?: boolean) => {
@@ -27,7 +30,7 @@ const formatResetDuration = (t: TFunction<"common">, duration?: string | null, c
  * color-coded progress bar (emerald < 80% < amber < exhausted = red), and a tooltip with
  * the exact current/max spend. Mirrors RateLimitDisplay for visual consistency across tables.
  */
-export function BudgetDisplay({ budgets, calendarAligned, maxVisible }: BudgetDisplayProps) {
+export function BudgetDisplay({ budgets, calendarAligned, maxVisible, showScope = false }: BudgetDisplayProps) {
 	const { t } = useTranslation("common");
 	if (!budgets || budgets.length === 0) {
 		return <span className="text-muted-foreground text-sm">-</span>;
@@ -53,11 +56,7 @@ export function BudgetDisplay({ budgets, calendarAligned, maxVisible }: BudgetDi
 									<span className="text-xs font-medium">
 										{formatCurrency(effectiveMaxLimit)}
 										{b.label ? <span className="text-muted-foreground ml-1 text-xs font-normal">{b.label}</span> : null}
-										{b.scope && b.scope !== "shared" ? (
-											<span className="text-muted-foreground ml-1 text-[10px]" data-testid="budget-display-scope">
-												{t(`budgetScope.${b.scope}`)}
-											</span>
-										) : null}
+										{showScope ? <BudgetScopeBadge scope={b.scope} className="ml-1.5" /> : null}
 										{hasOverride ? <span className="text-muted-foreground ml-1 text-[10px]">{t("budgetDisplay.override")}</span> : null}
 									</span>
 									<span className="text-muted-foreground text-xs">

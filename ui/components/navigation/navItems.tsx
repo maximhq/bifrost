@@ -356,6 +356,13 @@ export function useNavItems(): NavItem[] {
 						hasAccess: hasMCPGatewayAccess,
 					},
 					{
+						id: "mcp.budgets",
+						title: t("nav.budgetsLimits"),
+						url: "/workspace/mcp-limits",
+						icon: Wallet,
+						hasAccess: hasGovernanceLegacyAccess,
+					},
+					{
 						id: "mcp.virtual-mcps",
 						title: t("nav.virtualMcps"),
 						url: "/workspace/virtual-mcps",

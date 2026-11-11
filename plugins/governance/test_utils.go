@@ -250,7 +250,7 @@ func resolverCtx(store GovernanceStore, virtualKeyValue string) *schemas.Bifrost
 // request), so a test driving the tracker directly has to settle them or nothing is billed.
 func settleLimits(gs GovernanceStore, vkValue string, provider schemas.ModelProvider, model string, update *UsageUpdate) *UsageUpdate {
 	ctx := resolverCtx(gs, vkValue)
-	update.Budgets, update.RateLimits, _ = gs.GatherLimits(ctx, ctx.Grant().Access(), provider, model)
+	update.Budgets, update.RateLimits, _ = gs.GatherLimitsForRequestKind(ctx, ctx.Grant().Access(), provider, model, false)
 	return update
 }
 

@@ -208,7 +208,7 @@
 	},
 	"budgetScope": {
 		"label": "適用範囲",
-		"shared": "両方",
+		"shared": "共有",
 		"model": "モデル",
 		"mcp": "MCP",
 		"sharedHint": "モデルリクエストと MCP ツール実行の両方で消費されます",

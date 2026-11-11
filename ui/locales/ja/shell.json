@@ -220,6 +220,7 @@
 			"routingRule": "ルーティングルールを作成",
 			"mcpServer": "MCP サーバーを追加",
 			"modelLimit": "モデル制限を作成",
+			"mcpLimit": "MCP 制限を作成",
 			"webhook": "Webhook を作成",
 			"mcpLibraryServer": "MCP ライブラリにサーバーを追加",
 			"virtualMcp": "仮想 MCP を作成",

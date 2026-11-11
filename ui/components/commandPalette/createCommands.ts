@@ -14,6 +14,7 @@ export const CREATE_COMMANDS: readonly {
 }[] = [
 	{ id: "create:routing-rule", href: "/workspace/routing-rules", title: "routingRule", resource: RbacResource.RoutingRules },
 	{ id: "create:model-limit", href: "/workspace/model-limits", title: "modelLimit", resource: RbacResource.Governance },
+	{ id: "create:mcp-limit", href: "/workspace/mcp-limits", title: "mcpLimit", resource: RbacResource.Governance },
 	{ id: "create:mcp-server", href: "/workspace/mcp-registry", title: "mcpServer", resource: RbacResource.MCPGateway },
 	{
 		id: "create:mcp-library-server",

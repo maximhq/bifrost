@@ -2240,5 +2240,15 @@
 		"resetAll": "Restablecer a la ficha técnica",
 		"noPermission": "No tienes permiso para editar la ficha técnica",
 		"saving": "Guardando..."
+	},
+	"mcpLimits": {
+		"titleDescription": "Configurar presupuestos para ejecuciones de herramientas MCP, de forma global o por clave virtual. Las líneas MCP se cobran solo por ejecuciones de herramientas; las líneas compartidas también por solicitudes de modelos.",
+		"emptyTitle": "Presupuestos de MCP",
+		"emptyDescription": "Limitar el gasto de las ejecuciones de herramientas MCP de forma global o por clave virtual, por separado o compartido con las solicitudes de modelos.",
+		"createDescription": "Configurar presupuestos MCP y compartidos para el despliegue o una clave virtual.",
+		"editDescription": "Actualizar los presupuestos MCP y compartidos de este ámbito.",
+		"deleteTitle": "Quitar límites de MCP",
+		"deleteDescription": "¿Quitar los presupuestos MCP y compartidos de \"{{name}}\"? Los presupuestos de modelos y el límite de tarifas definidos en la página de modelos se conservan.",
+		"atLeastOneBudget": "Se necesita al menos un presupuesto"
 	}
 }

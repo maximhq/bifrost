@@ -607,7 +607,7 @@
 	},
 	"budgetScope": {
 		"label": "範圍",
-		"shared": "兩者",
+		"shared": "共用",
 		"model": "模型",
 		"mcp": "MCP",
 		"sharedHint": "由模型請求與 MCP 工具執行共同計費",

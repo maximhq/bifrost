@@ -22,3 +22,11 @@ export function hasMCPBudgetOnNarrowLimit(
 	if (modelName === "*" && !provider) return false;
 	return (budgets ?? []).some((b) => b.scope === "mcp" && b.max_limit !== undefined && b.max_limit !== null);
 }
+/**
+ * Whether a save has nothing to send: no line on the form with an amount, no limit kept on the row
+ * for the other page (a holder-level row's lines of the scope this page hides are saved back
+ * unchanged), and, on the MCP page, no existing limit being emptied (that deletes it).
+ */
+export function saveHasNoLimit(hasAnyLimit: boolean, keepsOtherPagesLines: boolean, deletesOnEmpty: boolean): boolean {
+	return !hasAnyLimit && !keepsOtherPagesLines && !deletesOnEmpty;
+}

@@ -16,12 +16,19 @@ import { BUDGET_SCOPE_VALUES, resetDurationLabels, resetDurationOptions } from "
 import { ProviderLabels, ProviderName } from "@/lib/constants/logs";
 import { getModelLimitScope, getModelLimitScopes } from "@/lib/registries/modelLimitScopes";
 import { budgetSignature } from "@/lib/utils/governance";
-import { hasMCPBudgetOnNarrowLimit, shouldClearModelOnProviderChange } from "./modelLimitSheet.utils";
+import { saveHasNoLimit, shouldClearModelOnProviderChange } from "./modelLimitSheet.utils";
 // Side-effect import: pulls in downstream scope registrations (e.g. enterprise
 // registers "user" + user picker). The OSS-build fallback is an empty module.
-import { getErrorMessage, useCreateModelConfigMutation, useLazyGetModelsQuery, useUpdateModelConfigMutation } from "@/lib/store";
-import { ModelConfig } from "@/lib/types/governance";
-import { formatCurrency } from "@/lib/utils/governance";
+import {
+	getErrorMessage,
+	useCreateModelConfigMutation,
+	useDeleteModelConfigMutation,
+	useGetModelConfigsQuery,
+	useLazyGetModelsQuery,
+	useUpdateModelConfigMutation,
+} from "@/lib/store";
+import { Budget, LimitScope, ModelConfig } from "@/lib/types/governance";
+import { budgetScopeChargedBy, formatCurrency, isHolderLevelModelConfig, LimitTraffic } from "@/lib/utils/governance";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import "@enterprise/lib/registrations/modelLimitScopes";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -37,6 +44,8 @@ interface ModelLimitSheetProps {
 	modelConfig?: ModelConfig | null;
 	onSave: () => void;
 	onCancel: () => void;
+	/** The page the sheet edits for: "mcp" edits the MCP and Shared lines of a holder-level row. */
+	traffic?: LimitTraffic;
 }
 
 const formSchema = z
@@ -72,11 +81,36 @@ type FormData = z.infer<typeof formSchema>;
 // sentinel so the control has something to show. Module level so its identity is stable.
 const ALL_PROVIDERS_VALUE = "all";
 
-// MCP tool executions name no model and no provider, so they are only charged by a limit that
-// covers every model on every provider; that is the only limit whose budgets can be scoped.
-const budgetScopeApplies = (modelName: string | undefined, provider: string | undefined) => modelName === "*" && !provider;
+// A limit covering every model on every provider is the holder's own (holder-level) row, the one MCP
+// tool executions are charged by and the one an add looks up and saves onto.
+const isHolderLevelSelection = (modelName: string | undefined, provider: string | undefined) => modelName === "*" && !provider;
 
-export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: ModelLimitSheetProps) {
+// The scopes each page offers on a holder-level row. Lines of the other page's scope stay on the row
+// untouched (see rowLines), so the two pages edit one set of limits without dropping each other's.
+const SCOPE_OPTIONS: Record<LimitTraffic, readonly LimitScope[]> = { model: ["shared", "model"], mcp: ["shared", "mcp"] };
+
+// The MCP page holds the deployment's and virtual keys' own limits only.
+const MCP_LIMIT_SCOPES = ["global", "virtual_key"];
+
+// The lines of a row a page shows (shown) or hides (!shown): a narrower row's lines are Shared or Model
+// and all shown; on a holder-level row a page shows the lines its traffic is charged by and hides the
+// others, which a save sends back unchanged.
+const rowLines = (config: ModelConfig | null | undefined, traffic: LimitTraffic, shown: boolean): Budget[] => {
+	const budgets = config?.budgets ?? [];
+	if (!config || !isHolderLevelModelConfig(config)) return shown ? budgets : [];
+	return budgets.filter((b) => budgetScopeChargedBy(b.scope, traffic) === shown);
+};
+
+const toFormBudget = (b: Budget) => ({
+	id: b.id,
+	max_limit: b.max_limit,
+	reset_duration: b.reset_duration,
+	reset_config: b.reset_config,
+	scope: b.scope,
+});
+
+export default function ModelLimitSheet({ modelConfig, onSave, onCancel, traffic = "model" }: ModelLimitSheetProps) {
+	const isMCPPage = traffic === "mcp";
 	const { t } = useTranslation("models");
 	const { t: tc } = useTranslation("common");
 	const allProvidersOption = useMemo(() => ({ value: ALL_PROVIDERS_VALUE, label: t("modelLimits.allProviders") }), [t]);
@@ -91,7 +125,7 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 
 	const hasCreateAccess = useRbac(RbacResource.Governance, RbacOperation.Create);
 	const hasUpdateAccess = useRbac(RbacResource.Governance, RbacOperation.Update);
-	const canSubmit = isEditing ? hasUpdateAccess : hasCreateAccess;
+	const hasDeleteAccess = useRbac(RbacResource.Governance, RbacOperation.Delete);
 
 	const handleClose = () => {
 		setIsOpen(false);
@@ -104,8 +138,9 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 	// Defers the save until the operator says whether to clear accumulated spend.
 	const resetPrompt = useBudgetUsageResetPrompt<FormData>();
 	const [updateModelConfig, { isLoading: isUpdating }] = useUpdateModelConfigMutation();
+	const [deleteModelConfig, { isLoading: isDeleting }] = useDeleteModelConfigMutation();
 	const [getModels] = useLazyGetModelsQuery();
-	const isLoading = isCreating || isUpdating;
+	const isLoading = isCreating || isUpdating || isDeleting;
 
 	// Handle provider change - clear model if it doesn't exist for the new provider
 	const handleProviderChange = async (newProvider: string, currentModel: string, onChange: (value: string) => void) => {
@@ -137,17 +172,13 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 		mode: "onChange",
 		resolver: zodResolver(formSchema),
 		defaultValues: {
-			modelName: modelConfig?.model_name || "",
+			// A new limit starts on all models and all providers (the holder-level row, the only one the MCP
+			// page edits).
+			modelName: modelConfig?.model_name || "*",
 			provider: modelConfig?.provider || "",
 			scope: modelConfig?.scope || "global",
 			scopeId: modelConfig?.scope_id || "",
-			budgets: (modelConfig?.budgets ?? []).map((b) => ({
-				id: b.id,
-				max_limit: b.max_limit,
-				reset_duration: b.reset_duration,
-				reset_config: b.reset_config,
-				scope: b.scope,
-			})),
+			budgets: rowLines(modelConfig, traffic, true).map(toFormBudget),
 			tokenMaxLimit: modelConfig?.rate_limit?.token_max_limit ?? undefined,
 			tokenResetDuration: modelConfig?.rate_limit?.token_reset_duration || "1h",
 			requestMaxLimit: modelConfig?.rate_limit?.request_max_limit ?? undefined,
@@ -156,10 +187,12 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 	});
 
 	const watchedBudgets = form.watch("budgets");
+	// The MCP page edits budgets only; the row's rate limit is the Models page's.
 	const hasAnyLimit =
 		(watchedBudgets?.some((b) => b.max_limit !== undefined && b.max_limit !== null) ?? false) ||
-		(form.watch("tokenMaxLimit") !== undefined && form.watch("tokenMaxLimit") !== null) ||
-		(form.watch("requestMaxLimit") !== undefined && form.watch("requestMaxLimit") !== null);
+		(!isMCPPage &&
+			((form.watch("tokenMaxLimit") !== undefined && form.watch("tokenMaxLimit") !== null) ||
+				(form.watch("requestMaxLimit") !== undefined && form.watch("requestMaxLimit") !== null)));
 
 	useEffect(() => {
 		if (hasAnyLimit) form.clearErrors("root");
@@ -176,20 +209,56 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 				provider: modelConfig.provider || "",
 				scope: modelConfig.scope || "global",
 				scopeId: modelConfig.scope_id || "",
-				budgets: (modelConfig.budgets ?? []).map((b) => ({
-					id: b.id,
-					max_limit: b.max_limit,
-					reset_duration: b.reset_duration,
-					reset_config: b.reset_config,
-					scope: b.scope,
-				})),
+				budgets: rowLines(modelConfig, traffic, true).map(toFormBudget),
 				tokenMaxLimit: modelConfig.rate_limit?.token_max_limit ?? undefined,
 				tokenResetDuration: modelConfig.rate_limit?.token_reset_duration || "1h",
 				requestMaxLimit: modelConfig.rate_limit?.request_max_limit ?? undefined,
 				requestResetDuration: modelConfig.rate_limit?.request_reset_duration || "1h",
 			});
 		}
-	}, [modelConfig, form]);
+	}, [modelConfig, form, traffic]);
+
+	// Adding a holder-level limit (always so on the MCP page; on the Models page when all models and all
+	// providers are picked) targets a holder that may already have that row (a key's own limits live
+	// there), so the sheet looks it up and saves onto it rather than creating a second one.
+	const watchedScope = form.watch("scope") || "global";
+	const watchedScopeId = form.watch("scopeId");
+	const addsHolderLevel = isMCPPage || isHolderLevelSelection(form.watch("modelName"), form.watch("provider"));
+	const lookupTarget = !isEditing && addsHolderLevel && (watchedScope === "global" || !!watchedScopeId);
+	// currentData belongs to the query now selected, so a lookup that failed or is still running for the
+	// chosen target never leaves the previous target's row to be saved onto.
+	const {
+		currentData: targetRows,
+		isFetching: isFetchingTarget,
+		isError: targetLookupFailed,
+		error: targetLookupError,
+	} = useGetModelConfigsQuery(
+		{ scope: watchedScope, scope_id: watchedScope === "global" ? undefined : watchedScopeId, search: "*", limit: 100 },
+		{ skip: !lookupTarget },
+	);
+	const targetRow = useMemo(
+		() => (lookupTarget ? (targetRows?.model_configs.find((mc) => isHolderLevelModelConfig(mc)) ?? null) : null),
+		[lookupTarget, targetRows],
+	);
+	// The row being saved: the one edited, or the target's existing row when adding.
+	const baseConfig = modelConfig ?? targetRow;
+
+	// The permission a save needs is the one of the mutation it will run: an add onto the target's existing
+	// row is an update, and an MCP page save that leaves nothing on the row deletes it.
+	const remainingBudgets =
+		(watchedBudgets ?? []).filter((b) => b.max_limit !== undefined && b.max_limit !== null).length +
+		rowLines(baseConfig, traffic, false).length;
+	const deletesRow = isMCPPage && !!baseConfig && remainingBudgets === 0 && !baseConfig.rate_limit;
+	const canSubmit = deletesRow ? hasDeleteAccess : baseConfig ? hasUpdateAccess : hasCreateAccess;
+
+	// Show the target row's lines beside any typed so far; picking another target swaps them.
+	useEffect(() => {
+		if (isEditing) return;
+		const typed = (form.getValues("budgets") ?? []).filter((b) => !b.id);
+		const existing = rowLines(targetRow, traffic, true).map(toFormBudget);
+		if (existing.length === 0 && typed.length === (form.getValues("budgets") ?? []).length) return;
+		form.setValue("budgets", [...existing, ...typed], { shouldDirty: true });
+	}, [targetRow, isEditing, traffic, form]);
 
 	// A budget config change on an existing limit is when clearing accumulated
 	// spend becomes a meaningful choice; creating one has no usage to reset.
@@ -197,8 +266,10 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 	// so including them would report a change on every save. The shared signature
 	// folds in the fiscal quarter, which a limit-and-duration comparison misses -
 	// moving Q1 from April to July reschedules the reset without touching either.
+	// An Add onto the target's existing row changes that row, so it is compared the same way.
 	const budgetsChanged = (data: FormData) => {
-		if (!isEditing || !modelConfig) return false;
+		const existing = modelConfig ?? targetRow;
+		if (!existing) return false;
 		const next = (data.budgets ?? [])
 			.filter((b) => b.max_limit !== undefined && b.max_limit !== null)
 			.map((b) => ({
@@ -207,7 +278,7 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 				reset_config: b.reset_config,
 				scope: b.scope,
 			}));
-		const current = (modelConfig.budgets ?? []).map((b) => ({
+		const current = rowLines(existing, traffic, true).map((b) => ({
 			max_limit: b.max_limit ?? undefined,
 			reset_duration: b.reset_duration,
 			reset_config: b.reset_config,
@@ -230,38 +301,61 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 	};
 
 	const saveModelLimit = async (data: FormData, resetBudgetUsage: boolean) => {
-		if (!hasAnyLimit) {
-			form.setError("root", { message: t("modelLimits.atLeastOneRequired") });
+		// Removing every line of an MCP limit removes the limit (see below), so only adding one needs a line.
+		// Lines the other page owns stay on the row, so a row that keeps one is not left empty.
+		const keepsOtherPagesLines = rowLines(baseConfig, traffic, false).length > 0;
+		if (saveHasNoLimit(hasAnyLimit, keepsOtherPagesLines, isMCPPage && isEditing)) {
+			form.setError("root", { message: isMCPPage ? t("mcpLimits.atLeastOneBudget") : t("modelLimits.atLeastOneRequired") });
 			return;
 		}
 
 		try {
 			const provider = data.provider && data.provider.trim() !== "" ? data.provider : undefined;
 
-			// Full desired set of budgets (kept lines with a max_limit). For updates this is
-			// reconciled server-side; an empty array removes all budgets.
-			// Only an all-models, all-providers limit is charged by MCP tool executions, so an MCP budget
-			// cannot stay once the limit is narrowed: it is never turned into a shared one, the operator
-			// resolves it first.
-			if (hasMCPBudgetOnNarrowLimit(data.modelName, provider, data.budgets)) {
-				form.setError("root", { message: t("modelLimits.mcpBudgetNeedsAllModels") });
-				return;
-			}
-			const budgetsPayload = (data.budgets ?? [])
-				.filter((b) => b.max_limit !== undefined && b.max_limit !== null)
-				.map((b) => ({
-					id: b.id,
-					max_limit: b.max_limit as number,
-					reset_duration: b.reset_duration || "1M",
-					reset_config: b.reset_config,
-					scope: b.scope,
-				}));
+			// Full desired set of budgets (kept lines with a max_limit), each with its scope. For updates
+			// this is reconciled server-side; an empty array removes all budgets.
+			// The lines this page hides on a holder-level row are sent back as they are, so saving here
+			// never drops what the other page set.
+			const budgetsPayload = [
+				...(data.budgets ?? [])
+					.filter((b) => b.max_limit !== undefined && b.max_limit !== null)
+					.map((b) => ({
+						id: b.id,
+						max_limit: b.max_limit as number,
+						reset_duration: b.reset_duration || "1M",
+						reset_config: b.reset_config,
+						scope: b.scope,
+					})),
+				...rowLines(baseConfig, traffic, false).map(toFormBudget),
+			];
 
-			if (isEditing && modelConfig) {
-				const hadRateLimit = !!modelConfig.rate_limit;
-				const hasRateLimit =
-					(data.tokenMaxLimit !== undefined && data.tokenMaxLimit !== null) ||
-					(data.requestMaxLimit !== undefined && data.requestMaxLimit !== null);
+			if (isMCPPage && baseConfig && budgetsPayload.length === 0 && !baseConfig.rate_limit) {
+				// Nothing of the Models page's is left on the row either, so the row itself goes.
+				await deleteModelConfig(baseConfig.id).unwrap();
+				toast.success(t("modelLimits.deletedSuccess"));
+			} else if (isMCPPage && baseConfig) {
+				await updateModelConfig({
+					id: baseConfig.id,
+					data: { budgets: budgetsPayload, reset_budget_usage: resetBudgetUsage || undefined },
+				}).unwrap();
+				toast.success(isEditing ? t("modelLimits.updatedSuccess") : t("modelLimits.createdSuccess"));
+			} else if (isMCPPage) {
+				await createModelConfig({
+					model_name: "*",
+					scope: data.scope || "global",
+					scope_id: getModelLimitScope(data.scope || "global")?.PickerComponent ? data.scopeId : undefined,
+					budgets: budgetsPayload,
+				}).unwrap();
+				toast.success(t("modelLimits.createdSuccess"));
+			} else if (baseConfig) {
+				// Adding onto the target's existing row keeps the parts of its rate limit not entered here.
+				const kept = isEditing ? undefined : baseConfig.rate_limit;
+				const tokenMaxLimit = data.tokenMaxLimit ?? kept?.token_max_limit ?? undefined;
+				const tokenResetDuration = data.tokenMaxLimit != null ? data.tokenResetDuration : kept?.token_reset_duration;
+				const requestMaxLimit = data.requestMaxLimit ?? kept?.request_max_limit ?? undefined;
+				const requestResetDuration = data.requestMaxLimit != null ? data.requestResetDuration : kept?.request_reset_duration;
+				const hadRateLimit = !!baseConfig.rate_limit;
+				const hasRateLimit = tokenMaxLimit != null || requestMaxLimit != null;
 
 				let rateLimitPayload:
 					| {
@@ -273,18 +367,17 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 					| undefined;
 				if (hasRateLimit) {
 					rateLimitPayload = {
-						token_max_limit: data.tokenMaxLimit ?? null,
-						token_reset_duration: data.tokenMaxLimit !== undefined && data.tokenMaxLimit !== null ? data.tokenResetDuration || "1h" : null,
-						request_max_limit: data.requestMaxLimit ?? null,
-						request_reset_duration:
-							data.requestMaxLimit !== undefined && data.requestMaxLimit !== null ? data.requestResetDuration || "1h" : null,
+						token_max_limit: tokenMaxLimit ?? null,
+						token_reset_duration: tokenMaxLimit != null ? tokenResetDuration || "1h" : null,
+						request_max_limit: requestMaxLimit ?? null,
+						request_reset_duration: requestMaxLimit != null ? requestResetDuration || "1h" : null,
 					};
 				} else if (hadRateLimit) {
 					rateLimitPayload = {};
 				}
 
 				await updateModelConfig({
-					id: modelConfig.id,
+					id: baseConfig.id,
 					data: {
 						model_name: data.modelName,
 						provider: provider,
@@ -294,7 +387,7 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 						reset_budget_usage: resetBudgetUsage || undefined,
 					},
 				}).unwrap();
-				toast.success(t("modelLimits.updatedSuccess"));
+				toast.success(isEditing ? t("modelLimits.updatedSuccess") : t("modelLimits.createdSuccess"));
 			} else {
 				await createModelConfig({
 					model_name: data.modelName,
@@ -453,85 +546,97 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 		);
 	}
 
+	const sheetDescription = {
+		mcp: { edit: t("mcpLimits.editDescription"), create: t("mcpLimits.createDescription") },
+		models: { edit: t("modelLimits.editDescriptionShort"), create: t("modelLimits.createDescriptionShort") },
+	};
+
 	return (
 		<Sheet open={isOpen} onOpenChange={(open) => !open && handleClose()}>
 			<SheetContent
 				className="flex w-full flex-col overflow-x-hidden pt-4"
 				onInteractOutside={(e) => {
-					if (isEditing ? form.formState.isDirty : !!form.watch("modelName") || hasAnyLimit) e.preventDefault();
+					if (form.formState.isDirty) e.preventDefault();
 				}}
 				onEscapeKeyDown={(e) => {
-					if (isEditing ? form.formState.isDirty : !!form.watch("modelName") || hasAnyLimit) e.preventDefault();
+					if (form.formState.isDirty) e.preventDefault();
 				}}
 				data-testid="model-limit-sheet"
 			>
 				<SheetHeader className="flex flex-col items-start p-0 py-4" headerClassName="mb-0 sticky -top-4 bg-card z-10 px-4 md:px-8">
 					<SheetTitle>{isEditing ? t("modelLimits.editLimit") : t("modelLimits.createLimit")}</SheetTitle>
-					<SheetDescription>{isEditing ? t("modelLimits.editDescriptionShort") : t("modelLimits.createDescriptionShort")}</SheetDescription>
+					<SheetDescription>{sheetDescription[isMCPPage ? "mcp" : "models"][isEditing ? "edit" : "create"]}</SheetDescription>
 				</SheetHeader>
 
 				<Form {...form}>
 					<form onSubmit={form.handleSubmit(onSubmit)} className="flex h-full flex-col gap-6">
 						<div className="grow space-y-4 px-4 md:px-8">
-							{/* Provider */}
-							<FormField
-								control={form.control}
-								name="provider"
-								render={({ field }) => (
-									<FormItem>
-										<FormLabel>{t("modelLimits.provider")}</FormLabel>
-										<FormControl>
-											<ProviderSelector
-												data-testid="model-limit-provider-select"
-												allOption={allProvidersOption}
-												value={field.value || ALL_PROVIDERS_VALUE}
-												onChange={(value: string) =>
-													handleProviderChange(value === ALL_PROVIDERS_VALUE ? "" : value, form.getValues("modelName"), field.onChange)
-												}
-												disabled={isEditing}
-											/>
-										</FormControl>
-										<FormMessage />
-									</FormItem>
-								)}
-							/>
-
-							{/* Model Name */}
-							<FormField
-								control={form.control}
-								name="modelName"
-								render={({ field }) => (
-									<FormItem>
-										<FormLabel>{t("modelLimits.modelName")}</FormLabel>
-										<FormControl>
-											{isEditing ? (
-												<Select value={field.value} disabled>
-													<SelectTrigger className="w-full" data-testid="model-limit-model-select">
-														<SelectValue />
-													</SelectTrigger>
-													<SelectContent>
-														<SelectItem value={field.value}>{field.value === "*" ? t("modelLimits.allModels") : field.value}</SelectItem>
-													</SelectContent>
-												</Select>
-											) : (
-												<div data-testid="model-limit-model-select">
-													<ModelSelector
-														provider={form.watch("provider") || undefined}
-														value={field.value}
-														onChange={field.onChange}
-														placeholder={t("modelLimits.searchForModel")}
-														baseModelsWithoutProvider
-														extraOptions={allModelsOption}
-														allowCustomModel
-														unfiltered
+							{/* Provider and model: the MCP page edits holder-level rows, which name neither */}
+							{!isMCPPage && (
+								<>
+									{/* Provider */}
+									<FormField
+										control={form.control}
+										name="provider"
+										render={({ field }) => (
+											<FormItem>
+												<FormLabel>{t("modelLimits.provider")}</FormLabel>
+												<FormControl>
+													<ProviderSelector
+														data-testid="model-limit-provider-select"
+														allOption={allProvidersOption}
+														value={field.value || ALL_PROVIDERS_VALUE}
+														onChange={(value: string) =>
+															handleProviderChange(value === ALL_PROVIDERS_VALUE ? "" : value, form.getValues("modelName"), field.onChange)
+														}
+														disabled={isEditing}
 													/>
-												</div>
-											)}
-										</FormControl>
-										<FormMessage />
-									</FormItem>
-								)}
-							/>
+												</FormControl>
+												<FormMessage />
+											</FormItem>
+										)}
+									/>
+
+									{/* Model Name */}
+									<FormField
+										control={form.control}
+										name="modelName"
+										render={({ field }) => (
+											<FormItem>
+												<FormLabel>{t("modelLimits.modelName")}</FormLabel>
+												<FormControl>
+													{isEditing ? (
+														<Select value={field.value} disabled>
+															<SelectTrigger className="w-full" data-testid="model-limit-model-select">
+																<SelectValue />
+															</SelectTrigger>
+															<SelectContent>
+																<SelectItem value={field.value}>
+																	{field.value === "*" ? t("modelLimits.allModels") : field.value}
+																</SelectItem>
+															</SelectContent>
+														</Select>
+													) : (
+														<div data-testid="model-limit-model-select">
+															<ModelSelector
+																provider={form.watch("provider") || undefined}
+																value={field.value}
+																onChange={field.onChange}
+																placeholder={t("modelLimits.searchForModel")}
+																baseModelsWithoutProvider
+																extraOptions={allModelsOption}
+																allowCustomModel
+																unfiltered
+															/>
+														</div>
+													)}
+												</FormControl>
+												<FormMessage />
+											</FormItem>
+										)}
+									/>
+								</>
+							)}
 
 							{/* Scope */}
 							<FormField
@@ -561,6 +666,7 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 													// isn't creatable (e.g. a legacy scope=user row) has no matching
 													// SelectItem for its value, and the trigger can render blank.
 													.filter((option) => option.value === field.value || (!option.readOnly && option.creatable !== false))
+													.filter((option) => !isMCPPage || MCP_LIMIT_SCOPES.includes(option.value))
 													.map((option) => (
 														<SelectItem key={option.value} value={option.value}>
 															{option.label}
@@ -625,67 +731,74 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 									}))}
 									onChange={(lines) => form.setValue("budgets", lines, { shouldDirty: true })}
 									showScope
-									// A narrower limit is reached by model requests only: Shared and Model, never MCP.
-									scopeOptions={budgetScopeApplies(form.watch("modelName"), form.watch("provider")) ? undefined : ["shared", "model"]}
+									scopeOptions={SCOPE_OPTIONS[traffic]}
+									defaultScope={isMCPPage ? "mcp" : undefined}
 								/>
+								{isMCPPage && form.formState.errors.root && (
+									<p className="text-destructive text-sm">{form.formState.errors.root.message}</p>
+								)}
 							</div>
 
-							<DottedSeparator />
+							{/* Rate Limiting Configuration: the Models page's, so the MCP page leaves it alone */}
+							{!isMCPPage && (
+								<>
+									<DottedSeparator />
 
-							{/* Rate Limiting Configuration */}
-							<div className="space-y-4">
-								<Label className="text-sm font-medium">{t("modelLimits.rateLimitsSection")}</Label>
+									<div className="space-y-4">
+										<Label className="text-sm font-medium">{t("modelLimits.rateLimitsSection")}</Label>
 
-								<FormField
-									control={form.control}
-									name="tokenMaxLimit"
-									render={({ field }) => (
-										<FormItem>
-											<NumberAndSelect
-												id="modelTokenMaxLimit"
-												labelClassName="font-normal"
-												label={t("modelLimits.maximumTokens")}
-												value={field.value}
-												selectValue={form.watch("tokenResetDuration") || "1h"}
-												onChangeNumber={(value) => field.onChange(value)}
-												onChangeSelect={(value) => form.setValue("tokenResetDuration", value, { shouldDirty: true })}
-												options={resetDurationOptions}
-											/>
-											<FormMessage />
-										</FormItem>
-									)}
-								/>
+										<FormField
+											control={form.control}
+											name="tokenMaxLimit"
+											render={({ field }) => (
+												<FormItem>
+													<NumberAndSelect
+														id="modelTokenMaxLimit"
+														labelClassName="font-normal"
+														label={t("modelLimits.maximumTokens")}
+														value={field.value}
+														selectValue={form.watch("tokenResetDuration") || "1h"}
+														onChangeNumber={(value) => field.onChange(value)}
+														onChangeSelect={(value) => form.setValue("tokenResetDuration", value, { shouldDirty: true })}
+														options={resetDurationOptions}
+													/>
+													<FormMessage />
+												</FormItem>
+											)}
+										/>
 
-								<FormField
-									control={form.control}
-									name="requestMaxLimit"
-									render={({ field }) => (
-										<FormItem>
-											<NumberAndSelect
-												id="modelRequestMaxLimit"
-												labelClassName="font-normal"
-												label={t("modelLimits.maximumRequests")}
-												value={field.value}
-												selectValue={form.watch("requestResetDuration") || "1h"}
-												onChangeNumber={(value) => field.onChange(value)}
-												onChangeSelect={(value) => form.setValue("requestResetDuration", value, { shouldDirty: true })}
-												options={resetDurationOptions}
-											/>
-											<FormMessage />
-										</FormItem>
-									)}
-								/>
-								{form.formState.errors.root && <p className="text-destructive text-sm">{form.formState.errors.root.message}</p>}
-							</div>
+										<FormField
+											control={form.control}
+											name="requestMaxLimit"
+											render={({ field }) => (
+												<FormItem>
+													<NumberAndSelect
+														id="modelRequestMaxLimit"
+														labelClassName="font-normal"
+														label={t("modelLimits.maximumRequests")}
+														value={field.value}
+														selectValue={form.watch("requestResetDuration") || "1h"}
+														onChangeNumber={(value) => field.onChange(value)}
+														onChangeSelect={(value) => form.setValue("requestResetDuration", value, { shouldDirty: true })}
+														options={resetDurationOptions}
+													/>
+													<FormMessage />
+												</FormItem>
+											)}
+										/>
+										{form.formState.errors.root && <p className="text-destructive text-sm">{form.formState.errors.root.message}</p>}
+									</div>
+								</>
+							)}
 
 							{/* Current Usage Display (for editing) */}
-							{isEditing && ((modelConfig?.budgets?.length ?? 0) > 0 || modelConfig?.rate_limit) && (
+							{isEditing && (rowLines(modelConfig, traffic, true).length > 0 || (!isMCPPage && modelConfig?.rate_limit)) && (
 								<>
 									<DottedSeparator />
 									<div className="space-y-3">
 										<Label className="text-sm font-medium">{t("modelLimits.currentUsage")}</Label>
 										<div className="bg-muted/50 grid grid-cols-1 gap-4 rounded-lg p-4 md:grid-cols-2">
-											{(modelConfig?.budgets ?? []).map((b) => (
+											{rowLines(modelConfig, traffic, true).map((b) => (
 												<div key={b.id} className="space-y-1">
 													<p className="text-muted-foreground flex items-center gap-1.5 text-xs">
 														{t("modelLimits.budgetWithDuration", { duration: b.reset_duration })}
@@ -696,7 +809,7 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 													</p>
 												</div>
 											))}
-											{modelConfig?.rate_limit?.token_max_limit && (
+											{!isMCPPage && modelConfig?.rate_limit?.token_max_limit && (
 												<div className="space-y-1">
 													<p className="text-muted-foreground text-xs">{t("modelLimits.tokens")}</p>
 													<p className="text-sm font-medium">
@@ -705,7 +818,7 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 													</p>
 												</div>
 											)}
-											{modelConfig?.rate_limit?.request_max_limit && (
+											{!isMCPPage && modelConfig?.rate_limit?.request_max_limit && (
 												<div className="space-y-1">
 													<p className="text-muted-foreground text-xs">{t("modelLimits.requests")}</p>
 													<p className="text-sm font-medium">
@@ -720,6 +833,12 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 							)}
 						</div>
 
+						{lookupTarget && targetLookupFailed && (
+							<p className="text-destructive px-4 text-sm md:px-8" data-testid="model-limit-target-lookup-error">
+								{getErrorMessage(targetLookupError)}
+							</p>
+						)}
+
 						{/* Footer */}
 						<div className="bg-card sticky bottom-0 shrink-0 border-t px-4 py-4 md:px-8">
 							<div className="flex items-center justify-end gap-3">
@@ -727,7 +846,11 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 								<Button type="button" variant="outline" onClick={handleClose}>
 									{tc("cancel")}
 								</Button>
-								<Button type="submit" data-testid="model-limit-button-submit" disabled={isLoading || !form.formState.isDirty || !canSubmit}>
+								<Button
+									type="submit"
+									data-testid="model-limit-button-submit"
+									disabled={isLoading || isFetchingTarget || targetLookupFailed || !form.formState.isDirty || !canSubmit}
+								>
 									{isLoading ? t("modelLimits.saving") : isEditing ? t("modelLimits.saveChanges") : t("modelLimits.createLimit")}
 								</Button>
 							</div>

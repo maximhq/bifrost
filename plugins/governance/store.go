@@ -158,19 +158,20 @@ type GovernanceStore interface {
 	// that named a project and carries no scoping permit, exactly as it refuses one that presented a
 	// credential nothing granted.
 	ResolvePermits(ctx *schemas.BifrostContext) (bases []schemas.Permit, scoping schemas.Permit, mode grant.CompositionMode)
-	// GatherLimits assembles every limit an attempt answers to, once its provider and model are
-	// known: the deployment's own for the pair, what funds each holder the request carries, and what
-	// funds their use of the provider. Which holders pay is the store's to say: a store that composes
-	// several possible payers settles here on who pays, and everything downstream (the checks, the
-	// co-payers named on the log row, the charge) reads that one settled answer off the grant rather
-	// than assembling its own.
+	// GatherLimitsForRequestKind assembles every limit an attempt answers to, once its provider and
+	// model are known: the deployment's own for the pair, what funds each holder the request carries,
+	// and what funds their use of the provider. isMCP is true for an MCP tool execution, which names no
+	// provider and no model and so answers to its holders' own limits only. Which holders pay is the
+	// store's to say: a store that composes several possible payers settles here on who pays, and
+	// everything downstream (the checks, the co-payers named on the log row, the charge) reads that one
+	// settled answer off the grant rather than assembling its own.
 	//
 	// An error is a request whose payers cannot be settled at all, which the funnel refuses as such;
 	// it is not a limit being exhausted, which the checks report.
-	GatherLimits(ctx *schemas.BifrostContext, access schemas.Access, provider schemas.ModelProvider, model string) (budgets []schemas.Limit, rateLimits []schemas.Limit, err error)
+	GatherLimitsForRequestKind(ctx *schemas.BifrostContext, access schemas.Access, provider schemas.ModelProvider, model string, isMCP bool) (budgets []schemas.Limit, rateLimits []schemas.Limit, err error)
 	// The gather primitives below are one vocabulary: who holds the money (the deployment, or a
 	// permit's holder) crossed with what scopes it (a provider, or a model on a provider), plus
-	// HolderLimits for what funds the holder whichever provider serves. GatherLimits composes them;
+	// HolderLimits for what funds the holder whichever provider serves. GatherLimitsForRequestKind composes them;
 	// nothing else decides who is charged. All are resolved per attempt because a request can fail
 	// over to another provider or have its model rewritten, so none of them are facts about the
 	// permit.
@@ -4832,27 +4833,47 @@ func (gs *LocalGovernanceStore) updateRateLimitReferences(ctx context.Context, r
 	})
 }
 
-// GetBudgetAndRateLimitStatus implements GovernanceStore. It gathers what the request would answer to
-// for the pair, from the store and the access on its grant, and reports the fullest budget and rate
-// limit among them. A request with no access still answers to the deployment's own limits.
-// GatherLimits assembles every limit an attempt answers to: the deployment's own for the pair; for
-// every permit the request carries, what funds the holder and the holder's own model limits; and
-// for every permit that pays for the pair, what funds its use of the provider.
+// GatherLimitsForRequestKind assembles every limit an attempt answers to: the deployment's own for
+// the pair; for every permit the request carries, what funds the holder and the holder's own model
+// limits; and for every permit that pays for the pair, what funds its use of the provider.
 //
 // A holder's own limits bind whatever the request does, whichever permit admits the pair: a key
 // whose budget is spent is spent, however the request reached the provider. Only what is funded
 // per provider follows the pair, and which permits pay for it is the access's to say (see
-// PermitsForModel).
+// PermitsForModel). The deployment's own come first, because that is the order refusals report in.
+// Every carried permit is gathered: this store resolves one permit per credential, so there is
+// nothing to pick between, and one limit reached twice is still one limit once the list is settled.
 //
-// The deployment's own come first, because that is the order refusals report in: what the
-// deployment imposes before what the holder is funded by. Every carried permit is gathered: this
-// store resolves one permit per credential, so there is nothing to pick between, and one limit
-// reached twice is still one limit once the list is settled.
-func (gs *LocalGovernanceStore) GatherLimits(ctx *schemas.BifrostContext, access schemas.Access, provider schemas.ModelProvider, model string) (budgets []schemas.Limit, rateLimits []schemas.Limit, err error) {
-	// A request naming no provider and no model (a relay call, an MCP tool execution) still walks
-	// the model-config scopes: only the all-models, all-providers tier can match then, and that
-	// tier is where a key's own budget and rate limit live since the model-config migration.
-	// Provider- and model-specific tiers cannot match an empty pair, so they never reach it.
+// An MCP tool execution names no provider and no model, so nothing scoped to either can cover it:
+// it answers to the holders' own limits only. For the deployment and for every carried permit those
+// are read straight off the holder-level model config (see GlobalHolderLevelLimits), one keyed
+// lookup per scope instead of a walk over the model-config tiers, plus what funds each holder
+// (HolderLimits). Which of those lines a tool execution is charged by is BudgetsForRequestKind's to
+// decide, as for any other request.
+func (gs *LocalGovernanceStore) GatherLimitsForRequestKind(ctx *schemas.BifrostContext, access schemas.Access, provider schemas.ModelProvider, model string, isMCP bool) (budgets []schemas.Limit, rateLimits []schemas.Limit, err error) {
+	if isMCP {
+		budgets, rateLimits = gs.GlobalHolderLevelLimits(ctx)
+		if access == nil {
+			return budgets, rateLimits, nil
+		}
+		carried := access.Bases()
+		if scoping := access.Scoping(); scoping != nil {
+			carried = append(carried, scoping)
+		}
+		for _, permit := range carried {
+			heldBudgets, heldRateLimits := gs.HolderLimits(ctx, permit)
+			budgets = append(budgets, heldBudgets...)
+			rateLimits = append(rateLimits, heldRateLimits...)
+			ownBudgets, ownRateLimits := gs.PermitHolderLevelLimits(ctx, permit)
+			budgets = append(budgets, ownBudgets...)
+			rateLimits = append(rateLimits, ownRateLimits...)
+		}
+		return budgets, rateLimits, nil
+	}
+	// A request naming no provider and no model (a relay call) still walks the model-config scopes:
+	// only the all-models, all-providers tier can match then, and that tier is where a key's own
+	// budget and rate limit live since the model-config migration. Provider- and model-specific
+	// tiers cannot match an empty pair, so they never reach it.
 	budgets, rateLimits = gs.GlobalProviderLimits(ctx, provider)
 	globalModelBudgets, globalModelRateLimits := gs.GlobalModelLimits(ctx, provider, model)
 	budgets = append(budgets, globalModelBudgets...)
@@ -4883,10 +4904,13 @@ func (gs *LocalGovernanceStore) GatherLimits(ctx *schemas.BifrostContext, access
 	return budgets, rateLimits, nil
 }
 
+// GetBudgetAndRateLimitStatus implements GovernanceStore. It gathers what the request would answer to
+// for the pair, from the store and the access on its grant, and reports the fullest budget and rate
+// limit among them. A request with no access still answers to the deployment's own limits.
 func (gs *LocalGovernanceStore) GetBudgetAndRateLimitStatus(ctx *schemas.BifrostContext, provider schemas.ModelProvider, model string, budgetBaselines map[string]float64, tokenBaselines map[string]int64, requestBaselines map[string]int64) *BudgetAndRateLimitStatus {
-	budgets, rateLimits, _ := gs.GatherLimits(ctx, ctx.Grant().Access(), provider, model)
+	budgets, rateLimits, _ := gs.GatherLimitsForRequestKind(ctx, ctx.Grant().Access(), provider, model, false)
 	// Status describes a model request for the pair, so an MCP-only budget must not steer it.
-	budgets = budgetsForRequestKind(ctx, gs, budgets, false)
+	budgets = BudgetsForRequestKind(ctx, gs, budgets, false)
 	status := &BudgetAndRateLimitStatus{}
 
 	for _, limit := range budgets {
@@ -5047,6 +5071,34 @@ func (gs *LocalGovernanceStore) PermitModelLimits(ctx context.Context, permit sc
 		return nil, nil
 	}
 	return gs.modelLimitsInScopes(ctx, modelConfigScopesFor(permit), provider, model)
+}
+
+// GlobalHolderLevelLimits reports the deployment's own limits: the lines on its holder-level model config (all models, no provider).
+func (gs *LocalGovernanceStore) GlobalHolderLevelLimits(ctx context.Context) ([]schemas.Limit, []schemas.Limit) {
+	return gs.holderLevelLimits(limitScope{name: configstoreTables.ModelConfigScopeGlobal, kind: grant.LimitHolderModelConfig})
+}
+
+// PermitHolderLevelLimits reports the permit holder's own limits on its holder-level model config, in the permit's scope.
+func (gs *LocalGovernanceStore) PermitHolderLevelLimits(ctx context.Context, permit schemas.Permit) ([]schemas.Limit, []schemas.Limit) {
+	if permit == nil || permit.ID() == "" {
+		return nil, nil
+	}
+	return gs.holderLevelLimits(limitScope{name: modelConfigScopeFor(permit.Type()), id: permit.ID(), kind: scopedModelConfigKind(permit.Type())})
+}
+
+// holderLevelLimits names the lines of the one holder-level model config a scope may hold.
+func (gs *LocalGovernanceStore) holderLevelLimits(scope limitScope) ([]schemas.Limit, []schemas.Limit) {
+	value, exists := gs.modelConfigs.Load(modelConfigStoreKey(scope.name, scope.id, modelConfigWildcard, nil))
+	if !exists || value == nil {
+		return nil, nil
+	}
+	mc, ok := value.(*configstoreTables.TableModelConfig)
+	if !ok || mc == nil {
+		return nil, nil
+	}
+	name := modelConfigDisplayName(mc)
+	return grant.LimitsHeldBy(scope.kind, mc.ID, name, "", "", budgetIDsOf(mc.Budgets)...),
+		grant.LimitsHeldBy(scope.kind, mc.ID, name, "", "", idOrEmpty(mc.RateLimitID)...)
 }
 
 // ScopedModelLimits reports the model-config limits covering the pair in one named scope, attributed

@@ -220,6 +220,7 @@
 			"routingRule": "建立路由規則",
 			"mcpServer": "新增 MCP 伺服器",
 			"modelLimit": "建立模型限制",
+			"mcpLimit": "建立 MCP 限制",
 			"webhook": "建立 Webhook",
 			"mcpLibraryServer": "將伺服器新增至 MCP 程式庫",
 			"virtualMcp": "建立虛擬 MCP",

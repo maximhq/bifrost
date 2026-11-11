@@ -221,7 +221,7 @@ test.describe('Virtual Keys', () => {
       const mcpIndex = amounts.indexOf('5')
       expect(mcpIndex).toBeGreaterThanOrEqual(0)
       await expect(page.getByTestId(`vk-budget-lines-scope-${mcpIndex}-trigger`)).toHaveText('MCP')
-      await expect(page.getByTestId(`vk-budget-lines-scope-${1 - mcpIndex}-trigger`)).toHaveText('Both')
+      await expect(page.getByTestId(`vk-budget-lines-scope-${1 - mcpIndex}-trigger`)).toHaveText('Shared')
       // Both lines share a period, so each budget override entry names its scope.
       const overrides = page.getByTestId('vk-budget-overrides-section')
       await expect(overrides.getByTestId('budget-scope-badge-mcp')).toBeVisible()

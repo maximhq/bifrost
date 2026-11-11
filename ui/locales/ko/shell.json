@@ -220,6 +220,7 @@
 			"routingRule": "라우팅 규칙 만들기",
 			"mcpServer": "MCP 서버 추가",
 			"modelLimit": "모델 한도 만들기",
+			"mcpLimit": "MCP 제한 만들기",
 			"webhook": "웹훅 만들기",
 			"mcpLibraryServer": "MCP 라이브러리에 서버 추가",
 			"virtualMcp": "가상 MCP 만들기",

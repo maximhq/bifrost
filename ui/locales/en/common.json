@@ -607,7 +607,7 @@
 	},
 	"budgetScope": {
 		"label": "Scope",
-		"shared": "Both",
+		"shared": "Shared",
 		"model": "Model",
 		"mcp": "MCP",
 		"sharedHint": "Charged by model requests and MCP tool executions",

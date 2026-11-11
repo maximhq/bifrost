@@ -208,7 +208,7 @@
 	},
 	"budgetScope": {
 		"label": "Ámbito",
-		"shared": "Ambos",
+		"shared": "Compartido",
 		"model": "Modelo",
 		"mcp": "MCP",
 		"sharedHint": "Se cobra por solicitudes de modelos y ejecuciones de herramientas MCP",

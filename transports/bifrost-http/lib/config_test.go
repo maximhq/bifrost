@@ -27519,6 +27519,13 @@ func TestValidateGovernanceBudgetScopes(t *testing.T) {
 			}},
 		},
 		{
+			name: "a key declared without an id is not the key whose id spells its position",
+			gov: configstore.GovernanceConfig{VirtualKeys: []configstoreTables.TableVirtualKey{
+				{Budgets: []configstoreTables.TableBudget{budget("a", "1d", configstoreTables.LimitScopeMCP)}},
+				{ID: "#1", Budgets: []configstoreTables.TableBudget{budget("b", "1d", configstoreTables.LimitScopeMCP)}},
+			}},
+		},
+		{
 			name: "teams declared without an id do not share their budgets",
 			gov: configstore.GovernanceConfig{Teams: []configstoreTables.TableTeam{
 				{Budgets: []configstoreTables.TableBudget{budget("a", "1d", configstoreTables.LimitScopeModel)}},
@@ -27552,4 +27559,19 @@ func TestValidateGovernanceBudgetScopes(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestValidateGovernanceBudgetScopesKeepsCustomersWithoutAnIDApart: customers declared without an id are
+// each their own owner until they are given one, so their budgets of one period and scope do not collide.
+func TestValidateGovernanceBudgetScopesKeepsCustomersWithoutAnIDApart(t *testing.T) {
+	gov := configstore.GovernanceConfig{Customers: []configstoreTables.TableCustomer{
+		{Name: "a", Budgets: []configstoreTables.TableBudget{{ID: "b-a", MaxLimit: 10, ResetDuration: "1M", Scope: configstoreTables.LimitScopeModel}}},
+		{Name: "b", Budgets: []configstoreTables.TableBudget{{ID: "b-b", MaxLimit: 20, ResetDuration: "1M", Scope: configstoreTables.LimitScopeModel}}},
+	}}
+	require.NoError(t, validateGovernanceBudgetScopes(&ConfigData{Governance: &gov}, func(string, ...any) {}))
+
+	gov.Customers[1].ID = "cust-1"
+	gov.Customers[1].Budgets[0].ID = "b-a2"
+	gov.Customers[0].Budgets = append(gov.Customers[0].Budgets, configstoreTables.TableBudget{ID: "b-a-dup", MaxLimit: 5, ResetDuration: "1M", Scope: configstoreTables.LimitScopeModel})
+	require.Error(t, validateGovernanceBudgetScopes(&ConfigData{Governance: &gov}, func(string, ...any) {}), "one customer's own duplicate still fails")
 }

@@ -1,3 +1,4 @@
+import { modelConfigAppliesToMCP } from "@/lib/utils/governance";
 import { virtualKeyMetadataQueryParams } from "@/lib/utils/virtualKeyMetadata";
 import {
 	Budget,
@@ -55,6 +56,10 @@ type PricingOverrideQueryArgs = {
 	offset?: number;
 	search?: string;
 };
+
+// Whether a model config passes a listing's scope filter, which may name several scopes separated by commas.
+const modelConfigMatchesScopeFilter = (mc: ModelConfig, args?: GetModelConfigsParams) =>
+	!args?.scope || args.scope.split(",").includes(mc.scope || "global");
 
 export const governanceApi = baseApi.injectEndpoints({
 	endpoints: (builder) => ({
@@ -535,6 +540,7 @@ export const governanceApi = baseApi.injectEndpoints({
 					...(params?.scope && { scope: params.scope }),
 					...(params?.scope_id && { scope_id: params.scope_id }),
 					...(params?.provider && { provider: params.provider }),
+					...(params?.applies_to && { applies_to: params.applies_to }),
 				},
 			}),
 			providesTags: ["ModelConfigs"],
@@ -564,9 +570,11 @@ export const governanceApi = baseApi.injectEndpoints({
 						if (entry?.endpointName !== "getModelConfigs" || entry?.status !== "fulfilled") continue;
 						const args = entry.originalArgs as GetModelConfigsParams | undefined;
 						if (args?.search && !mc.model_name.toLowerCase().includes(args.search.toLowerCase())) continue;
-						if (args?.scope && mc.scope !== args.scope) continue;
+						if (!modelConfigMatchesScopeFilter(mc, args)) continue;
 						if (args?.scope_id && mc.scope_id !== args.scope_id) continue;
 						if (args?.provider && mc.provider !== args.provider) continue;
+						// The MCP page lists only the rows MCP tool executions are charged by.
+						if (args?.applies_to === "mcp" && !modelConfigAppliesToMCP(mc)) continue;
 						dispatch(
 							governanceApi.util.updateQueryData("getModelConfigs", entry.originalArgs, (draft) => {
 								if (!draft.model_configs) draft.model_configs = [];
@@ -602,8 +610,21 @@ export const governanceApi = baseApi.injectEndpoints({
 							governanceApi.util.updateQueryData("getModelConfigs", entry.originalArgs, (draft) => {
 								if (!draft.model_configs) return;
 								const index = draft.model_configs.findIndex((mc) => mc.id === id);
+								// A holder-level row leaves the MCP page with its last Shared or MCP line and joins it with its first.
+								const args = entry.originalArgs as GetModelConfigsParams | undefined;
+								if (args?.applies_to === "mcp" && !modelConfigAppliesToMCP(data.model_config)) {
+									if (index === -1) return;
+									draft.model_configs.splice(index, 1);
+									draft.count = Math.max(0, (draft.count || 0) - 1);
+									draft.total_count = Math.max(0, (draft.total_count || 0) - 1);
+									return;
+								}
 								if (index !== -1) {
 									draft.model_configs[index] = data.model_config;
+								} else if (args?.applies_to === "mcp" && modelConfigMatchesScopeFilter(data.model_config, args)) {
+									draft.model_configs.unshift(data.model_config);
+									draft.count = (draft.count || 0) + 1;
+									draft.total_count = (draft.total_count || 0) + 1;
 								}
 							}),
 						);

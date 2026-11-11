@@ -1661,14 +1661,14 @@ func TestModelConfigScopesIncludeTheProjectScopingARequest(t *testing.T) {
 	})
 }
 
-// settlingErrorStore wraps a real store so GatherLimits fails the way a store composing several
+// settlingErrorStore wraps a real store so GatherLimitsForRequestKind fails the way a store composing several
 // possible payers can: the payers could not be settled at all, not a limit being exhausted.
 type settlingErrorStore struct {
 	GovernanceStore
 	err error
 }
 
-func (s *settlingErrorStore) GatherLimits(ctx *schemas.BifrostContext, access schemas.Access, provider schemas.ModelProvider, model string) ([]schemas.Limit, []schemas.Limit, error) {
+func (s *settlingErrorStore) GatherLimitsForRequestKind(ctx *schemas.BifrostContext, access schemas.Access, provider schemas.ModelProvider, model string, isMCP bool) ([]schemas.Limit, []schemas.Limit, error) {
 	return nil, nil, s.err
 }
 
@@ -1689,7 +1689,7 @@ func newSettlingErrorTestPlugin(t *testing.T, err error) *GovernancePlugin {
 	return plugin
 }
 
-// TestEvaluateSkipsASettlingErrorWhenSpendingChecksAreSkipped covers the store.GatherLimits error
+// TestEvaluateSkipsASettlingErrorWhenSpendingChecksAreSkipped covers the store.GatherLimitsForRequestKind error
 // path for a request that asked not to be checked against anything it answers to (e.g. a read-only
 // list-models call). LocalGovernanceStore never returns one, but the interface allows a store
 // composing several possible payers to fail this way, and such a request spends nothing, so an

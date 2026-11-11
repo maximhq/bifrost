@@ -231908,7 +231908,7 @@
                   "// Usage is settled asynchronously, so the second request waits for it. An MCP-only budget is never",
                   "// charged by inference, so a budget of a fraction of a cent must not refuse the second request.",
                   "whenSettled(state, 'model', function (budgets) {",
-                  "  pm.test('inference charged the model budget and left the MCP-only budget unspent', function () { pm.expect(budgets.some(function (b) { return b.scope === 'mcp'; }), 'the key carries no mcp budget: ' + JSON.stringify(budgets)).to.eql(true); pm.expect(budgets.filter(function (b) { return b.scope === 'mcp'; }).every(function (b) { return !b.current_usage; })).to.eql(true); });",
+                  "  pm.test('inference charged the model budget and left the MCP-only budget unspent', function () { pm.expect(budgets.some(function (b) { return b.scope === 'mcp'; }), 'the key carries no mcp budget: ' + JSON.stringify(budgets)).to.eql(true); var mcp = budgets.filter(function (b) { return b.scope === 'mcp'; }); pm.expect(mcp.length, 'no mcp budget: ' + JSON.stringify(budgets)).to.be.above(0); mcp.forEach(function (b) { pm.expect(b.current_usage, 'an mcp budget was charged by inference: ' + JSON.stringify(b)).to.equal(0); }); });",
                   "  chat(state, 'openai/gpt-4o-mini', {}, function (res) {",
                   "    pm.test('the second request is still served: inference does not spend an MCP-only budget', function () {",
                   "      pm.expect(res && res.code, res ? res.text() : 'no response').to.eql(200);",

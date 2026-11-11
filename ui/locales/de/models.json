@@ -2240,5 +2240,15 @@
 		"resetAll": "Auf Datenblatt zurücksetzen",
 		"noPermission": "Sie haben keine Berechtigung, das Datenblatt zu bearbeiten",
 		"saving": "Wird gespeichert..."
+	},
+	"mcpLimits": {
+		"titleDescription": "Konfiguriere Budgets für MCP-Tool-Ausführungen, global oder pro virtuellem Schlüssel. MCP-Zeilen werden nur von Tool-Ausführungen belastet, geteilte Zeilen auch von Modellanfragen.",
+		"emptyTitle": "MCP-Budgets",
+		"emptyDescription": "Begrenze die Ausgaben für MCP-Tool-Ausführungen global oder pro virtuellem Schlüssel, eigenständig oder geteilt mit Modellanfragen.",
+		"createDescription": "Richte MCP- und geteilte Budgets für die Bereitstellung oder einen virtuellen Schlüssel ein.",
+		"editDescription": "Aktualisiere die MCP- und geteilten Budgets dieser Ebene.",
+		"deleteTitle": "MCP-Limits entfernen",
+		"deleteDescription": "Die MCP- und geteilten Budgets von „{{name}}“ entfernen? Modellbudgets und das auf der Modellseite festgelegte Ratenlimit bleiben erhalten.",
+		"atLeastOneBudget": "Mindestens ein Budget ist erforderlich"
 	}
 }

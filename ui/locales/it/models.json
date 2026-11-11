@@ -2240,5 +2240,15 @@
 		"resetAll": "Ripristina la scheda tecnica",
 		"noPermission": "Non hai l'autorizzazione per modificare la scheda tecnica",
 		"saving": "Salvataggio..."
+	},
+	"mcpLimits": {
+		"titleDescription": "Configura i budget per le esecuzioni di strumenti MCP, a livello globale o per chiave virtuale. Le righe MCP sono addebitate solo dalle esecuzioni di strumenti; le righe condivise anche dalle richieste ai modelli.",
+		"emptyTitle": "Budget MCP",
+		"emptyDescription": "Limita la spesa delle esecuzioni di strumenti MCP a livello globale o per chiave virtuale, da sole o condivise con le richieste ai modelli.",
+		"createDescription": "Configura budget MCP e condivisi per il deployment o una chiave virtuale.",
+		"editDescription": "Aggiorna i budget MCP e condivisi di questo scope.",
+		"deleteTitle": "Rimuovi limiti MCP",
+		"deleteDescription": "Rimuovere i budget MCP e condivisi di \"{{name}}\"? I budget dei modelli e il rate limit impostati nella pagina Modelli restano.",
+		"atLeastOneBudget": "Serve almeno un budget"
 	}
 }
