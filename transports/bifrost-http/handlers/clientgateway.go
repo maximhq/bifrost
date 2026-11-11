@@ -55,7 +55,7 @@ const (
 type ClientGatewayProfile interface {
 	// Name identifies the client in logs and messages, e.g. "claude-code".
 	Name() string
-	// PathPrefix is the base URL path the client is pointed at, e.g. "/claude-code".
+	// PathPrefix is the base URL path the client is pointed at, e.g. "/gateway/claude-code".
 	PathPrefix() string
 	// ClientID names the built-in OAuth client every grant of this gateway is bound to.
 	ClientID() string

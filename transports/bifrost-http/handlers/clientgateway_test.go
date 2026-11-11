@@ -20,7 +20,7 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
-const testClaudeCodeResource = testIssuer + "/claude-code"
+const testClaudeCodeResource = testIssuer + "/gateway/claude-code"
 
 // newClaudeCodeGateway builds the gateway handler on a real sqlite store (full
 // migrations, so the device-code columns exist) with the gateway enabled, plus a
@@ -187,7 +187,7 @@ func TestClaudeCodeGateway_DisabledAnswers404(t *testing.T) {
 			mutate(cfg)
 
 			for route, ctx := range map[string]*fasthttp.RequestCtx{
-				"metadata":             getCtx("/claude-code/.well-known/oauth-authorization-server"),
+				"metadata":             getCtx("/gateway/claude-code/.well-known/oauth-authorization-server"),
 				"device_authorization": formPostCtx("surface=claude_code"),
 				"token":                formPostCtx("grant_type=refresh_token&refresh_token=x"),
 				"revoke":               formPostCtx("token=x"),
@@ -219,7 +219,7 @@ func TestClaudeCodeGateway_DisabledAnswers404(t *testing.T) {
 
 func TestClaudeCodeGateway_Metadata(t *testing.T) {
 	h, _, _, _ := newClaudeCodeGateway(t, false)
-	ctx := getCtx("/claude-code/.well-known/oauth-authorization-server")
+	ctx := getCtx("/gateway/claude-code/.well-known/oauth-authorization-server")
 	h.handleMetadata(ctx)
 	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode())
 	body := jsonBody(t, ctx)
@@ -264,7 +264,7 @@ func TestClaudeCodeGateway_DeviceSignInWithVirtualKey(t *testing.T) {
 	assert.Equal(t, "Bearer", tokens["token_type"])
 	assert.EqualValues(t, configtables.DefaultAccessTokenTTL, tokens["expires_in"])
 
-	// The token is bound to the /claude-code audience: valid here, refused on /mcp.
+	// The token is bound to the /gateway/claude-code audience: valid here, refused on /mcp.
 	signingKey, err := store.GetOAuth2SigningKey(bgCtx())
 	require.NoError(t, err)
 	claims, err := verifyBifrostJWT(bgCtx(), accessToken, cfg, signingKey, testClaudeCodeResource)
@@ -302,7 +302,7 @@ func TestClaudeCodeGateway_DeviceSignInWithVirtualKey(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, vk.ID, refreshedClaims.Subject)
 
-	// The grant is bound to /claude-code, so the /oauth2/token refresh path (the
+	// The grant is bound to /gateway/claude-code, so the /oauth2/token refresh path (the
 	// handler it dispatches to when MCP OAuth is on) refuses it, even when the
 	// caller names the built-in client.
 	viaMCP := formPostCtx(url.Values{"grant_type": {"refresh_token"}, "refresh_token": {rotated}, "client_id": {claudeCodeClientID}}.Encode())
@@ -546,7 +546,7 @@ func TestClaudeCodeGatewayTokenCache(t *testing.T) {
 	c.put("tok-a", testClaudeCodeResource, claims(now.Add(time.Minute)), now)
 
 	assert.NotNil(t, c.get("tok-a", testClaudeCodeResource, now.Add(30*time.Second)))
-	assert.Nil(t, c.get("tok-a", "https://moved.example.com/claude-code", now), "another resource is a miss")
+	assert.Nil(t, c.get("tok-a", "https://moved.example.com/gateway/claude-code", now), "another resource is a miss")
 	assert.Nil(t, c.get("tok-a", testClaudeCodeResource, now.Add(time.Minute)), "an expired token is a miss")
 	assert.Nil(t, c.get("tok-b", testClaudeCodeResource, now))
 

@@ -644,7 +644,7 @@ func (h *OAuth2IssuanceHandler) refreshGrant(ctx *fasthttp.RequestCtx, refreshTo
 	// The grant is bound to the served resource as it was when it was authorized. A changed issuer_url
 	// moves that resource, and a token minted for the old one is refused by the resource for its
 	// audience, so the grant cannot refresh; the client authorizes again against the server's current
-	// address. A grant for a different resource (a /claude-code grant at /oauth2/token) is refused too.
+	// address. A grant for a different resource (a /gateway/claude-code grant at /oauth2/token) is refused too.
 	if resource != servedResource {
 		sendOAuthError(ctx, fasthttp.StatusBadRequest, "invalid_grant", "the grant was issued for a resource this server no longer serves; authorize again")
 		return

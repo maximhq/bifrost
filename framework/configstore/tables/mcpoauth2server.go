@@ -78,9 +78,9 @@ type OAuth2ServerConfig struct {
 	DisableVKIdentity bool `json:"disable_vk_identity,omitempty"`
 
 	// ClaudeCodeGateway exposes this authorization server to Claude Code's
-	// gateway sign-in (/login → Cloud gateway) under /claude-code. It is
+	// gateway sign-in (/login → Cloud gateway) under /gateway/claude-code. It is
 	// independent of MCPServerAuthMode but requires IssuerURL. nil or
-	// Enabled=false leaves every /claude-code route answering 404.
+	// Enabled=false leaves every /gateway/claude-code route answering 404.
 	ClaudeCodeGateway *ClaudeCodeGatewayConfig `json:"claude_code_gateway,omitempty"`
 
 	// Refresh tokens have no hard expiry — they are invalidated only by:
@@ -95,7 +95,7 @@ type OAuth2ServerConfig struct {
 }
 
 // ClaudeCodeGatewayConfig configures the Claude Code gateway protocol served
-// under /claude-code: the RFC 8628 device sign-in that Claude Code's /login
+// under /gateway/claude-code: the RFC 8628 device sign-in that Claude Code's /login
 // runs, Anthropic Messages inference, managed settings and OTLP telemetry.
 // It reuses the OAuth2 authorization server's signing key, consent page and
 // refresh-token rotation, but not the /mcp auth mode: it is served whenever it
@@ -103,7 +103,7 @@ type OAuth2ServerConfig struct {
 type ClaudeCodeGatewayConfig struct {
 	Enabled bool `json:"enabled"`
 	// ManagedSettings is the Claude Code managed-settings.json document served at
-	// /claude-code/managed/settings to every signed-in client. nil means no
+	// /gateway/claude-code/managed/settings to every signed-in client. nil means no
 	// managed policy (the endpoint answers 404); an empty object is an empty policy.
 	ManagedSettings map[string]any `json:"managed_settings"`
 }
